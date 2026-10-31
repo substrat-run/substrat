@@ -13,6 +13,7 @@
  * switch, invite accept, webhooks, OAuth callbacks) are not declared, so they are not here.
  */
 import { buildOpenApiDocument, type ApiCatalog } from '@substrat-run/contracts';
+import { SESSION_COOKIE } from '@substrat-run/oidc-rp';
 import { dashboardRoutes } from './routes.js';
 
 const catalog: ApiCatalog = {};
@@ -44,4 +45,17 @@ export const API_DOCUMENT = buildOpenApiDocument(
     description: "The dashboard's team-scoped routes. Every path names the team it acts on.",
   },
   catalog,
+  // `teamContext` resolves the caller from the session cookie alone; there is no bearer path.
+  {
+    schemes: {
+      session: {
+        type: 'apiKey',
+        in: 'cookie',
+        name: SESSION_COOKIE,
+        description:
+          "The dashboard's session cookie, set when you sign in. Same-origin requests carry it automatically.",
+      },
+    },
+    requirement: [{ session: [] }],
+  },
 );
