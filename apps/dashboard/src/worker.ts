@@ -903,8 +903,9 @@ async function installSpecFor(
   };
 }
 
-// The anonymous catalog: this deployment's published builtins, the same for every caller. It reads
-// no session and no team; a team's own verticals are `dashboard/list-catalog`, under its path.
+// The anonymous catalog: this deployment's published verticals (installable for builtins), the same
+// for every caller. It reads no session and no team; a team's own verticals are
+// `dashboard/list-catalog`, under its path.
 app.get('/api/catalog', async (c) => {
   const host = hostFor(c.env);
   await ensureCatalogOnce(host);

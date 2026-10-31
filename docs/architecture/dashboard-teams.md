@@ -147,8 +147,8 @@ with the same answers they gave on the cookie. The registry, the model, a lifecy
 replayed counts and a version's files are carried as the plane answered them, so a plane newer
 than the dashboard cannot empty a tab. The old cookie routes are gone. These reads stay outside
 the assistant's tools; its process-map tool is unchanged. The install catalog is split in two.
-The anonymous `/api/catalog` answers this deployment's published builtins and reads no session or
-team. The New-app picker reads `GET /api/teams/:teamId/catalog` through `teamApi(teamId)`, which
+The anonymous `/api/catalog` answers this deployment's published verticals (installable for
+builtins) and reads no session or team. The New-app picker reads `GET /api/teams/:teamId/catalog` through `teamApi(teamId)`, which
 lists published verticals, the path team's own, and whether each can be installed yet (a pushed
 vertical once a version is in prod). OAuth callbacks and other teamless or signed-state routes do not take their team
 from the cookie.
