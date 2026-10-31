@@ -92,6 +92,11 @@ function fixedSource(estimated = false): AggregateSource & { asked: CubeQuery[] 
       asked.push(q);
       return { rows: within(PATTERNS, q), estimated };
     },
+    // No consumer or schedule ran in this world.
+    async asyncRequests(q) {
+      asked.push(q);
+      return { rows: [], estimated };
+    },
   };
 }
 
@@ -252,16 +257,21 @@ describe('the cube cache (#1877)', () => {
     const grainMs = grainFor(window.to - window.from);
     const blockMs = blockMsFor(grainMs);
     // Every closed block of the window, as the previous shape stored it: no entity, a count of 1.
+    const stale = { rows: [req({ bucket: T0, count: 1 })], estimated: false };
     for (let s = Math.floor(window.from / blockMs) * blockMs; s < window.to; s += blockMs) {
-      await store.put(`requests|${SERVICE}|${grainMs}|${s}`, { rows: [req({ bucket: s })], estimated: false }, s);
+      for (const kind of ['requests', 'async-requests']) await store.put(`${kind}|${SERVICE}|${grainMs}|${s}`, stale, s);
     }
-    const f = await aggregateReads(cachedSource(inner, store, { now: () => T0 + 24 * 60 * MIN })).tenantRequestFacets({ ...scope });
+    const source = cachedSource(inner, store, { now: () => T0 + 24 * 60 * MIN });
+    const f = await aggregateReads(source).tenantRequestFacets({ ...scope });
     expect(inner.asked.length).toBeGreaterThan(0);
     expect(f.total).toBe(60);
     expect(f.facets.entity).toEqual([
       { value: 'ticket', count: 49 },
       { value: 'assignment', count: 9 },
     ]);
+    // The async cube is keyed by the same shape: its stale block is recounted, never served.
+    const asyncCube = await source.asyncRequests!({ service: SERVICE, ...window, grainMs });
+    expect(asyncCube.rows.reduce((n, r) => n + r.count, 0)).toBe(0);
   });
 
   it('says a count is an estimate when any block was sampled', async () => {
