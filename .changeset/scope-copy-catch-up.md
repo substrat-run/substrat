@@ -5,5 +5,5 @@
 ---
 
 control-plane-api: a scope copy of a busy source catches up on the writes it took while it was read, instead of waiting for a quiet moment
-contracts: a dump page says when it was read under the capture it was asked for (`captured`)
+contracts: a dump page says when it was read under the capture it was asked for (`captured`), and the capture's refusals are named (`CAPTURE_REFUSALS`)
 adapter-cloudflare: a dump page read under a capture says so
