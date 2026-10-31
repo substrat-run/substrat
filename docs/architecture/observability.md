@@ -524,7 +524,7 @@ What the facet does not see:
 
 - The line's `entityTypes` is not capped, but the header and blob 10 are (128 characters, cut
   between types). Past the cap, the Analytics Engine facet and histogram drop the trailing types
-  while the Lines list still matches them, so the two can disagree for such a request.
+  while the request list still matches them, so the two can disagree for such a request.
 - Types come only from the first `EMITTED_REPORT_CAP` (20) events an operation emitted, so a
   request is not listed under a type whose events came after them.
 - A type is the text of an entity ref before its first `:`, so a type that itself holds a `:` is
