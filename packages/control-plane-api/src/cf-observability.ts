@@ -105,10 +105,12 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
       filters.push(types.length === 1 ? types[0]! : { kind: 'group', filterCombination: 'or', filters: types });
       continue;
     }
+    // #2762: the `path` facet is the line's `route`; its `path` is the called path, never grouped.
+    const field = key === 'path' ? 'route' : key;
     const leaves: TelemetryFilter[] = values.map((v) =>
       key === 'status'
-        ? { key, operation: 'eq', type: 'number', value: Number(v) }
-        : { key, operation: 'eq', type: 'string', value: v },
+        ? { key: field, operation: 'eq', type: 'number', value: Number(v) }
+        : { key: field, operation: 'eq', type: 'string', value: v },
     );
     filters.push(leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves });
   }
@@ -841,6 +843,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { type: 'number', value: 'status' },
         { type: 'string', value: 'kind' },
         { type: 'string', value: 'entityTypes' },
+        { type: 'string', value: 'route' },
       ],
       extra,
     );
@@ -863,6 +866,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           status: typeof status === 'number' ? status : typeof status === 'string' && status !== '' ? Number(status) : null,
           kind: str(groups.get('kind')),
           entity: str(groups.get('entityTypes')),
+          path: str(groups.get('route')),
           count,
         }];
       }),
@@ -930,6 +934,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           surface: blank(r['surface']),
           status: status > 0 ? status : null,
           entity: blank(r['entityTypes']),
+          path: blank(r['route']),
           count: Math.round(aeNum(r['requests'])),
         },
       ];
@@ -961,6 +966,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         ${p.principalKind} AS principalKind,
         ${p.level} AS level,
         ${p.entityTypes} AS entityTypes,
+        ${p.route} AS route,
         toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
         sum(_sample_interval) AS requests,
         max(_sample_interval) AS maxInterval
@@ -968,7 +974,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       WHERE ${p.tenantId} = ${aeLiteral(tenantId)}
         AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
         AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
-      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, entityTypes, bucket
+      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, entityTypes, route, bucket
       ORDER BY bucket ASC
       LIMIT ${REQUEST_CUBE_ROW_LIMIT}
       FORMAT JSON`;

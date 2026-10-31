@@ -67,6 +67,15 @@ export interface InvocationLogLine extends AuthRecording {
   /** Path ONLY: the request writer drops the query string. `null` on an async line (#1901). */
   path: string | null;
   /**
+   * #2762: the request's ROUTE — its method and the pattern the route that answered was
+   * registered under (`GET /api/lists/:id`), never the path it was called with, so its values
+   * are the app's route table times a fixed method set (any other method is `OTHER`) and a cube
+   * can group by it. A request no route answered names
+   * the wildcard it fell through (`GET /*`). `null` on an async line, from a worker that is
+   * not a Hono app, or from a vertical-host that predates it. At most 128 characters.
+   */
+  route: string | null;
+  /**
    * #1237: the id every event this invocation emitted is stamped with.
    *
    * The join nothing could make before. `$metadata.requestId` correlates the LINES of
@@ -251,6 +260,7 @@ export interface InvocationLineFields extends AuthRecording {
   surface?: string | null;
   method?: string | null;
   path?: string | null;
+  route?: string | null;
   invocationId: string;
   status?: number | null;
   threw: boolean;
@@ -305,6 +315,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     surface: f.surface ?? null,
     method: f.method ?? null,
     path: f.path ?? null,
+    route: f.route ?? null,
     status: f.status ?? null,
     threw: f.threw,
     durationMs: f.durationMs,

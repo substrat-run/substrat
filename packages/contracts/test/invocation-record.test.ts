@@ -11,7 +11,7 @@ import {
 
 describe('invocation record header (#1904)', () => {
   it('round-trips the fields, including names a raw header could not carry', () => {
-    const record = { operation: 'bokning/avboka – återbetala', problemCode: 'conflict', principalKind: 'user', entityTypes: 'bokning,kund' };
+    const record = { operation: 'bokning/avboka – återbetala', problemCode: 'conflict', principalKind: 'user', entityTypes: 'bokning,kund', route: 'POST /api/bokningar/:id' };
     const value = encodeInvocationRecord(record)!;
     expect(value).toMatch(/^[\x20-\x7e]+$/);
     expect(decodeInvocationRecord(value)).toEqual(record);
@@ -23,7 +23,7 @@ describe('invocation record header (#1904)', () => {
   });
 
   it('reads a missing, malformed or oversized value without throwing, and ignores unknown keys', () => {
-    const empty = { operation: null, problemCode: null, principalKind: null, entityTypes: null };
+    const empty = { operation: null, problemCode: null, principalKind: null, entityTypes: null, route: null };
     expect(decodeInvocationRecord(null)).toEqual(empty);
     expect(decodeInvocationRecord('%%%')).toEqual(empty);
     expect(decodeInvocationRecord('tenantId=someone-else')).toEqual(empty);

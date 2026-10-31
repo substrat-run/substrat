@@ -1227,6 +1227,20 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(listed.map((r) => r.invocationId)).toEqual(['both', 'dotted']);
   });
 
+  it('#2762: a path selection matches the line’s route, never the path it was called with', async () => {
+    const lines = [
+      { ...invocation({ invocationId: 'probe', path: '/.well-known/openid-configuration', route: 'GET /*' }, '01RA'), timestamp: 2 },
+      { ...invocation({ invocationId: 'item', path: '/api/items/7', route: 'GET /api/items/:id' }, '01RB'), timestamp: 1 },
+    ];
+    const { reader } = readerOver((filters, limit) =>
+      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
+    );
+    const ids = async (path: string[]) =>
+      (await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { path } })).map((r) => r.invocationId);
+    expect(await ids(['GET /*'])).toEqual(['probe']);
+    expect(await ids(['/api/items/7'])).toEqual([]);
+  });
+
   it('counts every RFC 9110 method as a request — a hyphen or a digit included — and nothing else', async () => {
     const methods = ['M-SEARCH', 'X1', 'PROPFIND', 'get'];
     const lines = [

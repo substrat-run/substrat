@@ -80,6 +80,8 @@ const facetValue: Record<RequestFacetKey, z.ZodType<string>> = {
     .min(1)
     .max(INVOCATION_RECORD_FIELD_MAX)
     .refine((v) => !v.includes(ENTITY_TYPES_SEPARATOR), 'entity is one entity type'),
+  // #2762: a route as the line writes it — `<METHOD> <pattern>`, never longer than the record keeps.
+  path: z.string().min(1).max(INVOCATION_RECORD_FIELD_MAX),
 };
 
 /** A query-string reader — Hono's `c.req.query` / `c.req.queries`, taken structurally. */

@@ -55,6 +55,11 @@ export interface RequestCubeRow {
    * for `kind`'s reason; absent, `null` or `''` is none.
    */
   entity?: string | null;
+  /**
+   * #2762: the line's `route` (the router's `route` blob) — the method and the registered
+   * pattern of the route that answered, the `path` facet. Optional for `kind`'s reason.
+   */
+  path?: string | null;
   count: number;
 }
 
@@ -174,8 +179,9 @@ export function memoryCubeStore(): CubeStore & { size(): number } {
  *
  * - 1: #1877/#1901 — level, operation, problemCode, principalKind, surface, status, kind.
  * - 2: #2762 — entity.
+ * - 3: #2762 — path.
  */
-export const REQUEST_CUBE_SHAPE = 2;
+export const REQUEST_CUBE_SHAPE = 3;
 
 /** The cache key of one block. The grain is in it: a block at 5 min is not one at 1 h. */
 export function blockKey(kind: 'requests' | 'patterns' | 'async-requests', service: string, grainMs: number, start: number): string {

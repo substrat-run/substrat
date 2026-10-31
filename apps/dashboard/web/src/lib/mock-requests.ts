@@ -171,6 +171,8 @@ type Where = Partial<Record<RequestFacetKey, string[]>>;
 function valuesOf(r: RequestRecord, key: RequestFacetKey): string[] {
   if (key === 'kind') return [r.kind ?? 'request'];
   if (key === 'entity') return [...new Set(r.entities.flatMap((e) => (e.indexOf(':') > 0 ? [e.slice(0, e.indexOf(':'))] : [])))];
+  // #2762: the fixture's paths stand in for route patterns; the plane groups the line's `route`.
+  if (key === 'path') return r.method && r.path ? [`${r.method} ${r.path}`] : [];
   const v = r[key];
   return v === null || v === undefined ? [] : [String(v)];
 }

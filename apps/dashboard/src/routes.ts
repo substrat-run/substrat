@@ -697,7 +697,7 @@ const repeated = z.array(z.string()).optional();
 const appRequestInput = z.object({
   scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(),
   level: repeated, operation: repeated, principalKind: repeated, problemCode: repeated, surface: repeated, status: repeated,
-  kind: repeated, entity: repeated, buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
+  kind: repeated, entity: repeated, path: repeated, buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
 });
 const logPatternsView = z.object({
   total: z.number(), bucketMs: z.number(),

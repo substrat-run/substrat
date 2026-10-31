@@ -62,6 +62,7 @@ import { AUTH_DIAGNOSTICS_KEY, tallyAuthCheck, type AuthDiagnosticsSink, type Au
 import {
   encodeInvocationRecord,
   FIELD_COVERAGE_HEADER,
+  INVOCATION_RECORD_FIELD_MAX,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   parentRequestIdOf,
@@ -117,6 +118,8 @@ export interface InvocationRecord extends StoreCallTally, OutboundRecording, Aut
   principalKind?: string;
   /** What the operation itself emitted — `InvokeOptions.onEmitted`. */
   emitted?: EmittedReport;
+  /** #2762: the route that answered — written by the middleware itself ({@link routeOf}). */
+  route?: string | undefined;
   /**
    * #1331: which of the operation's DECLARED output fields its response carried. Filled
    * only on a request the router armed the walk for ({@link fieldCoverageArmed}), and absent
@@ -636,6 +639,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     surface: node.surface,
     method: done.request.method,
     path: pathOf(done.request.url),
+    route: record.route ?? null,
     status: done.status,
     threw: done.threw,
     durationMs: Date.now() - done.started,
@@ -757,7 +761,14 @@ export function invocationLog<Env = unknown>(
     if (existing) {
       c.set?.('substratInvocationId', existing.invocationId);
       c.set?.(INVOCATION_RECORD_KEY, existing.record);
-      await next();
+      try {
+        await next();
+      } finally {
+        // Only this middleware sees the Hono context; the platform's entry writes the line
+        // (and hands the record to the router) once this has returned. An app nested inside
+        // another and mounting this too finishes first, and its route is the more specific.
+        existing.record.route ??= routeOf(c);
+      }
       return;
     }
     // Host code, so a real clock is correct here — `ctx.now()` is the module-code rule,
@@ -784,6 +795,7 @@ export function invocationLog<Env = unknown>(
       // the caller, and swallowing here would turn a fault into a silent 200.
       throw e;
     } finally {
+      stamp.record.route ??= routeOf(c);
       writeInvocationLine(
         stamp,
         { request: { method: c.req.method, url: c.req.raw.url, headers: c.req.raw.headers }, env: c.env, status: threw ? null : (c.res?.status ?? null), threw, started },
@@ -792,6 +804,39 @@ export function invocationLog<Env = unknown>(
     }
   };
 }
+
+/**
+ * #2762: the route that answered — the method and the pattern its handler was registered
+ * under (`GET /api/lists/:id`), read after the chain has run, when Hono's route index points
+ * at the handler that responded — not the last match, so a catch-all middleware registered
+ * after the handler does not displace it. A request no route answered names the last
+ * wildcard middleware it went through (`GET /*`).
+ *
+ * The value is the app's route table times a fixed set of methods. The pattern is the app's
+ * code, never the request: no segment, parameter or query string of what was called reaches
+ * it. The method is the one part a caller chooses, so it is read through {@link methodOf}.
+ *
+ * Read off the request instance (`matchedRoutes`, `routeIndex`) rather than through
+ * `hono/route`'s helper: the helper reaches the match through a module-local symbol, which a
+ * second copy of Hono in a vertical's bundle would not share, and the route would be silently
+ * absent. A context that is not Hono's yields `undefined`.
+ */
+function routeOf(c: InvocationLogContext<unknown>): string | undefined {
+  const req = c.req as { matchedRoutes?: readonly { path?: unknown }[]; routeIndex?: unknown };
+  try {
+    const index = typeof req.routeIndex === 'number' ? req.routeIndex : 0;
+    const pattern = req.matchedRoutes?.[index]?.path;
+    return typeof pattern === 'string' && pattern !== ''
+      ? `${methodOf(c.req.method)} ${pattern}`.slice(0, INVOCATION_RECORD_FIELD_MAX)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The methods a route is named under; any other is `OTHER`, so a caller cannot add a value. */
+const ROUTE_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+const methodOf = (method: string): string => (ROUTE_METHODS.has(method) ? method : 'OTHER');
 
 /** The request a module worker's `fetch` receives, as far as the stamp reads it. */
 export interface IncomingRequest {
