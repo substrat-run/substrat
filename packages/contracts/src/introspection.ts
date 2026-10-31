@@ -309,6 +309,15 @@ export const scopeDumpTable = z.object({
 export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
 
 /**
+ * A table's fragment in a dump page (#2450): `ScopeDumpTable`, and on a page read under a capture
+ * (`scopeDumpChanges`), each row's rowid at the source, aligned to `rows`, for a table read by
+ * rowid, so its rows can later be replaced or deleted one by one. Only pages carry it; a whole
+ * dump never does, and a reader that does not know it ignores it.
+ */
+export const scopeDumpPageTable = scopeDumpTable.extend({ rowids: z.array(z.number().int()).optional() });
+export type ScopeDumpPageTable = z.infer<typeof scopeDumpPageTable>;
+
+/**
  * A dump read in pages (#2450). A whole dump crosses a Durable Object RPC (32 MiB per message)
  * and an isolate (128 MB) as one value, so a scope past either cannot be carried whole. A page is
  * the same `ScopeDumpTable[]` shape, holding FRAGMENTS: a table's rows may be spread over several
@@ -321,7 +330,7 @@ export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
  * across pages: the pages are one consistent read only while it stays the same.
  */
 export const scopeDumpPage = z.object({
-  tables: z.array(scopeDumpTable),
+  tables: z.array(scopeDumpPageTable),
   next: z.string().min(1).nullable(),
   loadStamp: z.string().min(1).nullable(),
   revision: z.string().min(1).nullable(),
@@ -337,12 +346,13 @@ export const SCOPE_DUMP_PAGE_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * Merge dump pages back into one dump (#2450): each table's fragments joined in page order, the
- * tables in the order they first appeared. For a destination that only takes a whole dump.
+ * tables in the order they first appeared. For a destination that only takes a whole dump, so the
+ * pages' `rowids` are left out.
  */
-export function mergeDumpPages(pages: readonly (readonly ScopeDumpTable[])[]): ScopeDumpTable[] {
+export function mergeDumpPages(pages: readonly (readonly ScopeDumpPageTable[])[]): ScopeDumpTable[] {
   const byName = new Map<string, ScopeDumpTable>();
   for (const page of pages) {
-    for (const fragment of page) {
+    for (const { rowids: _, ...fragment } of page) {
       const held = byName.get(fragment.name);
       // A loop, not `push(...rows)`: a spread of a large page overflows the stack.
       if (held) for (const row of fragment.rows) held.rows.push(row);
@@ -351,6 +361,27 @@ export function mergeDumpPages(pages: readonly (readonly ScopeDumpTable[])[]): S
   }
   return [...byName.values()];
 }
+
+/**
+ * What changed in one table since a capture's pages read it (#2450). With `rowids`, the rows to
+ * put in place (each by the rowid it has at the source) and the rowids to delete. Without them the
+ * table is read by offset, has no rowid to name a row by, and `rows` replaces it whole.
+ */
+export const scopeDumpChange = scopeDumpPageTable.extend({ deleted: z.array(z.number().int()) });
+export type ScopeDumpChange = z.infer<typeof scopeDumpChange>;
+
+/**
+ * One batch of a capture's changes (#2450). A copy that pages a busy scope needs no quiet moment:
+ * the source logs the rows written after its first page, and these batches carry them across until
+ * none are left. `final` is the batch read in the same turn as the log ran empty; the capture ends
+ * with it, and `revision` is the store's write revision at that moment, the one the copy is true at.
+ */
+export const scopeDumpChanges = z.object({
+  tables: z.array(scopeDumpChange),
+  final: z.boolean(),
+  revision: z.string().min(1).nullable(),
+});
+export type ScopeDumpChanges = z.infer<typeof scopeDumpChanges>;
 
 /**
  * One scope store inside a dump (#2211). Opaque tables: they are not sealed per subject.
