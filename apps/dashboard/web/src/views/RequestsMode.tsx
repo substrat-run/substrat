@@ -176,7 +176,7 @@ export function RequestsMode({
         {frame(
           <>
             <FindRequest onOpenCall={onOpenCall} />
-            <RequestList rows={rows} total={total}onOpenCall={onOpenCall} />
+            <RequestList rows={rows} total={total} onOpenCall={onOpenCall} />
           </>,
         )}
       </div>
