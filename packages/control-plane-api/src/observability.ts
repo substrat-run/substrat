@@ -739,7 +739,8 @@ export interface ObservabilityReader {
    * and asking for them together is what makes one merged stream possible. Absent or
    * empty means "no service narrowing" (the fleet view); several means the backend
    * returns their events merged newest-first, capped at `limit` overall.
-   * `search` is a case-sensitive substring match on the event message — a contract
+   * `search` is a case-sensitive substring match on the event message, or on the request id: the stamped
+   * `invocationId`, and at service grain also the provider's request id — a contract
    * capability, so each backend maps it to its own query language (never a
    * provider-shaped filter passed through the seam).
    * A backend that may stop short of `limit` before the window is spent says so with

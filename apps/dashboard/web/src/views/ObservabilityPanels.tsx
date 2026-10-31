@@ -130,7 +130,7 @@ export function TenantLogs({
             : MOCK_LOG_LINES.filter(
               (l) =>
                 (!level || l.level === level) &&
-                (!search || (l.message ?? '').includes(search)) &&
+                (!search || (l.message ?? '').includes(search) || (l.invocationId ?? '').includes(search)) &&
                 (!invocationId || l.invocationId === invocationId) &&
                 // The preview narrows too, so a bar click visibly does something without
                 // a plane behind it.

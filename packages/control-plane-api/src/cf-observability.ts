@@ -406,8 +406,8 @@ function moduleLineFilters(input: {
   search?: string;
   invocationId?: string;
   template?: string;
-}): Array<{ key: string; operation: string; type: string; value: string }> {
-  const filters = [
+}): TelemetryFilter[] {
+  const filters: TelemetryFilter[] = [
     { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
     { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
   ];
@@ -417,7 +417,14 @@ function moduleLineFilters(input: {
   }
   if (input.template !== undefined) filters.push({ key: 'template', operation: 'eq', type: 'string', value: input.template });
   if (input.level) filters.push({ key: 'level', operation: 'eq', type: 'string', value: input.level.toLowerCase() });
-  if (input.search) filters.push({ key: 'message', operation: 'includes', type: 'string', value: input.search });
+  // #2762: the message or the request id, as one OR group.
+  if (input.search) {
+    filters.push({
+      kind: 'group',
+      filterCombination: 'or',
+      filters: ['message', 'invocationId'].map((key) => ({ key, operation: 'includes', type: 'string', value: input.search! })),
+    });
+  }
   return filters;
 }
 
@@ -1728,7 +1735,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
             phaseOneLimit,
           ),
         ])
-      : [await readTenant(base, phaseOneLimit), []];
+      : await Promise.all([
+          readTenant(base, phaseOneLimit),
+          // #2762: a request id older than the newest page is reached by asking for it, not by
+          // filtering that page afterwards. Its hits go first, below, so the correlation budget
+          // cannot be spent on a busy window's newest page before the invocation searched for.
+          input.search
+            ? readTenant([...base, { key: 'invocationId', operation: 'includes', type: 'string', value: input.search }], phaseOneLimit)
+            : [],
+        ]).then(([recent, hits]): [Array<Record<string, unknown>>, Array<Record<string, unknown>>] => [[...hits, ...recent], []]);
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
@@ -1800,7 +1815,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // failing invocation that wrote no console.error of its own is exactly the row being
       // looked for, and phase one selected it BECAUSE it failed.
       .filter((e) => (level ? e.level?.toLowerCase() === level : true))
-      .filter((e) => (search ? (e.message ?? '').includes(search) : true))
+      .filter((e) => (search ? (e.message ?? '').includes(search) || (e.invocationId ?? '').includes(search) : true))
       .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
       .slice(0, input.limit);
     return { events, incomplete };
@@ -1958,7 +1973,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const to = Date.now();
     const from = to - hours * 3_600_000;
     const filtersFor = (service: string | undefined) => {
-      const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
+      const filters: TelemetryFilter[] = [];
       // `$metadata.service` is the script name in Workers Logs events — the field
       // Cloudflare's own query examples filter on.
       if (service) {
@@ -1968,7 +1983,17 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
       }
       if (search) {
-        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
+        // #2762: the message or the request id, as one OR group.
+        filters.push({
+          kind: 'group',
+          filterCombination: 'or',
+          filters: ['$metadata.message', '$metadata.requestId', 'invocationId'].map((key) => ({
+            key,
+            operation: 'includes',
+            type: 'string',
+            value: search,
+          })),
+        });
       }
       return filters;
     };
@@ -2048,7 +2073,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     }
     const events = answer()
       .filter((e) => rawTime(e) >= floor)
-      .map((e) => projectEvent(e));
+      .map((e) => {
+        // #2762: a row matched by the stamped id shows the id searched for.
+        const invocationId = ((e['source'] ?? {}) as Record<string, unknown>)['invocationId'];
+        return typeof invocationId === 'string' ? { ...projectEvent(e), invocationId } : projectEvent(e);
+      });
     return { events, incomplete };
   }
 
