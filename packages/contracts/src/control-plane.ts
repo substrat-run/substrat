@@ -2078,6 +2078,8 @@ export const ROUTER_REQUEST_POINT = {
   level: 'blob9',
   /** #2762: `joinEntityTypes`' value from the record header; `''` before it, or for none. */
   entityTypes: 'blob10',
+  /** #2762: the record header's `route` — method and registered pattern; `''` before it, or for none. */
+  route: 'blob11',
   durationMs: 'double1',
   status: 'double2',
 } as const;

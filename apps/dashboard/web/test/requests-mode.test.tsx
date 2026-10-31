@@ -103,6 +103,12 @@ describe('request facets in the URL', () => {
     expect(requestChips(q)).toEqual([{ key: 'entity', value: 'ticket or assignment', clears: ['ent'] }]);
   });
 
+  it('#2762: carries the path facet under `path`, a route per value', () => {
+    const q = { path: 'GET /*,POST /api/mcp' };
+    expect(requestReadQuery(q, { hours: 1 }).path).toEqual(['GET /*', 'POST /api/mcp']);
+    expect(requestChips(q)).toEqual([{ key: 'path', value: 'GET /* or POST /api/mcp', clears: ['path'] }]);
+  });
+
   it('dates an axis end once the window is long enough for two clocks to collide', () => {
     const t = Date.parse('2026-09-26T13:06:52.000Z');
     expect(axisLabel(t, 3 * 3_600_000)).toBe('13:06:52');

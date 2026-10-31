@@ -533,6 +533,26 @@ What the facet does not see:
   The Analytics Engine read still refuses past its 50 000-row limit rather than truncate, and the
   telemetry read still splits a full span.
 
+**The `path` facet (#2762).** A request that reached no operation (a 404 probe, a discovery
+document, a vertical's own handler) has no `operation`, so no other facet can select it. The raw
+path cannot be a cube dimension: it has no bound. So the line carries `route`: the method and the
+pattern the answering route was registered under (`GET /api/lists/:id`), never what was called.
+Its values are the app's route table times a fixed set of methods: `GET`, `HEAD`, `POST`, `PUT`,
+`PATCH`, `DELETE`, `OPTIONS`, and `OTHER` for any method outside them, since the method is the one
+part a caller chooses. vertical-host's `invocationLog` reads it off Hono's request instance
+(`matchedRoutes`, `routeIndex`) after the chain has run, when the route index points at the
+handler that responded. It does not use `hono/route`'s helper, whose module-local symbol a second
+copy of Hono in a bundle would not share. An app called from another that also mounts the
+middleware sets the route first, and the more specific route is kept. That index, not the
+last match, is the reason a catch-all middleware registered after a handler does not displace the
+handler's pattern. A request no route answered names the wildcard it fell through (`GET /*`).
+Only that middleware sees the Hono context, so it writes the route onto the record even when the
+platform's entry stamped the request, before the entry writes the line and the header. The value
+is capped at 128 characters like every record field, rides the header as `route`, and becomes
+blob 11. The facet is `path`, but the line's own `path` is the called path, so the list read
+filters on `route`. A non-Hono worker and a vertical-host from before it write `null`. It bumped
+`REQUEST_CUBE_SHAPE` to 3.
+
 **4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
 which trusts a tenant only from the router's assertion. Work that never arrives as a request
 used to write nothing: a consumer delivery, its retries and its dead-letter, and a schedule run

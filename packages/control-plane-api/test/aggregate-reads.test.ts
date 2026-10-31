@@ -251,15 +251,18 @@ describe('the cube cache (#1877)', () => {
     expect(new Set(inner.asked.map((q) => q.grainMs))).toEqual(new Set([5 * MIN, 60 * MIN]));
   });
 
-  it('#2762: never serves a block cached before the cube had an entity dimension', async () => {
+  it('#2762: never serves a block cached before the cube had its entity and path dimensions', async () => {
     const inner = fixedSource();
     const store = memoryCubeStore();
     const grainMs = grainFor(window.to - window.from);
     const blockMs = blockMsFor(grainMs);
-    // Every closed block of the window, as the previous shape stored it: no entity, a count of 1.
+    // Every closed block of the window, as each earlier shape stored it — shape 1 (no entity) and
+    // shape 2 (no path) — a count of 1 each.
     const stale = { rows: [req({ bucket: T0, count: 1 })], estimated: false };
     for (let s = Math.floor(window.from / blockMs) * blockMs; s < window.to; s += blockMs) {
-      for (const kind of ['requests', 'async-requests']) await store.put(`${kind}|${SERVICE}|${grainMs}|${s}`, stale, s);
+      for (const kind of ['requests', 'async-requests', 'requests.v2', 'async-requests.v2']) {
+        await store.put(`${kind}|${SERVICE}|${grainMs}|${s}`, stale, s);
+      }
     }
     const source = cachedSource(inner, store, { now: () => T0 + 24 * 60 * MIN });
     const f = await aggregateReads(source).tenantRequestFacets({ ...scope });

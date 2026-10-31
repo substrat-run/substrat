@@ -608,7 +608,7 @@ describe('router', () => {
 
       expect(points).toHaveLength(1);
       expect(points[0]!.indexes).toEqual([T]);
-      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN', '', '', '', 'info', '']);
+      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN', '', '', '', 'info', '', '']);
       const [durationMs, status] = points[0]!.doubles!;
       expect(status).toBe(200);
       expect(durationMs).toBeGreaterThanOrEqual(0);
@@ -637,7 +637,7 @@ describe('router', () => {
       ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: spyVertical({
-        'x-substrat-invocation-record': 'operation=repairs%2Fclose&problemCode=conflict&principalKind=user&entityTypes=repair%2Cvisit',
+        'x-substrat-invocation-record': 'operation=repairs%2Fclose&problemCode=conflict&principalKind=user&entityTypes=repair%2Cvisit&route=POST+%2Fapi%2Frepairs%2F%3Aid',
       }).binding,
       ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
     } as unknown as Env;
@@ -665,6 +665,7 @@ describe('router', () => {
         principalKind: 'user',
         level: 'warn',
         entityTypes: 'repair,visit',
+        route: 'POST /api/repairs/:id',
         durationMs: expect.any(Number),
         status: 200,
       });
@@ -708,7 +709,7 @@ describe('router', () => {
       // The index is still the tenant the ROUTER resolved; the level is the router's, and a
       // problem code on a 200 files it as a warning.
       expect(points[0]!.indexes).toEqual([T]);
-      expect(points[0]!.blobs!.slice(5)).toEqual(['repairs/close', 'conflict', 'user', 'warn', '']);
+      expect(points[0]!.blobs!.slice(5)).toEqual(['repairs/close', 'conflict', 'user', 'warn', '', '']);
     } finally {
       logSpy.mockRestore();
     }

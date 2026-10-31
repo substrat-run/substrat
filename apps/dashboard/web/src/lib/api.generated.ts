@@ -470,21 +470,21 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/requests/facets` — `dashboard/app-request-facets`
    */
-  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
+  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
 
   /**
    * Request histogram for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/volume` — `dashboard/app-request-volume`
    */
-  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
+  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
 
   /**
    * Request records for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/list` — `dashboard/app-requests`
    */
-  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
+  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
 
   /**
    * The browsable scopes of this app's vertical
