@@ -212,7 +212,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { beginTransfer, connectionGrantsForScope, endCapture, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
   type CopyJobRecord, type CopyJobs,
@@ -4460,7 +4460,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * Drop every stage these records of one job name at its destination (#2450), best-effort: once the
    * job is forgotten nothing else names them, and they would wait for a wipe of the scope there. A
-   * stage that was loaded is gone already, and its discard changes nothing.
+   * stage that was loaded is gone already, and its discard changes nothing. A capture a copying
+   * record holds at the source is ended too (a done one's ended with its final batch).
    */
   const discardJobStages = async (...records: [CopyJobRecord, ...CopyJobRecord[]]): Promise<void> => {
     const { spec } = records[0];
@@ -4469,6 +4470,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     for (const stageId of new Set(staged.filter((id): id is string => id !== undefined))) {
       await dest?.discardStagedScope(spec.scopeId, stageId).catch(() => undefined);
     }
+    const captures = records.flatMap((r) => (r.state?.capture ? [r.state] : []));
+    if (captures.length === 0) return;
+    const source = await options.resolveVerticalRef?.(spec.sourceRef).catch(() => undefined);
+    if (!source) return;
+    for (const { from, stageId } of captures) await endCapture({ source }, from, stageId);
   };
 
   /**
@@ -11746,6 +11752,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               if (job.spec.moveId !== move.moveId) {
                 await settleCarryRetained(c, preview, opts.versionId, move);
                 await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
+                if (begun.state.capture) await endCapture({ source: move.source }, preview.id, begun.state.stageId);
                 const superseded = supersededRefusal(job, mine, opts.tag);
                 if (superseded) throw superseded;
               }

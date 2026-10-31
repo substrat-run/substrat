@@ -7529,7 +7529,7 @@ export function defineScopeDO(
           break;
         }
       }
-      return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY) };
+      return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY), ...(capture !== undefined ? { captured: true as const } : {}) };
     }
 
     /** A dumped table's columns, and whether its rows are read, and named, by rowid. */

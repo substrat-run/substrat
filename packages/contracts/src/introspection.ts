@@ -328,12 +328,17 @@ export type ScopeDumpPageTable = z.infer<typeof scopeDumpPageTable>;
  * `next` is opaque: hand it back for the following page, `null` after the last. `loadStamp` and
  * `revision` are the store's as `exportDumpStamped` reads them. A reader compares `revision`
  * across pages: the pages are one consistent read only while it stays the same.
+ *
+ * `captured`: the page was read under the capture it was asked for (`scopeDumpChanges`), so the
+ * reader may catch up on writes instead of comparing `revision`. A host that predates the echo
+ * leaves it out, and its pages are read as plain ones.
  */
 export const scopeDumpPage = z.object({
   tables: z.array(scopeDumpPageTable),
   next: z.string().min(1).nullable(),
   loadStamp: z.string().min(1).nullable(),
   revision: z.string().min(1).nullable(),
+  captured: z.literal(true).optional(),
 });
 export type ScopeDumpPage = z.infer<typeof scopeDumpPage>;
 
