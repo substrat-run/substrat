@@ -78,9 +78,10 @@ function parsePath(): Route {
   if (parts[0] === 'apps' && parts[1] === 'new') return { section: 'new', team };
   // The tab may carry a sub-section (settings/environment); AppDetail parses it.
   if (parts[0] === 'apps' && parts[1]) return { section: 'apps', app: parts[1], tab: parts.slice(2).join('/') || 'overview', team };
-  // A vertical's slug (acme-co/helpdesk) carries a slash, so it's URI-encoded into the
-  // single segment — the `/` stays as `%2F` in the pathname, so it never splits across parts.
-  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]), team };
+  // A vertical's slug (acme-co/helpdesk) carries a slash. In-app links URI-encode it into one
+  // segment, but a deep link or refresh is redirected by the asset layer with `%2F` decoded to
+  // `/`, so the slug can arrive split across two parts: the rest of the path is the slug.
+  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: parts.slice(1).map(decodeURIComponent).join('/'), team };
   // The audit page is team-level; an app narrows it, so the scope rides as a query
   // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
   // `entry` opens one entry in place — the Overview's Recent activity rows link to it.
