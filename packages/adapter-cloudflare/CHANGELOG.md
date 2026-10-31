@@ -1,5 +1,18 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.171.0
+
+### Minor Changes
+
+- e3f11a8: A paged scope copy can now catch up on the writes its source takes while it is read, so a later release can copy a busy scope without needing a quiet moment. A dump page read with `capture` opens a capture on the source and names each row by its source rowid (`rowids`). `exportDumpChanges` (`/internal/export-changes`, `exportScopeChanges`) hands over what was written since, in batches, and the final batch ends the capture at the write revision the copy is true at. `stageDumpChanges` (`/internal/stage-changes`, `stageScopeChanges`) applies a batch to the destination's stage, and `endDumpCapture` (`/internal/capture/end`, `endScopeCapture`) ends a capture whose copy stopped. A capture nobody asks for within one copy lease ends before the next write. Nothing calls these yet, and copies behave as before.
+
+### Patch Changes
+
+- Updated dependencies [2c7b3a7]
+- Updated dependencies [e3f11a8]
+  - @substrat-run/contracts@0.171.0
+  - @substrat-run/kernel@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes
@@ -7756,7 +7769,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

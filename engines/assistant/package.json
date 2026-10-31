@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-assistant",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "private": true,
   "description": "Substrat engine: the assistant's record — chat threads as an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input",
   "license": "AGPL-3.0-only",
