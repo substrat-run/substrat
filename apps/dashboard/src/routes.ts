@@ -361,7 +361,7 @@ export const appHostnameRow = z.object({
 });
 
 /** A role a member can be invited at — the owner is the un-invitable first member. */
-const inviteRole = z.enum(['admin', 'member', 'viewer']);
+export const inviteRole = z.enum(['admin', 'member', 'viewer']);
 
 /** What sending (or re-sending) an invite answers: the shareable link, and whether the email was accepted for delivery. */
 const sentInvite = z.object({ invitationId: z.string(), acceptUrl: z.string(), emailDelivered: z.boolean() });

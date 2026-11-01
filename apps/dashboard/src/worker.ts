@@ -30,7 +30,7 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { accountRoutes, dashboardRoutes, fieldReadsView, publicRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
+import { accountRoutes, dashboardRoutes, fieldReadsView, inviteRole, publicRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
 import { answered, mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
@@ -1209,12 +1209,14 @@ async function previewTeamInvite({ c }: PublicContext, { token }: { token: strin
   // (same pattern as accept-invite), so no role is needed to read the invite's own data.
   const scope = await host.getScope(principalId.parse(ulid()), t, s);
   const preview = (await scope.invoke('dashboard/preview-invite', { invitationId: claim.invitationId })) as
-    // The invite's role is one the invite route admitted; the declared output holds it to that.
-    | { email: string; roleKey: 'admin' | 'member' | 'viewer' }
+    | { email: string; roleKey: string }
     | null;
-  if (!preview) throw new HTTPException(404, { message: 'this invite link is invalid or has expired' });
+  // A role outside the ones an invite can grant is an invite this screen cannot show: the same
+  // 404 as a missing one, never the 500 the declared output would make of it.
+  const roleKey = inviteRole.safeParse(preview?.roleKey);
+  if (!preview || !roleKey.success) throw new HTTPException(404, { message: 'this invite link is invalid or has expired' });
   const team = await host.admin.getTenant(STAFF, t);
-  return { teamName: team?.name ?? 'a team', email: preview.email, roleKey: preview.roleKey };
+  return { teamName: team?.name ?? 'a team', email: preview.email, roleKey: roleKey.data };
 }
 
 mountRoutes(app, publicRoutes, { basePath: '/api', context: async (c): Promise<PublicContext> => ({ c }) })({
