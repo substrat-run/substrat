@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-mail-in",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "Substrat connector: inbound mail. A scope's address on the platform's receiving subdomain, backed by its own connection: refused at SMTP time when unknown, revoked or off its allowlist, stored durably on accept, deduplicated on Message-ID, and delivered into the vertical's declared operation with its attachment bytes. Host code, never module code.",
   "license": "AGPL-3.0-only",

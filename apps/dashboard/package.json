@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.48.9",
+  "version": "0.48.10",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts",
@@ -59,7 +59,10 @@
       },
       {
         "model": "src/routes.ts",
-        "operations": ["accountRoutes", "publicRoutes"],
+        "operations": [
+          "accountRoutes",
+          "publicRoutes"
+        ],
         "schemas": {
           "AccountView": "accountView",
           "OnboardingView": "onboardingView",
