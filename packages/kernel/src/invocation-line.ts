@@ -151,8 +151,9 @@ export interface InvocationLogLine extends AuthRecording {
   /**
    * #2762: the lifecycle moves the operation caused (`EmittedReport.transitions`), at most
    * `TRANSITION_REPORT_CAP` entities: each as `<entityType>:<entityId>`, the state it left
-   * (`null` for an entity the call created) and the one it reached. `null` when not recorded — an
-   * older scope host, a route that is not an operation, an async line — which is different from `[]`.
+   * (`null` for an entity the call created) and the one it reached. `null` when not recorded —
+   * nothing noted (no move, or a module that does not hand `assertTransition` its context), an
+   * older scope host, a route that is not an operation, an async line.
    */
   transitions: EmittedTransition[] | null;
   /**
