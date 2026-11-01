@@ -136,6 +136,11 @@ export function TenantLogs({
                 (!level || l.level === level) &&
                 (!search || (l.message ?? '').includes(search) || (l.invocationId ?? '').includes(search)) &&
                 (!invocationId || l.invocationId === invocationId) &&
+                // #2762: operation and who, as the plane applies them.
+                (['operation', 'principalKind'] as const).every((k) => {
+                  const source = (l.raw as { source?: Record<string, unknown> } | undefined)?.source;
+                  return !facets[k] || facets[k].includes(source?.[k] as string);
+                }) &&
                 // The preview narrows too, so a bar click visibly does something without
                 // a plane behind it.
                 (!cursor ||

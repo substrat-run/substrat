@@ -72,5 +72,10 @@ export const MOCK_LOG_LINES: ObservabilityLogEvent[] = LINES.map(([min, level, m
   invocationId: inv(n),
   cpuTimeMs: cpu,
   wallTimeMs: wall,
-  raw: { $metadata: { trigger, level }, $workers: { outcome, cpuTimeMs: cpu } },
+  raw: {
+    // #2762: what the Lines facets filter on — the line's operation and who it ran as.
+    source: { operation: /op=(\S+)/.exec(message)?.[1] ?? null, principalKind: trigger.startsWith('scheduled') ? 'system' : 'principal' },
+    $metadata: { trigger, level },
+    $workers: { outcome, cpuTimeMs: cpu },
+  },
 }));
