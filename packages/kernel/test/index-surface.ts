@@ -205,6 +205,9 @@ export const INDEX_VALUE_EXPORTS = [
   'TABLE_OWNERS_DDL',
   // #2447: the same for a tenant's tenant-level tuples.
   'TENANT_SEATED_ROLES_SQL',
+  // #2762: the transition-note helpers, which both adapters build `ctx.noteTransition` and the
+  // `onEmitted` report's `transitions` from.
+  'TRANSITION_REPORT_CAP',
   'UNCHECKED_OPERATION_FINDING',
   'UNCHECKED_OPERATION_TEMPLATE',
   // The sweep's cap on unreadable directory rows named per pass, which the control plane's
@@ -551,6 +554,7 @@ export const INDEX_VALUE_EXPORTS = [
   'noteDeclaredKeys',
   // #2430: each adapter's set of keys its registered modules reserve to a system principal.
   'noteReservedKeys',
+  'noteTransitionInto',
   'noteUncheckedCompletion',
   'observeFinding',
   'observeStoreCall',
@@ -798,6 +802,7 @@ export const INDEX_VALUE_EXPORTS = [
   'tooManyResultColumns',
   'tooManyTableColumns',
   'topUpEntityGrantShapes',
+  'transitionsReport',
   'ulid',
   'ulidTime',
   'unbindEntityHolderBounded',

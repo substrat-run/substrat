@@ -76,13 +76,14 @@ export function emittedReportContractSuite(
             { type: 'emitted.touched', entity: `emitted-thing:${b}` },
           ],
           total: 2,
+          transitions: [],
         },
       ]);
     });
 
     it('reports an empty list for an operation that emitted nothing', async () => {
       // A fact, not an absence: a read touched nothing, and that is worth saying.
-      expect((await run('emitted/read')).reports).toEqual([{ events: [], total: 0 }]);
+      expect((await run('emitted/read')).reports).toEqual([{ events: [], total: 0, transitions: [] }]);
     });
 
     it('never reports for a call that rolled back', async () => {
@@ -94,7 +95,9 @@ export function emittedReportContractSuite(
     it("leaves out a rolled-back sub-transaction's emit", async () => {
       const kept = `k-${ulid()}`;
       const { reports } = await run('emitted/partial', { kept, dropped: `d-${ulid()}` });
-      expect(reports).toEqual([{ events: [{ type: 'emitted.touched', entity: `emitted-thing:${kept}` }], total: 1 }]);
+      expect(reports).toEqual([
+        { events: [{ type: 'emitted.touched', entity: `emitted-thing:${kept}` }], total: 1, transitions: [] },
+      ]);
     });
 
     it('caps the list and keeps the uncapped count', async () => {
@@ -121,6 +124,18 @@ export function emittedReportContractSuite(
       expect(await counted('emitted/fail', { ids: [`lf-${ulid()}`] })).toEqual([1]);
       // Refused before the scope ran anything: not recorded, never a `0`.
       expect(await counted('emitted/no-such-operation', {})).toEqual([]);
+    });
+
+    it("reports the lifecycle moves the operation noted, a create's included, and none from a rolled-back sub-transaction (#2762)", async () => {
+      const [created, moved, dropped] = [`n-${ulid()}`, `m-${ulid()}`, `d-${ulid()}`];
+      const { reports, error } = await run('emitted/move', { created, moved, dropped });
+      expect(error).toBeUndefined();
+      expect(reports.map((r) => r.transitions)).toEqual([
+        [
+          { entity: `emitted-thing:${created}`, from: null, to: 'new' },
+          { entity: `emitted-thing:${moved}`, from: 'new', to: 'open' },
+        ],
+      ]);
     });
 
     it('does not report a replay, which committed nothing', async () => {

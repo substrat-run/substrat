@@ -1150,15 +1150,19 @@ describe('cf tenant logs — async work (#1901)', () => {
   });
 
   it('lists async work beside requests, with its kind, and filters on it', async () => {
-    const { reader, sent } = readerOver(() => [invocation({ logLines: 3 }, '01RQ'), consumer()]);
+    const move = { entity: 'conversation:c1', from: null, to: 'open' };
+    // #2762: an entry not shaped like a move is dropped, never guessed at.
+    const transitions = [move, { entity: 'conversation:c2', to: 7 }];
+    const { reader, sent } = readerOver(() => [invocation({ logLines: 3, transitions }, '01RQ'), consumer()]);
     const scope = { tenantId: '01TENANT', from: 0, to: 10_000, limit: 10 };
 
     const all = await reader.tenantRequests!(scope);
-    // #2762: and the line count as the line carries it — a line without one reads null, never 0.
-    expect(all.map((r) => [r.kind, r.outcome, r.attempt, r.logLines])).toEqual(
+    // #2762: and the line count and the moves as the line carries them — a line without them
+    // reads null, never 0 or [].
+    expect(all.map((r) => [r.kind, r.outcome, r.attempt, r.logLines, r.transitions])).toEqual(
       expect.arrayContaining([
-        ['request', null, null, 3],
-        ['consumer', 'retrying', 2, null],
+        ['request', null, null, 3, [move]],
+        ['consumer', 'retrying', 2, null, null],
       ]),
     );
 

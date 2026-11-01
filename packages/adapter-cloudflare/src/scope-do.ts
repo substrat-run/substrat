@@ -260,6 +260,9 @@ import {
   emittedSinceQuery,
   emittedReportOf,
   EMITTED_REPORT_CAP,
+  noteTransitionInto,
+  transitionsReport,
+  type TransitionTally,
   type EmittedReport,
   IMPORT_CURSOR_ADVANCE_SQL,
   IMPORT_RECORD_SQL,
@@ -3498,7 +3501,12 @@ export function defineScopeDO(
         // transaction, reported only after commit — a rolled-back intent is no signal.
         // The envelope return (below) is the DO↔coordinator wire for it; both sides
         // live in this package and deploy as one script, so the shape never skews.
-        const signals = { platformRequests: 0 };
+        // #2762: and the lifecycle moves `ctx.noteTransition` notes, when the caller asked for the
+        // report they ride on. `ctx.atomic` restores both.
+        const signals: { platformRequests: number } & TransitionTally = {
+          platformRequests: 0,
+          ...(invokeOptions?.onEmitted !== undefined ? { transitions: [] } : {}),
+        };
         /**
          * K-42: how a read-only session is made to BE read-only.
          *
@@ -3683,7 +3691,10 @@ export function defineScopeDO(
         let emitted: EmittedReport | undefined;
         if (emittedMark !== null && !replayed) {
           const q = emittedSinceQuery(emittedMark, EMITTED_REPORT_CAP);
-          emitted = emittedReportOf(this.sql.exec(q.sql, ...q.params).toArray());
+          emitted = {
+            ...emittedReportOf(this.sql.exec(q.sql, ...q.params).toArray()),
+            transitions: transitionsReport(signals.transitions ?? []),
+          };
         }
         if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince, this.invocationId);
         // After the tail, so an exported type a consumer emitted in it counts too.
@@ -9307,7 +9318,7 @@ export function defineScopeDO(
        */
       systemDoor?: SystemDoorPass,
       /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
-      signals?: { platformRequests: number },
+      signals?: { platformRequests: number } & TransitionTally,
       /**
        * K-42: the session this operation runs under, resolved by the coordinator
        * from the directory and handed down. Read here and nowhere module code can
@@ -9727,6 +9738,7 @@ export function defineScopeDO(
           sql.exec(r.sql, ...r.params);
         },
         atomic: createAtomic(runSub, { passed, signals }),
+        noteTransition: noteTransitionInto(signals),
         // #1672: mint / revoke / list, written once in the kernel — the pure adapter hands
         // the same function the same four things. The raw spine seam (the kernel's own write
         // to `_substrat_capabilities`), the operation's OWN check, and `ctx.emit`. A

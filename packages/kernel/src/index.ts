@@ -60,6 +60,7 @@ export type {
   InvokeOptions,
   EmittedEvent,
   EmittedReport,
+  EmittedTransition,
   SqlMigration,
   SqlValue,
   TenantRelationalStore,
@@ -223,6 +224,12 @@ export {
   parseValidationRecords,
   EMITTED_REPORT_CAP,
 } from './scope-host.js';
+export {
+  noteTransitionInto,
+  transitionsReport,
+  TRANSITION_REPORT_CAP,
+  type TransitionTally,
+} from './transition-notes.js';
 export {
   assertBoundOperations,
   checkHeldOperationsOf,
