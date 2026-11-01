@@ -1,5 +1,14 @@
 # @substrat-run/cli
 
+## 0.55.1
+
+### Patch Changes
+
+- 6583c0e: `substrat push` and `preview create` wait out a busy platform builder: a submit refused with `409 project operation already in progress` is retried with backoff for about eight minutes before the push fails.
+  - @substrat-run/contracts@0.173.0
+  - @substrat-run/control-plane-client@0.5.1
+  - @substrat-run/model-view@0.6.21
+
 ## 0.55.0
 
 ### Minor Changes
