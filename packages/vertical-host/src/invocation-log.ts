@@ -118,8 +118,12 @@ export interface InvocationRecord extends StoreCallTally, OutboundRecording, Aut
   principalKind?: string;
   /** What the operation itself emitted — `InvokeOptions.onEmitted`. */
   emitted?: EmittedReport;
-  /** #2762: the route that answered — written by the middleware itself ({@link routeOf}). */
-  route?: string | undefined;
+  /**
+   * #2762: the route that answered — written by the middleware itself ({@link nameRoute}),
+   * never by a vertical: the `path` facet is bounded to the route table only while nothing
+   * else can put a value here. Read-only to the type, and overwritten at run time.
+   */
+  readonly route?: string | undefined;
   /**
    * #1331: which of the operation's DECLARED output fields its response carried. Filled
    * only on a request the router armed the walk for ({@link fieldCoverageArmed}), and absent
@@ -765,9 +769,8 @@ export function invocationLog<Env = unknown>(
         await next();
       } finally {
         // Only this middleware sees the Hono context; the platform's entry writes the line
-        // (and hands the record to the router) once this has returned. An app nested inside
-        // another and mounting this too finishes first, and its route is the more specific.
-        existing.record.route ??= routeOf(c);
+        // (and hands the record to the router) once this has returned.
+        nameRoute(existing.record, c);
       }
       return;
     }
@@ -795,7 +798,7 @@ export function invocationLog<Env = unknown>(
       // the caller, and swallowing here would turn a fault into a silent 200.
       throw e;
     } finally {
-      stamp.record.route ??= routeOf(c);
+      nameRoute(stamp.record, c);
       writeInvocationLine(
         stamp,
         { request: { method: c.req.method, url: c.req.raw.url, headers: c.req.raw.headers }, env: c.env, status: threw ? null : (c.res?.status ?? null), threw, started },
@@ -803,6 +806,20 @@ export function invocationLog<Env = unknown>(
       );
     }
   };
+}
+
+/** The records a middleware has named the route of — the innermost app's, which finishes first. */
+const ROUTE_NAMED = new WeakSet<InvocationRecord>();
+
+/**
+ * #2762: set the record's route once, from the innermost app that mounts this middleware.
+ * An assignment, never `??=`: whatever a handler wrote there first is replaced, so the value
+ * is always one {@link routeOf} read off the route table.
+ */
+function nameRoute(record: InvocationRecord, c: InvocationLogContext<unknown>): void {
+  if (ROUTE_NAMED.has(record)) return;
+  ROUTE_NAMED.add(record);
+  (record as { route?: string | undefined }).route = routeOf(c);
 }
 
 /**
@@ -927,6 +944,10 @@ function handRecordToRouter<Env>(
   env: Env,
   options: InvocationLogOptions<Env>,
 ): void {
+  // An upgrade is answered by the router as it came — a rebuilt response would drop the
+  // socket — so a header set on it would reach the caller.
+  const r = response as { status?: unknown; webSocket?: unknown };
+  if (r.status === 101 || r.webSocket) return;
   try {
     const value = encodeInvocationRecord({ ...record, entityTypes: entityTypesOf(record.emitted) });
     if (value === null || !routedNodeOrNull(request.headers, env, options)) return;

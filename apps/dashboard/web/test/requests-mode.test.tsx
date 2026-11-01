@@ -11,6 +11,7 @@ import {
   requestReadQuery,
   resultLabel,
   rowLabel,
+  selected,
   toggleFacet,
   whereOf,
 } from '../src/lib/requests';
@@ -32,6 +33,10 @@ describe('request facets in the URL', () => {
     expect(toggleFacet({ op: 'a' }, 'operation', 'b')).toEqual({ op: 'a,b' });
     expect(toggleFacet({ op: 'a,b' }, 'operation', 'a')).toEqual({ op: 'b' });
     expect(toggleFacet({ op: 'a' }, 'operation', 'a')).toEqual({ op: undefined });
+    // #2762: a route pattern may hold a `,`; it stays one value.
+    const route = 'GET /api/codes/:c{[a-z]{2,3}}';
+    const ticked = toggleFacet({ path: 'GET /*' }, 'path', route);
+    expect(selected(ticked, 'path')).toEqual(['GET /*', route]);
   });
 
   it('sends facets as repeated keys, with the cursor in place of hours — never both', () => {
