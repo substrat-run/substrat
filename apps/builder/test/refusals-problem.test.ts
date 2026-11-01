@@ -23,6 +23,7 @@ import {
 	refuse,
 	refusalProblem,
 	sendProblem,
+	SourceBuildError,
 	TURN_FAILED,
 	turnFailure,
 	unhandledProblem,
@@ -271,6 +272,13 @@ describe("a throw's message reaches the client only when it is the provider erro
 		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 		const message = turnFailure(new Error('git bundle create failed: /workspace/.builder/projects/acme'));
 		expect(message).toBe(TURN_FAILED);
+		expect(log).toHaveBeenCalledOnce();
+	});
+
+	it('the fatal turn event: a repository failure keeps its reviewed message, and is still logged', () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const message = 'repository operation failed; check access and whether the branch changed';
+		expect(turnFailure(new SourceBuildError(message))).toBe(message);
 		expect(log).toHaveBeenCalledOnce();
 	});
 

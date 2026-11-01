@@ -109,6 +109,17 @@ export interface AppOverlays {
   truncated: boolean;
 }
 
+/** `appHostnameRow` — a published schema, not a stored row. */
+export interface AppHostnameRow {
+  hostname: string;
+  surface: string;
+  status: string;
+  statusNote: string | null;
+  canonical: boolean;
+  createdAt: string | null;
+  validationRecords: ({ type: string; name: string; value: string; status?: string | null })[];
+}
+
 /** `appRow` — a published schema, not a stored row. */
 export interface AppRow {
   id: string;
@@ -120,6 +131,14 @@ export interface AppRow {
   provision_result?: string | null;
   created_by: string;
   created_at: string;
+}
+
+/** `appSchedulesView` — a published schema, not a stored row. */
+export interface AppSchedulesView {
+  running: { versionId: string | null; version: string | null };
+  schedules: ({ operation: string; moduleId: string; everyMinutes: number; permissions: string[]; lastRun: { id: string; outcome: string; at: string; error?: string | null; elapsedMs?: number | null; observedAt?: string | null } | null; nextDueAt: string | null; health: "healthy" | "overdue" | "never-run" | "sweeper-silent"; runs: ({ id: string; outcome: string; at: string; error?: string | null; elapsedMs?: number | null; observedAt?: string | null })[] })[] | null;
+  freshness: ({ eventType: string; moduleId: string; withinHours: number; observedAt: string | null; health: "fresh" | "stale" | "never-seen" | "sweeper-silent"; runs: ({ id: string; outcome: string; at: string; error?: string | null; elapsedMs?: number | null; observedAt?: string | null })[] })[] | null;
+  lastSweepAt: string | null;
 }
 
 /** `boundScopeRow` — a published schema, not a stored row. */
@@ -204,6 +223,19 @@ export interface DeploymentVersion {
   schemaChange: boolean;
   origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null;
   createdAt: string;
+}
+
+/** `domainRow` — a published schema, not a stored row. */
+export interface DomainRow {
+  hostname: string;
+  appScopeId: string;
+  app: string;
+  surface: string;
+  status: string;
+  statusNote: string | null;
+  primary: boolean;
+  createdAt: string;
+  validationRecords: ({ type: string; name: string; value: string; status?: string | null })[];
 }
 
 /** `explanationView` — a published schema, not a stored row. */
@@ -398,6 +430,18 @@ export interface PreviewRow {
   callbackUrl?: string | null;
 }
 
+/** `processMapView` — a published schema, not a stored row. */
+export interface ProcessMapView {
+  versionId: string | null;
+  processes: { entity: string; initial: string; states: number; edges: number }[];
+  entity: string | null;
+  lifecycle: unknown;
+  period: "24h" | "7d" | "30d";
+  current: unknown;
+  previous: unknown;
+  unavailable: "no-version" | "no-lifecycles" | "not-yet-available" | null;
+}
+
 /** `promotionReviewRow` — a published schema, not a stored row. */
 export interface PromotionReviewRow {
   serving: { versionId: string } | null;
@@ -481,7 +525,7 @@ export interface DashboardClient {
    *
    * `POST /apps/{scopeId}/hostnames` — `dashboard/add-app-hostname`
    */
-  addAppHostname(input: { scopeId: string; surface: string; domain?: string }): Promise<{ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] }>;
+  addAppHostname(input: { scopeId: string; surface: string; domain?: string }): Promise<AppHostnameRow>;
 
   /**
    * Add a custom domain to one of this team's apps; lands verifying with the DNS records to publish
@@ -868,7 +912,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/processes` — `dashboard/get-app-process-map`
    */
-  getAppProcessMap(input: { scopeId: string; period?: string; entity?: string }): Promise<{ versionId: string | null; processes: { entity: string; initial: string; states: number; edges: number }[]; entity: string | null; lifecycle: unknown; period: "24h" | "7d" | "30d"; current: unknown; previous: unknown; unavailable: "no-version" | "no-lifecycles" | "not-yet-available" | null }>;
+  getAppProcessMap(input: { scopeId: string; period?: string; entity?: string }): Promise<ProcessMapView>;
 
   /**
    * Compare this app’s running version with the current prod version
@@ -882,7 +926,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/schedules` — `dashboard/get-app-schedules`
    */
-  getAppSchedules(input: { scopeId: string }): Promise<{ running: { versionId: string | null; version: string | null }; schedules: ({ operation: string; moduleId: string; everyMinutes: number; permissions: string[]; lastRun: { id: string; outcome: string; at: string; error?: string | null; elapsedMs?: number | null; observedAt?: string | null } | null; nextDueAt: string | null; health: "healthy" | "overdue" | "never-run" | "sweeper-silent"; runs: ({ id: string; outcome: string; at: string; error?: string | null; elapsedMs?: number | null; observedAt?: string | null })[] })[] | null; freshness: ({ eventType: string; moduleId: string; withinHours: number; observedAt: string | null; health: "fresh" | "stale" | "never-seen" | "sweeper-silent"; runs: ({ id: string; outcome: string; at: string; error?: string | null; elapsedMs?: number | null; observedAt?: string | null })[] })[] | null; lastSweepAt: string | null }>;
+  getAppSchedules(input: { scopeId: string }): Promise<AppSchedulesView>;
 
   /**
    * One installed app's traffic series and release markers
@@ -1022,7 +1066,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/hostnames` — `dashboard/list-app-hostnames`
    */
-  listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
+  listAppHostnames(input: { scopeId: string }): Promise<{ bindings: AppHostnameRow[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
 
   /**
    * The schema migrations this app has applied
@@ -1099,7 +1143,7 @@ export interface DashboardClient {
    *
    * `GET /domains` — `dashboard/list-domains`
    */
-  listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: ({ hostname: string; appScopeId: string; app: string; surface: string; status: string; statusNote: string | null; primary: boolean; createdAt: string; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; nextCursor: string | null }>;
+  listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: DomainRow[]; nextCursor: string | null }>;
 
   /**
    * Read this team's entitlement grants (owner or admin)

@@ -31,10 +31,17 @@ export const REQUEST_FACETS: { key: RequestFacetKey; url: keyof ObsQuery; label:
 
 const facetOf = (key: RequestFacetKey) => REQUEST_FACETS.find((f) => f.key === key)!;
 
+/**
+ * A facet's values share one URL key, joined by `,`. A route pattern may hold one
+ * (`/:c{[a-z]{2,3}}`), so a value's own `,` and `%` are escaped before the join.
+ */
+const escapeValue = (v: string) => v.replace(/%/g, '%25').replace(/,/g, '%2C');
+const unescapeValue = (v: string) => v.replace(/%(25|2C)/gi, (m) => (m === '%25' ? '%' : ','));
+
 /** One facet's selected values, as the URL holds them. */
 export function selected(q: ObsQuery, key: RequestFacetKey): string[] {
   const raw = q[facetOf(key).url];
-  return raw ? raw.split(',').filter((v) => v.length > 0) : [];
+  return raw ? raw.split(',').filter((v) => v.length > 0).map(unescapeValue) : [];
 }
 
 /** Every facet filter the URL carries, keyed as the plane names them. */
@@ -51,7 +58,7 @@ export function whereOf(q: ObsQuery): Partial<Record<RequestFacetKey, string[]>>
 export function toggleFacet(q: ObsQuery, key: RequestFacetKey, value: string): Partial<ObsQuery> {
   const now = selected(q, key);
   const next = now.includes(value) ? now.filter((v) => v !== value) : [...now, value];
-  return { [facetOf(key).url]: next.length > 0 ? next.join(',') : undefined };
+  return { [facetOf(key).url]: next.length > 0 ? next.map(escapeValue).join(',') : undefined };
 }
 
 /** The URL keys every request facet lives under — what `Clear` removes in this mode. */

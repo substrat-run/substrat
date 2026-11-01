@@ -264,6 +264,22 @@ describe('invocationLog', () => {
     }
   });
 
+  it('replaces a route a handler wrote into the record with the pattern that answered', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) =>
+        a.get('/api/items/:id', (c) => {
+          (c.get(INVOCATION_RECORD_KEY as never) as { route?: string }).route = c.req.path;
+          return c.text('ok');
+        }),
+      );
+      await app.request('/api/items/7', { headers: routed }, ENV);
+      expect(cap.lines.map((l) => l.route)).toEqual(['GET /api/items/:id']);
+    } finally {
+      cap.restore();
+    }
+  });
+
   it('keeps the route of the innermost app when an app it calls mounts the middleware too', async () => {
     const cap = capture();
     try {
@@ -650,6 +666,22 @@ describe('withInvocationLog — the record handed back to the router (#1904)', (
       const res = (await worker.fetch!(new Request('https://acme.example/api/lists/7', { headers: routed }), ENV, {})) as Response;
       expect(new URLSearchParams(res.headers.get(HEADER)!).get('route')).toBe('GET /api/lists/:id');
       expect(cap.lines.map((l) => l.route)).toEqual(['GET /api/lists/:id']);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('#2762: carries nothing on an upgrade, which the router answers as it came', async () => {
+    const cap = quiet();
+    try {
+      // Node's Response refuses a 101, so the upgrade is the shape workerd hands back.
+      const upgrade = { status: 101, webSocket: {}, headers: new Headers() };
+      const res = (await operationWorker({ operation: 'chat/join' }, () => upgrade as never).fetch!(
+        new Request('https://acme.example/ws', { headers: routed }),
+        ENV,
+        {},
+      )) as Response;
+      expect(res.headers.get(HEADER)).toBeNull();
     } finally {
       cap.restore();
     }

@@ -1,14 +1,5 @@
-import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, TeamTrafficLine as WireTeamTrafficLine, TeamTrafficSeries as WireTeamTrafficSeries, FieldCoverageView as WireFieldCoverageView, FlowFindingsView as WireFlowFindingsView, FlowFinding as WireFlowFinding, FlowGraph as WireFlowGraph, FlowNode as WireFlowNode, FlowEdge as WireFlowEdge, OperationHealthView as WireOperationHealthView, OperationHealthRow as WireOperationHealthRow, ConnectionSweepView as WireConnectionSweepView, ConnectionSweepRow as WireConnectionSweepRow, AppHealthRow as WireAppHealthRow, AppMetricsRow as WireAppMetricsRow, AppMetricsView as WireAppMetricsView, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, OverlayMarker as WireOverlayMarker, OverlaySpan as WireOverlaySpan, AppOverlays as WireAppOverlays, SweepRunView, BoundScopeRow as WireBoundScopeRow, BoundScopesView as WireBoundScopesView, MoveScopesResult as WireMoveScopesResult, MoveReviewRow as WireMoveReviewRow, RetireScopesResult as WireRetireScopesResult } from './api';
+import type { FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, TeamTrafficLine as WireTeamTrafficLine, TeamTrafficSeries as WireTeamTrafficSeries, FieldCoverageView as WireFieldCoverageView, FlowFindingsView as WireFlowFindingsView, FlowFinding as WireFlowFinding, FlowGraph as WireFlowGraph, FlowNode as WireFlowNode, FlowEdge as WireFlowEdge, OperationHealthView as WireOperationHealthView, OperationHealthRow as WireOperationHealthRow, ConnectionSweepView as WireConnectionSweepView, ConnectionSweepRow as WireConnectionSweepRow, AppHealthRow as WireAppHealthRow, AppMetricsRow as WireAppMetricsRow, AppMetricsView as WireAppMetricsView, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, OverlayMarker as WireOverlayMarker, OverlaySpan as WireOverlaySpan, AppOverlays as WireAppOverlays, BoundScopeRow as WireBoundScopeRow, BoundScopesView as WireBoundScopesView, MoveScopesResult as WireMoveScopesResult, MoveReviewRow as WireMoveReviewRow, RetireScopesResult as WireRetireScopesResult } from './api';
 import type { DeploymentRow as WireDeploymentRow, PreviewRow as WirePreviewRow } from './api.generated';
-// Type-only reach into the worker: schedules.ts is environment-free (contracts types
-// only), so it compiles under the DOM tsconfig, where the worker program could never
-// swallow this file's DOM-typed sibling. Never imported at runtime — the two bundles
-// stay separated by wire; only the COMPILER crosses.
-import type {
-  AppFreshnessRow as WorkerAppFreshnessRow,
-  AppScheduleRow as WorkerAppScheduleRow,
-  ScheduleRunView as WorkerRunView,
-} from '../../../src/schedules';
 import type {
   BoundScope as WorkerBoundScope,
   BoundScopesView as WorkerBoundScopesView,
@@ -53,9 +44,6 @@ type Equal<A, B> = [A] extends [B]
     : false
   : false;
 
-export const APP_SCHEDULE_ROW_PARITY: Equal<WireAppScheduleRow, WorkerAppScheduleRow> = true;
-export const SCHEDULE_RUN_VIEW_PARITY: Equal<SweepRunView, WorkerRunView> = true;
-export const APP_FRESHNESS_ROW_PARITY: Equal<AppFreshnessRow, WorkerAppFreshnessRow> = true;
 export const FAILURE_GROUP_ROW_PARITY: Equal<WireFailureGroupRow, WorkerFailureGroupRow> = true;
 export const RELEASE_ROW_PARITY: Equal<WireReleaseRow, WorkerReleaseRow> = true;
 export const RELEASES_VIEW_PARITY: Equal<WireReleasesView, WorkerReleasesView> = true;

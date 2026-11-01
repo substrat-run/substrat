@@ -813,7 +813,7 @@ const sweepRunView = z.looseObject({
 });
 
 /** Schedule and freshness health (`schedules.ts`): the verdicts are this worker's own. */
-const appSchedulesView = z.object({
+export const appSchedulesView = z.object({
   running: z.object({ versionId: z.string().nullable(), version: z.string().nullable() }),
   schedules: z.array(z.object({
     operation: z.string(), moduleId: z.string(), everyMinutes: z.number(), permissions: z.array(z.string()),
@@ -828,7 +828,7 @@ const appSchedulesView = z.object({
 });
 
 /** The process map (`process-map.ts`): a declared lifecycle replayed over a period and the one before. */
-const processMapView = z.object({
+export const processMapView = z.object({
   versionId: z.string().nullable(),
   processes: z.array(z.object({ entity: z.string(), initial: z.string(), states: z.number(), edges: z.number() })),
   entity: z.string().nullable(),

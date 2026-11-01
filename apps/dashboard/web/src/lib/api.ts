@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppMetricsView, type AppOverlays, type AppRow, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppHostnameRow, type AppMetricsView, type AppOverlays, type AppRow, type AppSchedulesView, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type DomainRow, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ProcessMapView as GeneratedProcessMapView, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { RequestReadQuery } from './requests';
@@ -7,7 +7,7 @@ import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { AppDeployments, AppEvent, AppFailuresView, AppMetricsView, AppOverlays, AppRow, BoundScopeRow, BusinessVolumesView, ConnectorCallsView, DeployFailureRow, DeploymentVersion, FailureGroupRow, FieldCoverageView, FieldReadsView, FlowView, InstallStep, LogPatterns, Member, MoveReviewRow, ObservabilityRow, PreviewCreated, ReleaseRow, ReleasesView, RequestFacets, RequestVolume, TeamTrafficSeries, TenantMetricsRow, TrafficSeries };
+export type { AppDeployments, AppEvent, AppFailuresView, AppHostnameRow, AppMetricsView, AppOverlays, AppRow, BoundScopeRow, BusinessVolumesView, ConnectorCallsView, DeployFailureRow, DeploymentVersion, DomainRow, FailureGroupRow, FieldCoverageView, FieldReadsView, FlowView, InstallStep, LogPatterns, Member, MoveReviewRow, ObservabilityRow, PreviewCreated, ReleaseRow, ReleasesView, RequestFacets, RequestVolume, TeamTrafficSeries, TenantMetricsRow, TrafficSeries };
 
 // The observability reads' parts (#2170), named as the views always have: each is the generated view's own member.
 export type AppMetricsRow = AppMetricsView['rows'][number];
@@ -277,18 +277,16 @@ export type ProcessPeriod = '24h' | '7d' | '30d';
  * One app's process map (#1744): a declared lifecycle replayed over the period asked and
  * the one before it. `unavailable` says why there is nothing to draw — each reason is a
  * different next step, so the screen never renders them as one empty map.
+ *
+ * The route publishes the three documents as `unknown` (the plane owns them); this narrows
+ * them to the contract's shapes, which is the one place the screen trusts them.
  */
-export interface ProcessMapView {
-  versionId: string | null;
-  processes: DeclaredProcess[];
-  entity: string | null;
+export type ProcessMapView = Omit<GeneratedProcessMapView, 'lifecycle' | 'current' | 'previous'> & {
   /** The machine the counts were replayed against — what the map lays out. */
   lifecycle: import('@substrat-run/contracts').EmittedLifecycle | null;
-  period: ProcessPeriod;
   current: import('@substrat-run/contracts').LifecycleFlowResult | null;
   previous: import('@substrat-run/contracts').LifecycleFlowResult | null;
-  unavailable: 'no-version' | 'no-lifecycles' | 'not-yet-available' | null;
-}
+};
 
 export interface AppHealthRow {
   scopeId: string;
@@ -853,16 +851,7 @@ export interface ConnectionActivityView {
 }
 
 /** One declared schedule's health on an app (#1232) — the worker's derived verdict, rendered verbatim. */
-export interface AppScheduleRow {
-  operation: string;
-  moduleId: string;
-  everyMinutes: number;
-  permissions: string[];
-  lastRun: SweepRunView | null;
-  nextDueAt: string | null;
-  health: 'healthy' | 'overdue' | 'never-run' | 'sweeper-silent';
-  runs: SweepRunView[];
-}
+export type AppScheduleRow = NonNullable<AppSchedulesView['schedules']>[number];
 
 /** The schedules panel's data. Both null = nothing declared or a pre-field version — hide. */
 /**
@@ -905,47 +894,13 @@ export interface AppPeersView {
   callersError: string | null;
 }
 
-export interface AppSchedulesView {
-  running: { versionId: string | null; version: string | null };
-  schedules: AppScheduleRow[] | null;
-  /** Declared freshness expectations' verdicts (#1272); null = none declared. */
-  freshness: AppFreshnessRow[] | null;
-  lastSweepAt: string | null;
-}
+export type { AppSchedulesView };
 
 /** One sweep outcome for a connection (#1232) — what the recent-runs strip renders. */
-export interface SweepRunView {
-  id: string;
-  outcome: string;
-  at: string;
-  error: string | null;
-  elapsedMs: number | null;
-  /** The freshness rows' evidence timestamp (#1272); null on schedule rows. */
-  observedAt: string | null;
-}
+export type SweepRunView = NonNullable<AppSchedulesView['schedules']>[number]['runs'][number];
 
 /** One declared freshness expectation's verdict on an app (#1272) — rendered verbatim. */
-export interface AppFreshnessRow {
-  eventType: string;
-  moduleId: string;
-  withinHours: number;
-  observedAt: string | null;
-  health: 'fresh' | 'stale' | 'never-seen' | 'sweeper-silent';
-  runs: SweepRunView[];
-}
-
-/** One hostname bound to the app's scope (the Domains tab). */
-export interface AppHostnameRow {
-  hostname: string;
-  surface: string;
-  status: string;
-  /** Why a row is `failed` (or mid-flight detail) — rendered under the status pill. */
-  statusNote: string | null;
-  canonical: boolean;
-  createdAt: string | null;
-  /** DNS records to publish for a custom domain; empty for a platform mint. */
-  validationRecords: DnsRecord[];
-}
+export type AppFreshnessRow = NonNullable<AppSchedulesView['freshness']>[number];
 
 /** A surface the app's vertical declares it serves — the Domains tab's picker. */
 export interface DeclaredSurface {
@@ -990,23 +945,6 @@ export interface DnsRecord {
   name: string;
   value: string;
   status?: string | null;
-}
-
-/** One custom domain row for the account-level Domains view (`GET /api/teams/:teamId/domains`). */
-export interface DomainRow {
-  hostname: string;
-  appScopeId: string;
-  /** The app (vertical install) this domain fronts. */
-  app: string;
-  surface: string;
-  /** The plane's (known: pending, verifying, active, failed); a newer plane may name another (#2401). */
-  status: string;
-  statusNote: string | null;
-  /** Canonical for its (scope, surface) — the "primary" tag. */
-  primary: boolean;
-  createdAt: string;
-  /** DNS records to publish while it is not yet active. */
-  validationRecords: DnsRecord[];
 }
 
 export class ApiError extends Error {

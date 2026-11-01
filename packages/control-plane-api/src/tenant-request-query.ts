@@ -80,8 +80,12 @@ const facetValue: Record<RequestFacetKey, z.ZodType<string>> = {
     .min(1)
     .max(INVOCATION_RECORD_FIELD_MAX)
     .refine((v) => !v.includes(ENTITY_TYPES_SEPARATOR), 'entity is one entity type'),
-  // #2762: a route as the line writes it — `<METHOD> <pattern>`, never longer than the record keeps.
-  path: z.string().min(1).max(INVOCATION_RECORD_FIELD_MAX),
+  // #2762: a route as the line writes it — `<METHOD> <pattern>`, never longer than the record
+  // keeps. A called path (`/api/items/7`) is refused rather than matching nothing.
+  path: z
+    .string()
+    .max(INVOCATION_RECORD_FIELD_MAX)
+    .regex(/^(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|OTHER) \S/, 'path is a route: a method and the pattern it was registered under'),
 };
 
 /** A query-string reader — Hono's `c.req.query` / `c.req.queries`, taken structurally. */
