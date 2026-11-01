@@ -4,7 +4,7 @@ import { ApiError as AccountApiError, createClient as createAccountClient, type 
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { LineReadQuery, RequestReadQuery } from './requests';
-import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
 export type { AppDeployments, AppEvent, AppFailuresView, AppHostnameRow, AppMetricsView, AppOverlays, AppRow, BoundScopeRow, BusinessVolumesView, ConnectorCallsView, DeployFailureRow, DeploymentVersion, DomainRow, FailureGroupRow, FieldCoverageView, FieldReadsView, FlowView, InstallStep, LineVolume, LogPatterns, Member, MoveReviewRow, ObservabilityRow, PreviewCreated, ReleaseRow, ReleasesView, RequestFacets, RequestVolume, TeamTrafficSeries, TenantMetricsRow, TrafficSeries };
@@ -34,6 +34,9 @@ export type LogPattern = LogPatterns['patterns'][number];
 export type AuditEntry = AdminLogEntry;
 export type ChannelHistoryEntry = ChannelHistoryRow;
 export type VerticalPreview = PreviewRow;
+
+// A route's answer, named by the generated client method that returns it: the views below are the wire's own, not copies.
+type Out<K extends keyof DashboardClient> = Awaited<ReturnType<DashboardClient[K]>>;
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -186,12 +189,7 @@ export interface AppModelView {
 }
 
 /** One PITR rewind point an app recorded before a migration pass (#286). */
-export interface MigrationBookmark {
-  bookmark: string;
-  takenAt: string;
-  /** The `module@version` migrations that were about to apply when it was taken. */
-  pending: string[];
-}
+export type MigrationBookmark = Out<'listAppBookmarks'>[number];
 
 export type Deployment = DeploymentRow;
 
@@ -200,22 +198,16 @@ export type Deployment = DeploymentRow;
 
 
 
-/** One migration as an app actually applied it (#1236) — its schema history. */
-export interface AppliedMigration {
-  moduleId: string;
-  version: string;
-  /** Null for a row written before the platform recorded the instant. */
-  appliedAt: string | null;
-  durationMs: number | null;
-  rowsChanged: number | null;
-}
-
 /**
  * One app's schema history with its availability (#1236). `available: false` is a
  * fact about the read — a deployment that does not serve the endpoint, or a plane
  * fault — while `migrations: []` with `available: true` is a fact about the app:
  * it genuinely has none, which a module registering `migrations: []` produces.
  */
+export type AppMigrationsView = Out<'listAppMigrations'>;
+/** One migration as an app actually applied it (#1236) — its schema history. */
+export type AppliedMigration = AppMigrationsView['migrations'][number];
+
 /**
  * One event in a record's history (#1235) — the CONTRACT's type, not a copy of it.
  *
@@ -296,11 +288,6 @@ export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts
  */
 export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal' | 'withheldReason'> & { withheldPersonal?: number; withheldReason?: string };
 
-export interface AppMigrationsView {
-  available: boolean;
-  migrations: AppliedMigration[];
-}
-
 /** One plotted bucket of traffic (#1236) — zero-filled worker-side. */
 export interface TrafficBucket {
   start: string;
@@ -326,254 +313,71 @@ export interface ReleaseMarker {
   versionId: string;
 }
 
+export type ReleaseComparison = Out<'getAppReleaseComparison'>;
 /** One side of the running-vs-update comparison (#1236). Nulls = metrics unavailable. */
-export interface ReleaseSide {
-  versionId: string;
-  version: string | null;
-  requests: number | null;
-  errors: number | null;
-  cpuTimeP50: number | null;
-  cpuTimeP99: number | null;
-}
+export type ReleaseSide = NonNullable<ReleaseComparison['running']>;
 
-export interface ReleaseComparison {
-  running: ReleaseSide | null;
-  /** Null = already on prod's head — nothing an update would move to. */
-  update: ReleaseSide | null;
-  metricsAvailable: boolean;
-  /** False = another team publishes this vertical; its traffic is theirs to see, not ours. */
-  owned: boolean;
-}
-
-
-export interface BoundScopesView {
-  /** Neither archived nor reaped — the number `still backs N scope(s)` reports. */
-  live: number;
-  /** Archived — the number `still backs N archived scope(s)` reports. */
-  archived: number;
-  scopes: BoundScopeRow[];
-}
-
-export interface MoveScopesResult {
-  moved: string[];
-  /** `reason` (#2347): the review the acknowledgement answered moved, or none was sent. */
-  refusal: { scopeId: string; message: string; reason?: RebindReviewReason } | null;
-}
-
-
-export interface RetireScopesResult {
-  retired: string[];
-  failure: { scopeId: string; message: string } | null;
-}
-
-
+export type BoundScopesView = Out<'listBoundScopes'>;
+export type MoveScopesResult = Out<'moveScopes'>;
+export type RetireScopesResult = Out<'retireScopes'>;
 
 /** The result of updating an app to its vertical's prod version. */
-export interface UpdateResult {
-  updated: boolean;
-  version: string | null;
-  previousVersion: string | null;
-}
+export type UpdateResult = Out<'updateInstalledApp'>;
 
 /** One snapshot (test copy) of an app's data — a fork's directory row. */
-export interface SnapshotRow {
-  id: string;
-  kind: string;
-  forkedFrom: string | null;
-  forkedAt: string | null;
-  /** null = kept until deleted; otherwise the GC sweep reaps it past this instant. */
-  expiresAt: string | null;
-  verticalVersionId: string | null;
-  createdAt: string;
-  /** The copy's preview hostname (`app--s1a2b.…`), when one is bound. */
-  url?: string | null;
-}
-
-/** One table of an app-data dump (mirrors the platform's ScopeDumpTable). */
-export interface DumpTable {
-  name: string;
-  ddl: string;
-  columns: string[];
-  rows: unknown[][];
-}
-
-export interface DumpStore {
-  binding: string;
-  driver: string;
-  tables: DumpTable[];
-}
+export type SnapshotRow = Out<'listAppSnapshots'>[number];
 
 /** An app's data as a dump the CLI also accepts. */
-export interface AppDataDump {
-  tenantId: string;
-  scopeId: string;
-  capturedAt: string;
-  /** True when PII columns arrived redacted (always, in connected mode). */
-  masked: boolean;
-  tables: DumpTable[];
-  stores: DumpStore[];
-}
+export type AppDataDump = Out<'exportInstalledApp'>;
+export type DumpTable = AppDataDump['tables'][number];
+export type DumpStore = NonNullable<AppDataDump['stores']>[number];
 
 /** What an import did, including the fork to back out to. */
-export interface RestoreResult {
-  restored: string;
-  tables: number;
-  safetyCopyId: string;
-}
-
-/** One importable repo the tenant's GitHub connection can see (worker's github.ts shape). */
-export interface GitRepo {
-  fullName: string;
-  defaultBranch: string;
-  private: boolean;
-  updatedAt: string;
-}
+export type RestoreResult = Out<'restoreInstalledApp'>;
 
 /** `GET /api/teams/:teamId/github/repos` — the Git-import card's live state. */
-export interface GitReposResult {
-  /** Is the GitHub App configured on this deployment at all? `false` ⇒ show nothing/hint. */
-  configured: boolean;
-  /** Has this tenant connected GitHub? `false` ⇒ show the Connect button. */
-  connected: boolean;
-  /** The SELECTED GitHub account (org/user login), when connected. */
-  account?: string | null;
-  /** Every connected account (namespace) — the picker's list; `repos` belongs to `account`. */
-  accounts: string[];
-  repos: GitRepo[];
-}
+export type GitReposResult = Out<'listGithubRepos'>;
+/** One importable repo the tenant's GitHub connection can see. */
+export type GitRepo = GitReposResult['repos'][number];
 
 /** `GET /api/teams/:teamId/github/workflow-preview` — the manual path's copy-paste workflow. */
-export interface WorkflowPreview {
-  workflowPath: string;
-  workflow: string;
-}
+export type WorkflowPreview = Out<'githubWorkflowPreview'>;
 
-/** One table in an app's database — the Data tab's left list (mirrors ScopeTable). */
-export interface ScopeTable {
-  name: string;
-  rowCount: number;
-  /** `_substrat_*` spine + SQLite internals — grouped apart from the vertical's own tables. */
-  system: boolean;
-}
-
+/** One table in an app's database — the Data tab's left list. */
+export type ScopeTable = Out<'listAppTables'>[number];
 /** One scope an app spans — the Data tab's scope switcher (a multi-scope vertical has several). */
-export interface AppScope {
-  scopeId: string;
-  name: string;
-  status: string;
-  /** The app's primary scope — the one the Data tab opens on. */
-  isDefault: boolean;
-}
+export type AppScope = Out<'appScopes'>[number];
+/** A bounded page of one table. Rows are positional, aligned to `columns`. */
+export type ScopeTablePage = Out<'readAppTable'>;
+/** A read-only console query's result. `truncated` = row cap hit. */
+export type ScopeQueryResult = Out<'queryAppScope'>;
 
-/** A bounded page of one table (mirrors ScopeTablePage). Rows are positional, aligned to `columns`. */
-export interface ScopeTablePage {
-  table: string;
-  columns: string[];
-  rows: unknown[][];
-  rowCount: number;
-  limit: number;
-  offset: number;
-}
-
-/** A read-only console query's result (mirrors ScopeQueryResult). `truncated` = row cap hit. */
-export interface ScopeQueryResult {
-  columns: string[];
-  rows: unknown[][];
-  truncated: boolean;
-}
-
-/** A declared env var for a vertical — drives the Env form (placeholder + description). */
-export interface EnvVarSpec {
-  key: string;
-  kind?: string;
-  label?: string;
-  description: string;
-  placeholder?: string;
-  required: boolean;
-  secret: boolean;
-  previewCarry?: boolean;
-  default?: string;
-  group?: string;
-}
-
+/** The app's Env tab: the declared spec (placeholder + description), the stored values, and the model catalogue. */
+export type AppEnvView = Out<'getAppEnv'>;
+/** A declared env var for a vertical — drives the Env form. */
+export type EnvVarSpec = AppEnvView['spec'][number];
 /** One stored env var — a secret's value is never sent back (write-only). */
-export interface AppEnvValue {
-  key: string;
-  isSecret: boolean;
-  hasValue: boolean;
-  value: string | null;
-  updatedAt: string;
-}
+export type AppEnvValue = AppEnvView['values'][number];
+export type ModelCatalogOption = AppEnvView['modelCatalog'][number];
 
 /** The app's owner seat (#925) as the platform relays it from the app's own identity directory. */
-export interface OwnerSeatView {
-  /** The deployed vertical may return a state this dashboard does not yet recognize. */
-  state: string;
-  owner: string | null;
-  firstSignIn: { open: boolean; until: string | null } | null;
-  claimLink: { expiresAt: string } | null;
-}
+export type OwnerSeatView = Out<'appOwnerSeat'>;
 
 /** A freshly minted owner-claim link — shown once, stored nowhere. */
-export interface OwnerClaimLinkView {
-  claimUrl: string;
-  expiresAt: string;
-}
+export type OwnerClaimLinkView = Out<'appOwnerClaim'>;
 
 /** An installed app's members (#1150), as the platform relays them from the app's own deployment. */
-export interface AppMembersView {
-  /** The roles a person may be invited at or moved to — the app's declared member roles. */
-  roles: string[];
-  members: { principal: string; roles: string[]; logins: number; email: string | null; owner: boolean }[];
-  /** `roleKey`: the role it was minted at. `roles`: what its principal holds now. */
-  invites: {
-    principal: string;
-    roleKey: string;
-    roles: string[];
-    email: string | null;
-    createdAt: number;
-    /** Where the invite's link stands (#1686); null for an older invite, absent from an older vertical. */
-    link?: { state: string; reason: string | null } | null;
-  }[];
-}
+export type AppMembersView = Out<'appMembers'>;
 
-/** A freshly minted member invite — shown once, stored nowhere. */
 /**
  * What every member change answers beside its result (#2064). `auditWarning` means the change
  * WENT THROUGH but the platform could not write its admin-log outcome: show it as a warning on a
  * success, never as an error to retry.
  */
-export interface AuditedAnswerView {
-  operationId?: string;
-  auditWarning?: string;
-}
+export type AuditedAnswerView = Pick<Out<'appInviteMember'>, 'operationId' | 'auditWarning'>;
 
-export interface MemberInviteView extends AuditedAnswerView {
-  principal: string;
-  roleKey: string;
-  email: string | null;
-  acceptUrl: string;
-}
-
-export interface AppEnvView {
-  spec: EnvVarSpec[];
-  values: AppEnvValue[];
-  modelCatalog: ModelCatalogOption[];
-}
-
-export interface ModelCatalogOption {
-  id: string;
-  label: string;
-  status: 'active' | 'deprecated';
-  servedBy: string;
-  tiers: Array<{
-    upToInputTokens: number | null;
-    inputPer1M: string;
-    outputPer1M: string;
-    cacheReadPer1M: string | null;
-    cacheWritePer1M: string | null;
-  }>;
-}
+/** A freshly minted member invite — shown once, stored nowhere. */
+export type MemberInviteView = Out<'appInviteMember'>;
 
 /** A provider credential form field — server-driven, the same move as the env spec. */
 export interface ProviderField {
@@ -825,46 +629,19 @@ export interface ConnectionActivityView {
 /** One declared schedule's health on an app (#1232) — the worker's derived verdict, rendered verbatim. */
 export type AppScheduleRow = NonNullable<AppSchedulesView['schedules']>[number];
 
-/** The schedules panel's data. Both null = nothing declared or a pre-field version — hide. */
 /**
  * One peer target this app declares it calls (#1706), resolved against what the tenant runs
  * and against the switch in the TARGET's scope. Mirrors `apps/dashboard/src/peers.ts` —
  * `not-installed` is an ordinary answer, never a fault, and `unreadable` is never folded
  * into `allowed`.
  */
-export type DeclaredCallRow =
-  | { state: 'not-installed'; vertical: string }
-  | { state: 'ambiguous'; vertical: string; count: number }
-  | { state: 'bound-unavailable'; vertical: string }
-  | { state: 'not-declared'; vertical: string }
-  | { state: 'allowed'; vertical: string; scopeId: string }
-  | {
-      state: 'switched-off';
-      vertical: string;
-      scopeId: string;
-      switchedOff: { actor: string; reason: string; at: string } | null;
-    }
-  | { state: 'no-grant'; vertical: string; scopeId: string }
-  | { state: 'unreadable'; vertical: string; scopeId: string; message: string };
-
-/** Where one of the tenant's other apps stands at THIS app's door. */
-export interface PeerCallerRow {
-  vertical: string;
-  /** The control plane owns the vocabulary; unknown positions have no switch action. */
-  calls: string;
-  switchedOff: { actor: string; reason: string; at: string } | null;
-}
+export type DeclaredCallRow = AppPeersView['calls'][number];
 
 /** Both directions of the peer disclosure for one app (#1706). */
-export interface AppPeersView {
-  /** What the running version declares it calls. `null` = a version that predates the field. */
-  declares: string[] | null;
-  calls: DeclaredCallRow[];
-  bindingChoices: { vertical: string; boundScopeId: string | null; invalidated: boolean; candidates: { scopeId: string; name: string }[] }[];
-  /** The mirror: who may call in here. `null` when the read itself failed. */
-  callers: PeerCallerRow[] | null;
-  callersError: string | null;
-}
+export type AppPeersView = Out<'appPeers'>;
+
+/** Where one of the tenant's other apps stands at THIS app's door. */
+export type PeerCallerRow = NonNullable<AppPeersView['callers']>[number];
 
 export type { AppSchedulesView };
 
@@ -874,50 +651,20 @@ export type SweepRunView = NonNullable<AppSchedulesView['schedules']>[number]['r
 /** One declared freshness expectation's verdict on an app (#1272) — rendered verbatim. */
 export type AppFreshnessRow = NonNullable<AppSchedulesView['freshness']>[number];
 
-/** A surface the app's vertical declares it serves — the Domains tab's picker. */
-export interface DeclaredSurface {
-  name: string;
-  label: string;
-}
-
 /** `GET /api/teams/:teamId/apps/:scope/hostnames` — bindings + declared surfaces + the untouchable default. */
-export interface AppHostnamesView {
-  bindings: AppHostnameRow[];
-  surfaces: DeclaredSurface[];
-  defaultHostname: string | null;
-}
+export type AppHostnamesView = Out<'listAppHostnames'>;
+/** A surface the app's vertical declares it serves — the Domains tab's picker. */
+export type DeclaredSurface = AppHostnamesView['surfaces'][number];
 
-/** The app's stored Identity choice — the clientSecret is write-only, never echoed. */
-export interface AppAuthRecord {
-  mode: 'oidc';
-  issuer: string;
-  clientId: string;
-  audience: string | null;
-  hasClientSecret: boolean;
-  updatedAt: string;
-}
-
-/** The stored identity choice; `auth: null` means the vertical's builtin sign-in. */
-export interface AppAuthView {
-  auth: AppAuthRecord | null;
-  /** The redirect URL to register at an external issuer; null while no hostname is bound. */
-  callbackUrl: string | null;
-}
+/** The stored identity choice; `auth: null` means the vertical's builtin sign-in. The clientSecret is write-only, never echoed. */
+export type AppAuthView = Out<'getAppAuth'>;
+export type AppAuthRecord = NonNullable<AppAuthView['auth']>;
 
 /** The save result; `delivered` says whether the running app got it. */
-export interface AppAuthUpdateResult {
-  delivered: boolean;
-  note?: string;
-}
+export type AppAuthUpdateResult = Out<'setAppAuth'>;
 
-/** A DNS record the tenant must publish for a custom domain (§4.7). */
-export interface DnsRecord {
-  /** The plane's (known: hostname, txt); a newer plane may name another (#2401). */
-  type: string;
-  name: string;
-  value: string;
-  status?: string | null;
-}
+/** A DNS record the tenant must publish for a custom domain (§4.7). `type` is the plane's: known are hostname and txt; a newer plane may name another (#2401). */
+export type DnsRecord = NonNullable<Out<'addDomain'>['validationRecords']>[number];
 
 export class ApiError extends Error {
   constructor(
@@ -1183,10 +930,9 @@ export const api = {
     teamApi(teamId)
       .getAppTraffic({ scopeId, ...window })
       .then((t) => t.markers.filter((m) => m.kind === 'went-live')),
-  /** #1747: one app's `ctx.log` lines grouped by template. The route declares the plane's
-   *  `dominant` level as an open string; this is the four the plane writes. */
+  /** #1747: one app's `ctx.log` lines grouped by template. */
   appLogPatterns: (teamId: string, scopeId: string, query: Omit<Parameters<DashboardClient['appLogPatterns']>[0], 'scopeId'>): Promise<LogPatterns> =>
-    teamApi(teamId).appLogPatterns({ scopeId, ...query }) as Promise<LogPatterns>,
+    teamApi(teamId).appLogPatterns({ scopeId, ...query }),
   appRequests: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestRecord[]> =>
     teamApi(teamId).appRequests({ scopeId, ...query }),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */

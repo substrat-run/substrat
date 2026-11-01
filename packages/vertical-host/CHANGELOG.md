@@ -1,5 +1,18 @@
 # @substrat-run/vertical-host
 
+## 0.174.0
+
+### Minor Changes
+
+- b8b837b: A declared route may answer more than one success status. It lists them in `statuses` (for example `[200, 202]`), a plain return answers the first, and a handler picks another by returning `answered(status, body)`. `mountRoutes` refuses a status the route does not list, and the OpenAPI document lists each status.
+
+### Patch Changes
+
+- Updated dependencies [b8b837b]
+  - @substrat-run/contracts@0.174.0
+  - @substrat-run/kernel@0.174.0
+  - @substrat-run/model-providers@0.5.64
+
 ## 0.173.0
 
 ### Minor Changes
