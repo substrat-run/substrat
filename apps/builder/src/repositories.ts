@@ -92,11 +92,13 @@ export async function checkoutRepository(sb: SandboxLike, access: RepositoryAcce
   if (probe.exitCode === 0) {
     const dirty = await checkedExec(sb, 'git status --porcelain', root);
     if (dirty) return; // preserve edits; the eventual push detects a concurrent writer
+    // The branch may not exist yet: a studio turn commits locally and pushes only when it
+    // changed files, so an interview turn leaves the remote empty. Fetching it would fail.
+    const refs = await repositoryGit(sb, access, ['ls-remote', '--heads', access.remote, `refs/heads/${branch}`], root);
+    if (!refs) return;
     const head = await sb.exec('git rev-parse --verify HEAD', { cwd: root });
     if (head.exitCode !== 0) {
-      // Another writer may have initialized the branch since this empty clone was opened.
-      const refs = await repositoryGit(sb, access, ['ls-remote', '--heads', access.remote, `refs/heads/${branch}`], root);
-      if (!refs) return;
+      // Another writer initialized the branch since this empty clone was opened.
       await repositoryGit(sb, access, ['fetch', access.remote, `refs/heads/${branch}`], root);
       await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout -B ${shellQuote(branch)} FETCH_HEAD`, root);
       return;

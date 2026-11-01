@@ -94,12 +94,14 @@ export function providerRefusal(err: unknown): Problem {
 
 /**
  * The fatal `error` event's message when a turn throws. A provider error mid-turn (a
- * phase's model resolving) keeps its reviewed message; anything else is the sandbox's,
- * the repo's or a bug's, and is logged, not streamed.
+ * phase's model resolving) and a source operation's reviewed failure (restoring or
+ * saving the project's repository) keep their message; anything else is the sandbox's
+ * or a bug's, and is logged, not streamed.
  */
 export function turnFailure(err: unknown): string {
 	if (err instanceof ProviderError) return err.message;
 	console.error('[builder] turn failed', err);
+	if (err instanceof SourceBuildError) return err.message;
 	return TURN_FAILED;
 }
 

@@ -54,6 +54,21 @@ describe('project repositories', () => {
     expect(execFileSync('git', ['--git-dir', remote, 'show', 'main:app.ts'], { encoding: 'utf8' })).toBe('writer-a');
   });
 
+  it('reopens a checkout whose local commit was never pushed to the still-empty repository', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'project-repository-'));
+    roots.push(root);
+    const remote = join(root, 'remote.git');
+    execFileSync('git', ['init', '--bare', '--initial-branch=main', '-q', remote]);
+    const access = { remote, authorization: 'Bearer fixture-token' };
+    const a = join(root, 'a');
+    await checkoutRepository(sandbox, access, a, 'main');
+    // A studio turn commits locally and pushes only when it changed files.
+    execFileSync('git', ['-C', a, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-q', '--allow-empty', '-m', 'Project created']);
+    const head = execFileSync('git', ['-C', a, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    await checkoutRepository(sandbox, access, a, 'main');
+    expect(execFileSync('git', ['-C', a, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).toBe(head);
+  });
+
   it('writes a file larger than one sandbox call in parts, never splitting a surrogate pair', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sandbox-write-'));
     roots.push(root);
