@@ -702,6 +702,17 @@ const appRequestInput = z.object({
   kind: repeated, entity: repeated, path: repeated, buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
   search: z.string().optional(),
 });
+/** #2762: the Lines histogram — a `ctx.log` line may be debug, a request line never is. */
+export const lineVolumeView = z.object({
+  bucketMs: z.number(),
+  buckets: z.array(z.object({ start: z.string(), debug: z.number(), info: z.number(), warn: z.number(), error: z.number(), unrecorded: z.number() })),
+  estimated: z.boolean(),
+});
+/** #2762: the Lines counts' query — its facets, a pattern, and the window. */
+const appLineCountInput = z.object({
+  scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(),
+  level: repeated, operation: repeated, principalKind: repeated, template: z.string().optional(), buckets: z.string().optional(),
+});
 export const logPatternsView = z.object({
   total: z.number(), bucketMs: z.number(),
   patterns: z.array(z.object({
@@ -1665,10 +1676,22 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/app-observability-logs': {
     summary: "Log lines for one of this team's installed apps",
-    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional(), invocationId: z.string().optional(), template: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional(), invocationId: z.string().optional(), template: z.string().optional(), operation: repeated, principalKind: repeated, since: z.string().optional(), until: z.string().optional() }),
     output: z.array(observabilityLogEvent),
     http: { method: 'GET', path: '/apps/{scopeId}/observability/logs' },
     responseHeaders: [LOGS_INCOMPLETE_HEADER],
+  },
+  'dashboard/app-log-volume': {
+    summary: "Log-line histogram for one of this team's installed apps: request lines and ctx.log lines",
+    input: appLineCountInput,
+    output: lineVolumeView,
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/logs/volume' },
+  },
+  'dashboard/app-log-facets': {
+    summary: "Log-line facet counts for one of this team's installed apps: request lines and ctx.log lines",
+    input: appLineCountInput,
+    output: requestFacetsView,
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/logs/facets' },
   },
   'dashboard/app-request-volume': {
     summary: "Request histogram for one of this team's installed apps",

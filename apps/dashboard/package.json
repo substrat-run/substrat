@@ -35,6 +35,7 @@
         "FindingRuleEntry": "findingRuleRow",
         "FlowView": "appFlowView",
         "InstallStep": "installStep",
+        "LineVolume": "lineVolumeView",
         "LogPatterns": "logPatternsView",
         "Member": "memberRow",
         "MoveReviewRow": "moveReviewRow",

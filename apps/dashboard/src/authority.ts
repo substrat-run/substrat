@@ -1676,6 +1676,20 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * MY lines, counted (#2762) — the Lines histogram and facets. `params` pass through as they
+   * arrived, the plane parses them; the tenant is set here, after them.
+   */
+  async tenantLogCounts(kind: 'volume' | 'facets', scopeId: string, params: ReadonlyArray<readonly [string, string]>): Promise<unknown> {
+    const q = new URLSearchParams();
+    for (const [k, v] of params) q.append(k, v);
+    q.set('scopeId', scopeId);
+    q.set('tenantId', this.tenantId);
+    // Each route spelled out, for `credential-reach.test.ts` (see `tenantRequests`).
+    if (kind === 'volume') return this.call<unknown>(`/observability/tenant-log-volume?${q.toString()}`);
+    return this.call<unknown>(`/observability/tenant-log-facets?${q.toString()}`);
+  }
+
+  /**
    * MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above.
    *
    * `incomplete` is the plane's own `x-substrat-logs-incomplete` header (#2521), as for
@@ -1690,6 +1704,9 @@ export class TenantNarrowedControlPlane {
     invocationId?: string;
     /** #1747: one pattern's lines — a `ctx.log` template, verbatim. */
     template?: string;
+    /** #2762: the Lines facets — alternatives within each, as the plane reads them. */
+    operation?: readonly string[];
+    principalKind?: readonly string[];
     hours: number;
     /** The chart's time cursor (#1447) — a window that ENDS in the past, which `hours`
      *  cannot name. Sent only when the caller has one; the plane defaults the rest. */
@@ -1728,6 +1745,8 @@ export class TenantNarrowedControlPlane {
     // plane answers with a 400, and dropping it here would answer it with the whole log.
     if (input.invocationId !== undefined) q.set('invocationId', input.invocationId);
     if (input.template !== undefined) q.set('template', input.template);
+    for (const v of input.operation ?? []) q.append('operation', v);
+    for (const v of input.principalKind ?? []) q.append('principalKind', v);
     if (input.since) q.set('since', input.since);
     if (input.until) q.set('until', input.until);
     const { body, headers } = await this.callWithHeaders<Array<Record<string, unknown>>>(
