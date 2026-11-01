@@ -1,10 +1,9 @@
-import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
+import { problemDetail } from '@substrat-run/contracts';
 import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppHostnameRow, type AppMetricsView, type AppOverlays, type AppRow, type AppSchedulesView, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type DomainRow, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LineVolume, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ProcessMapView as GeneratedProcessMapView, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
 import { ApiError as AccountApiError, createClient as createAccountClient, type AccountView as Me, type OnboardingView as Onboarding, type TeamSummary as Team } from './account-api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { LineReadQuery, RequestReadQuery } from './requests';
-import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
@@ -920,45 +919,9 @@ export interface DnsRecord {
   status?: string | null;
 }
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    /**
-     * The provider's own answer, when a connect was refused because the credential was
-     * rejected upstream (#605, 422). Lets the dialog say what is actually wrong —
-     * including WHICH provider environment answered — rather than "couldn't save".
-     */
-    readonly probe?: ConnectionProbeView,
-    /** #1756: the apps an Update or a Bind would break, when that is why it was refused. */
-    readonly exportBreaks?: ExportBreakRow[],
-    /**
-     * #2192: the id of the request that failed, when the answering worker named one — the
-     * `x-substrat-request-id` header, else the problem body's `requestId`. What a person
-     * quotes to find the request. Absent where the answer carried none.
-     */
-    readonly requestId?: string,
-    /** The problem's `reason` slug, when it carried one: what a caller branches on (#2333). */
-    readonly reason?: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
-/** The handwritten client and the two declared clients (team, account) report separate error classes. */
-export const isApiError = (error: unknown): error is ApiError | GeneratedApiError | AccountApiError =>
-  error instanceof ApiError || error instanceof GeneratedApiError || error instanceof AccountApiError;
-
-/** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
-export interface ExportBreakRow {
-  scopeId: string;
-  vertical: string;
-  type: string;
-  schemaVersion: number;
-  /** What the version exports it as instead, or null when it no longer does. */
-  incoming: number | null;
-}
+/** The team client and the account client each report their own error class; both keep the problem body under `body`. */
+export const isApiError = (error: unknown): error is GeneratedApiError | AccountApiError =>
+  error instanceof GeneratedApiError || error instanceof AccountApiError;
 
 /**
  * The declared surface (#2170), bound to ONE team: every call goes to
@@ -1001,21 +964,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    // `problemDetail` is the one reading of a failed body (#971) — the problem body's
-    // sentence, then the deprecated duplicate every SPA read before it. The `probe`
-    // beside it is the dashboard's own extension (#605) and stays read here.
-    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown; reason?: unknown } | null;
-    // Only something shaped like an id is surfaced as one: it is shown, and people copy it.
-    const plausible = (v: unknown): string | undefined => (typeof v === 'string' && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i.test(v) ? v : undefined);
-    const fromBody = plausible(body?.requestId);
-    throw new ApiError(
-      res.status,
-      problemDetail(body) ?? `${res.status} ${res.statusText}`,
-      body?.probe,
-      exportBreaksIn<ExportBreakRow>(body),
-      plausible(res.headers.get(REQUEST_ID_HEADER)) ?? fromBody,
-      typeof body?.reason === 'string' ? body.reason : undefined,
-    );
+    const body = await res.json().catch(() => null);
+    throw new GeneratedApiError(res.status, problemDetail(body) ?? `${res.status} ${res.statusText}`, body);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }

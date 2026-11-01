@@ -2,7 +2,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PatternsMode } from '../src/views/PatternsMode';
-import { api, ApiError, type LogPatterns } from '../src/lib/api';
+import { api, type LogPatterns } from '../src/lib/api';
+import { ApiError } from '../src/lib/api.generated';
 import { shareLabel, templateParts } from '../src/lib/patterns';
 import { logChips, parseBarText } from '../src/lib/logs-chips';
 import { tenantLogsQuery } from '../src/lib/logs-query';
@@ -125,7 +126,7 @@ describe('PatternsMode', () => {
   });
 
   it('says a 501 is "not on this platform"', async () => {
-    vi.spyOn(api, 'appLogPatterns').mockRejectedValue(new ApiError(501, 'not configured'));
+    vi.spyOn(api, 'appLogPatterns').mockRejectedValue(new ApiError(501, 'not configured', null));
     await render();
     expect(container.textContent).toContain('not available on this platform');
   });

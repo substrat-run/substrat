@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type TenantMetricsRow } from './api';
+import { api, isApiError, type TenantMetricsRow } from './api';
 import { DEV_MOCK, MOCK_TENANT_METRICS } from './mock';
 
 export type MetricsState = { state: 'loading' } | { state: 'error' } | { state: 'absent' } | { state: 'ok'; rows: TenantMetricsRow[] };
@@ -23,7 +23,7 @@ export function useTenantMetrics(teamId: string, scopeId: string): MetricsState 
       .appTenantMetrics(teamId, scopeId, 24)
       .then((rows) => live && setMetrics({ state: 'ok', rows }))
       // 501 = this plane counts no traffic, which is a different fact from "no traffic".
-      .catch((e) => live && setMetrics({ state: e instanceof ApiError && e.status === 501 ? 'absent' : 'error' }));
+      .catch((e) => live && setMetrics({ state: isApiError(e) && e.status === 501 ? 'absent' : 'error' }));
     return () => {
       live = false;
     };

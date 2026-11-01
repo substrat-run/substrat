@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RequestsMode } from '../src/views/RequestsMode';
-import { api, ApiError, type RequestFacets, type RequestRecord, type RequestVolume } from '../src/lib/api';
+import { api, type RequestFacets, type RequestRecord, type RequestVolume } from '../src/lib/api';
 import {
   durationLabel,
   bucketWidthLabel,
@@ -345,7 +345,7 @@ describe('RequestsMode', () => {
   });
 
   it('says a 501 is "not on this platform", never an empty app', async () => {
-    const unconfigured = new ApiError(501, 'observability is not configured on this platform');
+    const unconfigured = new GeneratedApiError(501, 'observability is not configured on this platform', null);
     vi.spyOn(api, 'appRequestVolume').mockRejectedValue(unconfigured);
     vi.spyOn(api, 'appRequestFacets').mockRejectedValue(unconfigured);
     vi.spyOn(api, 'appRequests').mockRejectedValue(unconfigured);

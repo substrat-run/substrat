@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { ApiError } from '../src/lib/api';
+import { ApiError } from '../src/lib/api.generated';
 import { isExactUsageFigure } from '../src/lib/usage-precision';
 import { Billing } from '../src/views/Billing';
 
@@ -59,7 +59,7 @@ it('asks a member to contact an owner or admin without reading grants', async ()
 });
 
 it('shows the owner/admin refusal for a handwritten API 403', async () => {
-  read.mockRejectedValue(new ApiError(403, 'Forbidden'));
+  read.mockRejectedValue(new ApiError(403, 'Forbidden', null));
   await render();
   expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
   expect(container.textContent).not.toContain('Entitlements are unavailable');
@@ -234,7 +234,7 @@ it('shows usage unavailable on read failure and recognizes a handwritten 403 ref
   act(() => root.unmount());
   root = createRoot(container);
   read.mockResolvedValue([{ key: 'private-grant' }]);
-  readUsage.mockRejectedValue(new ApiError(403, 'Forbidden'));
+  readUsage.mockRejectedValue(new ApiError(403, 'Forbidden', null));
   await render();
   expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
   expect(container.textContent).not.toContain('Usage is unavailable');
