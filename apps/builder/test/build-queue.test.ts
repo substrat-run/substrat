@@ -78,10 +78,22 @@ describe('the hosted agent uses it', () => {
 	const between = (from: string, to: string) => agent.slice(agent.indexOf(from), agent.indexOf(to, agent.indexOf(from)));
 
 	it('a build is queued, never refused on the studio flag', () => {
-		const build = between('async #build(', 'async #runBuild(');
+		const build = between('async #build(', 'async #cachedSnapshot(');
 		expect(build).toMatch(/this\.#builds\.run\(/);
-		expect(between('async #build(', 'async #cachedSnapshot(')).not.toMatch(/#busy\s*=/);
+		expect(build).not.toMatch(/#busy\s*=/);
 		expect(build).not.toMatch(/if \(this\.#busy\) return refuse/);
+	});
+
+	it('a waiting build has already let go of the submitted snapshot', () => {
+		// Tens of MB per monorepo: held across the wait, every queued build would keep one in
+		// this DO's memory. It goes to the build's sandbox, and out of `request`, first.
+		const build = between('async #build(', 'async #cachedSnapshot(');
+		const queued = build.indexOf('this.#builds.run(');
+		const dropped = build.indexOf('request = { ...request, snapshot: undefined }');
+		expect(dropped).toBeGreaterThan(build.indexOf("writeSandboxFile(sb, '/build/snapshot.json'"));
+		expect(dropped).toBeGreaterThan(-1);
+		expect(dropped).toBeLessThan(queued);
+		expect(build.slice(queued)).not.toMatch(/request\.snapshot/);
 	});
 
 	it('no studio path saves a registry it read before a long await', () => {

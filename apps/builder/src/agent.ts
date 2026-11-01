@@ -307,18 +307,10 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	/**
 	 * A source build, queued behind any other build of the same vertical and any studio
-	 * operation on its project (#2795) — never behind the rest of the workspace.
+	 * operation on its project (#2795) — never behind the rest of the workspace. A submitted
+	 * snapshot is written to the build's sandbox before the wait, not held through it.
 	 */
 	async #build(slug: string, request: SourceBuildRequest): Promise<Response> {
-		try {
-			return await this.#builds.run(slug, () => this.#busy && this.#studioSlug === slug, () => this.#runBuild(slug, request));
-		} catch (error) {
-			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
-			throw error;
-		}
-	}
-
-	async #runBuild(slug: string, request: SourceBuildRequest): Promise<Response> {
 		const buildId = ulid();
 		/** Where a submitted snapshot builds from; undefined for a pinned revision. */
 		const submittedDirectory = request.snapshot?.directory;
@@ -327,73 +319,79 @@ export class BuilderAgent extends DurableObject<Env> {
 		let entry: ProjectEntry | undefined;
 		let revision: string | undefined;
 		try {
-			entry = (await this.#registry()).projects.find((p) => p.slug === slug);
-			if (!entry && !request.snapshot) return refuse(404, 'this vertical has no source repository; submit source or connect GitHub first');
-			entry ??= await this.#createProject(request.name ?? slug, slug, undefined, false);
-			const root = '/build/source';
 			await checkedExec(sb, 'mkdir -p /build');
-			await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
 			if (request.snapshot) {
+				// stage-source reads the tree from the sandbox's disk, so it goes there before the
+				// queue. Kept in `request` it would sit in this DO's memory for the whole wait and
+				// build: an async frame holds its locals across every await.
 				await writeSandboxFile(sb, '/build/snapshot.json', JSON.stringify(request.snapshot));
-				// stage-source reads the tree from the sandbox's disk. Kept in `request` it would sit in
-				// this DO's memory for the whole build: an async frame holds its locals across every await.
 				request = { ...request, snapshot: undefined };
-				await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
-				await checkedExec(sb, "git -c core.hooksPath=/dev/null add -A && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=build@substrat.invalid commit --allow-empty -m 'Source snapshot'", root);
-				if (entry.repository.kind === 'artifacts') {
-					entry.directory = submittedDirectory!;
-					revision = await saveRepository(sb, await this.#access(entry, 'write', this.#tenant), root, entry.repository.branch);
-					entry.revision = revision;
+			}
+			return await this.#builds.run(slug, () => this.#busy && this.#studioSlug === slug, async () => {
+				entry = (await this.#registry()).projects.find((p) => p.slug === slug);
+				if (!entry && submittedDirectory === undefined) return refuse(404, 'this vertical has no source repository; submit source or connect GitHub first');
+				entry ??= await this.#createProject(request.name ?? slug, slug, undefined, false);
+				const root = '/build/source';
+				await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
+				if (submittedDirectory !== undefined) {
+					await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
+					await checkedExec(sb, "git -c core.hooksPath=/dev/null add -A && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=build@substrat.invalid commit --allow-empty -m 'Source snapshot'", root);
+					if (entry.repository.kind === 'artifacts') {
+						entry.directory = submittedDirectory!;
+						revision = await saveRepository(sb, await this.#access(entry, 'write', this.#tenant), root, entry.repository.branch);
+						entry.revision = revision;
+					} else {
+						// Local work on a GitHub project is durable in a separate snapshot repo.
+						const snapshot = await this.env.ARTIFACTS.create(`snapshot-${buildId.toLowerCase()}`, { setDefaultBranch: 'main' });
+						const repo: ProjectEntry = { ...entry, repository: { kind: 'artifacts', name: snapshot.name, remote: snapshot.remote, branch: 'main' } };
+						revision = await saveRepository(sb, await this.#access(repo, 'write', this.#tenant), root, 'main');
+						await this.ctx.storage.put(`build-source:${buildId}`, repo.repository);
+					}
 				} else {
-					// Local work on a GitHub project is durable in a separate snapshot repo.
-					const snapshot = await this.env.ARTIFACTS.create(`snapshot-${buildId.toLowerCase()}`, { setDefaultBranch: 'main' });
-					const repo: ProjectEntry = { ...entry, repository: { kind: 'artifacts', name: snapshot.name, remote: snapshot.remote, branch: 'main' } };
-					revision = await saveRepository(sb, await this.#access(repo, 'write', this.#tenant), root, 'main');
-					await this.ctx.storage.put(`build-source:${buildId}`, repo.repository);
+					// The request pins a commit, not a moving branch. Fetch that commit explicitly.
+					const access = await this.#access(entry, 'read', this.#tenant);
+					const { repositoryGit } = await import('./repositories.js');
+					await repositoryGit(sb, access, ['fetch', access.remote, request.revision!], root);
+					await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout --detach ${shellQuote(request.revision!)}`, root);
+					revision = await checkedExec(sb, 'git rev-parse HEAD', root);
+					entry.revision = revision;
 				}
-			} else {
-				// The request pins a commit, not a moving branch. Fetch that commit explicitly.
-				const access = await this.#access(entry, 'read', this.#tenant);
-				const { repositoryGit } = await import('./repositories.js');
-				await repositoryGit(sb, access, ['fetch', access.remote, request.revision!], root);
-				await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout --detach ${shellQuote(request.revision!)}`, root);
-				revision = await checkedExec(sb, 'git rev-parse HEAD', root);
-				entry.revision = revision;
-			}
-			const directory = submittedDirectory ?? entry.directory;
-			entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
-			await this.#putEntry(entry);
-			await this.ctx.storage.delete(this.#snapshotKey(entry));
-			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'building', startedAt: new Date().toISOString() });
-			const toolchain = await checkedExec(sb, 'cat /workspace/substrat/.toolchain-id');
-			const input = { root: directory === '.' ? root : `${root}/${directory}`, slug, request: { ...request, snapshot: undefined, revision } };
-			await raw.writeFile('/build/request.json', JSON.stringify(input));
-			// Source code and dependency hooks run without repository or control-plane credentials.
-			await checkedExec(sb, 'chown -R substrat-build:substrat-build /build');
-			const install = "cd /build/source && pnpm install --frozen-lockfile";
-			const run = 'cd /workspace/substrat && node --import tsx apps/builder/src/build-runner.ts /build/request.json /build/result.json';
-			await checkedExec(sb, `su -s /bin/sh substrat-build -c ${shellQuote(`${install} && ${run}`)}`);
-			const outputBytes = Number(await checkedExec(sb, 'wc -c < /build/result.json'));
-			if (!Number.isFinite(outputBytes) || outputBytes > 24 * 1024 * 1024) throw new SourceBuildError('release output exceeds the build transfer limit');
-			const resultFile = await raw.readFile('/build/result.json');
-			const result = JSON.parse(typeof resultFile === 'string' ? resultFile : resultFile.content) as { parts: Array<{ name: string; text?: string; base64?: string; type?: string }>; dataLoss: unknown };
-			const form = new FormData();
-			for (const part of result.parts) {
-				if (part.text !== undefined) form.set(part.name, part.text);
-				else form.set(part.name, new Blob([Uint8Array.from(atob(part.base64!), (c) => c.charCodeAt(0))], { type: part.type }), part.name);
-			}
-			const gate = JSON.parse(form.get('origin') as string)?.gate;
-			const origin = entry.repository.kind === 'github' && submittedDirectory === undefined
-				? { source: 'git', gitRepo: `${entry.repository.owner}/${entry.repository.repo}`, gitCommit: revision, gitRef: entry.repository.branch }
-				: request.origin ?? { source: 'cli' };
-			form.set('origin', JSON.stringify({ ...origin, gate }));
-			const manifest = JSON.parse(form.get('manifest') as string);
-			manifest.build = { id: buildId, projectId: entry.id, revision, toolchain };
-			form.set('manifest', JSON.stringify(manifest));
-			form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss: result.dataLoss }));
-			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'built', completedAt: new Date().toISOString() });
-			return new Response(form);
+				const directory = submittedDirectory ?? entry.directory;
+				entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
+				await this.#putEntry(entry);
+				await this.ctx.storage.delete(this.#snapshotKey(entry));
+				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'building', startedAt: new Date().toISOString() });
+				const toolchain = await checkedExec(sb, 'cat /workspace/substrat/.toolchain-id');
+				const input = { root: directory === '.' ? root : `${root}/${directory}`, slug, request: { ...request, snapshot: undefined, revision } };
+				await raw.writeFile('/build/request.json', JSON.stringify(input));
+				// Source code and dependency hooks run without repository or control-plane credentials.
+				await checkedExec(sb, 'chown -R substrat-build:substrat-build /build');
+				const install = "cd /build/source && pnpm install --frozen-lockfile";
+				const run = 'cd /workspace/substrat && node --import tsx apps/builder/src/build-runner.ts /build/request.json /build/result.json';
+				await checkedExec(sb, `su -s /bin/sh substrat-build -c ${shellQuote(`${install} && ${run}`)}`);
+				const outputBytes = Number(await checkedExec(sb, 'wc -c < /build/result.json'));
+				if (!Number.isFinite(outputBytes) || outputBytes > 24 * 1024 * 1024) throw new SourceBuildError('release output exceeds the build transfer limit');
+				const resultFile = await raw.readFile('/build/result.json');
+				const result = JSON.parse(typeof resultFile === 'string' ? resultFile : resultFile.content) as { parts: Array<{ name: string; text?: string; base64?: string; type?: string }>; dataLoss: unknown };
+				const form = new FormData();
+				for (const part of result.parts) {
+					if (part.text !== undefined) form.set(part.name, part.text);
+					else form.set(part.name, new Blob([Uint8Array.from(atob(part.base64!), (c) => c.charCodeAt(0))], { type: part.type }), part.name);
+				}
+				const gate = JSON.parse(form.get('origin') as string)?.gate;
+				const origin = entry.repository.kind === 'github' && submittedDirectory === undefined
+					? { source: 'git', gitRepo: `${entry.repository.owner}/${entry.repository.repo}`, gitCommit: revision, gitRef: entry.repository.branch }
+					: request.origin ?? { source: 'cli' };
+				form.set('origin', JSON.stringify({ ...origin, gate }));
+				const manifest = JSON.parse(form.get('manifest') as string);
+				manifest.build = { id: buildId, projectId: entry.id, revision, toolchain };
+				form.set('manifest', JSON.stringify(manifest));
+				form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss: result.dataLoss }));
+				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'built', completedAt: new Date().toISOString() });
+				return new Response(form);
+			});
 		} catch (error) {
+			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
 			const detail = sourceBuildFailure(error);
 			// The error as its own argument: nested in an object it serialises to `{}`.
 			console.error('source.build.failed', { buildId }, error);
