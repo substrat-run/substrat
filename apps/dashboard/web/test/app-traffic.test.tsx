@@ -180,6 +180,20 @@ describe('App › Overview traffic card (#1767)', () => {
     expect(metrics).toHaveBeenCalledWith('team-a', 'app-a', 24);
   });
 
+  it('reads a 501 from the tenant metrics as absent, and any other failure as an error', async () => {
+    const states: string[] = [];
+    const Probe = () => {
+      states.push(useTenantMetrics('team-a', 'app-a').state);
+      return null;
+    };
+    const metrics = vi.spyOn(api, 'appTenantMetrics').mockRejectedValueOnce(new GeneratedApiError(501, 'no traffic here', null));
+    await act(async () => root.render(<Probe />));
+    expect(states.at(-1)).toBe('absent');
+    metrics.mockRejectedValueOnce(new GeneratedApiError(500, 'boom', null));
+    await act(async () => root.render(<Probe key="again" />));
+    expect(states.at(-1)).toBe('error');
+  });
+
   it('a click pins its bar, and the pin opens the logs for exactly that window', async () => {
     await mount();
     const plot = container.querySelector('[data-traffic-plot] rect')!;

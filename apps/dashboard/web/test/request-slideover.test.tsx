@@ -2,7 +2,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RequestSlideOver } from '../src/views/RequestSlideOver';
-import { api, ApiError, type EffectsTree, type HistoryEntry, type InvocationEvents, type ObservabilityLogEvent } from '../src/lib/api';
+import { api, type EffectsTree, type HistoryEntry, type InvocationEvents, type ObservabilityLogEvent } from '../src/lib/api';
+import { ApiError } from '../src/lib/api.generated';
 
 /**
  * The request slide-over (#1752 §7a): each part reads on its own, so one failing read
@@ -68,7 +69,7 @@ describe('RequestSlideOver', () => {
     vi.spyOn(api, 'appTenantLogs').mockResolvedValue([stampedLine]);
     vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [event('E1', 'acme.assigned'), event('E2', 'acme.noted')], truncated: false } as InvocationEvents);
     vi.spyOn(api, 'appEventEffects').mockImplementation(async (_team, _s, eventId) => {
-      if (eventId === 'E2') throw new ApiError(503, 'scope busy');
+      if (eventId === 'E2') throw new ApiError(503, 'scope busy', null);
       return {
         root: { event: event('E1', 'acme.assigned'), deliveries: [{ consumer: 'notify', state: 'delivered', at: new Date(END + 180).toISOString(), attempts: 1, error: null }], effects: [] },
         terminal: 'complete',
@@ -86,7 +87,7 @@ describe('RequestSlideOver', () => {
   });
 
   it('shows the request from its stamped line, and what it emitted, even when the log backend refuses', async () => {
-    vi.spyOn(api, 'appTenantLogs').mockRejectedValue(new ApiError(501, 'not configured'));
+    vi.spyOn(api, 'appTenantLogs').mockRejectedValue(new ApiError(501, 'not configured', null));
     vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [event('E1', 'acme.assigned')], truncated: false } as InvocationEvents);
     vi.spyOn(api, 'appEventEffects').mockResolvedValue({ root: null, terminal: 'missing', count: 0 } as unknown as EffectsTree);
     await render();

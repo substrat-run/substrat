@@ -5,7 +5,7 @@ import { RequestsMode } from '../src/views/RequestsMode';
 import { RequestSlideOver } from '../src/views/RequestSlideOver';
 import { failureDetail, RequestIdNote, requestIdOf } from '../src/components/RequestIdNote';
 import { ApiError as ClientError } from '../src/lib/api.generated';
-import { api, ApiError, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
+import { api, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
 import { parseRequestId, requestLookup, REQUEST_WINDOW_MS } from '../src/lib/request-url';
 import { recordFromLogs, relatedRequests } from '../src/lib/request-detail';
 
@@ -316,7 +316,7 @@ describe('the request-finding surfaces', () => {
     it('does not say none are recorded when a read was rejected', async () => {
       vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
       vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: reacting(1), truncated: false } as InvocationEvents);
-      vi.spyOn(api, 'appEventEffects').mockRejectedValue(new ApiError(503, 'busy'));
+      vi.spyOn(api, 'appEventEffects').mockRejectedValue(new ClientError(503, 'busy', null));
       vi.spyOn(api, 'appEventCause').mockResolvedValue({ chain: [], terminal: 'operation' } as unknown as CauseChain);
       await renderPanel(OWN, MINTED);
       expect(text()).toContain('Some related requests could not be checked: 1 read failed');
