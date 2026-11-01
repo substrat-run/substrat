@@ -81,8 +81,12 @@ export class ContainerWorkspace implements Workspace {
 				cmd = `${quote(`${this.#toolchainRoot}/node_modules/.bin/tsx`)} ${quote(`${this.#toolchainRoot}/tools/${tool[1]}.mts`)}${cmd.slice(tool[0].length)}`;
 			} else if (cmd.startsWith('node packages/boundary-lint/dist/cli.js ')) {
 				cmd = `node ${quote(`${this.#toolchainRoot}/packages/boundary-lint/dist/cli.js`)}${cmd.slice('node packages/boundary-lint/dist/cli.js'.length)}`;
-			} else if (cmd.startsWith('pnpm exec tsc ')) {
-				cmd = `${quote(`${this.#toolchainRoot}/node_modules/.bin/tsc`)}${cmd.slice('pnpm exec tsc'.length)}`;
+			} else {
+				// Every `pnpm exec tsc` the command runs, not only a leading one: the
+				// model gate is a shell `if` with a tsc in each branch (#2727), and a
+				// prefix test left both running a tsc the project does not have yet.
+				const tsc = quote(`${this.#toolchainRoot}/node_modules/.bin/tsc`);
+				cmd = cmd.replace(/(^|[;&|]\s*|\b(?:then|else)\s+)pnpm exec tsc(?=\s)/g, `$1${tsc}`);
 			}
 		}
 		// env vars ride the command line: the sandbox exec has no env option in

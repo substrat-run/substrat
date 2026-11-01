@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ContainerWorkspace, type SandboxLike } from '../src/container.js';
+import { standaloneGates } from '../src/gates.js';
 import { emitProjectModel } from '../src/model.js';
 import { WorkspacePathError } from '../src/workspace.js';
 
@@ -59,6 +60,15 @@ describe('ContainerWorkspace (§3 seam, mode C)', () => {
 			'exec:\'/platform toolchain/node_modules/.bin/tsc\' --noEmit spec/model.ts@/source',
 			'exec:pnpm install --frozen-lockfile@/source',
 		]);
+	});
+	it('runs the model gate\'s tsc from the toolchain in both branches of its shell if', async () => {
+		const { sb, calls } = fake();
+		const ws = new ContainerWorkspace({ sandbox: sb, root: '/w/p', toolchainRoot: '/tc' });
+		const gate = standaloneGates('.').find((g) => g.name === 'model');
+		await ws.exec(gate?.cmd ?? '');
+		const cmd = calls.at(-1) ?? '';
+		expect(cmd).not.toContain('pnpm exec tsc');
+		expect(cmd.split("'/tc/node_modules/.bin/tsc'").length - 1).toBe(2);
 	});
 	it('finds the model emitter where exec runs it, not in a source repo that has no tools/', async () => {
 		const { sb, calls } = fake(['/w/p/spec/model.ts', '/tc/tools/model-diff.mts']);
