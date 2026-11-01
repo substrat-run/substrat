@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { createCfObservabilityReader, HTTP_METHOD_PATTERN } from '../src/cf-observability.js';
 import { TENANT_METRICS_LIMIT } from '../src/observability.js';
+import { invocationLevelOf } from '@substrat-run/contracts';
 
 /**
  * The tenant-grain reader against a faked Cloudflare, pinning the three behaviours that
@@ -11,10 +12,13 @@ import { TENANT_METRICS_LIMIT } from '../src/observability.js';
  * searches the right set of invocations at all.
  */
 
-/** A stamped invocation line as Workers Logs returns it — pure JSON, so NO $metadata.message. */
-const invocation = (over: Record<string, unknown> = {}, id = '01EV') => ({
-  timestamp: 1000,
-  source: {
+/**
+ * A stamped invocation line as Workers Logs returns it — pure JSON, so NO $metadata.message.
+ * It carries the `level` the host writes (`invocationLevelOf`); `{ level: undefined }` is a
+ * line from before the field.
+ */
+const invocation = (over: Record<string, unknown> = {}, id = '01EV') => {
+  const source: Record<string, unknown> = {
     substrat: 'invocation',
     tenantId: '01TENANT',
     scopeId: '01SCOPE',
@@ -25,9 +29,12 @@ const invocation = (over: Record<string, unknown> = {}, id = '01EV') => ({
     threw: false,
     durationMs: 42,
     ...over,
-  },
-  $metadata: { id, requestId: `req-${id}`, service: 'acme-widgets' },
-});
+  };
+  if (!('level' in over)) {
+    source['level'] = invocationLevelOf(source['status'] as number | null, source['threw'] === true, source['problemCode'] as string | undefined);
+  }
+  return { timestamp: 1000, source, $metadata: { id, requestId: `req-${id}`, service: 'acme-widgets' } };
+};
 
 /** A line the vertical's own code wrote — it HAS a level and a message, and no tenant. */
 const ownLine = (level: string, message: string, requestId: string, id: string) => ({
@@ -115,15 +122,19 @@ describe('cf tenant logs', () => {
 
   /**
    * #2762: a request line's level is the one the Lines counts group on — the line's own
-   * `level`, or for a line from before the field the rule that writes it. A 409 is a warning in
-   * both, so ticking `warn` from the histogram lists the 409s it counted.
+   * `level`. A line from before the field is counted `unrecorded`, so ticking `warn` from the
+   * histogram lists the 409 it counted and not the old one it did not.
    */
-  it('reads a request line at the level the counts file it under — a 409 is a warning', async () => {
-    const { reader } = readerOver((f) =>
-      keyed(f, 'substrat') ? [invocation({ status: 409, level: 'warn' }, '01OWN'), invocation({ status: 409 }, '01OLD')] : [],
+  it('reads a request line at the level the counts file it under — a line from before the field has none', async () => {
+    const lines = [invocation({ status: 409, durationMs: 1 }, '01OWN'), invocation({ status: 409, durationMs: 2, level: undefined }, '01OLD')];
+    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? lines : []));
+    const row = (e: { message: string | null; level: string | null }) => [e.message, e.level];
+    const warn = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'warn', hours: 24, limit: 10 });
+    expect(warn.events.map(row)).toEqual([['POST /api/orders → 409 (1 ms)', 'warn']]);
+    const all = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(all.events.map(row)).toEqual(
+      expect.arrayContaining([['POST /api/orders → 409 (1 ms)', 'warn'], ['POST /api/orders → 409 (2 ms)', null]]),
     );
-    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'warn', hours: 24, limit: 10 });
-    expect(events.map((e) => e.level)).toEqual(['warn', 'warn']);
   });
 
   it('still reads a 500 as an error row', async () => {
@@ -804,6 +815,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
       invocationId,
       status,
       threw: false,
+      level: invocationLevelOf(status, false),
       durationMs: 42,
     },
     $metadata: { id: `stamp-${invocationId}`, requestId, service: 'acme-widgets' },

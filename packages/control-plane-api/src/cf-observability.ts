@@ -7,7 +7,6 @@ import { serviceFamilyPattern } from './service-family.js';
 import {
   ENTITY_TYPES_SEPARATOR,
   FIELD_COVERAGE_ID_FIELD,
-  invocationLevelOf,
   ROUTER_REQUEST_POINT,
   ROUTER_SCRIPT_NAMES,
   splitEntityTypes,
@@ -404,9 +403,10 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
     invocationId: typeof source['invocationId'] === 'string' ? source['invocationId'] : null,
     message: `${method} ${path} → ${outcome}${ms === null ? '' : ` (${ms} ms)`}`,
     // #2762: the level the counts file it under, so a level ticked from the histogram or the
-    // facet lists the lines it counted: the line's own, else the rule it was written by
-    // (`invocationLevelOf`) for a line from before the field.
-    level: str(source['level']) ?? invocationLevelOf(status, source['threw'] === true, str(source['problemCode'])),
+    // facet lists the lines it counted: the line's own. A line from before the field has
+    // none, and the counts file it `unrecorded`, so it lists with no level and no ticked
+    // level selects it.
+    level: str(source['level']),
   };
 }
 
@@ -1736,8 +1736,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // because "an error" arrives in three shapes and no single filter spans them:
     //
     //   1. a FAILED response — the stamped line carries `status >= 500`. #2762: a 501
-    //      included, since it is filed as an error by the rule the line and the counts
-    //      share (`invocationLevelOf`), and the list must show what the histogram counted;
+    //      included, since the rule that writes the line's level (`invocationLevelOf`)
+    //      files it as an error, and the list must show what the histogram counted;
     //   2. an ESCAPE — the error got past `onError` itself, so the line carries
     //      `threw: true` and `status: null`, which no comparison on `status` can match.
     //      These are the rarest lines and the most interesting ones on the page;
