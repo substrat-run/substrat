@@ -1,5 +1,11 @@
 # @substrat-run/demo-handlebar-app
 
+## 0.0.86
+
+### Patch Changes
+
+- @substrat-run/contracts@0.173.0
+
 ## 0.0.85
 
 ### Patch Changes

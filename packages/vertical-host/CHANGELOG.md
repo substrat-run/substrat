@@ -1,5 +1,19 @@
 # @substrat-run/vertical-host
 
+## 0.173.0
+
+### Minor Changes
+
+- 77318c1: Requests carry a line count. `InvokeOptions.onLogLines` reports how many `ctx.log` lines a call wrote under its invocation id, including the consumers its post-commit tail ran inline, and it reports them for a failed call too. Both scope hosts report it. The invocation line carries it as `logLines` (`null` when not recorded), and the tenant request reads return it.
+
+### Patch Changes
+
+- 6e52001: A request's route is always the pattern that answered it: a value a handler writes into the invocation record is replaced, and `InvocationRecord.route` is read-only. An upgrade (101) response no longer carries the invocation record header, which the router cannot strip from one. The tenant request reads refuse a `path` facet value that is not a route (`<METHOD> <pattern>`).
+- Updated dependencies [77318c1]
+  - @substrat-run/kernel@0.173.0
+  - @substrat-run/contracts@0.173.0
+  - @substrat-run/model-providers@0.5.63
+
 ## 0.172.0
 
 ### Minor Changes
