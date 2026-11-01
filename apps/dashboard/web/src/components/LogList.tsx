@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } f
 import { Button } from '@substrat-run/ui';
 import type { ObservabilityLogEvent } from '../lib/api';
 import { ULID, shortId } from '../lib/logs-chips';
+import { parseEntity, recordFromLogs } from '../lib/request-detail';
+import { openRecordInUrl } from '../lib/request-url';
 
 /**
  * Log lines as the design's dense stream (#1767): one 28px mono row per line on a fixed
@@ -190,6 +192,9 @@ function LineFields({
 }) {
   const [raw, setRaw] = useState(false);
   const fields = FIELDS.filter((k) => event[k] !== null && event[k] !== undefined);
+  // The records a stamped invocation line says the request touched (#2762): each opens the
+  // record panel on the page, in the page's own scope.
+  const records = (recordFromLogs([event])?.entities ?? []).flatMap((ref) => parseEntity(ref) ?? []);
   return (
     // A row of its own with one cell across every column, so the table stays rows of cells.
     <div
@@ -239,6 +244,11 @@ function LineFields({
               Only this invocation’s lines
             </Button>
           )}
+          {records.map((r) => (
+            <Button key={`${r.entityType}:${r.entityId}`} variant="secondary" size="sm" onClick={() => openRecordInUrl(r.entityType, r.entityId)}>
+              {r.entityType}:{shortId(r.entityId)} history →
+            </Button>
+          ))}
           {event.raw !== undefined && (
             <Button variant="ghost" size="sm" onClick={() => setRaw((r) => !r)}>
               {raw ? 'Hide raw event' : 'Raw event'}
