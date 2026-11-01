@@ -233,6 +233,8 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
         operation: 'peer/note',
         principalKind: 'vertical',
         eventCount: 1,
+        // #2762: the scope host's count — `peer/note` logs nothing, which is a `0`, not "not recorded".
+        logLines: 0,
       });
       // The operation ran under the same id, which is what stamps its events with it.
       expect((calls.at(-1)![5] as { invocationId?: string }).invocationId).toBe(id);

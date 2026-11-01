@@ -17,7 +17,7 @@ describe('invocation line: parentInvocationId (#2192)', () => {
   const before =
     '{"substrat":"invocation","tenantId":"T","scopeId":"S","vertical":null,"surface":null,"method":null,"path":null,"route":null,' +
     '"status":null,"threw":false,"durationMs":3,"invocationId":"01JABCDEFGHJKMNPQRSTVWXYZ0","level":"info","operation":null,' +
-    '"problemCode":null,"principalKind":null,"eventCount":null,"eventTypes":[],"entities":[],"entityTypes":null,"versionId":null}';
+    '"problemCode":null,"principalKind":null,"eventCount":null,"logLines":null,"eventTypes":[],"entities":[],"entityTypes":null,"versionId":null}';
 
   it('absent: the line is exactly what it was', () => {
     expect(JSON.stringify(invocationLine(base))).toBe(before);

@@ -2413,6 +2413,7 @@ export function mountPlatformSurface<Env extends object>(
     const invocationId = requestIdOf(c);
     const started = Date.now();
     let emitted: EmittedReport | undefined;
+    let logLines: number | undefined;
     let status = 200;
     let problemCode: string | null = null;
     try {
@@ -2426,6 +2427,7 @@ export function mountPlatformSurface<Env extends object>(
           ...(body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : {}),
           ...(invocationId !== undefined ? { invocationId } : {}),
           onEmitted: (report) => (emitted = report),
+          onLogLines: (count) => (logLines = count),
         },
       );
       // #2073: through the egress every transport shares (`wire.ts`).
@@ -2455,6 +2457,7 @@ export function mountPlatformSurface<Env extends object>(
           principalKind: 'vertical',
           operation: body.operation,
           emitted,
+          logLines,
           started,
         });
       }

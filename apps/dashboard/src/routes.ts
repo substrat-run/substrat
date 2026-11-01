@@ -681,7 +681,9 @@ const requestRecordView = z.object({
   vertical: z.string().nullable(), surface: z.string().nullable(), method: z.string().nullable(),
   path: z.string().nullable(), status: z.number().nullable(), threw: z.boolean(), durationMs: z.number().nullable(),
   level: z.string().nullable(), operation: z.string().nullable(), problemCode: z.string().nullable(),
-  principalKind: z.string().nullable(), eventCount: z.number().nullable(), eventTypes: z.array(z.string()),
+  principalKind: z.string().nullable(), eventCount: z.number().nullable(),
+  // #2762: optional, so a source that predates it reads as not recorded.
+  logLines: z.number().nullable().optional(), eventTypes: z.array(z.string()),
   entities: z.array(z.string()), versionId: z.string().nullable(), kind: z.string().optional(),
   outcome: z.string().nullable().optional(), eventType: z.string().nullable().optional(),
   eventId: z.string().nullable().optional(), attempt: z.number().nullable().optional(),

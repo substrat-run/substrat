@@ -108,6 +108,8 @@ function fixture(now = Date.now()): RequestRecord[] {
       problemCode,
       principalKind,
       eventCount: t < anchor - 48 * 3_600_000 ? null : eventCount,
+      // #2762: counted from the version deployed after it; a failure logs why, the assistant its steps.
+      logLines: t >= deploy ? (failed ? 2 : operation === 'ticket0/assistant-answer' ? 3 : 0) : null,
       eventTypes: eventCount > 0 ? [operation === 'ticket0/reply' ? 'ticket.replied' : 'ticket.updated'] : [],
       entities: eventCount > 0 ? [`ticket:${id}`] : [],
       versionId: t >= deploy ? 'ticket0@2.15.0' : 'ticket0@2.14.3',

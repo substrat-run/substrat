@@ -1,6 +1,6 @@
 /**
  * Contract suite for the per-request record's scope half (#1746): `ScopeStub.subjectKind`
- * and `InvokeOptions.onEmitted`.
+ * and `InvokeOptions.onEmitted` — plus #2762's `InvokeOptions.onLogLines`, on the same fixture.
  *
  * What it pins is the invocation log line's honesty about what a request touched. The line
  * names the entities and event types an operation emitted, so a reader can facet requests
@@ -105,6 +105,22 @@ export function emittedReportContractSuite(
       expect(reports[0]!.events.map((e) => e.entity)).toEqual(
         ids.slice(0, EMITTED_REPORT_CAP).map((id) => `emitted-thing:${id}`),
       );
+    });
+
+    it("counts the call's ctx.log lines, its inline consumers' included, and a failed call's too, but not a call refused before it ran (#2762)", async () => {
+      const counted = async (operation: string, input: unknown) => {
+        const counts: number[] = [];
+        await run(operation, input, { onLogLines: (n: number) => counts.push(n) });
+        return counts;
+      };
+      // Two lines from the operation, one from each delivery its tail ran inline — the lines a
+      // reader of the request's id finds.
+      expect(await counted('emitted/touch', { ids: [`l-${ulid()}`, `l-${ulid()}`] })).toEqual([4]);
+      // Rolled back, and still counted: the line was written, and a failure's lines are the ones
+      // a reader opens the request for. No consumer ran, since nothing committed.
+      expect(await counted('emitted/fail', { ids: [`lf-${ulid()}`] })).toEqual([1]);
+      // Refused before the scope ran anything: not recorded, never a `0`.
+      expect(await counted('emitted/no-such-operation', {})).toEqual([]);
     });
 
     it('does not report a replay, which committed nothing', async () => {

@@ -1603,6 +1603,11 @@ interface ScopeStubRpc {
      * older DO that drops it is safe: the invocation line reads "not recorded".
      */
     emitted?: { events: { type: string; entity: string }[]; total: number };
+    /**
+     * #2762: the call's `ctx.log` lines when `onLogLines` asked, on a failure's envelope too.
+     * Advisory, like `emitted`: an older DO omits it and the invocation line reads "not recorded".
+     */
+    logLines?: number;
   }>;
   /** Trade a capability secret for a session or a principal (#1672) — the kernel's
    *  `exchangeCapability`, run in this scope's own storage. */
@@ -7184,6 +7189,8 @@ export class CloudflareScopeHost implements ScopeHost {
               return sent.systemDoorMoved === true ? SYSTEM_DOOR_MOVED : sent;
             })
           : await send();
+        // #2762: before the failure is rethrown, since a failed call's lines count too.
+        if (envelope.logLines !== undefined) invokeOptions?.onLogLines?.(envelope.logLines);
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
         // stripped down to a message (#113 §3). Rethrown here, where the caller expects

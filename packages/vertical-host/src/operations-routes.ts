@@ -563,6 +563,10 @@ export function mountOperations(
                     onEmitted: (report: NonNullable<InvocationRecord['emitted']>) => {
                       record.emitted = report;
                     },
+                    // #2762: on a failed call too — the scope host reports either way.
+                    onLogLines: (count: number) => {
+                      record.logLines = count;
+                    },
                   }
                 : {}),
             }

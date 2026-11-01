@@ -544,7 +544,10 @@ function FacetSidebar({
   );
 }
 
-const ROW_GRID = '96px minmax(0,1.4fr) 110px minmax(0,1fr) 150px 56px';
+const ROW_GRID = '96px minmax(0,1.4fr) 110px minmax(0,1fr) 150px 48px 56px';
+
+/** #2762: what the Lines column counts, said where a reader hovers. */
+const LINES_TITLE = 'ctx.log lines under the request’s id, including the inline consumer tail; not console.log';
 
 /**
  * The requests, newest first. A row opens the request slide-over (#1752 §7a): the request,
@@ -580,6 +583,7 @@ function RequestList({
         <span>Who</span>
         <span>Duration</span>
         <span>Result</span>
+        <span style={{ textAlign: 'right' }} title={LINES_TITLE}>Lines</span>
         <span style={{ textAlign: 'right' }} title="Events the request emitted">Events</span>
       </div>
       {rows.map((r, i) => {
@@ -608,6 +612,9 @@ function RequestList({
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-secondary)', minWidth: 44, textAlign: 'right' }}>{durationLabel(r.durationMs)}</span>
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', color: tone, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.text}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.logLines == null ? LINES_TITLE : `${r.logLines.toLocaleString('en-US')} — ${LINES_TITLE}`}>
+              {r.logLines == null ? '—' : r.logLines >= 10_000 ? `${Math.floor(r.logLines / 1000)}k` : r.logLines}
+            </span>
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', textAlign: 'right' }} title={r.eventTypes.join(', ') || undefined}>
               {r.eventCount === null ? '—' : r.eventCount}
             </span>
