@@ -233,7 +233,7 @@ function LineFields({
           })}
           <div style={{ color: 'var(--text-tertiary)' }}>{'}'}</div>
         </div>
-        <div style={{ display: 'flex', gap: 8, marginTop: 10, fontFamily: 'var(--font-sans)' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, fontFamily: 'var(--font-sans)' }}>
           {onOpenRequest && event.invocationId && ULID.test(event.invocationId) && (
             <Button variant="secondary" size="sm" onClick={() => onOpenRequest(event.invocationId!, event.timestamp ?? Date.now())}>
               Open request
