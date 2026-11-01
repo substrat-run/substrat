@@ -17,9 +17,12 @@ table, the permission registry, the API document.
 
 ## The file
 
+Take `z` from `@substrat-run/contracts`, never from `zod`: there is no
+`package.json` until the scaffold, so `zod` does not resolve and the model
+cannot be imported or emitted.
+
 ```ts
-import { defineEntities, defineOperations, emitModel, manifestEntities, money } from '@substrat-run/contracts';
-import { z } from 'zod';
+import { defineEntities, defineOperations, emitModel, manifestEntities, money, z } from '@substrat-run/contracts';
 
 export const entities = defineEntities({
   customer: {
