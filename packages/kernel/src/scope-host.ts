@@ -197,6 +197,7 @@ import type {
   DeclaredMigration,
   CheckSubject,
   EntityGrantShape,
+  NotedTransition,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { ByteBody } from './byte-stream.js';
@@ -849,6 +850,15 @@ export interface OperationContext {
    * the operation is already unrecoverable.
    */
   atomic<T>(fn: () => T | Promise<T>): Promise<T>;
+  /**
+   * #2762: note a lifecycle move this operation made, for its invocation record. Called by
+   * `assertTransition` when it is handed the context and the record; a module rarely calls it
+   * itself (an entity it creates, `from: null`). Reported after the commit on
+   * `InvokeOptions.onEmitted`, never for a rolled-back operation, and dropped with a rolled-back
+   * `ctx.atomic`. A no-op where nothing asked for the report (a consumer, a caller without
+   * `onEmitted`). Names only: a note whose type or states are not shaped like names is dropped.
+   */
+  noteTransition(transition: NotedTransition): void;
 }
 
 export type OperationHandler<I = unknown, O = unknown> = (
@@ -1003,10 +1013,29 @@ export interface EmittedEvent {
   readonly entity: string;
 }
 
+/**
+ * #2762: one lifecycle move an operation caused, as `onEmitted` reports it (`transition-notes.ts`
+ * states the rule): the state the entity left first and the one it reached last, `from` being
+ * `null` for an entity the call created.
+ */
+export interface EmittedTransition {
+  /** The entity, as `<entityType>:<entityId>`. */
+  readonly entity: string;
+  readonly from: string | null;
+  readonly to: string;
+}
+
 /** What `InvokeOptions.onEmitted` receives (#1746). */
 export interface EmittedReport {
   readonly events: readonly EmittedEvent[];
   readonly total: number;
+  /**
+   * #2762: the lifecycle moves the operation caused, as `ctx.noteTransition` noted them, at most
+   * `TRANSITION_REPORT_CAP` entities. Absent when nothing was noted — "not recorded", since a
+   * module that does not hand `assertTransition` its context notes nothing — and from a host that
+   * predates it. `[]` means moves were noted and each entity came back to where it started.
+   */
+  readonly transitions?: readonly EmittedTransition[];
 }
 
 /** The capability stub — the ONLY way code outside the scope reaches it. */

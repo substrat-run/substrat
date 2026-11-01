@@ -794,6 +794,9 @@ import {
   emittedSinceQuery,
   emittedReportOf,
   EMITTED_REPORT_CAP,
+  noteTransitionInto,
+  withTransitions,
+  type TransitionTally,
   type EmittedReport,
   exportedSinceQuery,
   IMPORT_CURSOR_ADVANCE_SQL,
@@ -6893,7 +6896,12 @@ export class SqliteScopeHost implements ScopeHost {
         // #458: per-invoke tally of `ctx.requestPlatform` calls. Reported to the
         // harness only after the enqueue task resolves — i.e. after COMMIT — so a
         // rolled-back intent never signals.
-        const signals = { platformRequests: 0 };
+        // #2762: and the lifecycle moves `ctx.noteTransition` notes, when the caller asked for the
+        // report they ride on. `ctx.atomic` restores both.
+        const signals: { platformRequests: number } & TransitionTally = {
+          platformRequests: 0,
+          ...(invokeOptions?.onEmitted !== undefined ? { transitions: [] } : {}),
+        };
         // #1705 PR 2: exported-type rows this invoke (and its consumers' tail) committed, for
         // `onExportedEvents`. Counted only in a deployment that exports something, and never
         // for a read-only session, which commits nothing.
@@ -7139,7 +7147,10 @@ export class SqliteScopeHost implements ScopeHost {
           // operation's own emits and none of its consumers'. A replay committed nothing.
           if (emittedMark !== null && !replayed) {
             const q = emittedSinceQuery(emittedMark, EMITTED_REPORT_CAP);
-            emittedReport = emittedReportOf(rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[]);
+            emittedReport = withTransitions(
+              emittedReportOf(rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[]),
+              signals.transitions,
+            );
           }
           // Post-commit, still inside the actor task: drain outbox → consumers,
           // then → executors. Prompt dispatch (K-22 §4.2): the common case
@@ -14421,7 +14432,7 @@ export class SqliteScopeHost implements ScopeHost {
     subject: CheckSubject,
     overrideActor?: { system: string },
     /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
-    signals?: { platformRequests: number },
+    signals?: { platformRequests: number } & TransitionTally,
     /**
      * K-42: the session this operation is running under, if any. Read here and
      * nowhere module code can reach — a vertical that could see it could branch
@@ -14921,6 +14932,7 @@ export class SqliteScopeHost implements ScopeHost {
         rt.db.prepare(r.sql).run(...r.params);
       },
       atomic: createAtomic(runSub, { passed, signals }),
+      noteTransition: noteTransitionInto(signals),
       // #1672: mint / revoke / list, written once in the kernel. The raw spine seam (this
       // is the kernel's own write to `_substrat_capabilities`), the operation's OWN check —
       // the predicate `grant` shares — and `ctx.emit` for the minted/revoked events. A
