@@ -43,7 +43,13 @@ import {
   SubstratError,
 } from '@substrat-run/contracts';
 import { externalInput, externalJson } from './wire.js';
-import type { RouteImpl } from '@substrat-run/contracts';
+import { RouteAnswer, type RouteImpl, type RouteStatus } from '@substrat-run/contracts';
+
+/**
+ * Re-exported so a handler builds its answer from the same module the mount recognises it by:
+ * `RouteAnswer` is matched by `instanceof`, and a second copy of contracts would not match.
+ */
+export { answered } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError } from './errors.js';
@@ -687,7 +693,8 @@ interface RouteDecl {
   readonly http: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
   readonly input?: unknown;
   readonly output?: unknown;
-  readonly status?: 200 | 201 | 202;
+  readonly status?: RouteStatus;
+  readonly statuses?: readonly RouteStatus[];
 }
 
 type SafeParse = (
@@ -838,9 +845,13 @@ function mountDeclaredRoutes<Ctx>(
       }
       const result = await handle(ctx, input);
       if (!parseOut) return c.body(null, 204);
-      const out = parseOut(result);
+      // `answered(status, body)` picks one of the route's other declared statuses; a status it
+      // does not list is the handler disagreeing with the declaration, like a mistyped body.
+      const answer = result instanceof RouteAnswer ? result : undefined;
+      if (answer && !decl.statuses?.includes(answer.status)) throw new RouteOutputMismatch(name, []);
+      const out = parseOut(answer ? answer.body : result);
       if (!out.success) throw new RouteOutputMismatch(name, out.error.issues);
-      return c.json(out.data as object, decl.status ?? 200);
+      return c.json(out.data as object, answer?.status ?? decl.statuses?.[0] ?? decl.status ?? 200);
     };
 
     if (method === 'GET') app.get(full, handler);

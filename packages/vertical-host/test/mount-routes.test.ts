@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { defineRoutes, errorCodeOf, toProblem, z, type RouteImpl } from '@substrat-run/contracts';
-import { issuePathsOf, mountRoutes, RouteOutputMismatch } from '../src/index.js';
+import { answered, issuePathsOf, mountRoutes, RouteOutputMismatch } from '../src/index.js';
 
 /**
  * `mountRoutes` (#2170): a declared route set whose handlers are host code. What it owes
@@ -40,6 +40,13 @@ const routes = defineRoutes({
     output: z.object({ ok: z.boolean() }),
     http: { method: 'GET', path: '/broken' },
   },
+  'acme/accept': {
+    summary: 'Accepted at once, or still landing',
+    input: z.object({ answer: z.enum(['done', 'pending', 'undeclared']) }),
+    output: z.object({ pending: z.boolean() }),
+    http: { method: 'POST', path: '/accept' },
+    statuses: [200, 202],
+  },
 });
 
 interface Ctx {
@@ -58,6 +65,8 @@ function appWith(seen: unknown[] = []) {
     // The declared output is `{ ok: boolean }`, so the compiler refuses this handler; the cast
     // gets it past that to exercise the runtime half — a map assembled where types are lost.
     'acme/broken': (() => ({ ok: 'yes' })) as unknown as () => { ok: boolean },
+    'acme/accept': (_ctx, { answer }) =>
+      answer === 'done' ? { pending: false } : answered(answer === 'pending' ? 202 : (201 as 202), { pending: true }),
   } satisfies RouteImpl<typeof routes, Ctx>;
   const app = new Hono();
   const mounted = mountRoutes(app, routes, {
@@ -77,7 +86,7 @@ describe('mountRoutes (#2170)', () => {
   it('mounts every route under the base path, a static segment ahead of its parameter sibling', async () => {
     const { mounted, req } = appWith();
     const paths = mounted.map((m) => `${m.method} ${m.path}`);
-    expect(paths).toHaveLength(5);
+    expect(paths).toHaveLength(6);
     expect(paths.indexOf('GET /api/teams/:teamId/things/mine')).toBeLessThan(paths.indexOf('GET /api/teams/:teamId/things/:id'));
     expect(await (await req('/api/teams/t1/things/mine')).json()).toEqual({ mine: true });
   });
@@ -117,6 +126,16 @@ describe('mountRoutes (#2170)', () => {
     const res = await appWith().req('/api/teams/t1/things', { method: 'POST', body: JSON.stringify({ name: 'a' }) });
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ name: 'a' });
+  });
+
+  it('a route declaring `statuses` answers its first by default, another through `answered`, and refuses one it does not list', async () => {
+    const { req } = appWith();
+    const accept = (answer: string) => req('/api/teams/t1/accept', { method: 'POST', body: JSON.stringify({ answer }) });
+    const done = await accept('done');
+    expect([done.status, await done.json()]).toEqual([200, { pending: false }]);
+    const pending = await accept('pending');
+    expect([pending.status, await pending.json()]).toEqual([202, { pending: true }]);
+    expect((await accept('undeclared')).status).toBe(500);
   });
 
   it('a handler answering outside its declaration is a server error naming the route', async () => {

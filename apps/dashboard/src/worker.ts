@@ -30,8 +30,8 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, fieldReadsView, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
-import { mountRoutes } from '@substrat-run/vertical-host';
+import { accountRoutes, dashboardRoutes, fieldReadsView, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
+import { answered, mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
 import { resolveBrowsableScope } from './browsable-scope.js';
@@ -952,27 +952,41 @@ async function teamCatalogIn(ctx: TeamContext) {
   );
 }
 
+/** What every team-less route runs against: the signed-in login, in no team in particular. */
+interface SessionContext {
+  readonly c: Context<{ Bindings: Env }>;
+  readonly user: SessionUser;
+}
+
+/**
+ * The session, and nothing more (#2170): `teamContext`'s membership check would refuse the
+ * callers these routes exist for — a login with no team yet, an invitee joining one.
+ */
+async function sessionContext(c: Context<{ Bindings: Env }>): Promise<SessionContext> {
+  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
+  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
+  return { c, user };
+}
+
 /**
  * Who am I — three states: no session ⇒ 401; a session with no team yet ⇒
  * `{ needsOnboarding }` (the app shows "name your first team"); otherwise my
  * current team, my teams, and my dashboard node. Resolving is READ-ONLY — a
  * teamless login is NOT silently bootstrapped; it must create a team explicitly.
  */
-app.get('/api/me', async (c) => {
+async function me({ c, user }: SessionContext) {
   const host = hostFor(c.env);
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) return problem(c, 401, 'unauthorized');
   const memo = resolveMemoFor(c.env.CONTROL_PLANE);
   const memberships = await loginMemberships(host, STAFF, memo, user.id);
   const tenants = memberships.map((m) => m.tenant.id);
   if (tenants.length === 0) {
-    return c.json({ needsOnboarding: true, email: user.email ?? null, name: user.name ?? null });
+    return { needsOnboarding: true as const, email: user.email ?? null, name: user.name ?? null };
   }
   // Always read fresh here — this is the call that draws the team switcher — and leave
   // the answer behind for the handlers the page fires next.
   const node = await resolveNode(host, STAFF, memo, memberships, getCookie(c, TEAM_COOKIE));
   rememberNode(memo, user.id, getCookie(c, TEAM_COOKIE), node, Date.now());
-  if (!node) return problem(c, 401, 'unauthorized');
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   let roleKey = await dash.invoke<string | null>('dashboard/my-role', {});
   if (roleKey === null) {
@@ -990,7 +1004,7 @@ app.get('/api/me', async (c) => {
   c.executionCtx.waitUntil(Promise.all(tenants.map((t) => mirrorBuilderIdentity(c.env, host, user.id, t))));
   // The dashboard scope carries no display identity — the shell shows the signed-in
   // email/name, which live on the OIDC session, so surface them alongside the teams.
-  return c.json({
+  return {
     principal: node.principal,
     tenant: node.tenantId,
     dashboardScope: node.scopeId,
@@ -999,8 +1013,8 @@ app.get('/api/me', async (c) => {
     teams: teamsOf(memberships),
     currentTeamId: node.tenantId,
     roleKey,
-  });
-});
+  };
+}
 
 /**
  * The support desk's identity claim for the signed-in customer — what the portal's
@@ -1039,30 +1053,19 @@ app.get('/api/support/identity', async (c) => {
  * identity linked, then the `sb_team` cookie is pointed at it so the portal opens on
  * the new team after the client reloads.
  */
-const createTeamBody = z.object({ name: z.string().trim().min(1).max(100) });
-app.post('/api/teams', async (c) => {
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
-  const { name } = createTeamBody.parse(await c.req.json());
+async function createTeamRoute({ c, user }: SessionContext, { name }: { name: string }) {
   const host = hostFor(c.env);
   const node = await createTeam(host, c.env, user, name);
   forgetLogin(resolveMemoFor(c.env.CONTROL_PLANE), user.id);
   setCookie(c, TEAM_COOKIE, node.tenantId, teamCookieOpts(new URL(c.req.url).protocol));
-  return c.json({ teamId: node.tenantId }, 201);
-});
+  return { teamId: node.tenantId };
+}
 
 /**
- * Switch the current team — validates the caller is a member, then pins the choice
- * in the `sb_team` cookie. The whole portal (apps, domains, billing) re-scopes to
- * the selected tenant on the next load, because every handler resolves the node
- * from this cookie. Naming a team you are not in is refused, not silently ignored.
+ * Switch the team `/` opens on — validates the caller is a member, then pins the choice
+ * in the `sb_team` cookie. Naming a team you are not in is refused, not silently ignored.
  */
-const switchTeamBody = z.object({ teamId: z.string().min(1) });
-app.post('/api/teams/switch', async (c) => {
-  const token = getCookie(c, SESSION_COOKIE);
-  const user = await verifySession(c.env, token);
-  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
-  const { teamId } = switchTeamBody.parse(await c.req.json());
+async function switchTeam({ c, user }: SessionContext, { teamId }: { teamId: string }) {
   const host = hostFor(c.env);
   await ensureIdentityPool(host, STAFF, resolveMemoFor(c.env.CONTROL_PLANE));
   const tenants = await host.admin.listIdentityTenants(STAFF, PROVIDER, user.id);
@@ -1070,8 +1073,17 @@ app.post('/api/teams/switch', async (c) => {
     throw new HTTPException(403, { message: 'not a member of that team' });
   }
   setCookie(c, TEAM_COOKIE, teamId, teamCookieOpts(new URL(c.req.url).protocol));
-  return c.body(null, 204);
-});
+  return { teamId };
+}
+
+// Mounted here, where the hand-written routes they replace were, so the registration order
+// the rest of the app relied on is unchanged. `acceptTeamInvite` is declared below, by the preview.
+mountRoutes(app, accountRoutes, { basePath: '/api', context: sessionContext })({
+  'dashboard/me': me,
+  'dashboard/create-team': createTeamRoute,
+  'dashboard/switch-team': switchTeam,
+  'dashboard/accept-team-invite': acceptTeamInvite,
+} satisfies RouteImpl<typeof accountRoutes, SessionContext>);
 
 /**
  * Every GET list below shares the platform-wide pagination convention (contracts
@@ -1210,9 +1222,7 @@ app.get('/api/invites/preview', async (c) => {
  * written unless refused, so future logins resolve into this team. Idempotent: an
  * already-member just switches; a re-used/settled invitation fails at the engine.
  */
-app.post('/api/invites/accept', async (c) => {
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
+async function acceptTeamInvite({ c, user }: SessionContext, { token }: { token: string }) {
   // The invite is addressed to an email, so the address IS the identity being claimed. A
   // session with none cannot claim it, and neither can one the issuer did not verify
   // (#1359) — including one minted before the claim was carried, which signing in again
@@ -1224,7 +1234,6 @@ app.post('/api/invites/accept', async (c) => {
     });
   }
   const email = identity.email;
-  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const claim = await verifyInviteToken(c.env, token);
   if (!claim) throw new HTTPException(400, { message: 'this invite link is invalid or has expired' });
   const t = tenantId.parse(claim.tenantId);
@@ -1235,7 +1244,7 @@ app.post('/api/invites/accept', async (c) => {
   // Already in this team? Nothing to accept — just switch to it (idempotent link click).
   if (await host.admin.resolveIdentity(t, PROVIDER, user.id)) {
     setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
-    return c.json({ teamId: t, already: true });
+    return { teamId: t, already: true };
   }
 
   const principal = principalId.parse(ulid());
@@ -1278,8 +1287,8 @@ app.post('/api/invites/accept', async (c) => {
   forgetLogin(resolveMemoFor(c.env.CONTROL_PLANE), user.id);
   setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
   // 202: accepted, and access follows once the backstop effects it — not a success yet.
-  return verdict.kind === 'done' ? c.json({ teamId: t }) : c.json({ teamId: t, pending: true }, 202);
-});
+  return verdict.kind === 'done' ? { teamId: t } : answered(202, { teamId: t, pending: true });
+}
 
 /** The Apps list, healed and reconciled — behind the team-path list route (#2170). */
 async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScopeHost, node: DashboardNode, page: ListPageQuery) {
