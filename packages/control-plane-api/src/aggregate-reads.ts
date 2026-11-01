@@ -1,6 +1,6 @@
 /**
  * The aggregate reads, computed ONCE from cubes (#1877) — the request histogram, the
- * facet counts and the log patterns, whatever source produced the cubes.
+ * facet counts, the log patterns and the Lines counts (#2762), whatever source produced the cubes.
  *
  * Pure, so the semantics the routes promise are held here and nowhere else, and the
  * contract suite can drive them over any `AggregateSource`:
@@ -34,7 +34,6 @@ import {
   type RequestVolumeBucket,
   type RequestWhere,
   type ObservabilityReader,
-  type TenantRequestScope,
   invocationKindOf,
 } from './observability.js';
 
@@ -182,7 +181,7 @@ const lineReading: FacetReading<LineRow, LineFacetKey> = {
  * template, that pattern's `ctx.log` lines alone (a request line has no template). A request
  * row is ONE line whatever its other dimensions, so its counts carry over as they are.
  */
-export function linesOf(
+function linesOf(
   requests: Cube<RequestCubeRow>,
   patterns: Cube<PatternCubeRow>,
   template?: string | undefined,
