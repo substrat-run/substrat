@@ -12,7 +12,7 @@ import type { ObsQuery } from './observability-query';
 
 /** The plane's facet keys, in the order the sidebar lists them: business facets first. */
 export type RequestFacetKey = 'operation' | 'entity' | 'path' | 'problemCode' | 'principalKind' | 'status' | 'surface' | 'level' | 'kind';
-export const REQUEST_FACETS: { key: RequestFacetKey; url: keyof ObsQuery; label: string; mono: boolean }[] = [
+export const REQUEST_FACETS: Facet<RequestFacetKey>[] = [
   { key: 'operation', url: 'op', label: 'Operation', mono: true },
   // #2762: the entity types a request's events were about; a request counts under each.
   // `ent`, because `entity` is the process map's lifecycle.
@@ -31,6 +31,27 @@ export const REQUEST_FACETS: { key: RequestFacetKey; url: keyof ObsQuery; label:
 
 const facetOf = (key: RequestFacetKey) => REQUEST_FACETS.find((f) => f.key === key)!;
 
+/** A facet the sidebar lists: its plane key, its URL key, and whether it takes one value only. */
+export interface Facet<K extends string = string> {
+  key: K;
+  url: keyof ObsQuery;
+  label: string;
+  mono: boolean;
+  single?: boolean;
+}
+
+/**
+ * #2762: the Lines mode's facets. Operation and Who share the Requests mode's URL keys, so a
+ * filter set in one mode is still set in the other. Level is the Lines mode's own `level`, one
+ * value at a time: the list reads a single level (the error read has its own path).
+ */
+export type LineFacetKey = 'operation' | 'principalKind' | 'level';
+export const LINE_FACETS: Facet<LineFacetKey>[] = [
+  { key: 'operation', url: 'op', label: 'Operation', mono: true },
+  { key: 'principalKind', url: 'pk', label: 'Who', mono: false },
+  { key: 'level', url: 'level', label: 'Level', mono: false, single: true },
+];
+
 /**
  * A facet's values share one URL key, joined by `,`. A route pattern may hold one
  * (`/:c{[a-z]{2,3}}`), so a value's own `,` and `%` are escaped before the join.
@@ -40,8 +61,22 @@ const unescapeValue = (v: string) => v.replace(/%(25|2C)/gi, (m) => (m === '%25'
 
 /** One facet's selected values, as the URL holds them. */
 export function selected(q: ObsQuery, key: RequestFacetKey): string[] {
-  const raw = q[facetOf(key).url];
-  return raw ? raw.split(',').filter((v) => v.length > 0).map(unescapeValue) : [];
+  return selectedIn(q, facetOf(key));
+}
+
+/** The same, for any facet: a single-value facet's key holds its one value as it is. */
+export function selectedIn(q: ObsQuery, f: Facet): string[] {
+  const raw = q[f.url];
+  if (!raw) return [];
+  return f.single ? [raw] : raw.split(',').filter((v) => v.length > 0).map(unescapeValue);
+}
+
+/** The URL patch that ticks or unticks one value of any facet; a single-value facet's tick replaces. */
+export function toggleIn(q: ObsQuery, f: Facet, value: string): Partial<ObsQuery> {
+  const now = selectedIn(q, f);
+  if (f.single) return { [f.url]: now.includes(value) ? undefined : value };
+  const next = now.includes(value) ? now.filter((v) => v !== value) : [...now, value];
+  return { [f.url]: next.length > 0 ? next.map(escapeValue).join(',') : undefined };
 }
 
 /** Every facet filter the URL carries, keyed as the plane names them. */
@@ -56,9 +91,7 @@ export function whereOf(q: ObsQuery): Partial<Record<RequestFacetKey, string[]>>
 
 /** The URL patch that ticks or unticks one value. Unticking the last one removes the key. */
 export function toggleFacet(q: ObsQuery, key: RequestFacetKey, value: string): Partial<ObsQuery> {
-  const now = selected(q, key);
-  const next = now.includes(value) ? now.filter((v) => v !== value) : [...now, value];
-  return { [facetOf(key).url]: next.length > 0 ? next.map(escapeValue).join(',') : undefined };
+  return toggleIn(q, facetOf(key), value);
 }
 
 /** The URL keys every request facet lives under — what `Clear` removes in this mode. */
@@ -114,6 +147,40 @@ export function requestReadQuery(
   return out;
 }
 
+/** #2762: one Lines count read's query — the window, the Lines facets, a pattern, the bucket count. */
+export type LineReadQuery = { since?: string; until?: string; hours?: string; buckets?: string; template?: string } &
+  Partial<Record<LineFacetKey, string[]>>;
+
+/**
+ * #2762: why the Lines counts cannot answer this query, or null when they can. A search, one
+ * request's lines and the `log` level (a vertical's `console.log`) narrow the LIST to lines no
+ * count can see — the counts hold no message, no request id and no line without a tenant.
+ */
+export function linesUncounted(q: ObsQuery): string | null {
+  if (q.search?.trim()) return 'Counts are unavailable while a search is set. The list below shows the matching lines; clear the search to see the chart and counts.';
+  if (q.invocationId) return 'Counts are not drawn for one request’s lines; the list below shows them all.';
+  if (q.level === 'log') return 'Console lines carry no team of their own, so they are listed below and never counted.';
+  return null;
+}
+
+/** #2762: the query for one Lines count read, as `requestReadQuery` is for the request reads. */
+export function lineReadQuery(q: ObsQuery, window: { since: string; until: string }, extra: { buckets?: number } = {}): LineReadQuery {
+  const out: LineReadQuery = { since: window.since, until: window.until };
+  for (const f of LINE_FACETS) {
+    const values = selectedIn(q, f);
+    if (values.length > 0) out[f.key] = values;
+  }
+  if (q.tpl) out.template = q.tpl;
+  if (extra.buckets !== undefined) out.buckets = String(extra.buckets);
+  return out;
+}
+
+/** #2762: the Lines facets the LIST takes beside its own `level` — operation and who, as lists. */
+export function lineListFilters(q: ObsQuery): { operation?: string[]; principalKind?: string[] } {
+  const { operation, principalKind } = lineReadQuery(q, { since: '', until: '' });
+  return { ...(operation ? { operation } : {}), ...(principalKind ? { principalKind } : {}) };
+}
+
 /**
  * Who a request ran as, in the design's words. The kinds are the stub's subject kinds; an
  * unknown one is shown as itself rather than guessed at.
@@ -136,7 +203,7 @@ export function principalKindLabel(kind: string): string {
 }
 
 /** How a facet value reads in the sidebar. */
-export function facetValueLabel(key: RequestFacetKey, value: string | number): string {
+export function facetValueLabel(key: string, value: string | number): string {
   if (key === 'principalKind') return principalKindLabel(String(value));
   if (key === 'kind') return kindLabel(String(value));
   return String(value);
@@ -163,7 +230,8 @@ export function rowLabel(r: {
 }
 
 /** The level colours the histogram stacks and the rows mark with — the design's. */
-export const LEVEL_COLORS: Record<'info' | 'warn' | 'error' | 'unrecorded', string> = {
+export const LEVEL_COLORS: Record<'debug' | 'info' | 'warn' | 'error' | 'unrecorded', string> = {
+  debug: 'var(--border-default)',
   info: 'var(--text-tertiary)',
   warn: 'var(--status-warning-fg)',
   error: 'var(--status-danger-fg)',

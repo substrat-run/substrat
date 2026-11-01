@@ -1,13 +1,13 @@
 import type { ObsQuery } from './observability-query';
 import type { LogMode } from './log-stream';
-import { requestChips } from './requests';
+import { LINE_FACETS, facetValueLabel, requestChips, selectedIn } from './requests';
 
 /**
  * The Logs query bar's chips (#1767): every filter the URL carries, as a removable chip.
  * The URL stays the one source of truth — a chip is a query key read back, and removing
  * it navigates without that key — so a chip can never show a filter the read did not use.
  *
- * Only the open mode's filters are chips: level, search and invocation narrow Lines; type
+ * Only the open mode's filters are chips: level, search, invocation, operation and who narrow Lines; type
  * and grouping narrow Events. The others stay in the URL untouched, so switching modes
  * and back finds them where they were.
  */
@@ -44,6 +44,11 @@ export function logChips(q: ObsQuery, mode: LogMode): LogChip[] {
   if (q.search) out.push({ key: 'search', value: q.search, clears: ['search'] });
   if (q.invocationId) out.push({ key: 'invocation', value: shortId(q.invocationId), clears: ['invocationId'] });
   if (q.tpl) out.push({ key: 'pattern', value: q.tpl, clears: ['tpl'] });
+  // #2762: the Lines facets beside the level — operation and who.
+  for (const f of LINE_FACETS) {
+    const values = f.single ? [] : selectedIn(q, f);
+    if (values.length > 0) out.push({ key: f.label.toLowerCase(), value: values.map((v) => facetValueLabel(f.key, v)).join(' or '), clears: [f.url] });
+  }
   return out;
 }
 

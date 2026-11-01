@@ -19,6 +19,7 @@ import { Pulse } from './Pulse';
 import { AppFailures } from './AppFailures';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
 import { RequestsMode } from './RequestsMode';
+import { LinesCounts } from './LinesCounts';
 import { PatternsMode } from './PatternsMode';
 import { LogStream } from '../components/LogStream';
 import { sectionOf, type ObsSection } from '../lib/obs-sections';
@@ -390,13 +391,28 @@ export function Observability({
             </LogStream>
           )}
         />
+      ) : scopeId && logMode === 'logs' ? (
+        // #2762: Lines lays out as Requests does — its histogram on top, its facets beside the stream.
+        <LinesCounts
+          teamId={teamId}
+          scopeId={scopeId}
+          q={q}
+          window={panelWindow}
+          nonce={nonce}
+          live={live}
+          onFilters={(filters) => navigateQuery({ ...q, ...filters })}
+          onRange={applyWindow}
+          zoomed={!!cursor}
+          onResetZoom={() => preset(null)}
+        >
+          <LogStream mode={logMode} counts={counts} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
+            <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} live={live} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
+          </LogStream>
+        </LinesCounts>
       ) : scopeId ? (
         // One card, two modes. A tab switch is a sub-view switch — same URL key, and the
         // cursor comes along: "what was happening at 09:13" is one question asked of both.
         <LogStream mode={logMode} counts={counts} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
-          {logMode === 'logs' && (
-            <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} live={live} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
-          )}
           {logMode === 'patterns' && (
             <PatternsMode
               teamId={teamId}
@@ -409,7 +425,7 @@ export function Observability({
               // from an earlier visit to Lines would otherwise quietly cut the pattern's
               // lines down to a subset, or to none.
               onOpenPattern={(tpl) =>
-                onNav({ app: scopeId, view: 'logs', tpl, level: undefined, search: undefined, invocationId: undefined, ...(cursor ?? {}) })
+                onNav({ app: scopeId, view: 'logs', tpl, level: undefined, search: undefined, invocationId: undefined, op: undefined, pk: undefined, ...(cursor ?? {}) })
               }
             />
           )}

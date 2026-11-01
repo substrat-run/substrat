@@ -1,13 +1,13 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppHostnameRow, type AppMetricsView, type AppOverlays, type AppRow, type AppSchedulesView, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type DomainRow, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ProcessMapView as GeneratedProcessMapView, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppHostnameRow, type AppMetricsView, type AppOverlays, type AppRow, type AppSchedulesView, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type DomainRow, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LineVolume, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ProcessMapView as GeneratedProcessMapView, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
-import type { RequestReadQuery } from './requests';
+import type { LineReadQuery, RequestReadQuery } from './requests';
 import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { AppDeployments, AppEvent, AppFailuresView, AppHostnameRow, AppMetricsView, AppOverlays, AppRow, BoundScopeRow, BusinessVolumesView, ConnectorCallsView, DeployFailureRow, DeploymentVersion, DomainRow, FailureGroupRow, FieldCoverageView, FieldReadsView, FlowView, InstallStep, LogPatterns, Member, MoveReviewRow, ObservabilityRow, PreviewCreated, ReleaseRow, ReleasesView, RequestFacets, RequestVolume, TeamTrafficSeries, TenantMetricsRow, TrafficSeries };
+export type { AppDeployments, AppEvent, AppFailuresView, AppHostnameRow, AppMetricsView, AppOverlays, AppRow, BoundScopeRow, BusinessVolumesView, ConnectorCallsView, DeployFailureRow, DeploymentVersion, DomainRow, FailureGroupRow, FieldCoverageView, FieldReadsView, FlowView, InstallStep, LineVolume, LogPatterns, Member, MoveReviewRow, ObservabilityRow, PreviewCreated, ReleaseRow, ReleasesView, RequestFacets, RequestVolume, TeamTrafficSeries, TenantMetricsRow, TrafficSeries };
 
 // The observability reads' parts (#2170), named as the views always have: each is the generated view's own member.
 export type AppMetricsRow = AppMetricsView['rows'][number];
@@ -1071,14 +1071,20 @@ interface ObservabilityLogsQuery {
   limit?: number;
 }
 
-export type AppTenantLogsQuery = Parameters<typeof tenantLogsQuery>[0];
+/** #2762: plus the Lines facets, each a list of alternatives sent once per value. */
+export type AppTenantLogsQuery = Parameters<typeof tenantLogsQuery>[0] & { operation?: string[]; principalKind?: string[] };
 
 async function appTenantLogsRead(
   teamId: string,
   scopeId: string,
-  q: AppTenantLogsQuery,
+  { operation, principalKind, ...q }: AppTenantLogsQuery,
 ): Promise<{ events: ObservabilityLogEvent[]; incomplete: boolean }> {
-  const { body, headers } = await teamApi(teamId).appObservabilityLogs({ scopeId, ...Object.fromEntries(tenantLogsQuery(q)) });
+  const { body, headers } = await teamApi(teamId).appObservabilityLogs({
+    scopeId,
+    ...Object.fromEntries(tenantLogsQuery(q)),
+    ...(operation?.length ? { operation } : {}),
+    ...(principalKind?.length ? { principalKind } : {}),
+  });
   return { events: body, incomplete: logsIncompleteOf(headers) };
 }
 
@@ -1219,6 +1225,11 @@ export const api = {
     teamApi(teamId).appRequestVolume({ scopeId, ...query }),
   appRequestFacets: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestFacets> =>
     teamApi(teamId).appRequestFacets({ scopeId, ...query }),
+  /** #2762: one app's Lines histogram and facet counts — its request lines and ctx.log lines. */
+  appLogVolume: (teamId: string, scopeId: string, query: LineReadQuery): Promise<LineVolume> =>
+    teamApi(teamId).appLogVolume({ scopeId, ...query }),
+  appLogFacets: (teamId: string, scopeId: string, query: LineReadQuery): Promise<RequestFacets> =>
+    teamApi(teamId).appLogFacets({ scopeId, ...query }),
   /** #2762: the versions that went live for one app inside a window — the request histogram's
    *  deploy marks. The traffic read is the one that already answers them. */
   appGoLives: (teamId: string, scopeId: string, window: { since: string; until: string }): Promise<ReleaseMarker[]> =>
