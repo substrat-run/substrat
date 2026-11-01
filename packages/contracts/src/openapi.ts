@@ -35,7 +35,7 @@ import {
  * second schema language anywhere in the pipeline.
  */
 
-export interface ApiOperationDoc {
+interface ApiOperationFields {
   /** One line, imperative — what invoking this operation does. */
   summary: string;
   /** Optional longer prose (permissions nuance, state-machine rules). */
@@ -84,8 +84,6 @@ export interface ApiOperationDoc {
    * client reads it and builds a retry it does not have.
    */
   idempotency?: false;
-  /** The success status, when it is not 200 — a declared route's `201` for a create (#2170). */
-  status?: 200 | 201 | 202;
   /** Response headers the success carries beside its body (a declared route's `responseHeaders`). */
   responseHeaders?: readonly string[];
   paged?: {
@@ -121,6 +119,17 @@ function sortKeyOf(paged: NonNullable<ApiOperationDoc['paged']>): string {
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
+/**
+ * One operation's documentation: its fields, and its success status as ONE of `status` (when it
+ * is not 200 — a declared route's `201` for a create) or `statuses` (every one, when a declared
+ * route answers more than one, `[200, 202]`; #2170). Never both, as `RouteShape` has it.
+ */
+export type ApiOperationDoc = ApiOperationFields &
+  (
+    | { status?: 200 | 201 | 202; statuses?: never }
+    | { statuses: readonly (200 | 201 | 202)[]; status?: never }
+  );
+
 export type ApiCatalog = Record<string, ApiOperationDoc>;
 
 export interface ApiDocumentInfo {
@@ -522,6 +531,43 @@ export function buildOpenApiDocument(
         });
       }
     }
+    const success = {
+      description: op.paged
+        ? op.paged.total
+          ? 'One page of results. The walk is in the response headers.'
+          : 'One page of results. The walk is in the response headers.'
+        : 'The operation result.',
+      // A page's BODY is the entries, and the walk rides in headers (#829).
+      // Wrapping the body renamed a live endpoint's response, which made
+      // adopting paging a breaking change for consumers a vertical cannot see —
+      // and could not be done at all for the list reads whose published shape
+      // was a bare array. In headers the body is what it always was.
+      ...(op.paged || op.concurrency || op.responseHeaders?.length
+        ? {
+            headers: {
+              ...(op.paged ? pageResponseHeaders(op.paged.total === true) : {}),
+              ...(op.concurrency ? etagResponseHeader() : {}),
+              ...Object.fromEntries(
+                (op.responseHeaders ?? []).map((name) => [name, { schema: { type: 'string' } }]),
+              ),
+            },
+          }
+        : {}),
+      ...(op.output
+        ? {
+            content: {
+              'application/json': {
+                schema: jsonSchema(
+                  op.paged ? z.array(op.output) : op.output,
+                  'output',
+                  operationId,
+                  hoisted,
+                ),
+              },
+            },
+          }
+        : {}),
+    };
     const existing = (paths[url] ?? {}) as Record<string, unknown>;
     paths[url] = {
       ...existing,
@@ -543,43 +589,7 @@ export function buildOpenApiDocument(
             }
           : {}),
         responses: {
-          [String(op.status ?? 200)]: {
-            description: op.paged
-              ? op.paged.total
-                ? 'One page of results. The walk is in the response headers.'
-                : 'One page of results. The walk is in the response headers.'
-              : 'The operation result.',
-            // A page's BODY is the entries, and the walk rides in headers (#829).
-            // Wrapping the body renamed a live endpoint's response, which made
-            // adopting paging a breaking change for consumers a vertical cannot see —
-            // and could not be done at all for the list reads whose published shape
-            // was a bare array. In headers the body is what it always was.
-            ...(op.paged || op.concurrency || op.responseHeaders?.length
-              ? {
-                  headers: {
-                    ...(op.paged ? pageResponseHeaders(op.paged.total === true) : {}),
-                    ...(op.concurrency ? etagResponseHeader() : {}),
-                    ...Object.fromEntries(
-                      (op.responseHeaders ?? []).map((name) => [name, { schema: { type: 'string' } }]),
-                    ),
-                  },
-                }
-              : {}),
-            ...(op.output
-              ? {
-                  content: {
-                    'application/json': {
-                      schema: jsonSchema(
-                        op.paged ? z.array(op.output) : op.output,
-                        'output',
-                        operationId,
-                        hoisted,
-                      ),
-                    },
-                  },
-                }
-              : {}),
-          },
+          ...Object.fromEntries((op.statuses ?? [op.status ?? 200]).map((status) => [String(status), success])),
           ...ERROR_RESPONSES,
           // #129: the 412 joins the documented set for THIS operation only —
           // `precondition_failed` is excluded from `DOCUMENTED_ERROR_CODES`

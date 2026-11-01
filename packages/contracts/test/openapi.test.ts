@@ -62,6 +62,13 @@ const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
     status: 201,
     http: { method: 'POST', path: '/customers' },
   },
+  // A declared route answering more than one success status (#2170): an accept still landing.
+  'customer/accept': {
+    summary: 'Accept',
+    output: z.object({ pending: z.boolean() }),
+    statuses: [200, 202],
+    http: { method: 'POST', path: '/customers/accept' },
+  },
   // A declared route's response header (#2170): a log page's `incomplete` flag.
   'customer/logs': {
     summary: 'Log lines',
@@ -259,6 +266,9 @@ describe('a write is untouched', () => {
   it('documents a declared route surface truthfully: status, headers, recursive refs, security (#2170)', () => {
     expect(Object.keys(op('/api/customers', 'post').responses)).toContain('201');
     expect(op('/api/customers', 'post').responses['200']).toBeUndefined();
+    const accept = op('/api/customers/accept', 'post').responses;
+    expect(accept['200']).toHaveProperty('content');
+    expect(accept['202']).toEqual(accept['200']);
     expect(Object.keys(op('/api/customers/logs', 'get').responses['200'].headers)).toEqual(['x-incomplete']);
 
     // A recursive schema's refs resolve from the document root, where OpenAPI reads `#`.

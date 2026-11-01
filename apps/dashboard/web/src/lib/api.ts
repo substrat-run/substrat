@@ -1,5 +1,6 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppHostnameRow, type AppMetricsView, type AppOverlays, type AppRow, type AppSchedulesView, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type DomainRow, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ProcessMapView as GeneratedProcessMapView, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
+import { ApiError as AccountApiError, createClient as createAccountClient, type AccountView as Me, type OnboardingView as Onboarding, type TeamSummary as Team } from './account-api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { RequestReadQuery } from './requests';
@@ -80,19 +81,8 @@ const pageQs = (opts?: PageOpts): string => {
   return s ? `?${s}` : '';
 };
 
-/** One team (tenant) the signed-in user belongs to — drives the team switcher. */
-export interface Team {
-  id: TenantId;
-  name: string;
-  slug: string;
-}
-
-/** Authenticated, but not in any team yet — the app shows the onboarding screen. */
-export interface Onboarding {
-  needsOnboarding: true;
-  email?: string | null;
-  name?: string | null;
-}
+/** The `/api/me` shapes (#2170): the generated account client's own. */
+export type { Me, Onboarding, Team };
 
 /** The `/api/me` result: either a resolved account, or a teamless login to onboard. */
 export type MeResult = Me | Onboarding;
@@ -100,23 +90,6 @@ export type MeResult = Me | Onboarding;
 /** Narrow a `MeResult` to the teamless onboarding state. */
 export function needsOnboarding(m: MeResult): m is Onboarding {
   return (m as Onboarding).needsOnboarding === true;
-}
-
-/** Who the authenticated customer is — their current team, dashboard scope, principal. */
-export interface Me {
-  principal: PrincipalId;
-  /** The currently-selected team (tenant) this session is scoped to. */
-  tenant: TenantId;
-  dashboardScope: ScopeId;
-  /** From the OIDC session — shown in the shell (footer, user pill). */
-  email?: string | null;
-  name?: string | null;
-  /** Every team this login belongs to — one user can span several teams. */
-  teams: Team[];
-  /** The selected team's id (mirrors `tenant`); drives the switcher's checkmark. */
-  currentTeamId: TenantId;
-  /** The caller's role on the selected team, independent of the roster's current page. */
-  roleKey: string | null;
 }
 
 /** One row of the New-app picker, read from the team's declared catalog route. */
@@ -973,9 +946,9 @@ export class ApiError extends Error {
   }
 }
 
-/** The handwritten cookie client and declared team client report separate error classes. */
-export const isApiError = (error: unknown): error is ApiError | GeneratedApiError =>
-  error instanceof ApiError || error instanceof GeneratedApiError;
+/** The handwritten client and the two declared clients (team, account) report separate error classes. */
+export const isApiError = (error: unknown): error is ApiError | GeneratedApiError | AccountApiError =>
+  error instanceof ApiError || error instanceof GeneratedApiError || error instanceof AccountApiError;
 
 /** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
 export interface ExportBreakRow {
@@ -991,7 +964,8 @@ export interface ExportBreakRow {
  * The declared surface (#2170), bound to ONE team: every call goes to
  * `/api/teams/<teamId>/…`, so the request names its team in its own URL. The `sb_team`
  * cookie, which every tab shares, is no longer what a request acts on. The hand-written
- * helper below (`call`) reaches only the team-less routes.
+ * helper below (`call`) reaches only the invite preview; the other team-less routes are
+ * `accountApi`'s.
  *
  * Build it from the team the TAB is on (`me.currentTeamId`, pinned by the URL), never
  * once at module load.
@@ -1010,6 +984,15 @@ export function teamApi(teamId: string): DashboardClient {
   teamClients.set(teamId, client);
   return client;
 }
+
+/**
+ * The declared team-less routes (#2170) — who am I, create, switch, accept — under `/api`, about
+ * the signed-in login rather than one team.
+ */
+const accountApi = createAccountClient({
+  fetch: (input, init) => fetch(input, { credentials: 'include', ...init }),
+  errorMessage: (body) => problemDetail(body),
+});
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -1100,29 +1083,23 @@ export const api = {
   /** `null` when there is no session (the worker answers 401); onboarding when teamless. */
   me: async (): Promise<MeResult | null> => {
     try {
-      return await call<MeResult>('/me');
+      return await accountApi.me();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return null;
+      if (isApiError(e) && e.status === 401) return null;
       throw e;
     }
   },
   /** Create a team (first team or another); the server switches to it, so reload after. */
-  createTeam: (name: string) =>
-    call<{ teamId: string }>('/teams', { method: 'POST', body: JSON.stringify({ name }) }),
+  createTeam: (name: string) => accountApi.createTeam({ name }),
   /** Switch the active team; the server pins it in a cookie, so the caller reloads after. */
-  switchTeam: (teamId: string) =>
-    call<void>('/teams/switch', { method: 'POST', body: JSON.stringify({ teamId }) }),
+  switchTeam: (teamId: string) => accountApi.switchTeam({ teamId }),
   /** Preview an invite (unauthenticated): the team + invited email, for prefill + the accept screen. */
   previewInvite: (token: string) =>
     call<{ teamName: string; email: string; roleKey: InviteRole }>(
       `/invites/preview?token=${encodeURIComponent(token)}`,
     ),
   /** Accept an invite token; the server switches to the team, so the caller reloads after. */
-  acceptInvite: (token: string) =>
-    call<{ teamId: string; already?: boolean }>('/invites/accept', {
-      method: 'POST',
-      body: JSON.stringify({ token }),
-    }),
+  acceptInvite: (token: string) => accountApi.acceptTeamInvite({ token }),
   /** One page of the TEAM's control-plane audit log (#1447) — every app, newest first.
    *  `scopeId` narrows it to one app; without it the page is the tenant's whole log,
    *  which is the only way to see the entries that name no scope at all. */

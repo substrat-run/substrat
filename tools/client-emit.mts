@@ -38,6 +38,8 @@
  * }
  * ```
  *
+ * `substrat.client` itself may be a list of such objects, one per base URL the app serves.
+ *
  * `model`, `entities` and `operations` also take lists — a vertical may split its model
  * across files, and one that composes engines names their operation bags and entities
  * too. A `model` entry that is not a path is a package specifier, resolved from the
@@ -96,18 +98,28 @@ for (const group of ['demos', 'apps']) {
     const pkgPath = join(dir, 'package.json');
     if (!existsSync(pkgPath)) continue;
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-      substrat?: { client?: Partial<ClientConfig> };
+      substrat?: { client?: Partial<ClientConfig> | Partial<ClientConfig>[] };
     };
-    const client = pkg.substrat?.client;
-    if (!client) continue;
-    // `entities` is optional: a declared route set (#2170) stores nothing of its own to name.
-    for (const field of ['model', 'operations', 'out', 'name'] as const) {
-      if (!client[field]) cannot(`${group}/${n}: substrat.client is missing \`${field}\``);
+    const declared = pkg.substrat?.client;
+    if (!declared) continue;
+    // A list when the app serves more than one base URL — the dashboard's team routes under
+    // `/api/teams/{teamId}` and its team-less ones under `/api` (#2170) — since one generated
+    // client answers one base.
+    const clients = Array.isArray(declared) ? declared : [declared];
+    if (clients.length === 0) cannot(`${group}/${n}: substrat.client is an empty list`);
+    for (const client of clients) {
+      // `entities` is optional: a declared route set (#2170) stores nothing of its own to name.
+      for (const field of ['model', 'operations', 'out', 'name'] as const) {
+        if (!client[field]) cannot(`${group}/${n}: substrat.client is missing \`${field}\``);
+      }
+      if (Array.isArray(client.operations) && client.operations.length === 0) {
+        cannot(`${group}/${n}: substrat.client.operations is an empty list`);
+      }
+      if (opted.some((o) => o.dir === dir && o.config.out === client.out)) {
+        cannot(`${group}/${n}: two substrat.client entries write ${client.out}`);
+      }
+      opted.push({ rel: `${group}/${n}`, dir, config: client as ClientConfig });
     }
-    if (Array.isArray(client.operations) && client.operations.length === 0) {
-      cannot(`${group}/${n}: substrat.client.operations is an empty list`);
-    }
-    opted.push({ rel: `${group}/${n}`, dir, config: client as ClientConfig });
   }
 }
 
@@ -247,7 +259,7 @@ for (const { rel, dir, config } of opted) {
         `  Remedy: run \`pnpm lint:client\` and commit the result.`,
     );
   }
-  if (readFileSync(artifact, 'utf8') !== content) drifted.push(rel);
+  if (readFileSync(artifact, 'utf8') !== content) drifted.push(`${rel}/${config.out}`);
 }
 
 if (check) {
