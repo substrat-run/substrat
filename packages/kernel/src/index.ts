@@ -226,7 +226,7 @@ export {
 } from './scope-host.js';
 export {
   noteTransitionInto,
-  transitionsReport,
+  withTransitions,
   TRANSITION_REPORT_CAP,
   type TransitionTally,
 } from './transition-notes.js';

@@ -12,8 +12,8 @@
  * inside a rolled-back sub-transaction is dropped with its writes, and a rolled-back operation
  * reports nothing at all. Consumer dispatch carries no signals and notes nothing.
  */
-import { refusalEntityType, type NotedTransition } from '@substrat-run/contracts';
-import type { EmittedTransition } from './scope-host.js';
+import { OBJECT_ID, refusalEntityType, type NotedTransition } from '@substrat-run/contracts';
+import type { EmittedReport, EmittedTransition } from './scope-host.js';
 
 /** How many entities' moves one invocation reports, in the order they first moved. */
 export const TRANSITION_REPORT_CAP = 8;
@@ -29,6 +29,8 @@ export interface TransitionTally {
  * dropped rather than written to a log line.
  */
 const STATE = /^[\w.-]{1,64}$/;
+/** The record's id: the tuple grammar's id half, and no longer than a line should carry. */
+const ENTITY_ID_MAX = 128;
 
 const refOf = (t: NotedTransition): string => `${t.entityType}:${t.entityId}`;
 
@@ -37,7 +39,8 @@ export function noteTransitionInto(tally: TransitionTally | undefined): (t: Note
   return (t) => {
     const notes = tally?.transitions;
     if (!notes) return;
-    if (refusalEntityType(t.entityType) !== t.entityType || typeof t.entityId !== 'string' || t.entityId === '') return;
+    if (refusalEntityType(t.entityType) !== t.entityType) return;
+    if (typeof t.entityId !== 'string' || t.entityId.length > ENTITY_ID_MAX || !OBJECT_ID.test(t.entityId)) return;
     if (!STATE.test(t.to) || (t.from !== null && !STATE.test(t.from))) return;
     // Bounded by entity: past the cap, only an entity already noted is followed further.
     const ref = refOf(t);
@@ -47,10 +50,17 @@ export function noteTransitionInto(tally: TransitionTally | undefined): (t: Note
 }
 
 /**
- * The report: one entry per entity, from the state it left first to the state it reached last,
- * in the order the entities first moved. An entity that came back to where it started did not move.
+ * The emitted report with the invocation's moves, when it noted any: one entry per entity, from
+ * the state it left first to the state it reached last, in the order the entities first moved.
+ * An entity that came back to where it started did not move. With no note the report is left
+ * without `transitions` — "not recorded", since a module that never hands `assertTransition`
+ * its context notes nothing either, and the two must not read as the same `[]`.
  */
-export function transitionsReport(notes: readonly NotedTransition[]): EmittedTransition[] {
+export function withTransitions(report: EmittedReport, notes: readonly NotedTransition[] | undefined): EmittedReport {
+  return notes && notes.length > 0 ? { ...report, transitions: transitionsOf(notes) } : report;
+}
+
+function transitionsOf(notes: readonly NotedTransition[]): EmittedTransition[] {
   const byRef = new Map<string, { from: string | null; to: string }>();
   for (const n of notes) {
     const seen = byRef.get(refOf(n));

@@ -1031,8 +1031,9 @@ export interface EmittedReport {
   readonly total: number;
   /**
    * #2762: the lifecycle moves the operation caused, as `ctx.noteTransition` noted them, at most
-   * `TRANSITION_REPORT_CAP` entities. Absent from a host that predates it, read as "not recorded";
-   * `[]` is a fact. Only a move made through `assertTransition` with the context is noted.
+   * `TRANSITION_REPORT_CAP` entities. Absent when nothing was noted — "not recorded", since a
+   * module that does not hand `assertTransition` its context notes nothing — and from a host that
+   * predates it. `[]` means moves were noted and each entity came back to where it started.
    */
   readonly transitions?: readonly EmittedTransition[];
 }

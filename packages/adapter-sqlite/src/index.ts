@@ -795,7 +795,7 @@ import {
   emittedReportOf,
   EMITTED_REPORT_CAP,
   noteTransitionInto,
-  transitionsReport,
+  withTransitions,
   type TransitionTally,
   type EmittedReport,
   exportedSinceQuery,
@@ -7147,10 +7147,10 @@ export class SqliteScopeHost implements ScopeHost {
           // operation's own emits and none of its consumers'. A replay committed nothing.
           if (emittedMark !== null && !replayed) {
             const q = emittedSinceQuery(emittedMark, EMITTED_REPORT_CAP);
-            emittedReport = {
-              ...emittedReportOf(rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[]),
-              transitions: transitionsReport(signals.transitions ?? []),
-            };
+            emittedReport = withTransitions(
+              emittedReportOf(rt.db.prepare(q.sql).all(...q.params) as Record<string, unknown>[]),
+              signals.transitions,
+            );
           }
           // Post-commit, still inside the actor task: drain outbox → consumers,
           // then → executors. Prompt dispatch (K-22 §4.2): the common case

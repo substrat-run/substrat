@@ -261,7 +261,7 @@ import {
   emittedReportOf,
   EMITTED_REPORT_CAP,
   noteTransitionInto,
-  transitionsReport,
+  withTransitions,
   type TransitionTally,
   type EmittedReport,
   IMPORT_CURSOR_ADVANCE_SQL,
@@ -3691,10 +3691,7 @@ export function defineScopeDO(
         let emitted: EmittedReport | undefined;
         if (emittedMark !== null && !replayed) {
           const q = emittedSinceQuery(emittedMark, EMITTED_REPORT_CAP);
-          emitted = {
-            ...emittedReportOf(this.sql.exec(q.sql, ...q.params).toArray()),
-            transitions: transitionsReport(signals.transitions ?? []),
-          };
+          emitted = withTransitions(emittedReportOf(this.sql.exec(q.sql, ...q.params).toArray()), signals.transitions);
         }
         if (!replayed) await this.settleCommitted(tenantId, scopeId, liveSince, this.invocationId);
         // After the tail, so an exported type a consumer emitted in it counts too.

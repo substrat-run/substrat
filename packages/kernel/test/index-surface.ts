@@ -802,7 +802,6 @@ export const INDEX_VALUE_EXPORTS = [
   'tooManyResultColumns',
   'tooManyTableColumns',
   'topUpEntityGrantShapes',
-  'transitionsReport',
   'ulid',
   'ulidTime',
   'unbindEntityHolderBounded',
@@ -829,6 +828,7 @@ export const INDEX_VALUE_EXPORTS = [
   // RFC wire-signing §7: a capability-record read's access-log target, the tenant its reach names.
   'wireAuthAccessTarget',
   'withRecorded',
+  'withTransitions',
   'withheldKeysFor',
   'withheldNote',
   // #2554: a tenant-filed failure whose text only staff read, for every writer, the hosts' included.

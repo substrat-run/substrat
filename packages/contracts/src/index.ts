@@ -71,6 +71,8 @@ export * from './control-plane.js';
 export * from './lake.js';
 export * from './findings.js';
 export * from './permission.js';
+// #2762: the id half of a tuple ref, which the kernel holds a noted transition's record to.
+export { OBJECT_ID } from './object-ref.js';
 export * from './impersonation.js';
 export * from './events.js';
 export * from './vertical-events.js';
