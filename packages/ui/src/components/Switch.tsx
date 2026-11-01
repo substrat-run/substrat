@@ -20,10 +20,25 @@ export function Switch({ label, checked, defaultChecked, onChange, disabled, sty
     onChange?.(!isOn);
   };
 
+  // A button with `role="switch"`, not a `<label onClick>`: a label is neither focusable nor
+  // announced, so a keyboard user could not reach the control and a screen reader heard only
+  // its text. A button gets Tab, Space/Enter and `disabled` from the platform.
   return (
-    <label
+    <button
+      type="button"
+      role="switch"
+      aria-checked={isOn}
+      disabled={disabled}
       onClick={toggle}
       style={{
+        appearance: 'none',
+        background: 'none',
+        border: 0,
+        padding: 0,
+        margin: 0,
+        font: 'inherit',
+        color: 'inherit',
+        textAlign: 'left',
         display: 'inline-flex',
         gap: 10,
         alignItems: 'center',
@@ -60,6 +75,6 @@ export function Switch({ label, checked, defaultChecked, onChange, disabled, sty
       {label && (
         <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-primary)' }}>{label}</span>
       )}
-    </label>
+    </button>
   );
 }

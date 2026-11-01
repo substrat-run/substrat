@@ -99,6 +99,28 @@ export interface SignInAttempt {
    * than an inference that two people signing in at once would break.
    */
   correlation: string | null;
+  /** Auth0's log type code for this hop — derived on read by `signInLogTypeOf`, never stored. */
+  type: SignInLogType | null;
+}
+
+/**
+ * The Auth0 log type codes this log can carry. Two, because it records the federated round trip
+ * only (see "What is NOT here"): `fp`, `ss`, `slo` and the rest would need rows this table
+ * deliberately does not hold.
+ */
+export type SignInLogType = 's' | 'f';
+
+/**
+ * A hop's Auth0 code: `s` (Success Login) for a succeeded hop, `f` (Failed Login) for a failed
+ * one — a refusal before the person left included, since Auth0 logs that as a failed login too.
+ * `started` gets NO code: Auth0 writes nothing for "sent to the upstream", and borrowing a code
+ * for it would claim a compatibility this log does not have. Derived from the stored `outcome`
+ * on every read, so no row was migrated to carry it.
+ */
+export function signInLogTypeOf(outcome: SignInOutcome): SignInLogType | null {
+  if (outcome === 'succeeded') return 's';
+  if (outcome === 'failed') return 'f';
+  return null;
 }
 
 /** What a writer supplies. Fixed and narrow on purpose — see the module header. */
@@ -332,13 +354,18 @@ export function signInLoggerFor(sql: SqlExec): SignInLogger {
   return (attempt) => recordSignInAttempt(sql, attempt);
 }
 
-/** What the admin read accepts: a page, newest first, optionally narrowed to one method. */
+/** What the admin read accepts: a page, newest first, optionally narrowed. */
 export const signInLogQuery = z.object({
   limit: z.coerce.number().int().min(1).max(SIGN_IN_LOG_PAGE_MAX).default(50),
   before: z.coerce.number().int().positive().optional(),
   method: z.string().min(1).max(40).optional(),
   /** `failed` alone is what an operator actually wants most of the time. */
   outcome: z.enum(['started', 'succeeded', 'failed']).optional(),
+  /** One relying party's sign-ins — the Application's Logs tab. */
+  clientId: z.string().min(1).max(256).optional(),
+  /** One account's sign-ins — the User's Logs tab. Only a succeeded callback names an account,
+   *  so a refusal is never attributed to one: by definition nobody was resolved. */
+  userId: z.string().min(1).max(256).optional(),
 });
 
 export type SignInLogQuery = z.infer<typeof signInLogQuery>;
@@ -360,39 +387,85 @@ export function readSignInLog(sql: SqlExec, query: SignInLogQuery): { attempts: 
     where.push('outcome = ?');
     bindings.push(query.outcome);
   }
+  // Both narrow to whole ATTEMPTS, not to the rows that happen to carry the column: only the
+  // hop out knows the relying party (it is read off the signed `oauth_query`) and only a
+  // succeeded callback knows the account, so a plain `client_id = ?` would show an application
+  // every start and none of the answers — every row would look like "never came back". The
+  // other hops are reached through `correlation`, which is indexed.
+  for (const [column, value] of [
+    ['client_id', query.clientId],
+    ['user_id', query.userId],
+  ] as const) {
+    if (!value) continue;
+    where.push(
+      `(${column} = ? OR correlation IN (SELECT correlation FROM sign_in_attempt WHERE ${column} = ? AND correlation IS NOT NULL))`,
+    );
+    bindings.push(value, value);
+  }
   const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const rows = sql
     .exec(`SELECT ${COLUMNS} FROM sign_in_attempt${clause} ORDER BY id DESC LIMIT ?`, ...bindings, query.limit)
-    .toArray() as unknown as {
-    id: number;
-    at: number;
-    method: string;
-    outcome: string;
-    phase: string;
-    authority: string | null;
-    error: string | null;
-    error_description: string | null;
-    client_id: string | null;
-    user_id: string | null;
-    correlation: string | null;
-  }[];
+    .toArray() as unknown as AttemptRow[];
   const total = Number(
     (sql.exec('SELECT count(*) AS n FROM sign_in_attempt').toArray()[0] as { n: number }).n,
   );
+  return { attempts: rows.map(attemptOf), total };
+}
+
+/**
+ * One row by id, with the other hops of the same attempt, oldest first — the pair is the
+ * diagnosis, so the entry's own screen needs both. Null once the ring has pruned it (or it never
+ * was). A row with no `correlation` has nothing to join on and so no related hops, rather than
+ * being joined to every other uncorrelated row.
+ */
+export function readSignInLogEntry(
+  sql: SqlExec,
+  id: number,
+): { attempt: SignInAttempt; related: SignInAttempt[] } | null {
+  const row = sql.exec(`SELECT ${COLUMNS} FROM sign_in_attempt WHERE id = ?`, id).toArray()[0] as unknown as
+    | AttemptRow
+    | undefined;
+  if (!row) return null;
+  const related = row.correlation
+    ? (sql
+        .exec(
+          `SELECT ${COLUMNS} FROM sign_in_attempt WHERE correlation = ? AND id <> ? ORDER BY id ASC`,
+          row.correlation,
+          id,
+        )
+        .toArray() as unknown as AttemptRow[])
+    : [];
+  return { attempt: attemptOf(row), related: related.map(attemptOf) };
+}
+
+interface AttemptRow {
+  id: number;
+  at: number;
+  method: string;
+  outcome: string;
+  phase: string;
+  authority: string | null;
+  error: string | null;
+  error_description: string | null;
+  client_id: string | null;
+  user_id: string | null;
+  correlation: string | null;
+}
+
+function attemptOf(row: AttemptRow): SignInAttempt {
+  const outcome = row.outcome as SignInOutcome;
   return {
-    attempts: rows.map((row) => ({
-      id: Number(row.id),
-      at: Number(row.at),
-      method: row.method,
-      outcome: row.outcome as SignInOutcome,
-      phase: row.phase,
-      authority: row.authority,
-      error: row.error,
-      errorDescription: row.error_description,
-      clientId: row.client_id,
-      userId: row.user_id,
-      correlation: row.correlation,
-    })),
-    total,
+    id: Number(row.id),
+    at: Number(row.at),
+    method: row.method,
+    outcome,
+    phase: row.phase,
+    authority: row.authority,
+    error: row.error,
+    errorDescription: row.error_description,
+    clientId: row.client_id,
+    userId: row.user_id,
+    correlation: row.correlation,
+    type: signInLogTypeOf(outcome),
   };
 }

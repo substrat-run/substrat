@@ -51,8 +51,9 @@ import {
   type BankIdTransport,
   type BankIdTransportKind,
 } from './bankid.js';
-import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
+import { SIGN_IN_LOG_LIMIT, readSignInLog, readSignInLogEntry, signInLogQuery } from './sign-in-log.js';
 import { importBody, importUsers } from './user-import.js';
+import { platformOwnerOf } from './resources.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -1095,6 +1096,36 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     return c.json(importUsers(deps.sql, body, (fn) => deps.transaction(fn)));
   });
 
+  /* ---- the APIs (RFC 8707 resources) this issuer mints access tokens for ---- */
+
+  /**
+   * Every `oauth_resource` row. Ownership is the marker `resources.ts` writes into `metadata`
+   * (`platformOwnerOf`), the same proof the sync and the preview mint lean on, so the console
+   * cannot call a row "platform" that the next delivery would not treat as one.
+   *
+   * `name` is NOT NULL in the plugin's schema, so the platform sync fills it with the
+   * identifier itself; that copy is a placeholder, not a name, and comes back as null.
+   * `scopes` is the plugin's `allowed_scopes` (a JSON `string[]`); null there means "no
+   * per-resource narrowing", which reads as `[]` here rather than as a list nobody wrote.
+   */
+  app.get('/resources', (c) => {
+    const rows = deps.sql
+      .exec('SELECT identifier, name, allowed_scopes, metadata FROM oauth_resource ORDER BY identifier')
+      .toArray() as { identifier: string; name: string | null; allowed_scopes: string | null; metadata: unknown }[];
+    return c.json({
+      resources: rows.map((r) => {
+        const owner = platformOwnerOf(r.metadata);
+        return {
+          identifier: r.identifier,
+          name: r.name && !(owner !== null && r.name === r.identifier) ? r.name : null,
+          source: owner === null ? ('issuer' as const) : ('platform' as const),
+          scopeId: owner,
+          scopes: jsonColumn<string[]>(r.allowed_scopes, []),
+        };
+      }),
+    });
+  });
+
   /* ---- what happened when people tried to sign in ---- */
 
   /**
@@ -1116,6 +1147,8 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       before: c.req.query('before'),
       method: c.req.query('method'),
       outcome: c.req.query('outcome'),
+      clientId: c.req.query('client_id'),
+      userId: c.req.query('user_id'),
     });
     if (!parsed.success) {
       throw new HTTPException(400, {
@@ -1126,6 +1159,20 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     const { attempts, total } = readSignInLog(deps.sql, parsed.data);
     return c.json({ attempts, total, retained: SIGN_IN_LOG_LIMIT });
+  });
+
+  /**
+   * One log entry, with the other hops of the same attempt — what `/logs/<id>` draws. A 404 is
+   * the ordinary answer for a link older than the ring, not an error in the link, which is why
+   * the console turns it into "pruned" rather than a failure. The id is the table's integer key,
+   * so anything else is refused as malformed before it reaches SQL.
+   */
+  app.get('/sign-in-log/:id', (c) => {
+    const raw = c.req.param('id');
+    if (!/^[1-9][0-9]{0,15}$/.test(raw)) throw new HTTPException(400, { message: 'id: a positive integer' });
+    const entry = readSignInLogEntry(deps.sql, Number(raw));
+    if (!entry) return c.json({ error: 'not found' }, 404);
+    return c.json(entry);
   });
 
   app.onError((err, c) => {

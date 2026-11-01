@@ -18,7 +18,12 @@ export default defineConfig({
       // it is handed, so the Host rewrite the shorthand performs changes nothing it
       // says. Every demo whose API derives an OIDC `redirect_uri` from Host writes
       // `changeOrigin: false` instead — see #1388 and tools/vite-proxy-host.mjs.
-      '/api': `http://localhost:${API_PORT}`,
+      //
+      // A regex anchored on `/api/`, not the bare `/api` prefix: Vite matches a string key as
+      // a prefix, so `/api` also swallowed the console's own `/apis` screen and answered it
+      // from the API server's 404. Production has no such rule — the worker serves the SPA for
+      // every path no route claims.
+      '^/api/': `http://localhost:${API_PORT}`,
       '/.well-known': `http://localhost:${API_PORT}`,
     },
   },

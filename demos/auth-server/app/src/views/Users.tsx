@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { inviteAccount } from '../api';
+import { Button, PageHeader } from '@substrat-run/ui';
 import {
   banUser,
+  inviteAccount,
   createUser,
   listUsers,
   removeUser,
@@ -11,6 +12,7 @@ import {
 } from '../api';
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
+import { userPath } from '../console/routes';
 import { ImportUsers } from './UserImport';
 
 /**
@@ -27,6 +29,12 @@ import { ImportUsers } from './UserImport';
 export function UsersView({ me }: { me: string }) {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Each form opens below the header instead of inside it — the header row is for the three
+  // buttons, and a form unfolding there pushed the title aside. Independent flags, as before:
+  // opening one does not throw away what was typed into another.
+  const [inviting, setInviting] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -42,27 +50,35 @@ export function UsersView({ me }: { me: string }) {
   }, [reload]);
 
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>Users</h2>
-        <InviteUser onInvited={reload} />
-        <NewUser onCreated={reload} />
-        <ImportUsers onImported={reload} />
-      </div>
-      {err && <p className="error">{err}</p>}
-      <UserTable users={users} me={me} onChanged={reload} />
-    </section>
+    <>
+      <PageHeader
+        title="Users"
+        description="Everyone who can sign in at this issuer. Open one to see how they sign in and where they are signed in."
+        actions={
+          <>
+            <Button variant="secondary" disabled={inviting} onClick={() => setInviting(true)}>Invite user</Button>
+            <Button variant="secondary" disabled={importing} onClick={() => setImporting(true)}>Import users</Button>
+            <Button disabled={creating} onClick={() => setCreating(true)}>New user</Button>
+          </>
+        }
+      />
+      {inviting && <InviteUser onInvited={reload} onClose={() => setInviting(false)} />}
+      {creating && <NewUser onCreated={reload} onClose={() => setCreating(false)} />}
+      {importing && <ImportUsers onImported={reload} onClose={() => setImporting(false)} />}
+      <section className="panel">
+        {err && <p className="error">{err}</p>}
+        <UserTable users={users} me={me} onChanged={reload} />
+      </section>
+    </>
   );
 }
 
-function InviteUser({ onInvited }: { onInvited: () => void }) {
-  const [open, setOpen] = useState(false);
+function InviteUser({ onInvited, onClose }: { onInvited: () => void; onClose: () => void }) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
-  if (!open) return <button className="btn" onClick={() => { setOpen(true); setSent(false); }}>Invite user</button>;
   return <div className="new-user">
     <Field label="Name" value={name} onChange={setName} />
     <Field label="Email" type="email" value={email} onChange={setEmail} />
@@ -74,7 +90,7 @@ function InviteUser({ onInvited }: { onInvited: () => void }) {
       catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
       finally { setBusy(false); }
     }}>Send invitation</button>
-    <button className="btn" disabled={busy} onClick={() => setOpen(false)}>Close</button>
+    <button className="btn" disabled={busy} onClick={onClose}>Close</button>
   </div>;
 }
 
@@ -103,11 +119,11 @@ function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: st
                   it is now a place, so it has to be copyable, middle-clickable and openable
                   in a tab. The plain click stays same-document. */}
               <a
-                href={`/users/${u.id}`}
+                href={userPath(u.id)}
                 onClick={(e) => {
                   if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
                   e.preventDefault();
-                  navigate(`/users/${u.id}`);
+                  navigate(userPath(u.id));
                 }}
               >
                 {u.name || '(no name)'}
@@ -133,14 +149,12 @@ function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: st
   );
 }
 
-function NewUser({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
+function NewUser({ onCreated, onClose }: { onCreated: () => void; onClose: () => void }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRoleState] = useState<'admin' | 'user'>('user');
   const [err, setErr] = useState<string | null>(null);
-  if (!open) return <button className="btn" onClick={() => setOpen(true)}>+ New user</button>;
   return (
     <div className="new-user">
       <Field label="Name" value={name} onChange={setName} />
@@ -161,8 +175,7 @@ function NewUser({ onCreated }: { onCreated: () => void }) {
             setErr(null);
             try {
               await createUser({ name, email, password, role });
-              setOpen(false);
-              setName(''); setEmail(''); setPassword(''); setRoleState('user');
+              onClose();
               onCreated();
             } catch (e) {
               setErr(e instanceof Error ? e.message : String(e));
@@ -171,7 +184,7 @@ function NewUser({ onCreated }: { onCreated: () => void }) {
         >
           Create
         </button>
-        <button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+        <button className="btn" onClick={onClose}>Cancel</button>
       </div>
     </div>
   );

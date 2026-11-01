@@ -256,12 +256,20 @@ compatibility would mean running those SDKs in CI, which §6 leaves as a decisio
 
 ## 5. Logs, branding, and the sign-in pages
 
-**Logs.** Each sign-in-log row gets an Auth0 log `type` code (`s` success login, `f` failed
-login, `fp` wrong password, `ss` success signup, `fs` failed signup, `slo` logout, `seccft`
-client-credentials exchange, …). The code is derived from the stored `(method, outcome, phase)`,
-so no migration is needed. The list shows the code's human description. A filter chip per
-type, application and connection replaces today's free fields. A log entry has its own URL,
-which Overview and the Application and User "Logs" tabs link to.
+**Logs.** Each sign-in-log row gets an Auth0 log `type` code, derived from the stored
+`outcome`, so no migration is needed. The log records the **federated round trip only**, and
+that is a recorded decision (`src/sign-in-log.ts`, "What is NOT here"): no password, BankID,
+sign-up or logout rows. So Phase 2 has exactly two codes to carry: `s` for a succeeded
+callback and `f` for a failed one. A `started` hop gets no code at all, because Auth0 logs
+nothing for "sent to the upstream", and a code invented for it would claim a compatibility
+the log does not have. `fp`, `ss`, `slo` and the rest arrive only if the log widens, and
+widening it is a decision about holding more of somebody's sign-in activity, not a UI change.
+
+The list shows each code's human description, with filter chips for outcome and method.
+Each entry has its own URL (`/logs/<id>`), and the entry's screen shows the other hops of the
+same attempt, because the pair is the diagnosis. Overview and the Application and User
+"Logs" tabs link to entries. The server grows a `client_id` / `user_id` filter and a read by
+id for these.
 
 **Branding.** Two levels, as in Auth0:
 - an issuer-wide theme on `/branding` (logo, colours, radius, font),
@@ -305,12 +313,13 @@ party's path, so it ships last and on its own.
 | Phase | Delivers | Touches `src/`? |
 |---|---|---|
 | 1. Shell | `AppShell` and friends in `@substrat-run/ui`; dashboard moved onto them with no visual change; console on the shell with light/dark, crumbs, issuer card, account menu, lazy-loaded behind `auth/` | no |
-| 2. Regroup | The new nav (§3), ⌘K jump-to, tabbed detail screens with Raw, Connections as one list over today's three stores, APIs as a read view, log type codes, Overview | log codes only |
+| 2. Regroup | The new nav (§3) with redirects from the old URLs, ⌘K jump-to, tabbed detail screens with Raw, Connections as one list over today's three stores, APIs as a read view, log type codes, Overview | three admin reads: log codes and filters, a log entry by id, the resource list |
 | 3. `/api/v2` | The management API (§4), the console switched to it, OpenAPI gated, `/api/admin` aliased | yes |
 | 4. Branding | Issuer-level theme, live preview, `/emails` read-only | yes |
 | 5. Identifier-first | The `/login` sequence (§5) | yes, relying-party path |
 
-Phases 1 and 2 are console-only: they change no route, no stored row and no permission, so a
-reviewer reads them as UI diffs. Phase 3 is the first that adds an authenticated surface, and
-it carries the security review: the scope-to-route table, the cookie origin rule, and a test
-that a token minted for another audience is refused.
+Phases 1 and 2 change no stored row and no permission. Phase 2 adds three read-only admin
+routes behind the existing `admin` gate, so a reviewer reads both phases mostly as UI diffs.
+Phase 3 is the first that adds a new authenticated surface, and it carries the security
+review: the scope-to-route table, the cookie origin rule, and a test that a token minted for
+another audience is refused.

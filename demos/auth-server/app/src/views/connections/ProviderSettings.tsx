@@ -1,179 +1,49 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import {
-  bankidSettings,
-  type BankIdSettings,
-  identityProviders,
+  removeIdentityProvider,
   saveIdentityProvider,
   type ConfiguredProvider,
   type ProviderCatalogueEntry,
   type ProviderDraft,
-} from '../api';
-import { Field } from '../primitives';
-import { navigate } from '../console/router';
-import { CONNECTIONS_PATH } from '../console/routes';
-import { BankIdSettingsLink, bankIdStatus } from './BankId';
+} from '../../api';
+import { Field } from '../../primitives';
+import { navigate } from '../../console/router';
+import { CONNECTIONS_PATH } from '../../console/routes';
 
-/* ---- the upstream identity providers ---- */
+/* ---- an upstream provider's Settings tab ---- */
 
 /**
- * The directories this issuer will sign people in THROUGH — the other end of the registry
- * below. "Applications" holds the apps that send people here; this holds the providers this
- * issuer itself is a relying party of.
+ * The Settings tab of an upstream connection: the stored facts, the credentials form, and
+ * Remove. Moved here from the old `/providers/<id>` screen with its behaviour intact; what
+ * changed is only where it sits — under the connection's header and tabs rather than above a
+ * back link.
  *
- * The catalogue is closed on purpose (`src/providers.ts`): each entry is a provider Better
- * Auth ships endpoints and a profile mapping for, so enabling one is a credential and two
- * decisions rather than a form full of URLs to get subtly wrong.
- *
- * A list, and almost only a list: every provider with an id — configured or merely offered by
- * the catalogue — is a screen of its own at `/providers/<id>`, which is a place a link can
- * point at. The one editor still here is the custom OIDC provider nobody has named yet: its id
- * is the first field of the form, so until it is saved there is no URL for it to be at.
+ * An id is a place whether or not it is configured yet. A catalogue entry nobody has enabled
+ * has an id all the same, so `/connections/google` is the screen that enables Google — the same
+ * screen that afterwards edits it.
  */
-export function ProvidersPanel({ issuer }: { issuer: string | null }) {
-  const [catalogue, setCatalogue] = useState<ProviderCatalogueEntry[] | null>(null);
-  const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
-  const [bankid, setBankid] = useState<BankIdSettings | null>();
-  const [bankidError, setBankidError] = useState<string | null>(null);
-  const [addingCustom, setAddingCustom] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setErr(null);
-    try {
-      const state = await identityProviders();
-      setCatalogue(state.catalogue);
-      setProviders(state.providers);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void reload();
-    void bankidSettings().then(setBankid).catch((e: unknown) => {
-      setBankidError(e instanceof Error ? e.message : String(e));
-    });
-  }, [reload]);
-
-  const configured = (id: string) => providers.find((p) => p.id === id);
-  const unconfigured = (catalogue ?? []).filter((entry) => !configured(entry.id));
-
+export function ProviderSettings({
+  issuer, entry, provider, onSaved,
+}: {
+  issuer: string | null;
+  entry: ProviderCatalogueEntry | null;
+  provider: ConfiguredProvider | null;
+  onSaved: () => Promise<void>;
+}) {
   return (
-    <section className="panel">
-      <div className="panel-head"><h2>Sign-in providers</h2></div>
-      {err && <p className="error">{err}</p>}
-      {!catalogue && !err && <p className="muted">Loading providers…</p>}
-      <p className="muted">
-        Services this issuer signs people in through. Enabling one adds a “Continue with
-        …” button to the login screen — including for people a relying party sent here.
-        BankID uses a certificate for Swedish e-ID sign-in. “Custom (OIDC)” takes any
-        standards-compliant issuer by URL — Keycloak, Okta, Auth0, or another auth server
-        like this one.
-      </p>
-      {(providers.length > 0 || Boolean(bankid)) && (
-        <table className="grid">
-          <thead>
-            <tr><th>Provider</th><th>Configuration</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            {providers.map((provider) => {
-              const entry = catalogue?.find((e) => e.id === provider.id);
-              return (
-                <tr key={provider.id}>
-                  <td>
-                    <div>
-                      <ProviderLink id={provider.id}>
-                        {entry?.label ?? provider.label ?? provider.id}
-                      </ProviderLink>
-                      {provider.platform && <span className="tag">provided by Substrat</span>}
-                      {provider.issuer && !entry && !provider.platform && <span className="tag">custom OIDC</span>}
-                      {provider.allowSignup && <span className="tag">creates accounts</span>}
-                      {provider.trustEmail && <span className="tag">trusted email</span>}
-                    </div>
-                    {provider.tenantId && <code className="client-id">{provider.tenantId}</code>}
-                    {provider.issuer && <code className="client-id">{provider.issuer}</code>}
-                  </td>
-                  <td><code>{provider.clientId}</code></td>
-                  <td>{provider.disabled ? 'Disabled' : provider.attention ? 'Not offered — save again' : 'Enabled'}</td>
-                </tr>
-              );
-            })}
-            {bankid && (
-              <tr>
-                <td>
-                  <BankIdSettingsLink>BankID</BankIdSettingsLink>
-                  {bankid.allowSignup && <span className="tag">creates accounts</span>}
-                </td>
-                <td>
-                  {bankid.environment === 'production' ? 'Production' : 'Test'}
-                  {' · '}{bankid.certSet ? 'Certificate stored' : 'No certificate'}
-                </td>
-                <td>{bankIdStatus(bankid)}</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      )}
-      {bankidError && <p className="error">Could not load BankID: {bankidError}</p>}
-      {bankid === undefined && !bankidError && <p className="muted">Loading BankID…</p>}
-      {!addingCustom && (
-        <div className="add-provider">
-          {/* A catalogue entry already HAS its id, so enabling it is the same screen as
-              editing it — and therefore a link rather than a button that unfolds a form. */}
-          {unconfigured.map((entry) => (
-            <ProviderLink key={entry.id} id={entry.id} className="btn">
-              + {entry.label}
-            </ProviderLink>
-          ))}
-          {bankid === null && <BankIdSettingsLink className="btn">+ BankID</BankIdSettingsLink>}
-          {catalogue && <button className="btn" onClick={() => setAddingCustom(true)}>+ Custom (OIDC)</button>}
+    <>
+      {provider && <ProviderFacts provider={provider} />}
+      <section className="panel">
+        <div className="panel-head">
+          <h2>{provider?.platform ? 'Settings' : provider ? 'Credentials' : 'Enable this connection'}</h2>
         </div>
-      )}
-      {addingCustom && (
-        <ProviderEditor
-          issuer={issuer}
-          entry={null}
-          provider={null}
-          onCancel={() => setAddingCustom(false)}
-          onSaved={(id) => {
-            setAddingCustom(false);
-            // Straight to the screen the new provider now has: it has an id, so from here
-            // on it is edited where a link can point, like every other row.
-            navigate(`${CONNECTIONS_PATH}/${id}`);
-          }}
-        />
-      )}
-      {(providers.length > 0 || Boolean(bankid)) && (
-        <p className="muted small">
-          Open a provider to change its credentials, disable it or remove it. Removing one
-          leaves the people who signed in with it needing another way in.
-        </p>
-      )}
-    </section>
-  );
-}
-
-/**
- * A real anchor to `/providers/<id>`, not a click handler on a cell: the row's whole point is
- * that it is now a place, so it has to be copyable, middle-clickable and openable in a tab. The
- * plain click stays same-document.
- */
-function ProviderLink({
-  id, className, children,
-}: { id: string; className?: string; children: ReactNode }) {
-  const href = `${CONNECTIONS_PATH}/${id}`;
-  return (
-    <a
-      href={href}
-      className={className}
-      onClick={(e) => {
-        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-        e.preventDefault();
-        navigate(href);
-      }}
-    >
-      {children}
-    </a>
+        {/* No key needed here: the whole detail view is keyed by the connection id at its call
+            site, so one provider's unsaved credentials cannot outlive a move to another. */}
+        <ProviderEditor issuer={issuer} entry={entry} provider={provider} onSaved={onSaved} />
+      </section>
+      {/* A platform row cannot be removed — it would be delivered again — only switched off. */}
+      {provider && !provider.platform && <ProviderActions provider={provider} entry={entry} />}
+    </>
   );
 }
 
@@ -348,7 +218,8 @@ export function ProviderEditor({
           <em className="hint">
             On, anyone who can sign in upstream gets an account here — for a directory you own,
             that is usually the point. Off, only people who already have an account can use it.
-            Separate from the issuer-wide sign-up toggle, which is about passwords.
+            Separate from the sign-up switch on the Username-Password connection, which is about
+            passwords.
           </em>
         </span>
       </label>
@@ -388,5 +259,104 @@ export function ProviderEditor({
         {saved && <span className="muted small">Saved.</span>}
       </div>
     </div>
+  );
+}
+
+/* ---- what is stored ---- */
+
+function ProviderFacts({ provider }: { provider: ConfiguredProvider }) {
+  return (
+    <section className="panel">
+      {/* Not the provider's name: the connection header above already says it, with its kind.
+          This panel is the stored row, the form below it is what replaces the row, and the
+          heading is what tells the two apart. */}
+      <div className="panel-head"><h2>Stored configuration</h2></div>
+      <dl className="kv">
+        <dt>Provider ID</dt>
+        {/* The callback path segment, and therefore the one string that has to match what was
+            registered upstream. Fixed once saved, which is why it is a fact here rather than a
+            field below. */}
+        <dd><code>{provider.id}</code></dd>
+        <dt>Status</dt>
+        <dd>
+          {provider.disabled ? <span className="tag warn">disabled</span> : 'enabled'}
+          {provider.allowSignup && <span className="tag">creates accounts</span>}
+          {provider.trustEmail && <span className="tag">trusted email</span>}
+          {provider.attention && <span className="tag warn">not offered</span>}
+        </dd>
+        {provider.attention && (
+          <>
+            <dt>Needs attention</dt>
+            <dd>{provider.attention}</dd>
+          </>
+        )}
+        <dt>Client ID</dt>
+        <dd><code>{provider.clientId}</code></dd>
+        {provider.issuer && (
+          <>
+            <dt>Issuer URL</dt>
+            <dd><code>{provider.issuer}</code></dd>
+          </>
+        )}
+        {provider.tenantId && (
+          <>
+            <dt>Tenant</dt>
+            <dd><code>{provider.tenantId}</code></dd>
+          </>
+        )}
+        {/* No redirect URI here: the editor below already prints it, with the sentence that
+            makes it useful ("register this exactly, matched character for character"). Saying
+            it twice on one screen invites a reader to check whether the two agree. */}
+        <dt>Last changed</dt>
+        {/* `updatedAt` is epoch milliseconds, and null for a row that predates the column. */}
+        <dd>{provider.updatedAt ? new Date(provider.updatedAt).toLocaleString() : '—'}</dd>
+      </dl>
+    </section>
+  );
+}
+
+/* ---- the lever that is not a field ---- */
+
+function ProviderActions({
+  provider, entry,
+}: { provider: ConfiguredProvider; entry: ProviderCatalogueEntry | null }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const name = entry?.label ?? provider.label ?? provider.id;
+
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Actions</h2></div>
+      {err && <p className="error">{err}</p>}
+      <div className="row">
+        <button
+          className="btn danger"
+          disabled={busy}
+          onClick={() =>
+            void (async () => {
+              if (!window.confirm(`Remove ${name}? People who signed in with it will need another way in.`)) return;
+              setBusy(true);
+              setErr(null);
+              try {
+                await removeIdentityProvider(provider.id);
+                // Back to the list rather than staying on a screen whose row is gone. A
+                // catalogue entry's screen would still be a place — it would offer to enable
+                // the provider again — which is the wrong answer to a removal just made.
+                navigate(CONNECTIONS_PATH);
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+                setBusy(false);
+              }
+            })()
+          }
+        >
+          Remove
+        </button>
+      </div>
+      <p className="muted small">
+        Removing takes the button off the login screen and forgets the credentials. To keep them
+        and only hide the button, tick <strong>Disabled</strong> above instead.
+      </p>
+    </section>
   );
 }
