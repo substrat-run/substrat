@@ -24,6 +24,7 @@
  * wraps savepoints trivially; the reverse is not true.
  */
 import type { EventAuthorization } from '@substrat-run/contracts';
+import type { TransitionTally } from './transition-notes.js';
 
 /**
  * The one thing a scope host supplies. `depth` is 1-based and increases with
@@ -55,9 +56,10 @@ export interface AtomicMarks {
    * The #458 per-invoke `ctx.requestPlatform` tally behind `onPlatformRequests`
    * (the router's immediate-drain kick, #381). Absent for consumer dispatch.
    * `ScopeStubOptions` promises it never fires for a rolled-back operation; the
-   * restore is what keeps that true at this boundary too.
+   * restore is what keeps that true at this boundary too. #2762: it also holds the moves
+   * `ctx.noteTransition` noted, so a rolled-back sub-transaction's moves are not reported.
    */
-  signals?: { platformRequests: number };
+  signals?: { platformRequests: number } & TransitionTally;
 }
 
 /**
@@ -89,6 +91,7 @@ export function createAtomic(
   return async <T>(fn: () => T | Promise<T>): Promise<T> => {
     const passedMark = marks.passed.length;
     const platformRequestMark = marks.signals?.platformRequests ?? 0;
+    const transitionMark = marks.signals?.transitions?.length ?? 0;
     const token = {};
     stack.push(token);
     const depth = stack.length;
@@ -100,6 +103,7 @@ export function createAtomic(
       // The storage rolled back; restore what it could not reach.
       marks.passed.length = passedMark;
       if (marks.signals) marks.signals.platformRequests = platformRequestMark;
+      if (marks.signals?.transitions) marks.signals.transitions.length = transitionMark;
       unwind(token);
       throw err;
     }

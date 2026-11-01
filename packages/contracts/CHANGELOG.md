@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.174.0
+
+### Minor Changes
+
+- b8b837b: A declared route may answer more than one success status. It lists them in `statuses` (for example `[200, 202]`), a plain return answers the first, and a handler picks another by returning `answered(status, body)`. `mountRoutes` refuses a status the route does not list, and the OpenAPI document lists each status.
+
 ## 0.173.0
 
 ## 0.172.0
@@ -7294,7 +7300,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

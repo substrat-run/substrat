@@ -294,6 +294,7 @@ export type {
   RequestFacets,
   RequestFacetValue,
   RequestRecord,
+  RequestTransition,
   OutboundCall,
   InvocationKind,
   LogPattern,

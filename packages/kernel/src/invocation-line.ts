@@ -17,7 +17,7 @@
 import type { AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
 
 import { joinEntityTypes, type InvocationLevel } from '@substrat-run/contracts/invocation-record';
-import type { EmittedReport } from './scope-host.js';
+import type { EmittedReport, EmittedTransition } from './scope-host.js';
 
 /**
  * The field walk's answer for one response (#1331). Names only, and only names the
@@ -148,6 +148,14 @@ export interface InvocationLogLine extends AuthRecording {
    * or nothing was recorded. Written on an async line too: a type is a declared name, not data.
    */
   entityTypes: string | null;
+  /**
+   * #2762: the lifecycle moves the operation caused (`EmittedReport.transitions`), at most
+   * `TRANSITION_REPORT_CAP` entities: each as `<entityType>:<entityId>`, the state it left
+   * (`null` for an entity the call created) and the one it reached. `null` when not recorded —
+   * nothing noted (no move, or a module that does not hand `assertTransition` its context), an
+   * older scope host, a route that is not an operation, an async line.
+   */
+  transitions: EmittedTransition[] | null;
   /**
    * The registry id of the version that served the call — the platform's
    * `SUBSTRAT_VERSION_ID` binding, the same identity the spine stamps on events. `null`
@@ -338,6 +346,10 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
     entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
     entityTypes: entityTypesOf(emitted),
+    transitions:
+      emitted?.transitions && f.withEntities !== false
+        ? emitted.transitions.map((t) => ({ entity: t.entity, from: t.from, to: t.to }))
+        : null,
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),

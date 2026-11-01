@@ -139,16 +139,8 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
   });
 
-  it('/api/support/identity answers its 401 the same way; an unconfigured desk is still plain JSON', async () => {
-    const unconfigured = await get('/support/identity');
-    expect(unconfigured.status).toBe(200);
-    expect(unconfigured.headers.get('content-type')).not.toContain('problem');
-
-    const res = await app.request(
-      '/api/support/identity',
-      {},
-      { ...env, SUPPORT_DESK_ORIGIN: 'https://desk.test', SUPPORT_WIDGET_SECRET: 's' },
-    );
+  it('/api/support/identity answers its 401 the same way, before it reads whether a desk is configured', async () => {
+    const res = await get('/support/identity');
     expect(res.status).toBe(401);
     expect(res.headers.get('content-type')).toBe('application/problem+json');
     expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);

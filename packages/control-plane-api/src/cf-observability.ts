@@ -24,6 +24,7 @@ import type {
   TenantMetricsRow,
   RequestFacetKey,
   RequestRecord,
+  RequestTransition,
   TenantRequestScope,
 } from './observability.js';
 import {
@@ -241,6 +242,20 @@ function facetsMatch(e: Record<string, unknown>, scope: TenantRequestScope): boo
   return types.length === 0 || types.some((t) => entityTypes.includes(t));
 }
 
+/**
+ * #2762: a line's `transitions`, entry by entry. Absent or not a list is "not recorded"; an entry
+ * not shaped like one is dropped, never guessed at.
+ */
+function transitionsOf(v: unknown): RequestTransition[] | null {
+  if (!Array.isArray(v)) return null;
+  return v.flatMap((t) => {
+    const r = (t ?? {}) as Record<string, unknown>;
+    return typeof r['entity'] === 'string' && typeof r['to'] === 'string' && (r['from'] === null || typeof r['from'] === 'string')
+      ? [{ entity: r['entity'], from: r['from'], to: r['to'] }]
+      : [];
+  });
+}
+
 /** The stamped line of a raw event, as the Requests view lists it. */
 function requestRecordOf(e: Record<string, unknown>): RequestRecord {
   const source = (e['source'] ?? {}) as Record<string, unknown>;
@@ -266,6 +281,7 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
     logLines: num(source['logLines']),
     eventTypes: strings(source['eventTypes']),
     entities: strings(source['entities']),
+    transitions: transitionsOf(source['transitions']),
     versionId: str(source['versionId']),
     kind: invocationKindOf(source['kind']),
     outcome: str(source['outcome']),
