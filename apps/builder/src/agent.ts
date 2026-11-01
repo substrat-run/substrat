@@ -319,11 +319,11 @@ export class BuilderAgent extends DurableObject<Env> {
 		let entry: ProjectEntry | undefined;
 		let revision: string | undefined;
 		try {
-			await checkedExec(sb, 'mkdir -p /build');
 			if (request.snapshot) {
 				// stage-source reads the tree from the sandbox's disk, so it goes there before the
 				// queue. Kept in `request` it would sit in this DO's memory for the whole wait and
 				// build: an async frame holds its locals across every await.
+				await checkedExec(sb, 'mkdir -p /build');
 				await writeSandboxFile(sb, '/build/snapshot.json', JSON.stringify(request.snapshot));
 				request = { ...request, snapshot: undefined };
 			}
@@ -332,6 +332,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (!entry && submittedDirectory === undefined) return refuse(404, 'this vertical has no source repository; submit source or connect GitHub first');
 				entry ??= await this.#createProject(request.name ?? slug, slug, undefined, false);
 				const root = '/build/source';
+				await checkedExec(sb, 'mkdir -p /build');
 				await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
 				if (submittedDirectory !== undefined) {
 					await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
