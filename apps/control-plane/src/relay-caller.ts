@@ -1,4 +1,4 @@
-import { RELAY_CALLER_HEADER, relayCaller, type RelayCaller } from '@substrat-run/contracts';
+import { RELAY_CALLER_HEADER, relayCaller, scopeId, type RelayCaller, type ScopeId, type TenantId } from '@substrat-run/contracts';
 
 /**
  * Who called the relay — the half of the relay's authentication its platform check does not
@@ -60,28 +60,46 @@ export interface RelayCallerEnv {
 /** What a relay route decides about its caller before it acts on the scope the body names. */
 export type RelayCallerVerdict = { ok: true; proven: boolean } | { ok: false; error: string };
 
+/** The directory's word on a scope, as far as the relay needs it. */
+export type RelayScopeLookup = (
+  tenantId: TenantId,
+  scopeId: ScopeId,
+) => Promise<{ vertical: string | null; status: string } | undefined>;
+
 /**
  * Hold the scope a relay body names to the caller that sent it.
  *
- * A proven caller may only act for its own (tenant, scope): naming any other is refused,
- * because that is precisely the call the platform check could not tell apart. An unproven
- * caller passes unless `RELAY_REQUIRE_CALLER` is on, and the route is told which it was, so
- * a capability that must never be reachable on the secret alone can insist on `proven`.
+ * A proven caller may act for its own (tenant, scope), and for a sibling its own install
+ * serves (#2803): a scope of the same tenant, active in the directory, running the same
+ * vertical. A multi-scope vertical serves one hostname and selects the other scopes with
+ * `x-scope`/`x-site`, so the router's dispatched scope is not always the one a call is made
+ * for — and the vertical can already reach every such sibling, so this widens nothing. The
+ * rule is the one `archiveScopeHandler` applies, and the directory is read only when the
+ * scopes differ. Another tenant's scope, or another vertical's, is still refused.
+ *
+ * An unproven caller passes unless `RELAY_REQUIRE_CALLER` is on, and the route is told which
+ * it was, so a capability that must never be reachable on the secret alone can insist on
+ * `proven`.
  */
-export function checkRelayCaller(
+export async function checkRelayCaller(
   request: Request,
   env: RelayCallerEnv,
   named: { tenantId: string; scopeId: string },
-): RelayCallerVerdict {
+  lookup: RelayScopeLookup,
+): Promise<RelayCallerVerdict> {
   const caller = relayCallerOf(request);
   if (!caller) {
     return env.RELAY_REQUIRE_CALLER === 'true'
       ? { ok: false, error: 'relay refused: this call carries no proven caller (it must come from a dispatched vertical)' }
       : { ok: true, proven: false };
   }
-  if (caller.tenantId !== named.tenantId || caller.scopeId !== named.scopeId) {
-    return { ok: false, error: `relay refused: '${caller.vertical}' may only act for its own scope` };
-  }
+  const refused: RelayCallerVerdict = { ok: false, error: `relay refused: '${caller.vertical}' may only act for its own scope` };
+  if (caller.tenantId !== named.tenantId) return refused;
+  if (caller.scopeId === named.scopeId) return { ok: true, proven: true };
+  const siblingId = scopeId.safeParse(named.scopeId);
+  if (!siblingId.success) return refused;
+  const sibling = await lookup(caller.tenantId, siblingId.data);
+  if (!sibling || sibling.status !== 'active' || sibling.vertical !== caller.vertical) return refused;
   return { ok: true, proven: true };
 }
 

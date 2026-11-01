@@ -86,6 +86,13 @@ and it comes up with Manyfold's schema.
   ([`server.ts:67`](../../demos/manyfold/src/server.ts)).
 - **Site switcher** in Manyfold's UI (already the intended shape in `manyfold-ui.md`), picking
   the active scope via the existing `x-scope` header ([`worker.ts:79-81`](../../demos/manyfold/src/worker.ts)).
+- **Relay calls from a selected scope (#2803).** The router dispatches the hostname's scope, so
+  that is the relay's proven caller even when `x-scope`/`x-site` selected a sibling. A relay body
+  naming a scope other than the caller's own is admitted when that scope is in the caller's
+  tenant, active in the directory, and runs the caller's vertical — the rule
+  `archiveScopeHandler` applies, and one the vertical could already reach through the switcher.
+  Another tenant's scope, another vertical's, or an archived one is refused
+  ([`relay-caller.ts`](../../apps/control-plane/src/relay-caller.ts)).
 
 **Exit:** the app's own UI lists and switches between real sites.
 

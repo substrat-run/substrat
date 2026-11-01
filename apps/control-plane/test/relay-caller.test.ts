@@ -25,9 +25,13 @@ describe('the relay holds a proven caller to its own scope', () => {
   const tA = tenantId.parse(ulid());
   const tB = tenantId.parse(ulid());
   const vertical = `relay-caller-${tA.slice(-8).toLowerCase()}`;
+  const otherVertical = `relay-other-${tA.slice(-8).toLowerCase()}`;
   const PROVIDER = 'relay-caller-test-provider'; // no probe registered, so nothing leaves for a provider
   let sA: ScopeId;
   let sB: ScopeId;
+  let sibling: ScopeId; // A's second scope of the same vertical, as `x-site` selects it
+  let archived: ScopeId; // A's scope of the same vertical, archived
+  let foreign: ScopeId; // A's scope of another vertical
   const sent: unknown[] = [];
 
   const testEnv = (over: Record<string, unknown> = {}) =>
@@ -65,15 +69,24 @@ describe('the relay holds a proven caller to its own scope', () => {
     const host = hostFor();
     await host.admin.registerVertical(staff, { slug: vertical, name: 'Relay caller', source: 'cli' });
     await host.admin.setVerticalEmailSender(staff, vertical, true);
-    const install = async (t: typeof tA): Promise<ScopeId> => {
-      await host.admin.createTenant(staff, { id: t, slug: `rc-${t.toLowerCase()}`, name: 'Relay caller' });
+    await host.admin.registerVertical(staff, { slug: otherVertical, name: 'Relay other', source: 'cli' });
+    await host.admin.setVerticalEmailSender(staff, otherVertical, true);
+    const scopeOf = async (t: typeof tA, v = vertical): Promise<ScopeId> => {
       const s = scopeId.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: v });
       await host.admin.activateScope(staff, t, s);
       return s;
     };
+    const install = async (t: typeof tA): Promise<ScopeId> => {
+      await host.admin.createTenant(staff, { id: t, slug: `rc-${t.toLowerCase()}`, name: 'Relay caller' });
+      return scopeOf(t);
+    };
     sA = await install(tA);
     sB = await install(tB);
+    sibling = await scopeOf(tA);
+    archived = await scopeOf(tA);
+    await host.admin.archiveScope(staff, tA, archived);
+    foreign = await scopeOf(tA, otherVertical);
   });
 
   const mail = (t: string, s: string) => ({ tenantId: t, scopeId: s, to: 'someone@example.com', subject: 'Hi', html: '<p>hi</p>', text: 'hi' });
@@ -121,6 +134,48 @@ describe('the relay holds a proven caller to its own scope', () => {
       const garbled = await viaGateway('/internal/email/send', mail(tA, sA), { 'x-substrat-relay-caller': '{not json' });
       expect([missing.status, garbled.status]).toEqual([400, 400]);
       expect(sent).toHaveLength(before);
+    });
+  });
+
+  describe('a sibling scope its own install serves (#2803)', () => {
+    it('a proven caller sends for a same-vertical sibling of its tenant', async () => {
+      const before = sent.length;
+      const res = await viaGateway('/internal/email/send', mail(tA, sibling), callerHeader(tA, sA));
+      expect(res.status).toBe(200);
+      expect(sent).toHaveLength(before + 1);
+    });
+
+    it("a proven caller naming its tenant's scope of another vertical is refused", async () => {
+      const before = sent.length;
+      const res = await viaGateway('/internal/email/send', mail(tA, foreign), callerHeader(tA, sA));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: `relay refused: '${vertical}' may only act for its own scope` });
+      expect(sent).toHaveLength(before);
+    });
+
+    it('a proven caller naming an archived sibling is refused', async () => {
+      const before = sent.length;
+      const res = await viaGateway('/internal/email/send', mail(tA, archived), callerHeader(tA, sA));
+      expect(res.status).toBe(403);
+      expect(sent).toHaveLength(before);
+    });
+
+    it('a proven caller naming a same-vertical scope of another tenant is refused', async () => {
+      // B's install runs the same vertical; the tenant alone refuses it.
+      const before = sent.length;
+      const res = await viaGateway('/internal/email/send', mail(tA, sB), callerHeader(tA, sA));
+      const crossed = await viaGateway('/internal/email/send', mail(tB, sB), callerHeader(tA, sA));
+      expect([res.status, crossed.status]).toEqual([403, 403]);
+      expect(sent).toHaveLength(before);
+    });
+
+    it('a proven caller reaches the connection relays for a sibling', async () => {
+      const res = await viaGateway(
+        '/internal/connections/connect-links/list',
+        { tenantId: tA, scopeId: sibling },
+        callerHeader(tA, sA),
+      );
+      expect(res.status).not.toBe(403);
     });
   });
 

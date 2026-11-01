@@ -21,7 +21,7 @@ import { Hono, type Context } from 'hono';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi } from './reviews.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
-import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv } from './relay-caller.js';
+import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv, type RelayScopeLookup } from './relay-caller.js';
 import { sendAsTenant, TenantMailRefusal } from './tenant-mail.js';
 import {
   parsePlatformBaseDomains,
@@ -1744,6 +1744,11 @@ export function platformStoreClients(env: Env): {
   };
 }
 
+/** How a relay reads the scope a proven caller names when it is not the caller's own (#2803). */
+function relayScopeLookup(env: Env): RelayScopeLookup {
+  return (tenantId, scopeId) => hostFor(env).admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+}
+
 /** The coordinator is stateless — rebuilt per request; durable state is in the DOs. */
 function hostFor(env: Env): CloudflareScopeHost {
   const stores = platformStoreClients(env);
@@ -3135,7 +3140,8 @@ export default {
     // the named scope, and the `emailSender` grant is checked against that vertical. So a script
     // that holds the secret but lacks the grant is still refused. When the call came through the
     // egress worker's `RelayGateway`, the caller is PROVEN as well, and a body naming any scope
-    // but the caller's own is refused (`checkRelayCaller`) — the same check every relay below runs.
+    // but the caller's own, or a sibling its own install serves (#2803), is refused
+    // (`checkRelayCaller`) — the same check every relay below runs.
     //
     // Who sends it (#2098): with no `from`, the platform's onboarded sender, never an address the
     // caller picked. With a `from`, the tenant's own mail connection that covers that address
@@ -3148,7 +3154,7 @@ export default {
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
-      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
       if (!caller.ok) return c.json({ error: caller.error }, 403);
       const parsed = emailRelayRequest.safeParse(body);
       if (!parsed.success) {
@@ -3241,7 +3247,7 @@ export default {
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
-      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
       if (!caller.ok) return c.json({ error: caller.error }, 403);
       try {
         const result = await relayConnectionUpsert(
@@ -3296,7 +3302,7 @@ export default {
           throw e;
         }
         const body: unknown = await c.req.json().catch(() => ({}));
-        const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+        const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
         if (!caller.ok) return c.json({ error: caller.error }, 403);
         try {
           return c.json(await run(c.env, hostFor(c.env), body, caller.proven));
@@ -3363,7 +3369,7 @@ export default {
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
-      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
       if (!caller.ok) return c.json({ error: caller.error }, 403);
       try {
         const result = await relayConnectUrl(
@@ -3399,7 +3405,7 @@ export default {
           throw e;
         }
         const body: unknown = await c.req.json().catch(() => ({}));
-        const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+        const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
         if (!caller.ok) return c.json({ error: caller.error }, 403);
         try {
           return c.json(await run(hostFor(c.env), body, c.env));
@@ -3442,7 +3448,7 @@ export default {
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
-      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
       if (!caller.ok) return c.json({ error: caller.error }, 403);
       if (!caller.proven) {
         return c.json({ error: "a mail-in address needs a proven caller — call the relay from the vertical's worker, not from inside a Durable Object" }, 403);
