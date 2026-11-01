@@ -1,40 +1,50 @@
 import { useEffect, useState } from 'react';
-import { AccountMenu, AppShell, EmptyState, SubIcon, SubIcons } from '@substrat-run/ui';
+import { AccountMenu, AppShell, EmptyState, Page, SearchPill, SubIcon, SubIcons } from '@substrat-run/ui';
 import type { AppShellCrumb, AppShellNavGroup } from '@substrat-run/ui';
 import { discovery, type Discovery, type Session } from '../api';
-import { AccessPanel } from '../views/Access';
 import { AccountView } from '../views/Account';
+import { ApisView } from '../views/Apis';
 import { ApplicationDetailView } from '../views/ApplicationDetail';
 import { ClientsPanel } from '../views/Applications';
-import { BankIdDetailView } from '../views/BankIdDetail';
-import { IssuerPanel } from '../views/Issuer';
-import { ProviderDetailView } from '../views/ProviderDetail';
-import { ProvidersPanel } from '../views/Providers';
-import { SignInLogView } from '../views/SignInLog';
+import { ConnectionDetailView } from '../views/ConnectionDetail';
+import { ConnectionsView } from '../views/Connections';
+import { LogEntryView } from '../views/LogEntry';
+import { LogsView } from '../views/Logs';
+import { OverviewView } from '../views/Overview';
+import { SecurityView } from '../views/Security';
+import { SettingsView } from '../views/Settings';
 import { UserDetailView } from '../views/UserDetail';
 import { UsersView } from '../views/Users';
+import { CommandPalette } from './CommandPalette';
 import { navigate, usePathname } from './router';
 import { useConsoleTheme } from './theme';
 import {
   ACCOUNT_PATH,
+  APIS_PATH,
   APPLICATIONS_PATH,
-  BANKID_PATH,
-  PROVIDERS_PATH,
+  CONNECTIONS_PATH,
   ICON_ACCOUNT,
+  LOGS_PATH,
+  OVERVIEW_PATH,
   ROUTES,
+  SECURITY_PATH,
+  SETTINGS_PATH,
   USERS_PATH,
-  applicationDetailId,
-  isBankIdSettingsPath,
-  providerDetailId,
-  userDetailId,
+  applicationDetail,
+  connectionDetail,
+  legacyTarget,
+  logEntryId,
+  userDetail,
+  type Route,
 } from './routes';
 // (`console.css` is imported from main.tsx, not here: its load ORDER relative to tokens.css
 //  decides which set wins the property they share, and only main.tsx can guarantee it.)
 
 function groupsFor(admin: boolean): AppShellNavGroup[] {
-  const visible = ROUTES.filter((r) => admin || !r.adminOnly);
   const groups: AppShellNavGroup[] = [];
-  for (const route of visible) {
+  for (const route of ROUTES) {
+    if (route.adminOnly && !admin) continue;
+    if (route.navForNonAdminOnly && admin) continue;
     let group = groups.find((g) => g.title === route.group);
     if (!group) groups.push((group = { title: route.group, items: [] }));
     // The key IS the path, and so is the href: the screen has a URL, so the nav item is a
@@ -60,57 +70,64 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   const pathname = usePathname();
   const [disc, setDisc] = useState<Discovery | null>(null);
   const [theme, toggleTheme] = useConsoleTheme();
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
-    // The issuer's own metadata: `ProvidersPanel` shows the callback URL an upstream has to
-    // be given, and `IssuerPanel` shows the document itself. One read, two screens.
+    // The issuer's own metadata: Connections shows the callback URL an upstream has to be
+    // given, and Settings shows the document itself. One read, several screens.
     void discovery().then(setDisc);
   }, []);
+
+  useEffect(() => {
+    if (!admin) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [admin]);
 
   const visible = ROUTES.filter((r) => admin || !r.adminOnly);
   // `/account` is `adminOnly: false`, so this list is never empty for either audience — the
   // fallback only exists because the type cannot say so.
   const home = visible[0] ?? ROUTES[ROUTES.length - 1]!;
-  // `/` is where signing in leaves you, and it is not a screen. Resolved here rather than
-  // only in the effect below, so the first frame is the section rather than a "no such page"
-  // that corrects itself.
-  // `/users/<id>`, `/applications/<client id>`, `/providers/<provider id>` and
-  // `/bankid/settings` are screens under their section rather than sections of their own: the
-  // nav keeps the section lit, and only an administrator can be on any of them — every one is
-  // read after the permission filter, so a non-administrator pasting one gets the "no such page"
-  // answer the nav's own courtesy already implies.
-  const userId = visible.some((r) => r.path === USERS_PATH) ? userDetailId(pathname) : null;
-  const clientId = visible.some((r) => r.path === APPLICATIONS_PATH) ? applicationDetailId(pathname) : null;
-  const providerId = visible.some((r) => r.path === PROVIDERS_PATH) ? providerDetailId(pathname) : null;
-  // BankID's second screen carries no id — there is one configuration per issuer — so this is
-  // the only one of the four that is a path rather than something parsed out of one.
-  const bankIdSettings = visible.some((r) => r.path === PROVIDERS_PATH) && isBankIdSettingsPath(pathname);
-  const bankIdRoute = bankIdSettings || pathname === BANKID_PATH
-    ? visible.find((r) => r.path === PROVIDERS_PATH)
-    : undefined;
+  const section = (path: string): Route | null => visible.find((r) => r.path === path) ?? null;
+
+  // A detail screen is a screen under its section rather than a section of its own: the nav
+  // keeps the section lit, and every one is read after the permission filter — so a
+  // non-administrator pasting one gets the "no such page" answer the nav's own courtesy
+  // already implies.
+  const user = section(USERS_PATH) ? userDetail(pathname) : null;
+  const app = section(APPLICATIONS_PATH) ? applicationDetail(pathname) : null;
+  const conn = section(CONNECTIONS_PATH) ? connectionDetail(pathname) : null;
+  const logId = section(LOGS_PATH) ? logEntryId(pathname) : null;
   const active =
-    visible.find((r) => r.path === pathname) ??
-    (userId ? visible.find((r) => r.path === USERS_PATH)! : null) ??
-    (clientId ? visible.find((r) => r.path === APPLICATIONS_PATH)! : null) ??
-    (providerId ? visible.find((r) => r.path === PROVIDERS_PATH)! : null) ??
-    bankIdRoute ??
-    (pathname === '/' ? home : null);
+    section(pathname) ??
+    (user ? section(USERS_PATH) : null) ??
+    (app ? section(APPLICATIONS_PATH) : null) ??
+    (conn ? section(CONNECTIONS_PATH) : null) ??
+    (logId !== null ? section(LOGS_PATH) : null);
+  // A URL from before the regroup (`/providers/google`, `/sign-in-log`) is a place that moved.
+  const moved = admin ? legacyTarget(pathname) : null;
 
   useEffect(() => {
     // Replace rather than push: the back button should not have to step through a redirect
     // that was never a place the person had been.
-    if (pathname === '/') navigate(home.path, { replace: true });
-    if (admin && pathname === BANKID_PATH) navigate(PROVIDERS_PATH, { replace: true });
-  }, [pathname, home, admin]);
+    if (moved) navigate(moved, { replace: true });
+    else if (pathname === OVERVIEW_PATH && !admin) navigate(home.path, { replace: true });
+  }, [pathname, moved, home, admin]);
 
   // Issuer › Section › Item. The issuer is the root because it is what this console is OF —
   // the dashboard's crumbs start at the team for the same reason.
   const issuerHost = disc ? new URL(disc.issuer).host : window.location.host;
   const crumbs: AppShellCrumb[] = [{ label: issuerHost, href: home.path, onClick: () => navigate(home.path) }];
-  if (active) crumbs.push({ label: active.label, href: active.path, onClick: () => navigate(active.path) });
-  const detail = userId ?? clientId ?? providerId ?? (bankIdSettings ? 'Settings' : null);
+  if (active && active.path !== OVERVIEW_PATH) crumbs.push({ label: active.label, href: active.path, onClick: () => navigate(active.path) });
+  const detail = user?.id ?? app?.id ?? conn?.id ?? (logId !== null ? `#${logId}` : null);
   if (detail) crumbs.push({ label: detail });
-  if (!active) crumbs.push({ label: 'Not found' });
+  if (!active && !moved) crumbs.push({ label: 'Not found' });
 
   return (
     // `data-theme` on the console root rather than on <html>: the hand-off screens share the
@@ -127,6 +144,7 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
       onNav={(path) => navigate(path)}
       crumbs={crumbs}
       brand={<IssuerCard issuer={disc?.issuer ?? null} />}
+      actions={admin ? <SearchPill placeholder="Jump to…" width={280} onOpen={() => setPaletteOpen(true)} /> : undefined}
       footer={
         <AccountMenu
           name={session.name ?? ''}
@@ -139,55 +157,53 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
         />
       }
     >
-        <div className="console-content">
-          {active === null ? (
-            // A URL that is not a screen. Saying so beats silently rewriting the address
-            // bar: a link that has moved is worth knowing about, not covering up.
-            <EmptyState
-              title="No such page"
-              description={`Nothing is served at ${pathname}. It may have been a link to a screen that has since moved.`}
-              action={
-                <button className="btn primary" style={{ width: 'auto' }} onClick={() => navigate(home.path, { replace: true })}>
-                  Go to {home.label}
-                </button>
-              }
-            />
-          ) : userId ? (
-            <UserDetailView userId={userId} me={session.sub} />
-          ) : clientId ? (
-            // Keyed by the id, so going from one application to another is a remount and not a
-            // prop change. Everything that screen holds belongs to ONE client — the row itself,
-            // a secret it just rotated, the form's unsaved fields — and a prop change would
-            // leave all of it on screen above the next application's header while its read is
-            // still in flight. A late answer from the previous one lands on an instance that no
-            // longer exists, which is the point.
-            <ApplicationDetailView key={clientId} clientId={clientId} />
-          ) : providerId ? (
-            // Keyed for the same reason: a provider's screen holds ONE upstream's client id,
-            // secret field and three toggles, and a prop change would leave them on screen
-            // above the next provider's header — with a Save button that would write them to
-            // the wrong row.
-            <ProviderDetailView key={providerId} providerId={providerId} issuer={disc?.issuer ?? null} />
-          ) : bankIdSettings ? (
-            // No key: there is exactly one BankID configuration, so there is no other one to
-            // move to and nothing a prop change could carry across.
-            <BankIdDetailView />
-          ) : active.path === '/users' ? (
-            <UsersView me={session.sub} />
-          ) : active.path === '/applications' ? (
-            <ClientsPanel />
-          ) : active.path === '/providers' ? (
-            <ProvidersPanel issuer={disc?.issuer ?? null} />
-          ) : active.path === '/access' ? (
-            <AccessPanel />
-          ) : active.path === '/sign-in-log' ? (
-            <SignInLogView />
-          ) : active.path === '/issuer' ? (
-            <IssuerPanel disc={disc} />
-          ) : (
-            <AccountView admin={admin} />
-          )}
-        </div>
+      {admin && <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />}
+      <Page>
+        {moved ? null : active === null ? (
+          // A URL that is not a screen. Saying so beats silently rewriting the address bar: a
+          // link that has moved is worth knowing about, not covering up.
+          <EmptyState
+            title="No such page"
+            description={`Nothing is served at ${pathname}. It may have been a link to a screen that has since moved.`}
+            action={
+              <button className="btn primary" style={{ width: 'auto' }} onClick={() => navigate(home.path, { replace: true })}>
+                Go to {home.label}
+              </button>
+            }
+          />
+        ) : user ? (
+          // Keyed by the id, so going from one record to another is a remount and not a prop
+          // change: everything a detail screen holds — the row, a secret it just rotated, a
+          // form's unsaved fields — belongs to ONE record, and a late answer from the previous
+          // one lands on an instance that no longer exists, which is the point. The tab is a
+          // prop, not part of the key: moving between tabs of one record keeps its read.
+          <UserDetailView key={user.id} userId={user.id} tab={user.tab} me={session.sub} />
+        ) : app ? (
+          <ApplicationDetailView key={app.id} clientId={app.id} tab={app.tab} />
+        ) : conn ? (
+          <ConnectionDetailView key={conn.id} id={conn.id} tab={conn.tab} issuer={disc?.issuer ?? null} />
+        ) : logId !== null ? (
+          <LogEntryView key={logId} id={logId} />
+        ) : active.path === OVERVIEW_PATH ? (
+          <OverviewView />
+        ) : active.path === APPLICATIONS_PATH ? (
+          <ClientsPanel />
+        ) : active.path === APIS_PATH ? (
+          <ApisView />
+        ) : active.path === CONNECTIONS_PATH ? (
+          <ConnectionsView issuer={disc?.issuer ?? null} />
+        ) : active.path === SECURITY_PATH ? (
+          <SecurityView />
+        ) : active.path === USERS_PATH ? (
+          <UsersView me={session.sub} />
+        ) : active.path === LOGS_PATH ? (
+          <LogsView />
+        ) : active.path === SETTINGS_PATH ? (
+          <SettingsView disc={disc} />
+        ) : (
+          <AccountView admin={admin} />
+        )}
+      </Page>
     </AppShell>
   );
 }
@@ -220,10 +236,10 @@ function IssuerCard({ issuer }: { issuer: string | null }) {
             });
           }}
           style={{
-            marginLeft: 26,
+            marginLeft: 20,
             padding: '2px 6px',
             alignSelf: 'flex-start',
-            maxWidth: 'calc(100% - 26px)',
+            maxWidth: 'calc(100% - 20px)',
             border: 0,
             borderRadius: 6,
             background: 'transparent',

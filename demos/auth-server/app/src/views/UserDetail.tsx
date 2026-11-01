@@ -1,3 +1,4 @@
+import type { UserTab } from '../console/paths';
 import { useCallback, useEffect, useState } from 'react';
 import { EmptyState } from '@substrat-run/ui';
 import {
@@ -34,7 +35,7 @@ import { navigate } from '../console/router';
  * The nav is not the gate here either — every call below is refused server-side by session +
  * the `admin` role, and this component simply is not rendered for anyone else.
  */
-export function UserDetailView({ userId, me }: { userId: string; me: string }) {
+export function UserDetailView({ userId, me }: { userId: string; tab: UserTab; me: string }) {
   const [user, setUser] = useState<AdminUser | null | 'missing'>(null);
   const [err, setErr] = useState<string | null>(null);
   // Bumped by anything that changes this person, and read by the panels that do not own the

@@ -4,7 +4,7 @@ import {
   type BankIdSettings,
 } from '../api';
 import { navigate } from '../console/router';
-import { BANKID_SETTINGS_PATH } from '../console/routes';
+import { connectionPath } from '../console/routes';
 
 /* ---- BankID ---- */
 
@@ -17,12 +17,12 @@ import { BANKID_SETTINGS_PATH } from '../console/routes';
 export function BankIdSettingsLink({ className, children }: { className?: string; children: ReactNode }) {
   return (
     <a
-      href={BANKID_SETTINGS_PATH}
+      href={connectionPath('bankid')}
       className={className}
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
         e.preventDefault();
-        navigate(BANKID_SETTINGS_PATH);
+        navigate(connectionPath('bankid'));
       }}
     >
       {children}

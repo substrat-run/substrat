@@ -10,7 +10,7 @@ import {
 } from '../api';
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
-import { PROVIDERS_PATH } from '../console/routes';
+import { CONNECTIONS_PATH } from '../console/routes';
 import { BankIdSettingsLink, bankIdStatus } from './BankId';
 
 /* ---- the upstream identity providers ---- */
@@ -139,7 +139,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
             setAddingCustom(false);
             // Straight to the screen the new provider now has: it has an id, so from here
             // on it is edited where a link can point, like every other row.
-            navigate(`${PROVIDERS_PATH}/${id}`);
+            navigate(`${CONNECTIONS_PATH}/${id}`);
           }}
         />
       )}
@@ -161,7 +161,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
 function ProviderLink({
   id, className, children,
 }: { id: string; className?: string; children: ReactNode }) {
-  const href = `${PROVIDERS_PATH}/${id}`;
+  const href = `${CONNECTIONS_PATH}/${id}`;
   return (
     <a
       href={href}

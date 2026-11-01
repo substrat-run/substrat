@@ -1,3 +1,4 @@
+import type { ApplicationTab } from '../console/paths';
 import { useCallback, useEffect, useState } from 'react';
 import { EmptyState } from '@substrat-run/ui';
 import {
@@ -49,7 +50,7 @@ const EMPTY_DRAFT: ClientDraft = {
  * The nav is not the gate here — every call below is refused server-side by session + the
  * `admin` role, and this component simply is not rendered for anyone else.
  */
-export function ApplicationDetailView({ clientId }: { clientId: string }) {
+export function ApplicationDetailView({ clientId }: { clientId: string; tab: ApplicationTab }) {
   const [client, setClient] = useState<RegisteredClient | null | 'missing'>(null);
   const [err, setErr] = useState<string | null>(null);
   /** A freshly minted secret, held until dismissed — the only moment it is knowable. */

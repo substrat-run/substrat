@@ -7,7 +7,7 @@ import {
   type ProviderCatalogueEntry,
 } from '../api';
 import { navigate } from '../console/router';
-import { PROVIDERS_PATH } from '../console/routes';
+import { CONNECTIONS_PATH } from '../console/routes';
 import { ProviderEditor } from './Providers';
 
 /**
@@ -65,7 +65,7 @@ export function ProviderDetailView({ providerId, issuer }: { providerId: string;
         title="No such provider"
         description={`Nothing here is configured as “${providerId}”, and this issuer ships no editor for that name. It may have been removed since this link was shared.`}
         action={
-          <button className="btn primary" style={{ width: 'auto' }} onClick={() => navigate(PROVIDERS_PATH)}>
+          <button className="btn primary" style={{ width: 'auto' }} onClick={() => navigate(CONNECTIONS_PATH)}>
             Back to Sign-in providers
           </button>
         }
@@ -78,7 +78,7 @@ export function ProviderDetailView({ providerId, issuer }: { providerId: string;
       <button
         className="btn link"
         style={{ justifySelf: 'start', padding: 0 }}
-        onClick={() => navigate(PROVIDERS_PATH)}
+        onClick={() => navigate(CONNECTIONS_PATH)}
       >
         ← Sign-in providers
       </button>
@@ -201,7 +201,7 @@ function ProviderActions({
                 // Back to the list rather than staying on a screen whose row is gone. A
                 // catalogue entry's screen would still be a place — it would offer to enable
                 // the provider again — which is the wrong answer to a removal just made.
-                navigate(PROVIDERS_PATH);
+                navigate(CONNECTIONS_PATH);
               } catch (e) {
                 setErr(e instanceof Error ? e.message : String(e));
                 setBusy(false);

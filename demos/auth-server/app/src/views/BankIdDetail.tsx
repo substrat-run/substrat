@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { bankidSettings, removeBankid, testBankid, type BankIdSettings } from '../api';
 import { navigate } from '../console/router';
-import { PROVIDERS_PATH } from '../console/routes';
+import { CONNECTIONS_PATH } from '../console/routes';
 import { BankIdEditor, bankIdStatus } from './BankId';
 
 /**
@@ -46,7 +46,7 @@ export function BankIdDetailView() {
       <button
         className="btn link"
         style={{ justifySelf: 'start', padding: 0 }}
-        onClick={() => navigate(PROVIDERS_PATH)}
+        onClick={() => navigate(CONNECTIONS_PATH)}
       >
         ← Sign-in providers
       </button>

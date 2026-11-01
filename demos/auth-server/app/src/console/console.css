@@ -77,16 +77,6 @@
 /* tokens.css gives `code` a fixed light grey that only reads on its dark panels. */
 .console-root code { color: var(--text-primary); }
 
-.console-content {
-  padding: var(--space-6);
-  display: grid;
-  gap: var(--space-4);
-  align-content: start;
-  width: 100%;
-  max-width: var(--content-max-w);
-  margin: 0 auto;
-}
-
 .console-root .panel {
   background: var(--surface-card);
   border: 1px solid var(--border-default);
