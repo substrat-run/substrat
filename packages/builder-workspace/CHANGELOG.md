@@ -1,5 +1,11 @@
 # @substrat-run/builder-workspace
 
+## 0.8.2
+
+### Patch Changes
+
+- f4b526a: The hosted builder's model gate runs the platform's TypeScript again instead of reporting `Command "tsc" not found` before the scaffold, and the model phase teaches `z` from `@substrat-run/contracts`, which resolves before a project has a `package.json`.
+
 ## 0.8.1
 
 ### Patch Changes

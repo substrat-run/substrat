@@ -2018,3 +2018,71 @@ export const dashboardRoutes = defineRoutes({
     http: { method: 'POST', path: '/apps/{scopeId}/processes/note' },
   },
 });
+
+/** One team the signed-in login belongs to — a row of the team switcher. */
+export const teamSummary = z.object({ id: z.string(), name: z.string(), slug: z.string() });
+
+/** Signed in, and in no team yet: the app shows "name your first team". */
+export const onboardingView = z.object({
+  needsOnboarding: z.literal(true),
+  email: z.string().nullable(),
+  name: z.string().nullable(),
+});
+
+/** Signed in, in at least one team: the team the cookie picks, every team, and the caller's role on it. */
+export const accountView = z.object({
+  principal: z.string(),
+  tenant: z.string(),
+  dashboardScope: z.string(),
+  email: z.string().nullable(),
+  name: z.string().nullable(),
+  teams: z.array(teamSummary),
+  currentTeamId: z.string(),
+  roleKey: z.string().nullable(),
+});
+
+/**
+ * The team-less routes (#2170): the ones that are about the signed-in LOGIN rather than one
+ * team, so no path can name a team for them — who am I, make a team, pick the team `/` opens
+ * on, join one by invite.
+ *
+ * `worker.ts` mounts these under `/api` with a context that verifies the session and nothing
+ * more: `dashboardRoutes`' membership check would refuse exactly the callers these exist for
+ * (a login with no team yet, an invitee not in the team they are joining). A separate table
+ * rather than entries in `dashboardRoutes` because that table's base path IS the team, and
+ * the browser client is generated per table for the same reason
+ * (`web/src/lib/account-api.generated.ts`, beside the team client).
+ *
+ * Writes of the `sb_team` cookie stay in the handlers: it is "the team `/` lands on", which
+ * create, switch and accept each move. Undeclared on purpose: the invite preview (it runs
+ * before sign-in, so this table's context would refuse it), webhooks and OAuth callbacks
+ * (their callers are providers, not this app's client).
+ */
+export const accountRoutes = defineRoutes({
+  'dashboard/me': {
+    summary: 'Who is signed in: their teams and the current one, or that they have none yet',
+    output: z.union([onboardingView, accountView]),
+    http: { method: 'GET', path: '/me' },
+  },
+  'dashboard/create-team': {
+    summary: 'Create a team with the caller as owner, and make it the one `/` opens on',
+    input: z.object({ name: z.string().trim().min(1).max(100) }),
+    output: z.object({ teamId: z.string() }),
+    http: { method: 'POST', path: '/teams' },
+    status: 201,
+  },
+  'dashboard/switch-team': {
+    summary: 'Make one of the caller’s teams the one `/` opens on',
+    input: z.object({ teamId: z.string().min(1) }),
+    output: z.object({ teamId: z.string() }),
+    http: { method: 'POST', path: '/teams/switch' },
+  },
+  // Not `dashboard/accept-invite`: that is the module operation this route's handler invokes.
+  'dashboard/accept-team-invite': {
+    summary: 'Join a team by an invite link: 200 joined, 202 accepted with access still landing',
+    input: z.object({ token: z.string().min(1) }),
+    output: z.object({ teamId: z.string(), already: z.boolean().optional(), pending: z.boolean().optional() }),
+    http: { method: 'POST', path: '/invites/accept' },
+    statuses: [200, 202],
+  },
+});

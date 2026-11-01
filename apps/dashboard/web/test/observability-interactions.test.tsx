@@ -107,6 +107,31 @@ it('a Lines row opens its fields as JSON, and an underlined value adds that filt
   expect(container.querySelector('[aria-label="Log details"]')).toBeNull();
 });
 
+it('an open stamped line links each record it touched to that record’s history', async () => {
+  const event: ObservabilityLogEvent = {
+    timestamp: Date.parse(windowRange.since),
+    level: 'info',
+    message: 'POST /api/orders',
+    service: 'service',
+    outcome: 'ok',
+    trigger: 'POST /api/orders',
+    invocation: 'fetch',
+    entrypoint: null,
+    requestId: 'provider-request-1',
+    invocationId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    cpuTimeMs: 2,
+    wallTimeMs: 12,
+    raw: { source: { substrat: 'invocation', entities: ['order:01ARZ3NDEKTSV4RRFFQ69G5FAW', 'customer:c1'] } },
+  };
+  await act(async () => root.render(<LogList events={[event]} />));
+  click(container.querySelector('[role="row"][aria-expanded]')!);
+  const links = [...container.querySelectorAll('[aria-label="Log details"] button')].filter((b) => b.textContent!.endsWith('history →'));
+  expect(links.map((b) => b.textContent)).toEqual(['order:01ARZ3…5FAW history →', 'customer:c1 history →']);
+  click(links[0]!);
+  expect(new URLSearchParams(window.location.search).get('rec')).toBe('order:01ARZ3NDEKTSV4RRFFQ69G5FAW');
+  window.history.replaceState(null, '', window.location.pathname);
+});
+
 it('Lines is a table of rows of cells, and an open line is a row of its own whose block parses as JSON', async () => {
   const event: ObservabilityLogEvent = {
     timestamp: Date.parse(windowRange.since),

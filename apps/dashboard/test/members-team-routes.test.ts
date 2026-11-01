@@ -245,6 +245,17 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
     expect(((await owner.json()) as { roleKey: string }).roleKey).toBe('owner');
     expect(((await viewer.json()) as { roleKey: string }).roleKey).toBe('viewer');
   });
+  it('/api/teams/switch pins a team the caller is in, and refuses one they are not without touching the cookie', async () => {
+    const mine = await team('sub-owner');
+    const other = await team('sub-stranger', 'Other');
+    const ok = await req('POST', '/api/teams/switch', { body: { teamId: mine.tenant } });
+    expect([ok.status, await ok.json()]).toEqual([200, { teamId: mine.tenant }]);
+    expect(ok.headers.get('set-cookie')).toContain(`sb_team=${mine.tenant}`);
+    const refused = await req('POST', '/api/teams/switch', { body: { teamId: other.tenant } });
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get('set-cookie')).toBeNull();
+  });
+
   it('a team the caller is not in is a 404 on every route — before its input is parsed, and before its scope is opened', async () => {
     await team('sub-owner');
     const other = await team('sub-stranger', 'Other');

@@ -3322,7 +3322,13 @@ type RouteShape<R> = {
     readonly path: CheckedPath<R>;
   };
   /** The success status, when it is not 200 — `201` for a create. */
-  readonly status?: 200 | 201 | 202;
+  readonly status?: R extends { statuses: unknown } ? never : RouteStatus;
+  /**
+   * Every success status the route answers, when there is more than one — `[200, 202]` for an
+   * accept whose effect may still be landing. The first is what a plain return answers; any
+   * other is chosen by returning `answered(status, body)`. Declared instead of `status`.
+   */
+  readonly statuses?: readonly [RouteStatus, RouteStatus, ...RouteStatus[]];
   /**
    * Response headers that say what the body cannot (a logs page's `incomplete`). The client
    * method answers `{ body, headers }`, and `headers` holds only these names.
@@ -3353,8 +3359,34 @@ export function defineRoutes<const Routes extends { readonly [K in keyof Routes]
 /** What a route's handler is handed: its parsed input, or `undefined` when it declares none. */
 export type RouteInput<R> = R extends { input: infer I } ? (I extends z.ZodType ? z.infer<I> : undefined) : undefined;
 
-/** What a route's handler answers — the declared output, before the mount parses it. */
-export type RouteOutput<R> = R extends { output: infer O } ? (O extends z.ZodType ? z.input<O> : never) : never;
+/** A success status a declared route may answer. */
+export type RouteStatus = 200 | 201 | 202;
+
+/**
+ * A handler's answer at a status other than its route's first (#2170): made by `answered`, and
+ * honoured by `mountRoutes` only when the route lists the status in `statuses`.
+ */
+export class RouteAnswer<S extends RouteStatus = RouteStatus, T = unknown> {
+  constructor(
+    readonly status: S,
+    readonly body: T,
+  ) {}
+}
+
+/** Answer a declared route at one of the other statuses it lists in `statuses`. */
+export function answered<S extends RouteStatus, T>(status: S, body: T): RouteAnswer<S, T> {
+  return new RouteAnswer(status, body);
+}
+
+/**
+ * What a route's handler answers — the declared output, before the mount parses it, or, on a
+ * route declaring `statuses`, that output wrapped at one of them.
+ */
+export type RouteOutput<R> = R extends { output: infer O }
+  ? O extends z.ZodType
+    ? z.input<O> | (R extends { statuses: readonly (infer S extends RouteStatus)[] } ? RouteAnswer<S, z.input<O>> : never)
+    : never
+  : never;
 
 /**
  * The handler map a declared route set requires — the routes' twin of `OperationImpl`.

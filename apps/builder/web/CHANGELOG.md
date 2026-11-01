@@ -1,5 +1,13 @@
 # @substrat-run/builder-web
 
+## 0.3.67
+
+### Patch Changes
+
+- Updated dependencies [388a941]
+  - @substrat-run/ui@0.4.0
+  - @substrat-run/model-view@0.6.21
+
 ## 0.3.66
 
 ### Patch Changes

@@ -1,5 +1,19 @@
 # @substrat-run/demo-auth-server
 
+## 0.17.0
+
+### Minor Changes
+
+- 388a941: The auth-server console on the dashboard's shell, regrouped in Auth0's shape: Overview, Applications, APIs, Connections, Security, Users, Logs and Settings, with tabbed detail screens, a Raw tab, a light theme and ⌘K. `@substrat-run/ui` gains `AppShell`, `AccountMenu`, `PageHeader`, `DetailHeader`, `LinkTabs` and the layout primitives, and `Switch` is now a keyboard-reachable `role="switch"` button. The dashboard renders on the shared shell unchanged.
+
+### Patch Changes
+
+- Updated dependencies [77318c1]
+- Updated dependencies [6e52001]
+  - @substrat-run/kernel@0.173.0
+  - @substrat-run/vertical-host@0.173.0
+  - @substrat-run/contracts@0.173.0
+
 ## 0.16.7
 
 ### Patch Changes
