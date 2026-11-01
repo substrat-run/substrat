@@ -32,8 +32,18 @@ describe('transition notes (#2762)', () => {
       Array.from({ length: TRANSITION_REPORT_CAP }, (_, i) => ({ entity: `ticket:e${i}`, from: 'new', to: i === 0 ? 'done' : 'open' })),
     ],
     [
-      'drops a note whose type, id or states are not shaped like names',
-      [move('a', 'new', 'open', 'not a type'), move('has space', 'new', 'open'), move('x'.repeat(129), 'new', 'open'), move('b', 'new', 'a state?'), move('c', 'a state?', 'open')],
+      'drops a note whose type, id or states are not shaped like names, or not strings at all',
+      [
+        move('a', 'new', 'open', 'not a type'),
+        move('has space', 'new', 'open'),
+        move('x'.repeat(129), 'new', 'open'),
+        move('b', 'new', 'a state?'),
+        move('c', 'a state?', 'open'),
+        // What a caller outside the type system can hand the verb.
+        move('d', 'new', 'open', null as unknown as string),
+        move('e', 'new', undefined as unknown as string),
+        move('f', undefined as unknown as string, 'open'),
+      ],
       undefined,
     ],
   ])('%s', (_, notes, expected) => {

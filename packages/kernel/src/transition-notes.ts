@@ -39,9 +39,12 @@ export function noteTransitionInto(tally: TransitionTally | undefined): (t: Note
   return (t) => {
     const notes = tally?.transitions;
     if (!notes) return;
-    if (refusalEntityType(t.entityType) !== t.entityType) return;
+    // Runtime types first: the verb is on `ctx`, so a caller outside the type system can hand it
+    // `null` or nothing, which `refusalEntityType` passes through and a pattern test stringifies.
+    if (typeof t.entityType !== 'string' || refusalEntityType(t.entityType) !== t.entityType) return;
     if (typeof t.entityId !== 'string' || t.entityId.length > ENTITY_ID_MAX || !OBJECT_ID.test(t.entityId)) return;
-    if (!STATE.test(t.to) || (t.from !== null && !STATE.test(t.from))) return;
+    if (typeof t.to !== 'string' || !STATE.test(t.to)) return;
+    if (t.from !== null && (typeof t.from !== 'string' || !STATE.test(t.from))) return;
     // Bounded by entity: past the cap, only an entity already noted is followed further.
     const ref = refOf(t);
     if (!notes.some((n) => refOf(n) === ref) && new Set(notes.map(refOf)).size >= TRANSITION_REPORT_CAP) return;
