@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-api
 
+## 0.174.0
+
+### Minor Changes
+
+- b40e34d: Logs Lines can be counted: `/observability/tenant-log-volume` and `/observability/tenant-log-facets` count a tenant's request lines and `ctx.log` lines by level, operation and principal kind, and `/observability/tenant-logs` takes repeated `operation` and `principalKind` filters.
+
+### Patch Changes
+
+- Updated dependencies [b8b837b]
+  - @substrat-run/contracts@0.174.0
+  - @substrat-run/control-plane-client@0.5.2
+  - @substrat-run/kernel@0.174.0
+
 ## 0.173.0
 
 ### Minor Changes
