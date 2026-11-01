@@ -1209,14 +1209,15 @@ async function previewTeamInvite({ c }: PublicContext, { token }: { token: strin
   // (same pattern as accept-invite), so no role is needed to read the invite's own data.
   const scope = await host.getScope(principalId.parse(ulid()), t, s);
   const preview = (await scope.invoke('dashboard/preview-invite', { invitationId: claim.invitationId })) as
-    | { email: string; roleKey: string }
+    // The invite's role is one the invite route admitted; the declared output holds it to that.
+    | { email: string; roleKey: 'admin' | 'member' | 'viewer' }
     | null;
   if (!preview) throw new HTTPException(404, { message: 'this invite link is invalid or has expired' });
   const team = await host.admin.getTenant(STAFF, t);
   return { teamName: team?.name ?? 'a team', email: preview.email, roleKey: preview.roleKey };
 }
 
-mountRoutes(app, publicRoutes, { basePath: '/api', context: (c): PublicContext => ({ c }) })({
+mountRoutes(app, publicRoutes, { basePath: '/api', context: async (c): Promise<PublicContext> => ({ c }) })({
   'dashboard/preview-team-invite': previewTeamInvite,
   'dashboard/public-catalog': publicCatalog,
 } satisfies RouteImpl<typeof publicRoutes, PublicContext>);

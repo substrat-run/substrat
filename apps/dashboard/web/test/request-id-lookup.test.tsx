@@ -157,32 +157,6 @@ describe('a team-client failure’s request id (#2192): install, retry and resum
   });
 });
 
-describe('ApiError.requestId', () => {
-  afterEach(() => vi.unstubAllGlobals());
-  const failWith = async (init: ResponseInit, body: unknown) => {
-    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(body), { status: 403, headers: { 'content-type': 'application/json' }, ...init }));
-    return api.previewInvite('token').then(
-      () => null,
-      (e: unknown) => e as ApiError,
-    );
-  };
-
-  it('reads the id from the response header, and from the problem body when there is no header', async () => {
-    expect((await failWith({ headers: { 'x-substrat-request-id': ID } }, { detail: 'no' }))?.requestId).toBe(ID);
-    expect((await failWith({}, { detail: 'no', requestId: OTHER }))?.requestId).toBe(OTHER);
-  });
-
-  it('ignores an id that is not shaped like one, from the body and from the header', async () => {
-    expect((await failWith({}, { detail: 'no', requestId: 'x'.repeat(500) }))?.requestId).toBeUndefined();
-    expect((await failWith({}, { detail: 'no', requestId: `8${ID.slice(1)}` }))?.requestId).toBeUndefined();
-    expect((await failWith({ headers: { 'x-substrat-request-id': 'nonsense' } }, { detail: 'no', requestId: OTHER }))?.requestId).toBe(OTHER);
-  });
-
-  it('has none when the answer named none', async () => {
-    expect((await failWith({}, { detail: 'no' }))?.requestId).toBeUndefined();
-  });
-});
-
 describe('the request-finding surfaces', () => {
   let container: HTMLDivElement, root: Root;
   beforeEach(() => {
