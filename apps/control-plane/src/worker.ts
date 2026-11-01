@@ -861,7 +861,7 @@ async function rebuildStoreScripts(env: Env, admin: HostAdmin): Promise<void> {
   const flow = storeReleasesFor(env);
   const ensure = ensureScopeStoresFor(env);
   const subrequests = parseNonNegativeInteger(env.STORE_REBUILD_SUBREQUESTS) ?? STORE_REBUILD_PASS_SUBREQUESTS;
-  if (!flow || !ensure || subrequests === 0 || STORE_DRIVERS.length === 0) return;
+  if (!flow || !ensure || subrequests === 0) return;
   const passes = await runStoreFleetRebuild({
     admin,
     actor: SWEEP_ACTOR,

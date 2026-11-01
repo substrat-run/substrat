@@ -34,7 +34,7 @@ import {
  * means a retry can still converge, destroyed means the erasure is final.
  *
  * Gated on the store-driver registry: with no driver registered no deployment can hold a store,
- * and erasure proceeds as it did before stores existed.
+ * and erasure proceeds as it did before stores existed. The hosted registry holds graph.
  */
 describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   let dir: string;
@@ -215,6 +215,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
           authenticate: UNSAFE_devPlatformActorAuth(),
           verticals: { docs: redactOnly as unknown as VerticalClient },
           resolveVerticalRef: async () => undefined,
+          storeDrivers: [],
         });
         const res = await api.request(`/tenants/${tenant}/scopes/${s}/subjects/${subject}/shred`, { method: 'POST', headers: auth });
         expect(res.status).toBe(200);
@@ -231,9 +232,8 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     // Stricter than asking the vertical (#2207): with no version to read, the control plane
     // cannot say which bindings to erase, so it refuses rather than guess an empty list, where a
     // version of the scope's vertical declared a store. Where none ever did, no store can hold the
-    // subject, and the erasure proceeds (#2394). Against an injected registry: the default one
-    // registers no driver yet, so nothing may hold a store there (below).
-    for (const [registry, drivers] of [['an injected', [graph]]] as const) {
+    // subject, and the erasure proceeds (#2394).
+    for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
       it(`with ${registry} registry, a scope with no bound version and no pin, beside a declared store, is a version unknown: 503, and the key is kept`, async () => {
         const { s, subject, keyKept } = await sealedScope(await declaringVertical());
         const { caller, asked } = platformStores();
@@ -295,13 +295,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         return { ...scope, api, asked: platform.asked };
       };
 
-      it('a version that declares no store is not asked, and the key is destroyed', async () => {
-        const { s, subject, keyKept, api, asked } = await bound();
-        const res = await shred(api, s, subject);
-        expect(res.status).toBe(200);
-        expect(asked).toEqual([]);
-        expect(await keyKept()).toBe(false);
-      });
+      // 'default' is the registry a hosted control plane runs: `STORE_DRIVERS`, which holds graph.
+      for (const drivers of [[graph], 'default'] as const) {
+        it(`with ${drivers === 'default' ? 'the default' : 'an injected'} registry, a version that declares no store is not asked, and the key is destroyed`, async () => {
+          const { s, subject, keyKept, api, asked } = await bound(undefined, platformStores(), drivers);
+          const res = await shred(api, s, subject);
+          expect(res.status).toBe(200);
+          expect(asked).toEqual([]);
+          expect(await keyKept()).toBe(false);
+        });
+      }
 
       // Erasure reaches every binding any version of the vertical declared (#2286), so a
       // binding that exists only on the bound version is still erased. A pointer naming
@@ -475,32 +478,17 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await scope.keyKept()).toBe(true);
       });
 
-      it('a version that declares a store is asked', async () => {
-        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }]);
-        const res = await shred(api, s, subject);
-        expect(res.status).toBe(200);
-        expect(asked).toEqual([`${s}/${subject}`]);
-        expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
-        expect(await keyKept()).toBe(false);
-      });
-
-      // The registry a hosted control plane runs: `STORE_DRIVERS`, which registers no driver yet.
-      it('with the default registry, a version that declares no store is not asked, and the key is destroyed', async () => {
-        const { s, subject, keyKept, api, asked } = await bound(undefined, platformStores(), 'default');
-        const res = await shred(api, s, subject);
-        expect(res.status).toBe(200);
-        expect(asked).toEqual([]);
-        expect(await keyKept()).toBe(false);
-      });
-
-      it('with the default registry, a version that declares a graph store is not asked, and the key is destroyed', async () => {
-        // No driver is registered, so no store can exist to hold the subject's data.
-        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }], platformStores(), 'default');
-        const res = await shred(api, s, subject);
-        expect(res.status).toBe(200);
-        expect(asked).toEqual([]);
-        expect(await keyKept()).toBe(false);
-      });
+      // 'default' is the registry a hosted control plane runs: `STORE_DRIVERS`, which holds graph.
+      for (const drivers of [[graph], 'default'] as const) {
+        it(`with ${drivers === 'default' ? 'the default' : 'an injected'} registry, a version that declares a store is asked`, async () => {
+          const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }], platformStores(), drivers);
+          const res = await shred(api, s, subject);
+          expect(res.status).toBe(200);
+          expect(asked).toEqual([`${s}/${subject}`]);
+          expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
+          expect(await keyKept()).toBe(false);
+        });
+      }
     });
   });
 });

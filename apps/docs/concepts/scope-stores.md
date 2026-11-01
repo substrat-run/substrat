@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. No driver is registered yet, so nothing is live for a vertical today."
+description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. The graph driver is registered, but no release of it is approved yet, so nothing is live for a vertical today."
 ---
 
 # Scope stores
@@ -10,16 +10,18 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a driver is registered and its store script is deployed.
+Nothing here is live for a vertical yet. The `graph` driver is registered, but a store script runs only a release a person has approved, and none is approved yet. A hosted push that declares a graph store passes the push check and is then refused before anything is uploaded. Everything below is what the platform does once a release is approved and rolled out.
 
 Today a vertical author can:
 
 - read the declaration and the call shape below, and write code against `getScopeStore` and `StoreStub`;
 - run a store locally, on the pure adapter, with a `ScopeStoreRunner` a driver supplies (see the end of this page).
 
+[Graph notes](../verticals/graph-notes.md) is a vertical that does both, against the `graph` driver's local process.
+
 A vertical author cannot yet:
 
-- push a vertical that declares `scopeStores`;
+- complete a hosted push of a vertical that declares `scopeStores`;
 - reach a store from a hosted deploy.
 
 ## Declaring it
@@ -33,8 +35,12 @@ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }]
 A hosted vertical's upload carries no store binding. The vertical is given neither the store's namespace nor anything that opens it. A binding already used by another store is refused, and so is the name `ATTACHMENTS`. The vertical's own Durable Object bindings count as stores for that check. A name in the `SUBSTRAT_` namespace is the platform's and is refused. The push and the control plane apply the same checks, so a manifest that did not come through `substrat push` is refused the same way.
 
 A driver is registered before a push that names it can succeed. There is one store script per
-driver and vertical; its objects keep their identities when the script changes. The upload and
-release machinery is implemented, but the empty driver registry still prevents hosted use.
+driver and vertical; its objects keep their identities when the script changes. The `graph`
+driver is registered, and a push that names it succeeds once a release of it is approved and
+rolled out. It is written outside this repo, so its registration rests on a
+[decision record](https://github.com/substrat-run/substrat/blob/main/docs/decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md)
+that accepts that the tenants of one vertical share its script, kept apart by the driver's own
+design and the review of each release.
 
 ### Store releases and vertical deploys are separate
 
@@ -64,7 +70,7 @@ On the platform path the call leaves the vertical as a fetch of `store.substrat.
 
 `invoke` takes an operation and its input, and nothing else. Idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no whitespace and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical. So is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations. The control plane calls the store script for those itself. The vertical is not on that path.
 
-The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
+The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`. On the platform path the router cuts the store's error to that rule before it answers, so a withheld body never reaches the vertical's isolate, and the code is capped at 64 characters. An `{ error }` envelope is the store's answer whatever HTTP status carried it, and a `{ result }` only on a 2xx. A store that answers anything else, such as the store script's own refusal of a signature, arrives as `bad_envelope` too, and its body is neither passed on nor logged. A store the router cannot reach arrives as `unavailable` (503), with `storeCode` `unavailable`, as does a call the router itself refuses.
 
 A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary.
 
@@ -126,15 +132,15 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first driver is registered. The second can follow.
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first release of a driver is approved, since only an approved release can hold data. The second can follow.
 
-Before the first driver:
+Before the first approved release:
 
-- **No store script is uploaded yet.** The entry that checks each call exists and is tested in front of a test driver. Uploading a registered driver behind it is the next step.
 - **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:
 
+- **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so an erasure removes nothing from a graph store. Until it does, a graph store is meant for synthetic data only. That is an operating rule, not something the platform checks.
 - **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another driver. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.

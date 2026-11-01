@@ -423,6 +423,39 @@ function clientSafeStoreBody(status: number, body: unknown): unknown {
   return body;
 }
 
+/** A scope store's error answer: the driver's `code`, an HTTP error `status`, and its `body`. */
+export interface StoreErrorAnswer {
+  readonly code: string;
+  readonly status: number;
+  readonly body?: unknown;
+}
+
+/** The longest `storeCode` the problem document takes, in UTF-16 units as zod counts. */
+const STORE_CODE_MAX = 64;
+
+/** The code cut to {@link STORE_CODE_MAX} on a code point boundary, so no surrogate pair is split. */
+function capStoreCode(code: string): string {
+  if (code.length <= STORE_CODE_MAX) return code;
+  let capped = '';
+  for (const point of code) {
+    if (capped.length + point.length > STORE_CODE_MAX) break;
+    capped += point;
+  }
+  return capped;
+}
+
+/**
+ * A store's error answer as far as it may travel toward a client (#2207). The code is
+ * capped at 64 UTF-16 units, the length the problem document takes, and the body is kept
+ * only under the rule {@link StoreError} states. The router hands a vertical this, not the
+ * store's raw answer, because the vertical's code can read the raw response: a 5xx
+ * traceback filtered only inside `StoreError` would already be in the vertical's isolate.
+ */
+export function clientSafeStoreError(error: StoreErrorAnswer): StoreErrorAnswer {
+  const body = clientSafeStoreBody(error.status, error.body);
+  return { code: capStoreCode(error.code), status: error.status, ...(body !== undefined ? { body } : {}) };
+}
+
 /**
  * A scope store refused or failed (#2207). The taxonomy code comes from the HTTP
  * status the store answered with. The store's own `code` and `body` ride in
@@ -441,11 +474,8 @@ export class StoreError extends SubstratError {
   readonly storeStatus: number;
   readonly storeBody: unknown;
 
-  constructor(error: { code: string; status: number; body?: unknown }) {
-    // The problem document caps `storeCode` at 64. A longer code used to throw
-    // inside `toProblem` instead of answering the store's failure.
-    const storeCode = error.code.slice(0, 64);
-    const storeBody = clientSafeStoreBody(error.status, error.body);
+  constructor(error: StoreErrorAnswer) {
+    const { code: storeCode, body: storeBody } = clientSafeStoreError(error);
     const code = CODE_FOR_STORE_STATUS[error.status] ?? 'unavailable';
     super(code, `scope store answered ${error.status} (${storeCode})`, {
       storeCode,
