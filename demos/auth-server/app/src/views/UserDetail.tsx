@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { EmptyState } from '@substrat-run/ui';
+import { Badge, Button, DetailHeader, EmptyState, LinkTabs, initials } from '@substrat-run/ui';
 import {
   adminRemoveSignInMethod,
   adminSignInMethods,
@@ -19,28 +19,45 @@ import {
 } from '../api';
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
+import { USERS_PATH, USER_TABS, userPath, type UserTab } from '../console/routes';
+import { LogTable } from './Logs';
+import { RawJson } from './RawJson';
+import { CopyId } from './applications/CopyId';
+
+const TAB_LABELS: Record<UserTab, string> = {
+  details: 'Details',
+  identities: 'Identities',
+  sessions: 'Sessions',
+  logs: 'Logs',
+  raw: 'Raw',
+};
 
 /**
- * `/users/:id` — one person, which the console has never had. A row in the directory was a
- * dead end: an operator could ban or remove somebody straight from the list and could not
- * look at them first, so the questions that actually arrive at a support desk — how do they
- * sign in, are they signed in right now, why is their address not verified — had no screen.
+ * `/users/:id[/<tab>]` — one person. A row in the directory used to be a dead end: an operator
+ * could ban or remove somebody straight from the list and could not look at them first, so the
+ * questions that actually arrive at a support desk — how do they sign in, are they signed in
+ * right now, why is their address not verified — had no screen.
  *
- * Three independent reads back it (the person, their sign-in methods, their sessions) and
- * they are kept independent on purpose: sessions failing must not blank the identity header
- * an operator is reading the user id out of. Each section states its own loading, empty and
- * error state, and none of them takes the others down.
+ * Auth0's shape (spec/console-redesign.md §3): a header naming the person and holding the
+ * levers that act on the whole account, over tabs that are places. The person is read ONCE —
+ * the view is keyed by id at its call site and the tab is a prop, so switching tabs re-reads
+ * nothing. Their sign-in methods and sessions are separate reads, owned by their tabs, and kept
+ * independent on purpose: sessions failing must not blank the header an operator is reading
+ * the user id out of. Each tab states its own loading, empty and error state.
  *
  * The nav is not the gate here either — every call below is refused server-side by session +
  * the `admin` role, and this component simply is not rendered for anyone else.
  */
-export function UserDetailView({ userId, me }: { userId: string; me: string }) {
+export function UserDetailView({ userId, tab, me }: { userId: string; tab: UserTab; me: string }) {
   const [user, setUser] = useState<AdminUser | null | 'missing'>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Bumped by anything that changes this person, and read by the panels that do not own the
-  // change. Setting a password creates the credential account the Sign-in methods panel is
-  // listing, so that panel has to hear about an edit made two sections below it.
+  // Bumped by anything that changes this person, and read by the tabs that do not own the
+  // change. Setting a password creates the credential account the Identities tab is listing,
+  // so that tab has to hear about an edit made on Details.
   const [changed, setChanged] = useState(0);
+  // Held here, not on Details, because the Ban… button that opens it is in the header and the
+  // header is on every tab.
+  const [banning, setBanning] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -70,7 +87,7 @@ export function UserDetailView({ userId, me }: { userId: string; me: string }) {
         title="No such user"
         description={`Nobody here has the id ${userId}. They may have been removed since this link was shared.`}
         action={
-          <button className="btn primary" style={{ width: 'auto' }} onClick={() => navigate('/users')}>
+          <button className="btn primary" style={{ width: 'auto' }} onClick={() => navigate(USERS_PATH)}>
             Back to Users
           </button>
         }
@@ -80,9 +97,6 @@ export function UserDetailView({ userId, me }: { userId: string; me: string }) {
 
   return (
     <>
-      <button className="btn link" style={{ justifySelf: 'start', padding: 0 }} onClick={() => navigate('/users')}>
-        ← Users
-      </button>
       {err && <p className="error">{err}</p>}
       {/* A failed read is an error state, not a pending one. Saying "Loading…" underneath the
           error would tell an operator to keep waiting for a request that already came back. */}
@@ -90,102 +104,118 @@ export function UserDetailView({ userId, me }: { userId: string; me: string }) {
         !err && <p className="muted">Loading this user…</p>
       ) : (
         <>
-          <IdentityHeader user={user} me={me} onChanged={onChanged} />
-          <SignInMethodsPanel userId={userId} email={user.email} reloadKey={changed} onChanged={onChanged} />
-          <SessionsPanel userId={userId} />
-          <ActionsPanel user={user} me={me} onChanged={onChanged} />
+          <UserHeader
+            user={user}
+            me={me}
+            onChanged={onChanged}
+            onBan={() => {
+              setBanning(true);
+              navigate(userPath(userId));
+            }}
+          />
+          <LinkTabs
+            label="User"
+            value={tab}
+            onNavigate={navigate}
+            tabs={USER_TABS.map((t) => ({ value: t, label: TAB_LABELS[t], href: userPath(userId, t) }))}
+          />
+          {/* Details stays mounted while another tab is shown, so a half-typed password or ban
+              reason is still there on the way back rather than silently dropped. */}
+          <div hidden={tab !== 'details'} style={{ display: tab === 'details' ? 'flex' : undefined, flexDirection: 'column', gap: 20 }}>
+            <DetailsTab user={user} me={me} onChanged={onChanged} banning={banning} setBanning={setBanning} />
+          </div>
+          {tab === 'identities' && <SignInMethodsPanel userId={userId} email={user.email} reloadKey={changed} onChanged={onChanged} />}
+          {tab === 'sessions' && <SessionsPanel userId={userId} />}
+          {tab === 'logs' && <LogTable userId={userId} />}
+          {tab === 'raw' && <RawJson value={user} />}
         </>
       )}
     </>
   );
 }
 
-/* ---- who they are ---- */
+/* ---- who they are, and the levers that act on the whole account ---- */
 
-function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; onChanged: () => void }) {
-  const [copied, setCopied] = useState(false);
+function UserHeader({ user, me, onChanged, onBan }: { user: AdminUser; me: string; onChanged: () => void; onBan: () => void }) {
+  const isMe = user.id === me;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const act = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>
-          {user.name || '(no name)'} {user.id === me && <span className="tag">you</span>}
-        </h2>
-      </div>
+    <>
+      <DetailHeader
+        icon={<span style={{ fontSize: 14, fontWeight: 600 }}>{initials(user.name || user.email)}</span>}
+        title={
+          <>
+            {user.name || '(no name)'} {isMe && <span className="tag">you</span>}
+          </>
+        }
+        meta={
+          <>
+            <span>{user.email}</span>
+            {user.emailVerified ? <Badge status="success">verified</Badge> : <Badge status="warning">unverified</Badge>}
+            <span>{user.role ?? 'user'}</span>
+            {user.banned && <Badge status="danger">banned</Badge>}
+            {/* Copyable because it is the `sub` every relying party stored against this person.
+                Matching a complaint in a customer's app to a row here starts with this string. */}
+            <CopyId value={user.id} label="user id" />
+          </>
+        }
+        actions={
+          <>
+            {/* Every destructive lever is disabled on your own row rather than hidden. Hiding it
+                would read as "this cannot be done here"; the truth is that it cannot be done to
+                yourself, and the server refuses it either way. */}
+            {user.role === 'admin' ? (
+              <Button variant="secondary" disabled={busy || isMe} onClick={() => void act(() => setRole(user.id, 'user'))}>
+                Demote to user
+              </Button>
+            ) : (
+              <Button variant="secondary" disabled={busy} onClick={() => void act(() => setRole(user.id, 'admin'))}>
+                Make administrator
+              </Button>
+            )}
+            {user.banned ? (
+              <Button variant="secondary" disabled={busy} onClick={() => void act(() => unbanUser(user.id))}>
+                Lift the ban
+              </Button>
+            ) : (
+              <Button variant="secondary" disabled={busy || isMe} onClick={onBan}>
+                Ban…
+              </Button>
+            )}
+            <Button
+              variant="danger"
+              disabled={busy || isMe}
+              onClick={() => {
+                if (!window.confirm(`Remove ${user.email}? Their account, sessions and sign-in methods go with them, and every relying party holding their user id keeps a reference to nobody. This cannot be undone.`)) return;
+                void act(async () => {
+                  await removeUser(user.id);
+                  navigate(USERS_PATH);
+                });
+              }}
+            >
+              Remove
+            </Button>
+          </>
+        }
+      />
+      {isMe && <p className="muted" style={{ margin: 0 }}>This is your own account, so the levers above are not yours to pull on it.</p>}
       {err && <p className="error">{err}</p>}
-      <dl className="kv">
-        <dt>Email</dt>
-        <dd>
-          {user.email}{' '}
-          {user.emailVerified ? (
-            <span className="tag">verified</span>
-          ) : (
-            <span className="tag warn">unverified</span>
-          )}
-          {/* Not decoration, and not a `title` either: a native tooltip on a badge is
-              unreachable by keyboard and by touch, and this sentence is the answer to a support
-              ticket that reads "I cannot sign in with Google". It is the visible text. */}
-          {!user.emailVerified && (
-            <p className="muted note">
-              Until this address is verified, this person cannot join an upstream provider to
-              this account at sign-in.
-            </p>
-          )}
-        </dd>
-        <dt>Role</dt>
-        <dd>{user.role ?? 'user'}</dd>
-        <dt>Status</dt>
-        <dd>{user.banned ? <span className="tag warn">banned</span> : 'active'}</dd>
-        <dt>Created</dt>
-        <dd>{user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}</dd>
-        <dt>User id</dt>
-        <dd>
-          {/* Copyable because it is the `sub` every relying party stored against this person.
-              Matching a complaint in a customer's app to a row here starts with this string. */}
-          <code>{user.id}</code>{' '}
-          <button
-            className="btn tiny"
-            onClick={async () => {
-              // Only claim it was copied if it was. `navigator.clipboard` is absent outside a
-              // secure context, and a button that says "Copied" over an empty clipboard is
-              // worse than one that does nothing visible.
-              try {
-                await navigator.clipboard.writeText(user.id);
-              } catch {
-                return;
-              }
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }}
-          >
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </dd>
-      </dl>
-      {!user.emailVerified && (
-        <div className="row">
-          <button
-            className="btn"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              setErr(null);
-              try {
-                await markEmailVerified(user.id);
-                onChanged();
-              } catch (e) {
-                setErr(e instanceof Error ? e.message : String(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Mark address verified
-          </button>
-        </div>
-      )}
-    </section>
+    </>
   );
 }
 
@@ -216,7 +246,7 @@ const removeLabel = (m: AdminSignInMethod): string =>
  *
  * Both say that sessions survive. It is the fact most likely to be assumed the other way —
  * "I removed their Google account" reads like a sign-out and is not one — and the panel that
- * does end a session is directly below this one.
+ * does end a session is the Sessions tab beside this one.
  */
 function removalWarning(m: AdminSignInMethod, email: string): string {
   if (m.provider === 'credential') {
@@ -242,7 +272,7 @@ function SignInMethodsPanel({
   // operator who clicked one of four Remove buttons unsure which one took.
   const [removing, setRemoving] = useState<string | null>(null);
 
-  // `reloadKey` is why this panel is not read-only in effect: setting a password under Actions
+  // `reloadKey` is why this panel is not read-only in effect: setting a password under Details
   // creates the very `credential` row listed here, and without the re-read the screen would go
   // on saying "No way to sign in" about a method it had just been used to create.
   useEffect(() => {
@@ -275,8 +305,8 @@ function SignInMethodsPanel({
     try {
       await adminRemoveSignInMethod(userId, m.id);
       // Through the parent, not a local re-read: removing the password changes what the
-      // Actions panel's "Set a password" field means, and the identity header is the other
-      // half of the same person.
+      // Details tab's "Set a password" field means, and the header is the other half of the
+      // same person.
       onChanged();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -292,10 +322,10 @@ function SignInMethodsPanel({
       {methods === null && !err && <p className="muted">Loading their sign-in methods…</p>}
       {methods?.length === 0 && (
         /* A real state, not an empty list to shrug at: this account has no way in at all, and
-           the fix is a password an administrator sets below. */
+           the fix is a password an administrator sets on the Details tab. */
         <p className="muted">
           No way to sign in. This account has neither a password nor a connected provider — set
-          a password under Actions to give them one.
+          a password under Details to give them one.
         </p>
       )}
       {methods && methods.length > 0 && (
@@ -319,8 +349,8 @@ function SignInMethodsPanel({
                   <td>{m.provider === 'credential' ? '—' : <code>{m.accountId}</code>}</td>
                   <td>{m.createdAt ? new Date(m.createdAt).toLocaleDateString() : '—'}</td>
                   <td className="actions">
-                    {/* Disabled rather than hidden, for the reason the Actions panel gives about
-                        its own row: a missing button reads as "not possible here", and the true
+                    {/* Disabled rather than hidden, for the reason the header gives about your own
+                        account: a missing button reads as "not possible here", and the true
                         answer is "not while it is the only way in". */}
                     <button
                       className="btn tiny"
@@ -337,9 +367,9 @@ function SignInMethodsPanel({
           </table>
           {methods.some((m) => !removable(m)) && (
             <p className="muted note">
-              Their only way to sign in cannot be removed. Set a password under Actions, or have
+              Their only way to sign in cannot be removed. Set a password under Details, or have
               them connect a provider, and it becomes removable — to close the account entirely,
-              use Remove under Actions.
+              use Remove at the top of this screen.
             </p>
           )}
         </>
@@ -422,13 +452,20 @@ function SessionsPanel({ userId }: { userId: string }) {
   );
 }
 
-/* ---- what an operator can do about them ---- */
+/* ---- Details: who they are, and what an operator can change about them ---- */
 
-function ActionsPanel({ user, me, onChanged }: { user: AdminUser; me: string; onChanged: () => void }) {
+function DetailsTab({
+  user, me, onChanged, banning, setBanning,
+}: {
+  user: AdminUser;
+  me: string;
+  onChanged: () => void;
+  banning: boolean;
+  setBanning: (on: boolean) => void;
+}) {
   const isMe = user.id === me;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [banning, setBanning] = useState(false);
   const [reason, setReason] = useState('');
   const [days, setDays] = useState('');
   const [password, setPassword] = useState('');
@@ -447,94 +484,97 @@ function ActionsPanel({ user, me, onChanged }: { user: AdminUser; me: string; on
   };
 
   return (
-    <section className="panel">
-      <div className="panel-head"><h2>Actions</h2></div>
+    <>
       {err && <p className="error">{err}</p>}
-      {/* Every destructive lever is disabled on your own row rather than hidden. Hiding it
-          would read as "this cannot be done here"; the truth is that it cannot be done to
-          yourself, and the server refuses it either way. */}
-      {isMe && <p className="muted">This is your own account, so the levers below are not yours to pull on it.</p>}
-      <div className="row">
-        {user.role === 'admin' ? (
-          <button className="btn" disabled={busy || isMe} onClick={() => act(() => setRole(user.id, 'user'))}>
-            Demote to user
-          </button>
-        ) : (
-          <button className="btn" disabled={busy} onClick={() => act(() => setRole(user.id, 'admin'))}>
-            Make administrator
-          </button>
-        )}
-        {user.banned ? (
-          <button className="btn" disabled={busy} onClick={() => act(() => unbanUser(user.id))}>
-            Lift the ban
-          </button>
-        ) : (
-          <button className="btn" disabled={busy || isMe} onClick={() => setBanning((v) => !v)}>
-            Ban…
-          </button>
-        )}
-        <button
-          className="btn danger"
-          disabled={busy || isMe}
-          onClick={() => {
-            if (!window.confirm(`Remove ${user.email}? Their account, sessions and sign-in methods go with them, and every relying party holding their user id keeps a reference to nobody. This cannot be undone.`)) return;
-            void act(async () => {
-              await removeUser(user.id);
-              navigate('/users');
-            });
-          }}
-        >
-          Remove
-        </button>
-      </div>
-
-      {banning && (
-        <div className="editor">
-          {/* A reason and an expiry, because a ban with neither is unreviewable later — and the
-              reason is what the person themselves is told at sign-in. */}
-          <Field label="Reason" value={reason} onChange={setReason} placeholder="Shown to them when they try to sign in" />
-          <Field label="Expires in (days)" value={days} onChange={setDays} type="number" hint="Leave empty for a ban with no end date." />
-          <div className="row">
-            <button
-              className="btn primary"
-              disabled={busy || reason.trim().length === 0}
-              onClick={() =>
-                act(async () => {
-                  await banUserWithReason(user.id, reason, days.trim() ? Number(days) : undefined);
-                  setBanning(false);
-                  setReason('');
-                  setDays('');
-                })
-              }
-            >
-              Ban this user
-            </button>
-            <button className="btn" onClick={() => setBanning(false)}>Cancel</button>
+      {banning && !user.banned && !isMe && (
+        <section className="panel">
+          <div className="panel-head"><h2>Ban this user</h2></div>
+          <div className="editor">
+            {/* A reason and an expiry, because a ban with neither is unreviewable later — and the
+                reason is what the person themselves is told at sign-in. */}
+            <Field label="Reason" value={reason} onChange={setReason} placeholder="Shown to them when they try to sign in" />
+            <Field label="Expires in (days)" value={days} onChange={setDays} type="number" hint="Leave empty for a ban with no end date." />
+            <div className="row">
+              <button
+                className="btn primary"
+                disabled={busy || reason.trim().length === 0}
+                onClick={() =>
+                  act(async () => {
+                    await banUserWithReason(user.id, reason, days.trim() ? Number(days) : undefined);
+                    setBanning(false);
+                    setReason('');
+                    setDays('');
+                  })
+                }
+              >
+                Ban this user
+              </button>
+              <button className="btn" onClick={() => setBanning(false)}>Cancel</button>
+            </div>
           </div>
-        </div>
+        </section>
       )}
 
-      <div className="editor">
-        <Field
-          label="Set a password"
-          value={password}
-          onChange={setPassword}
-          type="password"
-          hint="Replaces any password they have. Existing sessions survive it — revoke them above if that is the point."
-        />
-        <button
-          className="btn"
-          disabled={busy || password.length === 0}
-          onClick={() =>
-            act(async () => {
-              await setUserPassword(user.id, password);
-              setPassword('');
-            })
-          }
-        >
-          Set password
-        </button>
-      </div>
-    </section>
+      <section className="panel">
+        <dl className="kv">
+          <dt>Email</dt>
+          <dd>
+            {user.email}{' '}
+            {user.emailVerified ? (
+              <span className="tag">verified</span>
+            ) : (
+              <span className="tag warn">unverified</span>
+            )}
+            {/* Not decoration, and not a `title` either: a native tooltip on a badge is
+                unreachable by keyboard and by touch, and this sentence is the answer to a support
+                ticket that reads "I cannot sign in with Google". It is the visible text. */}
+            {!user.emailVerified && (
+              <p className="muted note">
+                Until this address is verified, this person cannot join an upstream provider to
+                this account at sign-in.
+              </p>
+            )}
+          </dd>
+          <dt>Role</dt>
+          <dd>{user.role ?? 'user'}</dd>
+          <dt>Status</dt>
+          <dd>{user.banned ? <span className="tag warn">banned</span> : 'active'}</dd>
+          <dt>Created</dt>
+          <dd>{user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}</dd>
+        </dl>
+        {!user.emailVerified && (
+          <div className="row">
+            <button className="btn" disabled={busy} onClick={() => void act(() => markEmailVerified(user.id))}>
+              Mark address verified
+            </button>
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head"><h2>Password</h2></div>
+        <div className="editor">
+          <Field
+            label="Set a password"
+            value={password}
+            onChange={setPassword}
+            type="password"
+            hint="Replaces any password they have. Existing sessions survive it — revoke them under Sessions if that is the point."
+          />
+          <button
+            className="btn"
+            disabled={busy || password.length === 0}
+            onClick={() =>
+              act(async () => {
+                await setUserPassword(user.id, password);
+                setPassword('');
+              })
+            }
+          >
+            Set password
+          </button>
+        </div>
+      </section>
+    </>
   );
 }

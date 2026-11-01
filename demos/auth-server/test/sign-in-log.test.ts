@@ -14,8 +14,10 @@ import {
   readSignInLog,
   recordSignInAttempt,
   signInLoggerFor,
+  signInLogTypeOf,
   type SignInAttempt,
 } from '../src/sign-in-log.js';
+import { createAdminApi } from '../src/admin-api.js';
 import type { SqlExec } from '../src/introspect.js';
 
 /**
@@ -426,6 +428,78 @@ describe('reading the log', () => {
     const next = readSignInLog(sql, { limit: 2, before: first[1]!.id }).attempts;
     expect(next.map((a) => a.id)).not.toContain(first[0]!.id);
     expect(next[0]!.id).toBeLessThan(first[1]!.id);
+  });
+});
+
+describe('the admin read — what the Logs screens ask for', () => {
+  /** The admin API over this store, behind a session that is already an administrator: the gate
+   *  itself (`app.use('*')`) is the same one every other admin route sits behind. */
+  const api = () =>
+    createAdminApi({
+      sql,
+      session: async () => ({ sub: adminId, email: ADMIN.email, name: ADMIN.name, role: 'admin' }),
+      effectiveCfg: () => ({}),
+      auth: () => auth.api as never,
+      offeredProviders: () => [],
+      transaction: (fn) => db.transaction(fn)(),
+    });
+  const get = async (path: string) => {
+    const res = await api().request(path);
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+
+  beforeEach(() => {
+    // One attempt into `crm` that came back signed in, and one into `wiki` that was refused —
+    // written as the hooks write them: only the hop OUT names the client, only a succeeded
+    // callback names the account.
+    recordSignInAttempt(sql, { method: 'acme', outcome: 'started', phase: 'sign-in', clientId: 'crm', correlation: 'aaaa' });
+    recordSignInAttempt(sql, { method: 'acme', outcome: 'started', phase: 'sign-in', clientId: 'wiki', correlation: 'bbbb' });
+    recordSignInAttempt(sql, { method: 'acme', outcome: 'succeeded', phase: 'callback', userId: adminId, correlation: 'aaaa' });
+    recordSignInAttempt(sql, { method: 'acme', outcome: 'failed', phase: 'callback', error: 'access_denied', correlation: 'bbbb' });
+  });
+
+  it("carries Auth0's code on every row — and none for a hop out, which Auth0 never logs", async () => {
+    expect([signInLogTypeOf('succeeded'), signInLogTypeOf('failed'), signInLogTypeOf('started')]).toEqual(['s', 'f', null]);
+    const { body } = await get('/sign-in-log');
+    expect((body.attempts as SignInAttempt[]).map((a) => [a.outcome, a.type])).toEqual([
+      ['failed', 'f'],
+      ['succeeded', 's'],
+      ['started', null],
+      ['started', null],
+    ]);
+  });
+
+  // Each filter returns whole attempts: the hop that carries the column AND the hop joined to
+  // it, or the Application's tab would show starts with no answers and the User's tab answers
+  // with no starts.
+  it("narrows to one application's attempts, the answer that does not name it included", async () => {
+    const { body } = await get('/sign-in-log?client_id=crm');
+    expect((body.attempts as SignInAttempt[]).map((a) => [a.outcome, a.correlation])).toEqual([
+      ['succeeded', 'aaaa'],
+      ['started', 'aaaa'],
+    ]);
+  });
+
+  it("narrows to one account's attempts, the start that does not name it included", async () => {
+    const { body } = await get(`/sign-in-log?user_id=${adminId}`);
+    expect((body.attempts as SignInAttempt[]).map((a) => [a.outcome, a.correlation])).toEqual([
+      ['succeeded', 'aaaa'],
+      ['started', 'aaaa'],
+    ]);
+  });
+
+  it('reads one entry with the other hop of its attempt', async () => {
+    const callback = log().find((a) => a.outcome === 'succeeded')!;
+    const { status, body } = await get(`/sign-in-log/${callback.id}`);
+    expect(status).toBe(200);
+    expect(body.attempt).toMatchObject({ id: callback.id, outcome: 'succeeded', type: 's' });
+    // The start it answered, and not the other attempt's hops beside it.
+    expect(body.related).toMatchObject([{ outcome: 'started', clientId: 'crm', correlation: 'aaaa' }]);
+  });
+
+  it('answers 404 for an entry the ring no longer holds, and 400 for one that is not an id', async () => {
+    expect(await get('/sign-in-log/999999')).toEqual({ status: 404, body: { error: 'not found' } });
+    expect((await get('/sign-in-log/abc')).status).toBe(400);
   });
 });
 

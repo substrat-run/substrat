@@ -20,8 +20,7 @@ import {
  * The file never leaves the browser except as the import body, batch by batch; it is not
  * stored, and the hashes in it are not shown.
  */
-export function ImportUsers({ onImported }: { onImported: () => void }) {
-  const [open, setOpen] = useState(false);
+export function ImportUsers({ onImported, onClose }: { onImported: () => void; onClose: () => void }) {
   const [file, setFile] = useState<{ name: string; users: ImportEntry[]; ignored: string[] } | null>(null);
   const [preview, setPreview] = useState<ImportResult | null>(null);
   const [done, setDone] = useState<ImportResult | null>(null);
@@ -83,8 +82,6 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
     }
   };
 
-  if (!open) return <button className="btn" onClick={() => setOpen(true)}>Import users</button>;
-
   const shown = done ?? preview;
   return (
     <div className="new-user import-users">
@@ -117,7 +114,7 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
             Import {preview.counts.created + preview.counts.merged}
           </button>
         )}
-        <button className="btn" disabled={Boolean(busy)} onClick={() => { reset(); setOpen(false); }}>Close</button>
+        <button className="btn" disabled={Boolean(busy)} onClick={() => { reset(); onClose(); }}>Close</button>
       </div>
     </div>
   );

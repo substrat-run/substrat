@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { PageHeader } from '@substrat-run/ui';
 import {
   connectProvider,
   disconnectProvider,
@@ -23,6 +24,7 @@ import { PhoneFactor } from '../auth/PhoneFactor';
 export function AccountView({ admin }: { admin: boolean }) {
   return (
     <>
+      <PageHeader title="Your account" description="The apps this account belongs to, and the ways you sign in to it." />
       <YourPlaces />
       <section className="panel">
         <div className="panel-head"><h2>Your sign-in methods</h2></div>

@@ -48,3 +48,8 @@ export type { SupportWidgetProps } from './SupportWidget';
 
 export { SubIcon, SubIcons } from './icons';
 export type { SubIconName, SubIconProps } from './icons';
+
+export { AccountMenu, AppShell, AppShellChildRow, Avatar, IconTile, SearchPill, initials } from './AppShell';
+export type { AccountMenuItem, AppShellCrumb, AppShellNavGroup, AppShellNavItem, AppShellProps } from './AppShell';
+export { DetailHeader, GridTable, LinkTabs, Page, PageHeader, Row } from './layout';
+export type { LinkTab } from './layout';

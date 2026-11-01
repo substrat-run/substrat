@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { AccountMenu, AppShell, AppShellChildRow, Avatar, IconTile, SearchPill, SubIcon, SubIcons } from '@substrat-run/ui';
 import { Ic, StrataGlyph, type IconName } from '../lib/icons';
 import { obsPath, teamPath } from '../lib/router';
-import { initials } from '../lib/format';
 import type { Team } from '../lib/api';
 import { OBS_SECTIONS, defaultView, type ObsSection } from '../lib/obs-sections';
 
@@ -68,39 +68,6 @@ const GROUPS: NavGroup[] = [
   },
 ];
 
-function NavRow({ item, active, parent = false, onNav }: { item: NavItem; active: boolean; parent?: boolean; onNav: (k: NavKey) => void }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <a
-      href={teamPath(`/${item.key}`)}
-      onClick={(e) => {
-        e.preventDefault();
-        onNav(item.key);
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        height: 32,
-        padding: '0 10px',
-        borderRadius: 6,
-        textDecoration: 'none',
-        background: active ? 'var(--surface-active)' : hover ? 'var(--surface-hover)' : 'transparent',
-        color: active || parent ? 'var(--text-primary)' : 'var(--text-secondary)',
-        fontSize: 14,
-        fontWeight: active || parent ? 500 : 400,
-      }}
-    >
-      <span style={{ display: 'inline-flex', width: 16, color: active ? 'var(--text-brand)' : 'var(--text-tertiary)' }}>
-        <Ic name={item.icon} />
-      </span>
-      <span style={{ flex: 1 }}>{item.label}</span>
-    </a>
-  );
-}
-
 /**
  * The Observability group's children (#1767): Pulse · Processes · Logs, shown while any
  * of them is open. The group row itself opens Pulse, so a reader who never expands it
@@ -114,40 +81,9 @@ function ObsChildren({ active, onNav }: { active: ObsSection; onNav: (s: ObsSect
       style={{ display: 'flex', flexDirection: 'column', gap: 1, margin: '1px 0 4px 17px', paddingLeft: 9, borderLeft: '1px solid var(--border-default)' }}
     >
       {OBS_SECTIONS.map((s) => (
-        <ObsChildRow key={s.key} label={s.label} href={teamPath(obsPath({ view: defaultView(s.key) }))} active={active === s.key} onClick={() => onNav(s.key)} />
+        <AppShellChildRow key={s.key} label={s.label} href={teamPath(obsPath({ view: defaultView(s.key) }))} active={active === s.key} onClick={() => onNav(s.key)} />
       ))}
     </div>
-  );
-}
-
-function ObsChildRow({ label, href, active, onClick }: { label: string; href: string; active: boolean; onClick: () => void }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <a
-      href={href}
-      aria-current={active ? 'page' : undefined}
-      onClick={(e) => {
-        e.preventDefault();
-        onClick();
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        height: 28,
-        padding: '0 10px',
-        borderRadius: 6,
-        textDecoration: 'none',
-        background: active ? 'var(--surface-active)' : hover ? 'var(--surface-hover)' : 'transparent',
-        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-        fontSize: 13,
-        fontWeight: active ? 500 : 400,
-      }}
-    >
-      {label}
-    </a>
   );
 }
 
@@ -180,22 +116,20 @@ export interface DashShellProps {
 }
 
 export function DashShell(props: DashShellProps) {
+  // Observability's group row opens Pulse, and while any of its children is open the
+  // parent reads as where you are without the fill — the fill belongs to the child.
+  const obsOpen = props.active === 'observability';
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--surface-page)' }}>
-      {/* Sidebar */}
-      <nav
-        style={{
-          width: 232,
-          flexShrink: 0,
-          boxSizing: 'border-box',
-          background: 'var(--surface-card)',
-          borderRight: '1px solid var(--border-default)',
-          padding: '12px 8px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-        }}
-      >
+    <AppShell
+      groups={GROUPS.map((g) => ({
+        title: g.title,
+        items: g.items.map((it) => ({ key: it.key, label: it.label, icon: <Ic name={it.icon} />, href: teamPath(`/${it.key}`) })),
+      }))}
+      active={obsOpen ? null : props.active}
+      parent={obsOpen ? 'observability' : null}
+      onNav={(k) => props.onNav(k as NavKey)}
+      beneath={(k) => (k === 'observability' && obsOpen ? <ObsChildren active={props.obsSection} onNav={props.onObsNav} /> : null)}
+      brand={
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 10px 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <StrataGlyph size={18} />
@@ -203,116 +137,30 @@ export function DashShell(props: DashShellProps) {
           </div>
           <TeamSwitcher org={props.org} teams={props.teams} currentTeamId={props.currentTeamId} onSwitch={props.onSwitchTeam} onNewTeam={props.onNewTeam} />
         </div>
-        {GROUPS.map((group, i) => {
-          // A titled group is a labelled group, not a run of links under a caption: the
-          // title is a heading and the group points at it, so assistive technology reads
-          // "Operate, group" and lets a reader jump by heading — the structure sighted
-          // readers get from the uppercase label. The untitled first group (Overview)
-          // stays a plain container; a group with no name is no group to announce.
-          const labelId = group.title ? `nav-group-${group.title.toLowerCase()}` : undefined;
-          return (
-            <div
-              key={group.title ?? i}
-              style={{ display: 'flex', flexDirection: 'column', gap: 1 }}
-              {...(labelId ? { role: 'group', 'aria-labelledby': labelId } : {})}
-            >
-              {group.title && (
-                <h2
-                  id={labelId}
-                  style={{ margin: 0, fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', padding: '0 10px 6px' }}
-                >
-                  {group.title}
-                </h2>
-              )}
-              {group.items.map((it) => (
-                <div key={it.key} style={{ display: 'contents' }}>
-                  {/* A parent whose child is open reads as where you are (primary text,
-                      weight 500) without the active fill — the fill belongs to the child. */}
-                  <NavRow item={it} active={props.active === it.key && it.key !== 'observability'} parent={props.active === 'observability' && it.key === 'observability'} onNav={props.onNav} />
-                  {it.key === 'observability' && props.active === 'observability' && (
-                    <ObsChildren active={props.obsSection} onNav={props.onObsNav} />
-                  )}
-                </div>
-              ))}
-            </div>
-          );
-        })}
-        <div style={{ flex: 1 }} />
-        <SidebarAccount
-          userName={props.userName}
-          userEmail={props.userEmail}
-          onSettings={() => props.onNav('settings')}
-          onToggleTheme={props.onToggleTheme}
-          onSignOut={props.onSignOut}
+      }
+      footer={
+        <AccountMenu
+          name={props.userName}
+          email={props.userEmail}
+          items={[
+            { label: 'Account settings', icon: <Ic name="settings" size={15} />, onSelect: () => props.onNav('settings') },
+            { label: 'Toggle theme', icon: <SubIcon d={SubIcons.moon} size={15} />, onSelect: props.onToggleTheme },
+            { label: 'Sign out', icon: <Ic name="arrowLeft" size={15} />, onSelect: props.onSignOut, danger: true, separated: true },
+          ]}
         />
-      </nav>
-
-      {/* Main column */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <header
-          style={{
-            height: 56,
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            padding: '0 24px',
-            borderBottom: '1px solid var(--border-default)',
-            background: 'color-mix(in srgb, var(--surface-card) 80%, transparent)',
-            backdropFilter: 'blur(8px)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, minWidth: 0 }}>
-            {props.crumbs.map((c, i) => {
-              const last = i === props.crumbs.length - 1;
-              return (
-                <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
-                  {i > 0 && <span style={{ color: 'var(--text-placeholder)' }}>/</span>}
-                  <a
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      c.onClick?.();
-                    }}
-                    style={{ color: last ? 'var(--text-primary)' : 'var(--text-tertiary)', fontWeight: last ? 500 : 400, textDecoration: 'none' }}
-                  >
-                    {c.label}
-                  </a>
-                </span>
-              );
-            })}
-          </div>
-          <div style={{ flex: 1 }} />
-          <button
-            type="button"
-            onClick={props.onOpenPalette}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              height: 32,
-              padding: '0 10px',
-              width: 340,
-              borderRadius: 6,
-              border: '1px solid var(--border-default)',
-              background: 'var(--surface-card)',
-              color: 'var(--text-placeholder)',
-              fontSize: 13,
-              flexShrink: 0,
-              cursor: 'pointer',
-            }}
-          >
-            <Ic name="search" size={14} />
-            <span style={{ flex: 1, textAlign: 'left' }}>Jump to… or write to support</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, border: '1px solid var(--border-default)', borderRadius: 4, padding: '1px 4px', color: 'var(--text-tertiary)' }}>⌘K</span>
-          </button>
+      }
+      crumbs={props.crumbs}
+      actions={
+        <>
+          <SearchPill placeholder="Jump to… or write to support" onOpen={props.onOpenPalette} />
           <IconTile label="Notifications" onClick={props.onOpenNotifications} size={28} badge={props.unread}>
             <Ic name="bell" size={16} />
           </IconTile>
-        </header>
-        <main style={{ flex: 1, overflow: 'auto' }}>{props.children}</main>
-      </div>
-    </div>
+        </>
+      }
+    >
+      {props.children}
+    </AppShell>
   );
 }
 
@@ -438,188 +286,5 @@ function TeamRow({ team, active, onClick }: { team: Team; active: boolean; onCli
   );
 }
 
-const TONES: Record<string, { bg: string; fg: string }> = {
-  brand: { bg: 'var(--brand-100)', fg: 'var(--brand-700)' },
-  cyan: { bg: 'var(--cyan-100)', fg: 'var(--cyan-700)' },
-  amber: { bg: 'var(--amber-100)', fg: 'var(--amber-700)' },
-  muted: { bg: 'var(--surface-active)', fg: 'var(--text-tertiary)' },
-};
-
-/** A circular initials avatar. */
-export function Avatar({ seed, tone = 'brand', size = 26 }: { seed: string; tone?: keyof typeof TONES; size?: number }) {
-  const t = TONES[tone] ?? TONES.brand!;
-  return (
-    <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: '50%',
-        background: t.bg,
-        color: t.fg,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: size <= 22 ? 10 : 11,
-        fontWeight: 600,
-        flexShrink: 0,
-      }}
-    >
-      {initials(seed)}
-    </span>
-  );
-}
-
-/** The sidebar-footer account row + its upward dropdown menu (settings / theme / sign out). */
-function SidebarAccount({
-  userName,
-  userEmail,
-  onSettings,
-  onToggleTheme,
-  onSignOut,
-}: {
-  userName: string;
-  userEmail: string;
-  onSettings: () => void;
-  onToggleTheme: () => void;
-  onSignOut: () => void;
-}) {
-  // `?menu=1` opens it on load (a demo/screenshot aid, like `?theme=`).
-  const [open, setOpen] = useState(() => new URLSearchParams(window.location.search).get('menu') === '1');
-  const [hover, setHover] = useState(false);
-  return (
-    <div style={{ position: 'relative', borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Account"
-        onClick={() => setOpen((o) => !o)}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          width: '100%',
-          padding: '6px 10px',
-          borderRadius: 6,
-          border: 0,
-          background: open || hover ? 'var(--surface-hover)' : 'transparent',
-          cursor: 'pointer',
-          textAlign: 'left',
-        }}
-      >
-        <Avatar seed={userName || userEmail} tone="brand" size={24} />
-        <span style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {userName || 'Account'}
-          </span>
-          <span title={userEmail} style={{ display: 'block', fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {userEmail}
-          </span>
-        </span>
-        <span style={{ display: 'inline-flex', transform: open ? 'none' : 'rotate(180deg)', transition: 'transform 120ms' }}>
-          <Ic name="chevronDown" size={12} color="var(--text-tertiary)" />
-        </span>
-      </button>
-      {open && (
-        <>
-          {/* click-away scrim */}
-          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-          <div
-            role="menu"
-            style={{
-              position: 'absolute',
-              bottom: 'calc(100% + 6px)',
-              left: 0,
-              right: 0,
-              zIndex: 41,
-              background: 'var(--surface-card)',
-              border: '1px solid var(--border-default)',
-              borderRadius: 10,
-              boxShadow: 'var(--shadow-popover)',
-              overflow: 'hidden',
-            }}
-          >
-            <MenuItem icon="settings" label="Account settings" onClick={() => { setOpen(false); onSettings(); }} />
-            <MenuItem icon="settings" label="Toggle theme" onClick={() => { setOpen(false); onToggleTheme(); }} moon />
-            <div style={{ height: 1, background: 'var(--border-subtle)' }} />
-            <MenuItem icon="arrowLeft" label="Sign out" onClick={() => { setOpen(false); onSignOut(); }} danger />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function MenuItem({ icon, label, onClick, danger, moon }: { icon: IconName; label: string; onClick: () => void; danger?: boolean; moon?: boolean }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        width: '100%',
-        height: 34,
-        padding: '0 12px',
-        border: 0,
-        background: hover ? 'var(--surface-hover)' : 'transparent',
-        color: danger ? 'var(--status-danger-fg)' : 'var(--text-secondary)',
-        fontSize: 13,
-        cursor: 'pointer',
-        textAlign: 'left',
-      }}
-    >
-      {moon ? (
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
-      ) : (
-        <Ic name={icon} size={15} />
-      )}
-      {label}
-    </button>
-  );
-}
-
-function IconTile({
-  label,
-  onClick,
-  children,
-  size = 24,
-  badge,
-}: {
-  label: string;
-  onClick?: () => void;
-  children: ReactNode;
-  size?: number;
-  badge?: boolean;
-}) {
-  const [hover, setHover] = useState(false);
-  const style: CSSProperties = {
-    position: 'relative',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: size,
-    height: size,
-    borderRadius: 6,
-    border: 0,
-    background: hover ? 'var(--surface-hover)' : 'transparent',
-    color: 'var(--text-secondary)',
-    cursor: 'pointer',
-    flexShrink: 0,
-  };
-  return (
-    <button type="button" aria-label={label} title={label} onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)} style={style}>
-      {children}
-      {badge && (
-        <span style={{ position: 'absolute', top: 4, right: 5, width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-500)', border: '1px solid var(--surface-card)' }} />
-      )}
-    </button>
-  );
-}
+/** Moved to `@substrat-run/ui` with the shell; re-exported for the views that read it here. */
+export { Avatar };

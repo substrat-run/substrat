@@ -39,58 +39,63 @@ size choices and what each one costs.
 
 ## Nav
 
+The sections follow Auth0's dashboard, which is the vocabulary an operator who has run an
+identity provider already has (`console-redesign.md` §3 has the reasoning).
+
 | Group | Item | What lives there |
 |---|---|---|
-| Directory | Users | The people this issuer knows; create, promote, ban, remove |
-| Directory | Applications | The relying-party registry — client ids, redirect URIs, secrets |
-| Sign-in | Sign-in providers | The upstream OAuth/OIDC directories, catalogue and custom |
-| Sign-in | BankID | The Swedish e-id, its certificate, and whether it may create accounts |
-| Sign-in | Access | Whether a stranger may sign up, and what an upstream sign-in may claim |
-| Sign-in | Sign-in log | What happened when people tried to sign in, and why a failed one failed |
-| Issuer | Issuer | The discovery document, and what an RP needs to integrate |
-| You | Your account | The ways *your* account can be signed into, and where you join another |
+| — | Overview | Counts, federated sign-ins over seven days, recent failures, and a "get started" card while only the seeded clients exist |
+| Applications | Applications | The relying-party registry: client ids, redirect URIs, secrets |
+| Applications | APIs | The RFC 8707 resources this issuer mints tokens for, and the `MACHINE_SCOPES` ceiling. Read-only |
+| Authentication | Connections | One list over three stores: the password database, the upstream providers, BankID |
+| Authentication | Security | How an upstream sign-in links to an existing account |
+| User management | Users | The people this issuer knows; create, invite, import, promote, ban, remove |
+| Monitoring | Logs | The federated round trips, and why a failed one failed |
+| Issuer | Settings | The discovery document and what an RP needs to integrate |
+| You | Your account | Shown in the nav only to a non-administrator; an administrator reaches it from the account menu |
 
-Three of these were calls to make rather than inherit from the order the panels grew in:
+Two placements are calls rather than inheritances:
 
-- **BankID is a sign-in method and sits beside the providers.** It is a separate item, not a
-  separate concept: it is configured on completely different terms — an mTLS client
-  certificate and an environment, no client id and no redirect URI to register — so one
-  editor could not have served both. The grouping says what it is; the split says why it
-  has its own screen.
-- **Access sits with the sign-in methods, not with the issuer's settings.** On the old page
-  it read as a lone toggle stranded between two registries. It is in fact the answer to "who
-  may get in at all", which is the same question the providers list answers one upstream at
-  a time — so it belongs with them.
-- **The sign-in log sits beside the providers it explains**, not under the issuer's settings
-  where a log might be filed by habit. It is read in the same minute as the panel it sends an
-  operator back to: the reason a federated sign-in failed is almost always one field on a
-  provider's own screen, or one registration at the upstream's console.
+- **Connections is one list.** The upstream providers, BankID and the password database grew up
+  as three screens, but they are one idea: a source of identities that applications are
+  enabled for. Each connection's **Applications** tab is a view of each client's
+  `metadata.signIn`, not new storage. A toggle rewrites that one entry through the same PATCH
+  the application's own Connections tab uses. The pure arithmetic of what a toggle writes is
+  `views/connections/policy.ts`, tested by `test/console-connections.test.ts`.
+- **The sign-up switch is on the password database** (the Username-Password connection), which
+  is the thing it switches. It is still the `ALLOW_SIGNUP` env-spec key. Security keeps what
+  is about every connection at once.
 
 ## Route table
 
 | Path | Screen | Who may see it |
 |---|---|---|
-| `/users` | Users | `admin` |
-| `/users/<id>` | User detail | `admin` |
+| `/` | Overview | `admin`; anyone else is sent to `/account` |
 | `/applications` | Applications | `admin` |
-| `/applications/<client id>` | Application detail | `admin` |
-| `/providers` | Sign-in providers | `admin` |
-| `/providers/<provider id>` | Sign-in provider detail | `admin` |
-| `/bankid` | BankID | `admin` |
-| `/bankid/settings` | BankID's certificate and environment | `admin` |
-| `/access` | Access | `admin` |
-| `/sign-in-log` | Sign-in log | `admin` |
-| `/issuer` | Issuer | `admin` |
+| `/applications/<client id>[/connections\|/branding\|/logs\|/raw]` | Application detail; Settings is the bare URL | `admin` |
+| `/apis` | APIs | `admin` |
+| `/connections` | Connections | `admin` |
+| `/connections/<id>[/applications\|/raw]` | Connection detail (`password`, `bankid`, or a provider id) | `admin` |
+| `/security` | Security | `admin` |
+| `/users` | Users | `admin` |
+| `/users/<id>[/identities\|/sessions\|/logs\|/raw]` | User detail; Details is the bare URL | `admin` |
+| `/logs` | Logs | `admin` |
+| `/logs/<id>` | One log entry, with the other hops of the same attempt | `admin` |
+| `/settings` | Settings | `admin` |
 | `/account` | Your account | anyone who can sign in |
-| `/` | not a screen — replaced with the first section the viewer may see | — |
+| `/providers[/<id>]`, `/bankid[/settings]`, `/access`, `/sign-in-log`, `/issuer` | redirected (replace, not push) to where that screen lives now | `admin` |
 | anything else | "No such page", with the way back | — |
 
+**A tab is a place.** Each detail screen's tabs come from a fixed list in `paths.ts`, the default
+tab is the bare URL, and an unknown tab is not a screen. So a tab survives a reload, a pasted
+link and the sign-in a stale session triggers, on the same terms as the detail URL itself. The
+detail view is keyed by its id, not its tab, so moving between tabs keeps the record's read and
+any half-edited form. Each form tab saves only its own fields.
+
 **A detail screen is a screen under its section, not a section of its own.** The nav keeps the
-parent lit, and each of the four is read *after* the permission filter — so a non-administrator
-pasting one gets the same "no such page" the nav's own courtesy already implies. Three of them
-parse an id out of the path (`src/console/paths.ts`, deliberately strict about the shape rather
-than accepting any tail); BankID's carries no id, because there is exactly one BankID
-configuration per issuer.
+parent lit, and each one is read *after* the permission filter, so a non-administrator pasting
+one gets the same "no such page" the nav's own courtesy already implies. The id parsers in
+`src/console/paths.ts` are deliberately strict about the shape rather than accepting any tail.
 
 **The nav is not the gate.** Every admin call is refused server-side by session + the `admin`
 role. Hiding a section from a non-administrator is a courtesy, and getting that wrong is a
@@ -102,7 +107,7 @@ be pasted into a support conversation. `src/console/router.ts` is the whole rout
 a `useSyncExternalStore` subscription over `popstate` plus one event `navigate()` dispatches,
 and no dependency.
 
-**Every nav item is a real link.** `SideNav` takes an `href` per item and only swallows the
+**Every nav item is a real link.** `AppShell` takes an `href` per item and only swallows the
 plain left click; ⌘/Ctrl-click, middle-click, Copy Link and Open in New Tab are handed to
 the browser. A URL that cannot be copied out of the chrome that shows it is not a URL.
 
@@ -118,9 +123,10 @@ what they were sent, so it is what they get back:
 | Path they arrived on | Where signing in lands them |
 |---|---|
 | a path in the route table | that path |
-| a detail URL `paths.ts` recognises | that path |
-| `/login`, `/signup`, `/consent`, `/reset-password` | `/` → the first section they may see |
-| anything else | `/` → the first section they may see |
+| a detail or tab URL `paths.ts` recognises | that path, re-composed from what it parsed |
+| a pre-regroup URL (`/providers/google`) | where that screen lives now (`legacyTarget`) |
+| `/login`, `/signup`, `/consent`, `/reset-password` | `/` |
+| anything else | `/` |
 
 A detail URL is the second row for the reason it exists at all: it is the link an operator
 pastes into a support conversation, and it is exactly where the person opening it meant to
@@ -136,22 +142,27 @@ the alternative is an open redirect with a round trip through Google attached. T
 
 ### The drawer below 900px
 
-The sidebar becomes an overlay, and an overlay has to answer for focus. It renders *before*
+The sidebar becomes an overlay, and an overlay has to answer for focus. This lives in
+`AppShell` (`drawerBelow={900}`), not in the console, so the next app that wants a drawer
+gets the same answers. It renders *before*
 the hamburger in DOM order, so opening it and leaving focus on the trigger would send the
 next Tab into the page behind the scrim. Opening moves focus to the first nav link, Escape
 closes, and closing — by Escape, by the scrim, or by picking a section — puts focus back on
-the hamburger rather than leaving it on an element that is now `visibility: hidden`.
+the hamburger rather than leaving it on an element that is now `visibility: hidden`. Visibility is transitioned
+on the way out only: the drawer has to be visible in the frame the effect focuses its first
+link, and `focus()` on an element still `visibility: hidden` does nothing — which is how the
+first version of this drawer left focus on the hamburger after all.
 
 ## Component inventory
 
 | Used for | From |
 |---|---|
-| Left nav, groups, active state, overlay behaviour | `SideNav` (`@substrat-run/ui`) |
-| The hamburger below 900px | `IconButton` + `SubIcons.menu` |
+| Sidebar, groups, active state, top bar, crumbs, drawer below 900px | `AppShell` (`@substrat-run/ui`) — the dashboard's shell, lifted out of `DashShell` with the console as its second caller |
+| The issuer card at the top of the sidebar | `IssuerCard` in `Console.tsx`: the wordmark, and a copy button for the issuer URL where the dashboard has its team switcher |
+| The account row and its menu (Your account · theme · sign out) | `AccountMenu` |
 | Nav icons | `SubIcons.users` / `layers` / `globe` / `box` / `sliders` / `scroll` / `cog` |
 | The 404 state | `EmptyState` |
-| The responsive breakpoint | `useMediaQuery` |
-| Panels, tables, buttons, fields inside a screen | still `tokens.css` classes, re-pointed at the Substrat ramp by `console.css` |
+| Panels, tables, buttons, fields inside a screen | still `tokens.css` classes; `console.css` redefines that vocabulary in terms of Substrat tokens under `.console-root`, so they follow the theme |
 | Card, Field, Centered on the hand-off screens | `src/primitives.tsx` — deliberately **not** the branded set |
 
 **What `@substrat-run/ui` does not have:** a single-person icon. `users` is a group, and
@@ -159,27 +170,37 @@ the hamburger rather than leaving it on an element that is now `visibility: hidd
 `circle-user` beside the route it belongs to. A shared icon set earns an entry from a second
 caller, not the first.
 
-Two additions were made to `@substrat-run/ui` rather than worked around here, because both
-are the component's business and not this app's: `SideNavItem.href` (above), and a forwarded
-ref on `SideNav` and `IconButton` — an off-canvas drawer cannot manage its own focus from
-outside the elements involved. Both are additive; `apps/console` passes neither and renders
-exactly as before.
+**The theme.** `data-theme` on the console root, from `console/theme.ts`: `?theme=` on load,
+then the operator's last choice, then the system's. On the root rather than `<html>`, because
+the hand-off screens share the document and are themed by the relying party. tokens.css's own
+custom properties (`--panel`, `--line`, `--muted`, …) are dark by construction, so
+`console.css` redefines each in terms of a Substrat token on `.console-root` — never `:root`,
+which is where a client's stored theme is applied — and everything tokens.css draws inside
+the console follows the toggle with no per-theme rule.
+
+**The console is its own chunk.** `App.tsx` imports it with `lazy()`: everyone a relying party
+sends to `/login` loads this SPA, and none of them needs the operator's screens. Every file in
+`app/dist` is inlined into the worker (`scripts/gen-assets.mjs`), so the chunk is served like
+the entry.
 
 ## Migration note
 
-| Old panel (one page) | Now |
+| Before the regroup | Now |
 |---|---|
-| Users + New user | `/users` — and it owns its own read, so a failed list no longer prints above every other panel |
-| Your sign-in methods | `/account` |
-| Access | `/access` |
-| Sign-in providers | `/providers` |
-| BankID | `/bankid` |
-| Applications | `/applications` |
-| Issuer | `/issuer` |
-| The lone "Your account" card a non-administrator got | the same console, with `/account` the only item in the nav |
+| Sign-in providers, `/providers/<id>` | Connections, `/connections/<id>` |
+| BankID, `/bankid/settings` | the `bankid` connection, `/connections/bankid` |
+| Access: the sign-up switch | the password database's Settings tab, `/connections/password` |
+| Access: account linking | Security |
+| Sign-in log | Logs, with Auth0 type codes (`s`, `f`) and an entry screen per row |
+| Issuer | Settings |
+| One long application editor | Settings · Connections · Branding · Logs · Raw tabs |
+| User detail panels | Details · Identities · Sessions · Logs · Raw tabs |
+| `/` redirected to the first section | Overview |
 
-Panel behaviour, API calls and copy moved verbatim. Nothing under `demos/auth-server/src/**`
-changed: no model, no migration, no permission and no auth-schema movement.
+The old URLs redirect. Three read-only admin routes were added for these screens: `client_id` /
+`user_id` filters and a by-id read on `/api/admin/sign-in-log`, and `/api/admin/resources`.
+Nothing else under `src/**` changed: no model, no migration, no permission, no auth-schema
+movement.
 
 ## Deliberately not here yet
 
@@ -196,8 +217,9 @@ follow-up this document deferred, above.
 
 What is still deliberately absent:
 
-- **The light theme.** The console renders on the dark stratum because the panels it wraps
-  are dark; a light console needs the panel internals to be components rather than CSS
-  classes first, and only then is a theme toggle worth offering.
 - **`impersonate-user`.** Mounted, unused, and left that way on purpose: it needs a decision
   about what makes it visible and revocable before it earns a button.
+- **Searching users past the first page from ⌘K.** The palette filters `listUsers()`, which
+  answers at most 200 rows. A server-side `q=` read is Phase 3's `/api/v2`.
+- **A per-entry Raw tab on `/logs/<id>`.** The entry is one screen with a Raw panel, since a
+  log row has nothing to edit and one more tab would only hide half of it.

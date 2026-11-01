@@ -3,6 +3,8 @@ import type { CSSProperties } from 'react';
 
 export interface SwitchProps {
   label?: string;
+  /** The accessible name when no visible `label` is drawn — a switch in a table row, say. */
+  'aria-label'?: string;
   checked?: boolean;
   defaultChecked?: boolean;
   onChange?: (checked: boolean) => void;
@@ -10,7 +12,7 @@ export interface SwitchProps {
   style?: CSSProperties;
 }
 
-export function Switch({ label, checked, defaultChecked, onChange, disabled, style }: SwitchProps) {
+export function Switch({ label, 'aria-label': ariaLabel, checked, defaultChecked, onChange, disabled, style }: SwitchProps) {
   const [internal, setInternal] = useState(!!defaultChecked);
   const isOn = checked !== undefined ? checked : internal;
 
@@ -20,10 +22,26 @@ export function Switch({ label, checked, defaultChecked, onChange, disabled, sty
     onChange?.(!isOn);
   };
 
+  // A button with `role="switch"`, not a `<label onClick>`: a label is neither focusable nor
+  // announced, so a keyboard user could not reach the control and a screen reader heard only
+  // its text. A button gets Tab, Space/Enter and `disabled` from the platform.
   return (
-    <label
+    <button
+      type="button"
+      role="switch"
+      aria-checked={isOn}
+      aria-label={label ? undefined : ariaLabel}
+      disabled={disabled}
       onClick={toggle}
       style={{
+        appearance: 'none',
+        background: 'none',
+        border: 0,
+        padding: 0,
+        margin: 0,
+        font: 'inherit',
+        color: 'inherit',
+        textAlign: 'left',
         display: 'inline-flex',
         gap: 10,
         alignItems: 'center',
@@ -60,6 +78,6 @@ export function Switch({ label, checked, defaultChecked, onChange, disabled, sty
       {label && (
         <span style={{ fontSize: 'var(--text-base)', color: 'var(--text-primary)' }}>{label}</span>
       )}
-    </label>
+    </button>
   );
 }

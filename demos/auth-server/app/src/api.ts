@@ -1189,7 +1189,17 @@ export interface SignInAttempt {
   userId: string | null;
   /** Which ATTEMPT this hop belongs to — the two rows of one round trip share it. */
   correlation: string | null;
+  /**
+   * Auth0's log type code for this hop (`s` success login, `f` failed login), derived on the
+   * server from `(outcome, phase)`. `null` for a `started` hop: Auth0 logs no row for "sent to
+   * the upstream", so there is no code to borrow, and inventing one would claim a compatibility
+   * this log does not have.
+   */
+  type: SignInLogType | null;
 }
+
+/** The Auth0 log type codes this log can carry — it records federated round trips only. */
+export type SignInLogType = 's' | 'f';
 
 export interface SignInLogPage {
   attempts: SignInAttempt[];
@@ -1210,6 +1220,10 @@ export interface SignInLogFilter {
    * silently skip whatever moved. An id cannot.
    */
   before?: number;
+  /** Only hops of sign-ins into this relying party — the Application's Logs tab. */
+  clientId?: string;
+  /** Only hops that resolved to this account — the User's Logs tab. */
+  userId?: string;
 }
 
 export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLogPage> {
@@ -1217,6 +1231,42 @@ export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLog
   if (filter.method) query.set('method', filter.method);
   if (filter.outcome) query.set('outcome', filter.outcome);
   if (filter.before !== undefined) query.set('before', String(filter.before));
+  if (filter.clientId) query.set('client_id', filter.clientId);
+  if (filter.userId) query.set('user_id', filter.userId);
   query.set('limit', String(filter.limit ?? 50));
   return admin(`/sign-in-log?${query}`);
+}
+
+/**
+ * One log row by id, with the other hops of the same attempt (`correlation`) — the pair is the
+ * diagnosis, so the entry's own screen shows both. `null` once the ring has pruned it.
+ */
+export async function signInLogEntry(id: number): Promise<{ attempt: SignInAttempt; related: SignInAttempt[] } | null> {
+  try {
+    return await admin(`/sign-in-log/${id}`);
+  } catch (e) {
+    if (e instanceof Error && /not found/i.test(e.message)) return null;
+    throw e;
+  }
+}
+
+/* ---- APIs: the resource servers this issuer mints tokens for (`/api/admin/resources`) ---- */
+
+/**
+ * One `oauth_resource` row — an RFC 8707 audience a client may ask for. `platform` rows are the
+ * MCP endpoints the dashboard registered for the verticals bound to this issuer
+ * (`src/resources.ts`); they are read-only here because the platform rewrites them whole.
+ */
+export interface ApiResource {
+  identifier: string;
+  name: string | null;
+  source: 'platform' | 'issuer';
+  /** The vertical scope a platform row was registered for, when it is one. */
+  scopeId: string | null;
+  scopes: string[];
+}
+
+export async function listApiResources(): Promise<ApiResource[]> {
+  const body = await admin<{ resources: ApiResource[] }>('/resources');
+  return body.resources;
 }
