@@ -48,6 +48,49 @@ object it serves by construction". For the graph driver:
   synthetic data until the driver's subject erasure (`substrat.erase`) is implemented. Today that
   operation answers `{erased: 0}`.
 
+## The same footing as the platform's own code
+
+Substrat already keeps tenants apart inside one script by review rather than by construction:
+
+- The platform's own Durable Objects (the control-plane directory, scope copies, observability)
+  serve every tenant from the platform's scripts, so objects of different tenants may share an
+  isolate.
+- Vertical code runs in one stable script per vertical (K-28, K-33), so tenants of one vertical
+  share it. What keeps their data apart is a scope object per scope, the router's choice of scope,
+  the kernel's permission doors and the absence of a raw namespace binding. The hosting notes say
+  plainly that this does not contain hostile bundle code; admission and review do.
+- `docs/rfc/store-instances.md` states the mechanism: objects of one class in one script may share
+  an isolate; only a separate script makes two objects' data mechanically separate (K-53's script
+  per tenant is the one place that buys it).
+
+This record asks for the graph driver to stand on that same footing: one script per (driver,
+vertical), its tenants kept apart by the driver's own per-object design and by the review of each
+release, as the platform's own objects and verticals are.
+
+## Evidence for the review
+
+The driver's repositories carry evidence that the per-object separation holds, so the review
+starts from it rather than from a reading alone:
+
+- **An inventory of all state one process shares** in the driver's code and the libraries it
+  uses, each place with its verdict. None is keyed by or holds what a tenant wrote: the compiled
+  rule and derivation programs and patterns are kept per object, resource identities are parsed
+  without the standard library's process-wide `urlsplit` cache, and each object has its own
+  identity generator. Four places that did carry something between objects were changed.
+- **Architecture tests** that parse the driver's source and fail on any new module-level or
+  class-level state, cache, `global` or mutable default that is not on the reviewed list, with
+  self-checks that 42 offending forms are caught.
+- **A two-tenant test**: a random workload of two tenants, with the same session ids and
+  idempotency keys, run step by step and concurrently with forced interleaving at every store
+  call. Each tenant gets exactly the answers it gets alone, no answer, stored row or identity of
+  one appears in the other, and a call naming the other object is refused. It runs in process, on
+  a local workerd, and on a deployed test worker with the two tenants' objects shown to share one
+  isolate before and after the run. Deliberate leaks (a shared program cache, a shared package
+  holding area, a shared idempotency memory) each fail it.
+
+The evidence lowers the chance of a defect; it does not replace the review of each release, and it
+says nothing about a release written to behave badly, which only the review can catch.
+
 ## The risk accepted
 
 A defect or a malicious change in an approved release could read or change another tenant's
