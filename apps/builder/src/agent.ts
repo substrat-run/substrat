@@ -39,6 +39,7 @@ import {
 	type TurnResult,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
+import { BUILD_BUSY, BuildQueue, BuildWaitExpired } from './build-queue.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	orUnhandled,
@@ -157,7 +158,11 @@ function sandboxLike(sb: Sandbox, timeout?: number): SandboxLike {
 }
 
 export class BuilderAgent extends DurableObject<Env> {
+	/** A studio operation is running. Builds do not take it (#2795): they queue in `#builds`. */
 	#busy = false;
+	/** The vertical the running studio operation works on, once it knows — a build of it waits. */
+	#studioSlug: string | null = null;
+	#builds = new BuildQueue();
 	/** The running turn's kill switch (POST /api/abort) — null while idle. */
 	#abort: AbortController | null = null;
 	#skills: Map<string, string> | null = null;
@@ -175,6 +180,32 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	async #save(reg: Registry): Promise<void> {
 		await this.ctx.storage.put('source-registry', reg);
+	}
+
+	/**
+	 * Write one project entry into the registry as it is NOW. A registry read before a long
+	 * await is stale by the time it is saved: a build of another vertical may have added or
+	 * updated its own entry meanwhile (#2795), and saving the old copy would drop that.
+	 */
+	async #putEntry(entry: ProjectEntry): Promise<void> {
+		const reg = await this.#registry();
+		reg.projects = reg.projects.map((p) => p.id === entry.id ? entry : p);
+		await this.#save(reg);
+	}
+
+	/**
+	 * Claim the studio for an operation on `entry`. A running build of the same vertical
+	 * refuses it, as a studio operation already refuses a second one; other builds do not.
+	 */
+	#claimStudio(entry: ProjectEntry): Response | null {
+		if (this.#builds.building(entry.slug)) return refuse(409, 'a build of this project is running');
+		this.#studioSlug = entry.slug;
+		return null;
+	}
+
+	#releaseStudio(): void {
+		this.#busy = false;
+		this.#studioSlug = null;
 	}
 
 	async #state(id: string): Promise<ProjectState> {
@@ -254,18 +285,14 @@ export class BuilderAgent extends DurableObject<Env> {
 		const head = await pair.sb.exec('git rev-parse --verify HEAD', { cwd: this.#repoRoot(entry) });
 		if (head.exitCode === 0 && entry.revision !== head.stdout.trim()) {
 			entry.revision = head.stdout.trim();
-			const reg = await this.#registry();
-			reg.projects = reg.projects.map((p) => p.id === entry.id ? entry : p);
-			await this.#save(reg);
+			await this.#putEntry(entry);
 		}
 	}
 
 	async #saveSource(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
 		entry.revision = await saveRepository(pair.sb, await this.#access(entry, 'write', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
 		entry.updatedAt = new Date().toISOString();
-		const reg = await this.#registry();
-		reg.projects = reg.projects.map((p) => p.id === entry.id ? entry : p);
-		await this.#save(reg);
+		await this.#putEntry(entry);
 	}
 
 	#snapshotKey(entry: ProjectEntry): string { return `snapshot:${entry.id}`; }
@@ -278,9 +305,20 @@ export class BuilderAgent extends DurableObject<Env> {
 		} catch { /* file endpoints remain available */ }
 	}
 
+	/**
+	 * A source build, queued behind any other build of the same vertical and any studio
+	 * operation on its project (#2795) — never behind the rest of the workspace.
+	 */
 	async #build(slug: string, request: SourceBuildRequest): Promise<Response> {
-		if (this.#busy) return refuse(409, 'project operation already in progress');
-		this.#busy = true;
+		try {
+			return await this.#builds.run(slug, () => this.#busy && this.#studioSlug === slug, () => this.#runBuild(slug, request));
+		} catch (error) {
+			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
+			throw error;
+		}
+	}
+
+	async #runBuild(slug: string, request: SourceBuildRequest): Promise<Response> {
 		const buildId = ulid();
 		/** Where a submitted snapshot builds from; undefined for a pinned revision. */
 		const submittedDirectory = request.snapshot?.directory;
@@ -324,9 +362,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			}
 			const directory = submittedDirectory ?? entry.directory;
 			entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
-			const reg = await this.#registry();
-			reg.projects = reg.projects.map((p) => p.id === entry!.id ? entry! : p);
-			await this.#save(reg);
+			await this.#putEntry(entry);
 			await this.ctx.storage.delete(this.#snapshotKey(entry));
 			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'building', startedAt: new Date().toISOString() });
 			const toolchain = await checkedExec(sb, 'cat /workspace/substrat/.toolchain-id');
@@ -364,7 +400,6 @@ export class BuilderAgent extends DurableObject<Env> {
 			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry?.id, state: 'failed', detail, completedAt: new Date().toISOString() });
 			return refuse(error instanceof SourceBuildError ? 422 : 500, `platform build failed: ${detail}`);
 		} finally {
-			this.#busy = false;
 			await raw.destroy().catch(() => undefined);
 		}
 	}
@@ -437,7 +472,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		const { message } = (await req.json().catch(() => ({}))) as { message?: string };
 		if (!message?.trim()) return refuse(400, 'message required');
 
-		const { reg, entry } = await this.#current();
+		const { entry } = await this.#current();
 		const state = await this.#state(entry.id);
 		const modelSpec =
 			((await this.ctx.storage.get('modelSpec')) as string | undefined) ?? 'anthropic:claude-opus-5';
@@ -456,6 +491,8 @@ export class BuilderAgent extends DurableObject<Env> {
 			return problemResponse(providerRefusal(err));
 		}
 
+		const building = this.#claimStudio(entry);
+		if (building) return building;
 		this.#busy = true;
 		this.#abort = new AbortController();
 		const signal = this.#abort.signal;
@@ -522,7 +559,7 @@ export class BuilderAgent extends DurableObject<Env> {
 							entry.name = event.name;
 							entry.nameSource = 'ai';
 							entry.updatedAt = new Date().toISOString();
-							await this.#save(reg);
+							await this.#putEntry(entry);
 						}
 						if (event.type === 'usage') {
 							// Best-effort by design: the turn's product is the commit, and
@@ -608,8 +645,8 @@ export class BuilderAgent extends DurableObject<Env> {
 				clearInterval(heartbeat);
 				await this.ctx.storage.put(`state:${entry.id}`, state);
 				entry.updatedAt = new Date().toISOString();
-				await this.#save(reg);
-				this.#busy = false;
+				await this.#putEntry(entry);
+				this.#releaseStudio();
 				this.#abort = null;
 				await writer.close().catch(() => undefined);
 			}
@@ -646,11 +683,13 @@ export class BuilderAgent extends DurableObject<Env> {
 				this.#busy = true;
 				try {
 					const { entry } = await this.#current();
+					const building = this.#claimStudio(entry);
+					if (building) return building;
 					// Resolve the remote before pinning a release, including a newly connected
 					// GitHub project that has not had a studio turn yet.
 					await this.#restoreProject(this.#sandboxPair(entry.id), entry);
 					return json(200, entry);
-				} finally { this.#busy = false; }
+				} finally { this.#releaseStudio(); }
 			}
 			case 'GET /api/session': {
 				const { entry } = await this.#current();
@@ -780,6 +819,8 @@ export class BuilderAgent extends DurableObject<Env> {
 				// by the check above, and again by that workspace's own jail, which is also
 				// what judges a symlink pointing out of the project.
 				if (this.#busy) return refuse(409, 'project operation already in progress');
+				const building = this.#claimStudio(entry);
+				if (building) return building;
 				this.#busy = true;
 				try {
 					const pair = this.#sandboxPair(entry.id);
@@ -788,7 +829,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					const sourcePath = entry.directory === '.' ? rel : `${entry.directory}/${rel}`;
 					await checkedExec(pair.sb, `git -c core.hooksPath=/dev/null add -- ${shellQuote(sourcePath)} && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=builder@substrat.invalid commit --allow-empty -m 'Save source'`, this.#repoRoot(entry));
 					await this.#saveSource(pair, entry);
-				} finally { this.#busy = false; }
+				} finally { this.#releaseStudio(); }
 				// Patch the stored snapshot so a reload before the next commit still
 				// shows this save. Best-effort: absent snapshot → next commit builds it.
 				try {

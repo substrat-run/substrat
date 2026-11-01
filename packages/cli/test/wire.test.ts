@@ -587,6 +587,30 @@ describe('the source submission', () => {
     expect(err.join('\n')).toMatch(/a newer substrat CLI is available/);
   });
 
+  it('a busy builder is waited out with the same body, and named once it never frees (#2795)', async () => {
+    vi.useFakeTimers();
+    const warned: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation((...a) => void warned.push(a.join(' ')));
+    try {
+      const busy = () => problem(409, 'project operation already in progress', 'conflict');
+      plane(busy(), json({ id: 'v1', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'acme/crm' }));
+      const settled = uploadSource(target, source());
+      await vi.runAllTimersAsync();
+      await expect(settled).resolves.toMatchObject({ id: 'v1' });
+      expect(seen).toHaveLength(2);
+      expect(seen[1]!.body).toBe(seen[0]!.body);
+      expect(warned.join('\n')).toMatch(/builder is busy.*retrying in 15s \(attempt 2 of 7\)/);
+
+      plane(busy());
+      const exhausted = uploadSource(target, source()).catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+      expect(String(await exhausted)).toMatch(/platform build failed \(409 conflict\): project operation already in progress/);
+      expect(seen).toHaveLength(7);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a network failure is the error fetch threw; a web page names the likely fix', async () => {
     const boom = new TypeError('fetch failed');
     plane(boom);

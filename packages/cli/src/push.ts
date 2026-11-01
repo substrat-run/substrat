@@ -2111,6 +2111,17 @@ export async function buildRelease(
   return { form, dataLoss };
 }
 
+/**
+ * The waits before each further submit a busy builder refused (#2795): about eight minutes in
+ * all. The builder refuses before it does anything, so the submit is safe to repeat. A builder
+ * that queues builds answers this only once its own wait has run out; an older one answers it
+ * whenever anything else in the workspace is using it, which is what reddened merge deploys.
+ */
+export const BUILDER_BUSY_BACKOFF_MS = [15_000, 30_000, 60_000, 120_000, 120_000, 120_000] as const;
+
+const builderBusy = (status: number, body: string): boolean =>
+  status === 409 && /\boperation already in progress\b/.test(body);
+
 /** Submit persisted source input; the platform returns the release after building it. */
 export async function uploadSource(
   opts: { controlPlaneUrl: string; authHeader: Record<string, string>; slug: string },
@@ -2120,10 +2131,21 @@ export async function uploadSource(
   const path = `/verticals/${encodeURIComponent(opts.slug)}/deploy`;
   const url = plane.urlFor(path);
   console.log(`submitting source → ${url}`);
-  const res = await plane.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
-  const body = await res.text();
-  if (!res.ok) throw new Error(failureMessage('platform build failed', res.status, body));
-  return parseJsonBody(body, url);
+  // Serialised once: the snapshot can be tens of MB, and a retry sends the same bytes.
+  const sent = JSON.stringify(input);
+  const attempts = 1 + BUILDER_BUSY_BACKOFF_MS.length;
+  for (let attempt = 1; ; attempt++) {
+    const res = await plane.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: sent });
+    const body = await res.text();
+    if (!res.ok && attempt < attempts && builderBusy(res.status, body)) {
+      const wait = BUILDER_BUSY_BACKOFF_MS[attempt - 1]!;
+      console.warn(`the platform builder is busy with another build in this workspace; retrying in ${wait / 1000}s (attempt ${attempt + 1} of ${attempts})`);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      continue;
+    }
+    if (!res.ok) throw new Error(failureMessage('platform build failed', res.status, body));
+    return parseJsonBody(body, url);
+  }
 }
 
 /** Push defaults read from a vertical's package.json, so `substrat push` needs no flags. */
