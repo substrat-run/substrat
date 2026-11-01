@@ -71,6 +71,8 @@ export interface PatternCubeRow {
   template: string;
   level: string | null;
   operation: string | null;
+  /** #2762: who the code ran as — the Lines view's `principalKind` facet. */
+  principalKind: string | null;
   count: number;
 }
 
@@ -175,7 +177,7 @@ export function memoryCubeStore(): CubeStore & { size(): number } {
  * `RequestCubeRow` gains a dimension: a block stored before carries none of it and would
  * answer every filter on the new dimension with nothing, for as long as it is kept. The
  * bump moves the request blocks to new keys, so each closed block is recounted once and
- * the old ones age out (`CUBE_RETENTION_MS`). Patterns are keyed apart and keep theirs.
+ * the old ones age out (`CUBE_RETENTION_MS`). Patterns are versioned apart (`PATTERN_CUBE_SHAPE`).
  *
  * - 1: #1877/#1901 — level, operation, problemCode, principalKind, surface, status, kind.
  * - 2: #2762 — entity.
@@ -183,11 +185,16 @@ export function memoryCubeStore(): CubeStore & { size(): number } {
  */
 export const REQUEST_CUBE_SHAPE = 3;
 
+/**
+ * The same for the pattern cube's row (#1747). Shape 1 was keyed with no suffix.
+ *
+ * - 2: #2762 — principalKind.
+ */
+export const PATTERN_CUBE_SHAPE = 2;
+
 /** The cache key of one block. The grain is in it: a block at 5 min is not one at 1 h. */
 export function blockKey(kind: 'requests' | 'patterns' | 'async-requests', service: string, grainMs: number, start: number): string {
-  // Shape 1 was written with no suffix, so the patterns' keys — and every key from before
-  // the version existed — stay exactly what they were.
-  const shaped = kind === 'patterns' ? kind : `${kind}.v${REQUEST_CUBE_SHAPE}`;
+  const shaped = `${kind}.v${kind === 'patterns' ? PATTERN_CUBE_SHAPE : REQUEST_CUBE_SHAPE}`;
   return `${shaped}|${service}|${grainMs}|${start}`;
 }
 

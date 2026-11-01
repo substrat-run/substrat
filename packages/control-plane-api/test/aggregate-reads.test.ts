@@ -66,6 +66,7 @@ const pat = (over: Partial<PatternCubeRow>): PatternCubeRow => ({
   template: 'reply to {id} sent',
   level: 'info',
   operation: 'acme/reply',
+  principalKind: 'principal',
   count: 1,
   ...over,
 });
@@ -74,6 +75,8 @@ const PATTERNS: PatternCubeRow[] = [
   pat({ bucket: T0, count: 30 }),
   pat({ bucket: T0 + 5 * MIN, template: 'assignment of {id} refused: {reason}', level: 'warn', operation: 'acme/assign', count: 8 }),
   pat({ bucket: T0 + 5 * MIN, template: 'assignment of {id} refused: {reason}', level: 'error', operation: 'acme/assign', count: 2 }),
+  // #2762: the scheduled sweep's own lines, at debug.
+  pat({ bucket: T0 + 10 * MIN, template: 'swept {n}', level: 'debug', operation: 'acme/sweep', principalKind: 'system', count: 10 }),
   pat({ tenantId: THEIRS, scopeId: 'X', template: 'their secret {thing}', count: 500 }),
 ];
 
@@ -172,10 +175,11 @@ describe.each(SOURCES)('aggregate reads over %s (#1877)', (_name, make) => {
 
   it('groups patterns by template, with shares of every matching line', async () => {
     const p = await aggregateReads(make()).tenantLogPatterns({ ...scope, buckets: 12 });
-    expect(p.total).toBe(40);
+    expect(p.total).toBe(50);
     expect(p.patterns.map((x) => [x.template, x.count, x.share, x.dominant])).toEqual([
-      ['reply to {id} sent', 30, 0.75, 'info'],
-      ['assignment of {id} refused: {reason}', 10, 0.25, 'warn'],
+      ['reply to {id} sent', 30, 0.6, 'info'],
+      ['assignment of {id} refused: {reason}', 10, 0.2, 'warn'],
+      ['swept {n}', 10, 0.2, 'debug'],
     ]);
     expect(JSON.stringify(p)).not.toContain('their secret');
   });
@@ -185,6 +189,40 @@ describe.each(SOURCES)('aggregate reads over %s (#1877)', (_name, make) => {
     expect(p.total).toBe(2);
     expect(p.patterns).toEqual([
       expect.objectContaining({ template: 'assignment of {id} refused: {reason}', count: 2, share: 1, dominant: 'error' }),
+    ]);
+  });
+
+  it('#2762: draws the Lines histogram over request lines and ctx.log lines, debug included', async () => {
+    const v = await aggregateReads(make()).tenantLogVolume({ ...scope, buckets: 12 });
+    expect(v.buckets).toEqual([
+      { start: new Date(T0).toISOString(), debug: 0, info: 40 + 30, warn: 0, error: 0, unrecorded: 0 },
+      { start: new Date(T0 + 5 * MIN).toISOString(), debug: 0, info: 0, warn: 9 + 8, error: 1 + 2, unrecorded: 0 },
+      { start: new Date(T0 + 10 * MIN).toISOString(), debug: 10, info: 4, warn: 0, error: 0, unrecorded: 6 },
+    ]);
+  });
+
+  it('#2762: counts each Lines facet over both kinds of line, its own filter left out', async () => {
+    const f = await aggregateReads(make()).tenantLogFacets({ ...scope, where: { principalKind: ['system'] } });
+    // The sweep's request line and its ctx.log lines.
+    expect(f.total).toBe(4 + 10);
+    expect(f.facets.level).toEqual([
+      { value: 'debug', count: 10 },
+      { value: 'info', count: 4 },
+    ]);
+    expect(f.facets.operation).toEqual([{ value: 'acme/sweep', count: 14 }]);
+    expect(f.facets.principalKind).toEqual([
+      { value: 'principal', count: 50 + 40 },
+      { value: 'system', count: 14 },
+    ]);
+    expect(JSON.stringify(f)).not.toMatch(/1000|500/);
+  });
+
+  it('#2762: narrows the Lines counts to one pattern’s ctx.log lines', async () => {
+    const f = await aggregateReads(make()).tenantLogFacets({ ...scope, template: 'assignment of {id} refused: {reason}' });
+    expect(f.total).toBe(10);
+    expect(f.facets.level).toEqual([
+      { value: 'warn', count: 8 },
+      { value: 'error', count: 2 },
     ]);
   });
 
@@ -275,6 +313,21 @@ describe('the cube cache (#1877)', () => {
     // The async cube is keyed by the same shape: its stale block is recounted, never served.
     const asyncCube = await source.asyncRequests!({ service: SERVICE, ...window, grainMs });
     expect(asyncCube.rows.reduce((n, r) => n + r.count, 0)).toBe(0);
+  });
+
+  it('#2762: never serves a pattern block cached before the cube had its principalKind dimension', async () => {
+    const inner = fixedSource();
+    const store = memoryCubeStore();
+    const grainMs = grainFor(window.to - window.from);
+    const blockMs = blockMsFor(grainMs);
+    // Shape 1's key had no suffix, and its rows no `principalKind`.
+    const { principalKind: _, ...stale } = pat({ bucket: T0, count: 1 });
+    for (let s = Math.floor(window.from / blockMs) * blockMs; s < window.to; s += blockMs) {
+      await store.put(`patterns|${SERVICE}|${grainMs}|${s}`, { rows: [stale], estimated: false }, s);
+    }
+    const source = cachedSource(inner, store, { now: () => T0 + 24 * 60 * MIN });
+    const f = await aggregateReads(source).tenantLogFacets({ ...scope, template: 'swept {n}' });
+    expect(f.facets.principalKind).toEqual([{ value: 'system', count: 10 }]);
   });
 
   it('says a count is an estimate when any block was sampled', async () => {

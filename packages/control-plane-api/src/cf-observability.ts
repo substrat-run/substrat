@@ -346,14 +346,29 @@ function isFailedInvocation(e: RecentLogEvent): boolean {
  */
 export function ownsInvocation(
   e: Record<string, unknown>,
-  input: { tenantId: string; scopeId?: string; vertical?: string },
+  input: { tenantId: string; scopeId?: string; vertical?: string } & LineFacetFilter,
 ): boolean {
   const source = (e['source'] ?? {}) as Record<string, unknown>;
   if (source['substrat'] !== 'invocation') return false;
   if (source['tenantId'] !== input.tenantId) return false;
   if (input.scopeId && source['scopeId'] !== input.scopeId) return false;
   if (input.vertical && source['vertical'] !== input.vertical) return false;
-  return true;
+  // #2762: and the Lines facets, so an account-wide candidate is admitted only as a request
+  // the tenant-filtered query would itself have selected.
+  return LINE_LIST_KEYS.every((key) => !input[key]?.length || input[key]!.includes(source[key] as string));
+}
+
+/** #2762: the Lines facets the list takes as filters — fields both a request line and a `ctx.log` line carry. */
+const LINE_LIST_KEYS = ['operation', 'principalKind'] as const;
+type LineFacetFilter = { [K in (typeof LINE_LIST_KEYS)[number]]?: readonly string[] };
+
+/** #2762: those facets as filters: each key's values one OR group, the keys ANDed. */
+function lineFacetFilters(input: LineFacetFilter): TelemetryFilter[] {
+  return LINE_LIST_KEYS.flatMap((key): TelemetryFilter[] => {
+    const leaves: TelemetryFilter[] = (input[key] ?? []).map((value) => ({ key, operation: 'eq', type: 'string', value }));
+    if (leaves.length === 0) return [];
+    return [leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves }];
+  });
 }
 
 /**
@@ -443,10 +458,11 @@ function moduleLineFilters(input: {
   search?: string;
   invocationId?: string;
   template?: string;
-}): TelemetryFilter[] {
+} & LineFacetFilter): TelemetryFilter[] {
   const filters: TelemetryFilter[] = [
     { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
     { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
+    ...lineFacetFilters(input),
   ];
   if (input.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
   if (input.invocationId !== undefined) {
@@ -815,6 +831,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { type: 'string', value: 'template' },
         { type: 'string', value: 'level' },
         { type: 'string', value: 'operation' },
+        { type: 'string', value: 'principalKind' },
       ]);
       return {
         estimated,
@@ -823,7 +840,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           const tenantId = str(groups.get('tenantId'));
           const template = str(groups.get('template'));
           if (tenantId === null || template === null || template === '') return [];
-          return [{ bucket, tenantId, scopeId: str(groups.get('scopeId')), template, level: str(groups.get('level')), operation: str(groups.get('operation')), count }];
+          return [{
+            bucket,
+            tenantId,
+            scopeId: str(groups.get('scopeId')),
+            template,
+            level: str(groups.get('level')),
+            operation: str(groups.get('operation')),
+            principalKind: str(groups.get('principalKind')),
+            count,
+          }];
         }),
       };
     },
@@ -1647,6 +1673,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     invocationId?: string;
     /** #1747: only the `ctx.log` lines written from this template. */
     template?: string;
+    /** #2762: the Lines facets — see `lineFacetFilters`. */
+    operation?: readonly string[];
+    principalKind?: readonly string[];
     /** #1877: the app's scripts — see `TenantRequestScope.services`. */
     services?: readonly string[];
     hours: number;
@@ -1686,6 +1715,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
       // #1877: the app's own scripts — the scan boundary and the trust boundary.
       ...serviceFilter(input.services),
+      // #2762: a request's lines come when its own line matches the Lines facets.
+      ...lineFacetFilters(input),
     ];
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });

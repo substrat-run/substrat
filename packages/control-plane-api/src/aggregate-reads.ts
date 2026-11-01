@@ -13,8 +13,14 @@
  * - `estimated` is carried through from any sampled part of a cube.
  */
 import { splitEntityTypes } from '@substrat-run/contracts';
-import { grainFor, type AggregateSource, type Cube, type PatternCubeRow, type RequestCubeRow } from './aggregate-source.js';
+import { grainFor, type AggregateSource, type Cube, type CubeQuery, type PatternCubeRow, type RequestCubeRow } from './aggregate-source.js';
 import {
+  LINE_FACET_KEYS,
+  type LineFacetKey,
+  type LineFacets,
+  type LineVolume,
+  type LineVolumeBucket,
+  type TenantLineScope,
   LOG_PATTERN_TOP,
   REQUEST_FACET_KEYS,
   REQUEST_FACET_TOP,
@@ -56,15 +62,59 @@ function facetValues(r: RequestCubeRow, key: RequestFacetKey): string[] {
   return v === null || v === undefined || v === '' ? [] : [String(v)];
 }
 
+/** How a facet set reads a row: its keys, and a row's values under one. */
+interface FacetReading<R, K extends string> {
+  keys: readonly K[];
+  values(r: R, key: K): string[];
+}
+
+const requestReading: FacetReading<RequestCubeRow, RequestFacetKey> = { keys: REQUEST_FACET_KEYS, values: facetValues };
+
 /** Does a row pass every facet filter — except `omit`'s, when counting that facet? */
-function passes(r: RequestCubeRow, where: RequestWhere | undefined, omit?: RequestFacetKey): boolean {
-  for (const key of REQUEST_FACET_KEYS) {
+function passesOn<R, K extends string>(
+  reading: FacetReading<R, K>,
+  r: R,
+  where: Partial<Record<K, readonly string[]>> | undefined,
+  omit?: K,
+): boolean {
+  for (const key of reading.keys) {
     if (key === omit) continue;
     const values = where?.[key];
     if (!values || values.length === 0) continue;
-    if (!facetValues(r, key).some((v) => values.includes(v))) return false;
+    if (!reading.values(r, key).some((v) => values.includes(v))) return false;
   }
   return true;
+}
+
+const passes = (r: RequestCubeRow, where: RequestWhere | undefined): boolean => passesOn(requestReading, r, where);
+
+/**
+ * Facet counts: the total matching every filter, and each asked facet's top values with
+ * every OTHER filter applied and its own left out.
+ */
+function countFacets<R extends { count: number }, K extends string>(
+  reading: FacetReading<R, K>,
+  rows: readonly R[],
+  where: Partial<Record<K, readonly string[]>> | undefined,
+  asked: readonly K[],
+): { total: number; facets: Record<K, RequestFacetValue[]> } {
+  const total = rows.filter((r) => passesOn(reading, r, where)).reduce((n, r) => n + r.count, 0);
+  const facets = Object.fromEntries(reading.keys.map((k) => [k, [] as RequestFacetValue[]])) as Record<K, RequestFacetValue[]>;
+  for (const key of asked) {
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      if (!passesOn(reading, r, where, key)) continue;
+      // A line with no value for this key is not a value anybody can filter on; the total
+      // above still counts it. A request touching two entity types counts under both, so the
+      // `entity` counts may sum past the total (#2762).
+      for (const v of reading.values(r, key)) counts.set(v, (counts.get(v) ?? 0) + r.count);
+    }
+    facets[key] = [...counts.entries()]
+      .map(([v, count]) => ({ value: key === 'status' ? Number(v) : v, count }))
+      .sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)))
+      .slice(0, REQUEST_FACET_TOP);
+  }
+  return { total, facets };
 }
 
 /**
@@ -104,26 +154,82 @@ export function facetsFrom(
   cube: Cube<RequestCubeRow>,
   scope: AggregateScope & { keys?: readonly RequestFacetKey[] | undefined },
 ): RequestFacets {
-  const rows = own(cube.rows, scope);
-  const total = rows.filter((r) => passes(r, scope.where)).reduce((n, r) => n + r.count, 0);
-  const facets = Object.fromEntries(REQUEST_FACET_KEYS.map((k) => [k, [] as RequestFacetValue[]])) as Record<
-    RequestFacetKey,
-    RequestFacetValue[]
-  >;
-  for (const key of scope.keys ?? REQUEST_FACET_KEYS) {
-    const counts = new Map<string, number>();
-    for (const r of rows) {
-      if (!passes(r, scope.where, key)) continue;
-      // A line with no value for this key is not a value anybody can filter on; the total
-      // above still counts it. A request touching two entity types counts under both, so the
-      // `entity` counts may sum past the total (#2762).
-      for (const v of facetValues(r, key)) counts.set(v, (counts.get(v) ?? 0) + r.count);
-    }
-    facets[key] = [...counts.entries()]
-      .map(([v, count]) => ({ value: key === 'status' ? Number(v) : v, count }))
-      .sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)))
-      .slice(0, REQUEST_FACET_TOP);
+  const { total, facets } = countFacets(requestReading, own(cube.rows, scope), scope.where, scope.keys ?? REQUEST_FACET_KEYS);
+  return { total, facets, estimated: cube.estimated };
+}
+
+/**
+ * #2762: one line the Lines counts see — a request's own line or a `ctx.log` line. Both carry
+ * their tenant; a vertical's `console.log` does not, and is in no cube.
+ */
+interface LineRow {
+  bucket: number;
+  tenantId: string;
+  scopeId: string | null;
+  level: string | null;
+  operation: string | null;
+  principalKind: string | null;
+  count: number;
+}
+
+const lineReading: FacetReading<LineRow, LineFacetKey> = {
+  keys: LINE_FACET_KEYS,
+  values: (r, key) => (r[key] === null || r[key] === '' ? [] : [r[key]!]),
+};
+
+/**
+ * #2762: the lines a Lines count reads — every request line and every `ctx.log` line, or, with a
+ * template, that pattern's `ctx.log` lines alone (a request line has no template). A request
+ * row is ONE line whatever its other dimensions, so its counts carry over as they are.
+ */
+export function linesOf(
+  requests: Cube<RequestCubeRow>,
+  patterns: Cube<PatternCubeRow>,
+  template?: string | undefined,
+): Cube<LineRow> {
+  const line = (r: RequestCubeRow | PatternCubeRow): LineRow => ({
+    bucket: r.bucket,
+    tenantId: r.tenantId,
+    scopeId: r.scopeId,
+    level: r.level,
+    operation: r.operation,
+    principalKind: r.principalKind,
+    count: r.count,
+  });
+  const logged = patterns.rows.filter((r) => template === undefined || r.template === template).map(line);
+  return {
+    rows: template === undefined ? [...requests.rows.map(line), ...logged] : logged,
+    estimated: patterns.estimated || (template === undefined && requests.estimated),
+  };
+}
+
+const lineLevelOf = (v: string | null): keyof Omit<LineVolumeBucket, 'start'> =>
+  v === 'debug' || v === 'info' || v === 'warn' || v === 'error' ? v : 'unrecorded';
+
+/** #2762: the Lines histogram — per-level counts per bar, as `volumeFrom` is for requests. */
+export function lineVolumeFrom(
+  cube: Cube<LineRow>,
+  scope: TenantLineScope & { buckets: number; grainMs: number },
+): LineVolume {
+  const width = barWidth(scope.to - scope.from, scope.buckets, scope.grainMs);
+  const bars = new Map<number, LineVolumeBucket>();
+  for (const r of own(cube.rows, scope)) {
+    if (!passesOn(lineReading, r, scope.where)) continue;
+    const start = scope.from + Math.floor((r.bucket - scope.from) / width) * width;
+    const bar = bars.get(start) ?? { start: new Date(start).toISOString(), debug: 0, info: 0, warn: 0, error: 0, unrecorded: 0 };
+    bar[lineLevelOf(r.level)] += r.count;
+    bars.set(start, bar);
   }
+  return {
+    bucketMs: width,
+    buckets: [...bars.entries()].sort(([a], [b]) => a - b).map(([, b]) => b),
+    estimated: cube.estimated,
+  };
+}
+
+/** #2762: the Lines facet counts, as `facetsFrom` is for requests. */
+export function lineFacetsFrom(cube: Cube<LineRow>, scope: TenantLineScope): LineFacets {
+  const { total, facets } = countFacets(lineReading, own(cube.rows, scope), scope.where, LINE_FACET_KEYS);
   return { total, facets, estimated: cube.estimated };
 }
 
@@ -221,15 +327,26 @@ function scriptsOf(services: readonly string[] | undefined): readonly string[] {
  */
 export function aggregateReads(
   source: AggregateSource,
-): Required<Pick<ObservabilityReader, 'tenantRequestVolume' | 'tenantRequestFacets' | 'tenantLogPatterns'>> {
-  const requestCube = async (input: TenantRequestScope) => {
-    const services = scriptsOf(input.services);
+): Required<
+  Pick<ObservabilityReader, 'tenantRequestVolume' | 'tenantRequestFacets' | 'tenantLogPatterns' | 'tenantLogVolume' | 'tenantLogFacets'>
+> {
+  /** Every service's cube over the window, cut at the window's grain. */
+  type Span = { tenantId: string; services?: readonly string[] | undefined; from: number; to: number };
+  const read = async <Row>(input: Span, count: (q: CubeQuery) => Promise<Cube<Row>>) => {
     const grainMs = grainFor(input.to - input.from);
     const window = alignWindow(input.from, input.to, grainMs);
-    const cube = mergeCubes(
-      await Promise.all(services.map((service) => source.requests({ service, ...window, grainMs, tenantId: input.tenantId }))),
-    );
+    const cube = mergeCubes(await Promise.all(scriptsOf(input.services).map((service) => count({ service, ...window, grainMs }))));
     return { grainMs, window, cube };
+  };
+  const requestCube = (input: Span) => read(input, (q) => source.requests({ ...q, tenantId: input.tenantId }));
+  const patternCube = (input: Span) => read(input, (q) => source.patterns(q));
+  // #2762: a template names `ctx.log` lines alone, so the request cube is not asked for.
+  const lineCube = async (input: TenantLineScope) => {
+    const [requests, patterns] = await Promise.all([
+      input.template === undefined ? requestCube(input).then((r) => r.cube) : { rows: [], estimated: false },
+      patternCube(input),
+    ]);
+    return { ...patterns, cube: linesOf(requests, patterns.cube, input.template) };
   };
   return {
     async tenantRequestVolume(input) {
@@ -241,13 +358,16 @@ export function aggregateReads(
       return facetsFrom(cube, input);
     },
     async tenantLogPatterns(input) {
-      const services = scriptsOf(input.services);
-      const grainMs = grainFor(input.to - input.from);
-      const window = alignWindow(input.from, input.to, grainMs);
-      const cube = mergeCubes(
-        await Promise.all(services.map((service) => source.patterns({ service, ...window, grainMs }))),
-      );
+      const { grainMs, window, cube } = await patternCube(input);
       return patternsFrom(cube, { ...input, ...window, grainMs });
+    },
+    async tenantLogVolume(input) {
+      const { grainMs, window, cube } = await lineCube(input);
+      return lineVolumeFrom(cube, { ...input, ...window, grainMs });
+    },
+    async tenantLogFacets(input) {
+      const { cube } = await lineCube(input);
+      return lineFacetsFrom(cube, input);
     },
   };
 }

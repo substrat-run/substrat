@@ -7,6 +7,9 @@
 import { z, substratError, tenantId as tenantIdSchema, ENTITY_TYPES_SEPARATOR, INVOCATION_RECORD_FIELD_MAX } from '@substrat-run/contracts';
 import {
   INVOCATION_KINDS,
+  LINE_FACET_KEYS,
+  type LineWhere,
+  type TenantLineScope,
   REQUEST_FACET_KEYS,
   REQUEST_SEARCH_MAX,
   REQUEST_SEARCH_NOT_COUNTED,
@@ -129,6 +132,37 @@ export function refuseSearchOnCounts(scope: TenantRequestScope): void {
     'request counts cannot be narrowed by search; search applies to the request list',
     { reason: REQUEST_SEARCH_NOT_COUNTED },
   );
+}
+
+/**
+ * #2762: the query the Lines counts take — the window, `LINE_FACET_KEYS` (a `ctx.log` line may be
+ * `debug`) and a pattern's `template`. `search` and `invocationId` narrow the Lines LIST only:
+ * no cube holds a message or a request id, so a count given either is refused, as
+ * `refuseSearchOnCounts` refuses it for requests.
+ */
+export function parseTenantLineQuery(tenantId: string, q: QueryReader, now: number = Date.now()): TenantLineScope {
+  if (q.one('search')?.trim() || q.one('invocationId')) {
+    throw substratError(
+      'validation_failed',
+      'line counts cannot be narrowed by search or by one request; those apply to the line list',
+      { reason: REQUEST_SEARCH_NOT_COUNTED },
+    );
+  }
+  const base = parseTenantWindowQuery(tenantId, q, now);
+  const where: LineWhere = {};
+  for (const key of LINE_FACET_KEYS) {
+    const values = q.all(key).filter((v) => v.length > 0);
+    if (values.length === 0) continue;
+    const value = key === 'level' ? z.enum(['debug', 'info', 'warn', 'error']) : facetValue[key];
+    where[key] = z.array(value).max(REQUEST_WHERE_VALUES_MAX).parse([...new Set(values)]);
+  }
+  // Raw, as on the list: an EMPTY template is a caller bug, never "every line".
+  const template = q.one('template');
+  return {
+    ...base,
+    ...(Object.keys(where).length > 0 ? { where } : {}),
+    ...(template !== undefined ? { template: z.string().min(1).max(500).parse(template) } : {}),
+  };
 }
 
 /**

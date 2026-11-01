@@ -315,6 +315,8 @@ import {
   parseTenantWindowQuery,
   refineTenantWindow,
   refuseSearchOnCounts,
+  parseTenantLineQuery,
+  REQUEST_WHERE_VALUES_MAX,
   scriptFamiliesOfScopes,
   type QueryReader,
 } from './tenant-request-query.js';
@@ -1686,6 +1688,9 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/observability\/tenant-requests$/, pin: 'query' },
   // #1747: the tenant's `ctx.log` lines grouped by template — same grain, same forced tenant.
   { method: 'GET', re: /\/observability\/tenant-log-patterns$/, pin: 'query' },
+  // #2762: the Lines histogram and facets — same grain, same forced tenant.
+  { method: 'GET', re: /\/observability\/tenant-log-volume$/, pin: 'query' },
+  { method: 'GET', re: /\/observability\/tenant-log-facets$/, pin: 'query' },
   { method: 'GET', re: /\/hostnames$/, pin: 'query' },
   { method: 'POST', re: /\/hostnames$/, pin: 'body' },
   // The registry + install catalog.
@@ -2211,6 +2216,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/observability\/tenant-requests$/ },
     // #1747: the same tenant's `ctx.log` lines, grouped by template.
     { method: 'GET', re: /\/observability\/tenant-log-patterns$/ },
+    // #2762: the same tenant's lines, counted.
+    { method: 'GET', re: /\/observability\/tenant-log-volume$/ },
+    { method: 'GET', re: /\/observability\/tenant-log-facets$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -10495,6 +10503,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #1747: one pattern's lines — a `ctx.log` template, verbatim. The line bounds a
         // template at 500 characters, so a longer one can match nothing and is refused.
         template: z.string().min(1).max(500).optional(),
+        // #2762: the Lines facets — repeated values are alternatives, as on the request reads.
+        operation: z.array(z.string().min(1).max(200)).max(REQUEST_WHERE_VALUES_MAX),
+        principalKind: z.array(z.string().min(1).max(40)).max(REQUEST_WHERE_VALUES_MAX),
         hours: z.coerce.number().int().min(1).max(72).default(24),
         // The chart's time cursor (#1447): a window that ENDS in the past, which `hours`
         // cannot spell — it always ends at now.
@@ -10516,6 +10527,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Raw, like the invocation id: an EMPTY template is a caller bug, and folding it into
         // "absent" would answer it with the app's whole log instead of the schema's 400.
         template: c.req.query('template'),
+        operation: [...new Set((c.req.queries('operation') ?? []).filter((v) => v.length > 0))],
+        principalKind: [...new Set((c.req.queries('principalKind') ?? []).filter((v) => v.length > 0))],
         hours: c.req.query('hours'),
         since: c.req.query('since') || undefined,
         until: c.req.query('until') || undefined,
@@ -10523,7 +10536,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
     // #1877: scoped to the app's own scripts — the scan and trust boundary.
     const services = await appServices(c.get('actor'), input.tenantId, input.scopeId, input.vertical);
-    const { events, incomplete } = await options.observability.tenantLogs({ ...input, services });
+    const { operation, principalKind, ...rest } = input;
+    const { events, incomplete } = await options.observability.tenantLogs({
+      ...rest,
+      ...(operation.length ? { operation } : {}),
+      ...(principalKind.length ? { principalKind } : {}),
+      services,
+    });
     // The body stays the list every caller reads; a page that may be missing lines behind a cut
     // says so beside it, as `/observability/logs` does (#2521).
     if (incomplete) c.header(LOGS_INCOMPLETE_HEADER, '1');
@@ -10651,6 +10670,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         services: await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical),
       }),
     );
+  });
+
+  // #2762: the Lines histogram and facets — a tenant's request lines and `ctx.log` lines, counted
+  // from the same cubes. Lines with no tenant of their own (`console.log`) are listed, never counted.
+  app.get('/observability/tenant-log-volume', async (c) => {
+    if (!options.observability?.tenantLogVolume) {
+      return refuseStatus(c, 501, 'line aggregation is not configured on this control plane');
+    }
+    const scope = parseTenantLineQuery(requestTenantOf(c), requestQueryOf(c));
+    const buckets = z.coerce.number().int().min(10).max(240).default(90).parse(c.req.query('buckets'));
+    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    return c.json(await options.observability.tenantLogVolume({ ...scope, services, buckets }));
+  });
+
+  app.get('/observability/tenant-log-facets', async (c) => {
+    if (!options.observability?.tenantLogFacets) {
+      return refuseStatus(c, 501, 'line aggregation is not configured on this control plane');
+    }
+    const scope = parseTenantLineQuery(requestTenantOf(c), requestQueryOf(c));
+    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    return c.json(await options.observability.tenantLogFacets({ ...scope, services }));
   });
 
   app.get('/observability/tenant-requests', async (c) => {
