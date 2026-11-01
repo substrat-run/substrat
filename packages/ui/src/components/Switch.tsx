@@ -3,6 +3,8 @@ import type { CSSProperties } from 'react';
 
 export interface SwitchProps {
   label?: string;
+  /** The accessible name when no visible `label` is drawn — a switch in a table row, say. */
+  'aria-label'?: string;
   checked?: boolean;
   defaultChecked?: boolean;
   onChange?: (checked: boolean) => void;
@@ -10,7 +12,7 @@ export interface SwitchProps {
   style?: CSSProperties;
 }
 
-export function Switch({ label, checked, defaultChecked, onChange, disabled, style }: SwitchProps) {
+export function Switch({ label, 'aria-label': ariaLabel, checked, defaultChecked, onChange, disabled, style }: SwitchProps) {
   const [internal, setInternal] = useState(!!defaultChecked);
   const isOn = checked !== undefined ? checked : internal;
 
@@ -28,6 +30,7 @@ export function Switch({ label, checked, defaultChecked, onChange, disabled, sty
       type="button"
       role="switch"
       aria-checked={isOn}
+      aria-label={label ? undefined : ariaLabel}
       disabled={disabled}
       onClick={toggle}
       style={{

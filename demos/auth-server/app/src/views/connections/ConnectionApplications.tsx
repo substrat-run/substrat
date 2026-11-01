@@ -122,6 +122,7 @@ export function ConnectionApplications({
               </code>
               <span style={{ justifySelf: 'end' }}>
                 <Switch
+                  aria-label={client.client_name || client.client_id}
                   checked={enabledFor(client, connectionId)}
                   disabled={busy !== null}
                   onChange={(on) => void toggle(client, on)}

@@ -73,12 +73,19 @@ export function useCoreForm(client: RegisteredClient | null, onError: (message: 
   const [scopes, setScopes] = useState<string[]>(client?.client_credentials_scopes ?? []);
   /** The issuer's `MACHINE_SCOPES` — what the scope boxes offer. `null` until read. */
   const [ceiling, setCeiling] = useState<IssuerSettings | null>(null);
+  // Kept rather than only reported: a save clears the form's error first, and without this the
+  // failed read would come back as "still loading" — a wait for a request that already ended.
+  const [ceilingError, setCeilingError] = useState<string | null>(null);
   useEffect(() => {
-    if (!machine || ceiling) return;
+    if (!machine || ceiling || ceilingError) return;
     void issuerSettings()
       .then(setCeiling)
-      .catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
-  }, [machine, ceiling, onError]);
+      .catch((e: unknown) => {
+        const message = e instanceof Error ? e.message : String(e);
+        setCeilingError(message);
+        onError(message);
+      });
+  }, [machine, ceiling, ceilingError, onError]);
   const [meta, setMeta] = useState(() => {
     const { theme: _theme, signIn: _signIn, ...rest } = client?.metadata ?? {};
     return Object.keys(rest).length ? JSON.stringify(rest, null, 2) : '';
@@ -113,7 +120,14 @@ export function useCoreForm(client: RegisteredClient | null, onError: (message: 
       ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
     };
     if (machine) {
-      if (!ceiling) return { ok: false, error: 'Scopes: still loading the issuer’s machine scopes — try again in a moment.' };
+      if (!ceiling) {
+        return {
+          ok: false,
+          error: ceilingError
+            ? `Scopes: the issuer’s machine scopes could not be read (${ceilingError}) — reload the page to try again.`
+            : 'Scopes: still loading the issuer’s machine scopes — try again in a moment.',
+        };
+      }
       // A held scope that has left MACHINE_SCOPES is dropped rather than sent: the API refuses
       // any scope outside the list, and the token endpoint already stopped granting it.
       const kept = scopes.filter((s) => ceiling.machineScopes.includes(s));

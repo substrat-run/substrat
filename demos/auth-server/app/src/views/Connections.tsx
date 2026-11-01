@@ -138,10 +138,10 @@ export function ConnectionsView({ issuer }: { issuer: string | null }) {
             conn={conn}
             signups={conn.kind === 'database' ? (settings?.allowSignup ?? null) : null}
             enabled={clients ? clients.filter((c) => enabledFor(c, conn.id)).length : null}
-            last={i === connections.length - 1 && catalogue !== null && bankid !== undefined}
+            last={i === connections.length - 1 && catalogue !== null && (bankid !== undefined || bankidErr !== null)}
           />
         ))}
-        {(!catalogue || bankid === undefined) && !providersErr && (
+        {(!catalogue || (bankid === undefined && !bankidErr)) && !providersErr && (
           <Row columns={COLUMNS} last>
             <span className="muted">Loading connections…</span>
           </Row>
