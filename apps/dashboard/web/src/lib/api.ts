@@ -1,10 +1,9 @@
-import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
+import { problemDetail } from '@substrat-run/contracts';
 import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppHostnameRow, type AppMetricsView, type AppOverlays, type AppRow, type AppSchedulesView, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type DomainRow, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LineVolume, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ProcessMapView as GeneratedProcessMapView, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
 import { ApiError as AccountApiError, createClient as createAccountClient, type AccountView as Me, type OnboardingView as Onboarding, type TeamSummary as Team } from './account-api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { LineReadQuery, RequestReadQuery } from './requests';
-import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
@@ -986,39 +985,13 @@ export function teamApi(teamId: string): DashboardClient {
 }
 
 /**
- * The declared team-less routes (#2170) — who am I, create, switch, accept — under `/api`, about
- * the signed-in login rather than one team.
+ * The declared team-less routes (#2170) under `/api`: who am I, create, switch, accept, the
+ * support claim, and the two that run before sign-in (the invite preview, the public catalog).
  */
 const accountApi = createAccountClient({
   fetch: (input, init) => fetch(input, { credentials: 'include', ...init }),
   errorMessage: (body) => problemDetail(body),
 });
-
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    credentials: 'include',
-    headers: { 'content-type': 'application/json', ...(init?.headers as Record<string, string>) },
-    ...init,
-  });
-  if (!res.ok) {
-    // `problemDetail` is the one reading of a failed body (#971) — the problem body's
-    // sentence, then the deprecated duplicate every SPA read before it. The `probe`
-    // beside it is the dashboard's own extension (#605) and stays read here.
-    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown; reason?: unknown } | null;
-    // Only something shaped like an id is surfaced as one: it is shown, and people copy it.
-    const plausible = (v: unknown): string | undefined => (typeof v === 'string' && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i.test(v) ? v : undefined);
-    const fromBody = plausible(body?.requestId);
-    throw new ApiError(
-      res.status,
-      problemDetail(body) ?? `${res.status} ${res.statusText}`,
-      body?.probe,
-      exportBreaksIn<ExportBreakRow>(body),
-      plausible(res.headers.get(REQUEST_ID_HEADER)) ?? fromBody,
-      typeof body?.reason === 'string' ? body.reason : undefined,
-    );
-  }
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
-}
 
 /** One recent log event from a team vertical's deployed service. */
 /** #1746: one request, as its stamped invocation line recorded it. `null` = not recorded. */
@@ -1100,10 +1073,7 @@ export const api = {
   /** Switch the active team; the server pins it in a cookie, so the caller reloads after. */
   switchTeam: (teamId: string) => accountApi.switchTeam({ teamId }),
   /** Preview an invite (unauthenticated): the team + invited email, for prefill + the accept screen. */
-  previewInvite: (token: string) =>
-    call<{ teamName: string; email: string; roleKey: InviteRole }>(
-      `/invites/preview?token=${encodeURIComponent(token)}`,
-    ),
+  previewInvite: (token: string) => accountApi.previewTeamInvite({ token }),
   /** Accept an invite token; the server switches to the team, so the caller reloads after. */
   acceptInvite: (token: string) => accountApi.acceptTeamInvite({ token }),
   /** One page of the TEAM's control-plane audit log (#1447) — every app, newest first.

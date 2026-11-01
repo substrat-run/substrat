@@ -178,7 +178,7 @@ The observability and logs reads go through the generated client like every othe
 A filter that names several values (`service`, `scopeId`, the request facets) is declared as an
 array, sent as a repeated query key and parsed by the mount into a list. The two log reads
 declare `responseHeaders: [x-substrat-logs-incomplete]`, so their client method answers the body
-and only that header. The browser's hand-written `call` reaches the invite preview only.
+and only that header. The browser has no hand-written `call` left: every route it reads is declared.
 
 The team-less routes are declared too, in a second table: `accountRoutes` (`/api/me`, team
 create, team switch, invite accept). They are about the signed-in login, not one team, so the
@@ -189,9 +189,16 @@ base URL, so `substrat.client` lists two, and these have their own,
 `web/src/lib/account-api.generated.ts`. Invite accept answers 200 when the person has joined
 and 202 when access is still landing (#1184). It declares `statuses: [200, 202]` and returns
 `answered(202, body)` for the second, which the mount refuses for any status the route does not
-list. Team switch answers `200 { teamId }`, where it used to answer 204. The invite preview stays
-undeclared, because it runs before sign-in and `sessionContext` would refuse it. Webhooks and
-OAuth callbacks stay undeclared because their callers are providers.
+list. Team switch answers `200 { teamId }`, where it used to answer 204. The support desk's
+identity claim (`/api/support/identity`) is in this table too: it needs a session and no team, so
+the onboarding screen can carry the bubble. The session is checked first, so a caller without
+one gets a 401 even on a deployment with no desk, where it used to get `{ desk: null }`.
+
+The routes that run before sign-in are a third table, `publicRoutes`: the invite preview, whose
+signed token is its own authority, and the anonymous `/api/catalog`. Its mount resolves no caller
+at all. It shares `/api` with `accountRoutes`, so both tables generate one client. Webhooks, OAuth
+callbacks and the connector consent start stay undeclared, because their callers are providers or
+a top-level navigation, not this app's client.
 
 The assistant's tools run the same handlers with the `/ask` request as the Hono context, so a
 handler the assistant can call reads every argument from the parsed input, never from `c.req`
@@ -202,12 +209,13 @@ what the same values in a URL mean. The four app chart reads the assistant is no
 failures, overlays, field reads) still read the query.
 
 The declared surface also emits its OpenAPI document. `apps/dashboard/src/api.ts` builds it from
-`dashboardRoutes` and `accountRoutes`, the objects the mounts and the generated clients read, with
+`dashboardRoutes`, `accountRoutes` and `publicRoutes`, the objects the mounts and the generated clients read, with
 each team route under `/api/teams/{teamId}`. `pnpm lint:api` writes it to the checked-in `apps/dashboard/openapi.json`,
 and CI's `pnpm lint:api --check` fails when a route changes without it. The document states each
 route's declared success status and response headers, and no `Idempotency-Key`, because
 `mountRoutes` does not honour one. Its only security scheme is the session cookie, because that
-is all `teamContext` and `sessionContext` read; there is no bearer path.
+is all `teamContext` and `sessionContext` read; there is no bearer path. A `publicRoutes` entry
+documents `security: []` (the builder's `anonymous` field), because it reads no session at all.
 It is a review artifact; the worker does not serve it.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.

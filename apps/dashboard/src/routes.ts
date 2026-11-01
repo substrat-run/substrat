@@ -2054,9 +2054,9 @@ export const accountView = z.object({
  * (`web/src/lib/account-api.generated.ts`, beside the team client).
  *
  * Writes of the `sb_team` cookie stay in the handlers: it is "the team `/` lands on", which
- * create, switch and accept each move. Undeclared on purpose: the invite preview (it runs
- * before sign-in, so this table's context would refuse it), webhooks and OAuth callbacks
- * (their callers are providers, not this app's client).
+ * create, switch and accept each move. The routes that run before sign-in are `publicRoutes`,
+ * below. Undeclared on purpose: webhooks, OAuth callbacks and the connector consent start
+ * (their callers are providers or a top-level navigation, not this app's client).
  */
 export const accountRoutes = defineRoutes({
   'dashboard/me': {
@@ -2084,5 +2084,35 @@ export const accountRoutes = defineRoutes({
     output: z.object({ teamId: z.string(), already: z.boolean().optional(), pending: z.boolean().optional() }),
     http: { method: 'POST', path: '/invites/accept' },
     statuses: [200, 202],
+  },
+  // A session and nothing more: someone with no team yet is the likeliest to have a question.
+  'dashboard/support-identity': {
+    summary: 'The support desk to embed and a signed claim of who is asking, or `desk: null` when there is none',
+    output: z.union([
+      z.object({ desk: z.null() }),
+      z.object({ desk: z.string(), user: z.string(), signature: z.string() }),
+    ]),
+    http: { method: 'GET', path: '/support/identity' },
+  },
+});
+
+/**
+ * The routes that run before sign-in (#2170), mounted under `/api` with no session check: each
+ * carries its own authority or needs none. The invite preview's signed token is the authority
+ * (the link was mailed to the invitee, and joining still takes the invited, verified email);
+ * the catalog is this deployment's published verticals, the same for every caller. Generated
+ * into the same browser client as `accountRoutes`, whose base path they share.
+ */
+export const publicRoutes = defineRoutes({
+  'dashboard/preview-team-invite': {
+    summary: 'The team and invited address behind an invite link, for the accept screen and the login prefill',
+    input: z.object({ token: z.string().min(1) }),
+    output: z.object({ teamName: z.string(), email: z.string(), roleKey: inviteRole }),
+    http: { method: 'GET', path: '/invites/preview' },
+  },
+  'dashboard/public-catalog': {
+    summary: 'This deployment’s published verticals, the same for every caller',
+    output: z.array(catalogRow),
+    http: { method: 'GET', path: '/catalog' },
   },
 });

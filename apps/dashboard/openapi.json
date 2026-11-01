@@ -3,7 +3,7 @@
   "info": {
     "title": "Substrat Dashboard",
     "version": "1",
-    "description": "The dashboard's routes. Every path under /teams/{teamId} names the team it acts on; the rest are about the signed-in login."
+    "description": "The dashboard's routes. Every path under /teams/{teamId} names the team it acts on; the rest are about the signed-in login, or run before sign-in."
   },
   "paths": {
     "/api/teams/{teamId}/apps/{scopeId}/hostnames": {
@@ -27059,6 +27059,81 @@
         }
       }
     },
+    "/api/support/identity": {
+      "get": {
+        "operationId": "dashboard-support-identity",
+        "summary": "The support desk to embed and a signed claim of who is asking, or `desk: null` when there is none",
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "desk": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "desk"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "desk": {
+                          "type": "string"
+                        },
+                        "user": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "desk",
+                        "user",
+                        "signature"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/teams/switch": {
       "post": {
         "operationId": "dashboard-switch-team",
@@ -27098,6 +27173,216 @@
                     "teamId"
                   ],
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/invites/preview": {
+      "get": {
+        "operationId": "dashboard-preview-team-invite",
+        "summary": "The team and invited address behind an invite link, for the accept screen and the login prefill",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "teamName": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "roleKey": {
+                      "type": "string",
+                      "enum": [
+                        "admin",
+                        "member",
+                        "viewer"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "teamName",
+                    "email",
+                    "roleKey"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/catalog": {
+      "get": {
+        "operationId": "dashboard-public-catalog",
+        "summary": "This deployment’s published verticals, the same for every caller",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "slug": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "owned": {
+                        "type": "boolean"
+                      },
+                      "listed": {
+                        "type": "boolean"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "installable": {
+                        "type": "boolean"
+                      },
+                      "envSpec": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "key": {
+                              "type": "string",
+                              "pattern": "^[A-Z][A-Z0-9_]*$"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "placeholder": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string"
+                            },
+                            "required": {
+                              "type": "boolean"
+                            },
+                            "secret": {
+                              "type": "boolean"
+                            },
+                            "previewCarry": {
+                              "type": "boolean"
+                            },
+                            "default": {
+                              "type": "string"
+                            },
+                            "group": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "description",
+                            "required",
+                            "secret"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "provides": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "requires": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "slug",
+                      "name",
+                      "owned",
+                      "listed",
+                      "source",
+                      "installable"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               }
             }

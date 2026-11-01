@@ -30,7 +30,7 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { accountRoutes, dashboardRoutes, fieldReadsView, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
+import { accountRoutes, dashboardRoutes, fieldReadsView, publicRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
 import { answered, mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
@@ -903,15 +903,20 @@ async function installSpecFor(
   };
 }
 
+/** What a route that runs before sign-in gets (`publicRoutes`): the request, and no claim about who sent it. */
+interface PublicContext {
+  readonly c: Context<{ Bindings: Env }>;
+}
+
 // The anonymous catalog: this deployment's published verticals (installable for builtins), the same
 // for every caller. It reads no session and no team; a team's own verticals are
 // `dashboard/list-catalog`, under its path.
-app.get('/api/catalog', async (c) => {
+async function publicCatalog({ c }: PublicContext) {
   const host = hostFor(c.env);
   await ensureCatalogOnce(host);
   const rows = availableCatalog(await host.admin.listVerticals(STAFF), { tenantId: null });
-  return c.json(rows.map((v) => ({ ...v, installable: v.source === 'builtin' })));
-});
+  return rows.map((v) => ({ ...v, installable: v.source === 'builtin' }));
+}
 
 /**
  * The New-app picker for the path's team — registry-driven (marketplace-publish.md §3): published
@@ -1023,7 +1028,8 @@ async function me({ c, user }: SessionContext) {
  * reaches the page (`signVisitorIdentity`), which is the only reason the claim means
  * anything: a visitor cannot claim somebody else's identity by editing an attribute.
  *
- * A SESSION is the whole requirement — no team, no membership, no onboarding state.
+ * A SESSION is the whole requirement — no team, no membership, no onboarding state — and
+ * it is checked first, so a caller without one is a 401 even where no desk is configured.
  * Someone who signed in and has not made a team yet is stuck on one screen and is the
  * likeliest person in the product to have a question; refusing them a bubble because
  * `/api/me` would say `needsOnboarding` would aim the desk away from exactly them.
@@ -1034,18 +1040,16 @@ async function me({ c, user }: SessionContext) {
  * same fact: nothing to embed. So does a session whose address the issuer did not verify
  * (#1359): the signature would vouch for a person the issuer did not.
  */
-app.get('/api/support/identity', async (c) => {
+async function supportIdentity({ c, user }: SessionContext) {
   const desk = c.env.SUPPORT_DESK_ORIGIN;
   const secret = c.env.SUPPORT_WIDGET_SECRET;
   // No desk configured is not an error — it is a deployment without one.
-  if (!desk || !secret) return c.json({ desk: null });
-  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) return problem(c, 401, 'unauthorized');
+  if (!desk || !secret) return { desk: null };
   const { email } = identifyEmail(c.env, user);
-  if (!email) return c.json({ desk: null });
+  if (!email) return { desk: null };
   c.header('cache-control', 'no-store');
-  return c.json({ desk, user: email, signature: await signVisitorIdentity(secret, email) });
-});
+  return { desk, user: email, signature: await signVisitorIdentity(secret, email) };
+}
 
 /**
  * Create a team — the signup-onboarding move AND the in-app "New team" action share
@@ -1083,6 +1087,7 @@ mountRoutes(app, accountRoutes, { basePath: '/api', context: sessionContext })({
   'dashboard/create-team': createTeamRoute,
   'dashboard/switch-team': switchTeam,
   'dashboard/accept-team-invite': acceptTeamInvite,
+  'dashboard/support-identity': supportIdentity,
 } satisfies RouteImpl<typeof accountRoutes, SessionContext>);
 
 /**
@@ -1194,9 +1199,7 @@ async function mailInvite(
  * verified-email hash at accept-time. Used before sign-in to prefill `login_hint`, so a
  * first-time invitee signs up with the right email and lands in the team, not onboarding.
  */
-app.get('/api/invites/preview', async (c) => {
-  const token = c.req.query('token');
-  if (!token) throw new HTTPException(400, { message: 'missing token' });
+async function previewTeamInvite({ c }: PublicContext, { token }: { token: string }) {
   const claim = await verifyInviteToken(c.env, token);
   if (!claim) throw new HTTPException(404, { message: 'this invite link is invalid or has expired' });
   const t = tenantId.parse(claim.tenantId);
@@ -1210,8 +1213,13 @@ app.get('/api/invites/preview', async (c) => {
     | null;
   if (!preview) throw new HTTPException(404, { message: 'this invite link is invalid or has expired' });
   const team = await host.admin.getTenant(STAFF, t);
-  return c.json({ teamName: team?.name ?? 'a team', email: preview.email, roleKey: preview.roleKey });
-});
+  return { teamName: team?.name ?? 'a team', email: preview.email, roleKey: preview.roleKey };
+}
+
+mountRoutes(app, publicRoutes, { basePath: '/api', context: (c): PublicContext => ({ c }) })({
+  'dashboard/preview-team-invite': previewTeamInvite,
+  'dashboard/public-catalog': publicCatalog,
+} satisfies RouteImpl<typeof publicRoutes, PublicContext>);
 
 /**
  * Accept an invitation. The recipient is logged in (verified email), presents the
