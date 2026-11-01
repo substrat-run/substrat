@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyPythonStoreModule } from '../src/deploy.js';
+import { classifyPythonStoreModule, isPythonCodeModule } from '../src/deploy.js';
 
 /** The module rule of a Python store-driver release (#2390), refused by table and admitted by twin. */
 describe('classifyPythonStoreModule', () => {
@@ -76,5 +76,35 @@ describe('classifyPythonStoreModule', () => {
     ['wrangler.toml', /a dependency is python_modules/],
   ])('refuses %s', (name, why) => {
     expect(() => classifyPythonStoreModule(name)).toThrow(why);
+  });
+});
+
+/** What counts toward the module cap (D-68): what Python can import, not the data beside it. */
+describe('isPythonCodeModule', () => {
+  it.each([
+    'driver_graph/store.py',
+    'python_modules/six.py',
+    'python_modules/pkg/__pycache__/mod.cpython-313.pyc',
+    'python_modules/_cffi_backend.cpython-313-wasm32-emscripten.so',
+    'python_modules/ext.abi3.so',
+    'python_modules/pkg.libs/libfoo.so.1',
+    'python_modules/pkg.libs/libfoo.so.1.2',
+  ])('counts %s', (name) => {
+    expect(isPythonCodeModule(name)).toBe(true);
+  });
+
+  it.each([
+    'python_modules/tzdata/zoneinfo/Europe/Stockholm',
+    'python_modules/tzdata/zones',
+    'python_modules/pkg/py.typed',
+    'python_modules/pkg/mod.pyi',
+    'python_modules/vendor_probe-1.0.dist-info/METADATA',
+    'python_modules/pkg/data.json',
+    // Twins: a name that only contains a code suffix is data.
+    'python_modules/pkg/notes.py.txt',
+    'python_modules/pkg/notes.so.txt',
+    'python_modules/pkg/lib.so.x',
+  ])('does not count %s', (name) => {
+    expect(isPythonCodeModule(name)).toBe(false);
   });
 });

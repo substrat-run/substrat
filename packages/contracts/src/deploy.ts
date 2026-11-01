@@ -429,8 +429,29 @@ export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
 
-/** The most modules one release bundle may carry (#2300, #2390). A bigger upload is 422. */
+/**
+ * The most code modules one release bundle may carry (#2300, #2390, D-68): files Python can import
+ * or load, by {@link isPythonCodeModule}. A data file beside them counts toward
+ * {@link STORE_RELEASE_MAX_BYTES} and {@link STORE_RELEASE_MAX_FILES} only, and the module rule still
+ * judges its name. A bigger upload is 422.
+ */
 export const STORE_RELEASE_MAX_MODULES = 1000;
+
+/** The most files, code and data, one release bundle may carry (D-68). A bigger upload is 422. */
+export const STORE_RELEASE_MAX_FILES = 4000;
+
+/**
+ * What Python loads code from under Pyodide: source (`.py`), bytecode (`.pyc`, imported without its
+ * source), and a compiled extension or the shared library it links (`.so`, with an ABI tag before it
+ * or a version after it, as in `libfoo.so.1.2`).
+ */
+const PYTHON_CODE_FILE = /\.(?:py|pyc)$|\.so(?:\.\d+)*$/;
+
+/** The code forms {@link isPythonCodeModule} counts, as messages name them. */
+export const PYTHON_CODE_FORMS = '.py, .pyc, .so';
+
+/** Whether a release module is code Python can import or load, so it counts toward {@link STORE_RELEASE_MAX_MODULES} (D-68). */
+export const isPythonCodeModule = (name: string): boolean => PYTHON_CODE_FILE.test(name);
 
 /**
  * A driver's own module: one top-level package that starts with `driver_`, then identifiers,
@@ -570,7 +591,10 @@ export const storeDriverReleaseUpload = z
     modules: z
       .array(z.object({ name: z.string().min(1), contentBase64: z.string() }).strict())
       .min(1)
-      .max(STORE_RELEASE_MAX_MODULES),
+      .max(STORE_RELEASE_MAX_FILES)
+      .refine((modules) => modules.filter((module) => isPythonCodeModule(module.name)).length <= STORE_RELEASE_MAX_MODULES, {
+        message: `a release carries at most ${STORE_RELEASE_MAX_MODULES} code modules (${PYTHON_CODE_FORMS})`,
+      }),
   })
   .strict();
 export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;

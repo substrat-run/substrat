@@ -11,6 +11,7 @@ import {
   RESERVED_STORE_OPERATIONS,
   STORE_DRIVER_PLATFORM_REPOSITORY,
   STORE_RELEASE_MAX_BYTES,
+  STORE_RELEASE_MAX_FILES,
   STORE_RELEASE_MAX_MODULES,
   storeDriverReleaseDigest,
   type PlatformActorId,
@@ -1601,5 +1602,30 @@ describe('a Python release may carry python_modules (#2390)', () => {
       expect(e).toMatchObject({ status: 422, message: expect.stringMatching(/not a store driver release/) });
     }
     expect(STORE_RELEASE_MAX_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it('counts only code toward the module cap: data files beside the most code modules are admitted (D-68)', () => {
+    const modules = [py('driver_graph/store.py')];
+    for (let i = 1; i < STORE_RELEASE_MAX_MODULES; i++) modules.push(py(`python_modules/m${i}.py`));
+    for (let i = 0; i < 700; i++) modules.push({ name: `python_modules/tzdata/zoneinfo/Zone${i}`, contentBase64: b64('TZif') });
+    expect(decodeStoreDriverRelease(body(modules)).modules).toHaveLength(STORE_RELEASE_MAX_MODULES + 700);
+    // Bytecode and a compiled extension are code: either one more is over the cap.
+    for (const name of ['python_modules/hidden.pyc', 'python_modules/hidden.cpython-313-wasm32-emscripten.so']) {
+      try {
+        decodeStoreDriverRelease(body([...modules, py(name)]));
+        expect.unreachable();
+      } catch (e) {
+        expect(e).toMatchObject({ status: 422, message: expect.stringMatching(/at most 1000 code modules/) });
+      }
+    }
+    // Files of any kind are capped too, so an upload cannot carry an unbounded list of names.
+    const crowded = [py('driver_graph/store.py')];
+    for (let i = 1; i <= STORE_RELEASE_MAX_FILES; i++) crowded.push({ name: `python_modules/data/f${i}`, contentBase64: '' });
+    try {
+      decodeStoreDriverRelease(body(crowded));
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toMatchObject({ status: 422, message: expect.stringMatching(/not a store driver release/) });
+    }
   });
 });
