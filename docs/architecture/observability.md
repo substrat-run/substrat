@@ -573,7 +573,9 @@ The list, `/observability/tenant-logs`, takes `operation` and `principalKind` as
 alternatives. They go into its tenant-filtered queries: a request's line must match, and its
 other lines come with it, and a `ctx.log` line matches on its own fields. An account-wide
 `console.error` candidate is admitted only when its request's line matches them too. Its
-`level` stays one value. The pattern cube gained `principalKind` for this, which moved its
+`level` stays one value. A request line is listed at the level it is counted under: the line's
+own `level`, or `invocationLevelOf` for a line from before the field. So a 409 is a warning, and a
+501 is an error (still labelled "capability absent"), and an error read selects `status >= 500`. The pattern cube gained `principalKind` for this, which moved its
 cached blocks to new keys (`PATTERN_CUBE_SHAPE` 2), so each is recounted once.
 
 **4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
