@@ -723,8 +723,14 @@ export class RouteOutputMismatch extends SubstratError {
   readonly route: string;
   readonly issuePaths: readonly string[];
 
-  constructor(route: string, issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>) {
-    super('internal', `mountRoutes: '${route}' answered outside its declared output`);
+  /** `status`: an `answered()` status the route does not list, when that is the disagreement. */
+  constructor(route: string, issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>, status?: number) {
+    super(
+      'internal',
+      status === undefined
+        ? `mountRoutes: '${route}' answered outside its declared output`
+        : `mountRoutes: '${route}' answered ${status}, a status it does not declare`,
+    );
     this.route = route;
     this.issuePaths = issuePathsOf(issues);
   }
@@ -844,11 +850,12 @@ function mountDeclaredRoutes<Ctx>(
         input = parsed.data;
       }
       const result = await handle(ctx, input);
-      if (!parseOut) return c.body(null, 204);
       // `answered(status, body)` picks one of the route's other declared statuses; a status it
       // does not list is the handler disagreeing with the declaration, like a mistyped body.
+      // Checked before the no-output 204, which would otherwise swallow it.
       const answer = result instanceof RouteAnswer ? result : undefined;
-      if (answer && !decl.statuses?.includes(answer.status)) throw new RouteOutputMismatch(name, []);
+      if (answer && !decl.statuses?.includes(answer.status)) throw new RouteOutputMismatch(name, [], answer.status);
+      if (!parseOut) return c.body(null, 204);
       const out = parseOut(answer ? answer.body : result);
       if (!out.success) throw new RouteOutputMismatch(name, out.error.issues);
       return c.json(out.data as object, answer?.status ?? decl.statuses?.[0] ?? decl.status ?? 200);

@@ -35,7 +35,7 @@ import {
  * second schema language anywhere in the pipeline.
  */
 
-export interface ApiOperationDoc {
+interface ApiOperationFields {
   /** One line, imperative — what invoking this operation does. */
   summary: string;
   /** Optional longer prose (permissions nuance, state-machine rules). */
@@ -84,10 +84,6 @@ export interface ApiOperationDoc {
    * client reads it and builds a retry it does not have.
    */
   idempotency?: false;
-  /** The success status, when it is not 200 — a declared route's `201` for a create (#2170). */
-  status?: 200 | 201 | 202;
-  /** Every success status, when a declared route answers more than one (`[200, 202]`); replaces `status`. */
-  statuses?: readonly (200 | 201 | 202)[];
   /** Response headers the success carries beside its body (a declared route's `responseHeaders`). */
   responseHeaders?: readonly string[];
   paged?: {
@@ -123,6 +119,17 @@ function sortKeyOf(paged: NonNullable<ApiOperationDoc['paged']>): string {
 }
 
 /** operation name (module-namespaced, e.g. 'hr/create-employee') → its doc. */
+/**
+ * One operation's documentation: its fields, and its success status as ONE of `status` (when it
+ * is not 200 — a declared route's `201` for a create) or `statuses` (every one, when a declared
+ * route answers more than one, `[200, 202]`; #2170). Never both, as `RouteShape` has it.
+ */
+export type ApiOperationDoc = ApiOperationFields &
+  (
+    | { status?: 200 | 201 | 202; statuses?: never }
+    | { statuses: readonly (200 | 201 | 202)[]; status?: never }
+  );
+
 export type ApiCatalog = Record<string, ApiOperationDoc>;
 
 export interface ApiDocumentInfo {

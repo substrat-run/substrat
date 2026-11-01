@@ -37,8 +37,7 @@ const declare = (routes: Record<string, unknown>, base: string) => {
       output: route.output,
       http: { method: route.http.method, path: `${base}${route.http.path}` },
       idempotency: false,
-      ...(route.status ? { status: route.status } : {}),
-      ...(route.statuses ? { statuses: route.statuses } : {}),
+      ...(route.statuses ? { statuses: route.statuses } : route.status ? { status: route.status } : {}),
       ...(route.responseHeaders ? { responseHeaders: route.responseHeaders } : {}),
     };
   }

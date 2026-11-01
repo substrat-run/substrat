@@ -135,7 +135,11 @@ describe('mountRoutes (#2170)', () => {
     expect([done.status, await done.json()]).toEqual([200, { pending: false }]);
     const pending = await accept('pending');
     expect([pending.status, await pending.json()]).toEqual([202, { pending: true }]);
-    expect((await accept('undeclared')).status).toBe(500);
+    const undeclared = await accept('undeclared');
+    expect([undeclared.status, ((await undeclared.json()) as { error: string }).error]).toEqual([
+      500,
+      "mountRoutes: 'acme/accept' answered 201, a status it does not declare",
+    ]);
   });
 
   it('a handler answering outside its declaration is a server error naming the route', async () => {
