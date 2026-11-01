@@ -112,7 +112,7 @@ describe('the app request reads (#1746)', () => {
               { ...base, id: 'fresh-1', kind: 'freshness', unit: 'widgets.updated', outcome: 'failed' },
             ] : [{ ...base, id: 'failure-1', operation: 'widgets/send', stage: 'dispatch', code: 'PermissionDenied', message: 'Full error: ' + 'context '.repeat(100) }], cursor: null });
           }
-          if (path.startsWith('/observability/tenant-request') || path === '/observability/tenant-log-patterns' || path === '/observability/tenant-logs') {
+          if (path.startsWith('/observability/tenant-request') || path.startsWith('/observability/tenant-log')) {
             reads.push(u);
             // The plane refuses to count a search (its `search_not_counted` problem).
             if (u.searchParams.has('search') && path !== '/observability/tenant-requests') {
@@ -122,7 +122,8 @@ describe('the app request reads (#1746)', () => {
             // The log read answers a page of events; the aggregate reads an object.
             if (path === '/observability/tenant-logs' || path === '/observability/tenant-requests') return Response.json([]);
             if (path === '/observability/tenant-request-volume') return Response.json({ bucketMs: 60000, buckets: [], estimated: false });
-            if (path === '/observability/tenant-request-facets') return Response.json({ total: 0, facets: {}, estimated: false });
+            if (path === '/observability/tenant-request-facets' || path === '/observability/tenant-log-facets') return Response.json({ total: 0, facets: {}, estimated: false });
+            if (path === '/observability/tenant-log-volume') return Response.json({ bucketMs: 60000, buckets: [], estimated: false });
             return Response.json({ total: 0, bucketMs: 60000, patterns: [], truncated: false, estimated: false });
           }
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
@@ -232,6 +233,21 @@ describe('the app request reads (#1746)', () => {
     expect(ask.searchParams.getAll('tenantId')).toEqual([tenant]);
     expect(ask.searchParams.getAll('scopeId')).toEqual([appScope]);
     expect((await app.request(`/api/teams/${tenant}/apps/${scopeId.parse(ulid())}/observability/log-patterns`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+  });
+
+  // #2762: the Lines counts and the list beside them, with the same facets, the tenant and scope pinned.
+  it('reaches the Lines counts and the list with operation and who, the tenant and scope pinned', async () => {
+    const q = `hours=3&level=debug&operation=acme%2Fsweep&principalKind=system&principalKind=principal&tenantId=${tenantId.parse(ulid())}`;
+    for (const [tail, route] of [['logs/volume', 'tenant-log-volume'], ['logs/facets', 'tenant-log-facets'], ['logs', 'tenant-logs']] as const) {
+      const res = await app.request(`/api/teams/${tenant}/apps/${appScope}/observability/${tail}?${q}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+      expect(res.status, tail).toBe(200);
+      const ask = reads.at(-1)!;
+      expect(ask.pathname).toBe(`/api/observability/${route}`);
+      expect(ask.searchParams.getAll('operation')).toEqual(['acme/sweep']);
+      expect(ask.searchParams.getAll('principalKind')).toEqual(['system', 'principal']);
+      expect(ask.searchParams.getAll('tenantId')).toEqual([tenant]);
+      expect(ask.searchParams.getAll('scopeId')).toEqual([appScope]);
+    }
   });
 
   it('passes a template to the log read', async () => {
