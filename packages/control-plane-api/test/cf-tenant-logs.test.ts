@@ -94,26 +94,36 @@ describe('cf tenant logs', () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     const statuses = sent.filter((f) => keyed(f, 'status')).map((f) => keyed(f, 'status'));
-    expect(statuses).toEqual([
-      { key: 'status', operation: 'eq', type: 'number', value: 500 },
-      { key: 'status', operation: 'gte', type: 'number', value: 502 },
-    ]);
+    expect(statuses).toEqual([{ key: 'status', operation: 'gte', type: 'number', value: 500 }]);
   });
 
   /**
    * #1345: a 501 is a declared-absent capability — the vertical answering "this version has
-   * no owner-seat hook" to a dashboard that asks on render. Correct behaviour, so it is
-   * labelled rather than coloured as a failure, and rather than hidden: the line is the
-   * evidence that something is asking at all.
+   * no owner-seat hook" to a dashboard that asks on render. It is labelled so rather than
+   * hidden: the line is the evidence that something is asking at all. #2762: and filed at the
+   * level the counts give it (`invocationLevelOf`), so a level ticked from the histogram lists it.
    */
-  it('labels a 501 as an absent capability, at info, instead of an error row', async () => {
+  it('labels a 501 as an absent capability, at the level the counts file it under', async () => {
     const { reader } = readerOver((f) =>
       keyed(f, 'substrat') ? [invocation({ method: 'GET', path: '/internal/owner-seat', status: 501, durationMs: 3 })] : [],
     );
-    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]!.message).toBe('GET /internal/owner-seat → 501 capability absent (3 ms)');
-    expect(events[0]!.level).toBe('info');
+    expect(events[0]!.level).toBe('error');
+  });
+
+  /**
+   * #2762: a request line's level is the one the Lines counts group on — the line's own
+   * `level`, or for a line from before the field the rule that writes it. A 409 is a warning in
+   * both, so ticking `warn` from the histogram lists the 409s it counted.
+   */
+  it('reads a request line at the level the counts file it under — a 409 is a warning', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat') ? [invocation({ status: 409, level: 'warn' }, '01OWN'), invocation({ status: 409 }, '01OLD')] : [],
+    );
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'warn', hours: 24, limit: 10 });
+    expect(events.map((e) => e.level)).toEqual(['warn', 'warn']);
   });
 
   it('still reads a 500 as an error row', async () => {
@@ -130,13 +140,6 @@ describe('cf tenant logs', () => {
     const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events[0]!.message).toBe('POST /api/orders → threw (42 ms)');
     expect(events[0]!.level).toBe('error');
-  });
-
-  it('keeps a 501 out of an error read', async () => {
-    // Whatever phase one is asked, a 501 that reaches the merge is not an error row.
-    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ status: 501 })] : []));
-    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
-    expect(events).toEqual([]);
   });
 
   /**
@@ -157,23 +160,20 @@ describe('cf tenant logs', () => {
 
   /**
    * The failure queries are separate pages, and the correlation cap (40) is spent in the
-   * order their invocations are listed. Page order would let a busy `= 500` page spend it
-   * all on old failures and never expand a newer 502 or escape.
+   * order their invocations are listed. Page order would let a busy `>= 500` page spend it
+   * all on old failures and never expand a newer escape.
    */
   it('spends the correlation budget on the newest failures across every failure page', async () => {
     const old500s = Array.from({ length: 45 }, (_, i) =>
       invocation({ status: 500 }, `01OLD${String(i).padStart(2, '0')}`),
     ).map((e, i) => ({ ...e, timestamp: 100 + i }));
     const { reader, sent } = readerOver((f) => {
-      const status = keyed(f, 'status');
-      if (status?.['operation'] === 'eq') return old500s;
-      if (status?.['operation'] === 'gte') return [{ ...invocation({ status: 502 }, '01NEW502'), timestamp: 5000 }];
+      if (keyed(f, 'status')) return old500s;
       if (keyed(f, 'threw')) return [{ ...invocation({ status: null, threw: true }, '01NEWESC'), timestamp: 4000 }];
       return [];
     });
     await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 100 });
     const expanded = sent.map((f) => keyed(f, '$metadata.requestId')?.['value']).filter(Boolean);
-    expect(expanded).toContain('req-01NEW502');
     expect(expanded).toContain('req-01NEWESC');
     expect(expanded).toHaveLength(40);
   });
@@ -222,6 +222,36 @@ describe('cf tenant logs', () => {
       return [];
     });
     const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    expect(events).toEqual([]);
+  });
+
+  /** #2762: the Lines facets reach both phase-one reads — the stamped lines and the `ctx.log` lines. */
+  it('sends operation and who on the stamped-line and ctx.log queries alike', async () => {
+    const { reader, sent } = readerOver(() => []);
+    await reader.tenantLogs!({ tenantId: '01TENANT', operation: ['acme/a', 'acme/b'], principalKind: ['system'], hours: 24, limit: 10 });
+    const ofKind = (kind: string) => sent.find((f) => keyed(f, 'substrat')?.['value'] === kind)!;
+    for (const kind of ['invocation', 'log']) {
+      const f = ofKind(kind);
+      expect(f, kind).toContainEqual({
+        kind: 'group',
+        filterCombination: 'or',
+        filters: ['acme/a', 'acme/b'].map((value) => ({ key: 'operation', operation: 'eq', type: 'string', value })),
+      });
+      expect(keyed(f, 'principalKind'), kind).toEqual({ key: 'principalKind', operation: 'eq', type: 'string', value: 'system' });
+    }
+  });
+
+  /** #2762: an account-wide error candidate is this tenant's, but not a request the facets select. */
+  it('refuses an account-wide error line whose own-tenant invocation ran another operation', async () => {
+    const { reader } = readerOver((f) => {
+      if (keyed(f, 'status') || keyed(f, 'threw')) return [];
+      if (keyed(f, '$metadata.level')) return [ownLine('error', 'charge declined', 'req-01OK', '01ERR')];
+      if (keyed(f, '$metadata.requestId')) {
+        return [invocation({ status: 200, operation: 'acme/other' }, '01OK'), ownLine('error', 'charge declined', 'req-01OK', '01ERR')];
+      }
+      return [];
+    });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', operation: ['acme/assign'], hours: 24, limit: 10 });
     expect(events).toEqual([]);
   });
 

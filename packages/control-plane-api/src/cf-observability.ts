@@ -7,6 +7,7 @@ import { serviceFamilyPattern } from './service-family.js';
 import {
   ENTITY_TYPES_SEPARATOR,
   FIELD_COVERAGE_ID_FIELD,
+  invocationLevelOf,
   ROUTER_REQUEST_POINT,
   ROUTER_SCRIPT_NAMES,
   splitEntityTypes,
@@ -323,17 +324,6 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? 
  */
 const CAPABILITY_ABSENT = 501;
 
-/** The event is a stamped invocation line whose request FAILED. */
-function isFailedInvocation(e: RecentLogEvent): boolean {
-  const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
-  if (source['substrat'] !== 'invocation') return false;
-  const status = source['status'];
-  return (
-    source['threw'] === true ||
-    (typeof status === 'number' && status >= 500 && status !== CAPABILITY_ABSENT)
-  );
-}
-
 /**
  * The event is a stamped invocation line belonging to the tenant (and the narrowing) that
  * was asked about — the proof an account-wide error line may be shown to this caller.
@@ -413,9 +403,10 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
     ...e,
     invocationId: typeof source['invocationId'] === 'string' ? source['invocationId'] : null,
     message: `${method} ${path} → ${outcome}${ms === null ? '' : ` (${ms} ms)`}`,
-    // Surfaced as the level it reads as, so the list's own colouring is honest about
-    // which rows are failures without the caller having to filter for them.
-    level: e.level ?? (isFailedInvocation(e) ? 'error' : 'info'),
+    // #2762: the level the counts file it under, so a level ticked from the histogram or the
+    // facet lists the lines it counted: the line's own, else the rule it was written by
+    // (`invocationLevelOf`) for a line from before the field.
+    level: str(source['level']) ?? invocationLevelOf(status, source['threw'] === true, str(source['problemCode'])),
   };
 }
 
@@ -1741,14 +1732,12 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // recent invocations and answer "none" if the error was the 41st: an empty page that
     // reads as "nothing is wrong" and means "I did not look".
     //
-    // So an error read selects the invocations to expand itself. It takes four queries,
+    // So an error read selects the invocations to expand itself. It takes three queries,
     // because "an error" arrives in three shapes and no single filter spans them:
     //
-    //   1. a FAILED response — the stamped line carries `status >= 500`, less 501, which
-    //      is a declared-absent capability rather than a failure (`isFailedInvocation`).
-    //      It is asked for as `= 500` plus `>= 502` rather than filtered afterwards, so a
-    //      page-render trickle of 501s cannot fill phase one and spend phase two's budget
-    //      on invocations the level filter below would only throw away;
+    //   1. a FAILED response — the stamped line carries `status >= 500`. #2762: a 501
+    //      included, since it is filed as an error by the rule the line and the counts
+    //      share (`invocationLevelOf`), and the list must show what the histogram counted;
     //   2. an ESCAPE — the error got past `onError` itself, so the line carries
     //      `threw: true` and `status: null`, which no comparison on `status` can match.
     //      These are the rarest lines and the most interesting ones on the page;
@@ -1794,15 +1783,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const [stamped, errorLines] = isErrorRead
       ? await Promise.all([
           Promise.all([
-            readTenant([...base, { key: 'status', operation: 'eq', type: 'number', value: 500 }], phaseOneLimit),
-            readTenant(
-              [...base, { key: 'status', operation: 'gte', type: 'number', value: CAPABILITY_ABSENT + 1 }],
-              phaseOneLimit,
-            ),
+            readTenant([...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }], phaseOneLimit),
             readTenant([...base, { key: 'threw', operation: 'eq', type: 'boolean', value: true }], phaseOneLimit),
             // Newest first across the pages, not page order: the correlation cap is spent
-            // in this order, and a busy `= 500` page must not crowd out a newer 502 or
-            // escape just because its query was listed first.
+            // in this order, and a busy `>= 500` page must not crowd out a newer escape
+            // just because its query was listed first.
           ]).then((pages) => pages.flat().sort((a, b) => rawTime(b) - rawTime(a))),
           queryRaw(
             // #1877: scoped to the app's scripts too, where known — it was account-wide,
