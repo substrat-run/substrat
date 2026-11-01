@@ -7261,6 +7261,56 @@ describe('control-plane API — observability proxy', () => {
         listScopes.mockRestore();
       });
     });
+
+    // #2762: the Lines histogram and facets, and the list's matching filters.
+    describe('the line reads (#2762)', () => {
+      const lineSeen: Record<string, unknown[]> = { volume: [], facets: [], list: [] };
+      const lineReader = {
+        ...reader,
+        tenantLogVolume: async (input: unknown) => {
+          lineSeen['volume']!.push(input);
+          return { bucketMs: 120_000, buckets: [], estimated: false };
+        },
+        tenantLogFacets: async (input: unknown) => {
+          lineSeen['facets']!.push(input);
+          return { total: 0, facets: {}, estimated: false };
+        },
+        tenantLogs: async (input: unknown) => {
+          lineSeen['list']!.push(input);
+          return { events: [], incomplete: false };
+        },
+      };
+
+      it('parses the Lines facets for the counts and the list, forcing the caller\'s tenant', async () => {
+        expect((await appWith(reader).request('/observability/tenant-log-volume', { headers: asBuilder })).status).toBe(501);
+        const app = appWith(lineReader);
+        const q = `tenantId=${tenantId.parse(ulid())}&scopeId=01SCOPE&level=debug&operation=acme%2Fsweep&principalKind=system&principalKind=principal&hours=3`;
+        for (const r of ['tenant-log-volume', 'tenant-log-facets', 'tenant-logs']) {
+          expect((await app.request(`/observability/${r}?${q}`, { headers: asBuilder })).status, r).toBe(200);
+        }
+        const where = { level: ['debug'], operation: ['acme/sweep'], principalKind: ['system', 'principal'] };
+        expect(lineSeen['volume']!.at(-1)).toMatchObject({ tenantId: builderTenant, scopeId: '01SCOPE', buckets: 90, where });
+        expect(lineSeen['facets']!.at(-1)).toMatchObject({ tenantId: builderTenant, where });
+        expect(lineSeen['list']!.at(-1)).toMatchObject({
+          tenantId: builderTenant,
+          level: 'debug',
+          operation: ['acme/sweep'],
+          principalKind: ['system', 'principal'],
+        });
+      });
+
+      it('refuses on the counts what no cube holds — a search, one request — with the stable reason', async () => {
+        const app = appWith(lineReader);
+        for (const bad of ['search=orders', `invocationId=${ulid()}`]) {
+          const res = await app.request(`/observability/tenant-log-facets?${bad}`, { headers: asBuilder });
+          expect(res.status, bad).toBe(400);
+          expect(await res.json()).toMatchObject({ code: 'validation_failed', reason: REQUEST_SEARCH_NOT_COUNTED });
+        }
+        for (const bad of ['level=log', 'template=', 'buckets=5000']) {
+          expect((await app.request(`/observability/tenant-log-volume?${bad}`, { headers: asBuilder })).status, bad).toBe(400);
+        }
+      });
+    });
   });
 });
 

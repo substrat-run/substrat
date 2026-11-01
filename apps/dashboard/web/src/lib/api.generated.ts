@@ -346,6 +346,13 @@ export interface InstallStep {
   settled_at: string | null;
 }
 
+/** `lineVolumeView` — a published schema, not a stored row. */
+export interface LineVolume {
+  bucketMs: number;
+  buckets: { start: string; debug: number; info: number; warn: number; error: number; unrecorded: number }[];
+  estimated: boolean;
+}
+
 /** `logPatternsView` — a published schema, not a stored row. */
 export interface LogPatterns {
   total: number;
@@ -563,11 +570,25 @@ export interface DashboardClient {
   appInviteMember(input: { scopeId: string; email?: string; roleKey: string }): Promise<{ principal: string; roleKey: string; email: string | null; acceptUrl: string; operationId?: string; auditWarning?: string }>;
 
   /**
+   * Log-line facet counts for one of this team's installed apps: request lines and ctx.log lines
+   *
+   * `GET /apps/{scopeId}/observability/logs/facets` — `dashboard/app-log-facets`
+   */
+  appLogFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; template?: string; buckets?: string }): Promise<RequestFacets>;
+
+  /**
    * Log templates for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/log-patterns` — `dashboard/app-log-patterns`
    */
   appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; buckets?: string }): Promise<LogPatterns>;
+
+  /**
+   * Log-line histogram for one of this team's installed apps: request lines and ctx.log lines
+   *
+   * `GET /apps/{scopeId}/observability/logs/volume` — `dashboard/app-log-volume`
+   */
+  appLogVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; template?: string; buckets?: string }): Promise<LineVolume>;
 
   /**
    * The members, roles and open invites in one app scope
@@ -590,7 +611,7 @@ export interface DashboardClient {
    *
    * Answers the body beside the response headers `x-substrat-logs-incomplete`, and no others.
    */
-  appObservabilityLogs(input: { scopeId: string; hours?: string; limit?: string; level?: string; search?: string; invocationId?: string; template?: string; since?: string; until?: string }): Promise<{ body: ({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]; headers: Headers }>;
+  appObservabilityLogs(input: { scopeId: string; hours?: string; limit?: string; level?: string; search?: string; invocationId?: string; template?: string; operation?: string[]; principalKind?: string[]; since?: string; until?: string }): Promise<{ body: ({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]; headers: Headers }>;
 
   /**
    * One installed app's traffic at this team's tenant grain
@@ -1603,8 +1624,12 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "GET", undefined, omit(input, ["scopeId"])),
     appInviteMember: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/members`, "POST", omit(input, ["scopeId"]), undefined),
+    appLogFacets: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/logs/facets`, "GET", undefined, omit(input, ["scopeId"])),
     appLogPatterns: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/log-patterns`, "GET", undefined, omit(input, ["scopeId"])),
+    appLogVolume: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/logs/volume`, "GET", undefined, omit(input, ["scopeId"])),
     appMembers: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/members`, "GET", undefined, omit(input, ["scopeId"])),
     appMetrics: (input: Args) =>

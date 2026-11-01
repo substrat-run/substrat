@@ -558,6 +558,27 @@ blob 11. The facet is `path`, but the line's own `path` is the called path, so t
 filters on `route`. A non-Hono worker and a vertical-host from before it write `null`. It bumped
 `REQUEST_CUBE_SHAPE` to 3.
 
+**The Lines counts (#2762).** The Lines mode has a level histogram and `operation`, `principalKind`
+("Who") and `level` facets, from `/observability/tenant-log-volume` and `/observability/tenant-log-facets`.
+They count the lines that carry their tenant: each request's own line (the request cube, one row
+per request) and every `ctx.log` line (the pattern cube). Both carry all three fields, and their
+levels together are `debug`, `info`, `warn`, `error` and `unrecorded`. A vertical's `console.log`
+and the runtime's lines carry no tenant. The list reaches them through their request, but no
+count can, so they are listed and never counted, and the page says so. A `template` narrows the
+counts to that pattern's `ctx.log` lines. `search` and `invocationId` narrow the list to a
+message or one request, which no cube holds, so the counts refuse them with `search_not_counted`.
+The dashboard does not ask for counts under the `log` level, since only console lines are `log`.
+
+The list, `/observability/tenant-logs`, takes `operation` and `principalKind` as repeated
+alternatives. They go into its tenant-filtered queries: a request's line must match, and its
+other lines come with it, and a `ctx.log` line matches on its own fields. An account-wide
+`console.error` candidate is admitted only when its request's line matches them too. Its
+`level` stays one value. A request line is listed at the level it is counted under, which is the
+line's own `level` (written by `invocationLevelOf`). So a 409 is a warning, a 501 is an error (still
+labelled "capability absent"), and an error read selects `status >= 500`. A line from before the
+field is counted `unrecorded`, so it is listed with no level and no ticked level selects it. The pattern cube gained `principalKind` for this, which moved its
+cached blocks to new keys (`PATTERN_CUBE_SHAPE` 2), so each is recounted once.
+
 **4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
 which trusts a tenant only from the router's assertion. Work that never arrives as a request
 used to write nothing: a consumer delivery, its retries and its dead-letter, and a schedule run

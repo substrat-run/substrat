@@ -18,9 +18,11 @@ import {
   resultLabel,
   rowLabel,
   selected,
+  selectedIn,
   toggleFacet,
+  toggleIn,
   whereOf,
-  type RequestFacetKey,
+  type Facet,
 } from '../lib/requests';
 import { lineTime } from '../components/LogList';
 import { parseRequestId, requestLookup } from '../lib/request-url';
@@ -40,20 +42,18 @@ import { parseRequestId, requestLookup } from '../lib/request-url';
  * at the top, then the facet sidebar beside the stream card, one scroll for both. The
  * caller hands the stream card in as `frame`, so the mode tabs stay on the card.
  *
- * The histogram and the facets belong to this mode rather than to every mode, because only
- * requests carry the business fields yet: a log line cannot be narrowed by operation until
- * module log lines inherit them (`ctx.log`, #1746 step 4). Drawing them over the Lines mode
- * would offer filters the lines do not obey.
+ * #2762: the Lines mode draws the same histogram and sidebar (`LinesCounts`) over its own
+ * counts — request lines and `ctx.log` lines, by level, operation and who.
  */
 
 /** How many buckets the histogram asks for — the design's 90. Zooming keeps the count. */
-const BUCKETS = 90;
+export const BUCKETS = 90;
 /** How many requests the list shows. */
 const LIST_LIMIT = 100;
 const HIST_HEIGHT = 110;
 
-type Loaded<T> = T | null | { error: string };
-const isError = (v: unknown): v is { error: string } => typeof v === 'object' && v !== null && 'error' in v;
+export type Loaded<T> = T | null | { error: string };
+export const isError = (v: unknown): v is { error: string } => typeof v === 'object' && v !== null && 'error' in v;
 
 /** Why a read failed, in the page's words: 501 is "not on this platform", never an outage. */
 function failure(e: unknown): { error: string } {
@@ -167,6 +167,7 @@ export function RequestsMode({
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ ...card, boxShadow: 'var(--shadow-sm)' }}>
         <Histogram
+          noun="requests"
           volume={volume}
           span={span}
           window={window}
@@ -178,7 +179,7 @@ export function RequestsMode({
         />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
-        <FacetSidebar facets={facets} q={q} onToggle={(key, value) => onFilters(toggleFacet(q, key, value))} />
+        <FacetSidebar label="Request filters" defs={REQUEST_FACETS} facets={facets} q={q} onToggle={(f, value) => onFilters(toggleIn(q, f, value))} />
         {frame(
           <>
             <FindRequest onOpenCall={onOpenCall} />
@@ -190,7 +191,17 @@ export function RequestsMode({
   );
 }
 
-const LEVELS = ['unrecorded', 'info', 'warn', 'error'] as const;
+type Level = 'unrecorded' | 'debug' | 'info' | 'warn' | 'error';
+/** A histogram bucket: a request has no `debug`, a line may (#2762). */
+type LevelBucket = { start: string; debug?: number; info: number; warn: number; error: number; unrecorded: number };
+type Volume = { bucketMs: number; buckets: LevelBucket[]; estimated: boolean };
+/** What a histogram counts, and the levels its bars stack, bottom up. */
+type Noun = 'requests' | 'lines';
+const LEVELS: Record<Noun, readonly Level[]> = {
+  requests: ['unrecorded', 'info', 'warn', 'error'],
+  lines: ['unrecorded', 'debug', 'info', 'warn', 'error'],
+};
+const count = (b: LevelBucket, l: Level) => b[l] ?? 0;
 
 /**
  * The level histogram: one stacked bar per bucket, drawn at its own instant on the
@@ -198,8 +209,10 @@ const LEVELS = ['unrecorded', 'info', 'warn', 'error'] as const;
  * the same count, so the bars get finer) and offers "Reset zoom" back to the range; hovering
  * opens a popover with the bucket's counts. A level in the legend toggles that level's
  * filter. Each version that went live inside the window is a line with its version on it.
+ * #2762: drawn over requests here and over lines in the Lines mode.
  */
-function Histogram({
+export function Histogram({
+  noun,
   volume,
   span,
   window,
@@ -209,7 +222,8 @@ function Histogram({
   onRange,
   onResetZoom,
 }: {
-  volume: Loaded<RequestVolume>;
+  noun: Noun;
+  volume: Loaded<Volume>;
   span: { from: number; to: number };
   window: { from: string; to: string };
   levels: string[];
@@ -225,13 +239,14 @@ function Histogram({
   const [hover, setHover] = useState<number | null>(null);
   const quiet = { padding: '14px 16px', fontSize: 13, color: 'var(--text-tertiary)' } as const;
 
-  if (volume === null) return <div style={quiet}>Counting requests…</div>;
+  if (volume === null) return <div style={quiet}>Counting {noun}…</div>;
   if (isError(volume)) return <div style={quiet}>{volume.error}</div>;
 
-  const totals = { info: 0, warn: 0, error: 0, unrecorded: 0 };
-  for (const b of volume.buckets) for (const l of LEVELS) totals[l] += b[l];
-  const all = totals.info + totals.warn + totals.error + totals.unrecorded;
-  const peak = Math.max(1, ...volume.buckets.map((b) => b.info + b.warn + b.error + b.unrecorded));
+  const stack = LEVELS[noun];
+  const totals = { debug: 0, info: 0, warn: 0, error: 0, unrecorded: 0 };
+  for (const b of volume.buckets) for (const l of stack) totals[l] += count(b, l);
+  const all = stack.reduce((n, l) => n + totals[l], 0);
+  const peak = Math.max(1, ...volume.buckets.map((b) => stack.reduce((n, l) => n + count(b, l), 0)));
   const width = span.to - span.from;
   const at = (t: number) => ((t - span.from) / width) * 100;
   const barWidth = Math.max(0.15, (volume.bucketMs / width) * 100);
@@ -269,12 +284,12 @@ function Histogram({
   };
 
   const hovered = hover === null ? null : volume.buckets[hover];
-  const summary = `${all.toLocaleString('en-US')} requests: ${totals.error} errors, ${totals.warn} warnings, ${totals.info} info${totals.unrecorded ? `, ${totals.unrecorded} with no level recorded` : ''}.`;
+  const summary = `${all.toLocaleString('en-US')} ${noun}: ${totals.error} errors, ${totals.warn} warnings, ${totals.info} info${totals.debug ? `, ${totals.debug} debug` : ''}${totals.unrecorded ? `, ${totals.unrecorded} with no level recorded` : ''}.`;
   return (
     <div style={{ padding: '12px 16px 10px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 8, fontSize: 12.5 }}>
         <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
-          <span style={{ fontFamily: 'var(--font-mono)' }}>{all.toLocaleString('en-US')}</span> requests
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{all.toLocaleString('en-US')}</span> {noun}
         </span>
         <span style={{ color: 'var(--text-tertiary)' }}>
           {bucketWidthLabel(volume.bucketMs)} buckets · drag to zoom
@@ -290,7 +305,7 @@ function Histogram({
           </button>
         )}
         <span style={{ flex: 1 }} />
-        {LEVELS.map((l) =>
+        {stack.map((l) =>
           l === 'unrecorded' && totals.unrecorded === 0 ? null : (
             <button
               key={l}
@@ -298,7 +313,7 @@ function Histogram({
               // "Not recorded" cannot be a filter: it is the absence of the field.
               disabled={l === 'unrecorded'}
               aria-pressed={l === 'unrecorded' ? undefined : levels.includes(l)}
-              title={l === 'unrecorded' ? 'Requests served by a version deployed before per-request levels were recorded' : `Show only ${l} requests`}
+              title={l === 'unrecorded' ? `${noun === 'lines' ? 'Request lines' : 'Requests'} served by a version deployed before per-request levels were recorded` : `Show only ${l} ${noun}`}
               onClick={() => onLevel(l)}
               style={{
                 display: 'inline-flex',
@@ -344,8 +359,8 @@ function Histogram({
               data-bucket
               style={{ position: 'absolute', bottom: 0, top: 0, left: `${at(s)}%`, width: `calc(${barWidth}% - 1px)`, pointerEvents: 'none', background: hover === i ? 'color-mix(in srgb, var(--text-primary) 6%, transparent)' : undefined }}
             >
-              {LEVELS.map((l) => {
-                const h = (b[l] / peak) * 100;
+              {stack.map((l) => {
+                const h = (count(b, l) / peak) * 100;
                 const seg = h > 0 ? <span key={l} style={{ position: 'absolute', left: 0, right: 0, bottom: `${bottom}%`, height: `${h}%`, background: LEVEL_COLORS[l], borderRadius: 1 }} /> : null;
                 bottom += h;
                 return seg;
@@ -388,7 +403,7 @@ function Histogram({
             );
           })}
         {hovered && hover !== null && !selection && (
-          <HoverPopover x={at(Date.parse(hovered.start) + volume.bucketMs / 2)} bucket={hovered} bucketMs={volume.bucketMs} />
+          <HoverPopover x={at(Date.parse(hovered.start) + volume.bucketMs / 2)} bucket={hovered} bucketMs={volume.bucketMs} stack={stack} />
         )}
         {selection && (
           <span
@@ -420,14 +435,13 @@ function Histogram({
  * The hovered bucket's counts, over the chart beside its bar. It flips to the bar's left
  * near the right edge, so it never runs off the card.
  */
-function HoverPopover({ x, bucket, bucketMs }: { x: number; bucket: RequestVolume['buckets'][number]; bucketMs: number }) {
+function HoverPopover({ x, bucket, bucketMs, stack }: { x: number; bucket: LevelBucket; bucketMs: number; stack: readonly Level[] }) {
   const start = Date.parse(bucket.start);
-  const rows: [string, number][] = [
-    ['error', bucket.error],
-    ['warn', bucket.warn],
-    ['info', bucket.info],
-    ...(bucket.unrecorded > 0 ? [['unrecorded', bucket.unrecorded] as [string, number]] : []),
-  ];
+  // Loudest first; "not recorded" only when there is any.
+  const rows: [Level, number][] = [...stack]
+    .reverse()
+    .filter((l) => l !== 'unrecorded' || bucket.unrecorded > 0)
+    .map((l) => [l, count(bucket, l)]);
   return (
     <div
       role="tooltip"
@@ -456,7 +470,7 @@ function HoverPopover({ x, bucket, bucketMs }: { x: number; bucket: RequestVolum
       </span>
       {rows.map(([level, n]) => (
         <span key={level} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: LEVEL_COLORS[level as (typeof LEVELS)[number]] }} />
+          <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: LEVEL_COLORS[level] }} />
           {level === 'unrecorded' ? 'not recorded' : level}
           <span style={{ flex: 1 }} />
           <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{n.toLocaleString('en-US')}</span>
@@ -471,26 +485,30 @@ function HoverPopover({ x, bucket, bucketMs }: { x: number; bucket: RequestVolum
  * because the plane counts a facet with every OTHER filter applied. A ticked value that
  * fell out of the top ten is still listed, so it can be unticked where it was ticked.
  */
-function FacetSidebar({
+export function FacetSidebar({
+  label,
+  defs,
   facets,
   q,
   onToggle,
 }: {
+  label: string;
+  defs: readonly Facet[];
   facets: Loaded<RequestFacets>;
   q: ObsQuery;
-  onToggle: (key: RequestFacetKey, value: string) => void;
+  onToggle: (f: Facet, value: string) => void;
 }) {
   const quiet = { fontSize: 12.5, color: 'var(--text-tertiary)' } as const;
   return (
-    <div role="group" aria-label="Request filters" style={{ padding: '4px 2px', display: 'grid', gap: 14, alignContent: 'start' }}>
+    <div role="group" aria-label={label} style={{ padding: '4px 2px', display: 'grid', gap: 14, alignContent: 'start' }}>
       {facets === null ? (
         <span style={quiet}>Counting…</span>
       ) : isError(facets) ? (
         <span style={quiet}>{facets.error}</span>
       ) : (
-        REQUEST_FACETS.map((f) => {
+        defs.map((f) => {
           const listed = facets.facets[f.key] ?? [];
-          const ticked = selected(q, f.key);
+          const ticked = selectedIn(q, f);
           const extra = ticked.filter((v) => !listed.some((x) => String(x.value) === v)).map((v) => ({ value: v, count: null as number | null }));
           const rows = [...listed.map((x) => ({ value: String(x.value), count: x.count as number | null })), ...extra];
           if (rows.length === 0) {
@@ -515,7 +533,7 @@ function FacetSidebar({
                     type="button"
                     role="checkbox"
                     aria-checked={on}
-                    onClick={() => onToggle(f.key, r.value)}
+                    onClick={() => onToggle(f, r.value)}
                     style={{ display: 'grid', gridTemplateColumns: '12px minmax(0,1fr) auto', alignItems: 'center', gap: 8, height: 26, border: 0, padding: 0, background: 'transparent', font: 'inherit', textAlign: 'left', cursor: 'pointer' }}
                   >
                     <span aria-hidden style={{ width: 12, height: 12, borderRadius: 3, boxSizing: 'border-box', border: `1px solid ${on ? 'var(--brand-500)' : 'var(--border-strong)'}`, background: on ? 'var(--brand-500)' : 'transparent' }} />

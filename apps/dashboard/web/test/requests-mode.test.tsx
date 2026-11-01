@@ -53,9 +53,14 @@ describe('request facets in the URL', () => {
       { key: 'operation', value: 'a or b', clears: ['op'] },
       { key: 'who', value: 'scheduled job', clears: ['pk'] },
     ]);
-    // The other modes' filters are not the Requests mode's chips.
-    expect(logChips({ level: 'error', op: 'a' }, 'requests').map((c) => c.key)).toEqual(['operation']);
-    expect(logChips({ level: 'error', op: 'a' }, 'logs').map((c) => c.key)).toEqual(['level']);
+    // The other modes' filters are not the Requests mode's chips; operation and who are both
+    // modes' (#2762), the level and a status one mode's each.
+    expect(logChips({ level: 'error', op: 'a', status: '409' }, 'requests').map((c) => c.key)).toEqual(['operation', 'status']);
+    expect(logChips({ level: 'error', op: 'a', pk: 'system', status: '409' }, 'logs').map((c) => [c.key, c.value])).toEqual([
+      ['level', 'error'],
+      ['operation', 'a'],
+      ['who', 'scheduled job'],
+    ]);
   });
 
   it('#2762: typed text in Requests is a search chip, sent upper-cased when it is an id', () => {

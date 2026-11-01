@@ -440,6 +440,45 @@ export interface RequestFacets {
 export const REQUEST_FACET_TOP = 10;
 
 /**
+ * #2762: the facets of the Lines view. Only the lines that carry their tenant can be counted
+ * per tenant: a request's own line and a `ctx.log` line, both of which carry these three. A
+ * vertical's `console.log` and the runtime's lines carry no tenant; the list reaches them through
+ * their request, and no count can, so they are listed and never counted.
+ */
+export const LINE_FACET_KEYS = ['level', 'operation', 'principalKind'] as const;
+export type LineFacetKey = (typeof LINE_FACET_KEYS)[number];
+
+/** Facet filters over lines: values under one key are alternatives, keys combine. */
+export type LineWhere = Partial<Record<LineFacetKey, readonly string[]>>;
+
+/** Which tenant's lines, which window, which filters — the Lines counts' query (#2762). */
+export interface TenantLineScope extends Omit<TenantRequestScope, 'where' | 'search'> {
+  where?: LineWhere;
+  /** One pattern's lines: a `ctx.log` template, verbatim. Narrows to `ctx.log` lines. */
+  template?: string;
+}
+
+/** One time bucket of the Lines histogram: a request line has no `debug`, a `ctx.log` line may. */
+export interface LineVolumeBucket extends RequestVolumeBucket {
+  debug: number;
+}
+
+/** The Lines histogram (#2762): per-level counts per bucket, as `RequestVolume` is for requests. */
+export interface LineVolume {
+  bucketMs: number;
+  buckets: LineVolumeBucket[];
+  estimated: boolean;
+}
+
+/** The Lines facet counts (#2762), as `RequestFacets` are for requests. */
+export interface LineFacets {
+  /** Counted lines matching every filter. */
+  total: number;
+  facets: Record<LineFacetKey, RequestFacetValue[]>;
+  estimated: boolean;
+}
+
+/**
  * One request, as the Requests view lists it: the stamped invocation line's fields, and
  * when it was written. `null` is "not recorded", exactly as on the line.
  */
@@ -686,6 +725,12 @@ export interface ObservabilityReader {
     invocationId?: string;
     /** #1747: only the `ctx.log` lines written from this template — a pattern opened. */
     template?: string;
+    /**
+     * #2762: alternatives, as on the request reads. A request's lines come with its own line
+     * when that line matches; a `ctx.log` line matches on its own fields.
+     */
+    operation?: readonly string[];
+    principalKind?: readonly string[];
     /** #1877: the app's deployed scripts — see `TenantRequestScope.services`. */
     services?: readonly string[];
     hours: number;
@@ -736,6 +781,16 @@ export interface ObservabilityReader {
    * absent means all of them. Same optionality as `tenantRequestVolume`.
    */
   tenantRequestFacets?(input: TenantRequestScope & { keys?: readonly RequestFacetKey[] }): Promise<RequestFacets>;
+
+  /**
+   * #2762: the Lines histogram — a tenant's request lines and `ctx.log` lines, per level per
+   * bucket, over the whole window (`LINE_FACET_KEYS` says which lines). Same optionality as
+   * `tenantRequestVolume`.
+   */
+  tenantLogVolume?(input: TenantLineScope & { buckets: number }): Promise<LineVolume>;
+
+  /** #2762: facet counts over the same lines. Same optionality. */
+  tenantLogFacets?(input: TenantLineScope): Promise<LineFacets>;
 
   /**
    * The requests themselves (#1746), newest first — the Requests view's rows. The same

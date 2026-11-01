@@ -323,17 +323,6 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? 
  */
 const CAPABILITY_ABSENT = 501;
 
-/** The event is a stamped invocation line whose request FAILED. */
-function isFailedInvocation(e: RecentLogEvent): boolean {
-  const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
-  if (source['substrat'] !== 'invocation') return false;
-  const status = source['status'];
-  return (
-    source['threw'] === true ||
-    (typeof status === 'number' && status >= 500 && status !== CAPABILITY_ABSENT)
-  );
-}
-
 /**
  * The event is a stamped invocation line belonging to the tenant (and the narrowing) that
  * was asked about — the proof an account-wide error line may be shown to this caller.
@@ -346,14 +335,29 @@ function isFailedInvocation(e: RecentLogEvent): boolean {
  */
 export function ownsInvocation(
   e: Record<string, unknown>,
-  input: { tenantId: string; scopeId?: string; vertical?: string },
+  input: { tenantId: string; scopeId?: string; vertical?: string } & LineFacetFilter,
 ): boolean {
   const source = (e['source'] ?? {}) as Record<string, unknown>;
   if (source['substrat'] !== 'invocation') return false;
   if (source['tenantId'] !== input.tenantId) return false;
   if (input.scopeId && source['scopeId'] !== input.scopeId) return false;
   if (input.vertical && source['vertical'] !== input.vertical) return false;
-  return true;
+  // #2762: and the Lines facets, so an account-wide candidate is admitted only as a request
+  // the tenant-filtered query would itself have selected.
+  return LINE_LIST_KEYS.every((key) => !input[key]?.length || input[key]!.includes(source[key] as string));
+}
+
+/** #2762: the Lines facets the list takes as filters — fields both a request line and a `ctx.log` line carry. */
+const LINE_LIST_KEYS = ['operation', 'principalKind'] as const;
+type LineFacetFilter = { [K in (typeof LINE_LIST_KEYS)[number]]?: readonly string[] };
+
+/** #2762: those facets as filters: each key's values one OR group, the keys ANDed. */
+function lineFacetFilters(input: LineFacetFilter): TelemetryFilter[] {
+  return LINE_LIST_KEYS.flatMap((key): TelemetryFilter[] => {
+    const leaves: TelemetryFilter[] = (input[key] ?? []).map((value) => ({ key, operation: 'eq', type: 'string', value }));
+    if (leaves.length === 0) return [];
+    return [leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves }];
+  });
 }
 
 /**
@@ -398,9 +402,11 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
     ...e,
     invocationId: typeof source['invocationId'] === 'string' ? source['invocationId'] : null,
     message: `${method} ${path} → ${outcome}${ms === null ? '' : ` (${ms} ms)`}`,
-    // Surfaced as the level it reads as, so the list's own colouring is honest about
-    // which rows are failures without the caller having to filter for them.
-    level: e.level ?? (isFailedInvocation(e) ? 'error' : 'info'),
+    // #2762: the level the counts file it under, so a level ticked from the histogram or the
+    // facet lists the lines it counted: the line's own. A line from before the field has
+    // none, and the counts file it `unrecorded`, so it lists with no level and no ticked
+    // level selects it.
+    level: str(source['level']),
   };
 }
 
@@ -443,10 +449,11 @@ function moduleLineFilters(input: {
   search?: string;
   invocationId?: string;
   template?: string;
-}): TelemetryFilter[] {
+} & LineFacetFilter): TelemetryFilter[] {
   const filters: TelemetryFilter[] = [
     { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
     { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
+    ...lineFacetFilters(input),
   ];
   if (input.scopeId) filters.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
   if (input.invocationId !== undefined) {
@@ -815,6 +822,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { type: 'string', value: 'template' },
         { type: 'string', value: 'level' },
         { type: 'string', value: 'operation' },
+        { type: 'string', value: 'principalKind' },
       ]);
       return {
         estimated,
@@ -823,7 +831,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           const tenantId = str(groups.get('tenantId'));
           const template = str(groups.get('template'));
           if (tenantId === null || template === null || template === '') return [];
-          return [{ bucket, tenantId, scopeId: str(groups.get('scopeId')), template, level: str(groups.get('level')), operation: str(groups.get('operation')), count }];
+          return [{
+            bucket,
+            tenantId,
+            scopeId: str(groups.get('scopeId')),
+            template,
+            level: str(groups.get('level')),
+            operation: str(groups.get('operation')),
+            principalKind: str(groups.get('principalKind')),
+            count,
+          }];
         }),
       };
     },
@@ -1647,6 +1664,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     invocationId?: string;
     /** #1747: only the `ctx.log` lines written from this template. */
     template?: string;
+    /** #2762: the Lines facets — see `lineFacetFilters`. */
+    operation?: readonly string[];
+    principalKind?: readonly string[];
     /** #1877: the app's scripts — see `TenantRequestScope.services`. */
     services?: readonly string[];
     hours: number;
@@ -1686,6 +1706,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
       // #1877: the app's own scripts — the scan boundary and the trust boundary.
       ...serviceFilter(input.services),
+      // #2762: a request's lines come when its own line matches the Lines facets.
+      ...lineFacetFilters(input),
     ];
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
@@ -1710,14 +1732,12 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // recent invocations and answer "none" if the error was the 41st: an empty page that
     // reads as "nothing is wrong" and means "I did not look".
     //
-    // So an error read selects the invocations to expand itself. It takes four queries,
+    // So an error read selects the invocations to expand itself. It takes three queries,
     // because "an error" arrives in three shapes and no single filter spans them:
     //
-    //   1. a FAILED response — the stamped line carries `status >= 500`, less 501, which
-    //      is a declared-absent capability rather than a failure (`isFailedInvocation`).
-    //      It is asked for as `= 500` plus `>= 502` rather than filtered afterwards, so a
-    //      page-render trickle of 501s cannot fill phase one and spend phase two's budget
-    //      on invocations the level filter below would only throw away;
+    //   1. a FAILED response — the stamped line carries `status >= 500`. #2762: a 501
+    //      included, since the rule that writes the line's level (`invocationLevelOf`)
+    //      files it as an error, and the list must show what the histogram counted;
     //   2. an ESCAPE — the error got past `onError` itself, so the line carries
     //      `threw: true` and `status: null`, which no comparison on `status` can match.
     //      These are the rarest lines and the most interesting ones on the page;
@@ -1763,15 +1783,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const [stamped, errorLines] = isErrorRead
       ? await Promise.all([
           Promise.all([
-            readTenant([...base, { key: 'status', operation: 'eq', type: 'number', value: 500 }], phaseOneLimit),
-            readTenant(
-              [...base, { key: 'status', operation: 'gte', type: 'number', value: CAPABILITY_ABSENT + 1 }],
-              phaseOneLimit,
-            ),
+            readTenant([...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }], phaseOneLimit),
             readTenant([...base, { key: 'threw', operation: 'eq', type: 'boolean', value: true }], phaseOneLimit),
             // Newest first across the pages, not page order: the correlation cap is spent
-            // in this order, and a busy `= 500` page must not crowd out a newer 502 or
-            // escape just because its query was listed first.
+            // in this order, and a busy `>= 500` page must not crowd out a newer escape
+            // just because its query was listed first.
           ]).then((pages) => pages.flat().sort((a, b) => rawTime(b) - rawTime(a))),
           queryRaw(
             // #1877: scoped to the app's scripts too, where known — it was account-wide,

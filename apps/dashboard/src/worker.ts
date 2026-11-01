@@ -4301,6 +4301,9 @@ async function appObservabilityLogsIn(ctx: TeamContext, input: RouteInput<'dashb
       invocationId: input.invocationId,
       // #1747: one pattern's lines. Raw like the id: an empty one is the plane's 400.
       template: input.template,
+      // #2762: the Lines facets, once per value; the plane judges them.
+      operation: input.operation ?? [],
+      principalKind: input.principalKind ?? [],
       hours: Number.isFinite(hours) ? hours : 24,
       // The chart's time cursor, passed on as the strings they arrived as: the plane
       // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
@@ -4361,6 +4364,19 @@ async function appLogPatternsIn(ctx: TeamContext, input: RouteInput<'dashboard/a
   const params = planeParams(LOG_PATTERN_KEYS, input);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return cpObservability(() => cp.tenantLogPatterns(appRow.app_scope_id, params));
+}
+
+/** The query keys the Lines counts may pass on (#2762) — as for the request reads above. */
+const LOG_COUNT_KEYS = ['hours', 'since', 'until', 'level', 'operation', 'principalKind', 'template', 'buckets'] as const;
+
+/** ONE app's lines, counted (#2762): the Lines histogram and facets, narrowed as every per-app read here. */
+async function appLogCountsIn(ctx: TeamContext, input: RouteInput<'dashboard/app-log-volume'>, kind: 'volume' | 'facets') {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), input.scopeId);
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const params = planeParams(LOG_COUNT_KEYS, input);
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  return cpObservability(() => cp.tenantLogCounts(kind, appRow.app_scope_id, params));
 }
 
 /**
@@ -5733,6 +5749,8 @@ const routeHandlers = {
   'dashboard/app-request-facets': async (ctx, input) => appRequestsIn(ctx, input, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-facets']['output']>>,
   'dashboard/app-requests': async (ctx, input) => appRequestsIn(ctx, input, 'list') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-requests']['output']>>,
   'dashboard/app-log-patterns': async (ctx, input) => appLogPatternsIn(ctx, input) as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-patterns']['output']>>,
+  'dashboard/app-log-volume': async (ctx, input) => appLogCountsIn(ctx, input, 'volume') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-volume']['output']>>,
+  'dashboard/app-log-facets': async (ctx, input) => appLogCountsIn(ctx, input, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-facets']['output']>>,
   'dashboard/list-catalog': async (ctx) => teamCatalogIn(ctx),
   'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
   'dashboard/promote-deployment': async (ctx, body) => promoteDeploymentIn(ctx, body),

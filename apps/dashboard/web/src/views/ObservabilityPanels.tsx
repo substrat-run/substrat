@@ -10,6 +10,7 @@ import { EVENT_GROUPS, bucketRows, dimensionLabel, emptyGroupingText, predatesRu
 import { mockEventFacets } from '../lib/mock-events';
 import { mockPatternLines } from '../lib/mock-patterns';
 import { appLogsPanelOf, LOGS_EMPTY_INCOMPLETE, LOGS_INCOMPLETE_NOTICE } from '../lib/logs-panel';
+import { lineListFilters } from '../lib/requests';
 
 /**
  * The panels the team Observability page composes for ONE app (#1447) — its traffic per
@@ -92,6 +93,9 @@ export function TenantLogs({
   const invocationId = filters.invocationId;
   // #1747: one pattern's lines, opened from the Patterns mode.
   const template = filters.tpl;
+  // #2762: the Lines facets — operation and who. A request's lines come when its own line matches.
+  const facets = lineListFilters(filters);
+  const facetKey = JSON.stringify(facets);
   const [read, setRead] = useState<{ events: ObservabilityLogEvent[]; incomplete: boolean } | null>(null);
   const logs = read?.events ?? null;
   // #2521: what the answer says beyond its lines.
@@ -111,7 +115,7 @@ export function TenantLogs({
     let current = true;
     generation.current += 1;
     const span = cursor ? Date.parse(cursor.to) - Date.parse(cursor.from) : hours;
-    const question = JSON.stringify([teamId, scopeId, level, search, invocationId, template, span]);
+    const question = JSON.stringify([teamId, scopeId, level, search, invocationId, template, facetKey, span]);
     const same = asked.current === question;
     asked.current = question;
     if (!live || !same) setRead(null);
@@ -132,6 +136,11 @@ export function TenantLogs({
                 (!level || l.level === level) &&
                 (!search || (l.message ?? '').includes(search) || (l.invocationId ?? '').includes(search)) &&
                 (!invocationId || l.invocationId === invocationId) &&
+                // #2762: operation and who, as the plane applies them.
+                (['operation', 'principalKind'] as const).every((k) => {
+                  const source = (l.raw as { source?: Record<string, unknown> } | undefined)?.source;
+                  return !facets[k] || facets[k].includes(source?.[k] as string);
+                }) &&
                 // The preview narrows too, so a bar click visibly does something without
                 // a plane behind it.
                 (!cursor ||
@@ -151,6 +160,7 @@ export function TenantLogs({
               limit: 100,
               invocationId,
               ...(template ? { template } : {}),
+              ...facets,
             });
         if (current) setRead(answer);
       } catch (e) {
@@ -170,7 +180,7 @@ export function TenantLogs({
     return () => {
       current = false;
     };
-  }, [teamId, scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId, template]);
+  }, [teamId, scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId, template, facetKey]);
 
   /**
    * The next page: the same filters over the same window, ending at the oldest line on
@@ -199,6 +209,7 @@ export function TenantLogs({
         limit: 100,
         invocationId,
         ...(template ? { template } : {}),
+        ...facets,
       });
       if (mine !== generation.current) return;
       const seen = new Set(logs.map(lineKey));

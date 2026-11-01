@@ -299,11 +299,18 @@ export type {
   LogPattern,
   LogPatterns,
   LogPatternLevel,
+  LineFacetKey,
+  LineWhere,
+  TenantLineScope,
+  LineVolume,
+  LineVolumeBucket,
+  LineFacets,
 } from './observability.js';
 export {
   TENANT_SERIES_SCOPE_CAP,
   TENANT_METRICS_LIMIT,
   REQUEST_FACET_KEYS,
+  LINE_FACET_KEYS,
   REQUEST_FACET_TOP,
   REQUEST_SEARCH_MAX,
   REQUEST_SEARCH_NOT_COUNTED,
