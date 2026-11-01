@@ -1014,9 +1014,9 @@ export interface EmittedEvent {
 }
 
 /**
- * #2762: one lifecycle move an operation caused, as `onEmitted` reports it (`emitted-transitions.ts`
- * states the rule). `to` is a declared state; `from` is one too, or `null` when the state before
- * the call is not on record — an entity this call created, say.
+ * #2762: one lifecycle move an operation caused, as `onEmitted` reports it (`transition-notes.ts`
+ * states the rule): the state the entity left first and the one it reached last, `from` being
+ * `null` for an entity the call created.
  */
 export interface EmittedTransition {
   /** The entity, as `<entityType>:<entityId>`. */
