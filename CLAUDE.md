@@ -70,7 +70,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
 | `engines/*` | The nine domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`, `assistant`. `notifications` is configured for public publication; `assistant` is private until its first release is set up | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` is private until its first release is set up | AGPL + commercial |
-| `demos/*` | Nine directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `graph-notes` (a local-only vertical over the graph scope store, with no worker until the driver is registered) and `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
+| `demos/*` | Nine directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `graph-notes` (a local-only vertical over the graph scope store, with no worker while no release of the driver is approved) and `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
 | `apps/control-plane` | The control plane, and the worker that serves the console | private |
 | `apps/console` | Control-plane admin console (tenants, fleet, admin log, permissions) | private |

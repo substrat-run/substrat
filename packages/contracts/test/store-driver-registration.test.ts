@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   STORE_DRIVER_ADMITTED_ISOLATION_LIFTS,
   STORE_DRIVER_PLATFORM_REPOSITORY,
+  STORE_DRIVERS,
   normalizeStoreDriverRepositoryUrl,
+  storeDriverBasisAdmits,
   storeDriverIsolationBasis,
   storeDriverRegistration,
   storeDriverRepositoryIsPlatformRepository,
@@ -10,11 +12,20 @@ import {
 
 describe('store driver registration isolation basis (D-65)', () => {
   it('admits only repo-written or explicitly admitted decision-record bases', () => {
-    expect(STORE_DRIVER_ADMITTED_ISOLATION_LIFTS).toEqual([]);
+    expect(STORE_DRIVER_ADMITTED_ISOLATION_LIFTS).toEqual(['D-67']);
     expect(storeDriverIsolationBasis.safeParse({ kind: 'writtenInRepo' }).success).toBe(true);
+    expect(storeDriverIsolationBasis.safeParse({ kind: 'decisionRecord', decisionRecord: 'D-67' }).success).toBe(true);
     expect(storeDriverIsolationBasis.safeParse({ kind: 'decisionRecord', decisionRecord: 'D-63' }).success).toBe(false);
     expect(storeDriverIsolationBasis.safeParse({ kind: 'decisionRecord', decisionRecord: 'D-000' }).success).toBe(false);
     expect(storeDriverIsolationBasis.safeParse({ kind: 'writtenInRepo', extra: true }).success).toBe(false);
+  });
+
+  it('admits the driver’s own repositories under a decision-record basis, and only the platform’s under writtenInRepo', () => {
+    const own = [{ repository: 'https://github.com/other-org/graph' }];
+    const graph = STORE_DRIVERS.find((d) => d.driver === 'graph')!;
+    expect(storeDriverBasisAdmits(graph.isolationBasis, own)).toBe(true);
+    expect(storeDriverBasisAdmits({ kind: 'writtenInRepo' }, own)).toBe(false);
+    expect(storeDriverBasisAdmits({ kind: 'writtenInRepo' }, [{ repository: STORE_DRIVER_PLATFORM_REPOSITORY }])).toBe(true);
   });
 
   it('is an id and a basis: a registration still carrying a release pin or its facts is refused', () => {

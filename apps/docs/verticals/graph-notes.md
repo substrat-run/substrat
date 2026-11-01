@@ -5,9 +5,10 @@ vertical's own tables. It is the first vertical that declares a store and calls 
 small on purpose: one store, one synthetic type, three operations.
 
 ::: warning Local only
-No store driver is registered yet, so a push that declares this store is refused. The vertical
-runs in its test suite, on the pure adapter, against a stand-in store or against the graph
-driver's own local process. It has no worker, no login and no app.
+The graph driver is registered, but no release of it is approved yet, so a hosted push that
+declares this store is refused before anything is uploaded. The vertical runs in its test suite,
+on the pure adapter, against a stand-in store or against the graph driver's own local process.
+It has no worker, no login and no app.
 :::
 
 ## At a glance

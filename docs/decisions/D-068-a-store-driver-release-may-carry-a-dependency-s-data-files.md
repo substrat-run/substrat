@@ -15,17 +15,21 @@ tracking: ["#2300", "#2390"]
 > fit the 1000-module limit without hiding files in an archive. It asks for a choice between the options
 > below; the proposers prefer the first.
 
-## The problem
+**A store-driver release counts only Python code toward its module limit, and carries a dependency's
+data files beside its modules (option 1 below).** Every file still counts toward the byte limit and a
+new limit on files of any kind, and the module rule still judges every name.
+
+## Why
 
 A Python release ships its dependencies as `python_modules/<path>` Data modules, and D-63 keeps the
 limits at 10 MiB and 1000 modules ([#2390](https://github.com/substrat-run/substrat/issues/2390)). Every
 file counts as one module, whether it is code or data.
 
-The graph driver's release is 692 modules and 7.2 MB once installer output, metadata, type stubs and
+The graph driver's release is 704 Python modules once installer output, metadata, type stubs and
 package test suites are left out. One dependency does not fit: `tzdata`, the IANA time zone database,
-is 627 files. Pyodide ships no zone data, the driver's date library resolves `UTC` as it is imported,
-and a rule may name any zone, so the data has to ship whole. With it the release is about 1 320 modules
-and well under 10 MiB.
+is mostly zone files. Pyodide ships no zone data, the driver's date library resolves `UTC` as it is
+imported, and a rule may name any zone, so the data has to ship whole. With it the release is 1 318
+files and 7.4 MB, well under 10 MiB.
 
 ## Options
 

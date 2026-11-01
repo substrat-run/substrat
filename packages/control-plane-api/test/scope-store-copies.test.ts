@@ -176,9 +176,8 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     return docsScope(undefined, 'files');
   };
 
-  // A version that cannot be named, judged against an injected registry. The default one registers
-  // no driver yet, so nothing is asked there (below).
-  for (const [registry, drivers] of [['an injected', [graph]]] as const) {
+  // A version that cannot be named, judged against an injected registry and the hosted default, which holds graph.
+  for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
     it(`with ${registry} registry, a version that cannot be named refuses the copy where a version of its vertical declared a store`, async () => {
       const { caller, asked } = platform();
       const api = appWith(caller, drivers);
@@ -205,30 +204,21 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     expect(asked).toEqual([]);
   });
 
-  it('a version that declares a store, with no route to the store script, refuses the copy (503)', async () => {
-    const { caller, asked } = platform();
-    const api = appWith(caller, [graph]);
-    const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
-    const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
-    expect(backup.status).toBe(503);
-    expect(asked).toEqual(['export']);
-  });
-
-  // The registry a hosted control plane runs (#2394): no `storeDrivers`, so `STORE_DRIVERS`, which
-  // registers no driver yet. Every case above injects one; these hold the default itself.
-  describe('with the default registry', () => {
-    it('a version that declares no store is not asked: every copy proceeds', async () => {
+  for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
+    it(`with ${registry} registry, a version that declares a store, with no route to the store script, refuses the copy (503)`, async () => {
       const { caller, asked } = platform();
-      await everyCopy(appWith(caller), {}, 'notes');
-      expect(asked).toEqual([]);
-    });
-
-    it('a version that declares a graph store is not asked either: with no driver registered no store can exist', async () => {
-      const { caller, asked } = platform();
+      const api = appWith(caller, drivers);
       const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
-      const backup = await appWith(caller).request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
-      expect(backup.status, await backup.clone().text()).toBeLessThan(300);
-      expect(asked).toEqual([]);
+      const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
+      expect(backup.status).toBe(503);
+      expect(asked).toEqual(['export']);
     });
+  }
+
+  // The registry a hosted control plane runs: no `storeDrivers`, so `STORE_DRIVERS`, which holds graph.
+  it('with the default registry, a version that declares no store is not asked: every copy proceeds', async () => {
+    const { caller, asked } = platform();
+    await everyCopy(appWith(caller), {}, 'notes');
+    expect(asked).toEqual([]);
   });
 });

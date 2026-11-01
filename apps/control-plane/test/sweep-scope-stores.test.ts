@@ -29,8 +29,11 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
   const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
 
   it('a serving-pinned install with a store is not skipped: with no route to the stores, the wipe and the gauge refuse', async () => {
-    expect(status(await refusal(wipeDeclaredScopeStores({}, admin, scope('graphy-stable'), [driver])))).toBe(503);
-    expect(status(await refusal(declaredStoreSizes({}, admin, scope('graphy-stable'), [driver])))).toBe(503);
+    // `undefined` is the hosted registry, `STORE_DRIVERS`, which holds graph.
+    for (const drivers of [[driver], undefined]) {
+      expect(status(await refusal(wipeDeclaredScopeStores({}, admin, scope('graphy-stable'), drivers)))).toBe(503);
+      expect(status(await refusal(declaredStoreSizes({}, admin, scope('graphy-stable'), drivers)))).toBe(503);
+    }
   });
 
   it('with a route, a serving-pinned install is wiped and sized through its store script', async () => {

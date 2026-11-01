@@ -355,7 +355,10 @@ export const storeCatalogOperation = storeOperationName.refine((name) => !name.s
 export const storeDriverId = z.string().regex(STORE_DRIVER_ID, { message: 'a store driver id is [a-z0-9]+' });
 
 /** A decision-record lift must be admitted here in a reviewed change before it can register a driver. */
-export const STORE_DRIVER_ADMITTED_ISOLATION_LIFTS = [] as const satisfies readonly `D-${number}`[];
+export const STORE_DRIVER_ADMITTED_ISOLATION_LIFTS = [
+  // The graph driver, kept apart per object by its own design and by the review of each release.
+  'D-67',
+] as const satisfies readonly `D-${number}`[];
 
 /** Normalized canonical identity shared by every published workspace package. */
 export const STORE_DRIVER_PLATFORM_REPOSITORY = 'https://github.com/substrat-run/substrat';
@@ -420,11 +423,13 @@ export const storeDriverRegistration = z
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
 /**
- * Registered store drivers. None yet: a driver is registered by its id once the approval flow in
- * docs/rfc/store-driver-release-approval.md serves (its step 5), and a third-party driver such as
- * graph also waits for a decision record lifting D-63's isolation requirement for it (#2210, #2394).
+ * Registered store drivers (D-63, D-65). A registered driver runs nothing until a person approves
+ * a release of it in the control plane. `graph` is written outside this repo, so it stands on the
+ * decision record that lifts D-63's isolation requirement for it (D-67).
  */
-export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
+export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [
+  { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' } },
+];
 
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;

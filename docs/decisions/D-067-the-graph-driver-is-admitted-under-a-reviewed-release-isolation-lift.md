@@ -23,6 +23,25 @@ construction. The review of each release, recorded in its approval (D-65), stays
 between that release and the tenants it serves, and this record states the risk accepted in its
 place.**
 
+## Why
+
+Substrat already keeps tenants apart inside one script by review rather than by construction:
+
+- The platform's own Durable Objects (the control-plane directory, scope copies, observability)
+  serve every tenant from the platform's scripts, so objects of different tenants may share an
+  isolate.
+- Vertical code runs in one stable script per vertical (K-28, K-33), so tenants of one vertical
+  share it. What keeps their data apart is a scope object per scope, the router's choice of scope,
+  the kernel's permission doors and the absence of a raw namespace binding. The hosting notes say
+  plainly that this does not contain hostile bundle code; admission and review do.
+- `docs/rfc/store-instances.md` states the mechanism: objects of one class in one script may share
+  an isolate; only a separate script makes two objects' data mechanically separate (K-53's script
+  per tenant is the one place that buys it).
+
+This record asks for the graph driver to stand on that same footing: one script per (driver,
+vertical), its tenants kept apart by the driver's own per-object design and by the review of each
+release, as the platform's own objects and verticals are.
+
 ## The conditions, as they stand
 
 D-63 lifts its rule for a third-party driver once that driver "cannot affect data outside the
@@ -46,26 +65,9 @@ object it serves by construction". For the graph driver:
 - **A narrow first use.** Until isolation exists by construction, the graph driver serves only
   verticals whose operator accepts that their tenants share the driver's isolate, and holds
   synthetic data until the driver's subject erasure (`substrat.erase`) is implemented. Today that
-  operation answers `{erased: 0}`.
-
-## The same footing as the platform's own code
-
-Substrat already keeps tenants apart inside one script by review rather than by construction:
-
-- The platform's own Durable Objects (the control-plane directory, scope copies, observability)
-  serve every tenant from the platform's scripts, so objects of different tenants may share an
-  isolate.
-- Vertical code runs in one stable script per vertical (K-28, K-33), so tenants of one vertical
-  share it. What keeps their data apart is a scope object per scope, the router's choice of scope,
-  the kernel's permission doors and the absence of a raw namespace binding. The hosting notes say
-  plainly that this does not contain hostile bundle code; admission and review do.
-- `docs/rfc/store-instances.md` states the mechanism: objects of one class in one script may share
-  an isolate; only a separate script makes two objects' data mechanically separate (K-53's script
-  per tenant is the one place that buys it).
-
-This record asks for the graph driver to stand on that same footing: one script per (driver,
-vertical), its tenants kept apart by the driver's own per-object design and by the review of each
-release, as the platform's own objects and verticals are.
+  operation answers `{erased: 0}`. This is an operating rule that the approver of each release
+  and the platform's operators keep, not a check in code: the registration admits any vertical
+  that declares the driver, and nothing inspects what a store holds.
 
 ## Evidence for the review
 

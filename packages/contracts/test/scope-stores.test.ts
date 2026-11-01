@@ -155,12 +155,18 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     );
   });
 
-  it('refuses graph while no driver is registered, naming the reason', () => {
+  it('refuses a driver the registry does not hold, naming the reason', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
-    expect(STORE_DRIVERS).toEqual([]);
     const reason = "deploy refused: scope store 'GRAPH' declares driver 'graph', which is not registered.";
-    expect(() => assertScopeStoresRegistered(stores)).toThrow(reason);
-    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(reason);
+    expect(() => assertScopeStoresRegistered(stores, [])).toThrow(reason);
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(reason);
+  });
+
+  it('registers graph on the hosted registry, on the decision record that lifts its isolation (D-67)', () => {
+    const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
+    expect(STORE_DRIVERS).toEqual([{ driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' } }]);
+    expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
   });
 
   it('judges against the registry a caller passes: a test fixture holding graph admits it', () => {
@@ -312,11 +318,7 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   });
 
   it('with no driver registered nothing may hold a store, whatever the manifest says', () => {
-    expect(STORE_DRIVERS).toEqual([]);
-    for (const json of [declaring, manifest(), null, undefined, '{not json']) {
-      expect(mayHoldScopeStores(json)).toBe(false);
-      expect(mayHoldScopeStores(json, [])).toBe(false);
-    }
+    for (const json of [declaring, manifest(), null, undefined, '{not json']) expect(mayHoldScopeStores(json, [])).toBe(false);
   });
 
   it('with a driver registered, unknown and unreadable count as may, and only a known "none" does not', () => {
@@ -326,6 +328,10 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
     expect(mayHoldScopeStores(JSON.stringify({ version: 1 }), [graph])).toBe(true);
     expect(mayHoldScopeStores(manifest(), [graph])).toBe(false);
     expect(mayHoldScopeStores(null, [graph])).toBe(false);
+    // The hosted registry holds graph, so its default answers the same.
+    for (const json of [declaring, manifest(), null, undefined, '{not json']) {
+      expect(mayHoldScopeStores(json), String(json)).toBe(mayHoldScopeStores(json, [graph]));
+    }
   });
 });
 

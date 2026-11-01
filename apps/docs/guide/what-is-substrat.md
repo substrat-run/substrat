@@ -103,7 +103,7 @@ Substrat is pre-release (0.x). What exists today:
 | Todo (shared lists) — user-initiated sharing on a record app; no engine, by design | [`demos/todo`](/verticals/todo) | Working |
 | ticket0 (support desk) — a public, unauthenticated surface; the assistant as a member of staff | [`demos/ticket0`](/verticals/ticket0) | Working |
 | Tock (measured file loads) — a runtime schema the data may disagree with; corrections that supersede without destroying | [`demos/tock`](/verticals/tock) | Runs locally — not deployed |
-| Graph notes (a scope store) — data kept in a scope store, each action a key check and then a store call | [`demos/graph-notes`](/verticals/graph-notes) | Runs locally — no store driver registered |
+| Graph notes (a scope store) — data kept in a scope store, each action a key check and then a store call | [`demos/graph-notes`](/verticals/graph-notes) | Runs locally — no graph driver release approved |
 
 Interfaces change without notice until the first vertical ships.
 

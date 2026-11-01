@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. No driver is registered yet, so nothing is live for a vertical today."
+description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. The graph driver is registered, but no release of it is approved yet, so nothing is live for a vertical today."
 ---
 
 # Scope stores
@@ -10,7 +10,7 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a driver is registered and its store script is deployed.
+Nothing here is live for a vertical yet. The `graph` driver is registered, but a store script runs only a release a person has approved, and none is approved yet. A hosted push that declares a graph store passes the push check and is then refused before anything is uploaded. Everything below is what the platform does once a release is approved and rolled out.
 
 Today a vertical author can:
 
@@ -21,7 +21,7 @@ Today a vertical author can:
 
 A vertical author cannot yet:
 
-- push a vertical that declares `scopeStores`;
+- complete a hosted push of a vertical that declares `scopeStores`;
 - reach a store from a hosted deploy.
 
 ## Declaring it
@@ -35,8 +35,12 @@ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }]
 A hosted vertical's upload carries no store binding. The vertical is given neither the store's namespace nor anything that opens it. A binding already used by another store is refused, and so is the name `ATTACHMENTS`. The vertical's own Durable Object bindings count as stores for that check. A name in the `SUBSTRAT_` namespace is the platform's and is refused. The push and the control plane apply the same checks, so a manifest that did not come through `substrat push` is refused the same way.
 
 A driver is registered before a push that names it can succeed. There is one store script per
-driver and vertical; its objects keep their identities when the script changes. The upload and
-release machinery is implemented, but the empty driver registry still prevents hosted use.
+driver and vertical; its objects keep their identities when the script changes. The `graph`
+driver is registered, and a push that names it succeeds once a release of it is approved and
+rolled out. It is written outside this repo, so its registration rests on a
+[decision record](https://github.com/substrat-run/substrat/blob/main/docs/decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md)
+that accepts that the tenants of one vertical share its script, kept apart by the driver's own
+design and the review of each release.
 
 ### Store releases and vertical deploys are separate
 
@@ -128,15 +132,15 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first driver is registered. The second can follow.
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first release of a driver is approved, since only an approved release can hold data. The second can follow.
 
-Before the first driver:
+Before the first approved release:
 
-- **No store script is uploaded yet.** The entry that checks each call exists and is tested in front of a test driver. Uploading a registered driver behind it is the next step.
 - **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:
 
+- **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so an erasure removes nothing from a graph store. Until it does, a graph store is meant for synthetic data only. That is an operating rule, not something the platform checks.
 - **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another driver. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.

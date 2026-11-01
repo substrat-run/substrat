@@ -8800,6 +8800,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuse(c, 'forbidden', 'forbidden');
     }
     input.verticalSlug = slug;
+    let scopeStores: readonly ScopeStoreNeed[] = [];
     // `manifestJson` is a string the schema cannot look inside, and every reader parses it
     // with `storedDeployManifest` and 500s on a row it refuses: the per-version reads below
     // (registry, schedules, flow, model, assets), the serving-upload rebuild that promote
@@ -8843,7 +8844,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (ownerGrants.length > 0) return refuseManifest({ path: ['ownerGrants'], message: ownerGrants.join('; ') });
       const connectorProblems = pushedConnectorProblems(checked.data);
       if (connectorProblems.length > 0) return refuseManifest({ path: ['connectors'], message: connectorProblems.join('; ') });
+      scopeStores = checked.data.scopeStores;
     }
+    // #2210: publishing records the version's store bindings for the whole vertical's lifecycle
+    // (backup, wipe, erasure, the meter), so its store scripts are put in place first, as a push
+    // does: a driver with no approved release refuses here, and nothing is published.
+    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, scopeStores, async () => (await ownerOf(c.get('actor'), slug)) ?? null);
     await c.var.admin.publishVersion(c.get('actor'), input);
     const version = await c.var.admin.getVersion(c.get('actor'), input.id, slug);
     return c.json(version, 201);

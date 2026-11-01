@@ -166,9 +166,11 @@ describe('assertSandboxContract', () => {
     // A test fixture, not a registered driver.
     const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
     expect(() => assertSandboxContract(declaring, [fixture])).not.toThrow();
+    // The hosted registry holds graph (D-67).
+    expect(() => assertSandboxContract(declaring)).not.toThrow();
     let thrown: unknown;
     try {
-      assertSandboxContract(declaring);
+      assertSandboxContract(declaring, []);
     } catch (err) {
       thrown = err;
     }
@@ -246,14 +248,16 @@ describe('scope store upload plan (#2210)', () => {
     expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [graph] }).bindings).toEqual([]);
   });
 
-  it('an upload refuses a declared driver the registry does not hold, which is every driver today, and admits a registered one', () => {
+  it('an upload refuses a declared driver the registry does not hold, and admits a registered one', () => {
     expect(() =>
-      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [] }),
+      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [], drivers: [] }),
     ).toThrow(/not registered/);
-    expect(
-      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [], drivers: [graph] }).map((b) => b.name),
-    ).toEqual([]);
-    expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [] })).toEqual([]);
+    for (const drivers of [[graph], undefined]) {
+      expect(
+        verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [], drivers }).map((b) => b.name),
+      ).toEqual([]);
+    }
+    expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [], drivers: [] })).toEqual([]);
   });
 
   it('plans one script per driver and vertical, named without a release', () => {
@@ -266,9 +270,6 @@ describe('scope store upload plan (#2210)', () => {
   });
 
   it('refuses a driver that is not registered', () => {
-    expect(() =>
-      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', driver: 'graph' }] }),
-    ).toThrow(/not registered/);
     expect(() =>
       scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', driver: 'graph' }], drivers: [] }),
     ).toThrow(/not registered/);

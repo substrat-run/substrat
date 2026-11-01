@@ -38,6 +38,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   let app: ReturnType<typeof createControlPlaneApi>;
   let bare: ReturnType<typeof createControlPlaneApi>;
   let unregistered: ReturnType<typeof createControlPlaneApi>;
+  let hosted: ReturnType<typeof createControlPlaneApi>;
   const staff = platformActorId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff };
 
@@ -52,6 +53,11 @@ describe('a vertical upload carries no scope-store binding, and its store script
     modules: [{ name: 'driver_counter/store.py', content: new TextEncoder().encode('class Store:\n    pass\n') }],
   };
   let rolledOut: typeof release | undefined = release;
+  /** Bytes stored for graph that no person approved. */
+  const unapproved = {
+    ...release,
+    modules: [{ name: 'driver_counter/store.py', content: new TextEncoder().encode('class Store:\n    unreviewed = True\n') }],
+  };
 
   /**
    * One test driver, handed to the control plane and the store uploader as their registry
@@ -105,6 +111,20 @@ describe('a vertical upload carries no scope-store binding, and its store script
     bare = createControlPlaneApi(common);
     // A control plane whose registry holds no driver.
     unregistered = createControlPlaneApi({ ...common, storeDrivers: [] });
+    // The hosted registry (`STORE_DRIVERS`, graph under D-67), handed bytes no person approved.
+    const { storeDrivers: _injected, ...hostedCommon } = common;
+    hosted = createControlPlaneApi({
+      ...hostedCommon,
+      ensureScopeStores: ({ approvals, ...input }) => createScopeStoreEnsurer({
+        accountId: 'acct',
+        namespace: 'ns',
+        apiToken: 'tok',
+        callerPublicKeys: [caller.publicKey],
+        platformPublicKeys: [platform.publicKey],
+        approvals,
+        loadRelease: async () => (rolledOut ? unapproved : undefined),
+      })(input),
+    });
   });
   afterAll(async () => {
     await host.close();
@@ -325,6 +345,66 @@ describe('a vertical upload carries no scope-store binding, and its store script
     expect(await failuresOf('store-bare/crm')).toEqual(
       expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 501 })]),
     );
+  });
+
+  // The hosted registry admits the declaration; what is missing is a release to run. Nothing is
+  // uploaded and no version is published, so no scope of the vertical can come to hold a store.
+  for (const [what, released, status, refusal] of [
+    ['release bytes no person approved', true, 422, /has no live approval/],
+    ['no release at all', false, 409, /no release rolled out/],
+  ] as const) {
+    it(`with the hosted registry, a push of graph with ${what} is refused (${status}) before anything is uploaded`, async () => {
+      stubCloudflare();
+      if (!released) rolledOut = undefined;
+      const before = puts.length;
+      const slug = await tenant(`store-hosted-${status}`);
+      const res = await push(slug, hosted);
+      expect(res.status).toBe(status);
+      expect(await res.text()).toMatch(refusal);
+      expect(puts.length).toBe(before);
+      expect(await host.admin.listVersions(staff, `${slug}/crm`)).toEqual([]);
+    });
+  }
+
+  // The raw publish of a version row (`POST /verticals/:slug/versions`) records its store bindings for
+  // the vertical's whole lifecycle, so it puts the store scripts in place first, as a push does.
+  it('a raw version publish that declares graph puts its store script first, and with no approved release publishes nothing', async () => {
+    stubCloudflare();
+    const publish = async (to: typeof app, slug: string) => {
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      const id = ulid();
+      return to.request(`/verticals/${slug}/versions`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          verticalSlug: slug,
+          version: '0.1.0',
+          manifestDigest: 'm1',
+          permissionDigest: 'p1',
+          migrationDigest: 'g1',
+          deploymentRef: `${slug}-${id.toLowerCase()}`,
+          manifestJson: JSON.stringify({
+            version: '0.1.0',
+            entry: 'worker.js',
+            compatibilityDate: '2025-01-01',
+            scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
+            digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+          }),
+        }),
+      });
+    };
+    const before = puts.length;
+    const refused = await publish(hosted, 'raw-unapproved');
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).toMatch(/has no live approval/);
+    expect(puts.length).toBe(before);
+    expect(await host.admin.listVersions(staff, 'raw-unapproved')).toEqual([]);
+    expect(await host.admin.verticalScopeStores(staff, 'raw-unapproved')).toEqual([]);
+    // The twin: with an approved release rolled out, the script goes up and the version is published.
+    const published = await publish(app, 'raw-approved');
+    expect(published.status, await published.clone().text()).toBe(201);
+    expect(putTo(scopeStoreScriptName('raw-approved', 'graph'))?.meta).toBeDefined();
   });
 
   it('with no driver registered, the same push is refused before anything is uploaded', async () => {
