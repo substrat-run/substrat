@@ -612,8 +612,8 @@ function RequestList({
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-secondary)', minWidth: 44, textAlign: 'right' }}>{durationLabel(r.durationMs)}</span>
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', color: tone, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.text}</span>
-            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', textAlign: 'right' }} title={LINES_TITLE}>
-              {r.logLines ?? '—'}
+            <span style={{ fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)', textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.logLines == null ? LINES_TITLE : `${r.logLines.toLocaleString('en-US')} — ${LINES_TITLE}`}>
+              {r.logLines == null ? '—' : r.logLines >= 10_000 ? `${Math.floor(r.logLines / 1000)}k` : r.logLines}
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', textAlign: 'right' }} title={r.eventTypes.join(', ') || undefined}>
               {r.eventCount === null ? '—' : r.eventCount}

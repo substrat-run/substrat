@@ -129,6 +129,11 @@ describe('a peer call’s parent (#2192)', () => {
     expect(relatedRequests(OWN, [], [], record)).toEqual([]);
   });
 
+  it('reads the line count the line carries, and a line without one as not recorded (#2762)', () => {
+    expect(recordFromLogs([line({ logLines: 4 })])?.logLines).toBe(4);
+    expect(recordFromLogs([line({})])?.logLines).toBeNull();
+  });
+
   it('never lists the request as its own parent', () => {
     expect(relatedRequests(OWN, [], [], { parentInvocationId: OWN })).toEqual([]);
   });

@@ -107,7 +107,7 @@ export function emittedReportContractSuite(
       );
     });
 
-    it("counts the call's ctx.log lines, its inline consumers' included, and a failed call's too (#2762)", async () => {
+    it("counts the call's ctx.log lines, its inline consumers' included, and a failed call's too, but not a call refused before it ran (#2762)", async () => {
       const counted = async (operation: string, input: unknown) => {
         const counts: number[] = [];
         await run(operation, input, { onLogLines: (n: number) => counts.push(n) });
@@ -119,6 +119,8 @@ export function emittedReportContractSuite(
       // Rolled back, and still counted: the line was written, and a failure's lines are the ones
       // a reader opens the request for. No consumer ran, since nothing committed.
       expect(await counted('emitted/fail', { ids: [`lf-${ulid()}`] })).toEqual([1]);
+      // Refused before the scope ran anything: not recorded, never a `0`.
+      expect(await counted('emitted/no-such-operation', {})).toEqual([]);
     });
 
     it('does not report a replay, which committed nothing', async () => {

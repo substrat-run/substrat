@@ -3208,10 +3208,12 @@ export function defineScopeDO(
       logLines?: number;
     }> {
       // #2762: filled by `ctx.log` while the queued body runs. Only reported when asked, so the
-      // envelope of a caller that did not ask is what it was.
-      const logTally = { logLines: 0 };
+      // envelope of a caller that did not ask is what it was, and only once the queued body ran:
+      // a call refused before it (an unknown operation, an input that fails its parse) is "not
+      // recorded", as the SQLite host has it, never a `0`.
+      const logTally = { logLines: 0, reached: false };
       const withLogLines = <T extends object>(envelope: T): T & { logLines?: number } =>
-        invokeOptions?.onLogLines !== undefined ? { ...envelope, logLines: logTally.logLines } : envelope;
+        invokeOptions?.onLogLines !== undefined && logTally.reached ? { ...envelope, logLines: logTally.logLines } : envelope;
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
         // ZodError, whose `message` is a getter) still arrives with its message.
@@ -3294,7 +3296,7 @@ export function defineScopeDO(
       /** #119: set only by `runPurgeSweep` on its own invokes — never an RPC argument. */
       purge?: boolean,
       /** #2762: where this call's `ctx.log` lines are counted — `invoke`'s, never an RPC argument. */
-      logTally?: { logLines: number },
+      logTally?: { logLines: number; reached: boolean },
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -3426,6 +3428,7 @@ export function defineScopeDO(
         this.invocationId = invokeOptions?.invocationId ?? null;
         // #2762: counted for the same span, for the same reason.
         this.logTally = logTally ?? null;
+        if (logTally) logTally.reached = true;
         try {
         // #1834: before anything opens. This instance is the storage the call meets, for the
         // whole call: a restore restarts the object, so it cannot move under a running body.

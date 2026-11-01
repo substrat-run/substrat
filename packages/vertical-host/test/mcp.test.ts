@@ -806,7 +806,7 @@ describe('a token minted for another audience is refused before the resolver', (
  * tells the line it failed.
  */
 describe('the per-request record on a tool call (#1746)', () => {
-  function recordHarness(invoke: (options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => unknown) {
+  function recordHarness(invoke: (options?: { invocationId?: string; onEmitted?: (r: unknown) => void; onLogLines?: (n: number) => void }) => unknown) {
     const record: InvocationRecord = {};
     const seen: (string | undefined)[] = [];
     const app = new Hono();
@@ -818,7 +818,7 @@ describe('the per-request record on a tool call (#1746)', () => {
     });
     mountOperations(app, operations, async () => ({
       subjectKind: 'principal',
-      invoke: async (_n: string, _i: unknown, options?: { invocationId?: string; onEmitted?: (r: unknown) => void }) => {
+      invoke: async (_n: string, _i: unknown, options?: { invocationId?: string; onEmitted?: (r: unknown) => void; onLogLines?: (n: number) => void }) => {
         seen.push(options?.invocationId);
         return invoke(options);
       },
@@ -888,6 +888,15 @@ describe('the per-request record on a tool call (#1746)', () => {
     });
     await batch(second.app);
     expect(second.record).toEqual({ operation: 'todo/my-lists', principalKind: 'principal' });
+
+    // #2762: the line count is the batch's — every tool writes under the request's one id.
+    const counts = [2, 3];
+    const counting = recordHarness((options) => {
+      options?.onLogLines?.(counts.shift()!);
+      return { ok: true };
+    });
+    await batch(counting.app);
+    expect(counting.record.logLines).toBe(5);
   });
 });
 

@@ -1108,14 +1108,15 @@ describe('cf tenant logs — async work (#1901)', () => {
   });
 
   it('lists async work beside requests, with its kind, and filters on it', async () => {
-    const { reader, sent } = readerOver(() => [invocation({}, '01RQ'), consumer()]);
+    const { reader, sent } = readerOver(() => [invocation({ logLines: 3 }, '01RQ'), consumer()]);
     const scope = { tenantId: '01TENANT', from: 0, to: 10_000, limit: 10 };
 
     const all = await reader.tenantRequests!(scope);
-    expect(all.map((r) => [r.kind, r.outcome, r.attempt])).toEqual(
+    // #2762: and the line count as the line carries it — a line without one reads null, never 0.
+    expect(all.map((r) => [r.kind, r.outcome, r.attempt, r.logLines])).toEqual(
       expect.arrayContaining([
-        ['request', null, null],
-        ['consumer', 'retrying', 2],
+        ['request', null, null, 3],
+        ['consumer', 'retrying', 2, null],
       ]),
     );
 
