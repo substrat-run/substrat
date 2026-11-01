@@ -146,6 +146,11 @@ describe('POST /api/teams/:teamId/members/invites/:invitationId/link', () => {
     expect(await res.json()).toMatchObject({ email: 'ivy@links.test', roleKey: 'viewer' });
   });
 
+  it('the declared preview refuses a link with no token (400) and one that does not verify (404)', async () => {
+    expect((await app.request('/api/invites/preview', {}, env)).status).toBe(400);
+    expect((await app.request('/api/invites/preview?token=not-a-token', {}, env)).status).toBe(404);
+  });
+
   it('sends no email — and its twin, resend, does', async () => {
     const invitationId = await invite();
     expect((await asRole('owner', linkOf(invitationId), {})).status).toBe(200);

@@ -59,7 +59,7 @@
       },
       {
         "model": "src/routes.ts",
-        "operations": "accountRoutes",
+        "operations": ["accountRoutes", "publicRoutes"],
         "schemas": {
           "AccountView": "accountView",
           "OnboardingView": "onboardingView",
