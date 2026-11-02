@@ -17,7 +17,7 @@ export function bindExportBreakOf(message: string): string | null {
   return at >= 0 ? message.slice(at) : null;
 }
 
-/** One app the refusal names (`ApiError.exportBreaks`), as much as the confirm shows of it. */
+/** One app the refusal names (`body.exportBreaks.affected`), as much as the confirm shows of it. */
 export interface BrokenApp {
   vertical: string;
   type: string;
@@ -53,7 +53,7 @@ export async function sendWithExportBreakAck<T>(
   } catch (e) {
     const refusal = bindExportBreakOf(e instanceof Error ? e.message : String(e));
     if (refusal === null) throw e;
-    const apps = (e as { exportBreaks?: readonly BrokenApp[] }).exportBreaks ?? [];
+    const apps = exportBreaksIn((e as { body?: unknown }).body) ?? [];
     if (!(await confirm(refusal, apps))) return 'cancelled';
     return await send(true);
   }

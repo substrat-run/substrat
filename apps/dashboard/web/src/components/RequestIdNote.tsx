@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { ApiError } from '../lib/api';
 import { ULID } from '../lib/palette';
 
 /**
@@ -8,7 +7,6 @@ import { ULID } from '../lib/palette';
  * names the same id as `requestId` — read from there, as one ULID.
  */
 export const requestIdOf = (e: unknown): string | undefined => {
-  if (e instanceof ApiError) return e.requestId;
   const body = e instanceof Error ? (e as { body?: unknown }).body : undefined;
   const id = body !== null && typeof body === 'object' ? (body as { requestId?: unknown }).requestId : undefined;
   return typeof id === 'string' && ULID.test(id) ? id : undefined;

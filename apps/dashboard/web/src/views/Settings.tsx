@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button, Dialog, Input, Tabs } from '@substrat-run/ui';
 import { Page } from '../components/layout';
 import { card } from '../components/ui';
-import { ApiError, teamApi } from '../lib/api';
+import { isApiError, teamApi } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { APP_SHA, APP_VERSION } from '../lib/version';
 
@@ -100,7 +100,7 @@ function DeleteOrgCard({ org, teamId }: { org: string; teamId: string }) {
       // or the next team).
       location.href = '/';
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
+      setError(isApiError(e) ? e.message : String(e));
       setBusy(false);
     }
   };

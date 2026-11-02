@@ -666,45 +666,9 @@ export type AppAuthUpdateResult = Out<'setAppAuth'>;
 /** A DNS record the tenant must publish for a custom domain (§4.7). `type` is the plane's: known are hostname and txt; a newer plane may name another (#2401). */
 export type DnsRecord = NonNullable<Out<'addDomain'>['validationRecords']>[number];
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    /**
-     * The provider's own answer, when a connect was refused because the credential was
-     * rejected upstream (#605, 422). Lets the dialog say what is actually wrong —
-     * including WHICH provider environment answered — rather than "couldn't save".
-     */
-    readonly probe?: ConnectionProbeView,
-    /** #1756: the apps an Update or a Bind would break, when that is why it was refused. */
-    readonly exportBreaks?: ExportBreakRow[],
-    /**
-     * #2192: the id of the request that failed, when the answering worker named one — the
-     * `x-substrat-request-id` header, else the problem body's `requestId`. What a person
-     * quotes to find the request. Absent where the answer carried none.
-     */
-    readonly requestId?: string,
-    /** The problem's `reason` slug, when it carried one: what a caller branches on (#2333). */
-    readonly reason?: string,
-  ) {
-    super(message);
-    this.name = 'ApiError';
-  }
-}
-
-/** The handwritten client and the two declared clients (team, account) report separate error classes. */
-export const isApiError = (error: unknown): error is ApiError | GeneratedApiError | AccountApiError =>
-  error instanceof ApiError || error instanceof GeneratedApiError || error instanceof AccountApiError;
-
-/** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
-export interface ExportBreakRow {
-  scopeId: string;
-  vertical: string;
-  type: string;
-  schemaVersion: number;
-  /** What the version exports it as instead, or null when it no longer does. */
-  incoming: number | null;
-}
+/** The team client and the account client each report their own error class; both keep the problem body under `body`. */
+export const isApiError = (error: unknown): error is GeneratedApiError | AccountApiError =>
+  error instanceof GeneratedApiError || error instanceof AccountApiError;
 
 /**
  * The declared surface (#2170), bound to ONE team: every call goes to

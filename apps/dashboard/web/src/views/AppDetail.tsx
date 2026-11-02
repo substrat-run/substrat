@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { ApiError as TeamApiError } from '../lib/api.generated';
-import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type DumpStore, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
+import { api, teamApi, isApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type DumpStore, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
 import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, RESERVED_KEY_MARK, reservationNote, roleHolderNote } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
@@ -311,7 +311,7 @@ function OwnerSeatCard({ teamId, scopeId, seat, onClaimed, canClaim }: { teamId:
       // The seat now carries a live link; ask its owner to re-read so the card says so.
       onClaimed(forScope);
     } catch (e) {
-      if (shown.current === forScope) setClaimErr(e instanceof ApiError ? e.message : String(e));
+      if (shown.current === forScope) setClaimErr(isApiError(e) ? e.message : String(e));
     } finally {
       if (shown.current === forScope) setMinting(false);
     }
@@ -3249,8 +3249,8 @@ export function AppMembers({ teamId, app }: { teamId: string; app: AppRow }) {
       setErr(null);
       setRole((r) => (r && v.roles.includes(r) ? r : (v.roles[v.roles.length - 1] ?? '')));
     } catch (e) {
-      if (e instanceof ApiError && e.status === 501) setUnsupported(e.message);
-      else setErr(e instanceof ApiError ? e.message : String(e));
+      if (isApiError(e) && e.status === 501) setUnsupported(e.message);
+      else setErr(isApiError(e) ? e.message : String(e));
       setView(null);
     }
   };
@@ -3277,7 +3277,7 @@ export function AppMembers({ teamId, app }: { teamId: string; app: AppRow }) {
       await read();
       return true;
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : String(e));
+      setErr(isApiError(e) ? e.message : String(e));
       return false;
     } finally {
       setBusy(false);

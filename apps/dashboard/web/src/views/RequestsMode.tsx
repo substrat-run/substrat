@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
-import { api, ApiError, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
+import { api, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestFacets, mockRequestVolume, mockRequests } from '../lib/mock-requests';
 import { mockAppTraffic } from '../lib/mock-app-traffic';
@@ -59,7 +59,7 @@ export const isError = (v: unknown): v is { error: string } => typeof v === 'obj
 function failure(e: unknown): { error: string } {
   // The plane counts the cubes, which cannot match free text: with a search set the chart and
   // the facet counts are unavailable by design, not empty (their list still answers).
-  const reason = e instanceof ApiError ? e.reason : (e as { body?: { reason?: unknown } } | null)?.body?.reason;
+  const reason = (e as { body?: { reason?: unknown } } | null)?.body?.reason;
   if (reason === 'search_not_counted') return { error: 'Counts are unavailable while a search is set. The list below shows the matching requests; clear the search to see the chart and counts.' };
   if (isApiError(e) && e.status === 501) return { error: 'Request counts are not available on this platform yet.' };
   if (isApiError(e)) return { error: `Requests could not be read (${e.status}): ${e.message}` };
