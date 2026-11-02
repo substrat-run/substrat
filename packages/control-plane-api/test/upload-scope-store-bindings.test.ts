@@ -10,6 +10,7 @@ import {
   platformActorId,
   scopeStoreScriptName,
   STORE_DRIVER_PLATFORM_REPOSITORY,
+  STORE_DRIVERS,
   storeDriverReleaseDigest,
   tenantId,
   type StoreDriverRegistration,
@@ -22,6 +23,7 @@ import {
   DEV_ACTOR_HEADER,
   stableDeploymentRefFor,
   UNSAFE_devPlatformActorAuth,
+  type ControlPlaneApiOptions,
 } from '../src/index.js';
 
 /**
@@ -39,6 +41,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   let bare: ReturnType<typeof createControlPlaneApi>;
   let unregistered: ReturnType<typeof createControlPlaneApi>;
   let hosted: ReturnType<typeof createControlPlaneApi>;
+  let asReviewed: ReturnType<typeof createControlPlaneApi>;
   const staff = platformActorId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff };
 
@@ -111,20 +114,24 @@ describe('a vertical upload carries no scope-store binding, and its store script
     bare = createControlPlaneApi(common);
     // A control plane whose registry holds no driver.
     unregistered = createControlPlaneApi({ ...common, storeDrivers: [] });
-    // The hosted registry (`STORE_DRIVERS`, graph under D-67), handed bytes no person approved.
-    const { storeDrivers: _injected, ...hostedCommon } = common;
-    hosted = createControlPlaneApi({
-      ...hostedCommon,
-      ensureScopeStores: ({ approvals, ...input }) => createScopeStoreEnsurer({
+    // The hosted registration (graph under D-67), naming the verticals below as ones it serves, and
+    // handed bytes no person approved.
+    const servingTests = STORE_DRIVERS.map((driver) => ({ ...driver, verticals: ['store-hosted-422/crm', 'store-hosted-409/crm', 'raw-unapproved'] }));
+    const hostedEnsurer = (drivers?: readonly StoreDriverRegistration[]): ControlPlaneApiOptions['ensureScopeStores'] =>
+      ({ approvals, ...input }) => createScopeStoreEnsurer({
         accountId: 'acct',
         namespace: 'ns',
         apiToken: 'tok',
         callerPublicKeys: [caller.publicKey],
         platformPublicKeys: [platform.publicKey],
+        ...(drivers ? { drivers } : {}),
         approvals,
         loadRelease: async () => (rolledOut ? unapproved : undefined),
-      })(input),
-    });
+      })(input);
+    hosted = createControlPlaneApi({ ...common, storeDrivers: servingTests, ensureScopeStores: hostedEnsurer(servingTests) });
+    // The hosted registry exactly as reviewed (`STORE_DRIVERS`), which names no vertical yet.
+    const { storeDrivers: _injected, ...hostedCommon } = common;
+    asReviewed = createControlPlaneApi({ ...hostedCommon, ensureScopeStores: hostedEnsurer() });
   });
   afterAll(async () => {
     await host.close();
@@ -405,6 +412,18 @@ describe('a vertical upload carries no scope-store binding, and its store script
     const published = await publish(app, 'raw-approved');
     expect(published.status, await published.clone().text()).toBe(201);
     expect(putTo(scopeStoreScriptName('raw-approved', 'graph'))?.meta).toBeDefined();
+  });
+
+  // D-67's narrow first use, held by the registration: graph serves only the verticals it names.
+  it('with the hosted registry as reviewed, a push of graph from a vertical it does not name is refused (403) before anything is uploaded', async () => {
+    stubCloudflare();
+    const before = puts.length;
+    const slug = await tenant('store-unnamed');
+    const res = await push(slug, asReviewed);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toMatch(/driver 'graph' does not serve vertical 'store-unnamed\/crm'/);
+    expect(puts.length).toBe(before);
+    expect(await host.admin.listVersions(staff, `${slug}/crm`)).toEqual([]);
   });
 
   it('with no driver registered, the same push is refused before anything is uploaded', async () => {

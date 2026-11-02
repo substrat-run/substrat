@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. The graph driver is registered, but no release of it is approved yet, so nothing is live for a vertical today."
+description: "A platform-run object per scope, declared by the vertical and called through getScopeStore. The graph driver is registered; no release is approved and it serves no vertical yet."
 ---
 
 # Scope stores
@@ -140,7 +140,7 @@ Before the first approved release:
 
 Later:
 
-- **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so an erasure removes nothing from a graph store. Until it does, a graph store is meant for synthetic data only. That is an operating rule, not something the platform checks.
+- **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so the platform refuses a subject erasure that would reach a graph store (501) and keeps the key, rather than record an erasure that removed nothing. Until it does, a graph store is meant for synthetic data only, and the driver serves only the verticals its registration names, none yet.
 - **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another driver. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.

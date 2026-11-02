@@ -5,9 +5,11 @@ import {
   STORE_DRIVERS,
   normalizeStoreDriverRepositoryUrl,
   storeDriverBasisAdmits,
+  storeDriverErasesSubjects,
   storeDriverIsolationBasis,
   storeDriverRegistration,
   storeDriverRepositoryIsPlatformRepository,
+  storeDriverServesVertical,
 } from '../src/deploy.js';
 
 describe('store driver registration isolation basis (D-65)', () => {
@@ -38,6 +40,22 @@ describe('store driver registration isolation basis (D-65)', () => {
     ]) {
       expect(storeDriverRegistration.safeParse({ ...registration, ...pinned }).success, JSON.stringify(pinned)).toBe(false);
     }
+  });
+
+  it('a driver on a decision record names the verticals it serves; one in the repo may serve every vertical', () => {
+    const lifted = { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' } };
+    const parsed = storeDriverRegistration.safeParse(lifted);
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('names the verticals it serves');
+    expect(storeDriverRegistration.safeParse({ ...lifted, verticals: ['notes'] }).success).toBe(true);
+    const inRepo = storeDriverRegistration.parse({ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } });
+    expect(storeDriverServesVertical(inRepo, 'any')).toBe(true);
+  });
+
+  it('a driver whose erasure is pending is marked so, and the hosted graph driver is', () => {
+    const graph = STORE_DRIVERS.find((d) => d.driver === 'graph')!;
+    expect(storeDriverErasesSubjects(graph)).toBe(false);
+    expect(storeDriverErasesSubjects({ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } })).toBe(true);
   });
 
   it('normalizes only the platform repo identity and refuses mirrors and look-alikes', () => {

@@ -306,6 +306,18 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         });
       }
 
+      // The hosted graph driver's `substrat.erase` is not implemented yet: its `{ erased: 0 }` is not an erasure.
+      for (const drivers of [[{ ...graph, erasure: 'pending' as const }], 'default'] as const) {
+        it(`with ${drivers === 'default' ? 'the default' : 'an injected'} registry, a store whose driver cannot erase yet refuses (501): no store is asked, and the key is kept`, async () => {
+          const { s, subject, keyKept, api, asked } = await bound(stores, platformStores(), drivers);
+          const res = await shred(api, s, subject);
+          expect(res.status).toBe(501);
+          expect(await res.text()).toMatch(/runs driver 'graph', which cannot erase a subject yet; nothing was erased/);
+          expect(asked).toEqual([]);
+          expect(await keyKept()).toBe(true);
+        });
+      }
+
       // Erasure reaches every binding any version of the vertical declared (#2286), so a
       // binding that exists only on the bound version is still erased. A pointer naming
       // another script is a version unknown.
@@ -478,17 +490,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await scope.keyKept()).toBe(true);
       });
 
-      // 'default' is the registry a hosted control plane runs: `STORE_DRIVERS`, which holds graph.
-      for (const drivers of [[graph], 'default'] as const) {
-        it(`with ${drivers === 'default' ? 'the default' : 'an injected'} registry, a version that declares a store is asked`, async () => {
-          const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }], platformStores(), drivers);
-          const res = await shred(api, s, subject);
-          expect(res.status).toBe(200);
-          expect(asked).toEqual([`${s}/${subject}`]);
-          expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
-          expect(await keyKept()).toBe(false);
-        });
-      }
+      // Injected only: the hosted graph driver's erasure is pending, so the default registry refuses
+      // here (501, above) until it erases.
+      it('with an injected registry, a version that declares a store is asked', async () => {
+        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }], platformStores());
+        const res = await shred(api, s, subject);
+        expect(res.status).toBe(200);
+        expect(asked).toEqual([`${s}/${subject}`]);
+        expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
+        expect(await keyKept()).toBe(false);
+      });
     });
   });
 });

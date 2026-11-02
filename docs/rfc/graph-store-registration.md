@@ -28,8 +28,10 @@ which lifts D-63's isolation sentence for it and is admitted in
 data outside the object it serves. It accepts that the tenants of one vertical share the
 driver's script, kept apart by the driver's per-object design and by the review of each
 release, and it limits the first use to synthetic data until the driver's `substrat.erase`
-erases. That first use is an operating rule the approver and operators keep, not a check in
-code. Under a decision-record basis an approval may name any repository; the review judges
+erases. The registration holds both: it names the verticals the driver serves (none yet), so a
+push, serve or publish from any other is refused (403), and it marks the driver's erasure
+pending, so a subject erasure that would reach a graph store refuses (501) and keeps the key
+rather than record `{ erased: 0 }` as done. Under a decision-record basis an approval may name any repository; the review judges
 the list.
 
 ## What registration changes, and what it does not

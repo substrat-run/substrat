@@ -418,9 +418,29 @@ export const storeDriverRegistration = z
     // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
     driver: storeDriverId.pipe(z.literal('graph')),
     isolationBasis: storeDriverIsolationBasis,
+    // The verticals the driver may serve. Absent, every vertical; a driver on a decision-record
+    // lift must name them, so serving one more is a reviewed change here, not an operating rule.
+    verticals: z.array(verticalSlug).readonly().optional(),
+    // The driver's `substrat.erase` is not implemented yet: a subject erasure that would reach one
+    // of its stores refuses and keeps the key, rather than record `{ erased: 0 }` as done.
+    erasure: z.literal('pending').optional(),
   })
-  .strict();
+  .strict()
+  .refine((registration) => registration.isolationBasis.kind !== 'decisionRecord' || registration.verticals !== undefined, {
+    message: 'a driver registered on a decision record names the verticals it serves',
+    path: ['verticals'],
+  });
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
+
+/** Whether a registered driver may serve `vertical`: every vertical, unless its registration names them. */
+export function storeDriverServesVertical(registration: StoreDriverRegistration, vertical: string): boolean {
+  return registration.verticals === undefined || registration.verticals.includes(vertical);
+}
+
+/** Whether a registered driver's stores can erase a subject, so an erasure may count their answer. */
+export function storeDriverErasesSubjects(registration: StoreDriverRegistration): boolean {
+  return registration.erasure !== 'pending';
+}
 
 /**
  * Registered store drivers (D-63, D-65). A registered driver runs nothing until a person approves
@@ -428,7 +448,14 @@ export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
  * decision record that lifts D-63's isolation requirement for it (D-67).
  */
 export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [
-  { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' } },
+  {
+    driver: 'graph',
+    isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' },
+    // D-67's narrow first use: none yet. A vertical whose operator accepts the shared isolate is
+    // added here by name, in a reviewed change.
+    verticals: [],
+    erasure: 'pending',
+  },
 ];
 
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
@@ -1025,7 +1052,29 @@ export function assertScopeStoresRegistered(
   }
 }
 
-/** Both refusals a push and the control plane apply to a scope-store declaration. */
+/**
+ * A scope store whose driver does not serve this vertical is refused (D-67): a registration that
+ * names its verticals serves those only. A driver that is not registered is
+ * {@link assertScopeStoresRegistered}'s refusal, not this one's.
+ */
+export function assertScopeStoresServeVertical(
+  vertical: string,
+  stores: readonly ScopeStoreNeed[],
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+): void {
+  for (const store of stores) {
+    const registration = drivers.find((driver) => driver.driver === store.driver);
+    if (registration && !storeDriverServesVertical(registration, vertical)) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: scope store '${store.binding}' declares driver '${store.driver}', which does not serve vertical '${vertical}'. ` +
+          `The verticals it serves are named in its registration, in this repo.`,
+      );
+    }
+  }
+}
+
+/** Both refusals a push and the control plane apply to a scope-store declaration, and the vertical's when it is named. */
 export function assertDeclaredScopeStores(input: {
   readonly own?: readonly { binding: string }[];
   readonly tenantStores?: readonly { binding: string }[];
@@ -1034,9 +1083,12 @@ export function assertDeclaredScopeStores(input: {
   readonly bindingNames?: readonly string[];
   /** The registry the scope stores are judged against; {@link STORE_DRIVERS} when absent. */
   readonly drivers?: readonly StoreDriverRegistration[];
+  /** The vertical declaring them, judged by {@link assertScopeStoresServeVertical} when given. */
+  readonly vertical?: string;
 }): void {
   assertStoreBindingsDistinct(input);
   assertScopeStoresRegistered(input.scopeStores ?? [], input.drivers);
+  if (input.vertical !== undefined) assertScopeStoresServeVertical(input.vertical, input.scopeStores ?? [], input.drivers);
 }
 
 /**

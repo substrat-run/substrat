@@ -20,6 +20,8 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   STORE_DRIVERS,
+  storeDriverErasesSubjects,
+  storeDriverServesVertical,
   storeCatalogOperation,
   storeDriverBasisAdmits,
   channelName,
@@ -6818,6 +6820,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // version that declares none is not asked. One that cannot be resolved while a driver is
     // registered refuses (503): the key must not be destroyed while a store may hold the subject.
     const reach = await platformStoresOf(c, scope, running);
+    // A store whose driver cannot erase a subject yet would answer `{ erased: 0 }` while it still
+    // holds them. Refused before anything is erased, so the key is kept and a retry can converge.
+    const unerasable = reach?.stores.find((store) => {
+      const registration = (options.storeDrivers ?? STORE_DRIVERS).find((k) => k.driver === store.driver);
+      return registration !== undefined && !storeDriverErasesSubjects(registration);
+    });
+    if (unerasable) {
+      throw new ControlPlaneError(
+        501,
+        `scope ${scopeId}'s store '${unerasable.binding}' runs driver '${unerasable.driver}', which cannot erase a subject yet; nothing was erased`,
+      );
+    }
     /**
      * L19: a bind, promote, rollback or serving re-upload that lands while the stores are erased
      * would run a version whose stores this erasure did not reach. Both arms take one atomic claim
@@ -9167,6 +9181,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     owner: () => Promise<TenantId | null>,
   ): Promise<void> => {
     if (stores.length === 0) return;
+    // D-67: a driver whose registration names its verticals serves those only, refused before any
+    // hold is taken or anything is uploaded.
+    for (const store of stores) {
+      const registration = (options.storeDrivers ?? STORE_DRIVERS).find((k) => k.driver === store.driver);
+      if (registration && !storeDriverServesVertical(registration, slug)) {
+        throw new ControlPlaneError(403, `${operation} refused: scope store driver '${store.driver}' does not serve vertical '${slug}'`);
+      }
+    }
     const holder = ulid();
     const drivers = [...new Set(stores.map((store) => store.driver))].sort();
     const held: string[] = [];

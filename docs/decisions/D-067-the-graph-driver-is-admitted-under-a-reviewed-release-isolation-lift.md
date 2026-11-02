@@ -65,9 +65,11 @@ object it serves by construction". For the graph driver:
 - **A narrow first use.** Until isolation exists by construction, the graph driver serves only
   verticals whose operator accepts that their tenants share the driver's isolate, and holds
   synthetic data until the driver's subject erasure (`substrat.erase`) is implemented. Today that
-  operation answers `{erased: 0}`. This is an operating rule that the approver of each release
-  and the platform's operators keep, not a check in code: the registration admits any vertical
-  that declares the driver, and nothing inspects what a store holds.
+  operation answers `{erased: 0}`. The registration holds both halves: it names the verticals
+  the driver serves (`verticals`, none at registration), so serving one more is a reviewed change
+  in this repo, and it marks the driver's erasure pending (`erasure: 'pending'`), so a subject
+  erasure that would reach a graph store refuses and keeps the key instead of recording
+  `{erased: 0}` as done. What a store holds is still not inspected.
 
 ## Evidence for the review
 
