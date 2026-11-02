@@ -93,6 +93,11 @@ runs and answers; only its writes do not survive. Sessions are never deleted —
 existed is why some rows carry the stamp they do — and an expired session is a different fact
 from an ended one.
 
+Some acts are only valid when the person makes them: recording their own consent, an
+attestation, a signature. An operation declaring `impersonation: 'refused'` is refused
+(`forbidden`) under any session, read-only or write, before its input is parsed and before
+its handler runs.
+
 This is not the [dev issuer's](/reference/dev-issuer) `/dev/token`, which mints a *login*
 as a persona for local scripts and stamps nothing: that is a development shortcut in the
 issuer, this is a production trail in the kernel.

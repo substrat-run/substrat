@@ -425,6 +425,31 @@ export function impersonationContractSuite(
       });
     });
 
+    /**
+     * #2821: some acts are only valid when the person makes them. An operation declaring
+     * `impersonation: 'refused'` is refused under any session before its handler runs —
+     * a WRITE session here, the one that would otherwise commit the act as theirs.
+     */
+    describe("an operation declaring impersonation: 'refused'", () => {
+      it('is refused under a write session, and writes nothing', async () => {
+        const scope = await freshScope();
+        const stub = await host.getImpersonatedScope((await openSession(scope, { mode: 'write' })).id, t1, scope);
+        await expect(stub.invoke('perm/attest', { note: 'on their behalf' })).rejects.toMatchObject({
+          code: 'forbidden',
+          message: expect.stringMatching(/^perm\/attest must be performed by the person themselves/),
+        });
+        const asAnna = await host.getScope(anna, t1, scope);
+        await expect(asAnna.invoke<string[]>('perm/read-notes')).resolves.toEqual([]);
+      });
+
+      it('commits when the person invokes it', async () => {
+        const scope = await freshScope();
+        const asAnna = await host.getScope(anna, t1, scope);
+        await asAnna.invoke('perm/attest', { note: 'their own' });
+        await expect(asAnna.invoke<string[]>('perm/read-notes')).resolves.toEqual(['their own']);
+      });
+    });
+
     // -- the time box ---------------------------------------------------------
 
     describe('the session is checked on every invoke, not once at the door', () => {
