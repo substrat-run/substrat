@@ -95,6 +95,7 @@ import {
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
+  moduleObjectsContractSuite,
   manyMigrationsContractSuite,
   migrationFenceContractSuite,
   permMod,
@@ -1692,6 +1693,17 @@ subjectErasureContractSuite(
 // #2068 r5: commented migration DDL, then a DROP COLUMN of the last column — the case workerd's
 // SQLite refused while comments were executed. `commentedDdlMod` is in `contractTestModules`.
 migrationCommentsContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2820: a module's own index and triggers across a restore. `moduleObjectsMod` is in `contractTestModules`.
+moduleObjectsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

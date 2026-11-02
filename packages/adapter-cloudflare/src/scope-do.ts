@@ -8736,7 +8736,7 @@ export function defineScopeDO(
      * table having changed.
      */
     private stageObjectsColumn(): void {
-      if (!doBuiltColumnsOf(this.sql, '_substrat_stage_tables').includes('objects')) {
+      if (doBuiltColumnsOf(this.sql, '_substrat_stage_tables')?.includes('objects') === false) {
         // The stage is this store's own, so the column moves no write revision a carry is fenced on.
         this.revision.untracked(() => this.sql.exec(`ALTER TABLE _substrat_stage_tables ADD COLUMN objects TEXT`));
       }
