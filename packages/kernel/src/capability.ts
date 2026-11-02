@@ -1048,7 +1048,7 @@ function markRevoked(
 /**
  * Revoke every binding link (#2818) still exchangeable on `entity` — unrevoked, unexpired, under
  * its use limit, its `bind` naming that record — with `by` as the revoker, and name them, sorted.
- * An unbind runs it in its own transaction: a link must not outlive the binding it was made for.
+ * An unbind runs it inside the unbind's transaction: a link must not outlive the binding it was made for.
  * A used-up or expired link is left as it reads.
  */
 export function revokeBindLinksIn(sql: ScopedSql, entity: EntityRef, by: PrincipalId, now: Instant): CapabilityId[] {
