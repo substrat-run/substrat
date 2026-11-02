@@ -118,17 +118,17 @@
     "test:role-seat-paths": "node --test tools/role-seat-paths.test.mjs"
   },
   "devDependencies": {
-    "@babel/parser": "^7.29.11",
+    "@babel/parser": "^7.29.12",
     "@babel/types": "^7.29.7",
     "@changesets/cli": "^2.31.0",
     "@substrat-run/contracts": "workspace:*",
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
-    "oxlint": "1.89.0",
+    "oxlint": "1.90.0",
     "oxlint-tsgolint": "7.0.2005",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "wrangler": "^4.152.0"
+    "wrangler": "^4.156.0"
   }
 }
