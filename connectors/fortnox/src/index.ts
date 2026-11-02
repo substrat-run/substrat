@@ -240,6 +240,8 @@ export interface FortnoxInvoiceFileEntry {
   entity: { entityType: string; entityId: string };
   /** The `FileId`s already landed, so a retry after a failure does not land them twice. */
   done?: string[];
+  /** Passes that failed to read it. At {@link INVOICE_FILE_ATTEMPTS} it is skipped by name. */
+  attempts?: number;
 }
 
 /**
@@ -428,6 +430,8 @@ const INVOICE_HOLD_CALLS = 2;
 const INVOICE_DECISION_CALLS = 5;
 /** Tries at a write that keeps failing for no stated reason, before the vertical is told. */
 const INVOICE_WRITE_ATTEMPTS = 8;
+/** Passes a queued file may fail before it is skipped, so a file that never reads cannot hold the budget. */
+const INVOICE_FILE_ATTEMPTS = 8;
 const invoiceHoldKey = (givenNumber: string): string => `fortnox:invoice-hold:${givenNumber}`;
 const invoiceWriteKey = (key: string): string => `fortnox:invoice-write:${key}`;
 
@@ -570,6 +574,12 @@ export async function bindFortnoxScope(
     ...(input.firstPass !== undefined ? { firstPass: input.firstPass } : {}),
     ...(input.writeback !== undefined ? { writeback: input.writeback } : {}),
     ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
+    // A re-bind that changes what is written back keeps the invoice cursor and its queued files, so
+    // turning writeback on does not re-land the company's history. A different operation or first
+    // pass reads from the start again, since what was landed was landed for the old one.
+    ...(current?.invoiceSync && current.operation === input.operation && current.firstPass === input.firstPass
+      ? { invoiceSync: current.invoiceSync }
+      : {}),
     boundAt: new Date(input.now?.() ?? Date.now()).toISOString(),
   };
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -817,6 +827,8 @@ export async function syncFortnoxSupplierInvoices(
   const budget = options.budget ?? { details: INVOICE_DETAILS_PER_PASS };
   const scopeRef = scopeIdSchema.parse(binding.scopeId);
 
+  let companyRead: ReturnType<FortnoxApi['companyInformation']> | undefined;
+  const company = () => (companyRead ??= api.companyInformation());
   const files = new InvoiceFiles(host, connectionId, scopeRef, api, budget, expired, cursor?.files);
   const saveFiles = async (base: FortnoxBinding): Promise<void> => {
     if (!base.invoiceSync || !files.moved) return;
@@ -832,10 +844,10 @@ export async function syncFortnoxSupplierInvoices(
 
   // A pass's parts are independent: a landing that throws says nothing about a decision waiting to be
   // written, and an idle pass is when most decisions are. The first failure is thrown at the end.
-  const landing = await landChangedInvoices(host, connectionId, binding, { api, files, budget, expired, nowMs, saveFiles })
+  const landing = await landChangedInvoices(host, connectionId, binding, { api, company, files, budget, expired, nowMs, saveFiles })
     .catch((err: unknown): InvoiceLanding => ({ landed: 0, more: true, failure: asError(err) }));
   const writes = binding.writeback
-    ? await writeBackInvoices(host, connectionId, binding, binding.writeback, { api, budget, expired, nowMs })
+    ? await writeBackInvoices(host, connectionId, binding, binding.writeback, { api, company, budget, expired, nowMs })
         .catch((err: unknown): InvoiceWrites => ({ held: 0, written: 0, more: true, failure: asError(err) }))
     : { held: 0, written: 0, more: false, failure: null };
   const failure = landing.failure ?? files.failed ?? writes.failure;
@@ -866,6 +878,7 @@ async function landChangedInvoices(
   binding: FortnoxBinding,
   pass: {
     api: FortnoxApi;
+    company: () => ReturnType<FortnoxApi['companyInformation']>;
     files: InvoiceFiles;
     budget: { details: number };
     expired: () => boolean;
@@ -873,7 +886,7 @@ async function landChangedInvoices(
     saveFiles: (base: FortnoxBinding) => Promise<void>;
   },
 ): Promise<InvoiceLanding> {
-  const { api, files, budget, expired, nowMs, saveFiles } = pass;
+  const { api, company: companyOf, files, budget, expired, nowMs, saveFiles } = pass;
   if (budget.details <= 0 || expired()) return { landed: 0, more: true, failure: null };
 
   const cursor = binding.invoiceSync;
@@ -914,7 +927,7 @@ async function landChangedInvoices(
   if (handled === 0) return { landed: 0, more: true, failure };
 
   if (invoices.length > 0) {
-    const company = await api.companyInformation();
+    const company = await companyOf();
     const payload = fortnoxSupplierInvoicePage.parse({
       connectionId,
       company: { name: company.CompanyName, organizationNumber: company.OrganizationNumber },
@@ -956,7 +969,13 @@ interface InvoiceHold {
   ours: boolean;
   at: string;
   cleared?: string;
+  /** The block was asked for and Fortnox has not answered yet, so it may or may not be set. */
+  unconfirmed?: true;
 }
+
+/** A refusal in Fortnox's own words: the request was read and not carried out. */
+const statedRefusal = (err: unknown): boolean =>
+  err instanceof FortnoxApiError && err.status >= 400 && err.status < 500 && err.status !== 429;
 
 /**
  * Write what the vertical says is waiting: hold what is undecided, then settle the decisions.
@@ -973,11 +992,19 @@ async function writeBackInvoices(
   connectionId: ConnectionId,
   binding: FortnoxBinding,
   operations: FortnoxInvoiceWritebackOperations,
-  pass: { api: FortnoxApi; budget: { details: number }; expired: () => boolean; nowMs: number },
+  pass: {
+    api: FortnoxApi;
+    company: () => ReturnType<FortnoxApi['companyInformation']>;
+    budget: { details: number };
+    expired: () => boolean;
+    nowMs: number;
+  },
 ): Promise<InvoiceWrites> {
   const { api, budget, expired, nowMs } = pass;
+  // A pass with no budget left for one write asks nothing of Fortnox, not even who the company is.
+  if (budget.details < INVOICE_HOLD_CALLS || expired()) return { held: 0, written: 0, more: true, failure: null };
   const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
-  const company = await api.companyInformation();
+  const company = await pass.company();
   const waiting = fortnoxInvoiceWriteback.parse(
     await scope.invoke(operations.read, {
       connectionId,
@@ -991,24 +1018,35 @@ async function writeBackInvoices(
     const key = invoiceHoldKey(givenNumber);
     // A released hold does not count: an invoice can come back to the queue, and then it is held again.
     const known = (await host.admin.getConnectorState(connectionId, key)) as InvoiceHold | null | undefined;
-    if (known && !known.cleared) continue;
+    const live = known && !known.cleared ? known : null;
+    // Only a block this connector saw set is left alone. Someone else's is looked at again, because
+    // lifting it would leave the undecided invoice payable, and so is one Fortnox never confirmed.
+    if (live?.ours && !live.unconfirmed) continue;
     if (budget.details < INVOICE_HOLD_CALLS || expired()) {
       out.more = true;
       break;
     }
     budget.details -= INVOICE_HOLD_CALLS;
+    let asked = false;
     try {
       if ((await api.supplierInvoice(givenNumber)).DisablePaymentFile) {
-        await host.admin.putConnectorState(connectionId, key, { ours: false, at } satisfies InvoiceHold);
+        // Blocked already: ours when our unconfirmed write went through, someone else's otherwise.
+        if (!live || live.unconfirmed) {
+          await host.admin.putConnectorState(connectionId, key, { ours: !!live?.ours, at: live?.at ?? at } satisfies InvoiceHold);
+        }
         continue;
       }
       // Remembered before the write: a pass that dies between them must not leave a block nobody
       // knows is ours, which no approval would ever clear and which keeps a good invoice unpaid.
-      await host.admin.putConnectorState(connectionId, key, { ours: true, at } satisfies InvoiceHold);
+      await host.admin.putConnectorState(connectionId, key, { ours: true, at, unconfirmed: true } satisfies InvoiceHold);
+      asked = true;
       await api.setSupplierInvoicePaymentBlock(givenNumber, true);
+      await host.admin.putConnectorState(connectionId, key, { ours: true, at } satisfies InvoiceHold);
       out.held += 1;
     } catch (err) {
-      await host.admin.putConnectorState(connectionId, key, null);
+      // Only a stated refusal says the block was not set. Any other failure may have set it, so the
+      // note stays unconfirmed and the next pass reads the invoice to find out.
+      if (asked && statedRefusal(err)) await host.admin.putConnectorState(connectionId, key, known ?? null);
       out.failure ??= new Error(`hold of supplier invoice ${givenNumber}: ${asError(err).message}`);
     }
   }
@@ -1028,14 +1066,18 @@ async function writeBackInvoices(
     } catch (err) {
       const error = asError(err);
       const attempts = (((await host.admin.getConnectorState(connectionId, tries)) as { attempts?: number } | null | undefined)?.attempts ?? 0) + 1;
-      const stated = err instanceof FortnoxApiError && err.status >= 400 && err.status < 500 && err.status !== 429;
       out.failure ??= new Error(`write-back of supplier invoice ${decision.givenNumber}: ${error.message}`);
-      if (stated || attempts >= INVOICE_WRITE_ATTEMPTS) {
-        await scope.invoke(operations.record, fortnoxInvoiceWritebackReceipt.parse({ key: decision.key, status: 'failed', error: error.message }));
-        await host.admin.putConnectorState(connectionId, tries, null);
-      } else {
-        await host.admin.putConnectorState(connectionId, tries, { attempts, lastError: error.message });
+      if (statedRefusal(err) || attempts >= INVOICE_WRITE_ATTEMPTS) {
+        try {
+          await scope.invoke(operations.record, fortnoxInvoiceWritebackReceipt.parse({ key: decision.key, status: 'failed', error: error.message }));
+          await host.admin.putConnectorState(connectionId, tries, null);
+          continue;
+        } catch {
+          // The receipt did not land, so the vertical still lists the decision: the next pass tries
+          // again, and this pass goes on to the rest. The first failure is already the one reported.
+        }
       }
+      await host.admin.putConnectorState(connectionId, tries, { attempts, lastError: error.message });
     }
   }
   return out;
@@ -1141,8 +1183,14 @@ class InvoiceFiles {
           );
           break;
         }
-        failed.push(entry);
-        this.failure ??= new Error(`file of supplier invoice ${entry.givenNumber}: ${message}`);
+        entry.attempts = (entry.attempts ?? 0) + 1;
+        // The last try is reported as a skip, so the pass that drops the file says which and why.
+        if (entry.attempts >= INVOICE_FILE_ATTEMPTS) {
+          this.skipped.push({ givenNumber: entry.givenNumber, reason: `its file failed ${entry.attempts} passes: ${message}` });
+        } else {
+          failed.push(entry);
+          this.failure ??= new Error(`file of supplier invoice ${entry.givenNumber}: ${message}`);
+        }
       }
     }
     this.queue.push(...failed);
@@ -1163,14 +1211,14 @@ class InvoiceFiles {
     const name = file.Name || `supplier-invoice-${entry.givenNumber}`;
     let read: Awaited<ReturnType<FortnoxApi['archiveFile']>>;
     try {
-      read = await this.api.archiveFile(file.FileId);
+      read = await this.api.archiveFile(file.FileId, INVOICE_FILE_MAX_BYTES);
     } catch (err) {
       if (!(err instanceof FortnoxApiError && err.status === 404)) throw err;
       this.skipped.push({ givenNumber: entry.givenNumber, reason: `${name} is gone from the archive` });
       return;
     }
-    if (read.bytes.byteLength > INVOICE_FILE_MAX_BYTES) {
-      this.skipped.push({ givenNumber: entry.givenNumber, reason: `${name} is ${read.bytes.byteLength} bytes, over ${INVOICE_FILE_MAX_BYTES}` });
+    if (!read.bytes) {
+      this.skipped.push({ givenNumber: entry.givenNumber, reason: `${name} is ${read.size} bytes, over ${INVOICE_FILE_MAX_BYTES}` });
       return;
     }
     this.attachments ??= await this.host.getConnectorAttachments(this.connectionId, this.scopeRef);
@@ -1273,7 +1321,7 @@ export async function sweepFortnoxLedger(
     try {
       if (binding.kind === 'supplier-invoice') {
         const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
-        if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0) result.invoices.push(r);
+        if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped) result.invoices.push(r);
         else result.unchanged += 1;
         continue;
       }

@@ -410,6 +410,20 @@ describe('fortnox connector — inbound sync', () => {
       expect((await binding()).invoiceSync).toBeUndefined();
     });
 
+    it('keeps the cursor when a re-bind only turns writeback on', async () => {
+      await bindInvoices();
+      invoice('1', '2026-06-10 09:00');
+      await sweepFortnoxLedger(host, connId, at(NOW));
+      const cursor = (await binding()).invoiceSync;
+
+      await bindFortnoxScope(host, {
+        connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: INVOICE_OPERATION, permission: LEDGER_RECORD,
+        kind: 'supplier-invoice', writeback: { read: WRITEBACK_READ, record: WRITEBACK_RECORD },
+      });
+
+      expect((await binding()).invoiceSync).toEqual(cursor);
+    });
+
     it('refuses a first pass on a ledger binding', async () => {
       await expect(bindFortnoxScope(host, {
         connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD, firstPass: 'all',
@@ -463,7 +477,7 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('file of supplier invoice 12:') }]);
       expect(invoicesLanded).toHaveLength(1);
-      expect((await binding()).invoiceSync?.files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }]);
+      expect((await binding()).invoiceSync?.files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' }, attempts: 1 }]);
 
       const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
@@ -557,6 +571,22 @@ describe('fortnox connector — inbound sync', () => {
       expect(await run(NOW + 15 * 60_000, 4)).toEqual({ scopeId: s, landed: 0, files: 2, held: 0, written: 0, pending: true });
       expect(fortnox.calls.filter((c) => c.startsWith('/3/supplierinvoices?'))).toEqual([]);
       expect((await binding()).invoiceSync?.files?.map((f) => f.givenNumber)).toEqual(['3']);
+    });
+
+    it('steps over a file that fails eight passes, so it cannot hold the budget', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('12', 'faktura.pdf');
+      const fetch: typeof fortnox.fetch = (input, init) => (String(input).includes('/archive/')
+        ? Promise.resolve({ ok: false, status: 500, text: async () => 'broken', headers: { get: () => null } } as unknown as Awaited<ReturnType<typeof fortnox.fetch>>)
+        : fortnox.fetch(input, init));
+      const pass = (n: number) => sweepFortnoxLedger(host, connId, { ...at(NOW + n * 15 * 60_000), fetch });
+
+      for (let n = 0; n < 7; n += 1) await pass(n);
+      expect((await binding()).invoiceSync?.files).toHaveLength(1);
+
+      const last = await pass(7);
+      expect(last.invoices).toEqual([expect.objectContaining({ skipped: [{ givenNumber: '12', reason: expect.stringContaining('failed 8 passes') }] })]);
+      expect((await binding()).invoiceSync?.files).toBeUndefined();
     });
 
     it('steps over a file gone from the archive or too large to hold, saying which', async () => {
@@ -889,6 +919,42 @@ describe('fortnox connector — inbound sync', () => {
 
         expect(await run(NOW + 15 * 60_000)).toMatchObject({ written: 1, pending: true });
         expect(receipts.map((r) => r.key)).toEqual(['decision-1']);
+      });
+
+      it('claims a block whose write went unanswered once it finds it set, and later releases it', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        // Fortnox takes the write, then the answer is lost.
+        const lost: typeof fortnox.fetch = async (input, init) => {
+          const res = await fortnox.fetch(input, init);
+          return init?.method === 'PUT'
+            ? ({ ok: false, status: 503, text: async () => 'unavailable', headers: { get: () => null } } as unknown as typeof res)
+            : res;
+        };
+
+        const first = await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch: lost });
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') }]);
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+        expect(fortnox.writes).toEqual([HOLD]);
+
+        waiting = { hold: [], decisions: [decided('12')] };
+        await sweepFortnoxLedger(host, connId, at(NOW + 30 * 60_000));
+        expect(fortnox.writes).toEqual([HOLD, BOOK, RELEASE, COMMENT]);
+      });
+
+      it('holds an invoice once someone lifts the block it found', async () => {
+        await bindWriteback();
+        unbooked('12', { DisablePaymentFile: true });
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        expect(fortnox.writes).toEqual([]);
+
+        unbooked('12', { DisablePaymentFile: false });
+        const lifted = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(fortnox.writes).toEqual([HOLD]);
+        expect(lifted.invoices).toEqual([expect.objectContaining({ held: 1 })]);
       });
 
       it('asks to hold again after a hold that failed', async () => {

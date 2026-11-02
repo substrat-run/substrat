@@ -69,6 +69,9 @@ describe('connector registry', () => {
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
     expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    // The relay passes only what the binding lacks, so what it holds and the call leaves out is kept.
+    const configured = { ...invoice, firstPass: 'all', writeback };
+    expect(options({ kind: 'supplier-invoice' }, configured)).toEqual({ kind: 'supplier-invoice', firstPass: 'all', writeback });
     const legacy = { ...invoice, kind: undefined };
     expect(options(undefined, legacy)).toEqual({ kind: undefined });
     expect(() => options({ kind: 'future-kind' })).toThrow();

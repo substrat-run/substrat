@@ -177,7 +177,9 @@ the attachment on the entity is the record.
 - **Upload is at least once.** A pass that stops between the upload and writing the queue uploads
   the file again on the next pass. A landing that shows an invoice's attachments should expect it.
 - **A file that cannot be read** stays queued and fails the scope's row by the invoice's number,
-  and the pass moves on to the next one. The invoices keep landing.
+  and the pass moves on to the next one. The invoices keep landing. After eight failed passes it is
+  stepped over, with the last error in the pass's result, so files that never read cannot use up
+  every pass's budget.
 - **A refused read** (`401`/`403`) stops the files for that pass, because it is the company's
   consent and every other file would answer the same. The scope's row says the consent must cover
   `connectfile` and `archive`. A company that consented before those scopes were asked for has to
@@ -245,9 +247,11 @@ fifteen minutes and nothing else. The operation answers for the company it is gi
 - **A hold** sets `DisablePaymentFile`, which keeps the invoice out of payment files and out of
   Fortnox's payment view. **Only a hold this binding set is ever cleared.** The flag is also used on
   purpose, for a supplier paid by direct debit for example, and a new invoice inherits it from the
-  supplier, so a block the sweep finds stays. What it set is remembered per connection, written
-  before the `PUT`: a pass that dies between them leaves a note and no block, never a block nobody
-  knows about.
+  supplier, so a block the sweep finds stays. A found block is read again each pass while the
+  invoice is listed in `hold`, and if someone lifts it the sweep sets its own. What it set is
+  remembered per connection, written before the `PUT` and marked confirmed after it: a pass that
+  dies between them, or a `PUT` that gets no clear answer, leaves an unconfirmed note that the next
+  pass checks against the invoice, never a block nobody knows about.
 - **A decision's order is the order that fails safe:** book, clear the hold, add the comment. An
   invoice that could not be booked stays held, and the comment log is append-only, so it goes last.
   Each step looks first, so a pass cut off part-way repeats nothing: a booked invoice is not booked

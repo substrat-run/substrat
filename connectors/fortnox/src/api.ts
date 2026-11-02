@@ -575,15 +575,30 @@ export class FortnoxApi {
     return z.array(fortnoxSupplierInvoiceFile).parse(raw.SupplierInvoiceFileConnections ?? []);
   }
 
-  /** One file's bytes out of the company's archive. Needs the `archive` scope. */
-  async archiveFile(fileId: string): Promise<{ bytes: Uint8Array; contentType: string | null }> {
+  /**
+   * One file's bytes out of the company's archive. Needs the `archive` scope.
+   *
+   * A file over `maxBytes` comes back as its size and no bytes. A declared `Content-Length` over it
+   * is refused before the body is read, so a large scan never fills the isolate's memory.
+   */
+  async archiveFile(
+    fileId: string,
+    maxBytes = Number.POSITIVE_INFINITY,
+  ): Promise<{ bytes: Uint8Array | null; size: number; contentType: string | null }> {
     const path = `/archive/${encodeURIComponent(fileId)}`;
     const res = await this.request(path);
     if (!res.ok) {
       const body = await res.text();
       throw new FortnoxApiError(`Fortnox GET ${path} failed: ${errorMessage(body, res.status)}`, res.status, body);
     }
-    return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: res.headers?.get('Content-Type') ?? null };
+    const contentType = res.headers?.get('Content-Type') ?? null;
+    const declared = Number(res.headers?.get('Content-Length') ?? Number.NaN);
+    if (declared > maxBytes) {
+      await res.body?.getReader().cancel();
+      return { bytes: null, size: declared, contentType };
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return bytes.byteLength > maxBytes ? { bytes: null, size: bytes.byteLength, contentType } : { bytes, size: bytes.byteLength, contentType };
   }
 
   /**
