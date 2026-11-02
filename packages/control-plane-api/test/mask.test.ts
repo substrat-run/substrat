@@ -246,6 +246,13 @@ describe('a masked dump', () => {
     expect((await masked('salt-a', [row]))[9]).toBe('not json at all');
   });
 
+  it("carries no module index or trigger, which masked values would break (#2820)", async () => {
+    const [table] = dumpOf([ROW]);
+    const objects = [{ type: 'index', name: 'one_email', ddl: 'CREATE UNIQUE INDEX one_email ON customers (email)' }];
+    const out = await maskDump([{ ...table!, objects }], await createPseudonymizer('salt-a'));
+    expect(out[0]).not.toHaveProperty('objects');
+  });
+
   it('never mutates the input', async () => {
     const tables = dumpOf([[...ROW]]);
     await maskDump(tables, await createPseudonymizer('salt-a'));

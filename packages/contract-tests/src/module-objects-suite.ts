@@ -64,6 +64,23 @@ export function moduleObjectsContractSuite(adapterName: string, makeFixture: () 
       expect(moduleObjects).toEqual({ carried: expect.any(Number), skipped: ['mo_count'] });
     });
 
+    it("refuses a dump whose own rows break its unique index, and the scope keeps its rows and its index", async () => {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'module-objects' });
+      await host.admin.activateScope(staff, t, s);
+      const stub = await host.getScope(anyone, t, s);
+      await stub.invoke('mo/insert', { id: 'a', who: 'x', lead: 1 });
+      const dump = await host.admin.exportScope(staff, t, s);
+      const broken = {
+        ...dump,
+        tables: dump.tables.map((table) => (table.name === 'mo_ledger' ? { ...table, rows: [...table.rows, ['b', 'x', 1]] } : table)),
+      };
+      await expect(host.restoreScope(staff, t, s, broken)).rejects.toThrow(/could not be put back over the dump's own rows/);
+      // The load rolled back whole: `b` never landed, and the index still refuses a second lead.
+      await stub.invoke('mo/insert', { id: 'b', who: 'y', lead: 0 });
+      await expect(stub.invoke('mo/insert', { id: 'c', who: 'x', lead: 1 })).rejects.toThrow(/UNIQUE constraint failed/);
+    });
+
     it('restores a dump written before objects were carried as before, and says they were not carried', async () => {
       const { stub, moduleObjects } = await restored((dump) => ({
         ...dump,

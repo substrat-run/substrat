@@ -273,6 +273,8 @@ import {
   SCOPE_GATE_REASONS,
   substratError,
   dumpObjectsAudit,
+  dumpObjectsPlan,
+  namesSpineTable,
   errorCodeOf,
   redrainEventsInput,
   coverage,
@@ -5614,7 +5616,8 @@ export class CloudflareScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
-        moduleObjects: dumpObjectsAudit(dump.tables),
+        // #2820: judged as the load judged them; a spine table carries none.
+        moduleObjects: dumpObjectsAudit(dumpObjectsPlan(dump.tables.filter((t) => !namesSpineTable(t.name)))),
         ...replay,
         ...(reprojected ? { reprojected } : {}),
       },

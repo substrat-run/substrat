@@ -101,6 +101,27 @@ describe('scope restore backup provenance (#1880)', () => {
     expect(posts[0]!.body).toMatchObject({ tables: [{ name: 'notes', objects }] });
   });
 
+  it('a masked pull writes its file with no module objects, so masked values that collide still land (#2820)', async () => {
+    const masked = {
+      name: 'notes',
+      ddl: 'CREATE TABLE notes (id TEXT)',
+      columns: ['id'],
+      rows: [['[masked]'], ['[masked]']],
+      objects: [{ type: 'index', name: 'notes_one', ddl: 'CREATE UNIQUE INDEX notes_one ON notes (id)' }],
+    };
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, masked: true, tables: [masked] }), {
+        status: 200,
+      })) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outDir = join(dir, 'masked-objects');
+    await pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: sourceTenant, scopeId: sourceScope, full: false, outDir });
+    const posts = capturePost();
+    await restoreScope(opts(join(outDir, `${sourceTenant}__${sourceScope}.sqlite`)));
+    // Not `[]`: a file holding no module objects reads as one that did not carry them.
+    expect((posts[0]!.body.tables as { objects?: unknown }[])[0]).not.toHaveProperty('objects');
+  });
+
   it('reads source IDs from a standard SQLite backup filename', async () => {
     const file = join(dir, `${sourceTenant}__${sourceScope}.sqlite`);
     await writeSqlite(file);

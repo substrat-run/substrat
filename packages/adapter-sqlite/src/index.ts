@@ -239,6 +239,7 @@ import {
   dumpObjectsOf,
   type DumpObjectRow,
   replayDumpObjects,
+  type DumpObjectsPlan,
   delegatedReadRecord,
   ownerTransferAudit,
   memberChangeAudit,
@@ -4648,9 +4649,11 @@ export class SqliteScopeHost implements ScopeHost {
     /** Run first inside the load's own transaction, before any drop (#2555): the role judgement,
      *  against the roles stored at the moment of the load. It throws to refuse with nothing moved. */
     beforeLoad?: () => void,
-  ): Promise<void> {
+  ): Promise<DumpObjectsPlan> {
     const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
+    // #2820: what the load did with the dump's own indexes and triggers, for the restore's admin row.
+    let judged: DumpObjectsPlan | undefined;
     const load = db.transaction((dumped: ScopeDumpTable[]) => {
       beforeLoad?.();
       // Deferred foreign keys cover the WHOLE drop-then-replay, drops included.
@@ -4700,6 +4703,7 @@ export class SqliteScopeHost implements ScopeHost {
       // TABLE. Judged as a whole before any of it executes — a check interleaved with
       // the replay has already let the earlier tables happen.
       const objects = assertReplayableDump(replayable);
+      judged = objects;
       // A vertical's tables take the dump's own DDL. The spine never does (#1883): its tables
       // come from KERNEL_DDL, which also fills in any the dump omits (#321) — e.g.
       // `_substrat_migrations`, which the frontier refresh below reads — and the dump
@@ -4790,6 +4794,7 @@ export class SqliteScopeHost implements ScopeHost {
       this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
       this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
     });
+    return judged!;
   }
 
   async restoreScope(
@@ -4814,7 +4819,7 @@ export class SqliteScopeHost implements ScopeHost {
     const rows: [WrittenAdminAction, Record<string, unknown>][] = [];
     // #1869: the re-point's source is the separate hint when given; the dump is otherwise as sent.
     const source = { tables: dump.tables, scopeId: opts?.sourceScopeId ?? dump.scopeId };
-    await this.loadDump(
+    const objects = await this.loadDump(
       tenantId,
       scopeId,
       source,
@@ -4838,7 +4843,7 @@ export class SqliteScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
-        moduleObjects: dumpObjectsAudit(dump.tables),
+        moduleObjects: dumpObjectsAudit(objects),
         ...replay,
       },
     );

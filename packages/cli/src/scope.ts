@@ -85,6 +85,9 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   // dump leaves the previous pull's file where it was instead of deleting it first.
   const objects = assertReplayableDump(dump.tables);
   rmSync(path, { force: true });
+  if (objects.skipped.length > 0) {
+    console.log(`  left out of the .sqlite: ${objects.skipped.join(', ')} (an index or trigger a restore does not put back)`);
+  }
   const db = new DatabaseSync(path);
   try {
     // Insert parents before children — this writer defers no FK check, so an
@@ -118,10 +121,12 @@ export async function pullScope(opts: {
   full: boolean;
   outDir: string;
 }): Promise<void> {
-  const dump = await viaPlane(
+  const pulled = await viaPlane(
     () => planeFor(opts.controlPlaneUrl, opts.header).exportScope(opts.tenantId, opts.scopeId, opts.full),
     (e) => new Error(problemDetail(refusalBody(e)) ?? `pull refused: ${e.status} ${e.statusText}`),
   );
+  // #2820: a masked pull carries no module indexes or triggers, which masked values would break.
+  const dump = pulled.masked ? { ...pulled, tables: pulled.tables.map(({ objects: _, ...t }) => t) } : pulled;
   // The WHOLE rule, checked before EITHER writer, so the node-<22.13 JSON fallback
   // cannot leave a dump on disk that a later `scope restore` would then have to
   // refuse. Names alone would not do it: `writeSqlite` returns before its own check
@@ -167,6 +172,8 @@ export async function pullScope(opts: {
     console.log('    column the heuristic does not recognize is untouched.');
     console.log('    Still personal data — a rare combination can re-identify. Pass --full');
     console.log('    for a break-glass pull of the real values.');
+    console.log('  masked pulls carry no module indexes or triggers: a restore from this file');
+    console.log('    puts none back.');
   } else {
     console.log('  ⚠ FULL-FIDELITY pull: this file contains real customer data.');
     console.log('    Treat it as production data — do not share it, delete it when done.');
@@ -228,6 +235,9 @@ async function readDump(file: string): Promise<Backup> {
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
       tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])), ...objects(t.name) });
     }
+    // A file holding none (a pull from before they were written, or a masked one) carries no
+    // `objects` at all, so the restore records them as not carried rather than as none.
+    if (!tables.some((t) => t.objects?.length)) for (const t of tables) delete t.objects;
     const namedOrigin = /^([0-9A-HJKMNP-TV-Z]{26})__([0-9A-HJKMNP-TV-Z]{26})\.sqlite$/i.exec(basename(file));
     const origin = namedOrigin
       ? { tenantId: tenantId.parse(namedOrigin[1]!.toUpperCase()), scopeId: scopeId.parse(namedOrigin[2]!.toUpperCase()) }

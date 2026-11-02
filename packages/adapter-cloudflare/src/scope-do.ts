@@ -7680,17 +7680,23 @@ export function defineScopeDO(
       });
     }
 
-    /** What a capture's pages read the schema as (#2450): the dumped tables and their explicit indexes. */
+    /**
+     * What a capture's pages read the schema as (#2450): the dumped tables, their explicit indexes and
+     * (#2820) their triggers, which the pages carry as the tables' own objects. The capture's own
+     * triggers are not part of it: they come and go with captures.
+     */
     private captureSchema(defs: { name: string; sql: string }[]): string {
       const names = new Set(defs.map((d) => d.name));
-      const indexes = (
-        this.sql.exec(`SELECT tbl_name, name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name`).toArray() as {
-          tbl_name: string;
-          name: string;
-          sql: string;
-        }[]
-      ).filter((i) => names.has(i.tbl_name));
-      return JSON.stringify({ tables: defs, indexes: indexes.map((i) => [i.name, i.sql]) });
+      const objects = (
+        this.sql
+          .exec(
+            `SELECT type, tbl_name, name, sql FROM sqlite_master
+              WHERE (type = 'index' OR (type = 'trigger' AND name NOT GLOB '${CAPTURE_GLOB}')) AND sql IS NOT NULL ORDER BY name`,
+          )
+          .toArray() as { type: string; tbl_name: string; name: string; sql: string }[]
+      ).filter((o) => names.has(o.tbl_name));
+      const of = (type: string) => objects.filter((o) => o.type === type).map((o) => [o.name, o.sql]);
+      return JSON.stringify({ tables: defs, indexes: of('index'), triggers: of('trigger') });
     }
 
     /**
