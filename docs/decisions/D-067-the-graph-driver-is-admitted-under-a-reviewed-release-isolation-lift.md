@@ -6,7 +6,7 @@ title: "The graph driver is admitted under a reviewed-release isolation lift"
 status: proposed
 aliases: []
 amends: ["D-63"]
-tracking: ["#2210", "#2394"]
+tracking: ["#2210", "#2394", "#2830"]
 ---
 
 # D-67 — The graph driver is admitted under a reviewed-release isolation lift
@@ -101,6 +101,16 @@ A defect or a malicious change in an approved release could read or change anoth
 object of the same vertical, or exhaust the isolate and restart that vertical's objects. Review
 lowers the chance of the first; it does not rule it out. Tenants of other verticals are not
 reachable, because each vertical has its own script.
+
+## No precedent
+
+This record admits the graph driver and no other. It sets no precedent: the next driver written
+outside this repo starts from D-63's rule, needs its own decision record, and cannot rest on this
+one. The evidence and controls above were weighed for this driver alone.
+
+The lift does not replace isolation by construction. That stays open work, owned by
+[#2830](https://github.com/substrat-run/substrat/issues/2830): verification of the envelope outside
+the driver's script, or a script per tenant.
 
 ## Revisit
 
