@@ -2,4 +2,4 @@
 "@substrat-run/control-plane-api": patch
 ---
 
-The Python store entry answers 413 to a request whose declared body is over 4 MiB, before reading it, instead of running out of memory.
+The Python store entry refuses a request with no Content-Length (411) or a declared body over 4 MiB (413) before reading it, instead of running out of memory.

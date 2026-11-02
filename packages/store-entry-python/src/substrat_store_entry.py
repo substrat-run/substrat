@@ -14,7 +14,7 @@ SubstratStoreObject by idFromName of the signed name. The object checks the call
 refuses unless its own id is the id of that name (check 5), before the driver is constructed: an
 object is bound to one name by construction, with nothing stored that the driver could rewrite.
 
-A body whose Content-Length is over MAX_BODY_BYTES is refused with 413 before it is read: the
+A body with no usable Content-Length is refused with 411, and one over MAX_BODY_BYTES with 413, before it is read: the
 stateless entry holds the body in memory more than once, and a larger one ran it out of memory
 (#2811) before the object was reached. The body is read once, verified as that string, and that
 same string is what the driver receives.
@@ -45,9 +45,15 @@ MAX_BODY_BYTES = 4194304
 
 
 def _too_large(request):
-    """The 413 for a body whose declared length is over the limit, or None. Asked before the body is read."""
+    """The refusal for a body with no usable Content-Length (411) or one over the limit (413), or None.
+
+    Asked before the body is read. Every caller sends a sized body, so a length that is missing or
+    malformed (a chunked request) is refused rather than read without a bound.
+    """
     declared = request.js_object.headers.get("content-length")
-    if declared is not None and str(declared).isdigit() and int(declared) > MAX_BODY_BYTES:
+    if declared is None or not str(declared).isdigit():
+        return Response("length required: send a Content-Length", status=411)
+    if int(declared) > MAX_BODY_BYTES:
         return Response(f"payload too large: at most {MAX_BODY_BYTES} bytes", status=413)
     return None
 
