@@ -807,7 +807,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/export` — `dashboard/export-installed-app`
    */
-  exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; tables: ({ name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: ({ type: "index" | "trigger"; name: string; ddl: string })[] })[]; stores?: ({ binding: string; driver: string; tables: ({ name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: ({ type: "index" | "trigger"; name: string; ddl: string })[] })[]; kind?: never })[]; masked: boolean }>;
+  exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: { type: string; name: string; ddl: string }[] }[]; stores?: { binding: string; driver: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: { type: string; name: string; ddl: string }[] }[]; kind?: never }[]; masked: boolean }>;
 
   /**
    * Counts of one app scope's events by a selected dimension
@@ -1362,7 +1362,7 @@ export interface DashboardClient {
    *
    * `POST /apps/{scopeId}/restore` — `dashboard/restore-installed-app`
    */
-  restoreInstalledApp(input: { tables: ({ name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: ({ type: "index" | "trigger"; name: string; ddl: string })[] })[]; stores?: ({ binding: string; driver: string; tables: ({ name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: ({ type: "index" | "trigger"; name: string; ddl: string })[] })[]; kind?: never })[]; scopeId: string; sourceScopeId?: unknown }): Promise<{ restored: string; tables: number; safetyCopyId: string }>;
+  restoreInstalledApp(input: { tables: { name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: { type: string; name: string; ddl: string }[] }[]; stores?: { binding: string; driver: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][]; objects?: { type: string; name: string; ddl: string }[] }[]; kind?: never }[]; scopeId: string; sourceScopeId?: unknown }): Promise<{ restored: string; tables: number; safetyCopyId: string }>;
 
   /**
    * Finish the install of an app stuck provisioning, in place (409 unless it is)

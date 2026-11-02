@@ -22,8 +22,8 @@ interface RawScope {
 }
 const rawScope = (): RawScope => env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(`spine-refs-${ulid()}`)) as unknown as RawScope;
 const own: ScopeDumpTable[] = [
-  { name: 'lists', ddl: 'CREATE TABLE lists (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['l1']] },
-  { name: 'notes', ddl: 'CREATE TABLE notes (t TEXT REFERENCES lists(id))', columns: ['t'], rows: [['l1']] },
+  { name: 'lists', ddl: 'CREATE TABLE lists (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['l1']], objects: [] },
+  { name: 'notes', ddl: 'CREATE TABLE notes (t TEXT REFERENCES lists(id))', columns: ['t'], rows: [['l1']], objects: [] },
 ];
 const vertical = (tables: ScopeDumpTable[]) => tables.filter((t) => !namesSpineTable(t.name));
 

@@ -288,7 +288,11 @@ export type ScopeQueryResult = z.infer<typeof scopeQueryResult>;
  * them back. Kernel-derived objects (`_substrat_*`) are never carried: a load derives them again.
  */
 export const scopeDumpObject = z.object({
-  type: z.enum(['index', 'trigger']),
+  /**
+   * `index` or `trigger`. A string, not an enum, so a reader older than its exporter still parses
+   * a dump that names another kind; a load skips that one and says so (`dumpObjectsPlan`).
+   */
+  type: z.string().min(1),
   name: z.string().min(1),
   /** The `CREATE INDEX` / `CREATE TRIGGER` statement from `sqlite_master`. */
   ddl: z.string().min(1),
@@ -788,7 +792,8 @@ export type ReplayableTable = { name: string; ddl: string; columns?: string[]; o
  * A trigger is put back only when every statement of its body is a guard,
  * `SELECT RAISE(ABORT|FAIL|ROLLBACK|IGNORE[, '…']) [WHERE …]`: the append-only and refusal shape
  * that holds an invariant. Any other trigger is skipped, never refused, so a restore stays possible
- * whatever a module wrote, and the restore records which ones it left out.
+ * whatever a module wrote, and the restore records which ones it left out. So is an object of a
+ * kind this reader does not know (a newer exporter's).
  */
 export interface DumpObjectsPlan {
   readonly replay: readonly (ScopeDumpObject & { table: string })[];
@@ -832,7 +837,7 @@ function dumpObjectsPlan(tables: readonly ReplayableTable[]): DumpObjectsPlan {
     if (t.objects === undefined) continue;
     carried = (carried ?? 0) + t.objects.length;
     for (const o of t.objects) {
-      const verdict = objectVerdict(o, t.name, names);
+      const verdict = o.type === 'index' || o.type === 'trigger' ? objectVerdict(o, t.name, names) : 'skip';
       if (verdict === 'skip') skipped.push(o.name);
       else replay.push({ ...o, table: t.name });
     }

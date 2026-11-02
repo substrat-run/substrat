@@ -24,10 +24,12 @@ const NO_UPDATE = trigger(
 describe('assertReplayableDump: the objects a dump carries', () => {
   it('puts back an index and a guard trigger, and leaves out and names a trigger that writes', () => {
     const writes = trigger('ledger_touch', "CREATE TRIGGER ledger_touch AFTER INSERT ON ledger BEGIN UPDATE other SET id = 'x'; END");
-    const plan = assertReplayableDump(dump(ONE_LEAD, NO_UPDATE, writes));
+    // A kind this reader does not know (a newer exporter's) is left out the same way.
+    const view: ScopeDumpObject = { type: 'view', name: 'ledger_view', ddl: 'CREATE VIEW ledger_view AS SELECT * FROM ledger' };
+    const plan = assertReplayableDump(dump(ONE_LEAD, NO_UPDATE, writes, view));
     expect(plan.replay.map((o) => [o.name, o.table])).toEqual([['ledger_one_lead', 'ledger'], ['ledger_no_update', 'ledger']]);
-    expect(plan.skipped).toEqual(['ledger_touch']);
-    expect(plan.carried).toBe(3);
+    expect(plan.skipped).toEqual(['ledger_touch', 'ledger_view']);
+    expect(plan.carried).toBe(4);
   });
 
   it('reads a dump written before objects were carried as not carrying them', () => {

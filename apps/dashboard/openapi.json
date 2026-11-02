@@ -7487,10 +7487,7 @@
                               "properties": {
                                 "type": {
                                   "type": "string",
-                                  "enum": [
-                                    "index",
-                                    "trigger"
-                                  ]
+                                  "minLength": 1
                                 },
                                 "name": {
                                   "type": "string",
@@ -7566,10 +7563,7 @@
                                     "properties": {
                                       "type": {
                                         "type": "string",
-                                        "enum": [
-                                          "index",
-                                          "trigger"
-                                        ]
+                                        "minLength": 1
                                       },
                                       "name": {
                                         "type": "string",
@@ -23542,10 +23536,7 @@
                             "properties": {
                               "type": {
                                 "type": "string",
-                                "enum": [
-                                  "index",
-                                  "trigger"
-                                ]
+                                "minLength": 1
                               },
                               "name": {
                                 "type": "string",
@@ -23619,10 +23610,7 @@
                                   "properties": {
                                     "type": {
                                       "type": "string",
-                                      "enum": [
-                                        "index",
-                                        "trigger"
-                                      ]
+                                      "minLength": 1
                                     },
                                     "name": {
                                       "type": "string",

@@ -126,7 +126,7 @@ export interface DumpTable {
   columns: string[];
   rows: unknown[][];
   /** #2820: the table's own indexes and triggers; absent from a dump that predates them. */
-  objects?: { type: 'index' | 'trigger'; name: string; ddl: string }[];
+  objects?: { type: string; name: string; ddl: string }[];
 }
 
 /** `GET …/scopes/:id/export` — a scope's data as the control plane released it. */
