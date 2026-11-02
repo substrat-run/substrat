@@ -523,15 +523,29 @@ export class FortnoxApi {
     return z.array(fortnoxSupplierInvoiceFile).parse(raw.SupplierInvoiceFileConnections ?? []);
   }
 
-  /** One file's bytes out of the company's archive. Needs the `archive` scope. */
-  async archiveFile(fileId: string): Promise<{ bytes: Uint8Array; contentType: string | null }> {
+  /**
+   * One file's bytes out of the company's archive. Needs the `archive` scope. A file over
+   * `maxBytes` answers its size as `tooLarge` and no bytes, and is not read whole when the
+   * response states its length.
+   */
+  async archiveFile(
+    fileId: string,
+    maxBytes = Infinity,
+  ): Promise<{ bytes: Uint8Array; contentType: string | null; tooLarge?: number }> {
     const path = `/archive/${encodeURIComponent(fileId)}`;
     const res = await this.request(path);
     if (!res.ok) {
       const body = await res.text();
       throw new FortnoxApiError(`Fortnox GET ${path} failed: ${errorMessage(body, res.status)}`, res.status, body);
     }
-    return { bytes: new Uint8Array(await res.arrayBuffer()), contentType: res.headers?.get('Content-Type') ?? null };
+    const contentType = res.headers?.get('Content-Type') ?? null;
+    const stated = Number(res.headers?.get('Content-Length') ?? NaN);
+    if (stated > maxBytes) {
+      await res.body?.getReader().cancel();
+      return { bytes: new Uint8Array(), contentType, tooLarge: stated };
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return bytes.byteLength > maxBytes ? { bytes: new Uint8Array(), contentType, tooLarge: bytes.byteLength } : { bytes, contentType };
   }
 
   /**

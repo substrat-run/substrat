@@ -400,7 +400,7 @@ describe('fortnox connector — inbound sync', () => {
         ['bilaga.png', 'image/png'],
         ['faktura.pdf', 'application/pdf'],
       ]);
-      expect((await binding()).invoiceSync?.files).toBeUndefined();
+      expect((await binding()).files).toBeUndefined();
 
       fortnox.calls.length = 0;
       await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
@@ -420,6 +420,19 @@ describe('fortnox connector — inbound sync', () => {
       expect((await onInvoice('12')).map((f) => f.contentType)).toEqual(['image/tiff']);
     });
 
+    it('takes the type the name suggests when Fortnox states only bytes', async () => {
+      await bindInvoices(FILED_OPERATION);
+      fortnox.setSupplierInvoice({
+        modified: '2026-06-10 09:00',
+        invoice: { GivenNumber: '12', Total: 100, Booked: false, Cancelled: false },
+        files: [{ FileId: 'a', Name: 'faktura.PDF', contentType: 'application/octet-stream', bytes: new Uint8Array([1]) }],
+      });
+
+      await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect((await onInvoice('12')).map((f) => f.contentType)).toEqual(['application/pdf']);
+    });
+
     it('keeps a file it could not read and lands it later, without landing the invoice again', async () => {
       await bindInvoices(FILED_OPERATION);
       filed('12', 'faktura.pdf');
@@ -430,7 +443,7 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('file of supplier invoice 12:') }]);
       expect(invoicesLanded).toHaveLength(1);
-      expect((await binding()).invoiceSync?.files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }]);
+      expect((await binding()).files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }]);
 
       const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
@@ -438,7 +451,7 @@ describe('fortnox connector — inbound sync', () => {
       expect(second.invoices).toEqual([{ scopeId: s, landed: 0, files: 1, pending: false }]);
       expect(invoicesLanded).toHaveLength(1);
       expect(await onInvoice('12')).toHaveLength(1);
-      expect((await binding()).invoiceSync?.files).toBeUndefined();
+      expect((await binding()).files).toBeUndefined();
     });
 
     it('does not land a file twice when the one after it failed', async () => {
@@ -448,10 +461,87 @@ describe('fortnox connector — inbound sync', () => {
       fortnox.rateLimitNext = 4;
 
       await sweepFortnoxLedger(host, connId, { ...at(NOW), sleep: async () => undefined });
-      expect((await binding()).invoiceSync?.files?.[0]?.done).toEqual(['12-a.pdf']);
+      expect(await host.admin.getConnectorState(connId, `fortnox:files-landed:${s}:12`)).toEqual({ entity: { entityType: 'invoice', entityId: 'inv-12' }, fileIds: ['12-a.pdf'] });
 
       await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
       expect((await onInvoice('12')).map((f) => f.filename).sort()).toEqual(['a.pdf', 'b.pdf']);
+    });
+
+    it('lands a file once, however often its invoice is asked about again', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('12', 'a.pdf');
+      await sweepFortnoxLedger(host, connId, at(NOW));
+
+      // The invoice is paid: it changes, lands again, and the landing asks for its file again.
+      fortnox.setSupplierInvoice({
+        modified: '2026-06-15 14:10',
+        invoice: { GivenNumber: '12', Total: 100, Booked: false, Cancelled: false },
+        files: [{ FileId: '12-a.pdf', Name: 'a.pdf', bytes: new TextEncoder().encode('bytes of a.pdf') }],
+      });
+      fortnox.calls.length = 0;
+      const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+      expect(second.invoices).toEqual([{ scopeId: s, landed: 1, files: 0, pending: false }]);
+      expect(fortnox.calls.filter((c) => c.includes('/archive/'))).toEqual([]);
+      expect(await onInvoice('12')).toHaveLength(1);
+    });
+
+    it('lands a file again when the landing names another entity for its invoice', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('12', 'a.pdf');
+      await host.admin.putConnectorState(connId, `fortnox:files-landed:${s}:12`, { entity: { entityType: 'invoice', entityId: 'inv-old' }, fileIds: ['12-a.pdf'] });
+
+      await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(await onInvoice('12')).toHaveLength(1);
+    });
+
+    it('keeps the files asked for across a re-bind', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('12', 'a.pdf');
+      fortnox.rateLimitOn = '/archive/';
+      fortnox.rateLimitNext = 4;
+      await sweepFortnoxLedger(host, connId, { ...at(NOW), sleep: async () => undefined });
+
+      await bindInvoices(FILED_OPERATION, s, 30);
+
+      expect((await binding()).invoiceSync).toBeUndefined();
+      expect((await binding()).files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }]);
+    });
+
+    it('stops between an invoice\'s files when the budget runs out, and reads the rest next pass', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('1', 'a.pdf', 'b.pdf', 'c.pdf');
+      const run = async (ms: number, budget: { details: number }) =>
+        syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget });
+      await run(NOW, { details: 1 });
+
+      const budget = { details: 3 };
+      expect(await run(NOW + 15 * 60_000, budget)).toEqual({ scopeId: s, landed: 0, files: 2, pending: true });
+      expect(budget.details).toBe(0);
+      expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['1']);
+
+      expect(await run(NOW + 30 * 60_000, { details: 3 })).toEqual({ scopeId: s, landed: 0, files: 1, pending: false });
+      expect((await onInvoice('1')).map((f) => f.filename).sort()).toEqual(['a.pdf', 'b.pdf', 'c.pdf']);
+    });
+
+    it('reports a pass whose only effect was a file it stepped over', async () => {
+      await bindInvoices(FILED_OPERATION);
+      await host.admin.putConnectorState(connId, `fortnox:binding:${s}`, {
+        ...(await binding()),
+        invoiceSync: { since: new Date(NOW).toISOString(), syncedAt: new Date(NOW).toISOString(), landed: 1 },
+        files: [{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }],
+      });
+      filed('12', 'a.pdf');
+      const fetch: typeof fortnox.fetch = (input, init) => fortnox.fetch(String(input).replace('/archive/12-a.pdf', '/archive/gone'), init);
+
+      const result = await sweepFortnoxLedger(host, connId, { ...at(NOW + 15 * 60_000), fetch });
+
+      expect(result.unchanged).toBe(0);
+      expect(result.invoices).toEqual([{
+        scopeId: s, landed: 0, files: 0, pending: false,
+        skipped: [{ givenNumber: '12', reason: 'a.pdf is gone from the archive' }],
+      }]);
     });
 
     it('fails by the invoice when the file cannot land, and tries the next one', async () => {
@@ -464,7 +554,7 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('file of supplier invoice 1:') }]);
       expect(fortnox.calls.filter((c) => c.includes('/archive/'))).toEqual(['/3/archive/1-a.pdf', '/3/archive/2-b.pdf']);
-      expect((await binding()).invoiceSync?.files?.map((f) => f.givenNumber)).toEqual(['1', '2']);
+      expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['1', '2']);
     });
 
     it('says the consent is short when Fortnox refuses a file, reads no more of them, and keeps landing invoices', async () => {
@@ -478,7 +568,7 @@ describe('fortnox connector — inbound sync', () => {
       expect(first.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/consent must cover the connectfile and archive scopes/) }]);
       expect(fortnox.calls.filter((c) => c.includes('/archive/'))).toHaveLength(1);
       expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1', '2']]);
-      expect((await binding()).invoiceSync?.files?.map((f) => f.givenNumber)).toEqual(['1', '2']);
+      expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['1', '2']);
 
       // A pass that also lands asks once, not once for the queue and again after the landing.
       fortnox.setSupplierInvoice({ modified: '2026-06-15 14:05', invoice: { GivenNumber: '3', Total: 100, Booked: false, Cancelled: false } });
@@ -498,10 +588,8 @@ describe('fortnox connector — inbound sync', () => {
       filed('1', 'a.pdf');
       await host.admin.putConnectorState(connId, `fortnox:binding:${s}`, {
         ...(await binding()),
-        invoiceSync: {
-          since: new Date(NOW).toISOString(), syncedAt: new Date(NOW).toISOString(), landed: 1,
-          files: [{ givenNumber: '1', entity: { entityType: 'invoice', entityId: 'inv-1' } }],
-        },
+        invoiceSync: { since: new Date(NOW).toISOString(), syncedAt: new Date(NOW).toISOString(), landed: 1 },
+        files: [{ givenNumber: '1', entity: { entityType: 'invoice', entityId: 'inv-1' } }],
       });
       fortnox.setSupplierInvoice({ modified: '2026-06-15 14:20', invoice: { GivenNumber: '2', Total: 100, Booked: false, Cancelled: false } });
 
@@ -509,7 +597,7 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/ledger closed for the period/) }]);
       expect(await onInvoice('1')).toHaveLength(1);
-      expect((await binding()).invoiceSync?.files).toBeUndefined();
+      expect((await binding()).files).toBeUndefined();
     });
 
     it('reads queued files before more invoices, so the queue stays within one pass', async () => {
@@ -518,12 +606,12 @@ describe('fortnox connector — inbound sync', () => {
       const run = async (ms: number, details: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details } });
 
       await run(NOW, 3);
-      expect((await binding()).invoiceSync?.files).toHaveLength(3);
+      expect((await binding()).files).toHaveLength(3);
 
       fortnox.calls.length = 0;
       expect(await run(NOW + 15 * 60_000, 4)).toEqual({ scopeId: s, landed: 0, files: 2, pending: true });
       expect(fortnox.calls.filter((c) => c.startsWith('/3/supplierinvoices?'))).toEqual([]);
-      expect((await binding()).invoiceSync?.files?.map((f) => f.givenNumber)).toEqual(['3']);
+      expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['3']);
     });
 
     it('steps over a file gone from the archive or too large to hold, saying which', async () => {

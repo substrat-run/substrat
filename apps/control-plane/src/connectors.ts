@@ -575,7 +575,10 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
             const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice'; firstPass?: 'all' | number };
             const refusal = bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
             if (refusal) throw new Error(refusal);
-            return { kind: parsed.kind, firstPass: parsed.firstPass };
+            // The relay drops a declared default the binding already holds, so a first pass `raw`
+            // leaves out is the held one: a rebind that restates nothing does not start over at 90 days.
+            const held = (current as { firstPass?: 'all' | number } | undefined)?.firstPass;
+            return { kind: parsed.kind, firstPass: parsed.firstPass ?? held };
           }
           return options.parse({
             ...(current ? options.strip().parse(current) : {}),
