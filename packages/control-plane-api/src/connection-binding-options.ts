@@ -16,7 +16,14 @@ export function connectionBindingOptions(provider: string) {
   if (isVerticalConnectorProvider(provider)) return z.object({}).catchall(z.unknown());
   switch (provider) {
     case 'fortnox':
-      return z.object({ kind: z.enum(['ledger', 'supplier-invoice']).optional() }).strict();
+      return z
+        .object({
+          kind: z.enum(['ledger', 'supplier-invoice']).optional(),
+          // How far back a supplier-invoice binding's first pass reads: days, or every invoice.
+          // A changed value re-binds, and a re-bound landing starts its first pass again.
+          firstPass: z.union([z.literal('all'), z.number().int().positive().max(36_500)]).optional(),
+        })
+        .strict();
     case 'planima':
       return z
         .object({

@@ -572,10 +572,10 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
           : {}),
         options: (raw, current) => {
           if (c.provider === 'fortnox') {
-            const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice' };
+            const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice'; firstPass?: 'all' | number };
             const refusal = bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
             if (refusal) throw new Error(refusal);
-            return { kind: parsed.kind };
+            return { kind: parsed.kind, firstPass: parsed.firstPass };
           }
           return options.parse({
             ...(current ? options.strip().parse(current) : {}),

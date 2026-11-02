@@ -53,8 +53,8 @@ const landing = async (env: Record<string, unknown>) => {
 };
 
 describe('the scopes the Fortnox consent redirect requests', () => {
-  it('asks for bookkeeping, companyinformation and supplierinvoice by default', async () => {
-    expect(await landing(base)).toBe('bookkeeping companyinformation supplierinvoice');
+  it('asks for the ledger, the invoices and the invoices\' files by default', async () => {
+    expect(await landing(base)).toBe('bookkeeping companyinformation supplierinvoice archive connectfile');
   });
 
   it('lets FORTNOX_SCOPES replace the default whole, not add to it', async () => {
