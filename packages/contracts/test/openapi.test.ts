@@ -76,6 +76,13 @@ const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
     responseHeaders: ['x-incomplete'],
     http: { method: 'GET', path: '/customers/logs' },
   },
+  // A declared route called before sign-in (#2170): an invite preview.
+  'customer/preview': {
+    summary: 'Preview',
+    output: z.object({ email: z.string() }),
+    anonymous: true,
+    http: { method: 'GET', path: '/customers/preview' },
+  },
   // A recursive output (#2170): the dashboard's effects tree.
   'customer/tree': {
     summary: 'A tree',
@@ -281,6 +288,9 @@ describe('a write is untouched', () => {
 
     // The security block is the vertical default unless the caller names its own.
     expect(doc.security).toEqual([{ session: [] }, { bearer: [] }]);
+    // …and an anonymous route lifts it for itself alone.
+    expect(op('/api/customers/preview', 'get').security).toEqual([]);
+    expect(op('/api/customers/logs', 'get').security).toBeUndefined();
     const cookieOnly = buildOpenApiDocument({ title: 'T', version: '1' }, {}, {
       schemes: { session: { type: 'apiKey', in: 'cookie', name: 'sb_session' } },
       requirement: [{ session: [] }],

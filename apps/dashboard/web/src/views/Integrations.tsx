@@ -3,7 +3,6 @@ import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
 import {
   api,
   teamApi,
-  ApiError,
   isApiError,
   type AccountIntegration,
   type AppIntegration,
@@ -999,7 +998,7 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
     teamApi(teamId)
       .getAppIntegrations({ scopeId: app.app_scope_id })
       .then((v) => live && setView((v as unknown as AppIntegrationsView).providers))
-      .catch((e) => live && setErr(e instanceof ApiError ? e.message : String(e)));
+      .catch((e) => live && setErr(isApiError(e) ? e.message : String(e)));
     return () => {
       live = false;
     };

@@ -323,8 +323,16 @@ export function assertTransition(
    * entity. Every caller in the repo passes it.
    */
   ref?: { entityType: string; entityId: string },
+  /**
+   * #2762: the operation's context, so a legal MOVE is noted on the invocation's record
+   * (`conversation: open → resolved` on its request line). Optional and additive, and only
+   * read with `ref`: without both, the move is simply not recorded. Structural, so this
+   * package names no kernel type — the kernel's `OperationContext` is one.
+   */
+  ctx?: TransitionNotes,
 ): Outcome {
   const outcome = transitionFor(lc, from, operation);
+  if (outcome?.kind === 'transition' && ref) ctx?.noteTransition?.({ ...ref, from, to: outcome.to });
   if (outcome) return outcome;
   const legal = Object.keys(lc.states)
     .filter((s) => transitionFor(lc, s, operation) !== null)
@@ -354,6 +362,20 @@ export function assertTransition(
     attempted: targets.size === 1 ? [...targets][0]! : null,
   };
   throw err;
+}
+
+/** #2762: one legal move, as `assertTransition` hands it to the context. */
+export interface NotedTransition {
+  readonly entityType: string;
+  readonly entityId: string;
+  /** `null` when the state before is not on record — an entity the operation created. */
+  readonly from: string | null;
+  readonly to: string;
+}
+
+/** #2762: what `assertTransition` notes a move on — the kernel's `OperationContext`, structurally. */
+export interface TransitionNotes {
+  noteTransition?(transition: NotedTransition): void;
 }
 
 /**

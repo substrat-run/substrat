@@ -329,9 +329,10 @@ function getRow(ctx: OperationContext, orderId: string): OrderRow {
  * `invalid transition: ...` prefix this engine raised before, now raised from
  * one place for every module that adopts a lifecycle.
  */
-function requireTransition(row: OrderRow, operation: string): void {
-  // #1745: the record, so a refused move is counted against it on the process map.
-  assertTransition(workorderLifecycle, `work order ${row.number}`, row.status, operation, { entityType: 'workorder', entityId: row.id });
+function requireTransition(ctx: OperationContext, row: OrderRow, operation: string): void {
+  // #1745: the record, so a refused move is counted against it on the process map; #2762: the
+  // context, so a legal one is noted on the request line.
+  assertTransition(workorderLifecycle, `work order ${row.number}`, row.status, operation, { entityType: 'workorder', entityId: row.id }, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +468,7 @@ export function getWorkOrder(ctx: OperationContext, orderId: string): WorkOrder 
 export function assignWorkOrder(ctx: OperationContext, rawInput: AssignWorkOrderInput): WorkOrder {
   const input = assignWorkOrderInput.parse(rawInput);
   const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/assign');
+  requireTransition(ctx, row, 'workorder/assign');
   ctx.sql.exec('UPDATE workorder_orders SET assigned_to = ? WHERE id = ?', [
     input.technician,
     row.id,
@@ -486,7 +487,7 @@ export function assignWorkOrder(ctx: OperationContext, rawInput: AssignWorkOrder
 export function startWorkOrder(ctx: OperationContext, rawInput: StartWorkOrderInput): WorkOrder {
   const input = startWorkOrderInput.parse(rawInput);
   const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/start');
+  requireTransition(ctx, row, 'workorder/start');
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'in_progress' WHERE id = ?`, [row.id]);
   emitWorkorderEvent(ctx, {
     type: 'workorder.started',
@@ -505,7 +506,7 @@ export function reportTime(ctx: OperationContext, rawInput: ReportTimeInput): Ti
   const input = reportTimeInput.parse(rawInput);
   const hours = decimal.parse(input.hours);
   const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/report-time');
+  requireTransition(ctx, row, 'workorder/report-time');
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO workorder_time_entries (id, order_id, technician, hours, note, reported_at)
@@ -534,7 +535,7 @@ export function reportMaterial(ctx: OperationContext, rawInput: ReportMaterialIn
   const input = reportMaterialInput.parse(rawInput);
   const qty = decimal.parse(input.qty);
   const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/report-material');
+  requireTransition(ctx, row, 'workorder/report-material');
   const id = ulid();
   ctx.sql.exec(
     `INSERT INTO workorder_material_lines (id, order_id, article, qty, note, reported_by, reported_at)
@@ -562,7 +563,7 @@ export function completeWorkOrder(
   input: { orderId: string; billable: BillableLine[]; currency?: string },
 ): { order: WorkOrder; total: Money } {
   const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/complete');
+  requireTransition(ctx, row, 'workorder/complete');
   const billable = z.array(billableLine).parse(input.billable);
   // A completion with no billable lines still has a total, and its currency is
   // not derivable from the lines — so the engine used to invent `SEK`, which is
@@ -617,7 +618,7 @@ export function completeWorkOrder(
  */
 export function closeWorkOrder(ctx: OperationContext, input: { orderId: string }): WorkOrder {
   const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/close');
+  requireTransition(ctx, row, 'workorder/close');
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'closed' WHERE id = ?`, [row.id]);
   emitWorkorderEvent(ctx, {
     type: 'workorder.closed',

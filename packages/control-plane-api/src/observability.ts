@@ -478,6 +478,13 @@ export interface LineFacets {
   estimated: boolean;
 }
 
+/** #2762: one lifecycle move a request caused, as its line names it. */
+export interface RequestTransition {
+  entity: string;
+  from: string | null;
+  to: string;
+}
+
 /**
  * One request, as the Requests view lists it: the stamped invocation line's fields, and
  * when it was written. `null` is "not recorded", exactly as on the line.
@@ -502,6 +509,12 @@ export interface RequestRecord extends AuthRecording {
   logLines: number | null;
   eventTypes: string[];
   entities: string[];
+  /**
+   * #2762: the lifecycle moves the request caused, as the line names them — each entity as
+   * `<entityType>:<entityId>`, the declared state it left (`null` when not on record) and the
+   * one it reached. `null` = not recorded (an older vertical or scope host, an async line).
+   */
+  transitions: RequestTransition[] | null;
   versionId: string | null;
   /** #1901: `request`, or the kind of async work the scope host logged. Never null. */
   kind: InvocationKind;

@@ -763,8 +763,15 @@ describe('the line’s outputFields (#1331)', () => {
     expect(Object.keys(line)).toEqual([
       'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'route', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
-      'logLines', 'eventTypes', 'entities', 'entityTypes', 'versionId',
+      'logLines', 'eventTypes', 'entities', 'entityTypes', 'transitions', 'versionId',
     ]);
+  });
+
+  it("carries the moves the scope host reported, and null from one that reports none, as an older DO's report reads (#2762)", async () => {
+    const move = { entity: 'conversation:c1', from: 'open', to: 'resolved' };
+    const events = [{ type: 'ticket.resolved', entity: 'conversation:c1' }];
+    expect((await lineFor({ operation: 'acme/op', emitted: { events, total: 1, transitions: [move] } })).transitions).toEqual([move]);
+    expect((await lineFor({ operation: 'acme/op', emitted: { events, total: 1 } })).transitions).toBeNull();
   });
 });
 

@@ -1,5 +1,36 @@
 # @substrat-run/template-check
 
+## 0.0.90
+
+### Patch Changes
+
+- Updated dependencies [37e3153]
+- Updated dependencies [ac9be30]
+  - @substrat-run/contracts@0.175.0
+  - @substrat-run/kernel@0.175.0
+  - @substrat-run/adapter-sqlite@0.175.0
+  - @substrat-run/adapter-cloudflare@0.175.0
+  - @substrat-run/engine-workorder@0.13.0
+  - @substrat-run/engine-invoicing@0.11.59
+  - @substrat-run/dev-issuer@0.2.57
+  - @substrat-run/vertical-host@0.175.0
+  - @substrat-run/attachment-extractors@0.2.36
+
+## 0.0.89
+
+### Patch Changes
+
+- Updated dependencies [b8b837b]
+  - @substrat-run/contracts@0.174.0
+  - @substrat-run/vertical-host@0.174.0
+  - @substrat-run/adapter-cloudflare@0.174.0
+  - @substrat-run/engine-invoicing@0.11.58
+  - @substrat-run/engine-workorder@0.12.58
+  - @substrat-run/adapter-sqlite@0.174.0
+  - @substrat-run/dev-issuer@0.2.56
+  - @substrat-run/kernel@0.174.0
+  - @substrat-run/attachment-extractors@0.2.35
+
 ## 0.0.88
 
 ### Patch Changes

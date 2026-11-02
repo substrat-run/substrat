@@ -96,6 +96,27 @@ export interface DashboardAccountClient {
   me(): Promise<OnboardingView | AccountView>;
 
   /**
+   * The team and invited address behind an invite link, for the accept screen and the login prefill
+   *
+   * `GET /invites/preview` — `dashboard/preview-team-invite`
+   */
+  previewTeamInvite(input: { token: string }): Promise<{ teamName: string; email: string; roleKey: "admin" | "member" | "viewer" }>;
+
+  /**
+   * This deployment’s published verticals, the same for every caller
+   *
+   * `GET /catalog` — `dashboard/public-catalog`
+   */
+  publicCatalog(): Promise<{ slug: string; name: string; owned: boolean; listed: boolean; source: string; installable: boolean; envSpec?: { key: string; label?: string; description: string; placeholder?: string; kind?: string; required: boolean; secret: boolean; previewCarry?: boolean; default?: string; group?: string }[]; provides?: string[]; requires?: string[] }[]>;
+
+  /**
+   * The support desk to embed and a signed claim of who is asking, or `desk: null` when there is none
+   *
+   * `GET /support/identity` — `dashboard/support-identity`
+   */
+  supportIdentity(): Promise<{ desk: null } | { desk: string; user: string; signature: string }>;
+
+  /**
    * Make one of the caller’s teams the one `/` opens on
    *
    * `POST /teams/switch` — `dashboard/switch-team`
@@ -175,6 +196,12 @@ export function createClient(options: ClientOptions = {}): DashboardAccountClien
       send("/teams", "POST", input, undefined),
     me: () =>
       send("/me", "GET", undefined, undefined),
+    previewTeamInvite: (input: Args) =>
+      send("/invites/preview", "GET", undefined, input),
+    publicCatalog: () =>
+      send("/catalog", "GET", undefined, undefined),
+    supportIdentity: () =>
+      send("/support/identity", "GET", undefined, undefined),
     switchTeam: (input: Args) =>
       send("/teams/switch", "POST", input, undefined),
   } as unknown as DashboardAccountClient;

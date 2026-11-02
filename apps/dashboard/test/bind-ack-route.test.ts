@@ -9,6 +9,7 @@ import { MODULES, provisionDashboard } from '../src/index.js';
 import { walkAll } from '../src/walk-all.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import { REQUEST_ID_HEADER, problemDetail } from '@substrat-run/contracts';
+import { ApiError } from '../web/src/lib/api.generated.js';
 import { exportBreaksIn, sendWithExportBreakAck, type BrokenApp } from '../web/src/lib/bind-ack.js';
 
 /**
@@ -135,8 +136,8 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  // What the web client's `call()` does with an answer, minus the browser: the sentence, the
-  // apps, and an Error carrying both, as `ApiError` does.
+  // What the web client's `call()` does with an answer, minus the browser: the sentence, and
+  // the generated client's `ApiError`, which keeps the parsed problem body under `body`.
   const post = async (path: string, body: object): Promise<unknown> => {
     const res = await app.request(
       `/api/teams/${tenant}${path}`,
@@ -145,7 +146,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     );
     if (res.ok) return res.status === 204 ? undefined : res.json();
     const parsed = await res.json().catch(() => null);
-    throw Object.assign(new Error(problemDetail(parsed) ?? `${res.status}`), { status: res.status, exportBreaks: exportBreaksIn(parsed) });
+    throw new ApiError(res.status, problemDetail(parsed) ?? `${res.status}`, parsed);
   };
   const ack = (on: boolean) => (on ? { acknowledge: { exportBreak: true } } : {});
   const boundTo = async () => (await host.admin.getScopeRecord(staff, tenant, appScope))?.verticalVersionId;
@@ -158,11 +159,11 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     const refused = (await post(`/apps/${appScope}/update`, {}).then(() => null, (e: unknown) => e)) as {
       status: number;
       message: string;
-      exportBreaks?: unknown;
+      body: unknown;
     };
     expect(refused.status).toBe(409);
     expect(refused.message).toMatch(/^this bind drops or re-versions 1 exported event type/);
-    expect(refused.exportBreaks).toMatchObject([{ scopeId: deskScope, vertical: CONSUMER, type: TYPE, incoming: null }]);
+    expect(exportBreaksIn(refused.body)).toMatchObject([{ scopeId: deskScope, vertical: CONSUMER, type: TYPE, incoming: null }]);
     expect(await boundTo()).toBe(v.exporting);
     expect(await updatedLines()).toBe(0);
   });

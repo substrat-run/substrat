@@ -868,7 +868,7 @@ function publicDesk(row: DeskRow) {
  * entry returns the next state; anything the state does not admit throws the
  * platform's own conflict with `reason: 'invalid_transition'`.
  */
-function step(row: ConversationRow, operation: string): string {
+function step(ctx: OperationContext, row: ConversationRow, operation: string): string {
   heldOrThrow(row, operation);
   const outcome = assertTransition(
     ticket0Lifecycles.conversation,
@@ -877,6 +877,8 @@ function step(row: ConversationRow, operation: string): string {
     operation,
     // #1745: the record, so a refused move is counted against it on the process map.
     { entityType: 'conversation', entityId: row.id },
+    // #2762: the context, so the move is noted on the request line.
+    ctx,
   );
   // `allowed` is not a degenerate transition: writing `state` after one would move
   // an entity the declaration says stays put.
@@ -940,13 +942,15 @@ function heldOrThrow(row: ConversationRow, operation: string): void {
  * `allowed` outcome is not a degenerate transition, so a re-submission of an address
  * already pending writes no state at all.
  */
-function stepSignup(row: SignupRow, operation: string): string {
+function stepSignup(ctx: OperationContext, row: SignupRow, operation: string): string {
   const outcome = assertTransition(
     ticket0Lifecycles.signup,
     `signup ${row.id}`,
     row.state,
     operation,
     { entityType: 'signup', entityId: row.id },
+    // #2762: the context, so the move is noted on the request line.
+    ctx,
   );
   return outcome.kind === 'transition' ? outcome.to : row.state;
 }
@@ -1680,7 +1684,7 @@ function closeConversation(
     | 'ticket0/discard'
     | 'ticket0/discard-suspended',
 ): ConversationRow {
-  const row = settle(ctx, conversation, step(conversation, edge));
+  const row = settle(ctx, conversation, step(ctx, conversation, edge));
   ctx.emit({
     type: 'ticket0.conversation-closed',
     schemaVersion: 1,
@@ -1725,7 +1729,7 @@ function suspendConversation(
   conversation: ConversationRow,
   signals: readonly SuspicionSignal[],
 ): ConversationRow {
-  step(conversation, 'ticket0/suspend');
+  step(ctx, conversation, 'ticket0/suspend');
   if (conversation.quarantine === 'suspended') return conversation;
   ctx.sql.exec(
     `UPDATE ticket0_conversations SET quarantine = 'suspended', suspended_at = ?, suspicion = ?
@@ -2322,7 +2326,7 @@ function putTag(
   conversation: ConversationRow,
   tag: string,
 ): { row: TagRow; added: boolean } {
-  step(conversation, 'ticket0/tag-conversation');
+  step(ctx, conversation, 'ticket0/tag-conversation');
   const existing = ctx.sql.query<TagRow>(
     'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
     [conversation.id, tag],
@@ -2403,7 +2407,7 @@ function assignConversation(
   // row so its messages carry a name, not so it can hold a queue. The app stopped
   // offering it in #1323; this is the half that makes the API agree.
   if (assignee !== null) assignableStaffOrThrow(ctx, assignee);
-  const next = step(conversation, 'ticket0/assign');
+  const next = step(ctx, conversation, 'ticket0/assign');
   ctx.sql.exec(
     `UPDATE ticket0_conversations
         SET assignee = ?, first_assigned_at = COALESCE(first_assigned_at, ?)
@@ -4736,7 +4740,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/post-note');
+    step(ctx, conversation, 'ticket0/post-note');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
       authorKind: 'agent',
@@ -4762,7 +4766,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationReplyPublic, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/post-public-reply');
+    const next = step(ctx, conversation, 'ticket0/post-public-reply');
 
     const profile = ctx.sql.query<AgentProfileRow>(
       'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
@@ -5169,7 +5173,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/set-priority');
+    const next = step(ctx, conversation, 'ticket0/set-priority');
     /**
      * A new priority re-aims the service-level targets (#1082), but only the ones still
      * RUNNING. A target already met is history, and so is one already missed: marking a
@@ -5236,7 +5240,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/snooze');
+    const next = step(ctx, conversation, 'ticket0/snooze');
     ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_until = ? WHERE id = ?', [
       input.until,
       conversation.id,
@@ -5257,7 +5261,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/wake');
+    const next = step(ctx, conversation, 'ticket0/wake');
     ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_until = NULL WHERE id = ?', [
       conversation.id,
     ]);
@@ -5298,7 +5302,7 @@ const bound = operationsFor(ticket0Operations)({
       [...CANONICAL_INSTANT_PARTS, ctx.now(), WAKE_BATCH],
     );
     for (const conversation of due) {
-      const next = step(conversation, 'ticket0/wake-snoozed');
+      const next = step(ctx, conversation, 'ticket0/wake-snoozed');
       ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_until = NULL WHERE id = ?', [
         conversation.id,
       ]);
@@ -5331,7 +5335,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationResolve, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const next = step(conversation, 'ticket0/resolve');
+    const next = step(ctx, conversation, 'ticket0/resolve');
     if (!conversation.first_public_reply_at) {
       // `conflict`, not `precondition_failed`: this is a refusal about the state the
       // conversation is in, exactly like the lifecycle's own. A sibling guard
@@ -5515,7 +5519,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/restore');
+    step(ctx, conversation, 'ticket0/restore');
     // Already in the inbox: the same decision made twice, not a conflict.
     if (conversation.quarantine !== 'suspended') return conversation;
     ctx.sql.exec('UPDATE ticket0_conversations SET quarantine = NULL WHERE id = ?', [conversation.id]);
@@ -5560,7 +5564,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationMerge, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/merge');
+    step(ctx, conversation, 'ticket0/merge');
     if (input.intoConversationId === conversation.id)
       throw substratError('validation_failed', 'a conversation cannot be merged into itself');
     const survivor = conversationOrThrow(ctx, input.intoConversationId);
@@ -5750,7 +5754,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/untag-conversation');
+    step(ctx, conversation, 'ticket0/untag-conversation');
     const existing = ctx.sql.query<TagRow>(
       'SELECT conversation_id, tag, created_at FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
       [conversation.id, input.tag],
@@ -5984,7 +5988,7 @@ const bound = operationsFor(ticket0Operations)({
   'ticket0/forward-message': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationForward, conversationRef(input.conversationId)));
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/forward-message');
+    step(ctx, conversation, 'ticket0/forward-message');
     const contact = recipientOrThrow(ctx, input.to, input.name);
     // The customer under any spelling of their mailbox (`standingOn`) — the forward would
     // otherwise be mailed straight back to them.
@@ -6408,7 +6412,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/record-answer');
+    step(ctx, conversation, 'ticket0/record-answer');
 
     // Idempotent at this end too: the ledger dedupes by key, and so must the side
     // table hanging off it, or a replay writes a second turn against one entry.
@@ -6524,7 +6528,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationWidget, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/record-assistant-failure');
+    step(ctx, conversation, 'ticket0/record-assistant-failure');
 
     const existing = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
       input.turnId,
@@ -7042,7 +7046,7 @@ const bound = operationsFor(ticket0Operations)({
     const conversation = opened ? screenAtTheDoor(ctx, landed, input.bodyText) : landed;
     ctx.log.info('mail ingested into {conversationId} as {binding}', { conversationId: conversation.id, binding });
 
-    const next = step(conversation, 'ticket0/ingest-message');
+    const next = step(ctx, conversation, 'ticket0/ingest-message');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
       authorKind: 'contact',
@@ -7399,7 +7403,7 @@ const bound = operationsFor(ticket0Operations)({
     // The first message opens the conversation, every later one finds it bound — and a
     // conversation an agent has closed hands over to the follow-up that continues it.
     const conversation = heldConversation(ctx, input.sessionId, hold, input.body);
-    const next = step(conversation, 'ticket0/widget-post');
+    const next = step(ctx, conversation, 'ticket0/widget-post');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
       authorKind: 'contact',
@@ -7437,7 +7441,7 @@ const bound = operationsFor(ticket0Operations)({
     // messages and notifies the desk, so it is the more expensive one to leave open.
     refuseIfBlockedVisitor(ctx, hold);
     const conversation = heldConversation(ctx, input.sessionId, hold, input.body ?? '');
-    const next = step(conversation, 'ticket0/request-human');
+    const next = step(ctx, conversation, 'ticket0/request-human');
 
     /**
      * The visitor's own words, when they are not already in the thread.
@@ -7555,7 +7559,7 @@ const bound = operationsFor(ticket0Operations)({
       await ctx.check(T0_PERM.conversationReadOwn, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    step(conversation, 'ticket0/submit-csat');
+    step(ctx, conversation, 'ticket0/submit-csat');
     const existing = ctx.sql.query<CsatRow>(
       'SELECT * FROM ticket0_csat WHERE conversation_id = ?',
       [conversation.id],
@@ -7716,7 +7720,7 @@ const bound = operationsFor(ticket0Operations)({
 
     // A row already exists. Where it had got to decides what a second submission means
     // — and the machine, not this handler, is what says which of those are legal.
-    const to = stepSignup(existing, 'ticket0/submit-signup');
+    const to = stepSignup(ctx, existing, 'ticket0/submit-signup');
 
     if (existing.state === 'confirmed') {
       /**
@@ -7810,7 +7814,7 @@ const bound = operationsFor(ticket0Operations)({
     if (!held)
       throw substratError('not_found', 'this confirmation link is not valid — it may already have been used');
 
-    const to = stepSignup(held, 'ticket0/confirm-signup');
+    const to = stepSignup(ctx, held, 'ticket0/confirm-signup');
     ctx.sql.exec(
       'UPDATE ticket0_signups SET state = ?, confirmed_at = ?, confirm_token_hash = NULL WHERE id = ?',
       [to, ctx.now(), held.id],
@@ -7831,7 +7835,7 @@ const bound = operationsFor(ticket0Operations)({
     const held = signupByUnsubscribeToken(ctx, input.token);
     if (!held) throw substratError('not_found', 'this unsubscribe link is not valid');
 
-    const to = stepSignup(held, 'ticket0/unsubscribe-signup');
+    const to = stepSignup(ctx, held, 'ticket0/unsubscribe-signup');
     // A second click from a mail archive: the machine allows it, it changes nothing,
     // and it must not become a second event. The person is telling us something we
     // already agree with.

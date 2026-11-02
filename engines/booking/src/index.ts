@@ -471,9 +471,10 @@ function getRow(ctx: OperationContext, id: string): ReservationRow {
  * something `invalid_transition` never could. Feeding the effective state in
  * here would collapse those two refusals into one worse message.
  */
-function requireTransition(row: ReservationRow, operation: string): void {
-  // #1745: the record, so a refused move is counted against it on the process map.
-  assertTransition(bookingLifecycles.reservation, `reservation ${row.id}`, row.state, operation, { entityType: 'reservation', entityId: row.id });
+function requireTransition(ctx: OperationContext, row: ReservationRow, operation: string): void {
+  // #1745: the record, so a refused move is counted against it on the process map; #2762: the
+  // context, so a legal one is noted on the request line.
+  assertTransition(bookingLifecycles.reservation, `reservation ${row.id}`, row.state, operation, { entityType: 'reservation', entityId: row.id }, ctx);
 }
 
 /** Participants who have not left — the count the fill target is measured against. */
@@ -669,7 +670,7 @@ export function confirmReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/confirm');
+  requireTransition(ctx, row, 'booking/confirm');
   const now = nowOr(ctx, input.now);
   if (row.expires_at && row.expires_at <= now) {
     throw conflict('hold_expired', `hold expired at ${row.expires_at}`);
@@ -711,7 +712,7 @@ export function expireReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/expire');
+  requireTransition(ctx, row, 'booking/expire');
   const now = nowOr(ctx, input.now);
   if (!row.expires_at || row.expires_at > now) {
     throw conflict('not_yet_expired', `reservation ${row.id} has not expired yet`);
@@ -742,7 +743,7 @@ export function joinReservation(
 ): { participant: Participant; reservation: Reservation } {
   const input = joinReservationCall.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/join');
+  requireTransition(ctx, row, 'booking/join');
   const now = nowOr(ctx, input.now);
 
   const active = activeParticipants(ctx, row.id);
@@ -807,7 +808,7 @@ export function openReservation(
   input: { reservationId: string; fillTarget: number | null; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/open');
+  requireTransition(ctx, row, 'booking/open');
   const joined = activeParticipants(ctx, row.id).length;
   if (input.fillTarget !== null && input.fillTarget < joined) {
     throw conflict('capacity_below_joined', 
@@ -869,7 +870,7 @@ export function cancelReservation(
   input: { reservationId: string; reason?: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/cancel');
+  requireTransition(ctx, row, 'booking/cancel');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'cancelled' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.cancelled',
@@ -906,7 +907,7 @@ export function moveReservation(
 ): Reservation {
   const input = moveReservationCall.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/move');
+  requireTransition(ctx, row, 'booking/move');
   const now = nowOr(ctx, input.now);
 
   const targetResourceId = input.resourceId ?? row.resource_id;
@@ -959,7 +960,7 @@ export function startReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/start');
+  requireTransition(ctx, row, 'booking/start');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'in_service' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.started',
@@ -981,7 +982,7 @@ export function completeReservation(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/complete');
+  requireTransition(ctx, row, 'booking/complete');
   const resource = getResourceRow(ctx, row.resource_id);
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'completed' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
@@ -1005,7 +1006,7 @@ export function markNoShow(
   input: { reservationId: string; now?: string },
 ): Reservation {
   const row = getRow(ctx, input.reservationId);
-  requireTransition(row, 'booking/no-show');
+  requireTransition(ctx, row, 'booking/no-show');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'no_show' WHERE id = ?`, [row.id]);
   emitBookingEvent(ctx, {
     type: 'booking.no-show',

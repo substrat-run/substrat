@@ -86,6 +86,11 @@ interface ApiOperationFields {
   idempotency?: false;
   /** Response headers the success carries beside its body (a declared route's `responseHeaders`). */
   responseHeaders?: readonly string[];
+  /**
+   * Called before sign-in, so the document-wide `security` does not apply: the operation
+   * documents `security: []` (an invite preview, whose signed token is its own authority).
+   */
+  anonymous?: true;
   paged?: {
     /** Present on a handler-composed read: the ENTRY field the cursor walks. */
     sortKey?: string;
@@ -577,6 +582,7 @@ export function buildOpenApiDocument(
         ...(params.length > 0 ? { parameters: params } : {}),
         ...(op.description ? { description: op.description } : {}),
         ...(op.tag ? { tags: [op.tag] } : {}),
+        ...(op.anonymous ? { security: [] } : {}),
         // Only for a verb that carries one. A `requestBody` on a GET describes a call
         // nobody can make: the mount never reads a body there, so a client that sent one
         // would be ignored (#830).

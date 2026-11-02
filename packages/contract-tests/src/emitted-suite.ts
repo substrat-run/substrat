@@ -123,6 +123,18 @@ export function emittedReportContractSuite(
       expect(await counted('emitted/no-such-operation', {})).toEqual([]);
     });
 
+    it("reports the lifecycle moves the operation noted, a create's included, and none from a rolled-back sub-transaction (#2762)", async () => {
+      const [created, moved, dropped] = [`n-${ulid()}`, `m-${ulid()}`, `d-${ulid()}`];
+      const { reports, error } = await run('emitted/move', { created, moved, dropped });
+      expect(error).toBeUndefined();
+      expect(reports.map((r) => r.transitions)).toEqual([
+        [
+          { entity: `emitted-thing:${created}`, from: null, to: 'new' },
+          { entity: `emitted-thing:${moved}`, from: 'new', to: 'open' },
+        ],
+      ]);
+    });
+
     it('does not report a replay, which committed nothing', async () => {
       const idempotencyKey = `key-${ulid()}`;
       const input = { ids: [`r-${ulid()}`] };

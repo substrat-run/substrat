@@ -2899,6 +2899,14 @@ const touchAll = (ctx: OperationContext, ids: readonly string[]): void => {
   }
 };
 
+/** #2762: a two-step lifecycle the `emitted/move` fixture moves its records through. */
+const emittedLifecycle: LifecycleDef = {
+  field: 'state',
+  initial: 'new',
+  states: { new: { on: { 'emitted/move': 'open' } }, open: { terminal: true } },
+};
+const thing = (id: string) => ({ entityType: 'emitted-thing', entityId: id });
+
 /**
  * The module the #1746 suite drives. Its consumer answers every `emitted.touched` with an
  * `emitted.echoed` in the same invocation, which is what lets the suite show the report
@@ -2927,6 +2935,19 @@ export const emittedMod: ModuleRegistration = {
       } catch {
         // The point of the fixture: the dropped emit is gone, the kept one stays.
       }
+      return { ok: true };
+    }) as OperationHandler<never, unknown>,
+    // #2762: a record created (noted by hand, as a create has no edge), one moved through
+    // `assertTransition` with the context, and one moved inside a sub-transaction that rolls back.
+    'emitted/move': (async (ctx, input: { created: string; moved: string; dropped: string }) => {
+      ctx.noteTransition({ ...thing(input.created), from: null, to: 'new' });
+      assertTransition(emittedLifecycle, 'thing', 'new', 'emitted/move', thing(input.moved), ctx);
+      await ctx
+        .atomic(() => {
+          assertTransition(emittedLifecycle, 'thing', 'new', 'emitted/move', thing(input.dropped), ctx);
+          throw new Error('rolled back');
+        })
+        .catch(() => undefined);
       return { ok: true };
     }) as OperationHandler<never, unknown>,
   }),
