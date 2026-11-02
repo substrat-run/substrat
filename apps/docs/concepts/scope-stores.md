@@ -17,8 +17,6 @@ Today a vertical author can:
 - read the declaration and the call shape below, and write code against `getScopeStore` and `StoreStub`;
 - run a store locally, on the pure adapter, with a `ScopeStoreRunner` a driver supplies (see the end of this page).
 
-[Graph notes](../verticals/graph-notes.md) is a vertical that does both, against the `graph` driver's local process.
-
 A vertical author cannot yet:
 
 - complete a hosted push of a vertical that declares `scopeStores`;

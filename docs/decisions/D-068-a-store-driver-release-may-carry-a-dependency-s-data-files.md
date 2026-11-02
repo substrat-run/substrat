@@ -27,9 +27,11 @@ file counts as one module, whether it is code or data.
 
 The graph driver's release is 704 Python modules once installer output, metadata, type stubs and
 package test suites are left out. One dependency does not fit: `tzdata`, the IANA time zone database,
-is mostly zone files. Pyodide ships no zone data, the driver's date library resolves `UTC` as it is
-imported, and a rule may name any zone, so the data has to ship whole. With it the release is 1 318
-files and 7.4 MB, well under 10 MiB.
+is mostly zone files. The runtime cannot supply them: on a deployed Python Worker with the driver's flags
+and compatibility date, measured on 2026-11-02, `zoneinfo` finds no zone, not even `UTC`, no `tzdata`
+module exists, `pyodide.loadPackage` is disabled and `micropip` is absent. The driver's date library
+resolves `UTC` as it is imported, and a rule may name any zone, so the data has to ship whole. With it the
+release is 1 318 files and 7.4 MB, well under 10 MiB.
 
 ## Options
 
@@ -52,6 +54,10 @@ files and 7.4 MB, well under 10 MiB.
 
 ## Consequences
 
+- The count bounds how much a reviewer must read as code. It is not a security boundary: code in a release
+  can put a data file on `sys.path` or `exec` it, whatever its name. A plain file can be listed and compared
+  by name where an archive cannot, which is the difference from option 3, and the review of a release still
+  covers its data files.
 - With option 1, `isPythonCodeModule` decides what counts, and both the upload's schema
   (`storeDriverReleaseUpload`) and the CLI's walk count with it. D-63's sentence on the limits is
   amended. The branch that proposes this record implements option 1, so option 2 would replace that
