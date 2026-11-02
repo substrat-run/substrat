@@ -139,6 +139,24 @@ export function assertImpersonationWrites(
   );
 }
 
+/**
+ * An operation that declared `impersonation: 'refused'` (#2821) is refused under ANY session,
+ * read-only included, before its input is parsed and before the guards and the handler run.
+ * Some acts are only valid when the person makes them, and a read-only session refusing at the
+ * first effecting verb would still have run the handler as them.
+ */
+export function assertImpersonationAdmitted(
+  session: ImpersonationSession | undefined,
+  operation: string,
+  refused: ReadonlySet<string>,
+): void {
+  if (!session || !refused.has(operation)) return;
+  throw new ImpersonationRefused(
+    `${operation} must be performed by the person themselves, and is refused under an ` +
+      `impersonation session (${session.id})`,
+  );
+}
+
 /** What the kernel stamps on a record raised under this session. */
 export function impersonationStampOf(session: ImpersonationSession): ImpersonationStamp {
   return { session: session.id, by: session.actor };

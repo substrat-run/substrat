@@ -6,6 +6,7 @@ export interface RawDerivedMaps {
   inputs?: BoundOperations['inputs'];
   concurrency?: BoundOperations['concurrency'];
   idempotencyOptOuts?: BoundOperations['idempotencyOptOuts'];
+  impersonationRefused?: BoundOperations['impersonationRefused'];
 }
 
 /**

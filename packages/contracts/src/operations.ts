@@ -729,6 +729,17 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
    */
   readonly idempotency?: false;
   /**
+   * This operation is only valid when the person makes it themselves (#2821): recording their
+   * own consent, an attestation, a signature. Under an impersonation session (K-42) the
+   * permission model answers as the impersonated principal, so without this line the act would
+   * read as theirs. `'refused'` makes the HOST refuse every impersonated invocation — read-only
+   * and write sessions alike — with `forbidden`, before the input is parsed and before the
+   * guards and the handler run, so no handler has to remember to ask.
+   *
+   * Only `'refused'` is a legal value: the default, admitting a session, needs no line.
+   */
+  readonly impersonation?: 'refused';
+  /**
    * This operation reaches an entity IN THE TRASH (#119). Absent — the default, and the right
    * answer for nearly every operation — the HOST refuses it on a trashed entity before the
    * guards and the handler run: `not_found` to a caller who holds the operation's key on the
@@ -2493,6 +2504,19 @@ export function operationIdempotencyOptOutsOf(
 ): string[] {
   return Object.entries(operations)
     .filter(([, op]) => (op as { idempotency?: unknown }).idempotency === false)
+    .map(([name]) => name)
+    .sort();
+}
+
+/**
+ * The operations that declared `impersonation: 'refused'` (#2821) — acts that are only valid
+ * when the person makes them. Names only, like the idempotency opt-outs above.
+ */
+export function operationImpersonationRefusalsOf(
+  operations: Readonly<Record<string, object>>,
+): string[] {
+  return Object.entries(operations)
+    .filter(([, op]) => (op as { impersonation?: unknown }).impersonation === 'refused')
     .map(([name]) => name)
     .sort();
 }

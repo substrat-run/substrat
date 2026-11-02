@@ -882,6 +882,7 @@ export {
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
   ImpersonationRefused,
+  assertImpersonationAdmitted,
   assertImpersonationWrites,
   assertSessionUsable,
   impersonationByIdQuery,

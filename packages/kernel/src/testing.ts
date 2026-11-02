@@ -16,6 +16,7 @@ export function forgeBoundOperationsForTest(
     inputs?: BoundOperations['inputs'];
     concurrency?: BoundOperations['concurrency'];
     idempotencyOptOuts?: BoundOperations['idempotencyOptOuts'];
+    impersonationRefused?: BoundOperations['impersonationRefused'];
     checks?: BoundOperations['checks'];
   },
 ): BoundOperations {
