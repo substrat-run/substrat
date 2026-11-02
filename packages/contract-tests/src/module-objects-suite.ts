@@ -3,8 +3,8 @@
  * every module table and replays it from the dump; the migrations that made the table's indexes and
  * triggers are journaled, so they never run again. The dump carries them, and a restore puts back
  * the ones that hold invariants: here a partial unique index and an append-only trigger, judged by
- * what they refuse afterwards. A trigger that writes is left out, and the restore's admin row names
- * it. The fixture is `moduleObjectsMod`.
+ * what they refuse afterwards. A trigger that writes, planted in the dump, is left out, and the
+ * restore's admin row names it. The fixture is `moduleObjectsMod`.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeDump } from '@substrat-run/contracts';
@@ -43,13 +43,22 @@ export function moduleObjectsContractSuite(adapterName: string, makeFixture: () 
       return { stub, moduleObjects: (entry?.after as { moduleObjects?: unknown }).moduleObjects };
     };
 
+    const COUNTS = {
+      type: 'trigger' as const,
+      name: 'mo_count',
+      ddl: 'CREATE TRIGGER mo_count AFTER INSERT ON mo_ledger BEGIN UPDATE mo_counter SET n = n + 1; END',
+    };
+
     it('puts back the partial unique index and the append-only trigger, and names the trigger it left out', async () => {
-      const { stub, moduleObjects } = await restored();
+      const { stub, moduleObjects } = await restored((dump) => ({
+        ...dump,
+        tables: dump.tables.map((table) => (table.name === 'mo_ledger' ? { ...table, objects: [...table.objects!, COUNTS] } : table)),
+      }));
       await expect(stub.invoke('mo/insert', { id: 'b', who: 'x', lead: 1 })).rejects.toThrow(/UNIQUE constraint failed/);
       await expect(stub.invoke('mo/demote', { id: 'a' })).rejects.toThrow(/append-only/);
-      // The counting trigger did not come back: an insert the index admits leaves the count alone.
+      // The counting trigger was not put back: an insert the index admits leaves the count alone.
       await stub.invoke('mo/insert', { id: 'c', who: 'x', lead: 0 });
-      expect(await stub.invoke('mo/count', undefined)).toBe(1);
+      expect(await stub.invoke('mo/count', undefined)).toBe(0);
       // Counted over the whole dump: on a host that migrates every kit module into a scope, other
       // tables carry their own indexes too.
       expect(moduleObjects).toEqual({ carried: expect.any(Number), skipped: ['mo_count'] });

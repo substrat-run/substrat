@@ -577,6 +577,7 @@ export function scopeRepointContractSuite(adapterName: string, makeFixture: () =
           ddl: 'CREATE TABLE repoint_notes (id TEXT PRIMARY KEY, body TEXT COLLATE NOCASE)',
           columns: ['id', 'body'],
           rows: [['n1', 'Hello']],
+          objects: [],
         };
         const dest = await blank();
         await host.restoreScope(staff, t, dest, { ...planted, tables: [...planted.tables, note] });

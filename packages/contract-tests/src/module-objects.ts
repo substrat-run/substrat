@@ -1,7 +1,8 @@
 /**
  * #2820: a module whose own migration declares invariants as SQLite objects: a partial unique index
- * (at most one lead per `who`) and an append-only trigger. Beside them a trigger that writes (a
- * counter), which a restore leaves out and names. `moduleObjectsContractSuite` drives it.
+ * (at most one lead per `who`) and an append-only trigger, both of which a restore puts back. A
+ * host may migrate it into every scope it holds, so it declares nothing a restore leaves out: the
+ * suite plants a trigger that writes into the dump instead. `moduleObjectsContractSuite` drives it.
  */
 import { moduleManifest } from '@substrat-run/contracts';
 import type { ModuleRegistration, OperationHandler } from '@substrat-run/kernel';
@@ -26,8 +27,7 @@ export const moduleObjectsMod: ModuleRegistration = {
         CREATE TABLE mo_counter (n INTEGER NOT NULL);
         INSERT INTO mo_counter (n) VALUES (0);
         CREATE UNIQUE INDEX mo_one_lead ON mo_ledger (who) WHERE lead = 1;
-        CREATE TRIGGER mo_no_update BEFORE UPDATE ON mo_ledger BEGIN SELECT RAISE(ABORT, 'mo_ledger is append-only'); END;
-        CREATE TRIGGER mo_count AFTER INSERT ON mo_ledger BEGIN UPDATE mo_counter SET n = n + 1; END;`,
+        CREATE TRIGGER mo_no_update BEFORE UPDATE ON mo_ledger BEGIN SELECT RAISE(ABORT, 'mo_ledger is append-only'); END;`,
     },
   ],
   ...testOperations({
