@@ -14,7 +14,10 @@ SubstratStoreObject by idFromName of the signed name. The object checks the call
 refuses unless its own id is the id of that name (check 5), before the driver is constructed: an
 object is bound to one name by construction, with nothing stored that the driver could rewrite.
 
-The body is read once, verified as that string, and that same string is what the driver receives.
+A body whose Content-Length is over MAX_BODY_BYTES is refused with 413 before it is read: the
+stateless entry holds the body in memory more than once, and a larger one ran it out of memory
+(#2811) before the object was reached. The body is read once, verified as that string, and that
+same string is what the driver receives.
 The driver is constructed once per object instance with the object's ctx and an env with none of
 the entry's SUBSTRAT_STORE* bindings. The upload sets disallow_importable_env and
 disable_ctx_exports, and both apply to a Python script: `from workers import env` then reads an
@@ -38,6 +41,15 @@ from __SUBSTRAT_STORE_DRIVER__ import __SUBSTRAT_STORE_CLASS__ as StoreDriver
 VERIFIER_MODULE = "./substrat-store-verify.js"
 OBJECT_BINDING = "SUBSTRAT_STORE"
 RESERVED_BINDING_PREFIX = "SUBSTRAT_STORE"
+MAX_BODY_BYTES = 4194304
+
+
+def _too_large(request):
+    """The 413 for a body whose declared length is over the limit, or None. Asked before the body is read."""
+    declared = request.js_object.headers.get("content-length")
+    if declared is not None and str(declared).isdigit() and int(declared) > MAX_BODY_BYTES:
+        return Response(f"payload too large: at most {MAX_BODY_BYTES} bytes", status=413)
+    return None
 
 
 def _raw_env(env):
@@ -76,6 +88,9 @@ class SubstratStoreObject(DurableObject):
         return self._driver
 
     async def fetch(self, request):
+        refused = _too_large(request)
+        if refused is not None:
+            return refused
         body = await request.text()
         name = await _verified(request, body, self.env)
         if isinstance(name, Response):
@@ -94,6 +109,9 @@ class SubstratStoreObject(DurableObject):
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
+        refused = _too_large(request)
+        if refused is not None:
+            return refused
         body = await request.text()
         name = await _verified(request, body, self.env)
         if isinstance(name, Response):

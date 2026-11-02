@@ -56,3 +56,9 @@ export const STORE_PLATFORM_KEYS_VAR = 'SUBSTRAT_STORE_PLATFORM_KEYS';
  * that has none of them, and a driver bundle may not declare one.
  */
 export const STORE_RESERVED_BINDING_PREFIX = 'SUBSTRAT_STORE';
+
+/**
+ * The most request-body bytes the Python entry reads (#2811). A call declaring more is answered
+ * 413 before its body is read, so the stateless entry is never the thing that runs out of memory.
+ */
+export const STORE_CALL_MAX_BODY_BYTES = 4 * 1024 * 1024;

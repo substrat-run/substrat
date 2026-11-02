@@ -389,6 +389,12 @@ try {
   const exact = JSON.stringify({ objectName: name, operation: 'body', input: { text: 'é   \\u00e9' } });
   check(result(await send(await signed(name, 'body', { body: exact }))) === exact, 'the driver receives the exact body that was verified');
 
+  // A body over the limit is refused on its declared length, before it is read; one at it is not.
+  const oversize = await send({ headers: {}, body: 'x'.repeat(entry.STORE_CALL_MAX_BODY_BYTES + 1) });
+  check(oversize.status === 413, 'a body over the limit is answered 413 before it is read', { status: oversize.status, text: oversize.text.slice(0, 80) });
+  const atLimit = await send({ headers: {}, body: 'x'.repeat(entry.STORE_CALL_MAX_BODY_BYTES) });
+  check(atLimit.status === 401 && atLimit.text === 'unauthorized: missing', 'a body at the limit is read and verified', { status: atLimit.status });
+
   const env = result(await send(await signed(name, 'env')));
   check(JSON.stringify(env.given) === JSON.stringify(['DRIVER_SETTING']), "the driver's env has none of the entry's bindings", env);
   check(env.importable.length === 0, 'an importable env reads nothing (disallow_importable_env)', env);
