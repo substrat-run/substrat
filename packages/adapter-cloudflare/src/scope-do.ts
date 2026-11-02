@@ -1114,16 +1114,22 @@ type LoadTable = { name: string; ddl: string; columns: string[]; objects?: Scope
 
 /**
  * A staged load's own tables (#2450): `_substrat_stage` (which load, and the next page it takes),
- * `_substrat_stage_tables` (each staged table's name, DDL and columns) and one
- * `_substrat_stage_rows_<n>` per staged table. They hold a carry's pages until the load commits
- * from them, so they are this store's, never its data: no dump carries them, and a load's drops
- * leave them to the commit that reads them.
+ * `_substrat_stage_tables` (each staged table's name, DDL and columns), `_substrat_stage_objects`
+ * (below) and one `_substrat_stage_rows_<n>` per staged table. They hold a carry's pages until the
+ * load commits from them, so they are this store's, never its data: no dump carries them, and a
+ * load's drops leave them to the commit that reads them.
  */
 const STAGE_GLOB = '_substrat_stage*';
 const STAGE_TABLES_DDL = [
   `CREATE TABLE _substrat_stage (stage_id TEXT NOT NULL, next_seq INTEGER NOT NULL)`,
-  `CREATE TABLE _substrat_stage_tables (ord INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, ddl TEXT NOT NULL, columns TEXT NOT NULL, objects TEXT)`,
+  `CREATE TABLE _substrat_stage_tables (ord INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, ddl TEXT NOT NULL, columns TEXT NOT NULL)`,
 ];
+/**
+ * #2820: each staged table's own indexes and triggers, for a table whose pages carried them. Created
+ * by every page if missing, so a stage opened before it existed still takes pages, and commits with
+ * none: as a dump written before objects were carried.
+ */
+const STAGE_OBJECTS_DDL = `CREATE TABLE IF NOT EXISTS _substrat_stage_objects (name TEXT PRIMARY KEY, objects TEXT NOT NULL)`;
 const stageRowsTable = (ord: number): string => `_substrat_stage_rows_${ord}`;
 /** How many staged rows a commit reads at a time. */
 const STAGE_READ_BATCH = 500;
@@ -8567,19 +8573,26 @@ export function defineScopeDO(
           if (seq > head.nextSeq) {
             throw substratError('precondition_failed', `stage page ${seq} arrived before page ${head.nextSeq}`);
           }
-          this.stageObjectsColumn();
+          // A stage opened before objects were staged takes their table now: its earlier pages
+          // staged none, so a later page that carries them reads as the table having changed.
+          this.sql.exec(STAGE_OBJECTS_DDL);
           for (const t of tables) {
             const columns = JSON.stringify(t.columns);
             const objects = t.objects === undefined ? null : JSON.stringify(t.objects);
             let held = this.sql
-              .exec(`SELECT ord, ddl, columns, objects FROM _substrat_stage_tables WHERE name = ?`, t.name)
+              .exec(
+                `SELECT s.ord, s.ddl, s.columns, o.objects FROM _substrat_stage_tables s
+                   LEFT JOIN _substrat_stage_objects o ON o.name = s.name WHERE s.name = ?`,
+                t.name,
+              )
               .toArray()[0] as { ord: number; ddl: string; columns: string; objects: string | null } | undefined;
             if (!held) {
               const ord = Number((this.sql.exec(`SELECT COUNT(*) AS n FROM _substrat_stage_tables`).toArray()[0] as { n: number }).n);
               this.sql.exec(
-                `INSERT INTO _substrat_stage_tables (ord, name, ddl, columns, objects) VALUES (?, ?, ?, ?, ?)`,
-                ord, t.name, t.ddl, columns, objects,
+                `INSERT INTO _substrat_stage_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`,
+                ord, t.name, t.ddl, columns,
               );
+              if (objects !== null) this.sql.exec(`INSERT INTO _substrat_stage_objects (name, objects) VALUES (?, ?)`, t.name, objects);
               // Untyped columns: no affinity, so a cell is stored exactly as it came.
               this.sql.exec(`CREATE TABLE "${stageRowsTable(ord)}" (${t.columns.map((_, i) => `c${i}`).join(', ')})`);
               held = { ord, ddl: t.ddl, columns, objects };
@@ -8679,9 +8692,15 @@ export function defineScopeDO(
       const out = await this.checkedLoad(() => {
         const head = this.stageHead();
         if (head?.stageId !== stageId) throw substratError('precondition_failed', STAGE_GONE);
-        this.stageObjectsColumn();
+        // Read only: a stage opened before objects were staged has no table for them, and loads none.
+        const withObjects = this.hasTable('_substrat_stage_objects');
         const staged = this.sql
-          .exec(`SELECT ord, name, ddl, columns, objects FROM _substrat_stage_tables ORDER BY name`)
+          .exec(
+            withObjects
+              ? `SELECT s.ord, s.name, s.ddl, s.columns, o.objects FROM _substrat_stage_tables s
+                   LEFT JOIN _substrat_stage_objects o ON o.name = s.name ORDER BY s.name`
+              : `SELECT ord, name, ddl, columns, NULL AS objects FROM _substrat_stage_tables ORDER BY name`,
+          )
           .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string; objects: string | null }[];
         const tables: LoadTable[] = staged.map((t) => ({
           name: t.name,
@@ -8727,18 +8746,6 @@ export function defineScopeDO(
         for (const row of batch) yield row.slice(1);
         if (batch.length < STAGE_READ_BATCH) return;
         after = Number(batch[batch.length - 1]![0]);
-      }
-    }
-
-    /**
-     * #2820: a stage opened before `objects` was staged takes the column now. Its pages staged none,
-     * so it commits as a dump that predates them, and a later page that carries them reads as the
-     * table having changed.
-     */
-    private stageObjectsColumn(): void {
-      if (doBuiltColumnsOf(this.sql, '_substrat_stage_tables')?.includes('objects') === false) {
-        // The stage is this store's own, so the column moves no write revision a carry is fenced on.
-        this.revision.untracked(() => this.sql.exec(`ALTER TABLE _substrat_stage_tables ADD COLUMN objects TEXT`));
       }
     }
 
