@@ -76,6 +76,31 @@ describe('scope restore backup provenance (#1880)', () => {
     expect(posts[0]!.body).toMatchObject({ tenantId: sourceTenant, scopeId: sourceScope, tables, stores });
   });
 
+  it("a module table's own index and guard trigger survive a pull to .sqlite and a restore from it (#2820)", async () => {
+    // In name order, as a read of `sqlite_master` returns them.
+    const objects = [
+      { type: 'trigger', name: 'notes_no_delete', ddl: "CREATE TRIGGER notes_no_delete BEFORE DELETE ON notes BEGIN SELECT RAISE(ABORT, 'kept'); END" },
+      { type: 'index', name: 'notes_one', ddl: 'CREATE UNIQUE INDEX notes_one ON notes (id)' },
+    ];
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, masked: false, tables: [{ ...tables[0], objects }] }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outDir = join(dir, 'with-objects');
+    await pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: sourceTenant, scopeId: sourceScope, full: true, outDir });
+    const file = join(outDir, `${sourceTenant}__${sourceScope}.sqlite`);
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(file);
+    expect(() => db.exec('DELETE FROM notes')).toThrow(/kept/);
+    db.close();
+
+    const posts = capturePost();
+    await restoreScope(opts(file));
+    expect(posts[0]!.body).toMatchObject({ tables: [{ name: 'notes', objects }] });
+  });
+
   it('reads source IDs from a standard SQLite backup filename', async () => {
     const file = join(dir, `${sourceTenant}__${sourceScope}.sqlite`);
     await writeSqlite(file);
