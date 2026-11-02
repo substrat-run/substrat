@@ -150,6 +150,13 @@ async function freeContact(): Promise<string> {
   if (!free) throw new Error('the seed has no unbound contact');
   return free.id;
 }
+/** The contact can be invited again — withdrawn at once, so no later case meets a pending invite on it. */
+async function invitedAgainThenWithdrawn(contactId: string): Promise<void> {
+  const again = await post('/api/invites', { roleKey: 'customer', contactId });
+  expect(again.status).toBe(201);
+  const { principal } = (await again.json()) as { principal: string };
+  expect((await post(`/api/invites/${principal}/revoke`)).status).toBe(204);
+}
 const contactPrincipal = async (contactId: string) =>
   ((await (await adminStub()).invoke('ticket0/get-contact', { contactId })) as { principal: string | null }).principal;
 
@@ -332,7 +339,7 @@ describe('a customer invite binds them to their contact (#1686)', () => {
     });
     const res = await post(`/api/bindings/contact/${contactId}/unbind`);
     expect(await res.json()).toEqual({ unbound: [legacy], revokedLinks: [] });
-    expect((await post('/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+    await invitedAgainThenWithdrawn(contactId);
   });
 
   it('a withdrawn customer invite binds nobody', async () => {
@@ -359,10 +366,9 @@ describe('a customer invite binds them to their contact (#1686)', () => {
     asAdmin();
     const res = await post(`/api/bindings/contact/${contactId}/unbind`);
     expect(res.status).toBe(200);
-    // `revokedLinks` is not pinned: the free contact may carry a pending invite an earlier case minted.
-    expect(((await res.json()) as { unbound: string[] }).unbound).toEqual([invite.principal]);
+    expect(await res.json()).toEqual({ unbound: [invite.principal], revokedLinks: [] });
     expect(await contactPrincipal(contactId)).toBeNull();
-    expect((await post('/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
+    await invitedAgainThenWithdrawn(contactId);
   });
 });
 

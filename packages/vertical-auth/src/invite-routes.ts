@@ -576,7 +576,7 @@ export interface UnbindRouteDeps<E extends object, N extends { scopeId: string }
  * before the column was ever written (a legacy holder) is released too — tombstoning the marker
  * and everything they hold on the record, with one `entity.holder-unbound` each on the spine.
  * `unbound: []` when nobody held it. Every binding link still pending on the record is revoked in
- * the same transaction and named in `revokedLinks` (#2818). A caller without the binding's key on the record is refused
+ * the same transaction and named in `revokedLinks` (#2818; absent from an older host). A caller without the binding's key on the record is refused
  * 403, naming it; a type the scope's reconciled registry does not bind is 404. A person keeps
  * their login and any role; what goes is what the record gave them.
  */
@@ -600,6 +600,8 @@ export function mountUnbindRoute<E extends object, N extends { scopeId: string }
       }
       throw new HTTPException(404, { message: `'${entity.data.entityType}' is not bound to a person here` });
     }
-    return c.json({ unbound: answer.data.unbound, revokedLinks: answer.data.revokedLinks });
+    // A host older than #2818 answers no `revokedLinks` (it revoked none): passed on as absent, never as [].
+    const { unbound, revokedLinks } = answer.data;
+    return c.json(revokedLinks === undefined ? { unbound } : { unbound, revokedLinks });
   });
 }

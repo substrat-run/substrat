@@ -1032,7 +1032,7 @@ function markRevoked(
   sql: ScopedSql,
   id: CapabilityId,
   author: CapabilityAuthor | null,
-  now: Instant,
+  now: string,
   /** The kernel's own revoke says why. */
   reason: 'holdings-changed' | null = null,
 ): boolean {
@@ -1048,26 +1048,35 @@ function markRevoked(
 /**
  * Revoke every binding link (#2818) still exchangeable on `entity` — unrevoked, unexpired, under
  * its use limit, its `bind` naming that record — with `by` as the revoker, and name them, sorted.
- * An unbind runs it inside the unbind's transaction: a link must not outlive the binding it was made for.
- * A used-up or expired link is left as it reads.
+ * An unbind and a person's erasure run it inside their own transaction: a link must not outlive
+ * the binding it was made for. A used-up or expired link is left as it reads; a row whose action
+ * does not decode is skipped, since it names no record (its exchange refuses it all the same).
+ * `by` null is the kernel's own revoke (an erasure's), recorded with no revoker.
  */
-export function revokeBindLinksIn(sql: ScopedSql, entity: EntityRef, by: PrincipalId, now: Instant): CapabilityId[] {
-  return sql
-    .query<CapabilityRow>(
-      `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities
-        WHERE mode = 'become' AND action IS NOT NULL AND revoked_at IS NULL`,
-    )
-    .filter((row) => {
-      const action = actionOf(row);
-      return (
-        action?.entity.entityType === entity.entityType &&
-        action.entity.entityId === entity.entityId &&
-        capabilityExchangeable(row, now)
-      );
-    })
-    .map((row) => capabilityIdSchema.parse(row.id))
-    .filter((id) => markRevoked(sql, id, by, now))
-    .sort();
+export function revokeBindLinksIn(sql: ScopedSql, entity: EntityRef, by: PrincipalId | null, now: string): CapabilityId[] {
+  const revoked: CapabilityId[] = [];
+  for (const row of sql.query<{ id: string; action: string }>(
+    `SELECT id, action FROM _substrat_capabilities
+      WHERE mode = 'become' AND action IS NOT NULL AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > ?) AND (max_uses IS NULL OR uses < max_uses)`,
+    [now],
+  )) {
+    const action = decodedAction(row.action);
+    if (action?.entity.entityType !== entity.entityType || action.entity.entityId !== entity.entityId) continue;
+    const id = capabilityIdSchema.parse(row.id);
+    if (markRevoked(sql, id, by, now)) revoked.push(id);
+  }
+  return revoked.sort();
+}
+
+/** A stored action, or null when it does not decode. */
+function decodedAction(text: string): CapabilityAction | null {
+  try {
+    const parsed = capabilityAction.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

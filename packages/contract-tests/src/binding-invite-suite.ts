@@ -638,6 +638,17 @@ export function bindingInviteContractSuite(
         expect(await live(id)).toEqual([]);
       });
 
+      it("erasing the PERSON revokes their record's pending links, so the freed record is not claimable by one (#2818)", async () => {
+        const id = await record();
+        const pending = await minted(clerk, await invitee(), rec(id));
+        const target = await invitee();
+        await exchange((await minted(clerk, target, rec(id))).secret);
+        await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(target));
+        expect((await rowOf(id))?.principal).toBeNull();
+        expect(await exchange(pending.secret)).toBeNull();
+        expect(await capOf(pending.id)).toMatchObject({ revokedBy: null, uses: 0 });
+      });
+
       it('a version that drops `bind` but keeps the shape: nobody may mint or unbind, and an erasure still releases', async () => {
         const { id, target } = await claimed();
         await reconcile([{ ...BIND_SHAPE, bind: undefined }]);

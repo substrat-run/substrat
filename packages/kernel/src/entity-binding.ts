@@ -357,10 +357,15 @@ export function captureBoundOf(sql: ScopedSql, subjectId: string): ErasureBindin
 /**
  * The erasure's unbind, after the module hooks: each captured column cleared where the row survived
  * and still names that person, and each captured holder released from the spine whether or not
- * its row survived. No event: an event naming the erased subject would be a new copy of what is
+ * its row survived. Each such record's pending links are revoked as an unbind revokes them (#2818),
+ * by the kernel itself: a record the erasure frees must not be claimable by a link minted for its
+ * earlier binding. No event: an event naming the erased subject would be a new copy of what is
  * being erased.
  */
 export function releaseBound(sql: ScopedSql, captured: ErasureBindings, now: string): void {
-  for (const { binding, entityId, principal } of captured.columns) clearColumn(sql, binding, entityId, principal);
+  for (const { binding, entityId, principal } of captured.columns) {
+    clearColumn(sql, binding, entityId, principal);
+    revokeBindLinksIn(sql, { entityType: binding.entityType, entityId }, null, now);
+  }
   for (const { object, only } of captured.holders) releaseHolders(sql, object, now, only);
 }
