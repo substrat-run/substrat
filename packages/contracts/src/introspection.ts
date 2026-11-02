@@ -282,18 +282,6 @@ export const scopeQueryResult = z.object({
 export type ScopeQueryResult = z.infer<typeof scopeQueryResult>;
 
 /**
- * A COMPLETE, byte-faithful dump of one scope's database — the deliberate opposite
- * of `readScopeTable` above (bounded, blob-as-null, "not a dump"). This is the whole
- * scope: every table, its DDL, and every row, so it can rebuild the scope elsewhere.
- *
- * It is the privileged primitive the preview/snapshot machinery is built on
- * (docs/architecture/preview-and-snapshots.md §3) — the source a fork or a local pull
- * reads. It KEEPS the `_substrat_*` spine (a fork must carry the event/migration
- * state) and drops only SQLite's own `sqlite_*` internals (auto-managed, and
- * `CREATE TABLE sqlite_*` is rejected on reload). Because it exfiltrates a whole
- * scope, it is staff/audited like every `HostAdmin` read, never a UI affordance.
- */
-/**
  * One of a module table's own indexes or triggers, as `sqlite_master` holds it (#2820). Some are
  * invariants rather than speed: a partial unique index, an append-only trigger. A restore drops
  * the table and its migrations are journaled, so they never run again; the dump is what brings
@@ -307,6 +295,18 @@ export const scopeDumpObject = z.object({
 });
 export type ScopeDumpObject = z.infer<typeof scopeDumpObject>;
 
+/**
+ * A COMPLETE, byte-faithful dump of one scope's database — the deliberate opposite
+ * of `readScopeTable` above (bounded, blob-as-null, "not a dump"). This is the whole
+ * scope: every table, its DDL, and every row, so it can rebuild the scope elsewhere.
+ *
+ * It is the privileged primitive the preview/snapshot machinery is built on
+ * (docs/architecture/preview-and-snapshots.md §3) — the source a fork or a local pull
+ * reads. It KEEPS the `_substrat_*` spine (a fork must carry the event/migration
+ * state) and drops only SQLite's own `sqlite_*` internals (auto-managed, and
+ * `CREATE TABLE sqlite_*` is rejected on reload). Because it exfiltrates a whole
+ * scope, it is staff/audited like every `HostAdmin` read, never a UI affordance.
+ */
 export const scopeDumpTable = z.object({
   /** Table name (a vertical table or a `_substrat_*` spine table). */
   name: z.string().min(1),
@@ -797,33 +797,33 @@ export interface DumpObjectsPlan {
 }
 
 /** Object names a dump never carries: the kernel's, SQLite's, and workerd's own. */
-export function isReservedObjectName(name: string): boolean {
+function isReservedObjectName(name: string): boolean {
   const lower = name.toLowerCase();
   return namesSpineTable(lower) || lower.startsWith('sqlite_') || lower.startsWith('_cf_');
 }
 
 /**
- * The read an exporter runs against `sqlite_master`, and `dumpObjectsByTable` what it keeps: each
- * module table's own indexes and triggers, keyed by the table's name lowercased. An autoindex has
- * no `sql` and is SQLite's to rebuild; a spine table's objects come from the kernel's DDL.
+ * The read an exporter runs against `sqlite_master` (#2820), and `dumpObjectsOf` what it keeps of
+ * the rows: each module table's own indexes and triggers. An autoindex has no `sql` and is SQLite's
+ * to rebuild; a spine table's come from the kernel's DDL, so a spine table carries no `objects`.
  */
 export const DUMP_OBJECTS_QUERY = `SELECT type, name, tbl_name, sql FROM sqlite_master
   WHERE type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY name`;
+export type DumpObjectRow = { type: string; name: string; tbl_name: string; sql: string };
 
-export function dumpObjectsByTable(
-  rows: readonly { type: string; name: string; tbl_name: string; sql: string }[],
-): Map<string, ScopeDumpObject[]> {
+/** A dumped table's `objects` field, by table name: `[]` for a module table with none. */
+export function dumpObjectsOf(rows: readonly DumpObjectRow[]): (table: string) => { objects?: ScopeDumpObject[] } {
   const byTable = new Map<string, ScopeDumpObject[]>();
   for (const { type, name, tbl_name, sql } of rows) {
     if ((type !== 'index' && type !== 'trigger') || isReservedObjectName(name) || isReservedObjectName(tbl_name)) continue;
     const key = tbl_name.toLowerCase();
     byTable.set(key, [...(byTable.get(key) ?? []), { type, name, ddl: sql }]);
   }
-  return byTable;
+  return (table) => (namesSpineTable(table) ? {} : { objects: byTable.get(table.toLowerCase()) ?? [] });
 }
 
 /** Judge every object a dump carries; throws on the first one that breaks the shape. */
-export function dumpObjectsPlan(tables: readonly ReplayableTable[]): DumpObjectsPlan {
+function dumpObjectsPlan(tables: readonly ReplayableTable[]): DumpObjectsPlan {
   const names = new Set(tables.map((t) => t.name.toLowerCase()));
   const replay: (ScopeDumpObject & { table: string })[] = [];
   const skipped: string[] = [];

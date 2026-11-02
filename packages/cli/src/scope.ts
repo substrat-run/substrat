@@ -2,8 +2,8 @@ import {
   assertReplayableDump,
   assertSqlIdentifier,
   DUMP_OBJECTS_QUERY,
-  dumpObjectsByTable,
-  namesSpineTable,
+  dumpObjectsOf,
+  type DumpObjectRow,
   replayDumpObjects,
   problemDetail,
   rebindReviewReasonIn,
@@ -215,7 +215,7 @@ async function readDump(file: string): Promise<Backup> {
   try {
     const tables: DumpTable[] = [];
     // #2820: the module tables' own indexes and triggers ride with them, as an export carries them.
-    const objects = dumpObjectsByTable(db.prepare(DUMP_OBJECTS_QUERY).all() as { type: string; name: string; tbl_name: string; sql: string }[]);
+    const objects = dumpObjectsOf(db.prepare(DUMP_OBJECTS_QUERY).all() as DumpObjectRow[]);
     const rows = db
       .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
       .all() as { name: string; sql: string }[];
@@ -226,13 +226,7 @@ async function readDump(file: string): Promise<Backup> {
       const cols = (db.prepare(`PRAGMA table_info("${t.name}")`).all() as { name: string }[]).map((c) => c.name);
       for (const c of cols) assertSqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
-      tables.push({
-        name: t.name,
-        ddl: t.sql,
-        columns: cols,
-        rows: data.map((r) => cols.map((c) => r[c])),
-        ...(namesSpineTable(t.name) ? {} : { objects: objects.get(t.name.toLowerCase()) ?? [] }),
-      });
+      tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])), ...objects(t.name) });
     }
     const namedOrigin = /^([0-9A-HJKMNP-TV-Z]{26})__([0-9A-HJKMNP-TV-Z]{26})\.sqlite$/i.exec(basename(file));
     const origin = namedOrigin

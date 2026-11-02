@@ -236,7 +236,8 @@ import {
   assertReplayableDump,
   DUMP_OBJECTS_QUERY,
   dumpObjectsAudit,
-  dumpObjectsByTable,
+  dumpObjectsOf,
+  type DumpObjectRow,
   replayDumpObjects,
   delegatedReadRecord,
   ownerTransferAudit,
@@ -12045,9 +12046,7 @@ export class SqliteScopeHost implements ScopeHost {
             .all() as { name: string; sql: string }[]
         ).filter(({ name }) => !isSearchIndexTable(name) && !isWireNonceTable(name));
         // #2820: each module table's own indexes and triggers ride with it; a spine table has none.
-        const objects = dumpObjectsByTable(
-          db.prepare(DUMP_OBJECTS_QUERY).all() as { type: string; name: string; tbl_name: string; sql: string }[],
-        );
+        const objects = dumpObjectsOf(db.prepare(DUMP_OBJECTS_QUERY).all() as DumpObjectRow[]);
         const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
           // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not
           // nulled as in a UI read) so the dump is byte-faithful. The name is from the live
@@ -12058,7 +12057,7 @@ export class SqliteScopeHost implements ScopeHost {
             .raw(true);
           const rows = stmt.all() as unknown[][];
           const columns = stmt.columns().map((c) => c.name);
-          return { name, ddl: sql, columns, rows, ...(isSpineTable(name) ? {} : { objects: objects.get(name.toLowerCase()) ?? [] }) };
+          return { name, ddl: sql, columns, rows, ...objects(name) };
         });
         this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
         const stores = await this.exportScopeStores(tenantId, scopeId);

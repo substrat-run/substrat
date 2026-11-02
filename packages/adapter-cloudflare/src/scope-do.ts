@@ -68,7 +68,8 @@ import {
   errorCodeOf,
   assertReplayableDump,
   DUMP_OBJECTS_QUERY,
-  dumpObjectsByTable,
+  dumpObjectsOf,
+  type DumpObjectRow,
   replayDumpObjects,
   type ScopeDumpObject,
   REDRAIN_BATCH,
@@ -7469,15 +7470,9 @@ export function defineScopeDO(
       });
     }
 
-    /**
-     * #2820: each module table's own indexes and triggers, as a dump carries them beside the table:
-     * `objects` on every module table (`[]` when it has none), never on a spine table.
-     */
+    /** #2820: each module table's own indexes and triggers, as a dump carries them beside the table. */
     private dumpObjects(): (table: string) => { objects?: ScopeDumpObject[] } {
-      const byTable = dumpObjectsByTable(
-        this.sql.exec(DUMP_OBJECTS_QUERY).toArray() as unknown as { type: string; name: string; tbl_name: string; sql: string }[],
-      );
-      return (table) => (isSpineTable(table) ? {} : { objects: byTable.get(table.toLowerCase()) ?? [] });
+      return dumpObjectsOf(this.sql.exec(DUMP_OBJECTS_QUERY).toArray() as unknown as DumpObjectRow[]);
     }
 
     /**
