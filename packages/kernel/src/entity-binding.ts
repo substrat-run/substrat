@@ -12,9 +12,12 @@ import {
   type EntityHolderBoundPayload,
   type EntityHolderUnboundPayload,
   type EntityRef,
+  type Instant,
   type PermissionKey,
   type PrincipalId,
 } from '@substrat-run/contracts';
+// A cycle with capability.ts (which imports `judgeBind`/`bindIn`), of functions only — none runs at load.
+import { revokeBindLinksIn } from './capability.js';
 import { BIND_HOLDER_RELATION, BIND_KEY_RELATION, BIND_PERMISSION_RELATION, BOUND_EVER_RELATION, grantEntityShapeIn } from './entity-grant-shape.js';
 import { SHAPE_PROTECTED_KEY_RELATION } from './entity-grant.js';
 import type { ScopedSql } from './scope-host.js';
@@ -268,12 +271,16 @@ export const ENTITY_UNBIND_OPERATION = 'entities.unbind';
  * its id) and releases every holder of the shape on it from the spine — whoever a link bound,
  * whatever the column says now, and a holder given the shape before the column was written —
  * with one `entity.holder-unbound` event each through `emit`, whose actor the host stamps as the
- * caller. `unbound` names everyone released; a refusal writes nothing.
+ * caller. `unbound` names everyone released. In the same transaction, every binding link still
+ * exchangeable on the record is revoked with the caller as revoker (#2818) — a link must not
+ * outlive the binding it was made for — and named in `revokedLinks`. A refusal writes nothing.
  */
 export async function unbindEntityHolderBounded(
   deps: {
     sql: ScopedSql;
-    now: string;
+    now: Instant;
+    /** The caller, recorded as the revoker of the links the unbind closes. */
+    caller: PrincipalId;
     allowed: (permission: PermissionKey, entity: EntityRef) => Promise<boolean>;
     emit: (event: DomainEventInput) => void;
   },
@@ -289,7 +296,8 @@ export async function unbindEntityHolderBounded(
     const payload: EntityHolderUnboundPayload = { entity, principal, removed };
     deps.emit({ type: ENTITY_HOLDER_UNBOUND, schemaVersion: 1, entity, piiClass: 'none', payload });
   }
-  return { ok: true, unbound: released.map((r) => r.principal) };
+  const revokedLinks = revokeBindLinksIn(deps.sql, entity, deps.caller, deps.now);
+  return { ok: true, unbound: released.map((r) => r.principal), revokedLinks };
 }
 
 /** What an erasure releases, read before any of it runs. */

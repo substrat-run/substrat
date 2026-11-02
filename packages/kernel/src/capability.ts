@@ -1046,6 +1046,31 @@ function markRevoked(
 }
 
 /**
+ * Revoke every binding link (#2818) still exchangeable on `entity` — unrevoked, unexpired, under
+ * its use limit, its `bind` naming that record — with `by` as the revoker, and name them, sorted.
+ * An unbind runs it in its own transaction: a link must not outlive the binding it was made for.
+ * A used-up or expired link is left as it reads.
+ */
+export function revokeBindLinksIn(sql: ScopedSql, entity: EntityRef, by: PrincipalId, now: Instant): CapabilityId[] {
+  return sql
+    .query<CapabilityRow>(
+      `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities
+        WHERE mode = 'become' AND action IS NOT NULL AND revoked_at IS NULL`,
+    )
+    .filter((row) => {
+      const action = actionOf(row);
+      return (
+        action?.entity.entityType === entity.entityType &&
+        action.entity.entityId === entity.entityId &&
+        capabilityExchangeable(row, now)
+      );
+    })
+    .map((row) => capabilityIdSchema.parse(row.id))
+    .filter((id) => markRevoked(sql, id, by, now))
+    .sort();
+}
+
+/**
  * Where each named `become` link stands (#1686), in the order asked — what a pending-invite list
  * shows beside each invite. A capability the scope does not hold reads as `revoked`, never `open`.
  *

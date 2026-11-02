@@ -282,10 +282,12 @@ export type BoundedBecomeRevoke = z.infer<typeof boundedBecomeRevoke>;
  * binding invite: everyone this call released from the record (empty when nobody held its shape,
  * so nothing was written beyond clearing the column); or `coverage` naming the binding's key the caller
  * lacks on the record; or `bind-not-declared` when the scope's reconciled registry binds no such
- * entity type. A refusal writes nothing.
+ * entity type. A refusal writes nothing. `revokedLinks` (#2818): the binding links on the record
+ * this call revoked — every one still exchangeable, since a link must not outlive the binding it
+ * was made for — sorted, empty when none was pending.
  */
 export const boundedUnbind = z.union([
-  z.object({ ok: z.literal(true), unbound: z.array(principalId) }),
+  z.object({ ok: z.literal(true), unbound: z.array(principalId), revokedLinks: z.array(capabilityId) }),
   z.object({ ok: z.literal(false), coverage }),
   z.object({ ok: z.literal(false), refused: z.literal('bind-not-declared') }),
 ]);

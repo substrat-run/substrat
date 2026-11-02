@@ -90,6 +90,7 @@ describe('the contact portal is a binding shape (#2083, #1686)', () => {
     expect(await host.unbindEntityHolderBounded(world.substrat.tenant, world.substrat.scope, world.substrat.admin.principal, contact())).toEqual({
       ok: true,
       unbound: [customer],
+      revokedLinks: [],
     });
     expect(await principalOfContact()).toBeNull();
     expect(await portalOf(customer)).toEqual([]);

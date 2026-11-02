@@ -267,7 +267,9 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   `POST /api/bindings/:entityType/:entityId/unbind` calls the host's
   `unbindEntityHolderBounded`. It clears the column and releases everyone holding the shape on
   the record, found by their marker rather than by the column, answering
-  `{ unbound: [<principal>, …] }`, or 403 naming the bind key the caller lacks on that record,
+  `{ unbound: [<principal>, …], revokedLinks: [<capability>, …] }`. In the same transaction it
+  revokes every binding link still pending on the record, since a link must not outlive the
+  binding it was made for. Or it answers 403 naming the bind key the caller lacks on that record,
   or 404 for a type the scope does not bind. People already bound keep the shape until an
   unbind, an erasure or a retirement of its keys releases them, whatever a later version
   declares. So a version that removes the shape, moves its holder, makes it a sharing shape or

@@ -331,7 +331,7 @@ describe('a customer invite binds them to their contact (#1686)', () => {
       error: expect.stringContaining('already has a portal customer from an earlier invite'),
     });
     const res = await post(`/api/bindings/contact/${contactId}/unbind`);
-    expect(await res.json()).toEqual({ unbound: [legacy] });
+    expect(await res.json()).toEqual({ unbound: [legacy], revokedLinks: [] });
     expect((await post('/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
   });
 
@@ -359,7 +359,7 @@ describe('a customer invite binds them to their contact (#1686)', () => {
     asAdmin();
     const res = await post(`/api/bindings/contact/${contactId}/unbind`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ unbound: [invite.principal] });
+    expect(await res.json()).toEqual({ unbound: [invite.principal], revokedLinks: [] });
     expect(await contactPrincipal(contactId)).toBeNull();
     expect((await post('/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
   });

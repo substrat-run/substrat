@@ -25,7 +25,8 @@
  * 5. **The keys come only from the column.** A direct grant of a binding shape's key on such a
  *    record is refused; a key outside the shape is not.
  * 6. **The unbind.** Bounded by the key on the record; it clears the column and tombstones the
- *    marker and every key of the shape, a retired one included; the record can be bound again.
+ *    marker and every key of the shape, a retired one included; the record can be bound again. It
+ *    revokes the record's pending links (#2818): a link must not outlive the binding it was made for.
  * 7. **The erasure.** Erasing the record or its person releases the binding — after the module's
  *    hook has read the rows by the column, and also when the hook deleted the row.
  */
@@ -286,11 +287,19 @@ export function bindingInviteContractSuite(
           ({ id }) => put('UPDATE bind_records SET principal = NULL WHERE id = ?', [id]),
         ));
 
-      it('is refused, unspent, when someone came to hold the record’s shape meanwhile — and goes through once they are unbound', () =>
-        refusedThenAllowed(
-          ({ id }) => host.admin.grantEntityShape(staff, { principalId: p(), node: node(), entity: rec(id), permissions: [BIND_READ_OWN], grantedBy: clerk }),
-          ({ id }) => fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id)),
-        ));
+      it('is refused, unspent, when someone came to hold the record’s shape meanwhile — and the unbind that frees the record revokes it', async () => {
+        const id = await record();
+        const link = await minted(clerk, await invitee(), rec(id));
+        await host.admin.grantEntityShape(staff, { principalId: p(), node: node(), entity: rec(id), permissions: [BIND_READ_OWN], grantedBy: clerk });
+        const before = await snapshot();
+        expect(await exchange(link.secret)).toBeNull();
+        expect(await snapshot()).toEqual(before);
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toMatchObject({ ok: true, revokedLinks: [link.id] });
+        expect(await exchange(link.secret)).toBeNull();
+        const target = await invitee();
+        expect((await exchange((await minted(clerk, target, rec(id))).secret))?.kind).toBe('principal');
+        expect((await rowOf(id))?.principal).toBe(target);
+      });
 
       it('is refused, unspent, when the record is gone — and goes through once it is back', () =>
         refusedThenAllowed(
@@ -367,7 +376,7 @@ export function bindingInviteContractSuite(
       it('an unbind clears every row carrying the id', async () => {
         const key = ulid();
         await put('INSERT INTO bind_dups (key, holder) VALUES (?, ?), (?, ?)', [key, p(), key, p()]);
-        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, dup(key))).toEqual({ ok: true, unbound: [] });
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, dup(key))).toEqual({ ok: true, unbound: [], revokedLinks: [] });
         expect(await rowsOf(key)).toEqual([null, null]);
       });
     });
@@ -530,7 +539,7 @@ export function bindingInviteContractSuite(
         const { id, target } = await claimed();
         // A retired key left from before the shape dropped it — only the kernel's own writes can put it here now.
         await raw(t1, s1, 'INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', [`principal:${target}`, `granted:${BIND_OLD}`, `brecord:${id}`]);
-        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target] });
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target], revokedLinks: [] });
         expect((await rowOf(id))?.principal).toBeNull();
         expect(await tuplesOn(id)).toEqual([
           { subject: `principal:${target}`, relation: 'bootstrap', live: false },
@@ -544,7 +553,7 @@ export function bindingInviteContractSuite(
         ]);
         // Nothing left to unbind: an answer, and nothing written.
         const before = await snapshot();
-        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [] });
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [], revokedLinks: [] });
         expect(await snapshot()).toEqual(before);
         // The record is free again: a new invite binds a new person.
         const next = await invitee();
@@ -558,7 +567,7 @@ export function bindingInviteContractSuite(
         const other = p();
         await put('UPDATE bind_records SET principal = ? WHERE id = ?', [other, id]);
         // `other` holds no marker here — the column alone is no holding — so only the bound person is released.
-        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target] });
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target], revokedLinks: [] });
         expect((await rowOf(id))?.principal).toBeNull();
         expect(await reads(target, id)).toBe(false);
         expect((await tuplesOn(id)).filter((t) => t.live)).toEqual([]);
@@ -571,13 +580,26 @@ export function bindingInviteContractSuite(
           const { id, target } = await claimed();
           await reconcile([{ ...BIND_SHAPE, retired: undefined }]);
           expect((await tuplesOn(id)).filter((t) => t.live).map((t) => t.relation)).toEqual(['bootstrap', `granted:${BIND_OLD}`, `granted:${BIND_READ_OWN}`]);
-          expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target] });
+          expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [target], revokedLinks: [] });
           expect((await tuplesOn(id)).filter((t) => t.live)).toEqual([]);
           const event = (await outbox(ENTITY_HOLDER_UNBOUND)).find((e) => e.entity_id === id);
           expect(event?.payload).toMatchObject({ removed: [BIND_OLD, BIND_READ_OWN] });
         } finally {
           await reconcile([BIND_SHAPE]);
         }
+      });
+
+      it("revokes the record's pending links, the unbinder as revoker — not its spent one, nor another record's (#2818)", async () => {
+        const id = await record();
+        const pending = await minted(clerk, await invitee(), rec(id));
+        const spent = await minted(clerk, await invitee(), rec(id));
+        const elsewhere = await minted(clerk, await invitee(), rec(await record()));
+        await exchange(spent.secret);
+        expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toMatchObject({ ok: true, revokedLinks: [pending.id] });
+        expect(await capOf(pending.id)).toMatchObject({ revokedBy: clerk, revokedReason: null, uses: 0 });
+        expect(await exchange(pending.secret)).toBeNull();
+        expect(await capOf(spent.id)).toMatchObject({ revokedAt: null, uses: 1 });
+        expect((await exchange(elsewhere.secret))?.kind).toBe('principal');
       });
 
       it('answers bind-not-declared for a type the registry binds nothing on', async () => {
