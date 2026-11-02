@@ -296,6 +296,7 @@ Semantics:
     the input field carrying its id. The host compares, between `BEGIN` and the guards; a
     precondition a handler evaluates is a precondition a handler can forget.
   - `idempotencyOptOuts` — the operations that declared `idempotency: false`.
+  - `impersonationRefused` — the operations that declared `impersonation: 'refused'`.
 - **`consumers`** — event handlers keyed by event type; the types must appear in
   `manifest.events.consumes`. Idempotency required (at-least-once delivery).
 - **In-scope functions** — plain exports (not registered anywhere) that a vertical's own
