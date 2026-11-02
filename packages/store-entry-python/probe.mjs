@@ -23,6 +23,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID, webcrypto } from 'node:crypto';
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -390,8 +391,21 @@ try {
   check(result(await send(await signed(name, 'body', { body: exact }))) === exact, 'the driver receives the exact body that was verified');
 
   // A body over the limit is refused on its declared length, before it is read; one at it is not.
-  const oversize = await send({ headers: {}, body: 'x'.repeat(entry.STORE_CALL_MAX_BODY_BYTES + 1) });
-  check(oversize.status === 413, 'a body over the limit is answered 413 before it is read', { status: oversize.status, text: oversize.text.slice(0, 80) });
+  // Only a few bytes are written against the declared length, so the answer cannot depend on a
+  // race with the server closing the connection mid-upload: it is given without the body.
+  const oversize = await new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': String(entry.STORE_CALL_MAX_BODY_BYTES + 1) } },
+      (res) => {
+        res.resume();
+        resolve({ status: res.statusCode });
+        req.destroy();
+      },
+    );
+    req.on('error', (err) => (err.code === 'ECONNRESET' ? undefined : reject(err)));
+    req.write('x');
+  });
+  check(oversize.status === 413, 'a body declared over the limit is answered 413 before it is read', oversize);
   const chunked = await fetch(`http://127.0.0.1:${port}/invoke`, {
     method: 'POST',
     body: new ReadableStream({ start: (c) => (c.enqueue(new TextEncoder().encode('{}')), c.close()) }),
