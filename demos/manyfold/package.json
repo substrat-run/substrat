@@ -90,7 +90,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
-    "@scalar/api-reference": "^1.76.0",
+    "@scalar/api-reference": "^1.76.3",
     "@substrat-run/cli": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",

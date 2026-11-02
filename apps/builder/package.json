@@ -29,7 +29,7 @@
     "@substrat-run/kernel": "workspace:*",
     "@substrat-run/model-providers": "workspace:*",
     "@substrat-run/oidc-rp": "workspace:*",
-    "ai": "7.0.152",
+    "ai": "7.0.157",
     "hono": "catalog:"
   },
   "devDependencies": {
