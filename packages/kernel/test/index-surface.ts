@@ -261,6 +261,8 @@ export const INDEX_VALUE_EXPORTS = [
   'assertBoundOperations',
   'assertIdempotencyKey',
   'assertIfMatch',
+  // #2821: both scope hosts refuse an operation declaring `impersonation: 'refused'` through it.
+  'assertImpersonationAdmitted',
   'assertImpersonationWrites',
   'assertJobRegistrable',
   'assertJournalDumpCoherent',
