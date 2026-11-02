@@ -75,6 +75,18 @@ connections: [
 ],
 ```
 
+A ledger binding can ask for more than the monthly sums:
+
+```ts
+connections: [
+  { provider: 'fortnox', operation: 'ledger/record-file', permission: 'ledger:record',
+    options: { form: 'sie', years: 'all' } },
+],
+```
+
+See [the whole SIE file](#the-whole-sie-file). Changing either option re-binds the landing, and a
+re-bound landing starts over.
+
 The platform validates the option before binding. A connection can have **one Fortnox landing
 kind per scope**. An omitted kind means `ledger`, including when a scope is already bound for
 invoices. A declaration or staff bind that asks for the other kind is refused before a new
@@ -88,6 +100,40 @@ this change (see their release changelogs). Older platforms reject `kind` as an 
 binding option: the connection's sweep row says its declared landing could not be bound,
 and the staff failure names the invalid option. A platform whose connector predates the invoice
 sweep seats an invoice binding but polls nothing for it, and reports it as **unsupported**.
+
+### The whole SIE file
+
+`form: 'sie'` lands the year's SIE4 file itself, decoded to text, in one call parsed by
+`fortnoxSieFile`, in place of the `FortnoxLedgerPage`s:
+
+```ts
+{
+  syncId,                                // the content hash: unchanged books, same id
+  connectionId,
+  company: { name, organizationNumber },
+  financialYear: { id, from, to },
+  sie,                                   // the whole file
+}
+```
+
+The summary form lands monthly sums, which is what a chart wants, and it leaves out what the file
+holds beyond them: the opening and closing balances, and every voucher. A vertical that needs those
+already reads SIE, because that is how its users bring in the books by hand, so the file goes through
+the same door. There is no window and no paging: the file is the year, and the landing takes it or
+refuses it whole.
+
+`years` says how many financial years before the current one the binding keeps, or `'all'`. Left
+out, it keeps none.
+
+- **One older year per pass.** A year is one large download and a pass runs on a timer, so a
+  company's history lands newest year first, one year per pass. After that each older year is read
+  once a day. A closed year rarely moves, but Fortnox does not stop it from moving.
+- **The current year is read every pass**, and lands only if the file changed.
+- **The cursor** is per year, written after that year landed, so a refused file is offered again
+  next pass and the other years are not held back. A landing should be idempotent on `syncId`.
+- **The current year** is the one that overlaps the calendar year, as for a summary, which for a
+  broken financial year means the newest one. The year before it is an older year, and it needs
+  `years` to be kept up to date past the turn of the year.
 
 ### What an invoice binding lands
 

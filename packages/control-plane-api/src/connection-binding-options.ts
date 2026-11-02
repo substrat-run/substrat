@@ -16,7 +16,15 @@ export function connectionBindingOptions(provider: string) {
   if (isVerticalConnectorProvider(provider)) return z.object({}).catchall(z.unknown());
   switch (provider) {
     case 'fortnox':
-      return z.object({ kind: z.enum(['ledger', 'supplier-invoice']).optional() }).strict();
+      return z
+        .object({
+          kind: z.enum(['ledger', 'supplier-invoice']).optional(),
+          // A ledger binding's form: the monthly sums, or the whole SIE file.
+          form: z.enum(['summary', 'sie']).optional(),
+          // How many years before the current one a `form: 'sie'` binding keeps.
+          years: z.union([z.literal('all'), z.number().int().min(0).max(100)]).optional(),
+        })
+        .strict();
     case 'planima':
       return z
         .object({

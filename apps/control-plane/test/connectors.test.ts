@@ -60,6 +60,9 @@ describe('connector registry', () => {
     const options = fortnox.options!;
     expect(options(undefined)).toEqual({ kind: undefined });
     expect(options({ kind: 'supplier-invoice' })).toEqual({ kind: 'supplier-invoice' });
+    expect(options({ form: 'sie', years: 'all' })).toEqual({ form: 'sie', years: 'all' });
+    expect(options({ form: 'sie', years: 3 })).toEqual({ form: 'sie', years: 3 });
+    expect(() => options({ form: 'pdf' })).toThrow();
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
     expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
