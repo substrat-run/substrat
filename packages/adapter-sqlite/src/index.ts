@@ -234,6 +234,10 @@ import {
   SCOPE_GATE_REASONS,
   substratError,
   assertReplayableDump,
+  DUMP_OBJECTS_QUERY,
+  dumpObjectsAudit,
+  dumpObjectsByTable,
+  replayDumpObjects,
   delegatedReadRecord,
   ownerTransferAudit,
   memberChangeAudit,
@@ -4694,7 +4698,7 @@ export class SqliteScopeHost implements ScopeHost {
       // `db.exec` would run every statement its `ddl` contains, not just the CREATE
       // TABLE. Judged as a whole before any of it executes — a check interleaved with
       // the replay has already let the earlier tables happen.
-      assertReplayableDump(replayable);
+      const objects = assertReplayableDump(replayable);
       // A vertical's tables take the dump's own DDL. The spine never does (#1883): its tables
       // come from KERNEL_DDL, which also fills in any the dump omits (#321) — e.g.
       // `_substrat_migrations`, which the frontier refresh below reads — and the dump
@@ -4724,6 +4728,10 @@ export class SqliteScopeHost implements ScopeHost {
       // A dump does not carry it; a hand-made one that does is dropped here all the same, so a
       // loaded store's next pass is a dry run.
       clearOrphanSweepLicence(spineSql(db));
+      // #2820: a module's own indexes and triggers went with the dropped tables, and its journal
+      // says the migrations that made them ran. Put back from the dump, after the rows they judge
+      // and before the kernel derives its own. One statement each, as `prepare` compiles one.
+      replayDumpObjects(objects, (ddl) => db.prepare(blankSqlComments(ddl)).run());
       // #827 / #119 / #811: the search triggers, the archive/trash guard triggers, the purge
       // sweep's index and the derived list indexes went with the dropped tables, and the search index points at rows that are
       // gone. Put back, and the search index rebuilt, AFTER the rows — which may legitimately
@@ -4829,6 +4837,7 @@ export class SqliteScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
+        moduleObjects: dumpObjectsAudit(dump.tables),
         ...replay,
       },
     );
@@ -12035,6 +12044,10 @@ export class SqliteScopeHost implements ScopeHost {
             )
             .all() as { name: string; sql: string }[]
         ).filter(({ name }) => !isSearchIndexTable(name) && !isWireNonceTable(name));
+        // #2820: each module table's own indexes and triggers ride with it; a spine table has none.
+        const objects = dumpObjectsByTable(
+          db.prepare(DUMP_OBJECTS_QUERY).all() as { type: string; name: string; tbl_name: string; sql: string }[],
+        );
         const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
           // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not
           // nulled as in a UI read) so the dump is byte-faithful. The name is from the live
@@ -12045,7 +12058,7 @@ export class SqliteScopeHost implements ScopeHost {
             .raw(true);
           const rows = stmt.all() as unknown[][];
           const columns = stmt.columns().map((c) => c.name);
-          return { name, ddl: sql, columns, rows };
+          return { name, ddl: sql, columns, rows, ...(isSpineTable(name) ? {} : { objects: objects.get(name.toLowerCase()) ?? [] }) };
         });
         this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
         const stores = await this.exportScopeStores(tenantId, scopeId);

@@ -1,6 +1,10 @@
 import {
   assertReplayableDump,
   assertSqlIdentifier,
+  DUMP_OBJECTS_QUERY,
+  dumpObjectsByTable,
+  namesSpineTable,
+  replayDumpObjects,
   problemDetail,
   rebindReviewReasonIn,
   scopeId,
@@ -79,7 +83,7 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   // DDL. Checked here rather than only at the caller because this is the site that
   // interpolates and executes them — and checked ahead of the `rmSync` so a refused
   // dump leaves the previous pull's file where it was instead of deleting it first.
-  assertReplayableDump(dump.tables);
+  const objects = assertReplayableDump(dump.tables);
   rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
@@ -98,6 +102,8 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
       const stmt = db.prepare(`INSERT INTO "${t.name}" (${cols}) VALUES (${marks})`);
       for (const row of t.rows) stmt.run(...row.map(bindable));
     }
+    // #2820: the module tables' own indexes and triggers, after every row they judge.
+    replayDumpObjects(objects, (ddl) => db.prepare(ddl).run());
   } finally {
     db.close();
   }
@@ -208,6 +214,8 @@ async function readDump(file: string): Promise<Backup> {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     const tables: DumpTable[] = [];
+    // #2820: the module tables' own indexes and triggers ride with them, as an export carries them.
+    const objects = dumpObjectsByTable(db.prepare(DUMP_OBJECTS_QUERY).all() as { type: string; name: string; tbl_name: string; sql: string }[]);
     const rows = db
       .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
       .all() as { name: string; sql: string }[];
@@ -218,7 +226,13 @@ async function readDump(file: string): Promise<Backup> {
       const cols = (db.prepare(`PRAGMA table_info("${t.name}")`).all() as { name: string }[]).map((c) => c.name);
       for (const c of cols) assertSqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
-      tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
+      tables.push({
+        name: t.name,
+        ddl: t.sql,
+        columns: cols,
+        rows: data.map((r) => cols.map((c) => r[c])),
+        ...(namesSpineTable(t.name) ? {} : { objects: objects.get(t.name.toLowerCase()) ?? [] }),
+      });
     }
     const namedOrigin = /^([0-9A-HJKMNP-TV-Z]{26})__([0-9A-HJKMNP-TV-Z]{26})\.sqlite$/i.exec(basename(file));
     const origin = namedOrigin

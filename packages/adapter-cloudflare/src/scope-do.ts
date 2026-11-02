@@ -67,6 +67,10 @@ import {
   substratError,
   errorCodeOf,
   assertReplayableDump,
+  DUMP_OBJECTS_QUERY,
+  dumpObjectsByTable,
+  replayDumpObjects,
+  type ScopeDumpObject,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import {
@@ -1106,7 +1110,7 @@ const STAGE_IN_PROGRESS = 'a different staged load is in progress; retry after i
 const STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * SCOPE_COPY_LEASE_MS;
 
 /** A table a load replays (#2450): its schema, and its rows, read when the load reaches them. */
-type LoadTable = { name: string; ddl: string; columns: string[]; rows: () => Iterable<unknown[]> };
+type LoadTable = { name: string; ddl: string; columns: string[]; objects?: ScopeDumpObject[]; rows: () => Iterable<unknown[]> };
 
 /**
  * A staged load's own tables (#2450): `_substrat_stage` (which load, and the next page it takes),
@@ -1118,7 +1122,7 @@ type LoadTable = { name: string; ddl: string; columns: string[]; rows: () => Ite
 const STAGE_GLOB = '_substrat_stage*';
 const STAGE_TABLES_DDL = [
   `CREATE TABLE _substrat_stage (stage_id TEXT NOT NULL, next_seq INTEGER NOT NULL)`,
-  `CREATE TABLE _substrat_stage_tables (ord INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, ddl TEXT NOT NULL, columns TEXT NOT NULL)`,
+  `CREATE TABLE _substrat_stage_tables (ord INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, ddl TEXT NOT NULL, columns TEXT NOT NULL, objects TEXT)`,
 ];
 const stageRowsTable = (ord: number): string => `_substrat_stage_rows_${ord}`;
 /** How many staged rows a commit reads at a time. */
@@ -7447,6 +7451,7 @@ export function defineScopeDO(
      * with the scope's identity after the K-3 check (host.ts admin.exportScope).
      */
     exportDump(): ScopeDumpTable[] {
+      const objects = this.dumpObjects();
       return this.dumpTableDefs().map(({ name, sql }) => {
         // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
         // read) so the dump reloads faithfully. The name is from the live schema.
@@ -7454,8 +7459,19 @@ export function defineScopeDO(
         const cursor = this.sql.exec(`SELECT * FROM "${name}" WHERE ${where}`, ...bindings);
         const columns = cursor.columnNames;
         const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
-        return { name, ddl: sql, columns, rows };
+        return { name, ddl: sql, columns, rows, ...objects(name) };
       });
+    }
+
+    /**
+     * #2820: each module table's own indexes and triggers, as a dump carries them beside the table:
+     * `objects` on every module table (`[]` when it has none), never on a spine table.
+     */
+    private dumpObjects(): (table: string) => { objects?: ScopeDumpObject[] } {
+      const byTable = dumpObjectsByTable(
+        this.sql.exec(DUMP_OBJECTS_QUERY).toArray() as unknown as { type: string; name: string; tbl_name: string; sql: string }[],
+      );
+      return (table) => (isSpineTable(table) ? {} : { objects: byTable.get(table.toLowerCase()) ?? [] });
     }
 
     /**
@@ -7509,6 +7525,7 @@ export function defineScopeDO(
         this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
       }
       const defs = this.dumpTableDefs();
+      const objects = this.dumpObjects();
       if (capture !== undefined) {
         if (cursor === null) this.openCapture(capture, defs);
         else this.heldCapture(capture, defs);
@@ -7555,7 +7572,7 @@ export function defineScopeDO(
           }
           if (full || read.length < DUMP_READ_BATCH) break;
         }
-        tables.push({ name, ddl: sql, columns, rows, ...(capture !== undefined && byRowid ? { rowids } : {}) });
+        tables.push({ name, ddl: sql, columns, rows, ...objects(name), ...(capture !== undefined && byRowid ? { rowids } : {}) });
         if (full) {
           next = encodeDumpCursor({ table: name, after: last ?? 0 });
           break;
@@ -8080,7 +8097,7 @@ export function defineScopeDO(
       opts: ImportDumpOptions = {},
     ): Promise<SwitchedOff[]> {
       return this.loadTables(
-        tables.map((t) => ({ name: t.name, ddl: t.ddl, columns: t.columns, rows: () => t.rows })),
+        tables.map((t) => ({ name: t.name, ddl: t.ddl, columns: t.columns, objects: t.objects, rows: () => t.rows })),
         destScopeId,
         opts,
       );
@@ -8145,7 +8162,7 @@ export function defineScopeDO(
       // amount of name checking reaches it. There is no prepare step here to compile
       // only the first statement, so the text itself has to be the one statement.
       // Pure input validation, so it runs before the first DROP: a refused dump touches nothing.
-      assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
+      const objects = assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
       // #1869: `exact` vouches for a named source; without one it would silently fall back.
       if (exact && !sourceScopeId) {
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
@@ -8331,6 +8348,10 @@ export function defineScopeDO(
           // derived (#2090). Inside the replay's transaction: a dump whose journal owes a table a
           // state column it does not carry rolls the whole load back. A plan whose table this dump
           // did not carry is skipped: a restore must not invent one.
+          // #2820: a module's own indexes and triggers went with the dropped tables, and its journal
+          // says the migrations that made them ran. Put back from the dump, after the rows they judge
+          // and before the kernel derives its own.
+          replayDumpObjects(objects, (ddl) => this.sql.exec(blankSqlComments(ddl)));
           repairDerivedObjects(doSpineSql(this.sql), (ddl) => this.runScript(ddl), this.derivedPlans(), {
             after: 'the restored dump',
             absentTable: 'skip',
@@ -8546,21 +8567,23 @@ export function defineScopeDO(
           if (seq > head.nextSeq) {
             throw substratError('precondition_failed', `stage page ${seq} arrived before page ${head.nextSeq}`);
           }
+          this.stageObjectsColumn();
           for (const t of tables) {
             const columns = JSON.stringify(t.columns);
+            const objects = t.objects === undefined ? null : JSON.stringify(t.objects);
             let held = this.sql
-              .exec(`SELECT ord, ddl, columns FROM _substrat_stage_tables WHERE name = ?`, t.name)
-              .toArray()[0] as { ord: number; ddl: string; columns: string } | undefined;
+              .exec(`SELECT ord, ddl, columns, objects FROM _substrat_stage_tables WHERE name = ?`, t.name)
+              .toArray()[0] as { ord: number; ddl: string; columns: string; objects: string | null } | undefined;
             if (!held) {
               const ord = Number((this.sql.exec(`SELECT COUNT(*) AS n FROM _substrat_stage_tables`).toArray()[0] as { n: number }).n);
               this.sql.exec(
-                `INSERT INTO _substrat_stage_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`,
-                ord, t.name, t.ddl, columns,
+                `INSERT INTO _substrat_stage_tables (ord, name, ddl, columns, objects) VALUES (?, ?, ?, ?, ?)`,
+                ord, t.name, t.ddl, columns, objects,
               );
               // Untyped columns: no affinity, so a cell is stored exactly as it came.
               this.sql.exec(`CREATE TABLE "${stageRowsTable(ord)}" (${t.columns.map((_, i) => `c${i}`).join(', ')})`);
-              held = { ord, ddl: t.ddl, columns };
-            } else if (held.ddl !== t.ddl || held.columns !== columns) {
+              held = { ord, ddl: t.ddl, columns, objects };
+            } else if (held.ddl !== t.ddl || held.columns !== columns || held.objects !== objects) {
               throw substratError('precondition_failed', `table ${t.name} changed between dump pages; nothing more was staged`);
             }
             this.stageRows(held.ord, t);
@@ -8656,13 +8679,15 @@ export function defineScopeDO(
       const out = await this.checkedLoad(() => {
         const head = this.stageHead();
         if (head?.stageId !== stageId) throw substratError('precondition_failed', STAGE_GONE);
+        this.stageObjectsColumn();
         const staged = this.sql
-          .exec(`SELECT ord, name, ddl, columns FROM _substrat_stage_tables ORDER BY name`)
-          .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string }[];
+          .exec(`SELECT ord, name, ddl, columns, objects FROM _substrat_stage_tables ORDER BY name`)
+          .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string; objects: string | null }[];
         const tables: LoadTable[] = staged.map((t) => ({
           name: t.name,
           ddl: t.ddl,
           columns: JSON.parse(t.columns) as string[],
+          ...(t.objects === null ? {} : { objects: JSON.parse(t.objects) as ScopeDumpObject[] }),
           rows: () => this.stagedRows(t.ord),
         }));
         count = tables.length;
@@ -8702,6 +8727,18 @@ export function defineScopeDO(
         for (const row of batch) yield row.slice(1);
         if (batch.length < STAGE_READ_BATCH) return;
         after = Number(batch[batch.length - 1]![0]);
+      }
+    }
+
+    /**
+     * #2820: a stage opened before `objects` was staged takes the column now. Its pages staged none,
+     * so it commits as a dump that predates them, and a later page that carries them reads as the
+     * table having changed.
+     */
+    private stageObjectsColumn(): void {
+      if (!doBuiltColumnsOf(this.sql, '_substrat_stage_tables').includes('objects')) {
+        // The stage is this store's own, so the column moves no write revision a carry is fenced on.
+        this.revision.untracked(() => this.sql.exec(`ALTER TABLE _substrat_stage_tables ADD COLUMN objects TEXT`));
       }
     }
 

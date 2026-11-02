@@ -138,6 +138,7 @@ import {
   type HistoryEntry,
   type Page,
   queryScopeInput,
+  scopeDumpObject,
   errorCodeOf,
   PARENT_REQUEST_ID_HEADER,
   type ScopeId,
@@ -953,6 +954,8 @@ const dumpTable = z.object({
   ddl: z.string(),
   columns: z.array(z.string()),
   rows: z.array(z.array(z.unknown())),
+  /** #2820: the table's own indexes and triggers; absent from a dump that predates them. */
+  objects: z.array(scopeDumpObject).optional(),
 });
 const dumpTables = z.array(dumpTable);
 /** #2450: a table's fragment in a page, with each row's source rowid on a page read under a capture. */
