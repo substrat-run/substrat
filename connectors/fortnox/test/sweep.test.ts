@@ -252,7 +252,8 @@ describe('fortnox connector — inbound sync', () => {
   describe('the whole SIE file', () => {
     const FILE_OPERATION = 'ledger/record-file';
     const NOW = Date.parse('2026-06-15T12:00:00.000Z');
-    const sie = (year: number, text = 'Hyra') => `#FORMAT PC8\r\n#RAR 0 ${year}0101 ${year}1231\r\n#KONTO 3010 "${text} Ö"\r\n`;
+    const sie = (year: number, text = 'Hyra') =>
+      `#FORMAT PC8\r\n#FNAMN "Testbolaget AB"\r\n#ORGNR 556677-8899\r\n#RAR 0 ${year}0101 ${year}1231\r\n#KONTO 3010 "${text} Ö"\r\n`;
     const YEARS = [
       { Id: 4, FromDate: '2023-01-01', ToDate: '2023-12-31' },
       { Id: 5, FromDate: '2024-01-01', ToDate: '2024-12-31' },
@@ -289,7 +290,7 @@ describe('fortnox connector — inbound sync', () => {
         sie: sie(2026),
       }]);
       expect(landed).toEqual([]);
-      expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=7', '/3/companyinformation']);
+      expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=7']);
     });
 
     it('lands nothing when the file has not changed, and again when it has', async () => {
@@ -348,7 +349,8 @@ describe('fortnox connector — inbound sync', () => {
 
       const first = await sweepFortnoxLedger(host, connId, at(NOW));
 
-      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/year 7 is closed/) }]);
+      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/^financial year 7: .*year 7 is closed/) }]);
+      expect(first.synced).toEqual([expect.objectContaining({ financialYearId: 6, changed: true })]);
       expect(fileYears()).toEqual([6]);
       expect(Object.keys((await listFortnoxBindings(host, connId))[0]!.yearSync!)).toEqual(['6']);
 
@@ -359,6 +361,19 @@ describe('fortnox connector — inbound sync', () => {
       expect(fileYears()).toEqual([6, 7]);
     });
 
+    it('leaves a binding unbound during a pass unbound', async () => {
+      await bindFile(1);
+      // Staff unbinds while the pass downloads the older year, after the current one was written.
+      const fetch: typeof fortnox.fetch = async (input, init) => {
+        if (String(input).includes('financialyear=6')) await unbindFortnoxScope(host, connId, s);
+        return fortnox.fetch(input, init);
+      };
+
+      await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch });
+
+      expect(await listFortnoxBindings(host, connId)).toEqual([]);
+    });
+
     it('refuses `years` on a summary, and `form` on an invoice binding', async () => {
       const bindWith = (over: Partial<Parameters<typeof bindFortnoxScope>[1]>) => bindFortnoxScope(host, {
         connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD, ...over,
@@ -367,12 +382,16 @@ describe('fortnox connector — inbound sync', () => {
       await expect(bindWith({ years: 2 })).rejects.toThrow("years applies to a binding with form 'sie'");
       await expect(bindWith({ form: 'summary', years: 2 })).rejects.toThrow("years applies to a binding with form 'sie'");
       await expect(bindWith({ kind: 'supplier-invoice', form: 'sie' })).rejects.toThrow("form applies to a ledger binding, not to 'supplier-invoice'");
+      await expect(bindWith({ form: 'sie', years: -1 })).rejects.toThrow("years is 'all' or a whole number of years");
       expect(await listFortnoxBindings(host, connId)).toEqual([]);
     });
 
-    it('starts over when a re-bind changes what it keeps', async () => {
+    it('keeps what landed through a re-bind that changes nothing, and starts over when one does', async () => {
       await bindFile();
       await sweepFortnoxLedger(host, connId, at(NOW));
+
+      await bindFile();
+      expect(Object.keys((await listFortnoxBindings(host, connId))[0]!.yearSync!)).toEqual(['7']);
 
       await bindFile('all');
 

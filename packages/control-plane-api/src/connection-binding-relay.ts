@@ -125,8 +125,11 @@ export async function relayConnectionBind(
   const { landing } = declared;
   const current = (await binder.list(host, connection)).find((b) => b.scopeId === scope.id);
   // The declaration's options fill only what the binding does not hold yet, and the scope's own
-  // override both: a rebind keeps the scope's options, never resetting them to the defaults.
-  const defaults = Object.fromEntries(Object.entries(landing.options ?? {}).filter(([k]) => !current || !(k in current)));
+  // override both: a rebind keeps the scope's options, never resetting them to the defaults. A key
+  // the binding holds is handed on as held rather than left out, because a binder that does not
+  // merge `current` (Fortnox) would read its absence as the default.
+  const holds = current as Record<string, unknown> | undefined;
+  const defaults = Object.fromEntries(Object.entries(landing.options ?? {}).map(([k, v]) => [k, holds && k in holds ? holds[k] : v]));
   let bindingOptions: Record<string, unknown>;
   try {
     bindingOptions = binder.options ? binder.options({ ...defaults, ...input.options }, current) : { ...defaults, ...input.options };

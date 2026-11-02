@@ -70,7 +70,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
   const statusOfA = () => relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf()).then((r) => r.bindings);
 
   /** A version of the vertical declaring the landing in `mode`, holding `key`, and every scope given it. */
-  const runs = async (mode: 'on-request' | 'every-install', key = LAND) => {
+  const runs = async (mode: 'on-request' | 'every-install', key = LAND, options?: Record<string, unknown>) => {
     const id = ulid();
     await host.admin.publishVersion(relayActor, await heldVersion({
       id, verticalSlug: SLUG, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
@@ -79,7 +79,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
           permissions: [LAND, INGEST].map((k) => ({ key: k, description: 'land a plan', declaredBy: ['@acme/drive'] })),
           roles: [],
           entityGrants: [],
-          connections: [{ provider: 'planima', operation: 'drive/land', permission: key, ...(mode === 'on-request' ? { bind: mode } : {}), declaredBy: ['@acme/drive'] }],
+          connections: [{ provider: 'planima', operation: 'drive/land', permission: key, ...(mode === 'on-request' ? { bind: mode } : {}), ...(options ? { options } : {}), declaredBy: ['@acme/drive'] }],
         },
       }),
     }));
@@ -241,6 +241,17 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await holdsKey(fresh, INGEST)).toBe(true);
     expect(await refusal(bindRefused(fresh))).toBe(422);
     expect([await holdsKey(fresh, INGEST), await holdsKey(fresh, LAND)]).toEqual([false, false]);
+  });
+
+  it("keeps a declared option the binding holds through a rebind that omits it, even with a binder that does not merge what it holds", async () => {
+    await runs('on-request', LAND, { horizonYears: 5 });
+    const conn = await own(a);
+    const declarationOnly: ConnectionBinder = { ...binder, options: (raw) => connectionBindingOptions('planima').parse(raw ?? {}) };
+    await relayConnectionBind(host, relayActor, bindBody(a, conn, { horizonYears: 8 }), landings(true, declarationOnly));
+
+    await relayConnectionBind(host, relayActor, bindBody(a, conn, {}), landings(true, declarationOnly));
+
+    expect((await listPlanimaBindings(host, conn))[0]).toMatchObject({ horizonYears: 8 });
   });
 
   it("takes the previous key back on a rebind under a landing whose key changed, so an unbind then leaves nothing", async () => {

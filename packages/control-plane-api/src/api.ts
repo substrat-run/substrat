@@ -1,6 +1,6 @@
 import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
-import { bindingChangeRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
+import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
 import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
@@ -3509,6 +3509,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       permission: permissionKey,
     });
     const input = schema.parse(await c.req.json());
+    const optionsRefused = bindingOptionsRefusal(row.provider, input as { kind?: string; form?: string; years?: unknown });
+    if (optionsRefused) return refuseStatus(c, 422, optionsRefused);
     const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
     if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {
       return refuseStatus(c, 409, `connection does not hold '${input.permission}' on scope ${scopeId}; grant it through the tenant's authorized connection flow, then bind`);

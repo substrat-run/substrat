@@ -85,7 +85,7 @@ connections: [
 ```
 
 See [the whole SIE file](#the-whole-sie-file). Changing either option re-binds the landing, and a
-re-bound landing starts over.
+re-bound landing starts over. A re-bind that changes nothing keeps the years already landed.
 
 The platform validates the option before binding. A connection can have **one Fortnox landing
 kind per scope**. An omitted kind means `ledger`, including when a scope is already bound for

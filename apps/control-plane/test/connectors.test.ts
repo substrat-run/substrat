@@ -63,6 +63,8 @@ describe('connector registry', () => {
     expect(options({ form: 'sie', years: 'all' })).toEqual({ form: 'sie', years: 'all' });
     expect(options({ form: 'sie', years: 3 })).toEqual({ form: 'sie', years: 3 });
     expect(() => options({ form: 'pdf' })).toThrow();
+    expect(() => options({ years: 3 })).toThrow("years applies to a binding with form 'sie'");
+    expect(() => options({ kind: 'supplier-invoice', form: 'sie' })).toThrow('form applies to a ledger binding');
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
     expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');

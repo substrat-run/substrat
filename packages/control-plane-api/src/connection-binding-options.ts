@@ -47,6 +47,20 @@ export function connectionBindingOptions(provider: string) {
   }
 }
 
+/**
+ * Why a combination of options {@link connectionBindingOptions} admits field by field cannot bind,
+ * or `undefined`. Every door asks it after the schema, so a staff PUT answers it as a refusal
+ * rather than the connector's throw inside the write, and a declaration is reported on the sweep
+ * row before anything is granted. Kept apart from the schema because the doors `extend` and
+ * `strip` it, which a refinement would not survive.
+ */
+export function bindingOptionsRefusal(provider: string, options: { kind?: string | null; form?: string | null; years?: unknown }): string | undefined {
+  if (provider !== 'fortnox') return undefined;
+  if (options.form != null && (options.kind ?? 'ledger') !== 'ledger') return `form applies to a ledger binding, not to '${options.kind}'`;
+  if (options.years != null && options.form !== 'sie') return "years applies to a binding with form 'sie': the summary form lands the current year";
+  return undefined;
+}
+
 /** Whether {@link bindingChangeRefusal} can refuse anything for `provider`, so a door reads the held binding only then. */
 export const refusesBindingChange = (provider: string): boolean => provider === 'fortnox';
 

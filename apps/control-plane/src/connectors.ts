@@ -8,7 +8,7 @@ import {
 } from '@substrat-run/kernel';
 import { isVerticalConnectorProvider } from '@substrat-run/contracts';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
-import { bindingChangeRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
+import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -577,7 +577,7 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
               form?: 'summary' | 'sie';
               years?: 'all' | number;
             };
-            const refusal = bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
+            const refusal = bindingOptionsRefusal(c.provider, parsed) ?? bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
             if (refusal) throw new Error(refusal);
             return { kind: parsed.kind, form: parsed.form, years: parsed.years };
           }
