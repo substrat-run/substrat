@@ -557,6 +557,24 @@ describe('fortnox connector — inbound sync', () => {
       expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['1', '2']);
     });
 
+    it.each([
+      ['does not read a failed file again when the landing asks for it again', 'inv-1', 1],
+      ['reads a failed file again when the landing names another entity for it', 'inv-old', 2],
+    ])('%s', async (_, heldEntityId, reads) => {
+      await bindInvoices(FILED_OPERATION);
+      fileEntityType = 'not-a-target';
+      await host.admin.putConnectorState(connId, `fortnox:binding:${s}`, {
+        ...(await binding()),
+        files: [{ givenNumber: '1', entity: { entityType: 'not-a-target', entityId: heldEntityId } }],
+      });
+      filed('1', 'a.pdf');
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('file of supplier invoice 1:') }]);
+      expect(fortnox.calls.filter((c) => c.includes('/archive/'))).toHaveLength(reads);
+    });
+
     it('says the consent is short when Fortnox refuses a file, reads no more of them, and keeps landing invoices', async () => {
       await bindInvoices(FILED_OPERATION);
       filed('1', 'a.pdf');

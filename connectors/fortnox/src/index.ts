@@ -867,6 +867,9 @@ export async function syncFortnoxSupplierInvoices(
 const firstPassSince = (binding: FortnoxBinding, nowMs: number): number | null =>
   binding.firstPass === 'all' ? null : nowMs - (binding.firstPass ?? INVOICE_FIRST_LOOKBACK_DAYS) * 86_400_000;
 
+const triedKey = (entry: FortnoxInvoiceFileEntry): string =>
+  JSON.stringify([entry.givenNumber, entry.entity.entityType, entry.entity.entityId]);
+
 /**
  * The invoice files one pass reads: the queue the binding carries, plus what the landing asks for.
  *
@@ -880,6 +883,11 @@ class InvoiceFiles {
   private failure: Error | null = null;
   /** The company's consent refused a read, so the rest of the pass asks nothing more. */
   private refused = false;
+  /**
+   * What failed this pass, by invoice and entity, so the drain after the landing does not read it
+   * again. A landing that names another entity for the invoice is a new request, and is read.
+   */
+  private readonly tried = new Set<string>();
   /** Files landed so far this pass. */
   landed = 0;
   readonly skipped: { givenNumber: string; reason: string }[] = [];
@@ -924,8 +932,10 @@ class InvoiceFiles {
   /** Read what the budget and the deadline allow. */
   async drain(): Promise<void> {
     const failed: FortnoxInvoiceFileEntry[] = [];
-    while (!this.refused && this.queue.length > 0 && this.budget.details >= INVOICE_FILE_READS && !this.expired()) {
-      const entry = this.queue.shift()!;
+    while (!this.refused && this.budget.details >= INVOICE_FILE_READS && !this.expired()) {
+      const at = this.queue.findIndex((e) => !this.tried.has(triedKey(e)));
+      if (at < 0) break;
+      const [entry] = this.queue.splice(at, 1) as [FortnoxInvoiceFileEntry];
       this.moved = true;
       try {
         if (!(await this.read(entry))) {
@@ -945,6 +955,7 @@ class InvoiceFiles {
           );
           break;
         }
+        this.tried.add(triedKey(entry));
         failed.push(entry);
         this.failure ??= new Error(`file of supplier invoice ${entry.givenNumber}: ${message}`);
       }
