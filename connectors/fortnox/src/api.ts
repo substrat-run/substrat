@@ -203,6 +203,8 @@ const fortnoxSupplierInvoice = z.object({
   /** A credit note. */
   Credit: fortnoxFlag,
   PaymentPending: fortnoxFlag,
+  /** Keeps the invoice out of payment files, and out of Fortnox's payment view. */
+  DisablePaymentFile: fortnoxFlag,
   /** Unset until the invoice is booked. */
   VoucherSeries: fortnoxText(),
   VoucherNumber: fortnoxOptionalNumber,
@@ -225,6 +227,9 @@ const fortnoxSupplierInvoice = z.object({
     .default([]),
 });
 export type FortnoxSupplierInvoice = z.infer<typeof fortnoxSupplierInvoice>;
+
+/** One entry of `GET /3/supplierinvoices/{GivenNumber}/commentlog`. */
+const fortnoxSupplierInvoiceComment = z.object({ Comment: fortnoxText() });
 
 /** One file connected to a supplier invoice, as `GET /3/supplierinvoicefileconnections` lists it. */
 const fortnoxSupplierInvoiceFile = z.object({
@@ -392,12 +397,23 @@ export class FortnoxApi {
    * connection to the same company, or the company's own integrations, spend from the same
    * limit, and the retry is what absorbs them.
    */
-  private async request(path: string, accept?: string): Promise<Awaited<ReturnType<ConnectorConnection['fetch']>>> {
+  private async request(
+    path: string,
+    accept?: string,
+    write?: { method: 'PUT' | 'POST'; body?: unknown },
+  ): Promise<Awaited<ReturnType<ConnectorConnection['fetch']>>> {
+    const body = write?.body === undefined ? undefined : JSON.stringify(write.body);
     for (let attempt = 0; ; attempt += 1) {
       const token = await this.accessToken();
       await this.throttle();
       const res = await this.conn.fetch(`${this.apiBase}${path}`, {
-        headers: { Authorization: `Bearer ${token}`, ...(accept ? { Accept: accept } : {}) },
+        ...(write ? { method: write.method } : {}),
+        ...(body === undefined ? {} : { body }),
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(accept ? { Accept: accept } : {}),
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
       });
       if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
       await this.sleep(retryAfterMs(res.headers?.get('Retry-After') ?? null));
@@ -471,6 +487,15 @@ export class FortnoxApi {
     return asJson(body, `Fortnox GET ${path}`);
   }
 
+  /** One write against the REST host. A `429` never reached Fortnox's books, so it is waited out like a read's. */
+  private async write(method: 'PUT' | 'POST', path: string, body?: unknown): Promise<void> {
+    const res = await this.request(path, 'application/json', { method, body });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new FortnoxApiError(`Fortnox ${method} ${path} failed: ${errorMessage(text, res.status)}`, res.status, text);
+    }
+  }
+
   /** The company — the probe read, and where a connect flow learns `DatabaseNumber`. */
   async companyInformation(): Promise<FortnoxCompany> {
     const raw = (await this.getJson('/companyinformation')) as {
@@ -513,6 +538,33 @@ export class FortnoxApi {
       SupplierInvoice?: unknown;
     };
     return fortnoxSupplierInvoice.parse(raw.SupplierInvoice ?? raw);
+  }
+
+  /** Sets or clears the invoice's payment block. Fortnox changes only the fields a `PUT` names. */
+  async setSupplierInvoicePaymentBlock(givenNumber: string, blocked: boolean): Promise<void> {
+    await this.write('PUT', `/supplierinvoices/${encodeURIComponent(givenNumber)}`, {
+      SupplierInvoice: { DisablePaymentFile: blocked },
+    });
+  }
+
+  /** Books the invoice. Fortnox refuses one that cannot be booked, with its reason. */
+  async bookSupplierInvoice(givenNumber: string): Promise<void> {
+    await this.write('PUT', `/supplierinvoices/${encodeURIComponent(givenNumber)}/bookkeep`);
+  }
+
+  /** The invoice's comment log, as text. */
+  async supplierInvoiceComments(givenNumber: string): Promise<string[]> {
+    const raw = (await this.getJson(`/supplierinvoices/${encodeURIComponent(givenNumber)}/commentlog`)) as {
+      SupplierInvoiceCommentLog?: unknown;
+    };
+    return z.array(fortnoxSupplierInvoiceComment).parse(raw.SupplierInvoiceCommentLog ?? []).map((c) => c.Comment);
+  }
+
+  /** Adds a comment to the log. Fortnox stamps who and when; the log is append-only. */
+  async addSupplierInvoiceComment(givenNumber: string, comment: string): Promise<void> {
+    await this.write('POST', `/supplierinvoices/${encodeURIComponent(givenNumber)}/commentlog`, {
+      SupplierInvoiceCommentLog: { Comment: comment },
+    });
   }
 
   /** The files connected to a supplier invoice, in Fortnox's order. Needs the `connectfile` scope. */

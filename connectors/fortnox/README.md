@@ -180,7 +180,8 @@ to bind time rather than disappearing.
    `CompanyInformation`. What it disproved is in caveat 3.
 
    `test/live.test.ts` reads only: the data calls are GETs, and the one POST is the token mint,
-   which creates no Fortnox record. This connector has no write path to Fortnox at all, so
+   which creates no Fortnox record. The connector writes to Fortnox only for an invoice binding
+   that declares `writeback`, and this suite binds none, so
    running it against a production company cannot damage anything. Putting test data INTO a
    sandbox is therefore a separate script — `pnpm fortnox:seed` — which refuses any company whose
    organisation number is not Fortnox's sandbox marker `555555-5555`. Note that an empty sandbox
