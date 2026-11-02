@@ -21,6 +21,8 @@ const notes = (n: number): ScopeDumpTable => ({
   ddl: 'CREATE TABLE pg_notes (id TEXT PRIMARY KEY, body TEXT, n INTEGER)',
   columns: ['id', 'body', 'n'],
   rows: Array.from({ length: n }, (_, i) => [`n${String(i).padStart(4, '0')}`, `body ${i} `.repeat(20), i]),
+  // #2820: the table's own index travels in every page and through the stage, as in a whole dump.
+  objects: [{ type: 'index', name: 'pg_notes_n', ddl: 'CREATE UNIQUE INDEX pg_notes_n ON pg_notes (n)' }],
 });
 // Read by offset: it has no rowid to page on.
 const tags = (n: number): ScopeDumpTable => ({
