@@ -7479,6 +7479,35 @@
                               "type": "array",
                               "items": {}
                             }
+                          },
+                          "objects": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "index",
+                                    "trigger"
+                                  ]
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "ddl": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "name",
+                                "ddl"
+                              ],
+                              "additionalProperties": false
+                            }
                           }
                         },
                         "required": [
@@ -7528,6 +7557,35 @@
                                   "items": {
                                     "type": "array",
                                     "items": {}
+                                  }
+                                },
+                                "objects": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "index",
+                                          "trigger"
+                                        ]
+                                      },
+                                      "name": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "ddl": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "name",
+                                      "ddl"
+                                    ],
+                                    "additionalProperties": false
                                   }
                                 }
                               },
@@ -23476,6 +23534,34 @@
                             "type": "array",
                             "items": {}
                           }
+                        },
+                        "objects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "index",
+                                  "trigger"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "ddl": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name",
+                              "ddl"
+                            ]
+                          }
                         }
                       },
                       "required": [
@@ -23524,6 +23610,34 @@
                                 "items": {
                                   "type": "array",
                                   "items": {}
+                                }
+                              },
+                              "objects": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "index",
+                                        "trigger"
+                                      ]
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "ddl": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "name",
+                                    "ddl"
+                                  ]
                                 }
                               }
                             },
