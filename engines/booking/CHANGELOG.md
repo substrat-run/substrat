@@ -1,5 +1,18 @@
 # @substrat-run/engine-booking
 
+## 0.9.0
+
+### Minor Changes
+
+- ac9be30: A request's invocation line names the lifecycle moves its operation made (`transitions`: entity, from, to). `assertTransition` takes the operation's context as an optional last argument and notes each legal move on it through the new `ctx.noteTransition`. Both scope hosts report the moves after the commit on `onEmitted`, and drop the ones a rolled-back `ctx.atomic` made. The tenant request read projects them. The work order and booking engines pass their context, so their moves are recorded.
+
+### Patch Changes
+
+- Updated dependencies [37e3153]
+- Updated dependencies [ac9be30]
+  - @substrat-run/contracts@0.175.0
+  - @substrat-run/kernel@0.175.0
+
 ## 0.8.58
 
 ### Patch Changes
