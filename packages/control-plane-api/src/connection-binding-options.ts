@@ -22,6 +22,11 @@ export function connectionBindingOptions(provider: string) {
           // How far back a supplier-invoice binding's first pass reads: days, or every invoice.
           // A changed value re-binds, and a re-bound landing starts its first pass again.
           firstPass: z.union([z.literal('all'), z.number().int().positive().max(36_500)]).optional(),
+          // The vertical's two operations behind writing back to Fortnox. Absent, nothing is written.
+          writeback: z
+            .object({ read: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/), record: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/) })
+            .strict()
+            .optional(),
         })
         .strict();
     case 'planima':

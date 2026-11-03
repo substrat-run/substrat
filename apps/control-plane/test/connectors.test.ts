@@ -63,12 +63,18 @@ describe('connector registry', () => {
     expect(options({ kind: 'supplier-invoice', firstPass: 'all' })).toEqual({ kind: 'supplier-invoice', firstPass: 'all' });
     expect(options({ kind: 'supplier-invoice', firstPass: 365 })).toEqual({ kind: 'supplier-invoice', firstPass: 365 });
     expect(() => options({ kind: 'supplier-invoice', firstPass: 'some' })).toThrow();
+    const writeback = { read: 'invoices/writeback', record: 'invoices/writeback-record' };
+    expect(options({ kind: 'supplier-invoice', writeback })).toEqual({ kind: 'supplier-invoice', writeback });
+    expect(() => options({ kind: 'supplier-invoice', writeback: { read: 'invoices/writeback' } })).toThrow();
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
     // A rebind that restates only the kind keeps the first pass the binding holds.
     const held = { ...invoice, firstPass: 'all' };
     expect(options({ kind: 'supplier-invoice' }, held)).toEqual({ kind: 'supplier-invoice', firstPass: 'all' });
     expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    // The relay passes only what the binding lacks, so what it holds and the call leaves out is kept.
+    const configured = { ...invoice, firstPass: 'all', writeback };
+    expect(options({ kind: 'supplier-invoice' }, configured)).toEqual({ kind: 'supplier-invoice', firstPass: 'all', writeback });
     const legacy = { ...invoice, kind: undefined };
     expect(options(undefined, legacy)).toEqual({ kind: undefined });
     expect(() => options({ kind: 'future-kind' })).toThrow();

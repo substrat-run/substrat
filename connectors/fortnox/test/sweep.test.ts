@@ -30,6 +30,8 @@ import {
   syncFortnoxSupplierInvoices,
   unbindFortnoxScope,
   type FortnoxInvoiceFirstPass,
+  type FortnoxInvoiceWriteback,
+  type FortnoxInvoiceWritebackReceipt,
   type FortnoxLedgerPage,
   type FortnoxSupplierInvoicePage,
 } from '../src/index.js';
@@ -52,6 +54,8 @@ describe('fortnox connector — inbound sync', () => {
   const REFUSING_OPERATION = 'ledger/refuse-period';
   const INVOICE_OPERATION = 'invoices/record';
   const FILED_OPERATION = 'invoices/record-filed';
+  const WRITEBACK_READ = 'invoices/writeback';
+  const WRITEBACK_RECORD = 'invoices/writeback-record';
 
   let dir: string;
   let host: SqliteScopeHost;
@@ -65,6 +69,12 @@ describe('fortnox connector — inbound sync', () => {
   let invoicesLanded: FortnoxSupplierInvoicePage[] = [];
   /** The entity type the filed landing names; a test points it at one nothing declares. */
   let fileEntityType = 'invoice';
+  /** What the write-back read answers, what asked it, and what came back. */
+  let waiting: FortnoxInvoiceWriteback = { hold: [], decisions: [] };
+  let writebackAsked: unknown[] = [];
+  let receipts: FortnoxInvoiceWritebackReceipt[] = [];
+  /** Receipts to refuse, counting down: a pass cut off after Fortnox was written. */
+  let refuseReceipts = 0;
 
   /**
    * A stand-in for the consuming vertical: it owns the landing operation and the
@@ -92,6 +102,20 @@ describe('fortnox connector — inbound sync', () => {
       [INVOICE_OPERATION]: (async (ctx, input: FortnoxSupplierInvoicePage) => {
         assertAllowed(await ctx.check(LEDGER_RECORD));
         invoicesLanded.push(input);
+        return { ok: true };
+      }) as OperationHandler<never, unknown>,
+      [WRITEBACK_READ]: (async (ctx, input: unknown) => {
+        assertAllowed(await ctx.check(LEDGER_RECORD));
+        writebackAsked.push(input);
+        return waiting;
+      }) as OperationHandler<never, unknown>,
+      [WRITEBACK_RECORD]: (async (ctx, input: FortnoxInvoiceWritebackReceipt) => {
+        assertAllowed(await ctx.check(LEDGER_RECORD));
+        if (refuseReceipts > 0) {
+          refuseReceipts -= 1;
+          throw new Error('the receipt did not land');
+        }
+        receipts.push(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
       // A landing that wants every invoice's file, each on an entity named after the invoice.
@@ -126,6 +150,10 @@ describe('fortnox connector — inbound sync', () => {
     landed = [];
     invoicesLanded = [];
     fileEntityType = 'invoice';
+    waiting = { hold: [], decisions: [] };
+    writebackAsked = [];
+    receipts = [];
+    refuseReceipts = 0;
 
     host = new SqliteScopeHost({
       dir,
@@ -290,9 +318,10 @@ describe('fortnox connector — inbound sync', () => {
 
       const first = await sweepFortnoxLedger(host, connId, at(NOW));
 
-      expect(first.invoices).toEqual([{ scopeId: s, landed: 1, files: 0, pending: false }]);
-      // A landing that names no file is read no file.
+      expect(first.invoices).toEqual([{ scopeId: s, landed: 1, files: 0, held: 0, written: 0, pending: false }]);
+      // A landing that names no file is read no file, and a binding that declares no write-back writes nothing.
       expect(fortnox.calls.filter((c) => c.includes('fileconnections') || c.includes('/archive/'))).toEqual([]);
+      expect(fortnox.writes).toEqual([]);
       // 90 days back, less the overlap, in Swedish local time: winter time (UTC+1) in March.
       expect(fortnox.calls[0]).toBe('/3/supplierinvoices?lastmodified=2026-03-17%2012%3A55&limit=500&page=1');
       expect(invoicesLanded).toHaveLength(1);
@@ -381,10 +410,28 @@ describe('fortnox connector — inbound sync', () => {
       expect((await binding()).invoiceSync).toBeUndefined();
     });
 
+    it('keeps the cursor when a re-bind only turns writeback on', async () => {
+      await bindInvoices();
+      invoice('1', '2026-06-10 09:00');
+      await sweepFortnoxLedger(host, connId, at(NOW));
+      const cursor = (await binding()).invoiceSync;
+
+      await bindFortnoxScope(host, {
+        connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: INVOICE_OPERATION, permission: LEDGER_RECORD,
+        kind: 'supplier-invoice', writeback: { read: WRITEBACK_READ, record: WRITEBACK_RECORD },
+      });
+
+      expect((await binding()).invoiceSync).toEqual(cursor);
+    });
+
     it('refuses a first pass on a ledger binding', async () => {
       await expect(bindFortnoxScope(host, {
         connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD, firstPass: 'all',
-      })).rejects.toThrow("firstPass applies to a supplier-invoice binding, not to 'ledger'");
+      })).rejects.toThrow("firstPass and writeback apply to a supplier-invoice binding, not to 'ledger'");
+      await expect(bindFortnoxScope(host, {
+        connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD,
+        writeback: { read: WRITEBACK_READ, record: WRITEBACK_RECORD },
+      })).rejects.toThrow("firstPass and writeback apply to a supplier-invoice binding, not to 'ledger'");
       expect(await listFortnoxBindings(host, connId)).toEqual([]);
     });
 
@@ -395,7 +442,7 @@ describe('fortnox connector — inbound sync', () => {
       const first = await sweepFortnoxLedger(host, connId, at(NOW));
 
       expect(first.failed).toEqual([]);
-      expect(first.invoices).toEqual([{ scopeId: s, landed: 1, files: 2, pending: false }]);
+      expect(first.invoices).toEqual([{ scopeId: s, landed: 1, files: 2, held: 0, written: 0, pending: false }]);
       expect((await onInvoice('12')).map((f) => [f.filename, f.contentType]).sort()).toEqual([
         ['bilaga.png', 'image/png'],
         ['faktura.pdf', 'application/pdf'],
@@ -443,12 +490,12 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('file of supplier invoice 12:') }]);
       expect(invoicesLanded).toHaveLength(1);
-      expect((await binding()).files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }]);
+      expect((await binding()).files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' }, attempts: 1 }]);
 
       const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
       expect(second.failed).toEqual([]);
-      expect(second.invoices).toEqual([{ scopeId: s, landed: 0, files: 1, pending: false }]);
+      expect(second.invoices).toEqual([{ scopeId: s, landed: 0, files: 1, held: 0, written: 0, pending: false }]);
       expect(invoicesLanded).toHaveLength(1);
       expect(await onInvoice('12')).toHaveLength(1);
       expect((await binding()).files).toBeUndefined();
@@ -481,7 +528,7 @@ describe('fortnox connector — inbound sync', () => {
       fortnox.calls.length = 0;
       const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
-      expect(second.invoices).toEqual([{ scopeId: s, landed: 1, files: 0, pending: false }]);
+      expect(second.invoices).toEqual([{ scopeId: s, landed: 1, files: 0, held: 0, written: 0, pending: false }]);
       expect(fortnox.calls.filter((c) => c.includes('/archive/'))).toEqual([]);
       expect(await onInvoice('12')).toHaveLength(1);
     });
@@ -506,7 +553,7 @@ describe('fortnox connector — inbound sync', () => {
       await bindInvoices(FILED_OPERATION, s, 30);
 
       expect((await binding()).invoiceSync).toBeUndefined();
-      expect((await binding()).files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' } }]);
+      expect((await binding()).files).toEqual([{ givenNumber: '12', entity: { entityType: 'invoice', entityId: 'inv-12' }, attempts: 1 }]);
     });
 
     it('stops between an invoice\'s files when the budget runs out, and reads the rest next pass', async () => {
@@ -517,11 +564,11 @@ describe('fortnox connector — inbound sync', () => {
       await run(NOW, { details: 1 });
 
       const budget = { details: 3 };
-      expect(await run(NOW + 15 * 60_000, budget)).toEqual({ scopeId: s, landed: 0, files: 2, pending: true });
+      expect(await run(NOW + 15 * 60_000, budget)).toEqual({ scopeId: s, landed: 0, files: 2, held: 0, written: 0, pending: true });
       expect(budget.details).toBe(0);
       expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['1']);
 
-      expect(await run(NOW + 30 * 60_000, { details: 3 })).toEqual({ scopeId: s, landed: 0, files: 1, pending: false });
+      expect(await run(NOW + 30 * 60_000, { details: 3 })).toEqual({ scopeId: s, landed: 0, files: 1, held: 0, written: 0, pending: false });
       expect((await onInvoice('1')).map((f) => f.filename).sort()).toEqual(['a.pdf', 'b.pdf', 'c.pdf']);
     });
 
@@ -539,7 +586,7 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(result.unchanged).toBe(0);
       expect(result.invoices).toEqual([{
-        scopeId: s, landed: 0, files: 0, pending: false,
+        scopeId: s, landed: 0, files: 0, held: 0, written: 0, pending: false,
         skipped: [{ givenNumber: '12', reason: 'a.pdf is gone from the archive' }],
       }]);
     });
@@ -598,7 +645,7 @@ describe('fortnox connector — inbound sync', () => {
       fortnox.deniedScopes = [];
       const third = await sweepFortnoxLedger(host, connId, at(NOW + 30 * 60_000));
       expect(third.failed).toEqual([]);
-      expect(third.invoices).toEqual([{ scopeId: s, landed: 0, files: 2, pending: false }]);
+      expect(third.invoices).toEqual([{ scopeId: s, landed: 0, files: 2, held: 0, written: 0, pending: false }]);
     });
 
     it('keeps what it read from the queue when the landing after it refuses', async () => {
@@ -627,9 +674,25 @@ describe('fortnox connector — inbound sync', () => {
       expect((await binding()).files).toHaveLength(3);
 
       fortnox.calls.length = 0;
-      expect(await run(NOW + 15 * 60_000, 4)).toEqual({ scopeId: s, landed: 0, files: 2, pending: true });
+      expect(await run(NOW + 15 * 60_000, 4)).toEqual({ scopeId: s, landed: 0, files: 2, held: 0, written: 0, pending: true });
       expect(fortnox.calls.filter((c) => c.startsWith('/3/supplierinvoices?'))).toEqual([]);
       expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['3']);
+    });
+
+    it('steps over a file that fails eight passes, so it cannot hold the budget', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('12', 'faktura.pdf');
+      const fetch: typeof fortnox.fetch = (input, init) => (String(input).includes('/archive/')
+        ? Promise.resolve({ ok: false, status: 500, text: async () => 'broken', headers: { get: () => null } } as unknown as Awaited<ReturnType<typeof fortnox.fetch>>)
+        : fortnox.fetch(input, init));
+      const pass = (n: number) => sweepFortnoxLedger(host, connId, { ...at(NOW + n * 15 * 60_000), fetch });
+
+      for (let n = 0; n < 7; n += 1) await pass(n);
+      expect((await binding()).files).toHaveLength(1);
+
+      const last = await pass(7);
+      expect(last.invoices).toEqual([expect.objectContaining({ skipped: [{ givenNumber: '12', reason: expect.stringContaining('failed 8 passes') }] })]);
+      expect((await binding()).files).toBeUndefined();
     });
 
     it('steps over a file gone from the archive or too large to hold, saying which', async () => {
@@ -650,7 +713,7 @@ describe('fortnox connector — inbound sync', () => {
 
       expect(result.failed).toEqual([]);
       expect(result.invoices).toEqual([{
-        scopeId: s, landed: 1, files: 0, pending: false,
+        scopeId: s, landed: 1, files: 0, held: 0, written: 0, pending: false,
         skipped: [
           { givenNumber: '12', reason: 'stor.pdf is 16777217 bytes, over 16777216' },
           { givenNumber: '12', reason: 'liten.pdf is gone from the archive' },
@@ -673,17 +736,17 @@ describe('fortnox connector — inbound sync', () => {
       for (const n of ['3', '1', '2']) invoice(n, '2026-06-10 09:00');
       const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 2 } });
 
-      expect(await run(NOW)).toEqual({ scopeId: s, landed: 2, files: 0, pending: true });
+      expect(await run(NOW)).toEqual({ scopeId: s, landed: 2, files: 0, held: 0, written: 0, pending: true });
       expect((await binding()).invoiceSync?.pending).toEqual({ startedAt: new Date(NOW).toISOString(), through: '2' });
       invoice('1', '2026-06-15 14:10'); // changed again after the run began
 
-      expect(await run(NOW + 15 * 60_000)).toEqual({ scopeId: s, landed: 1, files: 0, pending: false });
+      expect(await run(NOW + 15 * 60_000)).toEqual({ scopeId: s, landed: 1, files: 0, held: 0, written: 0, pending: false });
       expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1', '2'], ['3']]);
       // Drained: the cursor moves to when the run began, not to now, so the mid-run change is read.
       expect((await binding()).invoiceSync).toMatchObject({ since: new Date(NOW).toISOString() });
       expect((await binding()).invoiceSync?.pending).toBeUndefined();
 
-      expect(await run(NOW + 30 * 60_000)).toEqual({ scopeId: s, landed: 1, files: 0, pending: false });
+      expect(await run(NOW + 30 * 60_000)).toEqual({ scopeId: s, landed: 1, files: 0, held: 0, written: 0, pending: false });
       expect(invoicesLanded.at(-1)!.invoices.map((i) => i.givenNumber)).toEqual(['1']);
     });
 
@@ -729,7 +792,7 @@ describe('fortnox connector — inbound sync', () => {
 
       // The list at 10 s, then reads until 90 s had passed: eight of them.
       expect(first.failed).toEqual([]);
-      expect(first.invoices).toEqual([{ scopeId: s, landed: 8, files: 0, pending: true }]);
+      expect(first.invoices).toEqual([{ scopeId: s, landed: 8, files: 0, held: 0, written: 0, pending: true }]);
       expect(invoicesLanded[0]!.invoices.map((i) => i.givenNumber)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
 
       await sweepFortnoxLedger(host, connId, slow());
@@ -791,6 +854,227 @@ describe('fortnox connector — inbound sync', () => {
       await sweepFortnoxLedger(host, connId, at(Date.parse('2026-10-25T01:30:00.000Z')));
 
       expect(fortnox.calls[0]).toBe('/3/supplierinvoices?lastmodified=2026-10-25%2002%3A00&limit=500&page=1');
+    });
+
+    describe('writing back', () => {
+      const bindWriteback = (operation: string = INVOICE_OPERATION) =>
+        bindFortnoxScope(host, {
+          connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation, permission: LEDGER_RECORD,
+          kind: 'supplier-invoice', writeback: { read: WRITEBACK_READ, record: WRITEBACK_RECORD },
+        });
+      const unbooked = (givenNumber: string, extra: Record<string, unknown> = {}) =>
+        invoice(givenNumber, '2026-06-10 09:00', { Booked: false, ...extra });
+      const decided = (givenNumber: string, over: Partial<FortnoxInvoiceWriteback['decisions'][number]> = {}) => ({
+        key: `decision-${givenNumber}`, givenNumber, book: true, release: true, comment: 'Godkänd', ...over,
+      });
+      const HOLD = { request: 'PUT /3/supplierinvoices/12', body: { SupplierInvoice: { DisablePaymentFile: true } } };
+      const RELEASE = { request: 'PUT /3/supplierinvoices/12', body: { SupplierInvoice: { DisablePaymentFile: false } } };
+      const BOOK = { request: 'PUT /3/supplierinvoices/12/bookkeep' };
+      const COMMENT = { request: 'POST /3/supplierinvoices/12/commentlog', body: { SupplierInvoiceCommentLog: { Comment: 'Godkänd' } } };
+      /** A Fortnox that answers `status` to the requests `matches` picks, `times` times. */
+      const failing = (matches: (url: string, method: string) => boolean, status: number, times: number) => {
+        let left = times;
+        const fetch: typeof fortnox.fetch = (input, init) => {
+          if (left > 0 && matches(String(input), init?.method ?? 'GET')) {
+            left -= 1;
+            return Promise.resolve({ ok: false, status, text: async () => 'unavailable', headers: { get: () => null } } as unknown as Awaited<ReturnType<typeof fortnox.fetch>>);
+          }
+          return fortnox.fetch(input, init);
+        };
+        return fetch;
+      };
+
+      it('asks for this company on every pass, also an idle one', async () => {
+        await bindWriteback();
+
+        await sweepFortnoxLedger(host, connId, at(NOW));
+
+        expect(writebackAsked).toEqual([{ connectionId: connId, company: { name: 'Testbolaget AB', organizationNumber: '556677-8899' } }]);
+        expect(fortnox.writes).toEqual([]);
+      });
+
+      it('holds an undecided invoice once, and remembers the hold as its own', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+
+        const first = await sweepFortnoxLedger(host, connId, at(NOW));
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(first.invoices).toEqual([{ scopeId: s, landed: 1, files: 0, held: 1, written: 0, pending: false }]);
+        expect(fortnox.writes).toEqual([HOLD]);
+      });
+
+      it('books an approved invoice, then clears its hold, then comments, then says so', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        fortnox.writes.length = 0;
+
+        waiting = { hold: [], decisions: [decided('12')] };
+        const result = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(fortnox.writes).toEqual([BOOK, RELEASE, COMMENT]);
+        expect(receipts).toEqual([{ key: 'decision-12', status: 'done', error: null }]);
+        expect(result.invoices).toEqual([{ scopeId: s, landed: 0, files: 0, held: 0, written: 1, pending: false }]);
+      });
+
+      it('leaves a denied invoice held and unbooked, with only the comment', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        fortnox.writes.length = 0;
+
+        waiting = { hold: [], decisions: [decided('12', { book: false, release: false })] };
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(fortnox.writes).toEqual([COMMENT]);
+      });
+
+      it('never clears a block it did not set', async () => {
+        await bindWriteback();
+        unbooked('12', { DisablePaymentFile: true }); // a supplier paid by direct debit, say
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [decided('12')] };
+
+        await sweepFortnoxLedger(host, connId, at(NOW));
+
+        expect(fortnox.writes).toEqual([BOOK, COMMENT]);
+      });
+
+      it('holds an invoice again when it comes back to the queue after a release', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [decided('12')] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        fortnox.writes.length = 0;
+
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(fortnox.writes).toEqual([HOLD]);
+      });
+
+      it('repeats nothing in Fortnox when the receipt is what failed', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [], decisions: [decided('12')] };
+        refuseReceipts = 1;
+
+        const first = await sweepFortnoxLedger(host, connId, at(NOW));
+        const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('write-back of supplier invoice 12:') }]);
+        expect(second.failed).toEqual([]);
+        expect(fortnox.writes).toEqual([BOOK, COMMENT]);
+        expect(receipts).toHaveLength(1);
+      });
+
+      it('hands a booking Fortnox refuses to the vertical at once, in its words, with the hold in place', async () => {
+        await bindWriteback();
+        unbooked('12');
+        fortnox.setSupplierInvoice({
+          modified: '2026-06-10 09:00',
+          invoice: { GivenNumber: '12', Total: 100, Booked: false, Cancelled: false },
+          cannotBook: 'Perioden är låst',
+        });
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [decided('12')] };
+
+        const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+        expect(fortnox.writes).toEqual([HOLD, BOOK]);
+        expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.stringContaining('Perioden är låst') }]);
+        expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('write-back of supplier invoice 12:') }]);
+      });
+
+      it('retries an outage for eight passes, then tells the vertical, and a retry starts over', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [], decisions: [decided('12')] };
+        const down = failing((url, method) => url.endsWith('/bookkeep') && method === 'PUT', 503, 100);
+        const pass = (n: number) => sweepFortnoxLedger(host, connId, { ...at(NOW + n * 15 * 60_000), fetch: down });
+
+        for (let n = 0; n < 7; n += 1) await pass(n);
+        expect(receipts).toEqual([]);
+
+        await pass(7);
+        expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.any(String) }]);
+
+        await pass(8);
+        expect(receipts).toHaveLength(1);
+      });
+
+      it('writes when the landing refused, because a decision does not depend on it', async () => {
+        await bindWriteback(REFUSING_OPERATION);
+        unbooked('12');
+        waiting = { hold: [], decisions: [decided('12')] };
+
+        const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+        expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/ledger closed for the period/) }]);
+        expect(receipts).toHaveLength(1);
+      });
+
+      it('stops at the budget and carries on next pass', async () => {
+        await bindWriteback();
+        for (const n of ['1', '2']) unbooked(n);
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        waiting = { hold: [], decisions: [decided('1'), decided('2')] };
+        const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 7 } });
+
+        expect(await run(NOW + 15 * 60_000)).toMatchObject({ written: 1, pending: true });
+        expect(receipts.map((r) => r.key)).toEqual(['decision-1']);
+      });
+
+      it('claims a block whose write went unanswered once it finds it set, and later releases it', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        // Fortnox takes the write, then the answer is lost.
+        const lost: typeof fortnox.fetch = async (input, init) => {
+          const res = await fortnox.fetch(input, init);
+          return init?.method === 'PUT'
+            ? ({ ok: false, status: 503, text: async () => 'unavailable', headers: { get: () => null } } as unknown as typeof res)
+            : res;
+        };
+
+        const first = await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch: lost });
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') }]);
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+        expect(fortnox.writes).toEqual([HOLD]);
+
+        waiting = { hold: [], decisions: [decided('12')] };
+        await sweepFortnoxLedger(host, connId, at(NOW + 30 * 60_000));
+        expect(fortnox.writes).toEqual([HOLD, BOOK, RELEASE, COMMENT]);
+      });
+
+      it('holds an invoice once someone lifts the block it found', async () => {
+        await bindWriteback();
+        unbooked('12', { DisablePaymentFile: true });
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        expect(fortnox.writes).toEqual([]);
+
+        unbooked('12', { DisablePaymentFile: false });
+        const lifted = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(fortnox.writes).toEqual([HOLD]);
+        expect(lifted.invoices).toEqual([expect.objectContaining({ held: 1 })]);
+      });
+
+      it('asks to hold again after a hold that failed', async () => {
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        const down = failing((_url, method) => method === 'PUT', 503, 1);
+
+        const first = await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch: down });
+        const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') }]);
+        expect(second.invoices).toEqual([{ scopeId: s, landed: 0, files: 0, held: 1, written: 0, pending: false }]);
+      });
     });
 
     it('keeps ledger and invoice bindings of one connection apart', async () => {

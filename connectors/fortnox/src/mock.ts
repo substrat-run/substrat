@@ -48,6 +48,10 @@ export interface FortnoxMockSupplierInvoice {
   gone?: boolean;
   /** The files connected to it, in the order `supplierinvoicefileconnections` lists them. */
   files?: { FileId: string; Name: string; bytes: Uint8Array; contentType?: string }[];
+  /** Its comment log, oldest first. */
+  comments?: string[];
+  /** Why `bookkeep` answers 400, as Fortnox does for a locked period or a missing account. */
+  cannotBook?: string;
 }
 
 /**
@@ -97,6 +101,8 @@ export class FortnoxMock {
   readonly mints: string[] = [];
   /** Every REST path fetched, in order. */
   readonly calls: string[] = [];
+  /** Every write, in order, with its body: `method path` and what was sent. */
+  readonly writes: { request: string; body?: unknown }[] = [];
 
   constructor(options: FortnoxMockOptions = {}) {
     this.clientId = options.clientId ?? 'client-id';
@@ -207,6 +213,12 @@ export class FortnoxMock {
       return this.json({ message: 'Too many requests' }, 429, { 'Retry-After': '2' });
     }
 
+    if (init?.method !== undefined && init.method !== 'GET') {
+      const body = typeof init.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
+      this.writes.push({ request: `${init.method} ${url.pathname}`, ...(body === undefined ? {} : { body }) });
+      return this.applyWrite(url.pathname, init.method, body);
+    }
+
     if (path.endsWith('/companyinformation')) {
       return this.json({ CompanyInformation: this.company });
     }
@@ -226,6 +238,12 @@ export class FortnoxMock {
           .slice((page - 1) * limit, page * limit)
           .map((e) => ({ GivenNumber: e.invoice.GivenNumber })),
       });
+    }
+    const commentsMatch = /\/supplierinvoices\/([^/?]+)\/commentlog$/.exec(url.pathname);
+    if (commentsMatch) {
+      const entry = this.supplierInvoices.get(decodeURIComponent(commentsMatch[1]!));
+      if (!entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
+      return this.json({ SupplierInvoiceCommentLog: (entry.comments ?? []).map((Comment) => ({ Comment })) });
     }
     const invoiceMatch = /\/supplierinvoices\/([^/?]+)$/.exec(url.pathname);
     if (invoiceMatch) {
@@ -272,4 +290,26 @@ export class FortnoxMock {
     }
     return this.json({ ErrorInformation: { message: `unmocked path ${path}` } }, 404);
   };
+
+  /** The three writes the invoice write-back makes. */
+  private applyWrite(pathname: string, method: string, body: unknown): ReturnType<FetchLike> extends Promise<infer R> ? R : never {
+    const match = /\/supplierinvoices\/([^/?]+)(?:\/(bookkeep|commentlog))?$/.exec(pathname);
+    const entry = match ? this.supplierInvoices.get(decodeURIComponent(match[1]!)) : undefined;
+    if (!match || !entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
+    if (match[2] === 'bookkeep' && method === 'PUT') {
+      if (entry.cannotBook) return this.json({ ErrorInformation: { message: entry.cannotBook } }, 400);
+      entry.invoice['Booked'] = true;
+      return this.json({ SupplierInvoice: entry.invoice });
+    }
+    if (match[2] === 'commentlog' && method === 'POST') {
+      const comment = (body as { SupplierInvoiceCommentLog: { Comment: string } }).SupplierInvoiceCommentLog.Comment;
+      entry.comments = [...(entry.comments ?? []), comment];
+      return this.json({ SupplierInvoiceCommentLog: { Comment: comment } }, 201);
+    }
+    if (match[2] === undefined && method === 'PUT') {
+      Object.assign(entry.invoice, (body as { SupplierInvoice: Record<string, unknown> }).SupplierInvoice);
+      return this.json({ SupplierInvoice: entry.invoice });
+    }
+    return this.json({ ErrorInformation: { message: `unmocked write ${method} ${pathname}` } }, 404);
+  }
 }
