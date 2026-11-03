@@ -258,9 +258,12 @@ export async function publishStoreDriver(input: {
   const { release } = await client.uploadStoreDriverRelease(driver, input.body);
   const sha256 = release.sha256;
   log(`✓ stored ${driver} ${sha256} (commit ${release.sourceCommit})`);
-  for (let waited = 0; ; waited += input.pollMs) {
+  for (let waited = 0; ; ) {
     const view = await client.getStoreDriver(driver);
-    if (view.current?.sha256 === sha256) {
+    const { current } = view;
+    // A paused or diverged rollout since `current` leaves the fleet mixed; posting the release again converges it.
+    const mixed = current !== null && view.rollouts.some((r) => r.seq > current.seq && (r.state === 'paused' || r.state === 'diverged'));
+    if (current?.sha256 === sha256 && !mixed) {
       log(`✓ ${driver} is already on ${sha256}`);
       return { outcome: 'published', sha256 };
     }
@@ -272,18 +275,23 @@ export async function publishStoreDriver(input: {
       return { outcome: 'awaiting-approval', sha256 };
     }
     if (waited === 0) log('  waiting for a staff person to approve these bytes');
-    await input.sleep(input.pollMs);
+    const nap = Math.min(input.pollMs, input.waitMs - waited);
+    await input.sleep(nap);
+    waited += nap;
   }
   let stalled = 0;
+  let before = Infinity;
   while (true) {
-    const { rollout, moved, complete } = await client.rollOutStoreDriver(driver, sha256);
+    const { rollout, moved, complete, remaining } = await client.rollOutStoreDriver(driver, sha256);
     log(`  rollout #${rollout.seq}: ${rollout.state} (${moved.length} vertical(s) this run)`);
     if (complete) {
       if (rollout.state !== 'good') throw new Error(`the rollout of ${sha256} ended ${rollout.state}${rollout.detail ? `: ${rollout.detail}` : ''}; \`substrat store-driver status --driver ${driver}\` shows where it stands`);
       log(`✓ ${driver} rolled out to ${sha256}`);
       return { outcome: 'published', sha256 };
     }
-    stalled = moved.length === 0 ? stalled + 1 : 0;
-    if (stalled >= ROLLOUT_STALLED_AFTER) throw new Error(`the rollout of ${sha256} moved no vertical in ${ROLLOUT_STALLED_AFTER} requests (${rollout.state}${rollout.detail ? `: ${rollout.detail}` : ''}); run publish again, or check \`substrat store-driver status --driver ${driver}\``);
+    // Progress is verticals walked, not verticals changed: a resumed rollout walks ones already at the release.
+    stalled = remaining >= before ? stalled + 1 : 0;
+    before = remaining;
+    if (stalled >= ROLLOUT_STALLED_AFTER) throw new Error(`the rollout of ${sha256} walked no further in ${ROLLOUT_STALLED_AFTER} requests (${rollout.state}${rollout.detail ? `: ${rollout.detail}` : ''}); run publish again, or check \`substrat store-driver status --driver ${driver}\``);
   }
 }

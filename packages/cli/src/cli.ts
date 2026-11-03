@@ -892,7 +892,7 @@ async function cmdStoreDriver(): Promise<void> {
     const files = packedFilesOf(dir);
     const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, files));
     if (sub === 'publish') {
-      const waitMs = flag('wait') ? parseWaitMs(flag('wait')!) : 0;
+      const waitMs = argv.includes('--wait') ? parseWaitMs(optionValue('wait') ?? '') : 0;
       const { outcome } = await publishStoreDriver({ client: planeFor(controlPlaneUrl, header), driver, body, waitMs, pollMs: 10_000,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => console.log(line) });
       if (outcome === 'awaiting-approval') process.exit(2);
