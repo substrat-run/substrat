@@ -60,8 +60,13 @@ const ERROR_TEXT_MAX = 500;
 
 const clip = (text: string): string => (text.length > ERROR_TEXT_MAX ? `${text.slice(0, ERROR_TEXT_MAX)}…` : text);
 const unevaluable = (why: string) => new MigrationExtractionError(`the worker entry could not be evaluated without its bindings: ${clip(why)}`);
-/** What the runtime says when the loaded worker went over its `limits`, or hung: the bundle's outcome, not the loader's. */
-const OVER_LIMIT = /exceeded (its )?(cpu|resource|memory)|had hung/i;
+/**
+ * What the runtime says when the bundle itself is at fault, so pushing it again cannot help: it
+ * went over its `limits` or hung, a module failed to start (a syntax error in any of them), or it
+ * names a compatibility flag the runtime does not know. Anything else the loader throws is the
+ * platform's.
+ */
+const BUNDLE_FAULT = /exceeded (its )?(cpu|resource|memory)|had hung|Failed to start Worker|Uncaught|No such compatibility flag/i;
 
 /**
  * Imports the vertical's entry inside the request, so a throw at its top level is an answer
@@ -147,8 +152,10 @@ export function loaderMigrationExtractor(loader: MigrationLoader, options: { tim
     } catch (e) {
       if (e instanceof MigrationExtractionError) throw e;
       const message = e instanceof Error ? e.message : String(e);
-      if (OVER_LIMIT.test(message)) throw unevaluable(message);
-      throw new MigrationLoaderUnavailable(`the platform could not read this bundle's migrations (${clip(message)}); push again`);
+      if (BUNDLE_FAULT.test(message)) throw unevaluable(message);
+      // The runtime's own text stays in the platform's log; the push is told only that it may retry.
+      console.error(JSON.stringify({ substrat: 'migration-extract-unavailable', error: clip(message) }));
+      throw new MigrationLoaderUnavailable("the platform could not read this bundle's migrations; push again");
     } finally {
       clearTimeout(timer);
     }

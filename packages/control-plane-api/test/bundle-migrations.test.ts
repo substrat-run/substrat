@@ -97,7 +97,7 @@ describe('a version’s migrations, read from its bundle (#2351)', () => {
     ['registers the declared migrations in another order: refused before upload', async () => [declared[1]!, declared[0]!], 422, undefined],
     ['cannot be evaluated without its bindings: refused before upload', async () => failed(), 422, undefined],
     ['is read by a loader that failed (the platform’s, not the bundle’s): 503, retryable', async () => {
-      throw new MigrationLoaderUnavailable("the platform could not read this bundle's migrations (loader reset); push again");
+      throw new MigrationLoaderUnavailable("the platform could not read this bundle's migrations; push again");
     }, 503, undefined],
   ] as const)('a push declaring its migrations whose bundle %s', async (_what, bundle, status, extracted) => {
     registers = bundle;
@@ -219,8 +219,10 @@ describe('the Worker Loader extractor, over a fake loader (#2351)', () => {
   it.each([
     ['does not settle', () => new Promise<Response>(() => {}), MigrationExtractionError, /did not settle within 20 ms$/],
     ['goes over its CPU limit', async () => { throw new Error('Worker exceeded CPU time limit.'); }, MigrationExtractionError, /exceeded CPU/],
+    ['carries a module that fails to start', async () => { throw new Error('Failed to start Worker: Uncaught SyntaxError: Unexpected token at other.js:1:13'); }, MigrationExtractionError, /SyntaxError/],
+    ['names a compatibility flag the runtime does not know', async () => { throw new Error('No such compatibility flag: not_a_flag'); }, MigrationExtractionError, /No such compatibility flag/],
     ['answers with an error of its own, clipped', async () => Response.json({ error: 'x'.repeat(5000) }), MigrationExtractionError, /x{500}…$/],
-    ['meets a loader that failed', async () => { throw new Error('loader reset'); }, MigrationLoaderUnavailable, /\(loader reset\); push again$/],
+    ['meets a loader that failed, whose text stays in the log', async () => { throw new Error('loader reset'); }, MigrationLoaderUnavailable, /^the platform could not read this bundle's migrations; push again$/],
   ] as const)('a read that %s throws whose outcome it is', async (_what, fetch, kind, message) => {
     const read = loaderMigrationExtractor(loaderOf(fetch).loader, { timeoutMs: 20 })(bundle);
     await expect(read).rejects.toBeInstanceOf(kind);
