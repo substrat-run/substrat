@@ -4,7 +4,7 @@
  * dedupe, and `studioUsage`'s read-side pricing — recorded cost preferred,
  * flat-totals fallback for pre-#663 rows, unpriced models never guessed at $0.
  *
- * Only the Cloudflare adapter CLASS is mocked: a shim that adapts
+ * Only the Cloudflare adapter CLASS is mocked (test/studio-shim.ts): it adapts
  * `provisionScopeLocal` onto a `SqliteScopeHost` via its HostAdmin (the same
  * recipe engine-test-kit uses). The module, its migrations, the permission
  * checker and the per-meter dedupe are all real — so a drift between
@@ -15,115 +15,32 @@
  * reuse a few of those literals to prove the record → ledger → read plumbing
  * delivers them intact.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { platformActorId, principalId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { platformActorId, principalId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { STUDIO_NODE } from '../src/studio.js';
+import { startStudio, stopStudio } from './studio-shim.js';
 
 type MeteringModule = typeof import('../src/metering.js');
 
-/**
- * The shim's per-test state. `vi.mock` factories are hoisted above imports, so
- * the mock reaches the live host through this holder instead of a closure.
- */
-const shim = vi.hoisted(() => ({
-	current: null as {
-		host: {
-			registerModule(m: unknown): void;
-			getScope(p: unknown, t: unknown, s: unknown): Promise<unknown>;
-		};
-		registered: Set<string>;
-		provision(input: unknown): Promise<void>;
-	} | null,
-}));
-
-vi.mock('@substrat-run/adapter-cloudflare', () => ({
-	CloudflareScopeHost: class {
-		// metering.ts constructs a fresh host per call and re-registers the module
-		// each time; the sqlite host refuses duplicates, so the shim dedupes.
-		registerModule(m: { manifest: { id: string } }): void {
-			const s = shim.current;
-			if (!s) throw new Error('shim not initialized');
-			if (s.registered.has(m.manifest.id)) return;
-			s.registered.add(m.manifest.id);
-			s.host.registerModule(m);
-		}
-		provisionScopeLocal(input: unknown): Promise<void> {
-			const s = shim.current;
-			if (!s) throw new Error('shim not initialized');
-			return s.provision(input);
-		}
-		getScope(p: unknown, t: unknown, s: unknown): Promise<unknown> {
-			const cur = shim.current;
-			if (!cur) throw new Error('shim not initialized');
-			return cur.host.getScope(p, t, s);
-		}
-	},
-}));
+vi.mock('@substrat-run/adapter-cloudflare', () => import('./studio-shim.js'));
 
 const FLASH = 'qwen:qwen3.6-flash';
 
 describe('studio metering (recordTurnUsage → studioUsage)', () => {
-	let dir: string;
-	let host: SqliteScopeHost;
-	/** Captured from provisionScopeLocal so tests can mint extra ledger writers. */
-	let studioRoleKey = '';
+	let studio: ReturnType<typeof startStudio>;
 	let metering: MeteringModule;
-	const env = { SCOPE: {} } as unknown as import('../src/metering.js').StudioEnv;
+	const env = { SCOPE: {} } as unknown as import('../src/studio.js').StudioEnv;
 
 	beforeEach(async () => {
-		dir = mkdtempSync(join(tmpdir(), 'builder-metering-'));
-		host = new SqliteScopeHost({ dir });
-		shim.current = {
-			host: host as never,
-			registered: new Set(),
-			provision: async (raw) => {
-				const input = raw as {
-					tenantId: TenantId;
-					scopeId: ScopeId;
-					owner: PrincipalId;
-					roles: { key: string; permissions: string[]; source: string }[];
-					ownerRoleKey: string;
-				};
-				studioRoleKey = input.ownerRoleKey;
-				const staff = platformActorId.parse(ulid());
-				await host.admin.createTenant(staff, {
-					id: input.tenantId,
-					slug: 'studio',
-					name: 'Builder studio',
-				});
-				// The sqlite host enforces entitlements at invoke (unlike the un-projected
-				// CF scope, which trusts upstream) — grant the module's own key.
-				await host.admin.grantEntitlement(staff, input.tenantId, 'metering');
-				await host.provisionScope(staff, {
-					tenantId: input.tenantId,
-					scopeId: input.scopeId,
-					jurisdiction: 'global',
-				});
-				await host.admin.activateScope(staff, input.tenantId, input.scopeId);
-				for (const role of input.roles) {
-					await host.admin.defineRole(staff, input.tenantId, role as never);
-				}
-				await host.admin.assignRole(staff, {
-					principalId: input.owner,
-					roleKey: input.ownerRoleKey,
-					node: { tenantId: input.tenantId, scopeId: input.scopeId },
-				});
-			},
-		};
-		// Fresh module per test: metering.ts memoizes its provisioning promise at
+		studio = startStudio();
+		// Fresh modules per test: studio.ts memoizes its provisioning promise at
 		// module scope, and each test gets its own sqlite dir.
 		vi.resetModules();
 		metering = await import('../src/metering.js');
 	});
 
-	afterEach(() => {
-		shim.current = null;
-		rmSync(dir, { recursive: true, force: true });
-	});
+	afterEach(stopStudio);
 
 	/**
 	 * A scope stub holding the studio role — how a test writes ledger rows that
@@ -134,15 +51,15 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 	async function ledgerScope() {
 		const staff = platformActorId.parse(ulid());
 		const writer = principalId.parse(ulid());
-		await host.admin.assignRole(staff, {
+		await studio.host.admin.assignRole(staff, {
 			principalId: writer,
-			roleKey: studioRoleKey,
+			roleKey: studio.ownerRoleKey,
 			node: {
-				tenantId: metering.STUDIO_NODE.tenantId,
-				scopeId: metering.STUDIO_NODE.scopeId,
+				tenantId: STUDIO_NODE.tenantId,
+				scopeId: STUDIO_NODE.scopeId,
 			},
 		});
-		return host.getScope(writer, metering.STUDIO_NODE.tenantId, metering.STUDIO_NODE.scopeId);
+		return studio.host.getScope(writer, STUDIO_NODE.tenantId, STUDIO_NODE.scopeId);
 	}
 
 	/** A pre-#663 turn: token meters only, no `ai.cost.usd.*` entry. */

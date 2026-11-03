@@ -71,6 +71,7 @@ import {
 	type ProviderSecrets,
 } from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
+import { readRecord, TurnRecord, type TurnOutcome } from './record.js';
 import { underProject, withinProject } from './project-path.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
@@ -499,11 +500,18 @@ export class BuilderAgent extends DurableObject<Env> {
 		// The turn's identity for metering: the dedupe key that makes a replayed
 		// usage report record nothing (#646).
 		const turnId = ulid();
+		const actor = req.headers.get('x-substrat-actor');
+		// The conversation record (record.ts), opened first thing in run(). Every
+		// event the browser is sent is also written there, so a turn nobody
+		// watched — or one that failed — can still be read back.
+		let record: TurnRecord | null = null;
+		let outcome: TurnOutcome = { kind: 'done' };
 
 		const { readable, writable } = new TransformStream<Uint8Array>();
 		const writer = writable.getWriter();
 		const enc = new TextEncoder();
 		const emit = (e: BuildEvent): void => {
+			record?.event(e);
 			void writer.write(enc.encode(`${JSON.stringify(e)}\n`)).catch(() => undefined);
 		};
 		// Same transport heartbeat as the local server: bytes prove liveness.
@@ -513,6 +521,21 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		const run = async (): Promise<void> => {
 			try {
+				record = await TurnRecord.open(this.env, {
+					threadId: ((await this.ctx.storage.get(`record:${entry.id}`)) as string | undefined) ?? null,
+					title: entry.name,
+					projectId: entry.id,
+					turnId,
+					unfinishedTurnId: (await this.ctx.storage.get(`record-turn:${entry.id}`)) as string | undefined,
+					message,
+					actor,
+					model: modelSpec,
+				});
+				if (record) {
+					await this.ctx.storage.put(`record:${entry.id}`, record.threadId);
+					// Cleared when the turn reaches rest; still set means it never did.
+					await this.ctx.storage.put(`record-turn:${entry.id}`, turnId);
+				}
 				// A slept container reopens the authoritative Git branch.
 				await this.#restoreProject(pair, entry);
 				if (entry.directory === '.') {
@@ -542,6 +565,11 @@ export class BuilderAgent extends DurableObject<Env> {
 				const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 					let assistant = '';
 					let truncated = false;
+					// The turn loop's own prompts — a continuation, a repair — are not
+					// the user's words, so the record keeps them as the studio's.
+					if (text !== message) {
+						record?.note(carriedReport ? 'repair-prompt' : 'continuation-prompt', text.split('\n')[0] ?? '', { text });
+					}
 					for await (const event of generator.run({
 						workspace: projectWs,
 						verticalDir: '.',
@@ -638,10 +666,17 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.ctx.storage.put(`phase:${entry.id}`, after);
 
 				state.history.push(...transcript);
+				if (signal.aborted) outcome = { kind: 'stopped' };
 			} catch (err) {
-				emit({ type: 'error', message: turnFailure(err), fatal: true });
+				const failure = turnFailure(err);
+				outcome = { kind: 'error', message: failure };
+				emit({ type: 'error', message: failure, fatal: true });
 			} finally {
 				clearInterval(heartbeat);
+				if (record) {
+					await record.finish(outcome);
+					await this.ctx.storage.delete(`record-turn:${entry.id}`);
+				}
 				await this.ctx.storage.put(`state:${entry.id}`, state);
 				entry.updatedAt = new Date().toISOString();
 				await this.#putEntry(entry);
@@ -723,6 +758,16 @@ export class BuilderAgent extends DurableObject<Env> {
 					foreign: [],
 					mode: 'hosted — execution in the sandbox container; source in GitHub or Artifacts (D-66)',
 				});
+			}
+			case 'GET /api/record': {
+				// The current project's conversation record, a page after `?after=<seq>`.
+				// Only a thread this team's own project names is ever read.
+				const { entry } = await this.#current();
+				const threadId = (await this.ctx.storage.get(`record:${entry.id}`)) as string | undefined;
+				if (!threadId) return json(200, { threadId: null, events: [], lastSeq: 0 });
+				const after = Number(url.searchParams.get('after') ?? '0');
+				if (!Number.isInteger(after) || after < 0) return refuse(400, 'after must be a non-negative integer');
+				return json(200, { threadId, ...(await readRecord(this.env, threadId, after)) });
 			}
 			case 'POST /api/turn':
 				return this.#turn(req);

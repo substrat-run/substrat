@@ -34,8 +34,8 @@
  */
 import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
-import { meteringModule } from '@substrat-run/engine-metering';
 import { studioUsage } from './metering.js';
+import { STUDIO_MODULES } from './studio.js';
 import { refuse, unhandledResponse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
@@ -53,13 +53,14 @@ import { deniedDetail, staffAccessOf, type StaffEnv } from './staff.js';
 export { BuilderAgent } from './agent.js';
 // The execution container's DO class (#626) — wrangler requires the export here.
 export { Sandbox } from '@cloudflare/sandbox';
-// The studio's kernel scope (#646): one CP-less ScopeDO bundling only the
-// metering engine — the builder's first kernel-backed table (src/metering.ts).
-export const ScopeDO = defineScopeDO([meteringModule], {});
+// The studio's kernel scope (#646): one CP-less ScopeDO bundling the metering
+// engine (src/metering.ts) and the assistant engine, which keeps each project's
+// conversation (src/record.ts). The module list is src/studio.ts's.
+export const ScopeDO = defineScopeDO(STUDIO_MODULES, {});
 
 export interface Env extends OidcEnv, StaffEnv {
 	BUILDER_AGENT: DurableObjectNamespace;
-	/** The studio's own kernel scope (#646) — usage metering lives here. */
+	/** The studio's own kernel scope (#646) — usage metering and the conversation record live here. */
 	SCOPE: DurableObjectNamespace;
 	ASSETS: Fetcher;
 	/** The shared control plane — membership lookups over the service binding. */
@@ -255,6 +256,9 @@ app.all('/api/*', async (c) => {
 	const headers = new Headers(c.req.raw.headers);
 	headers.set(TENANT_HEADER, team.id);
 	headers.set('x-substrat-tenant-slug', team.slug);
+	// Who is acting, for the conversation record (record.ts). Always overwritten,
+	// so a browser cannot name somebody else.
+	headers.set('x-substrat-actor', (c.get('user' as never) as SessionUser).id);
 	headers.delete('x-service-token');
 	if (c.req.path === '/api/release' && c.req.method === 'POST') {
 		const projectResponse = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
