@@ -4,6 +4,7 @@
 '@substrat-run/adapter-cloudflare': patch
 '@substrat-run/contract-tests': patch
 '@substrat-run/vertical-host': patch
+'@substrat-run/control-plane-api': patch
 '@substrat-run/control-plane-client': patch
 '@substrat-run/cli': patch
 ---
