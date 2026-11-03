@@ -20,6 +20,9 @@
  */
 import { z } from 'zod';
 import {
+	builderTurn,
+	builderTurnInput,
+	builderTurnsQuery,
 	defineEntities,
 	defineOperations,
 	LIST_PAGE_DEFAULT,
@@ -27,6 +30,8 @@ import {
 	moduleManifest,
 	pageOf,
 	permissionKey,
+	type BuilderTurn,
+	type BuilderTurnsQuery,
 	type ListPage,
 } from '@substrat-run/contracts';
 import { assertAllowed, operationsFor, ulid, type ModuleRegistration, type OperationContext } from '@substrat-run/kernel';
@@ -40,64 +45,6 @@ export const TURNS_PERM = {
 
 export const TURN_RECORDED = 'studio.turn-recorded';
 
-const outcome = z.enum(['done', 'stopped', 'error', 'interrupted']);
-export type TurnSummaryOutcome = z.infer<typeof outcome>;
-
-/** A gate that was not green on the turn's last run, and the first line it printed. */
-const redGate = z.object({
-	name: z.string().min(1).max(64),
-	status: z.enum(['failed', 'blocked']),
-	line: z.string().max(400),
-});
-export type RedGate = z.infer<typeof redGate>;
-
-const instant = z.string().min(1).max(40);
-const count = z.number().int().nonnegative();
-
-/** What the studio knows about a turn when it closes it. */
-export const turnSummaryInput = z.object({
-	turnId: z.string().min(1).max(64),
-	tenantId: z.string().min(1).max(64),
-	projectId: z.string().min(1).max(64),
-	projectName: z.string().max(200),
-	threadId: z.string().min(1).max(64).nullable(),
-	/** The turn's events in its thread, inclusive. Null when the record did not open. */
-	firstSeq: count.nullable(),
-	lastSeq: count.nullable(),
-	model: z.string().max(200),
-	phaseStart: z.string().max(32).nullable(),
-	phaseEnd: z.string().max(32).nullable(),
-	outcome,
-	/** The fatal error a failed turn ended on. */
-	failure: z.string().max(2_000).nullable(),
-	/** Whether the turn's last gate run was green; null when no gates ran. */
-	gatesOk: z.boolean().nullable(),
-	redGates: z.array(redGate).max(32),
-	repairs: count,
-	truncated: z.boolean(),
-	commitSha: z.string().max(64).nullable(),
-	inputTokens: count,
-	outputTokens: count,
-	/** Null for a turn the studio lost track of (`interrupted`). */
-	startedAt: instant.nullable(),
-});
-export type TurnSummaryInput = z.infer<typeof turnSummaryInput>;
-
-export const turnSummary = turnSummaryInput.extend({ id: z.string(), endedAt: instant });
-export type TurnSummary = z.infer<typeof turnSummary>;
-
-const listTurnsInput = z.object({
-	tenantId: z.string().min(1).optional(),
-	projectId: z.string().min(1).optional(),
-	outcome: outcome.optional(),
-	/** Only turns whose last gate run left this gate red. */
-	redGate: z.string().min(1).max(64).optional(),
-	/** Only turns that were not green: a red last gate run, or an outcome other than `done`. */
-	troubled: z.boolean().optional(),
-	/** Only turns that ended at or after this instant. */
-	since: instant.optional(),
-});
-
 const entities = defineEntities({});
 const PERMISSIONS = ['studio:record-turns', 'studio:read-turns'] as const;
 
@@ -105,15 +52,15 @@ export const turnOperations = defineOperations(entities, PERMISSIONS)({
 	'studio/record-turn': {
 		summary: "Record one turn's summary — idempotent per turn",
 		permission: 'studio:record-turns',
-		input: turnSummaryInput,
+		input: builderTurnInput,
 		output: z.object({ id: z.string(), deduped: z.boolean() }),
 	},
 	'studio/list-turns': {
 		summary: 'Turn summaries across every team, most recent first',
 		permission: 'studio:read-turns',
-		input: listTurnsInput,
+		input: builderTurnsQuery,
 		inputOptional: true,
-		output: turnSummary,
+		output: builderTurn,
 		// Handler-composed: the red-gate filter reads into a JSON column, which the
 		// kernel's equality filters cannot say. Ids are ULIDs, so `id` is unique and
 		// orders by when the row was written.
@@ -123,7 +70,7 @@ export const turnOperations = defineOperations(entities, PERMISSIONS)({
 		summary: "One turn's summary, by the turn's id",
 		permission: 'studio:read-turns',
 		input: z.object({ turnId: z.string().min(1).max(64) }),
-		output: turnSummary.nullable(),
+		output: builderTurn.nullable(),
 	},
 });
 
@@ -157,8 +104,8 @@ interface TurnRow {
 	ended_at: string;
 }
 
-function summaryOf(r: TurnRow): TurnSummary {
-	return turnSummary.parse({
+function summaryOf(r: TurnRow): BuilderTurn {
+	return builderTurn.parse({
 		id: r.id,
 		turnId: r.turn_id,
 		tenantId: r.tenant_id,
@@ -184,7 +131,7 @@ function summaryOf(r: TurnRow): TurnSummary {
 	});
 }
 
-function turnByTurnId(ctx: OperationContext, turnId: string): TurnSummary | null {
+function turnByTurnId(ctx: OperationContext, turnId: string): BuilderTurn | null {
 	const [row] = ctx.sql.query<TurnRow>(`SELECT ${COLUMNS} FROM studio_turns WHERE turn_id = ?`, [turnId]);
 	return row ? summaryOf(row) : null;
 }
@@ -243,7 +190,7 @@ CREATE INDEX studio_turns_project ON studio_turns (project_id, id);`,
 			assertAllowed(await ctx.check(TURNS_PERM.record));
 			const existing = turnByTurnId(ctx, input.turnId);
 			if (existing) return { id: existing.id, deduped: true };
-			const row = turnSummary.parse({ ...input, id: ulid(), endedAt: ctx.now() });
+			const row = builderTurn.parse({ ...input, id: ulid(), endedAt: ctx.now() });
 			ctx.sql.exec(
 				`INSERT INTO studio_turns (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
@@ -282,7 +229,7 @@ CREATE INDEX studio_turns_project ON studio_turns (project_id, id);`,
 		},
 		'studio/list-turns': async (ctx, input) => {
 			assertAllowed(await ctx.check(TURNS_PERM.read));
-			const page = (input ?? {}) as z.infer<typeof listTurnsInput> & ListPage;
+			const page = (input ?? {}) as BuilderTurnsQuery & ListPage;
 			const clauses: string[] = [];
 			const params: (string | number)[] = [];
 			if (page.tenantId) {

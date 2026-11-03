@@ -16,6 +16,7 @@ export type ViewKey =
   | 'failures'
   | 'issues'
   | 'sweeps'
+  | 'builder-turns'
   | 'connections'
   | 'settings'
   | 'services';
@@ -151,6 +152,8 @@ export function ConsoleShell({
               // The fleet's sweep record (#1232) — the staff twin of the
               // dashboard's per-app strips, one page instead of a tenant tour.
               { value: 'sweeps', label: 'Sweeps', icon: <SubIcon d={SubIcons.bell} /> },
+              // Every builder-studio turn, every team — the ones that went wrong first.
+              { value: 'builder-turns', label: 'Builder turns', icon: <SubIcon d={SubIcons.scroll} /> },
             ],
           },
           {

@@ -409,3 +409,4 @@ export type { VerticalConnectorDeps, VerticalConnectorReads, VerticalConnectorTa
 
 export { gh, appJwt, installationToken, githubConfig, installUrl, type GithubConfig } from './github-app.js';
 export { sourceBuildService } from './source-builds.js';
+export { builderTurnsService, type BuilderTurnsService } from './builder-turns.js';
