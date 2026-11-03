@@ -7,7 +7,7 @@ import {
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeCallRequest,
-  storeResponse,
+  storeAnswerOf,
   type StoreCallRequest,
   type StoreResponse,
 } from '@substrat-run/contracts';
@@ -135,14 +135,12 @@ function dispatchFailure(error: unknown): string {
  * logged, since a store's failure text can carry its traceback.
  */
 async function storeAnswer(scriptName: string, response: Response): Promise<StoreCallOutcome> {
-  const parsed = storeResponse.safeParse(await response.json().catch(() => undefined));
-  if (parsed.success && 'error' in parsed.data) {
-    const error = clientSafeStoreError(parsed.data.error);
+  const answer = storeAnswerOf(response.status, await response.json().catch(() => undefined));
+  if (answer && 'error' in answer) {
+    const error = clientSafeStoreError(answer.error);
     return { ok: true, status: error.status, body: { error } };
   }
-  if (parsed.success && response.ok) {
-    return { ok: true, status: response.status, body: parsed.data };
-  }
+  if (answer) return { ok: true, status: response.status, body: answer };
   console.warn(`scope store ${scriptName} answered ${response.status} outside the store envelope`);
   return { ok: true, status: 502, body: { error: { code: 'bad_envelope', status: 502 } } };
 }
