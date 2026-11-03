@@ -20,7 +20,6 @@ import {
   type DirectoryBackup,
   type DirectoryDump,
   type ScopeBackup,
-  type ScopeDumpTable,
 } from '@substrat-run/contracts';
 import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
 import type { DirectoryBackupStore, ScopeBackupEntry, ScopeBackupStore } from './backups.js';
@@ -206,7 +205,7 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       if (!held) throw new Error(`no backup for scope ${scopeId} at ${capturedAt}`);
       if (!held.paged) {
         if (index !== 0) throw new Error(`backup ${capturedAt} of scope ${scopeId} has one entry`);
-        return { kind: 'page', tables: held.whole.tables as ScopeDumpTable[] };
+        return { kind: 'page', tables: held.whole.tables };
       }
       const obj = await r2.get(entryKey(tenantId, scopeId, capturedAt, held.manifest.stageId, index));
       if (!obj) throw new Error(`backup ${capturedAt} of scope ${scopeId} is missing entry ${index}`);
