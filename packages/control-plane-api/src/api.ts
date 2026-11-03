@@ -338,6 +338,7 @@ import {
   extractedMigrationsProblem,
   extractedMigrationsRefusal,
   MigrationExtractionError,
+  MigrationLoaderUnavailable,
   type ExtractMigrationsFn,
 } from './migration-extract.js';
 import { wireSettingsRefusal, wireUploadFor, type WireUpload, type WireUploadSettings } from './wire-upload.js';
@@ -8950,8 +8951,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ),
     };
     // #2351: whether the incoming set was read from the version's bundle, or only declared by its
-    // push (pushed before the read, or a bundle that exposes no registrations).
-    const readFromBundle = !!(await c.var.admin.versionMigrationsExtracted?.(c.get('actor'), slug, incomingId));
+    // push (pushed before the read, or a bundle that exposes no registrations). A version storing none was
+    // compared with nothing, whatever it recorded.
+    const readFromBundle = incoming !== null && !!(await c.var.admin.versionMigrationsExtracted?.(c.get('actor'), slug, incomingId));
     return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline), review, readFromBundle });
   });
 
@@ -9317,12 +9319,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * #2351: what a bundle registers, against the migrations its version declares (`declared`, null
    * when it stores none): `read` with the digest to record, `unmarked` when the bundle exposes no
    * registrations (an adapter from before them) or nothing is configured to read it, `differs`
-   * when the two sets are not the same, `failed` when the bundle could not be evaluated.
+   * when the two sets are not the same, `failed` when the bundle could not be evaluated or did not
+   * settle, `unavailable` when the loader itself failed (the platform's, and retryable).
    */
   type BundleMigrationsRead =
     | { kind: 'read'; digest: string }
     | { kind: 'unmarked' }
-    | { kind: 'differs' | 'failed'; message: string };
+    | { kind: 'differs' | 'failed' | 'unavailable'; message: string };
   const readBundleMigrations = async (
     bundle: Parameters<ExtractMigrationsFn>[0],
     declared: readonly DeclaredMigration[] | null,
@@ -9332,6 +9335,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       registered = await options.extractMigrations(bundle);
     } catch (e) {
+      if (e instanceof MigrationLoaderUnavailable) return { kind: 'unavailable', message: e.message };
       if (!(e instanceof MigrationExtractionError)) throw e;
       return { kind: 'failed', message: e.message };
     }
@@ -9344,19 +9348,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * #2351: a version pushed before its bundle was read is read once, at its first promote, from
    * its archive script. Same set: recorded, and the promote goes on. Another set: the refusal,
-   * before anything moves. No registrations, or a bundle that cannot be evaluated here (it was
-   * accepted at push, before this read existed): the promote goes on as it did, unrecorded. A
-   * version storing no migrations has nothing to compare.
+   * before anything moves. No registrations, or a bundle that cannot be read here (it was
+   * accepted at push, before this read existed): the promote goes on as it did, unrecorded, so such
+   * a version is read again at every promote. A version storing no migrations has nothing to
+   * compare, and one that is not admitted is refused by the promote without a read.
    */
   const bundleMigrationsRefusal = async (admin: HostAdmin, actor: PlatformActorId, slug: string, versionId: string): Promise<string | null> => {
     if (!options.extractMigrations || !options.fetchVerticalModules || !admin.versionMigrationsExtracted || !admin.recordMigrationsExtracted) {
       return null;
     }
-    if ((await admin.versionMigrationsExtracted(actor, slug, versionId)) !== null) return null;
-    const declared = await admin.versionMigrations(actor, slug, versionId);
-    const version = await admin.getVersion(actor, versionId, slug);
-    const manifestJson = await admin.versionManifest(actor, slug, versionId);
-    if (declared === null || !version?.deploymentRef || !manifestJson) return null;
+    const [extracted, declared, version, manifestJson] = await Promise.all([
+      admin.versionMigrationsExtracted(actor, slug, versionId),
+      admin.versionMigrations(actor, slug, versionId),
+      admin.getVersion(actor, versionId, slug),
+      admin.versionManifest(actor, slug, versionId),
+    ]);
+    if (extracted !== null || declared === null || version?.admission !== 'admitted' || !version.deploymentRef || !manifestJson) return null;
     const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
     // An archive that cannot be read back is the serve's to report, after the promote, as it is today.
     const modules = await options.fetchVerticalModules(version.deploymentRef).catch(() => null);
@@ -10257,15 +10264,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // #2351: the migrations the bundle registers, read before anything is uploaded. Where the
     // manifest carries migrations they must be the registered ones, or the push is refused, and
-    // so is a bundle that cannot be evaluated: the stored set is then provably what the version
-    // runs. A manifest that leaves them off (over the caps a manifest carries) stores none, so
-    // nothing is gated: its push is accepted however the read went, and records the digest of
-    // what was read, if anything was.
+    // so is a bundle that cannot be evaluated or does not settle: the stored set is then provably
+    // what the version runs. A declared `[]` is a set like any other: the bundle must register
+    // none. A loader that fails is the platform's, so that push answers 503 and may be retried. A
+    // manifest that leaves the field off (over the caps a manifest carries) stores none, so nothing
+    // is gated: its push is accepted however the read went, and records the digest of what was
+    // read, if anything was.
     const read = await readBundleMigrations(
       { entry: manifest.entry, compatibilityDate: manifest.compatibilityDate, compatibilityFlags: manifest.compatibilityFlags, modules },
       manifest.migrations ?? null,
     );
     if (read.kind === 'differs' || (read.kind === 'failed' && manifest.migrations)) return refuseStatus(c, 422, read.message);
+    if (read.kind === 'unavailable' && manifest.migrations) return refuseStatus(c, 503, read.message);
     const migrationsExtracted = read.kind === 'read' ? read.digest : null;
 
     // Mint the version id first: the deploymentRef (the dispatch script name) is keyed

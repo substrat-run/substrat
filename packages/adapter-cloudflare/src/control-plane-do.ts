@@ -3957,11 +3957,6 @@ export class ControlPlaneDO extends DurableObject {
     return !raced;
   }
 
-  /**
-   * One upload's capability record (RFC wire-signing §7, Q8), replacing the script's earlier one. False,
-   * with nothing written and no admin row, for a vertical the registry does not hold: the host answers
-   * that `not_found` on its side of the RPC, so the code survives.
-   */
   /** #2351: the digest of the migrations read from a version's bundle, or `undefined` for no such version. */
   readMigrationsExtracted(id: string): { verticalSlug: string; digest: string | null } | undefined {
     return versionMigrationsExtractedOf(this.kernelSql, id);
@@ -3975,6 +3970,11 @@ export class ControlPlaneDO extends DurableObject {
     }, audit);
   }
 
+  /**
+   * One upload's capability record (RFC wire-signing §7, Q8), replacing the script's earlier one. False,
+   * with nothing written and no admin row, for a vertical the registry does not hold: the host answers
+   * that `not_found` on its side of the RPC, so the code survives.
+   */
   recordWireAuth(row: DeploymentWireAuth, audit?: AdminEntryInput): boolean {
     return this.writeAndAudit(() => writeDeploymentWireAuth(this.kernelSql, row), audit);
   }

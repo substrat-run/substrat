@@ -20,9 +20,17 @@ export type ExtractMigrationsFn = (
   bundle: Pick<VerticalBundle, 'entry' | 'compatibilityDate' | 'compatibilityFlags' | 'modules'>,
 ) => Promise<DeclaredMigration[] | null>;
 
-/** A bundle that could not be evaluated, or whose answer does not read. */
+/** A bundle that could not be evaluated, did not settle, or whose answer does not read: the bundle's own outcome. */
 export class MigrationExtractionError extends Error {
   override readonly name = 'MigrationExtractionError';
+}
+
+/**
+ * The loader itself failed: the platform could not run the read, which says nothing about the
+ * bundle. Retryable, so a caller never answers it as the bundle's fault.
+ */
+export class MigrationLoaderUnavailable extends Error {
+  override readonly name = 'MigrationLoaderUnavailable';
 }
 
 /** The part of a Worker Loader binding this uses (`WorkerLoader` in workers-types). */
@@ -45,6 +53,15 @@ export interface MigrationLoader {
 const EXTRACT_MODULE = 'substrat:extract-migrations.js';
 /** A bundle must start inside the runtime's 1 s startup limit to deploy at all; twice that, for the read. */
 const EXTRACT_CPU_MS = 2000;
+/** How long a read may take in wall time before it counts as a bundle that does not settle. */
+const EXTRACT_TIMEOUT_MS = 10_000;
+/** How much of a bundle's own error text a refusal quotes. */
+const ERROR_TEXT_MAX = 500;
+
+const clip = (text: string): string => (text.length > ERROR_TEXT_MAX ? `${text.slice(0, ERROR_TEXT_MAX)}…` : text);
+const unevaluable = (why: string) => new MigrationExtractionError(`the worker entry could not be evaluated without its bindings: ${clip(why)}`);
+/** What the runtime says when the loaded worker went over its `limits`, or hung: the bundle's outcome, not the loader's. */
+const OVER_LIMIT = /exceeded (its )?(cpu|resource|memory)|had hung/i;
 
 /**
  * Imports the vertical's entry inside the request, so a throw at its top level is an answer
@@ -68,6 +85,11 @@ export default {
 };
 `;
 
+/**
+ * A module as the loader takes it, by its content type. A push sends every part as an ES module
+ * (the CLI labels each `application/javascript+module`), so a push reads as `js` throughout; the
+ * other kinds are for an archive script read back, whose parts carry the runtime's own types.
+ */
 function moduleOf(m: VerticalBundle['modules'][number]) {
   const bytes = m.content;
   const text = () => new TextDecoder().decode(bytes);
@@ -93,13 +115,23 @@ async function bundleId(bundle: Parameters<ExtractMigrationsFn>[0]): Promise<str
  * An `ExtractMigrationsFn` over a Worker Loader binding. The loaded worker is the vertical's own
  * modules (a platform module an archive script carries is left out) behind a main module of the
  * platform's, with `env: {}` and `globalOutbound: null`, so the bundle reaches nothing while it
- * evaluates. Keyed by the bundle's content, so the same bytes evaluated again reuse the isolate.
+ * evaluates, and `limits.cpuMs`. Keyed by the bundle's content, so the same bytes evaluated again
+ * reuse the isolate.
+ *
+ * Whose outcome a failure is decides how it is answered: an error the bundle's entry threw, a read
+ * over its limits, or one that does not settle within `timeoutMs` is a `MigrationExtractionError`;
+ * any other failure of the loader is a `MigrationLoaderUnavailable`.
  */
-export function loaderMigrationExtractor(loader: MigrationLoader): ExtractMigrationsFn {
+export function loaderMigrationExtractor(loader: MigrationLoader, options: { timeoutMs?: number } = {}): ExtractMigrationsFn {
+  const timeoutMs = options.timeoutMs ?? EXTRACT_TIMEOUT_MS;
   return async (bundle) => {
     const own = bundle.modules.filter((m) => !PLATFORM_MODULES.has(m.name));
     const id = await bundleId({ ...bundle, modules: own });
     let raw: unknown;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsettled = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(unevaluable(`it did not settle within ${timeoutMs} ms`)), timeoutMs);
+    });
     try {
       const stub = loader.get(id, () => ({
         compatibilityDate: bundle.compatibilityDate,
@@ -111,9 +143,14 @@ export function loaderMigrationExtractor(loader: MigrationLoader): ExtractMigrat
         globalOutbound: null,
         limits: { cpuMs: EXTRACT_CPU_MS },
       }));
-      raw = await (await stub.getEntrypoint().fetch('https://extract.invalid/')).json();
+      raw = await Promise.race([stub.getEntrypoint().fetch('https://extract.invalid/').then((res) => res.json()), unsettled]);
     } catch (e) {
-      throw new MigrationExtractionError(`the worker entry could not be evaluated without its bindings: ${(e as Error).message}`);
+      if (e instanceof MigrationExtractionError) throw e;
+      const message = e instanceof Error ? e.message : String(e);
+      if (OVER_LIMIT.test(message)) throw unevaluable(message);
+      throw new MigrationLoaderUnavailable(`the platform could not read this bundle's migrations (${clip(message)}); push again`);
+    } finally {
+      clearTimeout(timer);
     }
     return readExtraction(raw);
   };
@@ -133,7 +170,7 @@ export function readExtraction(raw: unknown): DeclaredMigration[] | null {
   const parsed = extraction.safeParse(raw);
   if (!parsed.success) throw new MigrationExtractionError('the bundle answered with migrations that do not read as migrations');
   if ('error' in parsed.data) {
-    throw new MigrationExtractionError(`the worker entry could not be evaluated without its bindings: ${parsed.data.error}`);
+    throw unevaluable(parsed.data.error);
   }
   if (parsed.data.classes.length === 0) return null;
   const byModule = new Map<string, DeclaredMigration[]>();

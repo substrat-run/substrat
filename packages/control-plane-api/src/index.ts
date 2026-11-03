@@ -186,6 +186,7 @@ export {
   extractedMigrationsProblem,
   loaderMigrationExtractor,
   MigrationExtractionError,
+  MigrationLoaderUnavailable,
   readExtraction,
   type ExtractMigrationsFn,
   type MigrationLoader,

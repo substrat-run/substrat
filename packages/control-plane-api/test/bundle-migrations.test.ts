@@ -9,16 +9,19 @@ import { ulid } from '@substrat-run/kernel';
 import {
   DEV_ACTOR_HEADER,
   extractedMigrationsDigest,
+  loaderMigrationExtractor,
   MigrationExtractionError,
+  MigrationLoaderUnavailable,
   readExtraction,
+  type MigrationLoader,
   UNSAFE_devPlatformActorAuth,
   type ExtractMigrationsFn,
 } from '../src/index.js';
 
 /**
  * #2351: the control plane reads a version's migrations from its bundle (`extractMigrations`, a
- * Worker Loader in production, faked here; the loader itself is driven in workerd by
- * apps/control-plane's `migration-extract.test.ts`) and gates the push on them, through the real
+ * Worker Loader in production, faked here; the loader itself is driven in workerd on a real bundle by
+ * adapter-cloudflare's `supplied-sweeper/bundle-migrations.test.ts`) and gates the push on them, through the real
  * deploy and promote routes over the pure host.
  */
 const m = (version: string, sql: string, extra: Partial<DeclaredMigration> = {}) =>
@@ -90,22 +93,39 @@ describe('a version’s migrations, read from its bundle (#2351)', () => {
     ['registers one migration more: refused before upload', async () => [...declared, m('0003-tag', 'ALTER TABLE contacts ADD COLUMN tag TEXT;')], 422, undefined],
     ['registers other SQL under a declared version: refused before upload', async () => [declared[0]!, m('0002-note', 'ALTER TABLE contacts ADD COLUMN body TEXT;')], 422, undefined],
     ['declares other moves for a declared version: refused before upload', async () => [declared[0]!, { ...declared[1]!, moves: { 'contacts.note': 'contacts.body' } }], 422, undefined],
+    ['declares other discards for a declared version: refused before upload', async () => [declared[0]!, { ...declared[1]!, discards: { 'contacts.note': 'no longer kept' } }], 422, undefined],
+    ['registers the declared migrations in another order: refused before upload', async () => [declared[1]!, declared[0]!], 422, undefined],
     ['cannot be evaluated without its bindings: refused before upload', async () => failed(), 422, undefined],
+    ['is read by a loader that failed (the platform’s, not the bundle’s): 503, retryable', async () => {
+      throw new MigrationLoaderUnavailable("the platform could not read this bundle's migrations (loader reset); push again");
+    }, 503, undefined],
   ] as const)('a push declaring its migrations whose bundle %s', async (_what, bundle, status, extracted) => {
     registers = bundle;
     deployVertical.mockClear();
     const res = await push(`gate-${ulid().toLowerCase()}`, declared);
     const body = (await res.json()) as { id: string; verticalSlug: string; detail?: string };
     expect(res.status, JSON.stringify(body)).toBe(status);
-    if (status === 422) {
+    if (status !== 201) {
       expect(deployVertical).not.toHaveBeenCalled();
-      expect(body.detail).toMatch(/^the (migrations this version's bundle registers are not the ones its push declared \(module acme-crm: |worker entry could not be evaluated)/);
+      expect(body.detail).toMatch(
+        status === 503
+          ? /^the platform could not read this bundle's migrations/
+          : /^the (migrations this version's bundle registers are not the ones its push declared \(module acme-crm: |worker entry could not be evaluated)/,
+      );
       return;
     }
     expect(await extractedOf(body)).toBe(extracted);
     // The promote review says whether the set it shows was read from the bundle.
     const review = await app.request(`/verticals/${encodeURIComponent(body.verticalSlug)}/versions/${body.id}/migrations`, { headers: auth });
     expect(((await review.json()) as { readFromBundle: boolean }).readFromBundle).toBe(extracted !== null);
+  });
+
+  it('a push declaring no migrations ([]) is gated like any other: a bundle registering some is refused', async () => {
+    registers = async () => declared;
+    deployVertical.mockClear();
+    const res = await push(`none-${ulid().toLowerCase()}`, []);
+    expect(res.status, await res.clone().text()).toBe(422);
+    expect(deployVertical).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -148,6 +168,8 @@ describe('what the loaded worker answers, and the digest recorded (#2351)', () =
     expect(await extractedMigrationsDigest([other, ...declared])).toBe(base);
     expect(await extractedMigrationsDigest([{ ...declared[0]!, sql: `${declared[0]!.sql} ` }, declared[1]!, other])).not.toBe(base);
     expect(await extractedMigrationsDigest([{ ...declared[0]!, moves: { 'contacts.id': 'contacts.key' } }, declared[1]!, other])).not.toBe(base);
+    expect(await extractedMigrationsDigest([{ ...declared[0]!, discards: { 'contacts.id': 'replaced' } }, declared[1]!, other])).not.toBe(base);
+    expect(await extractedMigrationsDigest([declared[1]!, declared[0]!, other])).not.toBe(base);
   });
 
   it('classes registering one module are one set when they agree, and an error when they do not', () => {
@@ -157,5 +179,48 @@ describe('what the loaded worker answers, and the digest recorded (#2351)', () =
       'two Durable Object classes register module acme-crm with different migrations',
     );
     expect(() => readExtraction({ classes: [[{ moduleId: 'acme-crm', version: '' }]] })).toThrow(MigrationExtractionError);
+  });
+});
+
+describe('the Worker Loader extractor, over a fake loader (#2351)', () => {
+  const bundle = {
+    entry: 'worker.js',
+    compatibilityDate: '2025-01-01',
+    compatibilityFlags: [],
+    modules: [
+      { name: 'substrat-platform-entry.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
+      { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
+    ],
+  };
+  /** A loader whose stub answers `fetch`; records the code it was given. */
+  const loaderOf = (fetch: () => Promise<Response>) => {
+    const given: Parameters<MigrationLoader['get']>[1][] = [];
+    const loader: MigrationLoader = {
+      get: (_id, code) => {
+        given.push(code);
+        return { getEntrypoint: () => ({ fetch }) };
+      },
+    };
+    return { loader, code: () => given[0]!() };
+  };
+
+  it('loads the vertical’s own modules with no bindings, no network and a CPU limit', async () => {
+    const { loader, code } = loaderOf(async () => Response.json({ classes: [declared] }));
+    expect(await loaderMigrationExtractor(loader)(bundle)).toEqual(declared);
+    const loaded = code();
+    expect(loaded).toMatchObject({ env: {}, globalOutbound: null, limits: { cpuMs: 2000 } });
+    expect(Object.keys(loaded.env!)).toEqual([]);
+    expect(Object.keys(loaded.modules).sort()).toEqual([loaded.mainModule, 'worker.js'].sort());
+  });
+
+  it.each([
+    ['does not settle', () => new Promise<Response>(() => {}), MigrationExtractionError, /did not settle within 20 ms$/],
+    ['goes over its CPU limit', async () => { throw new Error('Worker exceeded CPU time limit.'); }, MigrationExtractionError, /exceeded CPU/],
+    ['answers with an error of its own, clipped', async () => Response.json({ error: 'x'.repeat(5000) }), MigrationExtractionError, /x{500}…$/],
+    ['meets a loader that failed', async () => { throw new Error('loader reset'); }, MigrationLoaderUnavailable, /\(loader reset\); push again$/],
+  ] as const)('a read that %s throws whose outcome it is', async (_what, fetch, kind, message) => {
+    const read = loaderMigrationExtractor(loaderOf(fetch).loader, { timeoutMs: 20 })(bundle);
+    await expect(read).rejects.toBeInstanceOf(kind);
+    await expect(read).rejects.toThrow(message);
   });
 });
