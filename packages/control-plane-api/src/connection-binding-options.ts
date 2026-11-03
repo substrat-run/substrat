@@ -26,6 +26,11 @@ export function connectionBindingOptions(provider: string) {
           // How far back a supplier-invoice binding's first pass reads: days, or every invoice.
           // A changed value re-binds, and a re-bound landing starts its first pass again.
           firstPass: z.union([z.literal('all'), z.number().int().positive().max(36_500)]).optional(),
+          // The vertical's two operations behind writing back to Fortnox. Absent, nothing is written.
+          writeback: z
+            .object({ read: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/), record: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/) })
+            .strict()
+            .optional(),
         })
         .strict();
     case 'planima':
@@ -57,11 +62,12 @@ export function connectionBindingOptions(provider: string) {
  * row before anything is granted. Kept apart from the schema because the doors `extend` and
  * `strip` it, which a refinement would not survive.
  */
-export function bindingOptionsRefusal(provider: string, options: { kind?: string | null; form?: string | null; years?: unknown; firstPass?: unknown }): string | undefined {
+export function bindingOptionsRefusal(provider: string, options: { kind?: string | null; form?: string | null; years?: unknown; firstPass?: unknown; writeback?: unknown }): string | undefined {
   if (provider !== 'fortnox') return undefined;
   if (options.form != null && (options.kind ?? 'ledger') !== 'ledger') return `form applies to a ledger binding, not to '${options.kind}'`;
   if (options.years != null && options.form !== 'sie') return "years applies to a binding with form 'sie': the summary form lands the current year";
   if (options.firstPass != null && options.kind !== 'supplier-invoice') return `firstPass applies to a supplier-invoice binding, not to '${options.kind ?? 'ledger'}'`;
+  if (options.writeback != null && options.kind !== 'supplier-invoice') return `writeback applies to a supplier-invoice binding, not to '${options.kind ?? 'ledger'}'`;
   return undefined;
 }
 

@@ -18,8 +18,10 @@ import {
   type ScopeId,
 } from '@substrat-run/contracts';
 import { bindPlanimaScope, listPlanimaBindings, unbindPlanimaScope } from '@substrat-run/connector-planima';
+import { bindFortnoxScope, listFortnoxBindings, unbindFortnoxScope } from '@substrat-run/connector-fortnox';
 import {
   ConnectionRelayError,
+  bindingChangeRefusal,
   connectionBindingOptions,
   relayConnectionBind,
   relayConnectionBindings,
@@ -70,7 +72,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
   const statusOfA = () => relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf()).then((r) => r.bindings);
 
   /** A version of the vertical declaring the landing in `mode`, holding `key`, and every scope given it. */
-  const runs = async (mode: 'on-request' | 'every-install', key = LAND, options?: Record<string, unknown>) => {
+  const runs = async (mode: 'on-request' | 'every-install', key = LAND, options?: Record<string, unknown>, provider = 'planima') => {
     const id = ulid();
     await host.admin.publishVersion(relayActor, await heldVersion({
       id, verticalSlug: SLUG, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
@@ -79,7 +81,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
           permissions: [LAND, INGEST].map((k) => ({ key: k, description: 'land a plan', declaredBy: ['@acme/drive'] })),
           roles: [],
           entityGrants: [],
-          connections: [{ provider: 'planima', operation: 'drive/land', permission: key, ...(mode === 'on-request' ? { bind: mode } : {}), ...(options ? { options } : {}), declaredBy: ['@acme/drive'] }],
+          connections: [{ provider, operation: 'drive/land', permission: key, ...(mode === 'on-request' ? { bind: mode } : {}), ...(options ? { options } : {}), declaredBy: ['@acme/drive'] }],
         },
       }),
     }));
@@ -88,9 +90,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
   };
 
   /** A scope's own connection, as the upsert relay makes one. */
-  const own = async (s: ScopeId): Promise<ConnectionId> => {
+  const own = async (s: ScopeId, provider = 'planima'): Promise<ConnectionId> => {
     const id = connectionId.parse(ulid());
-    await host.admin.createConnection(relayActor, { id, tenantId: t, vertical: SLUG, provider: 'planima', label: 'own', secret: { token: `tok-${s}` }, ownerScopeId: s });
+    await host.admin.createConnection(relayActor, { id, tenantId: t, vertical: SLUG, provider, label: 'own', secret: { token: `tok-${s}` }, ownerScopeId: s });
     return id;
   };
   const bindBody = (s: ScopeId, conn: ConnectionId, options: Record<string, unknown> = { horizonYears: 10 }) => ({ tenantId: t, scopeId: s, connectionId: conn, options, boundBy: person });
@@ -252,6 +254,33 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     await relayConnectionBind(host, relayActor, bindBody(a, conn, {}), landings(true, declarationOnly));
 
     expect((await listPlanimaBindings(host, conn))[0]).toMatchObject({ horizonYears: 8 });
+  });
+
+  it('rebinds a Fortnox invoice landing the declaration names, keeping its kind and the scope\'s own first pass', async () => {
+    // The control plane's Fortnox binder: a missing kind means `ledger`, and a change of kind is refused.
+    const fortnox: ConnectionBinder = {
+      list: (h, row) => listFortnoxBindings(h, row.id),
+      bind: (h, row, target) => bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id }),
+      bindBeforeGrant: (h, row, target) => bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id, grantPreflighted: true }),
+      options: (raw, current) => {
+        const parsed = connectionBindingOptions('fortnox').parse(raw ?? {}) as { kind?: string; firstPass?: 'all' | number };
+        const refusal = bindingChangeRefusal('fortnox', current as { kind?: string } | undefined, parsed);
+        if (refusal) throw new Error(refusal);
+        return { kind: parsed.kind, firstPass: parsed.firstPass ?? (current as { firstPass?: 'all' | number } | undefined)?.firstPass };
+      },
+      unbind: (h, row, s) => unbindFortnoxScope(h, row.id, s),
+    };
+    const relay: ConnectionBindingRelayOptions = {
+      proven: true,
+      landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { fortnox } },
+    };
+    await runs('on-request', LAND, { kind: 'supplier-invoice' }, 'fortnox');
+    const conn = await own(a, 'fortnox');
+    await relayConnectionBind(host, relayActor, bindBody(a, conn, { firstPass: 'all' }), relay);
+
+    await relayConnectionBind(host, relayActor, bindBody(a, conn, {}), relay);
+
+    expect(await listFortnoxBindings(host, conn)).toEqual([expect.objectContaining({ kind: 'supplier-invoice', firstPass: 'all' })]);
   });
 
   it("takes the previous key back on a rebind under a landing whose key changed, so an unbind then leaves nothing", async () => {

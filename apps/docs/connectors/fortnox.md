@@ -21,7 +21,7 @@ The credential model is now proven rather than argued: `grant_type=client_creden
 |---|---|
 | **Provider** | Fortnox (Swedish accounting), REST API v3 + SIE4 export |
 | **Category** | Accounting |
-| **Status** | Ledger live-verified against a Fortnox test company; supplier invoices and their files verified against the mock only — poll-only, no outbound writes |
+| **Status** | Ledger live-verified against a Fortnox test company; supplier invoices, their files and the write-back verified against the mock only — poll-only, and it writes to Fortnox only for an invoice binding that declares `writeback` |
 | **Package** | `@substrat-run/connector-fortnox` — `0.x` |
 | **Consumes** | *nothing* — this connector answers no event |
 | **Registered with** | *nothing* — it is a `ConnectorSweeper`, bound into the platform sweeper |
@@ -197,8 +197,7 @@ twice. A pass with no changes makes no call to the operation.
   scope's row naming the invoice number, and the next pass starts from that invoice. One that
   can never be read fails every pass by its number rather than being skipped, because a skipped
   invoice would not reach the operation until someone edited it in Fortnox.
-- **Read-only.** This sweep writes nothing to Fortnox. Writing an approval back is not part of it
-  yet.
+- **Read-only unless declared.** A binding with no `writeback` writes nothing to Fortnox.
 
 #### The invoice's file
 
@@ -229,7 +228,9 @@ the attachment on the entity is the record.
   entity for the invoice lands its files there too. Upload is still at least once: a pass that
   stops between an upload and its record uploads that file again on the next pass.
 - **A file that cannot be read** stays queued and fails the scope's row by the invoice's number,
-  and the pass moves on to the next one. The invoices keep landing.
+  and the pass moves on to the next one. The invoices keep landing. After eight failed passes it is
+  stepped over, with the last error in the pass's result, so files that never read cannot use up
+  every pass's budget.
 - **A refused read** (`401`/`403`) stops the files for that pass, because it is the company's
   consent and every other file would answer the same. The scope's row says the consent must cover
   `connectfile` and `archive`. A company that consented before those scopes were asked for has to
@@ -260,6 +261,65 @@ polled binding, ledger or invoice, landed or was unchanged, **skipped** when the
 no binding, and **failed**, naming the scope, when a scope could not be landed in or a declared
 landing could not be granted or bound. An operation that refuses the invoice page fails its
 scope this way, naming the scope.
+
+#### Writing back
+
+A vertical that decides on invoices, a board approving them for example, declares two more
+operations on the landing:
+
+```ts
+options: {
+  kind: 'supplier-invoice',
+  writeback: { read: 'invoices/writeback', record: 'invoices/writeback-recorded' },
+},
+```
+
+Both run as the connection, so both check the landing's permission. Every pass, idle ones too, the
+sweep calls `read` with `{ connectionId, company }` and does what it answers, parsed by
+`fortnoxInvoiceWriteback`:
+
+```ts
+{
+  hold: [{ givenNumber }],        // keep it from being paid until it is decided
+  decisions: [{
+    key,                          // yours, handed back in the receipt
+    givenNumber,
+    book,                         // book it, unless it already is
+    release,                      // clear the hold this binding set
+    comment,                      // one entry for the comment log, or null
+  }],
+}
+```
+
+**The sweep asks rather than listens.** A hosted connector has no delivery of a scope's events, and
+it does not need one: what the operation still answers is what is still to do, so a lost pass costs
+fifteen minutes and nothing else. The operation answers for the company it is given, because
+`GivenNumber` repeats between companies and a bureau holds many in one install.
+
+- **A hold** sets `DisablePaymentFile`, which keeps the invoice out of payment files and out of
+  Fortnox's payment view. **Only a hold this binding set is ever cleared.** The flag is also used on
+  purpose, for a supplier paid by direct debit for example, and a new invoice inherits it from the
+  supplier, so a block the sweep finds stays. A found block is read again each pass while the
+  invoice is listed in `hold`, and if someone lifts it the sweep sets its own. What it set is
+  remembered per connection, written before the `PUT` and marked confirmed after it: a pass that
+  dies between them, or a `PUT` that gets no clear answer, leaves an unconfirmed note that the next
+  pass checks against the invoice, never a block nobody knows about.
+- **A decision's order is the order that fails safe:** book, clear the hold, add the comment. An
+  invoice that could not be booked stays held, and the comment log is append-only, so it goes last.
+  Each step looks first, so a pass cut off part-way repeats nothing: a booked invoice is not booked
+  again, and a comment already in the log is not added.
+- **The receipt** goes to `record`, parsed by `fortnoxInvoiceWritebackReceipt`, as
+  `{ key, status: 'done' | 'failed', error }`. A refusal in Fortnox's own words (a `4xx`, a locked
+  period for example) is `failed` at once, because the next pass would get the same answer and a
+  person has to act. Anything else, an outage for example, is tried on the next passes, and is
+  `failed` after eight. Answering the same key again after a `failed` is how a vertical retries.
+- **A write that fails** also fails the scope's row by the invoice's number. It never stops the
+  invoices landing, and a landing that fails never stops the writes.
+- **Budget.** A hold costs two calls and a decision up to five, from the pass's 200, and the 90-second
+  deadline applies. What does not fit is answered again next pass.
+
+Whether a hold does what it is for has not been measured against Fortnox. See
+[what's missing](#what-s-missing).
 
 ### Bind a hosted connection by hand
 
@@ -315,8 +375,8 @@ client pair serves a whole fleet; `tenantId` is the only part that differs per c
 **What is never stored:** nothing sensitive beyond the client secret. A ledger binding reads
 bookkeeping totals — accounts, cost centres, months, sums. An invoice binding reads supplier
 invoices, their accounting rows and the files connected to them, and only for a scope that
-declared it. Neither reads a customer register or an employee record, and neither writes anything
-back to Fortnox.
+declared it. Neither reads a customer register or an employee record. An invoice binding writes to
+Fortnox only if it declares `writeback`, and then only the three things above.
 
 ### The one-time consent
 
@@ -412,7 +472,7 @@ When the redirect comes back, three steps follow, and the third is the one that 
 Ask for what the integration will need, not what it needs today. Fixing this later means going
 back to every customer. Note also that **every Fortnox scope grants read *and* write** — there is
 no read-only variant — so an extra scope widens what the credential *could* do, even for a
-connector like this one that has no write path at all.
+binding that writes nothing.
 :::
 
 ### What the customer needs before any of this works
@@ -540,7 +600,7 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
    locally, reads it, verifies `client_credentials` against it, and prints the line to add.
 
    The suite reads only: the data calls are GETs and the one POST is the token mint, which creates
-   no Fortnox record. This connector has no write path to Fortnox, so it is safe against a
+   no Fortnox record. It binds no write-back, so it is safe against a
    production company too — and that property is worth protecting, which is why seeding a sandbox
    with test data lives in a **separate** script, `pnpm fortnox:seed`, that refuses to write to any
    company whose organisation number is not Fortnox's sandbox marker `555555-5555`.
@@ -559,5 +619,11 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 3. **A deployment that schedules the sweep.** The connector provides the driver and cannot hold a
    timer. Without `startPlatformSweeper` or `definePlatformSweeperDO` wired, a binding is inert.
 
-4. **Supplier-invoice approvals.** An invoice binding lands the invoices, their rows and their files
-   (above), and nothing is written back to Fortnox.
+4. **A measured write-back.** Everything under [writing back](#writing-back) runs against the mock,
+   which is our reading of Fortnox. Before a company depends on it, check in a sandbox:
+   - Can an unbooked supplier invoice be paid at all? Fortnox's support pages disagree.
+   - Is `DisablePaymentFile` writable with `PUT`, on an unbooked invoice and on a booked one, and
+     does a flag set over the API hide the invoice from the payment view as the web UI's does? The
+     release clears it after booking, and a booked invoice can otherwise not be edited.
+   - What does `bookkeep` answer for an invoice that cannot be booked, and for one already booked?
+   - Do `bookkeep` and `commentlog` work with the `supplierinvoice` scope alone?

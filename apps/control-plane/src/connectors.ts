@@ -577,13 +577,25 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
               form?: 'summary' | 'sie';
               years?: 'all' | number;
               firstPass?: 'all' | number;
+              writeback?: { read: string; record: string };
             };
-            const refusal = bindingOptionsRefusal(c.provider, parsed) ?? bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
+            // An option the binding holds and the call leaves out is kept, as every other provider's
+            // merge keeps it. Kind is not: a kind left out is `ledger`, and a change of kind is refused.
+            const held = current as
+              | { form?: 'summary' | 'sie'; years?: 'all' | number; firstPass?: 'all' | number; writeback?: { read: string; record: string } }
+              | undefined;
+            const ledger = (parsed.kind ?? 'ledger') === 'ledger';
+            const form = parsed.form ?? (ledger ? held?.form : undefined);
+            const next = {
+              kind: parsed.kind,
+              form,
+              years: parsed.years ?? (form === 'sie' ? held?.years : undefined),
+              firstPass: parsed.firstPass ?? (ledger ? undefined : held?.firstPass),
+              writeback: parsed.writeback ?? (ledger ? undefined : held?.writeback),
+            };
+            const refusal = bindingOptionsRefusal(c.provider, next) ?? bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
             if (refusal) throw new Error(refusal);
-            // The relay drops a declared default the binding already holds, so a first pass `raw`
-            // leaves out is the held one: a rebind that restates nothing does not start over at 90 days.
-            const held = (current as { firstPass?: 'all' | number } | undefined)?.firstPass;
-            return { kind: parsed.kind, form: parsed.form, years: parsed.years, firstPass: parsed.firstPass ?? held };
+            return next;
           }
           return options.parse({
             ...(current ? options.strip().parse(current) : {}),

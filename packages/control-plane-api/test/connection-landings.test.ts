@@ -206,7 +206,7 @@ describe('declared connection landings (#2316)', () => {
         const oldKind = (current as { kind?: string } | undefined)?.kind ?? 'ledger';
         const newKind = parsed.kind ?? 'ledger';
         if (current && oldKind !== newKind) throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${oldKind} to ${newKind})`);
-        return { kind: parsed.kind, form: parsed.form, years: parsed.years, firstPass: parsed.firstPass };
+        return { kind: parsed.kind, form: parsed.form, years: parsed.years, firstPass: parsed.firstPass, writeback: parsed.writeback };
       },
       stale: (binding, row) => ((binding as { externalAccountRef?: string | null }).externalAccountRef ?? null) !== row.externalAccountRef,
     },
@@ -329,7 +329,7 @@ describe('declared connection landings (#2316)', () => {
   it('binds a declared first pass, and a changed one starts the landing over', async () => {
     const declaring = (firstPass: 'all' | number) => manifestDeclaring([
       { provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record',
-        options: { kind: 'supplier-invoice', firstPass }, declaredBy: ['@acme/crm'] },
+        options: { kind: 'supplier-invoice', firstPass, writeback: { read: 'invoices/writeback', record: 'invoices/writeback-record' } }, declaredBy: ['@acme/crm'] },
     ]);
     await host.admin.bindScopeVersion(staff, t, s, await publish(declaring(30)));
     const id = await connect('fortnox', '111111');
@@ -340,7 +340,7 @@ describe('declared connection landings (#2316)', () => {
 
     await pass();
 
-    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', firstPass: 30 });
+    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', firstPass: 30, writeback: { read: 'invoices/writeback', record: 'invoices/writeback-record' } });
     expect(invoicePages).toEqual([]);
 
     await host.admin.bindScopeVersion(staff, t, s, await publish(declaring('all')));
