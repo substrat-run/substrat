@@ -997,8 +997,9 @@ function assertListsArePaged(operations: Record<string, unknown>): void {
         throw new Error(
           `model: '${name}' returns ${verdict.via.length > 0 ? `an array${under}` : 'a bare array'} and does not ` +
             'declare `paged` — a list read that answers with the whole table is unbounded by construction.\n' +
-            '  Remedy: declare the ENTRY as `output` and add `paged`. A list of one entity\'s own rows is a page\n' +
-            '  the kernel composes, and its handler is derived — no handler to write:\n' +
+            '  Remedy: declare the ENTRY as `output` and add `paged`. A list of one entity\'s own rows — output\n' +
+            '  its own fields, every input one of its declared filters — is a page the kernel composes, and its\n' +
+            '  handler is derived, with none to write:\n' +
             "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }, derive: 'list'\n" +
             '  Only where the kernel cannot (a kernel table, a correlated subquery, a per-row permission walk)\n' +
             '  does the handler compose its own page, naming the entry field the cursor walks. That handler is\n' +
@@ -2276,7 +2277,8 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
             `${DERIVED_KINDS.join(', ')}, so every handler for it is authored already.\n` +
             (sortKeyed
               ? '  A `paged: { sortKey }` page is composed by its handler, so it is hand-written by construction.\n' +
-                "  Remedy: remove `authored` — or, for a list of one entity's own rows, declare " +
+                "  Remedy: remove `authored` — or, for a list of one entity's own rows (its own fields out, its " +
+                'declared filters in), declare ' +
                 "`paged: { over: { entity, … } }` with `derive: 'list'` and delete the handler."
               : '  Remedy: remove `authored`.'),
         );
