@@ -275,7 +275,9 @@ parts so a mapping to and from it is mechanical. It lives at the experimental su
 consumer settles it. The contract's names are the ones this RFC uses: text
 (`text-start`/`text-delta`/`text-end`), `tool-input`, `tool-output`, `approval-request` and
 `approval-resolved`, `source`, and for what is ours, `data-provenance` (the "AI" marker, when,
-from how many sources, the query it ran: what #1749 asks for) and `budget-notice`. Still to
+from how many sources, the query it ran: what #1749 asks for), `budget-notice`, and
+`host-event` (something the host did in a turn that is neither text nor a tool call: the
+builder studio records its checks, commits and limits this way, a `kind` plus a line). Still to
 come, as new event types when a phase needs them: reasoning (collapsed by default), file,
 participant-joined, handoff-state and memory-proposed.
 

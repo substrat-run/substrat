@@ -15,17 +15,8 @@
  * metering outage must never fail the turn; a miss is logged, and the dedupe
  * key makes any retry safe.
  */
-import {
-	addDecimal,
-	LIST_PAGE_MAX,
-	permissionKey,
-	principalId,
-	scopeId,
-	tenantId,
-	type Page,
-} from '@substrat-run/contracts';
-import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
+import { addDecimal, LIST_PAGE_MAX, type Page } from '@substrat-run/contracts';
+import { studioScope, type StudioEnv } from './studio.js';
 import {
 	MARKUP_PERCENT,
 	costOf,
@@ -34,21 +25,6 @@ import {
 	withMarkup,
 	type StepTokens,
 } from './pricing.js';
-
-/** The studio's fixed node — valid ULIDs, same shape as Meridian's DEV_NODE. */
-export const STUDIO_NODE = {
-	tenantId: tenantId.parse('01JZ0000000000000000STD001'),
-	scopeId: scopeId.parse('01JZ0000000000000000STD002'),
-};
-
-/**
- * The recording principal. Entries carry it as `created_by`; the human staff
- * actor is not threaded through v0 (the studio DO is one shared instance), so
- * per-person attribution is deliberately absent rather than pretended.
- */
-const STUDIO_RECORDER = principalId.parse('01JZ0000000000000000STD003');
-
-const STUDIO_ROLE = 'studio-metering';
 
 /**
  * Meter keys carry the MODEL as the billing dimension (engine-metering:
@@ -86,55 +62,6 @@ function parseCostKey(key: string): string | null {
 	return key.startsWith('ai.cost.usd.') ? key.slice('ai.cost.usd.'.length) : null;
 }
 
-export interface StudioEnv {
-	SCOPE: DurableObjectNamespace;
-}
-
-function hostFor(env: StudioEnv): CloudflareScopeHost {
-	const host = new CloudflareScopeHost({ scope: env.SCOPE });
-	host.registerModule(meteringModule);
-	return host;
-}
-
-/**
- * Provision-or-heal, memoized per isolate. `provisionScopeLocal` is idempotent
- * (migrations no-op once applied; the projection rewrites the same rows), so a
- * cold start re-running it is a self-heal, not a hazard. Entitlements are
- * deliberately omitted: an un-projected scope trusts upstream (#304), which is
- * the truthful state — the studio has no plan.
- */
-let ready: Promise<void> | null = null;
-
-function ensureStudio(env: StudioEnv): Promise<void> {
-	ready ??= (async () => {
-		const host = hostFor(env);
-		await host.provisionScopeLocal({
-			tenantId: STUDIO_NODE.tenantId,
-			scopeId: STUDIO_NODE.scopeId,
-			owner: STUDIO_RECORDER,
-			roles: [
-				{
-					key: STUDIO_ROLE,
-					permissions: [
-						METERING_PERM.read,
-						METERING_PERM.record,
-						METERING_PERM.configure,
-						METERING_PERM.close,
-					].map((p) => permissionKey.parse(p)),
-					source: 'vertical',
-				},
-			],
-			ownerRoleKey: STUDIO_ROLE,
-		});
-		// Meters are per-model and configured lazily by recordTurnUsage — a new
-		// model id must never require a deploy to start metering.
-	})().catch((err) => {
-		ready = null; // a failed bootstrap must not poison every later turn
-		throw err;
-	});
-	return ready;
-}
-
 export interface TurnUsage {
 	readonly projectId: string;
 	/** The turn's ulid — the dedupe key, so a replayed report can never double-bill. */
@@ -160,12 +87,7 @@ export interface TurnUsage {
  * `reportTurnUsage` from the turn path.
  */
 export async function recordTurnUsage(env: StudioEnv, usage: TurnUsage): Promise<void> {
-	await ensureStudio(env);
-	const scope = await hostFor(env).getScope(
-		STUDIO_RECORDER,
-		STUDIO_NODE.tenantId,
-		STUDIO_NODE.scopeId,
-	);
+	const scope = await studioScope(env);
 	const model = normalizeModelSpec(usage.model);
 	const subject = { entityType: 'builder-project', entityId: usage.projectId };
 	const sides: Array<[Side, number | undefined]> = [
@@ -296,12 +218,7 @@ export interface UsageReport {
  * discipline still guards the stored truth.
  */
 export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<UsageReport> {
-	await ensureStudio(env);
-	const scope = await hostFor(env).getScope(
-		STUDIO_RECORDER,
-		STUDIO_NODE.tenantId,
-		STUDIO_NODE.scopeId,
-	);
+	const scope = await studioScope(env);
 	// The ledger read is PAGED (#959), and this report is a fold over all of it:
 	// `totals` and `byModel` are lifetime figures, not windowed ones, so taking
 	// the first page would quietly under-report every number on the usage screen.
