@@ -31,7 +31,7 @@ import {
 import { rowDecoder, UNDECODED_ACTOR, type RowDecoder } from './row-decode.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { REFUSAL_JOURNAL_PREFIX } from './delivery-refusal.js';
-import { OUTBOX_PRUNED_THROUGH, WatermarkPruned } from './outbox-prune.js';
+import { OUTBOX_PRUNED_THROUGH_SQL, WatermarkPruned } from './outbox-prune.js';
 
 /**
  * Reading an entity's history out of the spine (#800).
@@ -370,9 +370,7 @@ function scopeWalkQuery(
  */
 function assertWatermarkHeld(ctx: TimelineReader, page: ScopeWalkPage | undefined): void {
   if (page?.cursor === undefined || page.order === 'desc') return;
-  const floor = ctx.sql.query<{ value: string }>('SELECT value FROM _substrat_meta WHERE key = ?', [
-    OUTBOX_PRUNED_THROUGH,
-  ])[0]?.value;
+  const floor = ctx.sql.query<{ through: string }>(OUTBOX_PRUNED_THROUGH_SQL)[0]?.through;
   if (floor !== undefined && page.cursor < floor) throw new WatermarkPruned(page.cursor, floor);
 }
 

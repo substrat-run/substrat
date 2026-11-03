@@ -14,11 +14,22 @@ export const OUTBOX_RETENTION_DAYS = 90;
 export const OUTBOX_PRUNE_BATCH = 500;
 
 /**
- * The `_substrat_meta` key holding the highest event id a prune ever removed. A scope walk
- * resumed from a watermark below it may have lost rows to the prune, so it refuses
- * (`WatermarkPruned`) rather than answering with a silent hole.
+ * The highest event id a prune ever removed (#1334), one row. A scope walk resumed from a
+ * watermark below it may have lost rows to the prune, so it refuses (`WatermarkPruned`) rather
+ * than answering with a silent hole. Kernel-owned and shared by both adapters' `KERNEL_DDL`,
+ * like `_substrat_copy_origin`, so the two cannot part company. Travels in a scope's dump with
+ * the outbox it describes.
  */
-export const OUTBOX_PRUNED_THROUGH = 'outbox_pruned_through';
+export const OUTBOX_PRUNED_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_outbox_pruned (
+    -- Always 1: one floor per scope. No CHECK, because lint:spine-ddl compares none.
+    id INTEGER PRIMARY KEY,
+    through TEXT NOT NULL
+  );
+`;
+
+/** The pruned-through floor, or none: what `assertWatermarkHeld` compares a watermark against. */
+export const OUTBOX_PRUNED_THROUGH_SQL = 'SELECT through FROM _substrat_outbox_pruned WHERE id = 1';
 
 /** One local subscriber to an event type: a module consumer (its module id) or an executor (`executor:<id>`). */
 export interface OutboxSubscriber {
@@ -86,9 +97,8 @@ export function pruneDrainedOutbox(sql: SwitchSql, input: OutboxPruneInput): num
   sql.run('DELETE FROM _substrat_outbox WHERE id IN (SELECT value FROM json_each(?))', batch);
   const highest = ids.reduce((a, b) => (b > a ? b : a));
   sql.run(
-    `INSERT INTO _substrat_meta (key, value) VALUES (?, ?)
-       ON CONFLICT (key) DO UPDATE SET value = MAX(value, excluded.value)`,
-    OUTBOX_PRUNED_THROUGH,
+    `INSERT INTO _substrat_outbox_pruned (id, through) VALUES (1, ?)
+       ON CONFLICT (id) DO UPDATE SET through = MAX(through, excluded.through)`,
     highest,
   );
   return ids.length;

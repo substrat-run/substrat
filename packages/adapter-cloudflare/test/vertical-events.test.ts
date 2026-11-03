@@ -98,6 +98,9 @@ describe('cross-vertical verbs on the shared control plane (#1705)', () => {
     redrain: async () => {
       throw new Error('the delegation is never called by these verbs');
     },
+    prune: async () => {
+      throw new Error('the delegation is never called by these verbs');
+    },
   };
   let shared: CloudflareScopeHost;
 

@@ -42,6 +42,7 @@ describe('event-drain delegation (#1334)', () => {
       const reopens = seen.redrain.filter((c) => !(c as { countOnly?: boolean }).countOnly);
       return reopens.length === 1 ? 3 : 0;
     },
+    prune: async () => null,
   };
   const hostFor = () =>
     new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, eventDrainDelegation: delegation });
