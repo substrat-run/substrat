@@ -16,7 +16,6 @@ import {
   scopeId,
   tenantId,
   type ScopeBackup,
-  type ScopeDump,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -59,16 +58,23 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
 
   /** The kind of backup store a deployed plane holds: enough to satisfy `backup: true`. */
   const backups: NonNullable<ControlPlaneApiOptions['scopeBackups']> = {
-    put: async ({ vertical, dump }: { vertical: string | null; dump: ScopeDump }): Promise<ScopeBackup> => ({
-      tenantId: dump.tenantId,
-      scopeId: dump.scopeId,
-      vertical,
-      capturedAt: dump.capturedAt,
-      size: 1,
-      tables: dump.tables.length,
+    begin: ({ vertical, header }) => ({
+      put: async () => undefined,
+      discard: async () => undefined,
+      commit: async ({ tables }): Promise<ScopeBackup> => ({
+        tenantId: header.tenantId,
+        scopeId: header.scopeId,
+        vertical,
+        capturedAt: header.capturedAt,
+        size: 1,
+        tables,
+      }),
     }),
     list: async () => [],
     get: async () => null,
+    entry: async () => {
+      throw new Error('no backup is held');
+    },
   };
 
   beforeEach(async () => {
