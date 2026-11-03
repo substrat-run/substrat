@@ -554,6 +554,8 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const ok = await post(host, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', limit: 500 });
     expect(await ok.json()).toEqual({ pruned: 3 });
     expect((await post(host, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', limit: 5000 })).status).toBe(400);
+    // A future horizon would prune inside the retention window, so this door refuses it too.
+    expect((await post(host, { scopeId: SCOPE, drainedBefore: new Date(Date.now() + 60_000).toISOString(), limit: 500 })).status).toBe(400);
     const older = fakeHost({ pruneDrainedEventsLocal: undefined });
     expect((await post(older, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', limit: 500 })).status).toBe(501);
     expect(older.calls).toHaveLength(0);

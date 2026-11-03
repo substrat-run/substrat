@@ -2175,8 +2175,26 @@ export function scopeHostContractSuite(
 
       // Inside retention (strictly before the stamp) nothing goes.
       await expect(prune(stampedAt)).resolves.toBe(0);
-      await expect(prune(new Date(Date.parse(stampedAt) + 1).toISOString())).resolves.toBe(2);
-      expect(await walk()).toEqual([poison, okNewest, poisonNewest, pairNewest, lateOld, lateNewest]);
+      await expect(prune(new Date(Date.now() + 60_000).toISOString())).rejects.toThrow(/future/);
+      // A horizon in the future is refused, so let the clock pass the stamp first (a millisecond).
+      const justAfter = new Date(Date.parse(stampedAt) + 1).toISOString();
+      while (Date.now() <= Date.parse(justAfter)) await new Promise((r) => setTimeout(r, 1));
+      await expect(prune(justAfter)).resolves.toBe(2);
+      const kept = [poison, okNewest, poisonNewest, pairNewest, lateOld, lateNewest];
+      expect(await walk()).toEqual(kept);
+      // A walk that began after the prune pages through the rows still kept below the floor, in
+      // pages small enough that its cursor sits under it; both scope walks.
+      for (const op of ['test/scope-timeline', 'test/scope-history']) {
+        const paged: string[] = [];
+        let cursor: string | null = null;
+        for (let guard = 0; guard < 10; guard++) {
+          const page: Page<ScopeTimelineEntry> = await stub.invoke(op, { limit: 2, ...(cursor ? { cursor } : {}) });
+          paged.push(...page.entries.map((e) => e.id));
+          cursor = page.nextCursor;
+          if (cursor === null) break;
+        }
+        expect(paged).toEqual(kept);
+      }
       // The delivered row's journal went with it; the retrying one's stays.
       const deliveries = await host.admin.readScopeTable(staff, t1, sPrune, { table: '_substrat_deliveries', limit: 50, offset: 0 });
       const journaled = deliveries.rows.map((r) => r[deliveries.columns.indexOf('event_id')]);
@@ -2200,7 +2218,7 @@ export function scopeHostContractSuite(
         ...dump,
         tables: dump.tables.filter((t) => t.name !== '_substrat_outbox_pruned'),
       });
-      expect(await walk({ cursor: ok })).toEqual([poison, okNewest, poisonNewest, pairNewest, lateOld, lateNewest]);
+      expect(await walk({ cursor: ok })).toEqual(kept);
     });
 
     it('stamps and reopens more events than a Durable Object binds parameters (#1776)', async () => {

@@ -12,6 +12,7 @@ import {
   installsReconciledOf,
   type InstallsReconciled,
 } from '../src/install-receipts.js';
+import { outboxPruneDue } from '../src/outbox-prune.js';
 import { isPrimaryScope, runningVersionOf } from '../src/scope-identity.js';
 import { exportBreakRefusal, exportBreaksOf, isExportBreakRefusal, isExportBreakUnjudged } from '../src/export-break.js';
 import {
@@ -2368,20 +2369,30 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
       return mark(...a);
     };
     const answers: (number | null)[] = [3, null];
-    let before = '';
-    admin.pruneDrainedEvents = async (_a: unknown, _t: unknown, _s: unknown, input: { drainedBefore: string; limit: number }) => {
-      calls.push(`prune ${input.limit}`);
-      before = input.drainedBefore;
+    let input = { drainedBefore: '', limit: 0, due: undefined as boolean | undefined };
+    admin.pruneDrainedEvents = async (_a: unknown, _t: unknown, _s: unknown, i: typeof input) => {
+      calls.push(`prune ${i.limit}`);
+      input = i;
       return answers.shift()!;
     };
     const started = Date.now();
     expect((await sweep(h)).eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0, pruned: 3 });
     expect(calls).toEqual(['mark', 'prune 500']);
-    const age = started - Date.parse(before);
+    // A new lap starts only in the scope's hour; the scope continues a capped one regardless.
+    expect(input.due).toBe(outboxPruneDue(scope, started));
+    const age = started - Date.parse(input.drainedBefore);
     expect(age).toBeGreaterThanOrEqual(90 * 86_400_000 - 1000);
     expect(age).toBeLessThanOrEqual(90 * 86_400_000 + 1000);
-    // A deployment older than the verb answers null: counted, never an error, nothing pruned.
-    const report = await sweep(h);
+    // A deployment older than the verb answers null: counted, never an error, nothing pruned. A
+    // window that is not a positive number falls back to the default rather than pruning now.
+    const report = await runPlatformSweep(h.host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      eventSink: h.eventSink as never,
+      outboxRetentionDays: Number.NaN,
+    });
+    expect(started - Date.parse(input.drainedBefore)).toBeGreaterThanOrEqual(90 * 86_400_000 - 1000);
     expect(report.eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0, pruneUnsupported: 1 });
     expect(report.errors).toEqual([]);
   });
