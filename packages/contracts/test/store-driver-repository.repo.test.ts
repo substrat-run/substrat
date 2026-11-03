@@ -16,7 +16,6 @@ const PRIVATE_WORKSPACE_PACKAGES = [
   'demos/auth-server', 'demos/auth-server/app', 'demos/handlebar', 'demos/handlebar/app', 'demos/manyfold', 'demos/manyfold/app',
   'demos/meridian', 'demos/meridian/app', 'demos/shop', 'demos/shop/admin', 'demos/shop/app', 'demos/ticket0', 'demos/ticket0/app',
   'demos/tock', 'demos/tock/app', 'demos/todo', 'demos/todo/app',
-  'engines/assistant',
   'packages/adapter-email', 'packages/builder-generator', 'packages/builder-workspace', 'packages/console-data',
   'packages/engine-test-kit', 'packages/template-check', 'packages/ui',
   'spikes/k3s-sharding',

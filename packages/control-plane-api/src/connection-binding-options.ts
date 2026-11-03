@@ -23,6 +23,9 @@ export function connectionBindingOptions(provider: string) {
           form: z.enum(['summary', 'sie']).optional(),
           // How many years before the current one a `form: 'sie'` binding keeps.
           years: z.union([z.literal('all'), z.number().int().min(0).max(100)]).optional(),
+          // How far back a supplier-invoice binding's first pass reads: days, or every invoice.
+          // A changed value re-binds, and a re-bound landing starts its first pass again.
+          firstPass: z.union([z.literal('all'), z.number().int().positive().max(36_500)]).optional(),
         })
         .strict();
     case 'planima':
@@ -54,10 +57,11 @@ export function connectionBindingOptions(provider: string) {
  * row before anything is granted. Kept apart from the schema because the doors `extend` and
  * `strip` it, which a refinement would not survive.
  */
-export function bindingOptionsRefusal(provider: string, options: { kind?: string | null; form?: string | null; years?: unknown }): string | undefined {
+export function bindingOptionsRefusal(provider: string, options: { kind?: string | null; form?: string | null; years?: unknown; firstPass?: unknown }): string | undefined {
   if (provider !== 'fortnox') return undefined;
   if (options.form != null && (options.kind ?? 'ledger') !== 'ledger') return `form applies to a ledger binding, not to '${options.kind}'`;
   if (options.years != null && options.form !== 'sie') return "years applies to a binding with form 'sie': the summary form lands the current year";
+  if (options.firstPass != null && options.kind !== 'supplier-invoice') return `firstPass applies to a supplier-invoice binding, not to '${options.kind ?? 'ledger'}'`;
   return undefined;
 }
 

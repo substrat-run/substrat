@@ -65,7 +65,14 @@ describe('connector registry', () => {
     expect(() => options({ form: 'pdf' })).toThrow();
     expect(() => options({ years: 3 })).toThrow("years applies to a binding with form 'sie'");
     expect(() => options({ kind: 'supplier-invoice', form: 'sie' })).toThrow('form applies to a ledger binding');
+    expect(options({ kind: 'supplier-invoice', firstPass: 'all' })).toEqual({ kind: 'supplier-invoice', firstPass: 'all' });
+    expect(options({ kind: 'supplier-invoice', firstPass: 365 })).toEqual({ kind: 'supplier-invoice', firstPass: 365 });
+    expect(() => options({ kind: 'supplier-invoice', firstPass: 'some' })).toThrow();
+    expect(() => options({ firstPass: 'all' })).toThrow('firstPass applies to a supplier-invoice binding');
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
+    // A rebind that restates only the kind keeps the first pass the binding holds.
+    const held = { ...invoice, firstPass: 'all' };
+    expect(options({ kind: 'supplier-invoice' }, held)).toEqual({ kind: 'supplier-invoice', firstPass: 'all' });
     expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     const legacy = { ...invoice, kind: undefined };

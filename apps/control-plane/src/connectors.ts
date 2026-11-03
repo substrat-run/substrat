@@ -576,10 +576,14 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
               kind?: 'ledger' | 'supplier-invoice';
               form?: 'summary' | 'sie';
               years?: 'all' | number;
+              firstPass?: 'all' | number;
             };
             const refusal = bindingOptionsRefusal(c.provider, parsed) ?? bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
             if (refusal) throw new Error(refusal);
-            return { kind: parsed.kind, form: parsed.form, years: parsed.years };
+            // The relay drops a declared default the binding already holds, so a first pass `raw`
+            // leaves out is the held one: a rebind that restates nothing does not start over at 90 days.
+            const held = (current as { firstPass?: 'all' | number } | undefined)?.firstPass;
+            return { kind: parsed.kind, form: parsed.form, years: parsed.years, firstPass: parsed.firstPass ?? held };
           }
           return options.parse({
             ...(current ? options.strip().parse(current) : {}),

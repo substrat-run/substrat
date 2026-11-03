@@ -85,7 +85,7 @@ export type FortnoxSecret = z.infer<typeof fortnoxSecret>;
 export function fortnoxConsentUrl(input: {
   clientId: string;
   redirectUri: string;
-  /** e.g. `['bookkeeping', 'companyinformation', 'supplierinvoice']` — `bookkeeping` is what SIE export needs, `supplierinvoice` reads and approves supplier invoices. */
+  /** e.g. `['bookkeeping', 'companyinformation', 'supplierinvoice', 'archive', 'connectfile']` — `bookkeeping` is what SIE export needs, `supplierinvoice` reads and approves supplier invoices, and an invoice's file takes both `connectfile` (the connection) and `archive` (the bytes). */
   scopes: readonly string[];
   /** Opaque round-trip value; the caller correlates its own record by it. */
   state: string;
@@ -155,6 +155,18 @@ export type FortnoxCompany = z.infer<typeof fortnoxCompany>;
 /** A number Fortnox may send as a JSON number or as a string. Kept as a string: never arithmetic on floats. */
 const fortnoxNumber = z.union([z.number(), z.string().min(1)]).transform(String);
 
+/** {@link fortnoxNumber} for a field Fortnox may leave unset. `null`, because a guessed zero is a fact nobody stated. */
+const fortnoxOptionalNumber = z
+  .union([z.number(), z.string(), z.null()])
+  .optional()
+  .transform((v) => (v === undefined || v === null || v === '' ? null : String(v)));
+
+/** A flag Fortnox may leave unset. Unset is false: it has not been set. */
+const fortnoxFlag = z
+  .union([z.boolean(), z.null()])
+  .optional()
+  .transform((v) => v ?? false);
+
 /**
  * One supplier invoice, as `GET /3/supplierinvoices/{GivenNumber}` returns it. Only the fields
  * the invoice landing carries are read; the rest are ignored.
@@ -169,13 +181,43 @@ const fortnoxSupplierInvoice = z.object({
   DueDate: fortnoxText(),
   Currency: fortnoxText('SEK'),
   Total: fortnoxNumber,
+  /** What is left to pay: the only fact on the invoice that says whether it has been paid. */
+  Balance: fortnoxOptionalNumber,
+  VAT: fortnoxOptionalNumber,
+  OCR: fortnoxText(),
+  /** The old single comment. Fortnox is retiring it for {@link fortnoxSupplierInvoice.CommentLog}. */
+  Comments: fortnoxText(),
+  /** Read-only here, written through `POST …/commentlog`. Fortnox's own UI writes only to this log. */
+  CommentLog: z
+    .array(
+      z.object({
+        Comment: fortnoxText(),
+        CreatedAt: fortnoxText(),
+        UserName: fortnoxText(),
+      }),
+    )
+    .nullish()
+    .transform((v) => v ?? []),
   Booked: z.boolean(),
   Cancelled: z.boolean(),
+  /** A credit note. */
+  Credit: fortnoxFlag,
+  PaymentPending: fortnoxFlag,
+  /** Unset until the invoice is booked. */
+  VoucherSeries: fortnoxText(),
+  VoucherNumber: fortnoxOptionalNumber,
+  /** Fortnox's number for the financial year, not a calendar year. */
+  VoucherYear: fortnoxOptionalNumber,
+  Project: fortnoxText(),
+  CostCenter: fortnoxText(),
   SupplierInvoiceRows: z
     .array(
       z.object({
         Account: fortnoxNumber,
+        AccountDescription: fortnoxText(),
         CostCenter: fortnoxText(),
+        Project: fortnoxText(),
+        TransactionInformation: fortnoxText(),
         Debit: fortnoxNumber.default('0'),
         Credit: fortnoxNumber.default('0'),
       }),
@@ -183,6 +225,14 @@ const fortnoxSupplierInvoice = z.object({
     .default([]),
 });
 export type FortnoxSupplierInvoice = z.infer<typeof fortnoxSupplierInvoice>;
+
+/** One file connected to a supplier invoice, as `GET /3/supplierinvoicefileconnections` lists it. */
+const fortnoxSupplierInvoiceFile = z.object({
+  /** The id `GET /3/archive/{id}` reads the bytes by. */
+  FileId: z.string().min(1),
+  Name: fortnoxText(),
+});
+export type FortnoxSupplierInvoiceFile = z.infer<typeof fortnoxSupplierInvoiceFile>;
 
 /** How many list entries one `GET /3/supplierinvoices` page asks for — Fortnox's maximum. */
 const LIST_LIMIT = 500;
@@ -437,17 +487,19 @@ export class FortnoxApi {
 
   /**
    * The `GivenNumber` of every supplier invoice changed at or after `lastModified` — Fortnox's
-   * `YYYY-MM-DD HH:MM`, in Swedish local time. Every list page is read: the list carries no rows,
-   * so it is the cheap half, and the caller decides how many details to spend.
+   * `YYYY-MM-DD HH:MM`, in Swedish local time — or of every invoice the company has, with `null`.
+   * Every list page is read: the list carries no rows, so it is the cheap half, and the caller
+   * decides how many details to spend.
    */
-  async supplierInvoicesModifiedSince(lastModified: string): Promise<string[]> {
+  async supplierInvoicesModifiedSince(lastModified: string | null): Promise<string[]> {
     const page = z.object({
       MetaInformation: z.object({ '@TotalPages': z.number() }).optional(),
       SupplierInvoices: z.array(z.object({ GivenNumber: fortnoxNumber })).default([]),
     });
+    const filter = lastModified === null ? '' : `lastmodified=${encodeURIComponent(lastModified)}&`;
     const numbers: string[] = [];
     for (let current = 1, total = 1; current <= total; current += 1) {
-      const query = `lastmodified=${encodeURIComponent(lastModified)}&limit=${LIST_LIMIT}&page=${current}`;
+      const query = `${filter}limit=${LIST_LIMIT}&page=${current}`;
       const parsed = page.parse(await this.getJson(`/supplierinvoices?${query}`));
       numbers.push(...parsed.SupplierInvoices.map((i) => i.GivenNumber));
       total = parsed.MetaInformation?.['@TotalPages'] ?? 1;
@@ -461,6 +513,39 @@ export class FortnoxApi {
       SupplierInvoice?: unknown;
     };
     return fortnoxSupplierInvoice.parse(raw.SupplierInvoice ?? raw);
+  }
+
+  /** The files connected to a supplier invoice, in Fortnox's order. Needs the `connectfile` scope. */
+  async supplierInvoiceFiles(givenNumber: string): Promise<FortnoxSupplierInvoiceFile[]> {
+    const raw = (await this.getJson(
+      `/supplierinvoicefileconnections?supplierinvoicenumber=${encodeURIComponent(givenNumber)}`,
+    )) as { SupplierInvoiceFileConnections?: unknown };
+    return z.array(fortnoxSupplierInvoiceFile).parse(raw.SupplierInvoiceFileConnections ?? []);
+  }
+
+  /**
+   * One file's bytes out of the company's archive. Needs the `archive` scope. A file over
+   * `maxBytes` answers its size as `tooLarge` and no bytes, and is not read whole when the
+   * response states its length.
+   */
+  async archiveFile(
+    fileId: string,
+    maxBytes = Infinity,
+  ): Promise<{ bytes: Uint8Array; contentType: string | null; tooLarge?: number }> {
+    const path = `/archive/${encodeURIComponent(fileId)}`;
+    const res = await this.request(path);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new FortnoxApiError(`Fortnox GET ${path} failed: ${errorMessage(body, res.status)}`, res.status, body);
+    }
+    const contentType = res.headers?.get('Content-Type') ?? null;
+    const stated = Number(res.headers?.get('Content-Length') ?? NaN);
+    if (stated > maxBytes) {
+      await res.body?.getReader().cancel();
+      return { bytes: new Uint8Array(), contentType, tooLarge: stated };
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return bytes.byteLength > maxBytes ? { bytes: new Uint8Array(), contentType, tooLarge: bytes.byteLength } : { bytes, contentType };
   }
 
   /**

@@ -46,6 +46,8 @@ export interface FortnoxMockSupplierInvoice {
   modified: string;
   /** Listed, but its detail answers 404: deleted between the list and the read. */
   gone?: boolean;
+  /** The files connected to it, in the order `supplierinvoicefileconnections` lists them. */
+  files?: { FileId: string; Name: string; bytes: Uint8Array; contentType?: string }[];
 }
 
 /**
@@ -120,6 +122,11 @@ export class FortnoxMock {
   rateLimitNext = 0;
   /** Only requests whose path contains this count toward {@link rateLimitNext}. */
   rateLimitOn = '';
+  /**
+   * The scopes the company's consent left out — a request needing one answers 403, the same
+   * way Fortnox tells a connection it never asked for `archive` or `connectfile`.
+   */
+  deniedScopes: string[] = [];
 
   /** Add or change a supplier invoice — how a test simulates "an invoice was booked". */
   setSupplierInvoice(entry: FortnoxMockSupplierInvoice): void {
@@ -168,7 +175,7 @@ export class FortnoxMock {
           access_token: token,
           token_type: 'bearer',
           expires_in: this.expiresIn,
-          scope: 'bookkeeping companyinformation supplierinvoice',
+          scope: 'bookkeeping companyinformation supplierinvoice archive connectfile',
         });
       }
       if ((headers['TenantId'] ?? '') !== this.tenantId) {
@@ -185,7 +192,7 @@ export class FortnoxMock {
         access_token: token,
         token_type: 'bearer',
         expires_in: this.expiresIn,
-        scope: 'bookkeeping companyinformation supplierinvoice',
+        scope: 'bookkeeping companyinformation supplierinvoice archive connectfile',
       });
     }
 
@@ -209,7 +216,7 @@ export class FortnoxMock {
     if (url.pathname.endsWith('/supplierinvoices')) {
       // `lastmodified` is inclusive and to the minute, so string order is time order.
       const query = new URLSearchParams(url.search.slice(1));
-      const since = query.get('lastmodified') ?? '';
+      const since = query.get('lastmodified') ?? ''; // no filter: every invoice
       const limit = Number(query.get('limit') ?? 100);
       const page = Number(query.get('page') ?? 1);
       const matching = [...this.supplierInvoices.values()].filter((e) => e.modified >= since);
@@ -225,6 +232,28 @@ export class FortnoxMock {
       const entry = this.supplierInvoices.get(decodeURIComponent(invoiceMatch[1]!));
       if (!entry || entry.gone) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
       return this.json({ SupplierInvoice: entry.invoice });
+    }
+    if (url.pathname.endsWith('/supplierinvoicefileconnections')) {
+      if (this.deniedScopes.includes('connectfile')) return this.json({ ErrorInformation: { message: 'no access to scope' } }, 403);
+      const number = new URLSearchParams(url.search.slice(1)).get('supplierinvoicenumber') ?? '';
+      const files = this.supplierInvoices.get(number)?.files ?? [];
+      return this.json({
+        SupplierInvoiceFileConnections: files.map((f) => ({ FileId: f.FileId, Name: f.Name, SupplierInvoiceNumber: number })),
+      });
+    }
+    const archiveMatch = /\/archive\/([^/?]+)$/.exec(url.pathname);
+    if (archiveMatch) {
+      if (this.deniedScopes.includes('archive')) return this.json({ ErrorInformation: { message: 'no access to scope' } }, 403);
+      const fileId = decodeURIComponent(archiveMatch[1]!);
+      const file = [...this.supplierInvoices.values()].flatMap((e) => e.files ?? []).find((f) => f.FileId === fileId);
+      if (!file) return this.json({ ErrorInformation: { message: 'no such file' } }, 404);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name: string) => (name === 'Content-Type' ? (file.contentType ?? null) : null) },
+        text: async () => '',
+        arrayBuffer: async () => file.bytes.buffer as ArrayBuffer,
+      } as Awaited<ReturnType<FetchLike>>;
     }
     const sieMatch = /\/sie\/4\?financialyear=(\d+)$/.exec(path);
     if (sieMatch) {

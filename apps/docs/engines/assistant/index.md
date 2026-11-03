@@ -9,7 +9,7 @@ exact input the person saw.
 
 | | |
 |---|---|
-| **Package** | `@substrat-run/engine-assistant` (not yet published to npm) |
+| **Package** | `@substrat-run/engine-assistant` (public publication configured; first npm release pending) |
 | **Entitlement key** | `assistant` |
 | **Composed** | by call: a host runs the loop and calls the engine's functions |
 | **Owns** | threads, their events, the run lease on each, and the state of every tool call |

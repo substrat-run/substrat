@@ -21,7 +21,7 @@ The credential model is now proven rather than argued: `grant_type=client_creden
 |---|---|
 | **Provider** | Fortnox (Swedish accounting), REST API v3 + SIE4 export |
 | **Category** | Accounting |
-| **Status** | Ledger live-verified against a Fortnox test company; supplier invoices verified against the mock only — poll-only, no outbound writes |
+| **Status** | Ledger live-verified against a Fortnox test company; supplier invoices and their files verified against the mock only — poll-only, no outbound writes |
 | **Package** | `@substrat-run/connector-fortnox` — `0.x` |
 | **Consumes** | *nothing* — this connector answers no event |
 | **Registered with** | *nothing* — it is a `ConnectorSweeper`, bound into the platform sweeper |
@@ -71,9 +71,15 @@ including existing declarations) or `supplier-invoice`. For an invoice landing, 
 ```ts
 connections: [
   { provider: 'fortnox', operation: 'invoices/record', permission: 'invoices:record',
-    options: { kind: 'supplier-invoice' } },
+    options: { kind: 'supplier-invoice', firstPass: 'all' } },
 ],
 ```
+
+`options.firstPass` says how far back an invoice binding's first pass reads: a number of days, or
+`'all'` for every invoice the company has. Left out it is 90 days. Changing it re-binds the
+landing, and a re-bound landing starts its first pass again, which is also how a vertical reads
+further back after the fact. The landing upserts, so the invoices it already holds only cost a
+resend.
 
 A ledger binding can ask for more than the monthly sums:
 
@@ -149,19 +155,30 @@ and lands them in **one** call to the declared operation, parsed by `fortnoxSupp
     supplierNumber, supplierName, invoiceNumber,
     invoiceDate, dueDate,
     total: { amount, currency },             // in the invoice's own currency
-    booked, cancelled,
-    rows: [{ account, costCentre, amount }], // debit-positive, in SEK
+    balance?, vat?,                          // the same; absent when Fortnox states none
+    ocr, booked, cancelled, credit, paymentPending,
+    comments,                                // the old single comment, while it has one
+    commentLog: [{ comment, createdAt, userName }],
+    voucher: { series, number, year } | null, // year is Fortnox's number for the financial year;
+                                             // series and year are null when Fortnox states none
+    project, costCentre,
+    rows: [{ account, accountDescription, costCentre, project, transactionInformation,
+             amount }],                       // debit-positive, in SEK
   }],
 }
 ```
+
+`balance` is the only fact on an invoice that says whether it has been paid. `commentLog` is where
+Fortnox's web UI writes new comments since September 2026, so an integration that reads only
+`comments` misses them.
 
 **Upsert by `(connectionId, givenNumber)`.** An invoice arrives again every time it changes in
 Fortnox (booked, cancelled, edited). The cursor also reads a few minutes back, so a change made in
 the same minute as the last pass is never missed, which means an unchanged invoice can arrive
 twice. A pass with no changes makes no call to the operation.
 
-- **The first pass** reads invoices changed in the last **90 days**. This is fixed, not
-  configurable.
+- **The first pass** reads invoices changed in the last **90 days**, or as far back as
+  `options.firstPass` says. With `'all'` the list carries no date filter until the run has drained.
 - **The cursor** moves only after the operation accepted the page. An operation that throws
   leaves it in place, and the next pass reads the same invoices again.
 - **Rate.** Every read of a pass is paced to Fortnox's documented limit, 25 requests in any
@@ -180,8 +197,48 @@ twice. A pass with no changes makes no call to the operation.
   scope's row naming the invoice number, and the next pass starts from that invoice. One that
   can never be read fails every pass by its number rather than being skipped, because a skipped
   invoice would not reach the operation until someone edited it in Fortnox.
-- **Read-only.** This sweep writes nothing to Fortnox. Invoice files (the scanned PDF) and
-  writing an approval back are not part of it yet.
+- **Read-only.** This sweep writes nothing to Fortnox. Writing an approval back is not part of it
+  yet.
+
+#### The invoice's file
+
+The operation asks for files in its answer. It names each invoice whose file it wants, and the
+entity the file lands on:
+
+```ts
+return { files: [{ givenNumber: '12', entity: { entityType: 'invoice', entityId } }] };
+```
+
+The entity's type must be a declared attachment target the landing's key can write. An answer that
+names no files, or that does not parse as `fortnoxSupplierInvoiceLandingAnswer`, asks for none.
+
+For each one, the pass reads `GET /3/supplierinvoicefileconnections?supplierinvoicenumber=` and
+then `GET /3/archive/{FileId}` for **every** file connected to the invoice, and uploads the bytes
+to the entity as the connection, with `internal` visibility. No operation is called afterwards:
+the attachment on the entity is the record.
+
+- **The queue.** A file is asked for once, when its invoice lands, and an unchanged invoice does
+  not land again. So what has been asked for is held on the binding until it has been read, across
+  passes. A pass reads the queue before it lists new invoices, so the queue stays within one pass's
+  budget. An invoice costs one read and a file two from the pass's 200, which puts a first pass over
+  2,000 invoices with one file each at about eight hours. The budget is checked before each file,
+  so an invoice with many files is read across passes rather than overrunning one. A re-bind keeps
+  the queue.
+- **A file lands once per entity.** What has landed is recorded per invoice, by `FileId`, so an
+  invoice that changes and is asked about again lands only files connected since. Naming another
+  entity for the invoice lands its files there too. Upload is still at least once: a pass that
+  stops between an upload and its record uploads that file again on the next pass.
+- **A file that cannot be read** stays queued and fails the scope's row by the invoice's number,
+  and the pass moves on to the next one. The invoices keep landing.
+- **A refused read** (`401`/`403`) stops the files for that pass, because it is the company's
+  consent and every other file would answer the same. The scope's row says the consent must cover
+  `connectfile` and `archive`. A company that consented before those scopes were asked for has to
+  connect again; nothing compares granted with requested scopes, so this row is how it shows.
+- **Stepped over, with the reason in the pass's result** (a pass that only stepped over a file is
+  reported, not counted as unchanged): a file gone from the archive, and a file
+  over 16 MiB, which is the most a pass holds. An invoice with no file connected asks nothing more
+  until it next lands. Whether connecting a file later moves an invoice's `lastmodified` is not
+  verified, so a file connected after the fact may wait for the next change to the invoice.
 
 Each client company is its own connection, told apart by its `externalAccountRef`. On the connector
 pass after a company's connection appears — through the dashboard's Connect, a connect link the
@@ -257,8 +314,9 @@ client pair serves a whole fleet; `tenantId` is the only part that differs per c
 
 **What is never stored:** nothing sensitive beyond the client secret. A ledger binding reads
 bookkeeping totals — accounts, cost centres, months, sums. An invoice binding reads supplier
-invoices and their accounting rows, and only for a scope that declared it. Neither reads a customer
-register or an employee record, and neither writes anything back to Fortnox.
+invoices, their accounting rows and the files connected to them, and only for a scope that
+declared it. Neither reads a customer register or an employee record, and neither writes anything
+back to Fortnox.
 
 ### The one-time consent
 
@@ -335,7 +393,7 @@ exactly like a spent code.
 `fortnoxConsentUrl` builds the URL the admin is sent to:
 
 ```ts
-fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation', 'supplierinvoice'] });
+fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation', 'supplierinvoice', 'archive', 'connectfile'] });
 // always sets account_type=service and access_type=offline
 ```
 
@@ -501,8 +559,5 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 3. **A deployment that schedules the sweep.** The connector provides the driver and cannot hold a
    timer. Without `startPlatformSweeper` or `definePlatformSweeperDO` wired, a binding is inert.
 
-4. **Supplier-invoice files and approvals.** An invoice binding lands the invoices and their rows
-   (above), but not the invoice's file, and nothing is written back to Fortnox. The `archive` and
-   `connectfile` scopes the file needs are not requested, and because scopes cannot be
-   widened after consent, a deployment that expects to want them should ask for them in the *first*
-   consent round.
+4. **Supplier-invoice approvals.** An invoice binding lands the invoices, their rows and their files
+   (above), and nothing is written back to Fortnox.

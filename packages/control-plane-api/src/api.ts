@@ -3509,7 +3509,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       permission: permissionKey,
     });
     const input = schema.parse(await c.req.json());
-    const optionsRefused = bindingOptionsRefusal(row.provider, input as { kind?: string; form?: string; years?: unknown });
+    const optionsRefused = bindingOptionsRefusal(row.provider, input as { kind?: string; form?: string; years?: unknown; firstPass?: unknown });
     if (optionsRefused) return refuseStatus(c, 422, optionsRefused);
     const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
     if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {
