@@ -10359,6 +10359,69 @@ export function scopeHostContractSuite(
       await expect(host.getScope(alice, t3, s3)).resolves.toBeDefined();
     });
 
+    describe('a scope whose stores a deletion is fencing cannot come back (D-70)', () => {
+      const archivedScope = async (status: 'active' | 'archived' = 'archived') => {
+        const tenant = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tenant, slug: `fenced-${ulid().toLowerCase()}`, name: 'Fenced' });
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, jurisdiction: 'eu' });
+        await host.admin.activateScope(staff, tenant, scope);
+        if (status === 'archived') await host.admin.archiveScope(staff, tenant, scope);
+        return { tenant, scope };
+      };
+
+      it('an unarchive that got in first wins: nothing is marked, and the scope stays live', async () => {
+        const { tenant, scope } = await archivedScope();
+        await host.admin.unarchiveScope(staff, tenant, scope);
+        await expectRefusal(host.admin.markScopeStoresFenced(staff, tenant, scope), 'conflict', /not archived/);
+        expect(await host.admin.scopeStoresFencedAt(staff, tenant, scope)).toBeNull();
+        expect((await host.admin.getScopeRecord(staff, tenant, scope))?.status).toBe('active');
+      });
+
+      it('once marked, an unarchive refuses naming a new scope, a retry answers as before, and it is audited once', async () => {
+        const { tenant, scope } = await archivedScope();
+        await host.admin.markScopeStoresFenced(staff, tenant, scope);
+        await host.admin.markScopeStoresFenced(staff, tenant, scope);
+        expect(await host.admin.scopeStoresFencedAt(staff, tenant, scope)).not.toBeNull();
+        await expectRefusal(host.admin.unarchiveScope(staff, tenant, scope), 'conflict', /new scope/);
+        expect((await host.admin.getScopeRecord(staff, tenant, scope))?.status).toBe('archived');
+        expect(await host.admin.auditLog(staff, { scopeId: scope, action: 'markScopeStoresFenced' })).toHaveLength(1);
+      });
+
+      it('survives a directory dump and its restore', async () => {
+        const { tenant, scope } = await archivedScope();
+        await host.admin.markScopeStoresFenced(staff, tenant, scope);
+        await host.admin.restoreDirectory(staff, await host.admin.exportDirectory(staff));
+        await expectRefusal(host.admin.unarchiveScope(staff, tenant, scope), 'conflict', /new scope/);
+      });
+
+      it('a tenant with a marked scope cannot be un-deleted until that scope is reaped; a whole one can', async () => {
+        const { tenant, scope } = await archivedScope();
+        await host.admin.setTenantStatus(staff, tenant, 'deleting');
+        await host.admin.setTenantStatus(staff, tenant, 'active');
+        await host.admin.setTenantStatus(staff, tenant, 'deleting');
+        await host.admin.markScopeStoresFenced(staff, tenant, scope, { whileTenantDeleting: true });
+        await expectRefusal(host.admin.setTenantStatus(staff, tenant, 'active'), 'conflict', /new scope/);
+        expect((await host.admin.getTenant(staff, tenant))?.status).toBe('deleting');
+        // A reaped scope was never coming back, so it holds nothing up.
+        await host.admin.reapScope(staff, tenant, scope, { force: true });
+        await host.admin.setTenantStatus(staff, tenant, 'active');
+      });
+
+      it('a tenant un-deleted before the mark wins: its stores are not fenced', async () => {
+        const { tenant, scope } = await archivedScope();
+        await expectRefusal(host.admin.markScopeStoresFenced(staff, tenant, scope, { whileTenantDeleting: true }), 'conflict', /no longer deleting/);
+        expect(await host.admin.scopeStoresFencedAt(staff, tenant, scope)).toBeNull();
+      });
+
+      it('names an unknown scope as such', async () => {
+        const { tenant } = await archivedScope();
+        const unknown = scopeId.parse(ulid());
+        await expectRefusal(host.admin.markScopeStoresFenced(staff, tenant, unknown), 'not_found');
+        expect(await host.admin.scopeStoresFencedAt(staff, tenant, unknown)).toBeNull();
+      });
+    });
+
     it('archive then un-archive is an explicit audited restore (§4.2)', async () => {
       await host.admin.archiveScope(staff, t3, s3);
       await expectRefusal(host.getScope(alice, t3, s3), 'conflict', /scope not active/);

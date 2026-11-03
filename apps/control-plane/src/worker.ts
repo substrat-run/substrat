@@ -94,7 +94,6 @@ import {
 import {
   createControlPlaneApi,
   sweepScopeScriptCopies,
-  reapScopeScriptCopies,
   assertNoUnreachableScopeCopies,
   claimScopeScriptReap,
   drainScopeScriptCopies,
@@ -2000,7 +1999,7 @@ export function storeStorageReaderFor(
  * one that refuses every call (503), never an absent one: absent means a co-located host, and a
  * hosted control plane that skipped its stores would back up, wipe and erase without them.
  */
-function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>): PlatformScopeStores {
+export function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>): PlatformScopeStores {
   return env.DISPATCH && env.STORE_PLATFORM_KEY
     ? platformScopeStoresFor({
         platformKey: env.STORE_PLATFORM_KEY,
@@ -2012,32 +2011,28 @@ function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>): P
 type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>;
 
 /**
- * `substrat.wipe` on each store the scope's running version declares, before its own bytes go
- * (#2207). A store list that cannot be resolved, or no route to the stores, refuses (503): the
- * sweep records it and the scope is not reaped past a store that may hold data.
+ * `substrat.fence` on each store a scope reaches, before its own bytes go (#2207, D-70), in two
+ * halves: the stores checked now (which may refuse), the fence when called, once the scope is no longer
+ * served. It reads them again then, for the reason `platformStoresFence` in the API gives. A store list that
+ * cannot be resolved, or no route to the stores, refuses (503): the sweep records it and the scope is
+ * not reaped past a store that may hold data.
  */
-export async function wipeDeclaredScopeStores(
-  env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>,
-  admin: StoreReadAdmin,
-  scope: Scope,
-  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
-): Promise<void> {
-  await (await declaredScopeStoresWipe(platformStoresFor(env), admin, scope, drivers))();
-}
-
-/** `wipeDeclaredScopeStores` in two halves: the stores resolved now (which may refuse), the wipe when called. */
-async function declaredScopeStoresWipe(
+export async function declaredScopeStoresFence(
   caller: PlatformScopeStores,
   admin: StoreReadAdmin,
   scope: Scope,
-  drivers: readonly StoreDriverRegistration[],
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+  /** Run immediately before the fence, where there is a store to fence: what a scope whose row outlives it says first. */
+  beforeFence?: () => Promise<void>,
 ): Promise<() => Promise<void>> {
   const vertical = scope.vertical;
-  const stores = vertical ? await scopeStoresOf(admin, SWEEP_ACTOR, scope, drivers) : [];
+  if (!vertical) return async () => undefined;
+  await scopeStoresOf(admin, SWEEP_ACTOR, scope, drivers);
   return async () => {
-    if (vertical && stores.length > 0) {
-      await caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical, stores });
-    }
+    const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, drivers);
+    if (stores.length === 0) return;
+    await beforeFence?.();
+    await caller.fenceStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical, stores });
   };
 }
 
@@ -2066,12 +2061,12 @@ export async function reapExpiredSnapshot(
   const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
   if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
   else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
-  const wipeStores = rec ? await declaredScopeStoresWipe(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS) : undefined;
+  const fenceStores = rec ? await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS) : undefined;
   // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
   if (rec) await unrouteScope(host.admin, actor, rec);
   // Its own sign-in clients go once nothing routes to it, and before the row (#1704).
   await retireClientsOfReapedScope({ admin: host.admin, actor, issuerClient: deps.issuerClient }, rec);
-  if (wipeStores) await wipeStores();
+  if (fenceStores) await fenceStores();
   if (resolveRef) {
     // #1722: a script that predates the delete verb strands its bytes; the reap records it
     // as an ops failure and goes on, so an expired fork is never pinned forever.
@@ -2084,7 +2079,50 @@ export async function reapExpiredSnapshot(
   await host.deleteSnapshot(actor, tenantId, scopeId);
 }
 
-/** Each declared store's size, for the storage gauge (#2207). Refuses as the wipe does. */
+/**
+ * The sweep's reap of a scope past its retention (control-plane.md §4.4), which the tenant reap
+ * composes (§4.8): every refusal that can be decided up front, as `reapExpiredSnapshot` takes them, the
+ * stores' fence, the delete through every script that holds it, then the in-process reap for the
+ * directory transition and audit. A refusal throws, the pass records it, and the scope stays as it was
+ * for the next pass. A fence cannot be undone, so the claim comes first.
+ */
+export async function reapRetainedScope(
+  deps: {
+    host: Pick<ScopeHost, 'admin'>;
+    stores: PlatformScopeStores;
+    resolveRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+    resolveVersion?: (slug: string, versionId: string, actor: PlatformActorId) => Promise<VerticalClient | undefined>;
+    drivers?: readonly StoreDriverRegistration[];
+  },
+  tenantId: TenantId,
+  scopeId: ScopeId,
+): Promise<void> {
+  const { host, resolveRef, resolveVersion } = deps;
+  const actor = SWEEP_ACTOR;
+  const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+  if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
+  else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
+  // Past its retention it is archived, so the router no longer serves it, and reapScope below releases its names.
+  if (rec) {
+    const tenantDeleting = (await host.admin.getTenant(actor, tenantId))?.status === 'deleting';
+    const fence = await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, () =>
+      host.admin.markScopeStoresFenced(actor, tenantId, scopeId, tenantDeleting ? { whileTenantDeleting: true } : {}));
+    await fence();
+  }
+  if (resolveRef) {
+    // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
+    const { storageStranded } = await drainScopeScriptCopies({ admin: host.admin, actor, resolveRef }, tenantId, scopeId);
+    if (storageStranded) console.warn(`retention reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
+  } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+    const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, actor);
+    if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+  }
+  // Automated retention / tenant-teardown reap: force past the bound-hostname guard
+  // (that guard stops the interactive per-scope mistake, not the aged-out sweep).
+  await host.admin.reapScope(actor, tenantId, scopeId, { force: true });
+}
+
+/** Each declared store's size, for the storage gauge (#2207). Refuses as the fence does. */
 export async function declaredStoreSizes(
   env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>,
   admin: StoreReadAdmin,
@@ -2637,26 +2675,12 @@ export default {
       // transition + audit. Left unset ⇒ the kernel skips the phase, so a deployment that
       // has not chosen a retention window never auto-deletes an app's data.
       reapArchivedAfterDays: parseRetentionDays(env.SCOPE_RETENTION_DAYS),
-      reapScopeFn: async (tenantId, scopeId) => {
-        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
-        if (rec) {
-          await wipeDeclaredScopeStores(env, host.admin, rec);
-        }
-        if (resolveRef) {
-          // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
-          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
-          if (storageStranded) console.warn(`retention reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
-        } else {
-          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
-          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
-          }
-        }
-        // Automated retention / tenant-teardown reap: force past the bound-hostname guard
-        // (that guard stops the interactive per-scope mistake, not the aged-out sweep).
-        await host.admin.reapScope(SWEEP_ACTOR, tenantId, scopeId, { force: true });
-      },
+      reapScopeFn: (tenantId, scopeId) => reapRetainedScope({
+        host,
+        stores: platformStoresFor(env),
+        ...(resolveRef ? { resolveRef } : {}),
+        ...(resolveVersion ? { resolveVersion } : {}),
+      }, tenantId, scopeId),
       // §4.8 tenant reap — opt-in via TENANT_RETENTION_DAYS. The kernel's default
       // `reapTenantFn` composes the `reapScopeFn` above (archive-if-needed → wipe each
       // scope's DO in its vertical deployment → reapScope), then clears the directory via

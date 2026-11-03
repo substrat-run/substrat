@@ -72,7 +72,11 @@ from the vertical catalog. The platform's `RESERVED_STORE_OPERATIONS`, including
 bytes at every rollout. Since D-69 they are `substrat.selfcheck`, `substrat.export-page`,
 `substrat.stage-page`, `substrat.commit-stage`, `substrat.discard-stage`, `substrat.size`,
 `substrat.wipe` and `substrat.erase`: a dump moves in pages, and `substrat.export` and
-`substrat.import` are gone. The registration also declares `dumpPageMaxBytes`, the largest
+`substrat.import` are gone. A deletion's `substrat.fence` (D-70) is not on that list: the store entry
+answers it and hands the driver a plain `substrat.wipe`, so the driver needs no change, and its wipe may
+`deleteAll()`. The tombstone the entry keeps is in the object's own storage, under
+`_substrat_store_fence`, which a driver release leaves alone: the review holds that, not the entry (#2830).
+The registration also declares `dumpPageMaxBytes`, the largest
 serialized page of a dump the driver takes or gives in one call. For graph it is 900 000, under
 the driver's 1 MB limit on a request with room for the envelope around a page.
 

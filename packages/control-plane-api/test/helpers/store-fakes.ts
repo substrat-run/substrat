@@ -21,6 +21,8 @@ type StoreObject = {
   revision: number;
   stage?: Stage;
   committed?: { id: string; count: number };
+  /** Set by `substrat.fence`, as the store entry keeps it (D-70). */
+  fenced?: boolean;
 };
 
 const mergeTables = (pages: readonly ScopeDumpTable[][]): ScopeDumpTable[] => {
@@ -87,6 +89,9 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
   };
 
   const apply = (object: StoreObject, operation: string, input: Record<string, unknown>): Response => {
+    // The store entry's half (D-70): a fenced object refuses what would write, and a fence is its wipe.
+    if (object.fenced && (operation === 'substrat.stage-page' || operation === 'substrat.commit-stage')) return storeError(410, 'store_fenced');
+    if (operation === 'substrat.fence') object.fenced = true;
     switch (operation) {
       case 'substrat.size':
         return Response.json({ result: { bytes: JSON.stringify(object.tables).length } });
@@ -119,6 +124,7 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
         if (discarded) object.stage = undefined;
         return Response.json({ result: { discarded } });
       }
+      case 'substrat.fence':
       case 'substrat.wipe':
         object.tables = [];
         object.stage = undefined;
@@ -184,6 +190,9 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
     },
     idsOf(name: string, table = 'nodes'): unknown[] {
       return (objectOf(name).tables.find((t) => t.name === table)?.rows ?? []).map((row) => row[0]);
+    },
+    rowsOf(name: string): number {
+      return objectOf(name).tables.reduce((n, t) => n + t.rows.length, 0);
     },
     stageOf(name: string): Stage | undefined {
       return objectOf(name).stage;
@@ -277,7 +286,7 @@ export function pagedFromWhole(
   fake: {
     exportTables: (input: { scopeId: string; binding: string; driver: string }) => ScopeDumpTable[] | Promise<ScopeDumpTable[]>;
     imported?: (input: { scopeId: string; binding: string; tables: ScopeDumpTable[] }) => void | Promise<void>;
-  } & Partial<Pick<PlatformScopeStores, 'eraseSubject' | 'wipeStores' | 'sizeStores'>>,
+  } & Partial<Pick<PlatformScopeStores, 'eraseSubject' | 'fenceStores' | 'sizeStores'>>,
 ): PlatformScopeStores {
   const stages = new Map<string, ScopeDumpTable[][]>();
   return {
@@ -301,7 +310,7 @@ export function pagedFromWhole(
         throw new Error(`pagedFromWhole does not answer ${operation}`);
       }) as never,
     eraseSubject: fake.eraseSubject ?? (async ({ stores }) => stores.map((store) => ({ binding: store.binding, erased: 0 }))),
-    wipeStores: fake.wipeStores ?? (async () => undefined),
+    fenceStores: fake.fenceStores ?? (async () => undefined),
     sizeStores: fake.sizeStores ?? (async () => []),
   };
 }

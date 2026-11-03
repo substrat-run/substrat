@@ -24,6 +24,9 @@ class CounterStore(DurableObject):
         seen["count"] += 1
         seen["at"] = Date.now()
         self.sql = ctx.storage.sql
+        self._ensure_table()
+
+    def _ensure_table(self):
         self.sql.exec("CREATE TABLE IF NOT EXISTS counter (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL, alarms INTEGER NOT NULL)")
         self.sql.exec("INSERT OR IGNORE INTO counter (id, n, alarms) VALUES (1, 0, 0)")
 
@@ -39,6 +42,18 @@ class CounterStore(DurableObject):
         if operation == "increment":
             self.sql.exec("UPDATE counter SET n = n + 1 WHERE id = 1")
             return _json(self._row().n)
+        if operation == "substrat.selfcheck":
+            # For a test: a platform call may set an alarm on a fenced object, which a caller cannot.
+            await self.ctx.storage.setAlarm(Date.now() + 100)
+            return _json({})
+        if operation == "substrat.erase":
+            # For a test: what the driver's alarm has done, which a caller cannot ask of a fenced object.
+            return _json({"erased": 0, "alarms": self._row().alarms, "n": self._row().n})
+        if operation == "substrat.wipe":
+            # As the graph driver does: everything goes, the entry's tombstone with it. Then its table again.
+            await self.ctx.storage.deleteAll()
+            self._ensure_table()
+            return _json({})
         if operation == "body":
             return _json(body)
         if operation == "inspect":

@@ -6,6 +6,7 @@ import {
   STORE_ENTRY_PYTHON_SOURCE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
   STORE_DRIVER_PLACEHOLDER,
+  STORE_FENCE_KEY,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
   STORE_PLATFORM_KEYS_VAR,
@@ -13,7 +14,7 @@ import {
   STORE_SCRIPT_VAR,
   STORE_VERIFIER_MODULE,
 } from '../src/store-entry.generated.js';
-import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
+import { generateScopeStoreKeyPair, STORE_FENCE_OPERATION } from '@substrat-run/contracts/scope-store-envelope';
 import { STORE_PYTHON_DATA_CONTENT_TYPE, withPythonStoreEntry } from '../src/store-entry.js';
 
 /**
@@ -37,6 +38,20 @@ describe('the Python entry, as shipped', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`RESERVED_BINDING_PREFIX = "${STORE_RESERVED_BINDING_PREFIX}"`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`class ${STORE_OBJECT_CLASS}(DurableObject):`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`from ${STORE_DRIVER_PLACEHOLDER} import ${STORE_CLASS_PLACEHOLDER} as StoreDriver`);
+  });
+
+  it('runs the fence the JavaScript entry runs, from the verifier module, around every driver call (D-70)', () => {
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`FENCE_OPERATION = "${STORE_FENCE_OPERATION}"`);
+    // Running under both SDK shapes: apps/vertical-egress/test/store-entry-python.workerd.test.ts.
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('getattr(self.ctx, "_ctx", self.ctx)');
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('.storeObjectFence(state.storage)');
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('.storeFenceWipeBody(call.body)');
+    // Every driver call in `fetch`, and the alarm, sits inside a try whose finally settles the fence.
+    const object = STORE_ENTRY_PYTHON_SOURCE.slice(STORE_ENTRY_PYTHON_SOURCE.indexOf('    async def fetch(self, request):'), STORE_ENTRY_PYTHON_SOURCE.indexOf('class Default('));
+    expect(object.match(/await self\._driver_object\(\)\.fetch/g)).toHaveLength(2);
+    expect(object.match(/await fence\.reassert\(\)/g)).toHaveLength(1);
+    expect(object.match(/await fence\.leave\(\)/g)).toHaveLength(2);
+    expect(object).toContain('await fence.admitAlarm()');
   });
 
   it('carries no switch that addresses an object other than the signed one', () => {
@@ -72,6 +87,32 @@ describe('the Python entry, as shipped', () => {
     expect(types['python_modules/vendor_probe/__init__.py']).toBe(STORE_PYTHON_DATA_CONTENT_TYPE);
     expect(types['python_modules/vendor_probe/payload.txt']).toBe(STORE_PYTHON_DATA_CONTENT_TYPE);
     expect(script.modules.some((module) => /(^|\/)(workers|js|pyodide)(\/|\.py$)/.test(module.name))).toBe(false);
+  });
+});
+
+describe('the fence the Python entry imports, as shipped (D-70)', () => {
+  const shipped = verifier as unknown as {
+    storeObjectFence(storage: { get(key: string): Promise<unknown>; put(key: string, value: unknown): Promise<void> }): {
+      admit(envelope: { aud: string; op: string }): Promise<{ ok: boolean; status?: number }>;
+      close(): Promise<{ ok: boolean }>;
+      leave(): Promise<void>;
+    };
+    storeFenceWipeBody(body: ArrayBuffer): ArrayBuffer;
+  };
+
+  it('marks the object under the name the entry shares, and refuses a caller from then on', async () => {
+    const stored = new Map<string, unknown>();
+    const fence = shipped.storeObjectFence({ get: async (key) => stored.get(key), put: async (key, value) => void stored.set(key, value) });
+    expect(await fence.admit({ aud: 'caller', op: 'read' })).toEqual({ ok: true });
+    await fence.leave();
+    expect(await fence.close()).toEqual({ ok: true });
+    expect([...stored.keys()]).toEqual([STORE_FENCE_KEY]);
+    expect(await fence.admit({ aud: 'caller', op: 'read' })).toMatchObject({ ok: false, status: 410 });
+  });
+
+  it('hands the driver the fence as the wipe it answers', () => {
+    const body = new TextEncoder().encode(JSON.stringify({ operation: 'substrat.fence', objectName: 'n' })).buffer;
+    expect(JSON.parse(new TextDecoder().decode(shipped.storeFenceWipeBody(body)))).toEqual({ operation: 'substrat.wipe', objectName: 'n' });
   });
 });
 

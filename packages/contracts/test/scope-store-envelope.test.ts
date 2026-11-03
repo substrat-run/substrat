@@ -10,6 +10,7 @@ import {
   parseScopeStoreEnvelope,
   parseScopeStorePublicKeys,
   RESERVED_STORE_OPERATIONS,
+  STORE_FENCE_OPERATION,
   scopeStoreBodyBytes,
   scopeStoreBodyDigest,
   STORE_CALL_MAX_BYTES,
@@ -216,6 +217,10 @@ describe('scope store envelope (#2287)', () => {
       expect(scopeStoreEnvelopeAdmits(1, 'platform', op)).toBe(true);
       expect(scopeStoreEnvelopeAdmits(1, 'caller', op)).toBe(false);
     }
+    // The fence (D-70) is the platform's, and not a driver's to answer, so it is not on that list.
+    expect(RESERVED_STORE_OPERATIONS as readonly string[]).not.toContain(STORE_FENCE_OPERATION);
+    expect(scopeStoreEnvelopeAdmits(1, 'platform', STORE_FENCE_OPERATION)).toBe(true);
+    expect(scopeStoreEnvelopeAdmits(1, 'caller', STORE_FENCE_OPERATION)).toBe(false);
     expect(scopeStoreEnvelopeAdmits(1, 'caller', 'read')).toBe(true);
     expect(scopeStoreEnvelopeAdmits(1, 'platform', 'read')).toBe(false);
     expect(scopeStoreEnvelopeAdmits(1, 'platform', 'substrat.unknown')).toBe(false);

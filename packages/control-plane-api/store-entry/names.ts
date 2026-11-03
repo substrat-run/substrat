@@ -36,6 +36,13 @@ export const STORE_DRIVER_PLACEHOLDER = '__SUBSTRAT_STORE_DRIVER__';
 /** The class name the uploader replaces, inside a property access on the driver module. */
 export const STORE_CLASS_PLACEHOLDER = '__SUBSTRAT_STORE_CLASS__';
 
+/**
+ * The storage key of a fenced object's tombstone (D-70), the entry's and never a driver's. It is
+ * the store's counterpart of the scope object's `_substrat_reaped`: written after the wipe as well
+ * as before, since a driver's wipe may `deleteAll()`, and never cleared.
+ */
+export const STORE_FENCE_KEY = '_substrat_store_fence';
+
 /** The object class the entry addresses, and the SQLite class the upload migrates. Reserved. */
 export const STORE_OBJECT_CLASS = 'SubstratStoreObject';
 

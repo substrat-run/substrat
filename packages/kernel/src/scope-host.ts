@@ -2764,6 +2764,20 @@ export interface HostAdmin {
    * column on the directory row, not a ledger entry: it refuses new moves and the conditional
    * bind until the row itself is deleted, and a crashed reaper resumes it. */
   beginScopeScriptReap(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+  /**
+   * Record, immediately before the first `substrat.fence` on a scope whose row outlives it, that its
+   * stores are being fenced (D-70). It cannot be undone, as the fence cannot, and from then on the host
+   * refuses `unarchiveScope` and a tenant's un-delete, and the restore routes refuse the scope.
+   *
+   * The scope must be archived, in the same read as the write, so an unarchive that got in first wins and
+   * no store is fenced: `conflict`. `whileTenantDeleting` holds the tenant the same way. Asked again on a
+   * scope already marked it answers as before, whatever its status, for a reap's retry.
+   */
+  markScopeStoresFenced(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, opts?: { whileTenantDeleting?: boolean },
+  ): Promise<void>;
+  /** When `markScopeStoresFenced` was asked for this scope, or null: never, or no such scope. */
+  scopeStoresFencedAt(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<string | null>;
   /** Only a confirmed move makes a source eligible for a nonterminal wipe. */
   settleScopeScriptCopy(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,

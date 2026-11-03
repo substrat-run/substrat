@@ -12,7 +12,11 @@ import {
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeEraseResult,
+  STORE_FENCE_OPERATION,
+  storeRequest,
+  storeResponse,
   storeSizeResult,
+  storeWipeResult,
   StoreError,
   type PlatformActorId,
   type ReservedStoreOperation,
@@ -71,7 +75,12 @@ export interface PlatformScopeStores {
     subjectId: string;
     stores: readonly DeclaredScopeStore[];
   }): Promise<{ binding: string; erased: number }[]>;
-  wipeStores(input: {
+  /**
+   * Fence each store and wipe it, for a scope that is being deleted (`substrat.fence`, D-70). The
+   * object refuses a caller from then on, whenever the call was signed, and refuses a platform call
+   * that would write. It is one call to the object, so a retry runs the whole of it again.
+   */
+  fenceStores(input: {
     tenantId: string;
     scopeId: string;
     vertical: string;
@@ -321,62 +330,100 @@ export async function callPlatformScopeStoreAt(
   input?: unknown,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  if (!dispatch.platformKey) {
-    throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
-  }
-  const { scriptName, objectName } = target;
   try {
-    return await callReservedStoreOperation(async (request) => {
-      const body = JSON.stringify({ ...request, objectName });
-      // The store entry refuses a body over the limit (#2811), so it is refused here, before it is signed.
-      const bytes = scopeStoreBodyBytes(body);
-      if (bytes > STORE_CALL_MAX_BYTES) {
-        throw new ControlPlaneError(
-          413,
-          `scope store call '${request.operation}' carries a body of ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
-        );
-      }
-      let issued;
-      try {
-        issued = await issueScopeStoreEnvelope({
-          privateKey: dispatch.platformKey,
-          aud: 'platform',
-          script: scriptName,
-          name: objectName,
-          op: request.operation,
+    return await callReservedStoreOperation(signedStoreSend(dispatch, target, signal), operation, input);
+  } catch (error) {
+    asControlPlane(error);
+  }
+}
+
+/** Sign one request, audience `platform`, POST it at the script, and answer the store's JSON, or null for none. */
+function signedStoreSend(
+  dispatch: PlatformScopeStoreDispatch,
+  { scriptName, objectName }: { readonly scriptName: string; readonly objectName: string },
+  signal?: AbortSignal,
+): (request: { operation: string; input?: unknown }) => Promise<unknown> {
+  return async (request) => {
+    if (!dispatch.platformKey) {
+      throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
+    }
+    const body = JSON.stringify({ ...request, objectName });
+    // The store entry refuses a body over the limit (#2811), so it is refused here, before it is signed.
+    const bytes = scopeStoreBodyBytes(body);
+    if (bytes > STORE_CALL_MAX_BYTES) {
+      throw new ControlPlaneError(
+        413,
+        `scope store call '${request.operation}' carries a body of ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
+      );
+    }
+    let issued;
+    try {
+      issued = await issueScopeStoreEnvelope({
+        privateKey: dispatch.platformKey,
+        aud: 'platform',
+        script: scriptName,
+        name: objectName,
+        op: request.operation,
+        body,
+      });
+    } catch (error) {
+      if (!(error instanceof ScopeStoreKeyError)) throw error;
+      // Set but unusable, e.g. a raw key where PKCS8 belongs. The message never carries the key.
+      console.warn(`scope store call refused: STORE_PLATFORM_KEY is set but unusable (${error.message})`);
+      throw new ControlPlaneError(503, 'this control plane holds no usable scope-store key');
+    }
+    let response: Response;
+    try {
+      response = await dispatch.fetch(
+        scriptName,
+        new Request('https://scope-store/invoke', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
+            [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
+          },
           body,
-        });
-      } catch (error) {
-        if (!(error instanceof ScopeStoreKeyError)) throw error;
-        // Set but unusable, e.g. a raw key where PKCS8 belongs. The message never carries the key.
-        console.warn(`scope store call refused: STORE_PLATFORM_KEY is set but unusable (${error.message})`);
-        throw new ControlPlaneError(503, 'this control plane holds no usable scope-store key');
-      }
-      let response: Response;
-      try {
-        response = await dispatch.fetch(
-          scriptName,
-          new Request('https://scope-store/invoke', {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
-              [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
-            },
-            body,
-            ...(signal ? { signal } : {}),
-          }),
-        );
-      } catch (error) {
-        // An end that cannot be reached is a fault to retry, not a route's 500.
-        throw new ControlPlaneError(502, `scope store script '${scriptName}' could not be reached: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      try {
-        return await response.json();
-      } catch {
-        return null;
-      }
-    }, operation, input);
+          ...(signal ? { signal } : {}),
+        }),
+      );
+    } catch (error) {
+      // An end that cannot be reached is a fault to retry, not a route's 500.
+      throw new ControlPlaneError(502, `scope store script '${scriptName}' could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * `substrat.fence` on one store object (D-70): the entry fences it and the driver wipes it. The entry
+ * answers with the driver's wipe, held to what a wipe answers. An entry older than the fence refuses
+ * the call outside the envelope, which reads as `bad_envelope` (502): the reap stops there, and no
+ * store is taken for fenced that was not.
+ */
+async function callPlatformStoreFence(
+  dispatch: PlatformScopeStoreDispatch,
+  target: PlatformScopeStoreTarget,
+  signal?: AbortSignal,
+): Promise<void> {
+  const send = signedStoreSend(
+    dispatch,
+    {
+      scriptName: scopeStoreScriptName(target.vertical, target.driver),
+      objectName: scopeStoreObjectName(target.tenantId, target.vertical, target.scopeId, target.binding),
+    },
+    signal,
+  );
+  try {
+    const parsed = storeResponse.safeParse(await send(storeRequest.parse({ operation: STORE_FENCE_OPERATION })));
+    if (!parsed.success) throw new StoreError({ code: 'bad_envelope', status: 502, body: parsed.error.issues });
+    if ('error' in parsed.data) throw new StoreError(parsed.data.error);
+    const wiped = storeWipeResult.safeParse(parsed.data.result);
+    if (!wiped.success) throw new StoreError({ code: 'bad_envelope', status: 502, body: wiped.error.issues });
   } catch (error) {
     asControlPlane(error);
   }
@@ -404,16 +451,13 @@ export class RefusedAfterRetry extends ControlPlaneError {
 export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): PlatformScopeStores {
   const delays = dispatch.retryDelaysMs ?? STORE_CALL_RETRY_DELAYS_MS;
   const deadlineMs = dispatch.deadlineMs ?? PAGE_CALL_DEADLINE_MS;
+  const bounded = <T>(target: PlatformScopeStoreTarget, operation: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> =>
+    withDeadline(`'${operation}'`, deadlineMs, run, `scope store '${target.binding}'`);
   const call = (target: PlatformScopeStoreTarget, operation: ReservedStoreOperation, input?: unknown): Promise<unknown> => {
     let tries = 0;
     return retryTransientOver(delays, async () => {
       tries += 1;
-      const answer = await withDeadline(
-        `'${operation}'`,
-        deadlineMs,
-        (signal) => callPlatformScopeStore(dispatch, target, operation, input, signal),
-        `scope store '${target.binding}'`,
-      ).catch((e: unknown) => {
+      const answer = await bounded(target, operation, (signal) => callPlatformScopeStore(dispatch, target, operation, input, signal)).catch((e: unknown) => {
         const refused = e instanceof ControlPlaneError && e.status < 500 && e.status !== 0;
         throw refused && tries > 1 && operation === 'substrat.commit-stage' ? new RefusedAfterRetry(e) : e;
       });
@@ -435,9 +479,12 @@ export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): Pl
       }
       return erased;
     },
-    async wipeStores({ tenantId, scopeId, vertical, stores }) {
+    async fenceStores({ tenantId, scopeId, vertical, stores }) {
       for (const store of stores) {
-        await call({ ...store, tenantId, scopeId, vertical }, 'substrat.wipe');
+        const target = { ...store, tenantId, scopeId, vertical };
+        await retryTransientOver(delays, () =>
+          bounded(target, STORE_FENCE_OPERATION, (signal) => callPlatformStoreFence(dispatch, target, signal)),
+        );
       }
     },
     async sizeStores({ tenantId, scopeId, vertical, stores }) {
@@ -462,5 +509,5 @@ export function unreachablePlatformScopeStores(): PlatformScopeStores {
   const refuse = async (): Promise<never> => {
     throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
   };
-  return { callStore: () => refuse as ReservedStoreCall, eraseSubject: refuse, wipeStores: refuse, sizeStores: refuse };
+  return { callStore: () => refuse as ReservedStoreCall, eraseSubject: refuse, fenceStores: refuse, sizeStores: refuse };
 }

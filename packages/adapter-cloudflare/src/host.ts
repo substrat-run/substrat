@@ -1016,6 +1016,8 @@ interface ControlPlaneStub {
   backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntry): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
+  markScopeStoresFenced(tenantId: string, scopeId: string, whileTenantDeleting: boolean, audit: AdminEntry): Promise<void>;
+  scopeStoresFencedAt(tenantId: string, scopeId: string): Promise<string | null>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
   renewScopeScriptCopy(tenantId: string, scopeId: string, moveId: string, leaseMs?: number): Promise<{ renewedAt: number; leaseUntil: string } | null>;
@@ -9149,6 +9151,11 @@ export class CloudflareScopeHost implements ScopeHost {
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         if (result === 'reaping') throw substratError('precondition_failed', `scope ${scopeId} is being reaped`);
       },
+      markScopeStoresFenced: async (actor, tenantId, scopeId, opts) => {
+        await this.directory('markScopeStoresFenced', tenantId, scopeId, opts?.whileTenantDeleting === true,
+          this.adminEntry(actor, 'markScopeStoresFenced', { tenantId, scopeId }, null, { storesFenced: true }));
+      },
+      scopeStoresFencedAt: async (_actor, tenantId, scopeId) => this.cp.scopeStoresFencedAt(tenantId, scopeId),
       beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
         const result = await this.cp.beginScopeScriptReap(tenantId, scopeId);
         if (result === 'missing') throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);

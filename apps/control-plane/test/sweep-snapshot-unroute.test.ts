@@ -4,7 +4,7 @@ import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { unreachablePlatformScopeStores, type PlatformScopeStores, type VerticalClient } from '@substrat-run/control-plane-api';
 import { MCP_RESOURCES_CONFIG_PREFIX, platformActorId, scopeId, tenantId, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { reapExpiredSnapshot } from '../src/worker.js';
+import { reapExpiredSnapshot, reapRetainedScope } from '../src/worker.js';
 
 /**
  * The sweep's reap of an expired snapshot (#2285): it unroutes the fork before it wipes the fork's
@@ -61,12 +61,62 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const seen: string[] = [];
     const stores: PlatformScopeStores = {
       ...unreachablePlatformScopeStores(),
-      wipeStores: async () => {
+      fenceStores: async () => {
         seen.push((await host.admin.resolveHostname(hostname()))?.scopeId ?? 'unrouted');
       },
     };
     return { stores, seen };
   };
+
+  it('a retention reap fences the stores of an archived scope, and the scope ends reaped (D-70)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    // The router serves only an active scope, so nothing routes to it from here.
+    expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
+    const { stores, seen } = witness(host, () => hostname);
+    await reapRetainedScope({ host, stores, drivers: [graph] }, t, scope);
+    expect(seen).toEqual(['unrouted']);
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('reaped');
+  });
+
+  it('a retention reap marks the scope before its fence, and one whose fence fails cannot be unarchived (D-70)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    const stores: PlatformScopeStores = {
+      ...unreachablePlatformScopeStores(),
+      fenceStores: async () => {
+        expect(await host.admin.scopeStoresFencedAt(staff, t, scope)).not.toBeNull();
+        throw new Error('the fence could not run');
+      },
+    };
+    await expect(reapRetainedScope({ host, stores, drivers: [graph] }, t, scope)).rejects.toThrow(/fence could not run/);
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
+    await expect(host.admin.unarchiveScope(staff, t, scope)).rejects.toThrow(/new scope/);
+  });
+
+  it('a retention reap that finds the scope unarchived since the sweep chose it fences nothing (D-70)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    await host.admin.unarchiveScope(staff, t, scope);
+    const { stores, seen } = witness(host, () => hostname);
+    await expect(reapRetainedScope({ host, stores, drivers: [graph] }, t, scope)).rejects.toThrow(/not archived/);
+    expect(seen).toEqual([]);
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('active');
+  });
+
+  it('a retention reap refused by a copy move in flight fences nothing, since a fence cannot be undone (D-70)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    await host.admin.recordScopeScriptCopy(staff, t, scope, `copy-${scope.toLowerCase()}`, ulid(), { role: 'destination' });
+    const { stores, seen } = witness(host, () => hostname);
+    await expect(reapRetainedScope({ host, stores, drivers: [graph], resolveRef: async () => undefined }, t, scope)).rejects.toMatchObject({ status: 412 });
+    expect(seen).toEqual([]);
+    expect((await host.admin.listHostnames(staff, { tenantId: t, scopeId: scope })).map((h) => h.hostname)).toEqual([hostname]);
+  });
 
   it('the wipe sees no route, and the fork is gone after', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });

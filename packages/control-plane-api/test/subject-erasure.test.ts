@@ -540,7 +540,7 @@ describe('subject erasure (#37)', () => {
         calls.erased.push(subjectId);
         return stores.map((store) => ({ binding: store.binding, erased: 1 }));
       },
-      wipeStores: async ({ scopeId: s2 }) => {
+      fenceStores: async ({ scopeId: s2 }) => {
         calls.wiped.push(s2);
       },
       sizeStores: async () => [],

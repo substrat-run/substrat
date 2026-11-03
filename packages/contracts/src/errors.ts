@@ -401,6 +401,9 @@ const CODE_FOR_STORE_STATUS: Partial<Record<number, ErrorCode>> = {
   401: 'unauthenticated',
   403: 'forbidden',
   404: 'not_found',
+  // The catalog has no `gone`, and a store that answers 410 for good is not `unavailable`, which
+  // reads as worth retrying (D-70). `storeCode` says which: `store_fenced`.
+  410: 'not_found',
   409: 'conflict',
   412: 'precondition_failed',
   422: 'validation_failed',

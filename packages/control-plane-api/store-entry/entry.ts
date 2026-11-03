@@ -19,9 +19,14 @@
  * isolate, before this module's body, and its class runs with the object's `ctx`. A driver that
  * leaves the checks out cannot skip them; a driver written to interfere with the isolate is
  * stopped by the review of its release (D-63), not by this module.
+ *
+ * Inside the object, a call passes the fence (`fence.ts`, D-70) before it reaches the driver: an
+ * object a deletion path has fenced refuses it, whenever it was signed. The fence is held in this
+ * object, so it holds in front of any driver and behind any router.
  */
 import { DurableObject } from 'cloudflare:workers';
 import * as driverModule from '__SUBSTRAT_STORE_DRIVER__';
+import { callThroughFence, storeObjectFence, type StoreObjectFence } from './fence.js';
 import { STORE_OBJECT_BINDING, STORE_RESERVED_BINDING_PREFIX } from './names.js';
 import { verifiedStoreCall, type StoreCallRefusal, type VerifiedStoreCall } from './verify.js';
 
@@ -52,6 +57,12 @@ async function verified(request: Request, env: StoreEntryEnv): Promise<Extract<V
 
 export class SubstratStoreObject extends DurableObject<StoreEntryEnv> {
   #driver: DriverObject | undefined;
+  #fence: StoreObjectFence | undefined;
+
+  #fenceOf(): StoreObjectFence {
+    this.#fence ??= storeObjectFence(this.ctx.storage);
+    return this.#fence;
+  }
 
   /** Constructed once per object instance, on first use, so the driver keeps its in-memory state. */
   #driverObject(): DriverObject {
@@ -64,15 +75,22 @@ export class SubstratStoreObject extends DurableObject<StoreEntryEnv> {
     if (call instanceof Response) return call;
     const ns = this.env[STORE_OBJECT_BINDING];
     if (!this.ctx.id.equals(ns.idFromName(call.envelope.name))) return new Response('unauthorized: object', { status: 401 });
-    return this.#driverObject().fetch(
-      new Request(request.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: call.body }),
+    const answer = await callThroughFence(this.#fenceOf(), call, (body) =>
+      this.#driverObject().fetch(new Request(request.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
     );
+    return answer instanceof Response ? answer : refusal(answer);
   }
 
-  /** An alarm is the object's own timer, which only the driver sets. It goes to the driver. */
+  /** An alarm is the object's own timer, which only the driver sets. It goes to the driver, unless the object is fenced. */
   override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
-    const driver = this.#driverObject();
-    if (typeof driver.alarm === 'function') await driver.alarm(alarmInfo);
+    const fence = this.#fenceOf();
+    if (!(await fence.admitAlarm())) return;
+    try {
+      const driver = this.#driverObject();
+      if (typeof driver.alarm === 'function') await driver.alarm(alarmInfo);
+    } finally {
+      await fence.leave();
+    }
   }
 }
 

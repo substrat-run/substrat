@@ -38,6 +38,8 @@ describe('scope store transport', () => {
   it('a reserved operation accepts only the platform signature', () => {
     expect(storeAudienceAllows('substrat.wipe', 'caller')).toBe(false);
     expect(storeAudienceAllows('substrat.wipe', 'platform')).toBe(true);
+    expect(storeAudienceAllows('substrat.fence', 'caller')).toBe(false);
+    expect(storeAudienceAllows('substrat.fence', 'platform')).toBe(true);
     expect(storeAudienceAllows('read', 'caller')).toBe(true);
     expect(storeAudienceAllows('read', 'platform')).toBe(false);
   });

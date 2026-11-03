@@ -921,6 +921,7 @@ import {
   type StoreStub,
   type ScopeStoreStubOptions,
   callReservedStoreOperation,
+  storesFencedRefusal,
   readStoreDump,
   writeStoreDump,
   type ReservedStoreResult,
@@ -2608,6 +2609,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- #1722: set once a reap has started draining this scope's script copies, and never
         -- cleared: only deleting the row ends it. While set, no copy move is recorded or bound.
         reap_claimed_at TEXT,
+        -- D-70: set immediately before the first substrat.fence on a scope whose row outlives it, and never
+        -- cleared. While set, the scope cannot be unarchived and its tenant cannot be un-deleted.
+        stores_fenced_at TEXT,
         provisioned_version_id TEXT,
         -- Last FAILED migration attempt (§5.3). All null / 0 = healthy. Written on
         -- the failure path so a scope that fails closed stops rendering as active;
@@ -8977,10 +8981,13 @@ export class SqliteScopeHost implements ScopeHost {
       afterExtra?: Record<string, unknown>,
     ) => {
       const row = this.directory
-        .prepare('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?')
-        .get(scopeId) as { tenant_id: string; status: string; vertical: string | null } | undefined;
+        .prepare('SELECT tenant_id, status, vertical, stores_fenced_at FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { tenant_id: string; status: string; vertical: string | null; stores_fenced_at: string | null } | undefined;
       if (!row || row.tenant_id !== tenantId) {
         throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+      }
+      if (to === 'active' && row.stores_fenced_at !== null) {
+        throw substratError('conflict', storesFencedRefusal(scopeId));
       }
       if (!from.includes(row.status as ScopeStatus)) {
         throw substratError('conflict',
@@ -10949,6 +10956,27 @@ export class SqliteScopeHost implements ScopeHost {
           return claimed.map(scopeScriptCopyOf);
         })();
       },
+      markScopeStoresFenced: async (actor, tenantId, scopeId, opts) => {
+        // No await between the read and the write, so an unarchive is before or after.
+        const scope = this.directory.prepare('SELECT status, stores_fenced_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+          .get(tenantId, scopeId) as { status: string; stores_fenced_at: string | null } | undefined;
+        if (!scope) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        if (scope.stores_fenced_at !== null) return;
+        if (scope.status !== 'archived') {
+          throw substratError('conflict', `scope ${scopeId} is ${scope.status}, not archived, so its stores are not fenced`);
+        }
+        if (opts?.whileTenantDeleting && readTenant(tenantId)?.status !== 'deleting') {
+          throw substratError('conflict', `tenant ${tenantId} is no longer deleting, so the stores of scope ${scopeId} are not fenced`);
+        }
+        this.directoryWriteAndAudit(() => this.directory.prepare(
+          `UPDATE scopes SET stores_fenced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE tenant_id = ? AND scope_id = ?`,
+        ).run(tenantId, scopeId).changes > 0, () => this.recordAdmin(
+          actor, 'markScopeStoresFenced', { tenantId, scopeId }, { storesFencedAt: null }, { storesFenced: true },
+        ));
+      },
+      scopeStoresFencedAt: async (_actor, tenantId, scopeId) => (this.directory
+        .prepare('SELECT stores_fenced_at FROM scopes WHERE tenant_id = ? AND scope_id = ?')
+        .get(tenantId, scopeId) as { stores_fenced_at: string | null } | undefined)?.stores_fenced_at ?? null,
       beginScopeScriptReap: async (_actor, tenantId, scopeId) => {
         const result = this.directory.prepare(
           `UPDATE scopes SET reap_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -11696,6 +11724,12 @@ export class SqliteScopeHost implements ScopeHost {
         this.directoryWriteAndAudit(() => {
           before = readTenant(tenantId);
           if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+          if (before.status === 'deleting' && status !== 'deleting') {
+            const fenced = this.directory.prepare(
+              "SELECT scope_id FROM scopes WHERE tenant_id = ? AND stores_fenced_at IS NOT NULL AND status <> 'reaped' LIMIT 1",
+            ).get(tenantId) as { scope_id: string } | undefined;
+            if (fenced) throw substratError('conflict', `tenant ${tenantId} cannot be un-deleted: ${storesFencedRefusal(fenced.scope_id)}`);
+          }
           if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
           return (status === 'deleting'
             ? this.directory
@@ -14329,6 +14363,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'scopes', 'bound_shapes', 'bound_shapes TEXT');
     this.ensureColumn(this.directory, 'scopes', 'erasure_epoch', 'erasure_epoch INTEGER');
     this.ensureColumn(this.directory, 'scopes', 'reap_claimed_at', 'reap_claimed_at TEXT');
+    this.ensureColumn(this.directory, 'scopes', 'stores_fenced_at', 'stores_fenced_at TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');
     this.ensureColumn(

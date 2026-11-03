@@ -579,7 +579,7 @@ Generating, provisioning, checking and rotating these keys is
 | `substrat.erase` (shred) | Control plane, then `/internal/scope-store-erase`, then the host | Control plane, then the store script |
 | `substrat.export-page` (backup, pull, snapshot) | Control plane, then `/internal/scope-store-export`, then the host | Control plane, then the store script |
 | `substrat.stage-page`, `substrat.commit-stage` (restore, snapshot) | Control plane, then `/internal/scope-store-import`, then the host | Control plane, then the store script |
-| `substrat.wipe` (reap, snapshot delete) | Inside the host's `deleteScopeLocal` / `reapScope`, reached by `/internal/delete-scope` | Control plane, then the store script, before the scope's own delete |
+| `substrat.fence`, which the entry answers and the driver receives as `substrat.wipe` (reap, snapshot delete, D-70) | Inside the host's `deleteScopeLocal` / `reapScope`, reached by `/internal/delete-scope` | Control plane, then the store script, before the scope's own delete |
 | Erasure replay after a copy | none | Control plane, then the store script |
 | A vertical's own operation | `getScopeStore`, then the ambient binding | `getScopeStore`, then the router hop (§1) |
 
@@ -647,21 +647,37 @@ version in it. A preview scope is its own scope with its own objects. Its stores
 created and reaped with it, and its outbound effects stay inert as every non-primary
 scope's do (#2005).
 
-**Reap and wipe: unroute, then stores, then the scope.** Every path that deletes a scope's
-storage first stops the scope being routed. It then calls `substrat.wipe` on each binding
-(L17), and only then deletes the scope's own storage (L6). The paths are tenant reap,
-scope storage deletion, preview reap, snapshot deletion and the sweeper's reap. The router
-serves a scope while it is active. A vertical call that lands between the wipe and the
-delete would repopulate the object, which then outlives its scope with nothing left to
-reach it. Tenant reap is already fenced by the tenant's status. Scope, preview and snapshot
-deletion need the scope unrouted before the wipe.
+**Reap and wipe: unroute, then fence the stores, then the scope.** Every path that deletes a
+scope's storage first stops the scope being routed. It then calls `substrat.fence` on each
+binding (L17), and only then deletes the scope's own storage (L6). The paths are tenant reap,
+scope storage deletion, preview reap, snapshot deletion and the sweeper's two reaps. The router
+serves a scope while it is active. A vertical call that lands after the wipe would repopulate
+the object, which then outlives its scope with nothing left to reach it. A tenant reap and a
+retention reap archive the scope first, which stops the routing. Scope, preview and snapshot
+deletion unbind its names too.
 
 PR #2285 does this for snapshot deletion, preview reap and the sweeper's snapshot reap. Each takes
 every refusal it can decide up front first: the reap claim (a copy move in flight), a copy the
 platform cannot reach, and the store resolution. A refused delete therefore leaves the scope
-routed and its stores untouched. Only then does it unbind every hostname of the scope, wipe and
-delete. Unbinding by hostname is the fast path, not a drain. The durable fence is a scope state
-that the store door itself checks, and that is a follow-up.
+routed and its stores untouched. Only then does it unbind every hostname of the scope, fence and
+delete.
+
+Unbinding by hostname is the fast path, not a drain: a request already running, or a call signed and
+still on its way, is not stopped by it. The durable fence is the object's own (D-70). The store entry
+answers `substrat.fence`: it writes a tombstone, waits out the calls inside the driver, hands the driver
+`substrat.wipe`, and writes the tombstone again, since a driver's wipe may `deleteAll()`. The object then
+refuses every `caller` call with 410 (`store_fenced`), whenever it was signed, and every platform
+`stage-page` and `commit-stage`. The check is made in the object because a check at signing cannot stop
+a call signed just before it. No router, no driver and no envelope changes for this. The stores are read
+again once the scope is no longer served, so the fence reaches every binding a running request could still name. A plain
+`substrat.wipe` fences nothing, and the canary and the contract keep using it.
+
+Where the scope's row outlives the fence (scope reap, tenant reap, retention), the directory records
+`stores_fenced_at` immediately before the first fence, and only if the scope is still archived, so an
+unarchive that got in first wins. From then on the scope cannot be unarchived or restored into, and its
+tenant cannot be un-deleted, each refused naming a new scope as the way out. The fence waits for a call
+until its `fetch` returns, so a driver does all its writing before it answers, which the review of a
+release holds (D-63).
 
 A wipe that fails stops the delete. The scope's own storage is not deleted around the
 store, and the delete is retried. #2254's `wipePlatformStores` does this by throwing when
@@ -812,7 +828,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
 | L4 | The store refuses an envelope whose signature fails, whose `kid` names no listed key, whose `script` is not its own, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` is not the name of the object's own id. Each is checked before driver code runs |
 | L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by the object whose id is `idFromName(X)`, used or fresh |
-| L6 | Every scope-deletion path stops routing the scope, then calls `substrat.wipe` on each binding, then deletes the scope's storage, in that order |
+| L6 | Every scope-deletion path stops routing the scope, then calls `substrat.fence` on each binding (the driver receives `substrat.wipe`), then deletes the scope's storage, in that order. A fenced object refuses every `caller` call and every platform call that would write (D-70) |
 | L7 | A failed or undecidable wipe stops the delete, and the scope's own storage is left for the retry. The delete never proceeds around the store |
 | L8 | A restore imports only bindings the destination version declares with the same driver. Any other dump binding refuses the restore before any write, ahead of `host.restoreScope`. This is the recommended answer to Q4, pending its decision |
 | L9 | A restore re-erases the union of the target's and the source's tombstoned subjects on every binding the target declares, each subject once |
@@ -852,7 +868,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (b), (o) The platform's store entry runs checks 1–5 in front of the driver, evidenced on workerd with the counter test driver uploaded as the platform uploads it. No store script is uploaded behind it until #2210 (#2295) | `withStoreEntry`, `apps/vertical-egress/test/store-entry.workerd.test.ts` |
 | (c) The platform hop is the Cloudflare host's default, control plane or not. Only a runner or `transport: 'binding'` takes another path, `'platform'` beside runners is refused, and on the hop the host's local size, export and erase refuse (`unavailable`) instead of answering "no stores" (#2294) | `scopeStoreTransportOf`, `refuseLocalStoresOnPlatform` |
 | (a) The name-only MAC is gone. Both signers sign the Ed25519 envelope of §10.3, over the audience, key id, script, name, operation, body digest, time and nonce, and `verifyScopeStoreCall` holds checks 1–4 (#2293) | `issueScopeStoreEnvelope`, `verifyScopeStoreCall` |
-| (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
+| (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then fence and wipe, then delete. The fence is the object's own, on every deletion path (D-70). Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
 Still open:
 
@@ -864,6 +880,8 @@ Still open:
 | (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
 | (u) | A store call works only during a request. A call from a Durable Object, a schedule included, does not pass egress and is refused (§9). The platform's own jobs are not affected | §9 | No, later |
 | (v) | Nothing retires a binding from a vertical's record (`vertical_scope_stores`, #2292). The step Q5's decision names, export then wipe then delete the record row, does not exist yet. Until it does, each binding no version still declares costs one store call per scope on every export, wipe, erasure and meter run, and its name cannot be declared again as another driver. It is also the way out for a vertical whose record cannot be read | L17 | No, later |
+| (w) | The fence ran on local workerd on both entries, the Python one under the runtime's SDK and the pinned `workers-runtime-sdk`. The probe under `pywrangler dev` has to pass in CI, and a deployed run follows (D-70) | L6 | Yes, before the first approval |
+| (x) | A deleted snapshot or preview loses its row, so `POST /scopes` with that exact id gives a new scope whose stores refuse for good. It fails loudly and holds no data (D-70) | L6 | No, later |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is
 not given a tenant id (#2243). That is in the Cloudflare host (`adapter-cloudflare/src/host.ts`),

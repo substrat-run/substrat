@@ -59,6 +59,21 @@ export const RESERVED_STORE_OPERATIONS = [
 export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
 
 /**
+ * The operation a deletion path sends (D-70). The store entry answers it, and a driver never
+ * sees the name, so it is not among the {@link RESERVED_STORE_OPERATIONS} a driver answers: the
+ * entry marks the object fenced, waits out the calls inside it, and hands the driver a plain
+ * `substrat.wipe`. From then on the object refuses every call of audience `caller` and every
+ * platform call that would write, whenever it was signed.
+ */
+export const STORE_FENCE_OPERATION = 'substrat.fence';
+
+/** The `code` of the store envelope's error a fenced object answers with, status 410. */
+export const STORE_FENCED_CODE = 'store_fenced';
+
+/** The `code` of the error a fence answers when calls inside the object outlast its wait, status 503, so the platform asks again. */
+export const STORE_FENCE_DRAINING_CODE = 'store_fence_draining';
+
+/**
  * How long a stage (`substrat.stage-page`, D-69) may sit unused before the driver drops it: six hours
  * of copying plus three 30-minute copy leases, the backstop for a stage whose writer is gone. A stage
  * unused for longer is dropped no later than the next call to the object, so a driver needs no timer.
@@ -103,12 +118,12 @@ export interface ScopeStoreEnvelope {
 
 /**
  * Which operations each (version, audience) admits. Closed: a pair not in this table is
- * refused. `platform` sends exactly the reserved operations, and `caller` sends anything
- * else, never a `substrat.*` name.
+ * refused. `platform` sends exactly the reserved operations and the fence, and `caller` sends
+ * anything else, never a `substrat.*` name.
  */
 const ADMITTED: Readonly<Record<'1', Readonly<Record<ScopeStoreAudience, (op: string) => boolean>>>> = {
   '1': {
-    platform: (op) => (RESERVED_STORE_OPERATIONS as readonly string[]).includes(op),
+    platform: (op) => op === STORE_FENCE_OPERATION || (RESERVED_STORE_OPERATIONS as readonly string[]).includes(op),
     caller: (op) => !op.startsWith('substrat.'),
   },
 };

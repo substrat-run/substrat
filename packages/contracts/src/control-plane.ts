@@ -97,6 +97,7 @@ export const adminAction = z.enum([
   // #1722 — a copy made before the copy ledger existed, recorded `retained` by the staff backfill. Its id is
   // the backfill's clock: a subject erased in that scope before it never reached the recorded copy.
   'backfillScopeCopy',
+  'markScopeStoresFenced', // D-70 — a deletion is about to fence this scope's stores, which cannot be undone
   'bindHostname', // K-26 — the hostname map
   'setHostnameStatus', // #31 step 2 — where the two human checkpoints fire
   'setHostnameIssuance', // #305 §4.7 — a Cloudflare-for-SaaS issuance step (create/poll) result

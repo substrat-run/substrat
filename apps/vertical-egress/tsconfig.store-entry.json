@@ -11,5 +11,5 @@
     "rootDir": "../..",
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["../../packages/control-plane-api/store-entry/*.ts"]
+  "include": ["../../packages/control-plane-api/store-entry/*.ts", "test/store-fence.model.test.ts"]
 }

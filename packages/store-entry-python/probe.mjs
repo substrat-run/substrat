@@ -496,6 +496,21 @@ try {
   const lastAfter = await send(await signed(name, 'read'));
   check(lastAfter.status === 200, 'and the entry serves the next call after a body that size');
 
+  // ---- the door fence (D-70): the same fence as the JavaScript entry, over this entry's own bridge ----
+  const fencedName = `${name}-fenced`;
+  check((await send(await signed(fencedName, 'increment'))).status === 200, 'a caller call on a live object is admitted');
+  const staleCaller = await signed(fencedName, 'increment');
+  const fenced = await send(await signed(fencedName, 'substrat.fence', { aud: 'platform' }));
+  check(fenced.status === 200 && JSON.stringify(result(fenced)) === '{}', 'the fence reaches the driver as its wipe, and answers what the wipe answers', fenced);
+  const refusedLate = await send(staleCaller);
+  check(refusedLate.status === 410 && JSON.parse(refusedLate.text).error.code === 'store_fenced', 'a call signed before the fence and delivered after the wipe is refused', refusedLate);
+  const refusedStage = await send(await signed(fencedName, 'substrat.stage-page', { aud: 'platform' }));
+  check(refusedStage.status === 410, 'a platform call that writes is refused', refusedStage);
+  const sizeAfter = await send(await signed(fencedName, 'substrat.size', { aud: 'platform' }));
+  check(sizeAfter.status === 200 && result(sizeAfter) === 0, 'a platform read goes through, and the object holds nothing', sizeAfter);
+  check((await send(await signed(fencedName, 'substrat.fence', { aud: 'platform' }))).status === 200, 'a fence asked again answers the same');
+  check((await send(await signed(fencedName, 'increment'))).status === 410, 'and the object is still fenced after the driver took the mark with its wipe');
+
   const env = result(await send(await signed(name, 'env')));
   check(JSON.stringify(env.given) === JSON.stringify(['DRIVER_SETTING']), "the driver's env has none of the entry's bindings", env);
   check(env.importable.length === 0, 'an importable env reads nothing (disallow_importable_env)', env);

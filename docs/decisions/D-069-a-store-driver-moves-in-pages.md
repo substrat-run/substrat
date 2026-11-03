@@ -198,9 +198,10 @@ unroute it, waiting for a step running now: a backup still moving is dropped wit
 finished one stays as any held copy does, and a restore's stages go. A restore a call is finishing
 right now refuses the reap, to retry. Each job step also reads the scope, and a backup reads it again
 right before the index, so a reap by the sweep, which does not cancel, stops a job within a step. A
-restore into a scope archived while it ran refuses before the load and before the commits. **What this
-does not close:** a restore run in one request, into a scope already archived when it began, has no
-record for a reap to find, so its commit can land between a reap's wipe and the status flip.
+restore into a scope archived while it ran refuses before the load and before the commits. A restore
+run in one request, into a scope already archived when it began, has no record for a reap to find. This
+record left open that its commit could land between a reap's wipe and the status flip; D-70 closes that
+at the object, which refuses a commit once a deletion has fenced it.
 
 **Retention** walks scope by scope with a delimiter, so it never lists the pages of a backup it keeps,
 and deletes as it goes, in batches of 1000, the index first. A pass spends at most 200 listings and

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { scopeId, tenantId, type Scope } from '@substrat-run/contracts';
+import { scopeId, tenantId, type Scope, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { declaredStoreSizes, wipeDeclaredScopeStores } from '../src/worker.js';
+import { declaredScopeStoresFence, declaredStoreSizes, platformStoresFor } from '../src/worker.js';
 
 /**
  * #2207: the sweep's reap wipe and storage gauge name a scope's stores from the version its
@@ -27,11 +27,13 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
   };
   const status = (e: unknown) => (e as { status?: number } | undefined)?.status;
   const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+  const fence = async (env: Parameters<typeof platformStoresFor>[0], s: Scope, drivers?: readonly StoreDriverRegistration[]) =>
+    (await declaredScopeStoresFence(platformStoresFor(env), admin, s, drivers))();
 
   it('a serving-pinned install with a store is not skipped: with no route to the stores, the wipe and the gauge refuse', async () => {
     // `undefined` is the hosted registry, `STORE_DRIVERS`, which holds graph.
     for (const drivers of [[driver], undefined]) {
-      expect(status(await refusal(wipeDeclaredScopeStores({}, admin, scope('graphy-stable'), drivers)))).toBe(503);
+      expect(status(await refusal(fence({}, scope('graphy-stable'), drivers)))).toBe(503);
       expect(status(await refusal(declaredStoreSizes({}, admin, scope('graphy-stable'), drivers)))).toBe(503);
     }
   });
@@ -51,20 +53,20 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
         }),
       },
     } as never;
-    await wipeDeclaredScopeStores(routed, admin, scope('graphy-stable'), [driver]);
+    await fence(routed, scope('graphy-stable'), [driver]);
     expect(await declaredStoreSizes(routed, admin, scope('graphy-stable'), [driver])).toEqual([{ binding: 'GRAPH', bytes: 7 }]);
-    expect(asked.map((a) => a.split(' ')[1])).toEqual(['substrat.wipe', 'substrat.size']);
+    expect(asked.map((a) => a.split(' ')[1])).toEqual(['substrat.fence', 'substrat.size']);
   });
 
   it('a scope whose version cannot be told refuses once a driver is registered', async () => {
     for (const s of [scope(null), scope('graphy-older')]) {
-      expect(status(await refusal(wipeDeclaredScopeStores({}, admin, s, [driver])))).toBe(503);
+      expect(status(await refusal(fence({}, s, [driver])))).toBe(503);
       expect(status(await refusal(declaredStoreSizes({}, admin, s, [driver])))).toBe(503);
     }
   });
 
   it('with no driver registered nothing can hold a store, and both proceed as before', async () => {
-    await expect(wipeDeclaredScopeStores({}, admin, scope('graphy-stable'), [])).resolves.toBeUndefined();
+    await expect(fence({}, scope('graphy-stable'), [])).resolves.toBeUndefined();
     await expect(declaredStoreSizes({}, admin, scope(null), [])).resolves.toEqual([]);
   });
 });

@@ -110,7 +110,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
         asked.push(...stores.map((store) => `erase ${store.binding}`));
         return stores.map((store) => ({ binding: store.binding, erased: 0 }));
       },
-      wipeStores: async ({ scopeId: s, stores }) => {
+      fenceStores: async ({ scopeId: s, stores }) => {
         asked.push(...stores.map((store) => `wipe ${store.binding}`));
         for (const store of stores) rows.delete(key(s, store.binding));
       },

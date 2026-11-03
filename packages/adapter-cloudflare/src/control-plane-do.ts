@@ -185,6 +185,7 @@ import {
   resolvePeerInstanceFrom,
   LEGACY_SCOPE_ROWS_BACKFILL,
   loadDirectoryDump,
+  storesFencedRefusal,
   type ImpersonationRow,
   redactSubjectDirectoryText,
   ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL,
@@ -911,6 +912,9 @@ const DIRECTORY_DDL = `
     -- #1722: set once a reap has started draining this scope's script copies, and never
     -- cleared: only deleting the row ends it. While set, no copy move is recorded or bound.
     reap_claimed_at TEXT,
+    -- D-70: set immediately before the first substrat.fence on a scope whose row outlives it, and never
+    -- cleared. While set, the scope cannot be unarchived and its tenant cannot be un-deleted.
+    stores_fenced_at TEXT,
     -- Last FAILED migration attempt (§5.3). All null / 0 = healthy. Written on the
     -- failure path so a scope that fails closed stops rendering as active, and
     -- cleared on the next success. See ScopeDO.applyPendingMigrations.
@@ -1466,6 +1470,7 @@ const SCOPE_COLUMNS_ADDED = [
   'vertical_version_id TEXT',
   'erasure_epoch INTEGER',
   'reap_claimed_at TEXT',
+  'stores_fenced_at TEXT',
   'provisioned_version_id TEXT',
   // #2185: null on every existing row, which reads as "not finished" (the sweep reconciles it once more).
   'retirements_finished_version_id TEXT',
@@ -1547,6 +1552,7 @@ export function backfillBackoffMs(failures: number): number {
 export const REPLIED_METHODS = [
   'createTenant',
   'setTenantStatus',
+  'markScopeStoresFenced',
   'reapTenant',
   'setTenantName',
   'putTenantStore',
@@ -2235,6 +2241,13 @@ export class ControlPlaneDO extends DurableObject {
       throw substratError('validation_failed',
         `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
       );
+    }
+    if (before.status === 'deleting' && status !== 'deleting') {
+      const fenced = this.sql.exec(
+        "SELECT scope_id FROM scopes WHERE tenant_id = ? AND stores_fenced_at IS NOT NULL AND status <> 'reaped' LIMIT 1",
+        tenantId,
+      ).toArray()[0] as { scope_id: string } | undefined;
+      if (fenced) throw substratError('conflict', `tenant ${tenantId} cannot be un-deleted: ${storesFencedRefusal(fenced.scope_id)}`);
     }
     if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
     // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
@@ -2994,10 +3007,13 @@ export class ControlPlaneDO extends DurableObject {
     | { ok: true; status: string; vertical: string | null }
     | { ok: false; code: ErrorCode; message: string } {
     const row = this.sql
-      .exec('SELECT tenant_id, status, vertical FROM scopes WHERE scope_id = ?', scopeId)
-      .toArray()[0] as { tenant_id: string; status: string; vertical: string | null } | undefined;
+      .exec('SELECT tenant_id, status, vertical, stores_fenced_at FROM scopes WHERE scope_id = ?', scopeId)
+      .toArray()[0] as { tenant_id: string; status: string; vertical: string | null; stores_fenced_at: string | null } | undefined;
     if (!row || row.tenant_id !== tenantId) {
       return { ok: false, code: 'not_found', message: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
+    }
+    if (to === 'active' && row.stores_fenced_at !== null) {
+      return { ok: false, code: 'conflict', message: storesFencedRefusal(scopeId) };
     }
     if (!from.includes(row.status)) {
       return {
@@ -4267,6 +4283,30 @@ export class ControlPlaneDO extends DurableObject {
       }
       return claimed;
     });
+  }
+
+  /** `HostAdmin.markScopeStoresFenced`: read and written in one synchronous step, so an unarchive is before or after. */
+  markScopeStoresFenced(tenantId: string, scopeId: string, whileTenantDeleting: boolean, audit?: AdminEntryInput): void {
+    const scope = this.sql.exec('SELECT status, stores_fenced_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { status: string; stores_fenced_at: string | null } | undefined;
+    if (!scope) throw substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (scope.stores_fenced_at !== null) return;
+    if (scope.status !== 'archived') {
+      throw substratError('conflict', `scope ${scopeId} is ${scope.status}, not archived, so its stores are not fenced`);
+    }
+    if (whileTenantDeleting && this.readTenant(tenantId)?.status !== 'deleting') {
+      throw substratError('conflict', `tenant ${tenantId} is no longer deleting, so the stores of scope ${scopeId} are not fenced`);
+    }
+    this.writeAndAudit(() => this.sql.exec(
+      `UPDATE scopes SET stores_fenced_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE tenant_id = ? AND scope_id = ?`,
+      tenantId, scopeId,
+    ).rowsWritten > 0, audit && { ...audit, before: { storesFencedAt: null } });
+  }
+
+  scopeStoresFencedAt(tenantId: string, scopeId: string): string | null {
+    const scope = this.sql.exec('SELECT stores_fenced_at FROM scopes WHERE tenant_id = ? AND scope_id = ?', tenantId, scopeId)
+      .toArray()[0] as { stores_fenced_at: string | null } | undefined;
+    return scope?.stores_fenced_at ?? null;
   }
 
   beginScopeScriptReap(tenantId: string, scopeId: string): 'claimed' | 'pending' | 'missing' {

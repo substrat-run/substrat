@@ -122,9 +122,15 @@ After a restore, and after a snapshot copy, the platform runs `substrat.erase` a
 
 The host's own `restoreScope` result carries the same facts as `storeErasuresReplayed`, `storeErasureIncomplete` and `storeErasureSourceUnknown`. With none of them present, nothing had to be replayed and nothing is missing.
 
-Reap, deleting a snapshot, reaping a preview and deleting the scope call `substrat.wipe` on each store before the scope's own storage goes. A wipe that cannot run stops the delete, and the scope's storage is left for the retry.
+Reap, deleting a snapshot, reaping a preview and deleting the scope fence and wipe each store before the scope's own storage goes. If that cannot run, the delete stops, and the scope's storage is left for the retry.
 
-Deleting a snapshot, reaping a preview and the sweep's snapshot reap stop routing the scope before they wipe it. They take every refusal they can decide up front (a copy move in flight, a copy the platform cannot reach, stores it cannot name), then unbind every hostname of the scope, then wipe its stores, then delete it. A refused delete leaves the scope routed and its stores untouched. Unbinding the hostnames is the fast path, not a drain. The durable fence is a scope state that the store door itself checks, and it is a follow-up (see [Known limits](#known-limits)).
+Every path that deletes a scope stops routing it first, by archiving it or by unbinding its hostnames. It takes every refusal it can decide up front (a copy move in flight, a copy the platform cannot reach, stores it cannot name), then fences and wipes its stores, then deletes it. A refused delete leaves its stores untouched, and a snapshot or a preview still routed.
+
+Neither of those stops a request already running or a call on its way. The fence does. The platform's store entry answers `substrat.fence`, in front of any driver: it marks the object, waits for the calls inside it, and hands the driver its `substrat.wipe`. From then on the object answers 410 with the code `store_fenced` to a vertical's call, whenever that call was signed, and refuses the platform's own stage and commit. A vertical reads this as `not_found` with `storeCode: store_fenced`. The object never comes back: a deleted scope's backup restores into a new scope, with new objects. A plain `substrat.wipe` fences nothing.
+
+Once a reap has started fencing a scope whose row stays, the directory records it. Unarchiving that scope, restoring into it and un-deleting its tenant are all refused from then on, even if the fence never landed, and the refusal names the way out: finish the reap, or restore its backup into a new scope.
+
+A driver does all its writing before its `fetch` returns. The fence waits for a call until then, and work left running after it (`ctx.waitUntil`, an unawaited task, a streaming body) could write after the wipe. The review of a release holds this.
 
 ## The storage meter
 
@@ -142,9 +148,11 @@ These are open, and are tracked in the [scope-stores RFC](https://github.com/sub
 
 Before the first approved release:
 
-- **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
+- **A deployed run of the fence.** It ran on local workerd on both entries, the Python one under both SDK shapes. The store entry's probe under `pywrangler dev` has to pass in CI, and a deployed run follows.
 
 Later:
+
+- **A deleted snapshot's id.** A deleted snapshot or preview loses its row, so creating a scope with that exact id gives one whose stores refuse for good.
 
 - **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so the platform refuses a subject erasure that would reach a graph store (501) and keeps the key, rather than record an erasure that removed nothing. Until it does, a graph store is meant for synthetic data only, and the driver serves only the verticals its registration names, none yet.
 - **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another driver. The explicit retire step is still to come.
@@ -171,7 +179,7 @@ What a runner answers:
 - `substrat.stage-page` takes `{ stageId, seq, tables }`, holds the page aside and changes nothing a call can see, and answers `{ staged }`. Page `seq` 0 starts the stage and drops any other, so the old id can then neither stage nor commit. A `seq` already held answers `{ staged: false }` and is not held twice, so a lost answer can be retried. A gap is refused. A stage id is not used again: naming the stage last committed is refused. A stage the object does not hold is refused with status 409, code `stage_refused`. A stage unused for longer than `STORE_STAGE_MAX_AGE_MS` (seven and a half hours) is dropped no later than the next call to the object, so a driver needs no timer. `substrat.size` counts the stages the object holds.
 - `substrat.commit-stage` takes `{ stageId }`, replaces the whole object with the stage atomically, and answers `{ tables }` as the count of distinct tables it wrote. It is the only step that changes the object. A stage the object does not hold is refused, except the one last committed: asked again, it answers the same count and changes nothing, which makes a commit retry safe. Only that stage answers: an older one is refused, and a wipe ends the memory (a new page 0 or an erase does not).
 - `substrat.discard-stage` takes `{ stageId }` and answers `{ discarded }`: whether the object held the stage. The driver also drops a stage that was abandoned.
-- `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to. It drops every stage.
+- `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to. It drops every stage. It may `deleteAll()`: on a deletion, the entry holds its own mark through it.
 - `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, counting what it removed. A subject with nothing on the object, a repeat included, answers `{ erased: 0 }`. It drops every stage, since a stage may hold the subject: a restore racing it fails at its commit.
 
 A driver's registration declares the largest page of its dump it takes in one call (`dumpPageMaxBytes`, counted on the serialized page), and the platform and every host ask for pages within it: the graph driver declares 900 000 bytes, under its 1 MB limit on a request. A driver the registry does not hold is asked for pages of at most 4 MiB.

@@ -123,7 +123,8 @@ export {
 } from './live-read.js';
 export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
 export {
-  callReservedStoreOperation,
+  callReservedStoreOperation,
+  storesFencedRefusal,
   callScopeStore,
   observeStoreCall,
   readStoreDump,

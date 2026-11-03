@@ -11,6 +11,14 @@ describe('StoreError (#2209)', () => {
     expect(toProblem(err).storeCode).toBe('not_a_node');
   });
 
+  it('reads a store fenced for good as not_found, not as unavailable, with the store code naming why (D-70)', () => {
+    const err = new StoreError({ code: 'store_fenced', status: 410, body: { message: 'being deleted' } });
+    expect(errorCodeOf(err)).toBe('not_found');
+    expect(err.storeCode).toBe('store_fenced');
+    expect(err.storeStatus).toBe(410);
+    expect(toProblem(err).storeCode).toBe('store_fenced');
+  });
+
   it('maps a status the taxonomy does not list to unavailable, and still carries the body', () => {
     const err = new StoreError({ code: 'teapot', status: 418, body: 'short' });
     expect(errorCodeOf(err)).toBe('unavailable');

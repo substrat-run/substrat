@@ -252,6 +252,14 @@ export async function callScopeStore(
   return parsed.data.result;
 }
 
+/**
+ * What a host answers an unarchive, an un-delete or a restore of a scope whose stores a deletion has
+ * fenced (D-70). The objects refuse for good, so the way out is a new scope, with new objects.
+ */
+export const storesFencedRefusal = (scopeId: string): string =>
+  `scope ${scopeId} had its stores fenced by a reap that has not finished, and a fenced store refuses for good. ` +
+  'Finish the reap, or restore its backup into a new scope.';
+
 const RESERVED_RESULT = {
   'substrat.selfcheck': storeSelfcheckResult,
   'substrat.export-page': storeExportPageResult,

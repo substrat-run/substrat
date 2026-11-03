@@ -52,6 +52,39 @@ describe('callPlatformScopeStore', () => {
   });
 });
 
+describe('platformScopeStoresFor fences a store being deleted (D-70)', () => {
+  const stores = (answer: () => Response | Promise<Response>, sent: string[] = []) => platformScopeStoresFor({
+    platformKey: vector.privateKeyPkcs8,
+    retryDelaysMs: [0, 0],
+    fetch: async (_script, request) => {
+      sent.push(((await request.json()) as { operation: string }).operation);
+      return answer();
+    },
+  }).fenceStores({ tenantId: 'T', scopeId: 'S', vertical: 'docs', stores: [{ binding: 'A', driver: 'graph' }, { binding: 'B', driver: 'graph' }] });
+
+  it('sends the fence, signed for the platform, to every store, and takes the wipe it answers', async () => {
+    const sent: string[] = [];
+    await expect(stores(() => Response.json({ result: {} }), sent)).resolves.toBeUndefined();
+    expect(sent).toEqual(['substrat.fence', 'substrat.fence']);
+  });
+
+  it('asks again while calls inside the object outlast its wait, then refuses, and stops at the first store', async () => {
+    const sent: string[] = [];
+    const draining = () => Response.json({ error: { code: 'store_fence_draining', status: 503 } }, { status: 503 });
+    await expect(stores(draining, sent)).rejects.toMatchObject({ status: 503 });
+    expect(sent).toHaveLength(3);
+  });
+
+  it('refuses when a store script is older than the fence: no store is taken for fenced that was not', async () => {
+    // An entry from before D-70 refuses the operation in plain text, outside the envelope.
+    await expect(stores(() => new Response('unauthorized: audience', { status: 401 }))).rejects.toMatchObject({ status: 502 });
+  });
+
+  it('refuses a driver whose wipe answers the wrong shape', async () => {
+    await expect(stores(() => Response.json({ result: 'wiped' }))).rejects.toMatchObject({ status: 502 });
+  });
+});
+
 describe('platformScopeStoresFor moves a store in pages the driver declared (D-69)', () => {
   const target = { tenantId: 'T', scopeId: 'S', vertical: 'acme/crm' };
   const table = (rows: unknown[][]) => ({ name: 'nodes', ddl: 'CREATE TABLE nodes (a TEXT)', columns: ['a'], rows });

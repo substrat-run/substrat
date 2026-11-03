@@ -331,7 +331,10 @@ record.
   of all of them. During the deploy's overlap it does not fail closed (§5).
 - **The isolation review is required.** For each of D-63's three conditions the approval records
   whether the reviewer found it met, with evidence, and that they checked envelope handling,
-  reserved operations and no per-object state at module level. A missing condition refuses. A
+  reserved operations and no per-object state at module level. The reviewer also reads for work left
+  running after a call has answered (`ctx.waitUntil`, an unawaited task, a streaming body): a deletion's
+  fence waits only until `fetch` returns, so such work could write after the wipe (D-70). The approval
+  records this one only in its evidence, not as a field of its own. A missing condition refuses. A
   condition recorded "not met" is recorded and does not refuse (Q14): today every driver fails at
   least one, and D-63 makes the review the control for a driver written in this repo.
 

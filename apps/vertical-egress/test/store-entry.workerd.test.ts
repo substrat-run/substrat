@@ -487,3 +487,94 @@ describe('the counter behind the store entry (#2289)', () => {
     }, 30_000);
   });
 });
+
+/**
+ * The door fence (D-70), on real storage. The counter's wipe is `deleteAll()`, which takes the entry's
+ * mark with everything else, so what these see is the mark the entry wrote back. The random
+ * interleavings are `store-fence.model.test.ts`.
+ */
+describe('a fenced object', () => {
+  const objectFor = (scope: string) => scopeStoreObjectName('01JTESTATTACHTENANT000000A', 'docs', scope, 'GRAPH');
+  const platformCall = (name: string, op: string, input?: unknown) =>
+    call({ name, op, aud: 'platform', key: platformKey, body: JSON.stringify({ operation: op, input, objectName: name }) });
+  const fence = (name: string) => platformCall(name, 'substrat.fence');
+  const FENCED = { error: { code: 'store_fenced', status: 410, body: { message: 'the scope this store belongs to is being deleted' } } };
+  const refused = async (answer: { status: number; text: string }) => {
+    expect(answer.status).toBe(410);
+    expect(JSON.parse(answer.text)).toEqual(FENCED);
+  };
+
+  it('wipes through the driver, and refuses a caller from then on, a call signed before the fence included', async () => {
+    const name = objectFor('01J00000000000000000000F01');
+    expect((await call({ name })).status).toBe(200);
+    expect((await call({ name })).status).toBe(200);
+    // Signed now, delivered after the wipe, and fresh by its `iat`.
+    const body = JSON.stringify({ operation: 'increment', input: { by: 1 }, objectName: name });
+    const stale = await issueScopeStoreEnvelope({ privateKey: callerKey, aud: 'caller', script: SCRIPT, name, op: 'increment', body });
+    expect(await fence(name)).toEqual({ status: 200, text: JSON.stringify({ result: {} }) });
+    const delivered = await (await mf.getWorker('store')).fetch('https://store/invoke', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-store-envelope': stale.header, 'x-substrat-store-signature': stale.signature },
+      body,
+    });
+    await refused({ status: delivered.status, text: await delivered.text() });
+    await refused(await call({ name }));
+    expect(JSON.parse((await platformCall(name, 'substrat.size')).text)).toEqual({ result: { bytes: 0 } });
+  });
+
+  it('keeps the mark through an eviction, and an object fenced with no call ever made holds it too', async () => {
+    const name = objectFor('01J00000000000000000000F02');
+    expect((await fence(name)).status).toBe(200);
+    await refused(await call({ name }));
+    // Losing the instance loses what it held in memory: what refuses next is what storage kept.
+    await platformCall(name, 'substrat.selfcheck', { abort: true }).catch(() => undefined);
+    await refused(await call({ name }));
+    // A retry of the fence, as after a lost answer, answers the same and keeps it.
+    expect((await fence(name)).status).toBe(200);
+    await refused(await call({ name }));
+  });
+
+  it('refuses a platform call that would write, and a plain wipe leaves it fenced', async () => {
+    const name = objectFor('01J00000000000000000000F03');
+    expect((await fence(name)).status).toBe(200);
+    await refused(await platformCall(name, 'substrat.stage-page', { stageId: 'late', seq: 0, tables: [] }));
+    await refused(await platformCall(name, 'substrat.commit-stage', { stageId: 'late' }));
+    expect((await platformCall(name, 'substrat.wipe')).status).toBe(200);
+    await refused(await call({ name }));
+  });
+
+  it('a plain wipe fences nothing, a restore after it writes, and another scope of the same script goes on', async () => {
+    const wiped = objectFor('01J00000000000000000000F04');
+    expect((await call({ name: wiped })).status).toBe(200);
+    expect((await platformCall(wiped, 'substrat.wipe')).status).toBe(200);
+    expect(JSON.parse((await platformCall(wiped, 'substrat.stage-page', { stageId: 'r', seq: 0, tables: [] })).text)).toEqual({ result: { staged: true } });
+    expect(await call({ name: wiped })).toEqual({ status: 200, text: JSON.stringify({ result: 1 }) });
+    const neighbour = objectFor('01J00000000000000000000F05');
+    expect((await fence(objectFor('01J00000000000000000000F06'))).status).toBe(200);
+    expect((await call({ name: neighbour })).status).toBe(200);
+  });
+
+  it('a caller signature does not open the fence, and a driver operation does not reach it', async () => {
+    const name = objectFor('01J00000000000000000000F07');
+    expect((await call({ name })).status).toBe(200);
+    const signed = await signedByHandFor(name, 'caller', 'substrat.fence');
+    expect(signed).toEqual({ status: 401, text: 'unauthorized: audience' });
+    expect((await call({ name })).status).toBe(200);
+  });
+
+  const signedByHandFor = async (name: string, aud: 'caller', op: string) => {
+    const body = JSON.stringify({ operation: op, objectName: name });
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)))]
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const canonical = ['1', aud, callerKid, SCRIPT, name, op, digest, String(Math.floor(Date.now() / 1000)), 'AAAAAAAAAAAAAAAAAAAAAA'].join('\n');
+    const signingKey = await crypto.subtle.importKey('pkcs8', base64UrlToBytes(callerKey)! as Uint8Array<ArrayBuffer>, { name: 'Ed25519' }, false, ['sign']);
+    const signature = bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('Ed25519', signingKey, new TextEncoder().encode(canonical))));
+    const res = await (await mf.getWorker('store')).fetch('https://store/invoke', {
+      method: 'POST',
+      headers: { 'x-substrat-store-envelope': bytesToBase64Url(new TextEncoder().encode(canonical)), 'x-substrat-store-signature': signature },
+      body,
+    });
+    return { status: res.status, text: await res.text() };
+  };
+});

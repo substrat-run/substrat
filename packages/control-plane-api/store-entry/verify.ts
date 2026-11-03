@@ -18,14 +18,16 @@ import {
 } from '@substrat-run/contracts/scope-store-envelope';
 import { STORE_CALLER_KEYS_VAR, STORE_PLATFORM_KEYS_VAR, STORE_SCRIPT_VAR } from './names.js';
 
+export { storeFenceWipeBody, storeObjectFence } from './fence.js';
+
 /**
- * A call the entry refuses: answer `status` with `message`. A 413 is the store envelope's error
- * (`{ error: { code, status } }`, JSON, named by `contentType`), so the router and the platform read
- * it as a store's own refusal at its status; the others are plain text.
+ * A call the entry refuses: answer `status` with `message`. A 410, a 413 and a fence's 503 are the
+ * store envelope's error (`{ error: { code, status } }`, JSON, named by `contentType`), so the router
+ * and the platform read them as a store's own refusal at its status; the others are plain text.
  */
 export interface StoreCallRefusal {
   readonly ok: false;
-  readonly status: 401 | 413 | 503;
+  readonly status: 401 | 410 | 413 | 503;
   readonly message: string;
   readonly contentType?: string;
 }

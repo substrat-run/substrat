@@ -325,7 +325,7 @@ export const assetsNeed = assetRouting.extend({
 export type AssetsNeed = z.infer<typeof assetsNeed>;
 
 // The reserved operations live beside the envelope that admits them, a module that imports nothing.
-export { RESERVED_STORE_OPERATIONS, type ReservedStoreOperation } from './scope-store-envelope.js';
+export { RESERVED_STORE_OPERATIONS, STORE_FENCE_OPERATION, type ReservedStoreOperation } from './scope-store-envelope.js';
 
 /** The operations a vertical may invoke on a scope store. No `substrat.*` name belongs here. */
 export interface StoreOperationCatalog {

@@ -521,6 +521,43 @@ describe('a store is backed up and restored in pages, through the routes (D-69)'
     });
   });
 
+  describe('a scope a reap has marked takes no restore (D-70)', () => {
+    it('refuses both restore routes before any load or stage, naming a new scope', async () => {
+      const w = world();
+      const { s, backup } = await backedUp(w, 15);
+      const dump = { tenantId: t, scopeId: s, capturedAt: '2026-01-02T03:04:05.000Z', tables: [{ name: 'notes', ddl: 'CREATE TABLE notes (id TEXT)', columns: ['id'], rows: [['own']] }] };
+      await host.admin.archiveScope(staff, t, s);
+      await host.admin.markScopeStoresFenced(staff, t, s);
+      w.order.length = 0;
+      for (const res of [await w.restoreOf(s, backup.capturedAt), await w.post(`/scopes/${s}/restore`, dump)]) {
+        expect(res.status).toBe(409);
+        expect(JSON.stringify(await res.json())).toContain('a new scope');
+      }
+      expect(w.order).toEqual([]);
+    });
+  });
+
+  describe('a reap that lands during a restore run in a request (D-70)', () => {
+    it('a restore into a scope already archived, whose reap fences it before the commit, commits nothing', async () => {
+      const w = world();
+      const { s, backup } = await backedUp(w, 15);
+      await host.admin.archiveScope(staff, t, s);
+      w.order.length = 0;
+      let reaped = false;
+      w.driver.before(async (call) => {
+        if (call.operation === 'substrat.commit-stage' && !reaped) {
+          reaped = true;
+          await platformOver(w.driver).fenceStores({ tenantId: t, scopeId: s, vertical: VERTICAL, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
+        }
+      });
+      const res = await w.restoreOf(s, backup.capturedAt);
+      expect(reaped).toBe(true);
+      expect(res.status).toBe(410);
+      expect(w.driver.rowsOf(w.object(s))).toBe(0);
+      expect(w.order).not.toContain('deployment-load');
+    });
+  });
+
   describe('races and stopped jobs (D-69)', () => {
     const otherJob = (s: ScopeId, kind: 'store-backup' | 'store-restore') => ({
       spec: {
@@ -929,7 +966,7 @@ describe('a store is backed up and restored in pages, through the routes (D-69)'
       expect(fork.expiresAt).not.toBeNull();
       expect(fork.verticalVersionId).toBe(before.verticalVersionId);
       expect(w.driver.stageOf(w.object(fork.id))).toBeUndefined();
-      expect(w.driver.calls.some((call) => call.operation === 'substrat.wipe' && call.objectName === w.object(fork.id))).toBe(true);
+      expect(w.driver.calls.some((call) => call.operation === 'substrat.fence' && call.objectName === w.object(fork.id))).toBe(true);
     });
 
     it('a commit that fails: the same', async () => {

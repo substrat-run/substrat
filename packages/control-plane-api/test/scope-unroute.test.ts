@@ -18,6 +18,7 @@ import {
   DEV_ACTOR_HEADER,
   unreachablePlatformScopeStores,
   unrouteScope,
+  ControlPlaneError,
   UNSAFE_devPlatformActorAuth,
   type PlatformScopeStores,
   type VerticalClient,
@@ -120,7 +121,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
     const seen: string[] = [];
     const caller: PlatformScopeStores = {
       ...unreachablePlatformScopeStores(),
-      wipeStores: async () => {
+      fenceStores: async () => {
         seen.push((await host.admin.resolveHostname(hostname()))?.scopeId ?? 'unrouted');
       },
     };
@@ -169,6 +170,171 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
       expect(res.status).toBe(503);
       expect(seen).toEqual([]);
       expect((await host.admin.resolveHostname(fork.hostname))?.scopeId).toBe(fork.id);
+    });
+  });
+
+  describe('the scope and tenant reaps fence what they delete (D-70)', () => {
+    it('the scope reap: an archived scope with no name left is fenced, and only then reaped', async () => {
+      const id = await boundSource();
+      await host.admin.archiveScope(staff, t, id);
+      const fenced: string[] = [];
+      const caller: PlatformScopeStores = {
+        ...unreachablePlatformScopeStores(),
+        fenceStores: async ({ scopeId: s, stores }) => {
+          // The directory says so first, so a fence that lands has its row marked.
+          expect(await host.admin.scopeStoresFencedAt(staff, t, s as ScopeId)).not.toBeNull();
+          fenced.push(`${s} ${stores.map((st) => st.binding).join()}`);
+        },
+      };
+      const res = await reap(caller, id);
+      expect(res.status).toBe(200);
+      expect(fenced).toEqual([`${id} GRAPH`]);
+    });
+
+    const reap = (caller: PlatformScopeStores, id: ScopeId) => apiWith(caller, false).request(`/tenants/${t}/scopes/${id}/reap`, {
+      method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ backup: false }),
+    });
+    const unarchive = (id: ScopeId) => apiWith(unreachablePlatformScopeStores(), false)
+      .request(`/tenants/${t}/scopes/${id}/unarchive`, { method: 'POST', headers: auth });
+
+    it('a reap whose fence fails leaves the scope archived, and an unarchive refuses naming a new scope', async () => {
+      const id = await boundSource();
+      await host.admin.archiveScope(staff, t, id);
+      const failing: PlatformScopeStores = {
+        ...unreachablePlatformScopeStores(),
+        fenceStores: async () => { throw new ControlPlaneError(503, 'the fence could not run'); },
+      };
+      expect((await reap(failing, id)).status).toBe(503);
+      expect((await host.admin.getScopeRecord(staff, t, id))?.status).toBe('archived');
+      const res = await unarchive(id);
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('a new scope');
+      expect((await host.admin.getScopeRecord(staff, t, id))?.status).toBe('archived');
+    });
+
+    it('a reap refused before its fence marks nothing: stores it cannot name leave the scope free to come back', async () => {
+      const id = await boundSource();
+      await host.admin.archiveScope(staff, t, id);
+      const read = host.admin.verticalScopeStores.bind(host.admin);
+      host.admin.verticalScopeStores = async () => { throw new Error('the record cannot be read'); };
+      try {
+        expect((await reap(witness(() => 'none').caller, id)).status).toBe(503);
+      } finally {
+        host.admin.verticalScopeStores = read;
+      }
+      expect(await host.admin.scopeStoresFencedAt(staff, t, id)).toBeNull();
+      expect((await unarchive(id)).status).toBe(200);
+    });
+
+    it('an unarchive between the reap\'s status check and its mark wins: no store is fenced, and the scope is live', async () => {
+      const id = await boundSource();
+      await host.admin.archiveScope(staff, t, id);
+      const { caller, seen } = witness(() => 'none');
+      // The route has read the scope and its stores once. Its second read is the one before the mark.
+      const read = host.admin.verticalScopeStores.bind(host.admin);
+      let reads = 0;
+      host.admin.verticalScopeStores = async (...args: Parameters<typeof read>) => {
+        reads += 1;
+        if (reads === 2) await host.admin.unarchiveScope(staff, t, id);
+        return read(...args);
+      };
+      try {
+        expect((await reap(caller, id)).status).toBe(409);
+      } finally {
+        host.admin.verticalScopeStores = read;
+      }
+      expect(seen).toEqual([]);
+      expect(await host.admin.scopeStoresFencedAt(staff, t, id)).toBeNull();
+      expect((await host.admin.getScopeRecord(staff, t, id))?.status).toBe('active');
+    });
+
+    it('a scope with no store marks nothing, since nothing of it refuses', async () => {
+      const id = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: id });
+      await host.admin.archiveScope(staff, t, id);
+      expect((await reap(witness(() => 'none').caller, id)).status).toBe(200);
+      expect(await host.admin.scopeStoresFencedAt(staff, t, id)).toBeNull();
+    });
+
+    it('the tenant reap: each scope is archived, so no longer served, before its fence', async () => {
+      const doomed = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: doomed, slug: `doomed-${doomed.slice(-6).toLowerCase()}`, name: 'Doomed' });
+      const slug = `doc-${doomed.slice(-6).toLowerCase()}`;
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: doomed });
+      const version = ulid();
+      await host.admin.publishVersion(staff, {
+        id: version, verticalSlug: slug, version: `1.0.${version.toLowerCase()}`, manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: `${slug}-v1`,
+        manifestJson: JSON.stringify({
+          version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+          registry: { permissions: [], roles: [], entityGrants: [] },
+          digests: { manifest: 'm', permission: 'p', migration: 'g' },
+          scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
+        }),
+      });
+      await host.admin.admitVersion(staff, version);
+      const scope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: doomed, scopeId: scope, vertical: slug });
+      await host.admin.activateScope(staff, doomed, scope);
+      await host.admin.bindScopeVersion(staff, doomed, scope, version);
+      const hostname = `d-${scope.slice(-8).toLowerCase()}.example`;
+      await host.admin.bindHostname(staff, { hostname, tenantId: doomed, scopeId: scope, surface: 'app', region: null, canonical: true });
+      await host.admin.setHostnameStatus(staff, hostname, 'active');
+      await host.admin.setTenantStatus(staff, doomed, 'deleting');
+      // A fence that fails leaves the tenant deleting, with the scope marked: it cannot be un-deleted.
+      const failing: PlatformScopeStores = {
+        ...unreachablePlatformScopeStores(),
+        fenceStores: async () => { throw new ControlPlaneError(503, 'the fence could not run'); },
+      };
+      expect((await apiWith(failing, false).request(`/tenants/${doomed}/reap`, { method: 'POST', headers: auth })).status).toBe(503);
+      expect(await host.admin.scopeStoresFencedAt(staff, doomed, scope)).not.toBeNull();
+      await expect(host.admin.setTenantStatus(staff, doomed, 'active')).rejects.toThrow(/new scope/);
+      const seen: (string | undefined)[] = [];
+      const caller: PlatformScopeStores = {
+        ...unreachablePlatformScopeStores(),
+        fenceStores: async () => { seen.push((await host.admin.getScopeRecord(staff, doomed, scope))?.status); },
+      };
+      const res = await apiWith(caller, false).request(`/tenants/${doomed}/reap`, { method: 'POST', headers: auth });
+      expect(res.status).toBe(200);
+      expect(seen).toEqual(['archived']);
+      // Reaped, it holds nothing up any more, and the tenant is reaped.
+      expect((await host.admin.getTenant(staff, doomed))?.status).toBe('reaped');
+    });
+
+    it('reads the stores again after the unroute: a binding published in between is fenced too', async () => {
+      const fork = await snapshot();
+      const fenced: string[][] = [];
+      const caller: PlatformScopeStores = {
+        ...unreachablePlatformScopeStores(),
+        fenceStores: async ({ stores }) => { fenced.push(stores.map((s) => s.binding).sort()); },
+      };
+      // The first read has passed once the hostname goes: a version published now names a new binding.
+      const unbind = host.admin.unbindHostname.bind(host.admin);
+      const published = ulid();
+      let once = false;
+      host.admin.unbindHostname = async (...args: Parameters<typeof unbind>) => {
+        if (!once) {
+          once = true;
+          await host.admin.publishVersion(staff, {
+            id: published, verticalSlug: 'docs', version: `1.0.${published.toLowerCase()}`, manifestDigest: `m-${published}`, permissionDigest: 'p', migrationDigest: 'g',
+            deploymentRef: `docs-${published.toLowerCase()}`,
+            manifestJson: JSON.stringify({
+              version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+              registry: { permissions: [], roles: [], entityGrants: [] },
+              digests: { manifest: 'm', permission: 'p', migration: 'g' },
+              scopeStores: [{ binding: 'GRAPH', driver: 'graph' }, { binding: 'LATE', driver: 'graph' }],
+            }),
+          });
+        }
+        return unbind(...args);
+      };
+      try {
+        const res = await apiWith(caller, false).request(`/tenants/${t}/scopes/${fork.id}`, { method: 'DELETE', headers: auth });
+        expect(res.status).toBe(200);
+      } finally {
+        host.admin.unbindHostname = unbind;
+      }
+      expect(fenced).toEqual([['GRAPH', 'LATE']]);
     });
   });
 
