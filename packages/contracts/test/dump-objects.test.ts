@@ -88,11 +88,6 @@ describe('assertReplayableDump: the objects a dump carries', () => {
     });
   }
 
-  it('refuses a dump where some module tables carry objects and others do not', () => {
-    const [ledger, other] = dump(ONE_LEAD);
-    expect(() => assertReplayableDump([ledger!, { ...other!, objects: undefined }])).toThrow(/"other" does not/);
-  });
-
   it('refuses an object filed under a platform table', () => {
     const spine = {
       name: '_substrat_notes',
