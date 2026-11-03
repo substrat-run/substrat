@@ -223,6 +223,14 @@ describe('the non-interactive door', () => {
     expect(res.headers.get('content-type')).toBe('application/problem+json');
     expect(await res.json()).toMatchObject({ code: 'validation_failed', detail: expect.stringContaining('dev|nobody') });
   });
+
+  it('refuses /userinfo without a valid bearer as a problem document, with the RFC 6750 challenge', async () => {
+    const res = await app.fetch(new Request(`${ISSUER}/userinfo`, { headers: { authorization: 'Bearer nope' } }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(res.headers.get('www-authenticate')).toBe('Bearer error="invalid_token"');
+    expect(await res.json()).toMatchObject({ code: 'unauthenticated' });
+  });
 });
 
 /**

@@ -131,6 +131,18 @@ function redirectError(c: Context, redirectUri: string, state: string | undefine
   return c.redirect(u.toString());
 }
 
+/** A non-OAuth refusal, as the RFC 9457 problem document every Substrat surface answers with. */
+function problem(
+  c: Context,
+  code: 'unauthenticated' | 'validation_failed',
+  detail: string,
+  status: 400 | 401,
+  headers: Record<string, string> = {},
+) {
+  const body = toProblem(substratError(code, detail), c.req.path);
+  return c.body(JSON.stringify(body), status, { ...headers, 'content-type': PROBLEM_CONTENT_TYPE });
+}
+
 export function createDevIssuer(opts: DevIssuerOptions): Hono {
   const personas = opts.personas;
   const ttl = opts.tokenTtlSec ?? 3600;
@@ -288,14 +300,19 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
   app.get('/userinfo', async (c) => {
     const auth = c.req.header('authorization') ?? '';
     const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : '';
-    if (!token) return c.json({ error: 'invalid_token' }, 401);
+    // RFC 6750 §3: a refused bearer is announced in WWW-Authenticate; the body is a problem document.
+    const refuse = () =>
+      problem(c, 'unauthenticated', 'the bearer token is missing, invalid or expired', 401, {
+        'www-authenticate': 'Bearer error="invalid_token"',
+      });
+    if (!token) return refuse();
     try {
       const { payload } = await jwtVerify(token, await verificationKey(), { issuer: issuerOf(c) });
       const persona = personaOf(String(payload.sub));
-      if (!persona) return c.json({ error: 'invalid_token' }, 401);
+      if (!persona) return refuse();
       return c.json(claimsFor(persona));
     } catch {
-      return c.json({ error: 'invalid_token' }, 401);
+      return refuse();
     }
   });
 
@@ -330,8 +347,7 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
     const persona = personaOf(sub);
     if (!persona) {
       const known = personas.map((p) => p.sub).join(', ');
-      const refusal = toProblem(substratError('validation_failed', `unknown sub '${sub}' — known: ${known}`), c.req.path);
-      return c.body(JSON.stringify(refusal), 400, { 'content-type': PROBLEM_CONTENT_TYPE });
+      return problem(c, 'validation_failed', `unknown sub '${sub}' — known: ${known}`, 400);
     }
     const base = { iss: issuerOf(c), aud: audience, ...claimsFor(persona) };
     const [idToken, accessToken] = await Promise.all([sign(base, ttl), sign({ ...base, typ: 'access' }, ttl)]);
