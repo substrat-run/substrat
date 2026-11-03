@@ -1028,6 +1028,20 @@ export const permissions = {
     expect(r.stderr).toMatch(/connectors\.mjs exports no `connectors` with a `declarations\(\)`/);
   });
 
+  it.runIf(built)('refuses a scope store whose driver is not registered, as a push does (#2812)', () => {
+    const r = runCheck(
+      verticalWith(SURFACE, {
+        substrat: {
+          permissions: 'perms.mjs',
+          runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] },
+        },
+      }),
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("scope store 'GRAPH' declares driver 'graph', which is not registered.");
+    expect(r.stdout).not.toMatch(/digest:/);
+  });
+
   it.runIf(built)('refuses an entry that stops exporting `permissions`', () => {
     const r = runCheck(verticalWith(`export const roles = [];\n`));
     expect(r.status).not.toBe(0);
