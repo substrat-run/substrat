@@ -321,6 +321,25 @@ describe('fortnox connector — inbound sync', () => {
     expect(await host.admin.getConnectorState(connId, `fortnox:lease:${s}`)).toBeNull();
   });
 
+  it('leaves alone a lease another poll took over after its own expired mid-poll (#2672)', async () => {
+    await bind();
+    let clock = Date.parse('2026-06-15T12:00:00.000Z');
+    let planted = false;
+    // The first request outlives the lease, and another poll takes the binding over meanwhile.
+    const fetch: typeof fortnox.fetch = async (input, init) => {
+      if (!planted) {
+        planted = true;
+        clock += 10 * 60_000;
+        await host.admin.putConnectorState(connId, `fortnox:lease:${s}`, { token: 'the other poll', until: new Date(clock + 60_000).toISOString() });
+      }
+      return fortnox.fetch(input, init);
+    };
+
+    await pollFortnoxScope(host, connId, s, { ...options(), fetch, now: () => clock });
+
+    expect(await host.admin.getConnectorState(connId, `fortnox:lease:${s}`)).toMatchObject({ token: 'the other poll' });
+  });
+
   it('refuses to turn an invoice binding into a ledger one', async () => {
     await bindInvoices();
     await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');

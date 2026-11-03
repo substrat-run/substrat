@@ -41,7 +41,7 @@ import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wir
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, providerSpecsFor, undeclaredConnectorSpec, upsertLocalConnection, type ProviderSpec } from './integrations.js';
-import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
+import { deriveFreshnessHealth, deriveScheduleHealth, lastScopeSweepAt } from './schedules.js';
 import { declaredCallState, peerChoicesOf, targetScopeOf } from './peers.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
@@ -1817,24 +1817,24 @@ async function appSchedulesIn(ctx: TeamContext, appScopeId: string) {
     };
   }
 
-  const [liveness, ...perUnit] = await Promise.all([
-    // Liveness deliberately spans EVERY kind: a freshness-only app writes no
-    // schedule rows, and a kind-filtered probe would read it as permanently
-    // sweeper-silent. Any row of any kind proves the sweep reached the scope
-    // (connector rows cannot pollute this — they carry no scopeId by contract).
-    cp.listSweepRuns({ scopeId: scope, limit: 1 }),
-    ...schedules.flatMap((spec) => {
-      const unit = `${scope}:${spec.operation}`;
-      return [
-        cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'ok', limit: 20 }),
-        cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'failed', limit: 20 }),
-      ];
-    }),
-    // Freshness rows are change-gated — no flood, so no outcome filter: the
-    // skipped (never-seen) ticks are meaningful here.
-    ...freshTypes.map((t) =>
-      cp.listSweepRuns({ kind: 'freshness', unit: `${scope}:${t}`, limit: 20 }),
-    ),
+  const [lastSweepAt, perUnit] = await Promise.all([
+    // Liveness spans every kind the pass writes per scope, never a connector row: a
+    // requested poll (#2672) carries the scope and proves nothing about the sweeper.
+    lastScopeSweepAt((filter) => cp.listSweepRuns(filter), scope),
+    Promise.all([
+      ...schedules.flatMap((spec) => {
+        const unit = `${scope}:${spec.operation}`;
+        return [
+          cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'ok', limit: 20 }),
+          cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'failed', limit: 20 }),
+        ];
+      }),
+      // Freshness rows are change-gated — no flood, so no outcome filter: the
+      // skipped (never-seen) ticks are meaningful here.
+      ...freshTypes.map((t) =>
+        cp.listSweepRuns({ kind: 'freshness', unit: `${scope}:${t}`, limit: 20 }),
+      ),
+    ]),
   ]);
   const runsByOperation = new Map<string, SweepRunEntry[]>();
   schedules.forEach((spec, i) => {
@@ -1849,7 +1849,6 @@ async function appSchedulesIn(ctx: TeamContext, appScopeId: string) {
     runsByEventType.set(t, perUnit[schedules.length * 2 + i]!);
   });
 
-  const lastSweepAt = liveness[0]?.at ?? null;
   return {
     running: { versionId: runningId, version: runningVersion?.version ?? null },
     schedules:

@@ -1565,6 +1565,23 @@ async function takePollLease(host: ScopeHost, connectionId: ConnectionId, scopeI
   return after?.token === token ? token : null;
 }
 
+/**
+ * `fetch`, renewing the lease while the poll still asks Fortnox, so a slow poll (the ledger has no
+ * deadline of its own) keeps it. Every request is a step boundary; a lease another poll took over is
+ * left alone.
+ */
+function leaseRenewing(host: ScopeHost, connectionId: ConnectionId, scopeId: string, token: string, fetch: FetchLike, now: () => number): FetchLike {
+  let renewedAt = now();
+  return async (input, init) => {
+    if (now() - renewedAt >= POLL_LEASE_MS / 3) {
+      renewedAt = now();
+      const held = (await host.admin.getConnectorState(connectionId, leaseKey(scopeId))) as FortnoxPollLease | null | undefined;
+      if (held?.token === token) await host.admin.putConnectorState(connectionId, leaseKey(scopeId), { token, until: new Date(renewedAt + POLL_LEASE_MS).toISOString() } satisfies FortnoxPollLease);
+    }
+    return fetch(input, init);
+  };
+}
+
 /** Give the lease back, unless it expired and another poll took it over. */
 async function releasePollLease(host: ScopeHost, connectionId: ConnectionId, scopeId: string, token: string): Promise<void> {
   const key = leaseKey(scopeId);
@@ -1600,6 +1617,7 @@ export async function sweepFortnoxLedger(
   // One budget and one rate window per pass: every binding on this connection reads the same company.
   const budget = { details: INVOICE_DETAILS_PER_PASS };
   const pass = { ...options, rateWindow: options.rateWindow ?? [] };
+  const clock = () => options.now?.() ?? Date.now();
 
   for (const { value } of rows) {
     // A tombstoned binding (`unbindFortnoxScope`) — present as a row, not a target.
@@ -1617,19 +1635,20 @@ export async function sweepFortnoxLedger(
     }
     let lease: string | null = null;
     try {
-      lease = await takePollLease(host, connectionId, binding.scopeId, options.now?.() ?? Date.now());
+      lease = await takePollLease(host, connectionId, binding.scopeId, clock());
       if (lease === null) {
         result.busy.push(binding.scopeId);
         continue;
       }
+      const leased = { ...pass, fetch: leaseRenewing(host, connectionId, binding.scopeId, lease, pass.fetch, clock) };
       if (binding.kind === 'supplier-invoice') {
-        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
+        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...leased, budget });
         if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped || r.pending) result.invoices.push(r);
         else result.unchanged += 1;
         continue;
       }
       if (binding.form === 'sie') {
-        const { synced, failed } = await syncFortnoxSieFiles(host, connectionId, binding, pass);
+        const { synced, failed } = await syncFortnoxSieFiles(host, connectionId, binding, leased);
         const landed = synced.filter((r) => r.changed);
         result.synced.push(...landed);
         for (const f of failed) {
@@ -1641,7 +1660,7 @@ export async function sweepFortnoxLedger(
         if (landed.length === 0 && failed.length === 0) result.unchanged += 1;
         continue;
       }
-      const r = await syncFortnoxScope(host, connectionId, binding, pass);
+      const r = await syncFortnoxScope(host, connectionId, binding, leased);
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
     } catch (err) {

@@ -172,3 +172,21 @@ export function deriveScheduleHealth(
     };
   });
 }
+
+/** The kinds of sweep row the platform's pass writes for one scope. */
+const SCOPE_SWEEP_KINDS = ['schedule', 'freshness', 'vertical-events'] as const;
+
+/**
+ * The newest sweep row that proves the platform's pass reached `scopeId`, or null: the liveness the
+ * verdicts above take as `lastSweepAt`. Every kind the pass writes per scope counts — a
+ * freshness-only app writes no schedule rows — and connector rows do not: a poll a vertical asked
+ * for (#2672) is recorded as a connector row for its scope, and proves nothing about the sweeper.
+ */
+export async function lastScopeSweepAt<S extends string>(
+  list: (filter: { kind: (typeof SCOPE_SWEEP_KINDS)[number]; scopeId: S; limit: number }) => Promise<SweepRunEntry[]>,
+  scopeId: S,
+): Promise<string | null> {
+  const rows = await Promise.all(SCOPE_SWEEP_KINDS.map((kind) => list({ kind, scopeId, limit: 1 })));
+  const ats = rows.flatMap((r) => (r[0] ? [r[0].at] : []));
+  return ats.length === 0 ? null : ats.reduce((a, b) => (a > b ? a : b));
+}

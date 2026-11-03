@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SweepRunEntry } from '@substrat-run/contracts';
-import { SWEEP_WINDOW_MINUTES, deriveFreshnessHealth, deriveScheduleHealth } from '../src/schedules.js';
+import { SWEEP_WINDOW_MINUTES, deriveFreshnessHealth, deriveScheduleHealth, lastScopeSweepAt } from '../src/schedules.js';
 
 /**
  * The verdict table (#1232). Pure over its inputs, so every boundary the panel
@@ -140,5 +140,17 @@ describe('deriveScheduleHealth — the verdicts', () => {
     const row = one(60, [run(min(30), 'failed', 'operation threw')], iso(min(5)));
     expect(row.health).toBe('healthy'); // it RAN — failing is the lastRun's fact, not lateness
     expect(row.lastRun).toMatchObject({ outcome: 'failed', error: 'operation threw' });
+  });
+});
+
+describe('lastScopeSweepAt — the liveness the verdicts take', () => {
+  it("is the newest of the pass's own rows for the scope, never a poll the vertical asked for (#2672)", async () => {
+    const at = (kind: string, when: string) => ({ kind, scopeId: 'sc1', at: when }) as SweepRunEntry;
+    const rows = [at('connector', '2026-09-07T12:00:00.000Z'), at('freshness', '2026-09-07T11:00:00.000Z'), at('schedule', '2026-09-07T10:00:00.000Z')];
+    const list = async (f: { kind: string; scopeId: string }) => rows.filter((r) => r.kind === f.kind && r.scopeId === f.scopeId);
+
+    expect(await lastScopeSweepAt(list, 'sc1')).toBe('2026-09-07T11:00:00.000Z');
+    // A scope only polled on request reads as unswept.
+    expect(await lastScopeSweepAt(async (f) => rows.slice(0, 1).filter((r) => r.kind === f.kind), 'sc1')).toBeNull();
   });
 });
