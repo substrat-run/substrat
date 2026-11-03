@@ -38,6 +38,7 @@ export {
   scopeStoreBodyDigest,
   scopeStoreEnvelopeAdmits,
   scopeStoreEnvelopeFresh,
+  STORE_STAGE_MAX_AGE_MS,
   scopeStoreKeyId,
   verifyScopeStoreCall,
   verifyScopeStoreEnvelope,

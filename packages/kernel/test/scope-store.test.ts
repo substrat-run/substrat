@@ -1,14 +1,19 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { errorCodeOf, platformActorId, scopeId, StoreError, substratError, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { errorCodeOf, mergeDumpPages, platformActorId, scopeId, StoreError, STORE_STAGE_MAX_AGE_MS, substratError, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import {
   callReservedStoreOperation,
   callScopeStore,
   observeStoreCall,
+  readStoreDump,
   replayStoreErasures,
   scopeStoreLifecycleOf,
+  storeDumpPages,
+  writeStoreDump,
+  type ReservedStoreCall,
   type ScopeStoreRunner,
 } from '../src/scope-store.js';
 import { ulid } from '../src/ulid.js';
+import { SCOPE_COPY_LEASE_MS } from '../src/scope-host.js';
 import {
   STORE_CALL_LOG_CAP,
   STORE_CALL_SINK_KEY,
@@ -236,7 +241,7 @@ describe('callReservedStoreOperation (#2207)', () => {
     expect((refusal as StoreError).storeCode).toBe('bad_envelope');
   });
 
-  it('parses an erase, an export and an import count', async () => {
+  it('parses an erase, an export page, a stage, a commit and a discard', async () => {
     const table = {
       name: 'counter',
       ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)',
@@ -249,16 +254,330 @@ describe('callReservedStoreOperation (#2207)', () => {
       { subjectId: 'subject-1' },
     );
     expect(erased).toEqual({ erased: 2 });
-    const exported = await callReservedStoreOperation(async () => ({ result: { tables: [table] } }), 'substrat.export');
-    expect(exported).toEqual({ tables: [table] });
-    const imported = await callReservedStoreOperation(
-      async () => ({ result: { tables: 1 } }),
-      'substrat.import',
-      { tables: [table] },
-    );
-    expect(imported).toEqual({ tables: 1 });
+    const page = { tables: [table], next: null, revision: '7' };
+    const exported = await callReservedStoreOperation(async () => ({ result: page }), 'substrat.export-page', { cursor: null, maxBytes: 100 });
+    expect(exported).toEqual(page);
+    const staged = await callReservedStoreOperation(async () => ({ result: { staged: true } }), 'substrat.stage-page', {
+      stageId: 's',
+      seq: 0,
+      tables: [table],
+    });
+    expect(staged).toEqual({ staged: true });
+    const committed = await callReservedStoreOperation(async () => ({ result: { tables: 1 } }), 'substrat.commit-stage', { stageId: 's' });
+    expect(committed).toEqual({ tables: 1 });
+    const discarded = await callReservedStoreOperation(async () => ({ result: { discarded: false } }), 'substrat.discard-stage', { stageId: 's' });
+    expect(discarded).toEqual({ discarded: false });
+    expect(await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.selfcheck')).toEqual({});
     const wiped = await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.wipe');
     expect(wiped).toEqual({});
+  });
+
+  it('refuses a paged operation whose input is not what it takes, before the store is called', async () => {
+    const refuse = async (operation: 'substrat.export-page' | 'substrat.stage-page' | 'substrat.commit-stage' | 'substrat.discard-stage', input: unknown) => {
+      let called = false;
+      const refusal = await callReservedStoreOperation(
+        async () => {
+          called = true;
+          return { result: {} };
+        },
+        operation,
+        input,
+      ).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(called, operation).toBe(false);
+      expect(errorCodeOf(refusal), operation).toBe('validation_failed');
+      expect((refusal as Error).message, operation).toContain(operation);
+    };
+    await refuse('substrat.export-page', undefined);
+    await refuse('substrat.export-page', { cursor: null, maxBytes: 0 });
+    await refuse('substrat.export-page', { cursor: '', maxBytes: 10 });
+    await refuse('substrat.stage-page', { stageId: 's', seq: -1, tables: [] });
+    await refuse('substrat.stage-page', { stageId: 's', tables: [] });
+    await refuse('substrat.commit-stage', { stageId: '' });
+    await refuse('substrat.discard-stage', {});
+  });
+
+  it('refuses an export page with no revision, and the removed whole-dump operations', async () => {
+    const refusal = await callReservedStoreOperation(async () => ({ result: { tables: [], next: null } }), 'substrat.export-page', {
+      cursor: null,
+      maxBytes: 10,
+    }).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect((refusal as StoreError).storeCode).toBe('bad_envelope');
+    // The names are still on the reserved prefix, so a call that names them is refused before any store is asked.
+    for (const removed of ['substrat.export', 'substrat.import']) {
+      const gone = await callScopeStore(async () => ({ result: 1 }), removed).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(gone), removed).toBe('forbidden');
+    }
+  });
+});
+
+type Table = ScopeDumpTable;
+const tableOf = (name: string, rows: unknown[][] = []): Table => ({ name, ddl: `CREATE TABLE ${name} (a TEXT)`, columns: ['a'], rows });
+
+/** A small seeded generator, so a failing case reruns the same. */
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const sizeOf = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+
+describe('storeDumpPages (D-69)', () => {
+  it('gives no tables as one empty page, so an empty stage still replaces the object', () => {
+    expect(storeDumpPages([], 100)).toEqual([[]]);
+  });
+
+  it('carries every table, empty or not, so its schema travels', () => {
+    const pages = storeDumpPages([tableOf('a'), tableOf('b', [['x']]), tableOf('c')], 10_000);
+    expect(pages.flat().map((t) => t.name)).toEqual(['a', 'b', 'c']);
+    expect(mergeDumpPages(pages)).toEqual([tableOf('a'), tableOf('b', [['x']]), tableOf('c')]);
+  });
+
+  it('puts a row larger than maxBytes in a page of its own, and keeps the rest within it', () => {
+    const big = ['y'.repeat(500)];
+    const tables = [tableOf('t', [['a'], ['b'], big, ['c']])];
+    const pages = storeDumpPages(tables, 120);
+    const rowsPerPage = pages.map((page) => page.flatMap((t) => t.rows));
+    expect(rowsPerPage.find((rows) => rows.includes(big))).toEqual([big]);
+    for (const page of pages) {
+      if (page.flatMap((t) => t.rows).includes(big)) continue;
+      expect(sizeOf(page)).toBeLessThanOrEqual(120);
+    }
+    expect(mergeDumpPages(pages)).toEqual(tables);
+  });
+
+  it('names a table again on every page it continues on', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => [`row-${i}`]);
+    const pages = storeDumpPages([tableOf('t', rows)], 90);
+    expect(pages.length).toBeGreaterThan(1);
+    for (const page of pages) expect(page.map((t) => t.name)).toEqual(['t']);
+  });
+
+  it('is lossless and within the page size, over random row sizes and page sizes', () => {
+    const random = seeded(2811);
+    for (let round = 0; round < 200; round += 1) {
+      const tables = Array.from({ length: Math.floor(random() * 5) }, (_, index) =>
+        tableOf(
+          `table_${index}`,
+          Array.from({ length: Math.floor(random() * 30) }, () => ['z'.repeat(Math.floor(random() * 200))]),
+        ),
+      );
+      const maxBytes = 1 + Math.floor(random() * 600);
+      const pages = storeDumpPages(tables, maxBytes);
+      expect(pages.length, `round ${round}`).toBeGreaterThan(0);
+      expect(mergeDumpPages(pages), `round ${round}`).toEqual(tables);
+      for (const page of pages) {
+        const rows = page.reduce((sum, t) => sum + t.rows.length, 0);
+        // Over the size only by a row that rides alone with its own table, or a heading no smaller page could hold.
+        if (sizeOf(page) > maxBytes) expect(rows <= 1 && page.length === 1, `round ${round}: ${sizeOf(page)} > ${maxBytes}`).toBe(true);
+      }
+    }
+  });
+});
+
+describe('readStoreDump (D-69)', () => {
+  const page = (rows: unknown[][], next: string | null, revision = '1') => ({ tables: [tableOf('t', rows)], next, revision });
+
+  it('asks from the start and merges a chain, handing each cursor back', async () => {
+    const asked: unknown[] = [];
+    const chain = [page([['a']], 'c1'), page([['b']], 'c2'), page([['c']], null)];
+    const dump = await readStoreDump((async (operation: string, input: unknown) => {
+      expect(operation).toBe('substrat.export-page');
+      asked.push(input);
+      return chain[asked.length - 1];
+    }) as ReservedStoreCall, 77);
+    expect(dump).toEqual([tableOf('t', [['a'], ['b'], ['c']])]);
+    expect(asked).toEqual([
+      { cursor: null, maxBytes: 77 },
+      { cursor: 'c1', maxBytes: 77 },
+      { cursor: 'c2', maxBytes: 77 },
+    ]);
+  });
+
+  it('starts again when the revision changes along a chain, and answers the later read whole', async () => {
+    const answers = [page([['old']], 'c1', '1'), page([['moved']], null, '2'), page([['new-a']], 'd1', '2'), page([['new-b']], null, '2')];
+    let at = 0;
+    const asked: unknown[] = [];
+    const dump = await readStoreDump((async (_operation: string, input: unknown) => {
+      asked.push(input);
+      return answers[at++];
+    }) as ReservedStoreCall, 50);
+    expect(dump).toEqual([tableOf('t', [['new-a'], ['new-b']])]);
+    expect(asked[2]).toEqual({ cursor: null, maxBytes: 50 });
+  });
+
+  it('refuses as a conflict once three chains have moved, rather than answer a dump of no one moment', async () => {
+    let calls = 0;
+    const refusal = await readStoreDump((async () => {
+      calls += 1;
+      return calls % 2 === 1 ? page([['a']], 'c', String(calls)) : page([['b']], null, String(calls));
+    }) as ReservedStoreCall, 50).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(errorCodeOf(refusal)).toBe('conflict');
+    expect(calls).toBe(6);
+  });
+
+  it('passes a store failure on unchanged', async () => {
+    const failure = new Error('down');
+    await expect(readStoreDump((async () => Promise.reject(failure)) as ReservedStoreCall, 50)).rejects.toBe(failure);
+  });
+
+  it('refuses a page whose next is the cursor it was asked with', async () => {
+    let asked = 0;
+    const refusal = await readStoreDump((async () => {
+      asked += 1;
+      return page([['a']], 'stuck');
+    }) as ReservedStoreCall, 50).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    // The first page asks from the start and moves to 'stuck'; the second is asked 'stuck' and answers it.
+    expect(refusal).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+    expect(asked).toBe(2);
+  });
+
+  it('refuses a chain of more than 100 000 pages, and reads one of exactly that many', async () => {
+    const chain = (pages: number) => {
+      let asked = 0;
+      return readStoreDump((async () => {
+        asked += 1;
+        return page([], asked < pages ? `c${asked}` : null);
+      }) as ReservedStoreCall, 50);
+    };
+    expect(await chain(100_000)).toEqual([tableOf('t', [])]);
+    const refusal = await chain(100_001).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(refusal).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+  });
+});
+
+describe('writeStoreDump (D-69)', () => {
+  const rows = Array.from({ length: 12 }, (_, i) => [`row-${i}`]);
+  const tables = [tableOf('t', rows), tableOf('empty')];
+
+  /** A store that records its calls and fails the ones `fail` names, by operation and call index. */
+  function store(fail: (operation: string, nth: number) => Error | undefined = () => undefined) {
+    const calls: { operation: string; input: any }[] = [];
+    const names = new Set<string>();
+    const call = (async (operation: string, input: any) => {
+      const nth = calls.filter((c) => c.operation === operation).length;
+      calls.push({ operation, input });
+      const failure = fail(operation, nth);
+      if (failure) throw failure;
+      if (operation === 'substrat.stage-page') for (const table of input.tables) names.add(table.name);
+      if (operation === 'substrat.commit-stage') return { tables: names.size };
+      if (operation === 'substrat.discard-stage') return { discarded: true };
+      return { staged: true };
+    }) as ReservedStoreCall;
+    return { calls, call };
+  }
+
+  it('stages every page in order under one stage id, then commits that stage', async () => {
+    const { calls, call } = store();
+    const answer = await writeStoreDump(call, tables, 100);
+    expect(answer).toEqual({ tables: 2 });
+    const staged = calls.slice(0, -1);
+    expect(staged.length).toBeGreaterThan(1);
+    expect(staged.every((c) => c.operation === 'substrat.stage-page')).toBe(true);
+    expect(staged.map((c) => c.input.seq)).toEqual(staged.map((_, i) => i));
+    const stageId = staged[0]!.input.stageId;
+    expect(new Set(staged.map((c) => c.input.stageId))).toEqual(new Set([stageId]));
+    expect(calls.at(-1)).toEqual({ operation: 'substrat.commit-stage', input: { stageId } });
+    expect(mergeDumpPages(staged.map((c) => c.input.tables))).toEqual(tables);
+  });
+
+  it('refuses a page the store says it did not stage, and discards the stage', async () => {
+    const { calls, call } = store((operation, nth) => undefined);
+    const lying = (async (operation: string, input: unknown) => {
+      if (operation === 'substrat.stage-page' && calls.length === 1) {
+        calls.push({ operation, input });
+        return { staged: false };
+      }
+      return call(operation as never, input);
+    }) as ReservedStoreCall;
+    const refusal = await writeStoreDump(lying, tables, 100).then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(refusal).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+    expect(calls.map((c) => c.operation)).not.toContain('substrat.commit-stage');
+    expect(calls.at(-1)!.operation).toBe('substrat.discard-stage');
+  });
+
+  it('refuses a commit that answers another number of tables than the distinct tables sent', async () => {
+    for (const wrote of [1, 3]) {
+      const { calls, call } = store();
+      const miscounting = (async (operation: string, input: unknown) =>
+        operation === 'substrat.commit-stage' ? call(operation, input).then(() => ({ tables: wrote })) : call(operation as never, input)) as ReservedStoreCall;
+      const refusal = await writeStoreDump(miscounting, tables, 100).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(refusal, String(wrote)).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+      expect(calls.at(-1)!.operation).toBe('substrat.discard-stage');
+    }
+  });
+
+  it('counts a table once however many fragments it was sent as', async () => {
+    const { call } = store();
+    // 12 rows at 100 bytes are several fragments of one table, and one empty table beside it.
+    expect(await writeStoreDump(call, tables, 100)).toEqual({ tables: 2 });
+  });
+
+  it('stages an empty dump as one page and commits it', async () => {
+    const { calls, call } = store();
+    await writeStoreDump(call, [], 100);
+    expect(calls.map((c) => c.operation)).toEqual(['substrat.stage-page', 'substrat.commit-stage']);
+    expect(calls[0]!.input.tables).toEqual([]);
+  });
+
+  it('discards the stage when a page fails, rethrows that failure, and never commits', async () => {
+    const failure = new Error('page 2 lost');
+    const { calls, call } = store((operation, nth) => (operation === 'substrat.stage-page' && nth === 2 ? failure : undefined));
+    await expect(writeStoreDump(call, tables, 100)).rejects.toBe(failure);
+    expect(calls.map((c) => c.operation)).toEqual([
+      'substrat.stage-page',
+      'substrat.stage-page',
+      'substrat.stage-page',
+      'substrat.discard-stage',
+    ]);
+    expect(calls.at(-1)!.input.stageId).toBe(calls[0]!.input.stageId);
+  });
+
+  it('discards the stage when the commit fails, and rethrows the commit failure', async () => {
+    const failure = new Error('commit refused');
+    const { calls, call } = store((operation) => (operation === 'substrat.commit-stage' ? failure : undefined));
+    await expect(writeStoreDump(call, tables, 100)).rejects.toBe(failure);
+    expect(calls.at(-1)!.operation).toBe('substrat.discard-stage');
+  });
+
+  it('does not let a failed discard hide the failure that led to it', async () => {
+    const original = new Error('page lost');
+    const { calls, call } = store((operation) => {
+      if (operation === 'substrat.stage-page') return original;
+      if (operation === 'substrat.discard-stage') return new Error('discard also lost');
+      return undefined;
+    });
+    await expect(writeStoreDump(call, tables, 100)).rejects.toBe(original);
+    expect(calls.map((c) => c.operation)).toEqual(['substrat.stage-page', 'substrat.discard-stage']);
   });
 });
 
@@ -403,5 +722,11 @@ describe('callReservedStoreOperation returns the parsed result type (#2239)', ()
     const size = callReservedStoreOperation(async () => ({ result: { bytes: 4 } }), 'substrat.size');
     expectTypeOf(size).resolves.toEqualTypeOf<{ bytes: number }>();
     expect(await size).toEqual({ bytes: 4 });
+  });
+});
+
+describe('the age of an abandoned store stage (D-69)', () => {
+  it('is the age the scope\'s own staged load holds: six hours of copying and three copy leases', () => {
+    expect(STORE_STAGE_MAX_AGE_MS).toBe(6 * 3_600_000 + 3 * SCOPE_COPY_LEASE_MS);
   });
 });

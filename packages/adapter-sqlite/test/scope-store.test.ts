@@ -92,7 +92,8 @@ describe('scope store door (pure adapter, #2209)', () => {
       async stop() {},
       async invoke(_address, request) {
         log.push(request.operation);
-        if (request.operation === 'substrat.export') return { result: { tables: [] } };
+        if (request.operation === 'substrat.export-page') return { result: { tables: [], next: null, revision: '1' } };
+        if (request.operation === 'substrat.stage-page') return { result: { staged: true } };
         return { result: { tables: 0 } };
       },
     };
@@ -420,6 +421,53 @@ describe('scope store door (pure adapter, #2209)', () => {
     }
   });
 
+  it('moves a store in pages of the size its driver declares, not the scope page size (D-69)', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    const asked: number[] = [];
+    const staged: number[] = [];
+    const big = 'x'.repeat(400_000);
+    const runner: ScopeStoreRunner = {
+      // A registered driver: graph declares 900 000 bytes.
+      driver: 'graph',
+      async start() {},
+      async stop() {},
+      async invoke(_address, request) {
+        const input = request.input as { maxBytes?: number; tables?: unknown[] } | undefined;
+        if (request.operation === 'substrat.export-page') {
+          asked.push(input!.maxBytes!);
+          return { result: { tables: [], next: null, revision: '1' } };
+        }
+        if (request.operation === 'substrat.stage-page') {
+          staged.push(JSON.stringify(input!.tables).length);
+          return { result: { staged: true } };
+        }
+        if (request.operation === 'substrat.commit-stage') return { result: { tables: 1 } };
+        return { result: {} };
+      },
+    };
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      scopeStores: { runners: [{ binding: 'GRAPH', runner }] },
+    });
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
+      await host.admin.activateScope(staff, t, s);
+      const dump = await host.admin.exportScope(staff, t, s);
+      expect(asked).toEqual([900_000]);
+      const heavy = { name: 'held', ddl: 'CREATE TABLE held (a TEXT)', columns: ['a'], rows: [[big], [big], [big], [big]] };
+      await host.restoreScope(staff, t, s, { ...dump, stores: [{ binding: 'GRAPH', driver: 'graph', tables: [heavy] }] });
+      expect(staged.length).toBeGreaterThan(1);
+      expect(Math.max(...staged)).toBeLessThanOrEqual(900_000);
+    } finally {
+      await host.close();
+    }
+  });
+
   it('a scope with no vertical has nothing to export, and the runner is not asked', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     let asked = false;
@@ -455,6 +503,7 @@ describe('scope store door (pure adapter, #2209)', () => {
   it('a restore re-erases a subject shredded after the backup, and a retry finishes', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const held = new Set<string>();
+    let stage: { stageId: string; rows: string[]; pages: number } | undefined;
     let fail = false;
     const runner: ScopeStoreRunner = {
       driver: 'counter',
@@ -472,31 +521,32 @@ describe('scope store door (pure adapter, #2209)', () => {
           held.clear();
           return { result: {} };
         }
-        if (request.operation === 'substrat.export') {
+        if (request.operation === 'substrat.export-page') {
+          // Two rows a page, so a dump of this store is a chain.
+          const input = Reflect.get(request, 'input') as { cursor: string | null };
+          const all = [...held];
+          const from = input.cursor === null ? 0 : Number(input.cursor);
+          const rows = all.slice(from, from + 2).map((id) => [id]);
           return {
             result: {
-              tables: [
-                {
-                  name: 'held',
-                  ddl: 'CREATE TABLE held (subject_id TEXT NOT NULL)',
-                  columns: ['subject_id'],
-                  rows: [...held].map((id) => [id]),
-                },
-              ],
+              tables: [{ name: 'held', ddl: 'CREATE TABLE held (subject_id TEXT NOT NULL)', columns: ['subject_id'], rows }],
+              next: from + 2 < all.length ? String(from + 2) : null,
+              revision: `r:${all.join(',')}`,
             },
           };
         }
-        if (request.operation === 'substrat.import') {
+        if (request.operation === 'substrat.stage-page') {
+          const input = request.input as { stageId: string; seq: number; tables: { rows: unknown[][] }[] };
+          if (input.seq === 0) stage = { stageId: input.stageId, rows: [], pages: 0 };
+          if (stage?.stageId !== input.stageId || input.seq !== stage.pages) return { result: { staged: false } };
+          for (const row of input.tables[0]?.rows ?? []) if (typeof row[0] === 'string') stage.rows.push(row[0]);
+          stage.pages += 1;
+          return { result: { staged: true } };
+        }
+        if (request.operation === 'substrat.commit-stage') {
           held.clear();
-          const tables = Reflect.get(request.input ?? {}, 'tables');
-          const first = Array.isArray(tables) ? tables[0] : undefined;
-          const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
-          if (Array.isArray(rows)) {
-            for (const row of rows) {
-              const cell = Array.isArray(row) ? row[0] : undefined;
-              if (typeof cell === 'string') held.add(cell);
-            }
-          }
+          for (const id of stage?.rows ?? []) held.add(id);
+          stage = undefined;
           return { result: { tables: 1 } };
         }
         if (request.operation === 'substrat.erase') {

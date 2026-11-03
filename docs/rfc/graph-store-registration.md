@@ -69,7 +69,12 @@ the approval (Q2), not to the registration. For the release reviewed so far they
 are class `Store` and the catalog below. Administration operations are excluded
 from the vertical catalog. The platform's `RESERVED_STORE_OPERATIONS`, including
 `substrat.erase`, are required separately: the canary asserts each of them on the
-bytes at every rollout.
+bytes at every rollout. Since D-69 they are `substrat.selfcheck`, `substrat.export-page`,
+`substrat.stage-page`, `substrat.commit-stage`, `substrat.discard-stage`, `substrat.size`,
+`substrat.wipe` and `substrat.erase`: a dump moves in pages, and `substrat.export` and
+`substrat.import` are gone. The registration also declares `dumpPageMaxBytes`, the largest
+serialized page of a dump the driver takes or gives in one call. For graph it is 900 000, under
+the driver's 1 MB limit on a request with room for the envelope around a page.
 
 ```text
 createHistoryTag

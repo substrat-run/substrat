@@ -5,7 +5,7 @@ import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
-import { scopeDumpTable } from './introspection.js';
+import { SCOPE_DUMP_PAGE_MAX_BYTES, scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
@@ -424,6 +424,9 @@ export const storeDriverRegistration = z
     // The driver's `substrat.erase` is not implemented yet: a subject erasure that would reach one
     // of its stores refuses and keeps the key, rather than record `{ erased: 0 }` as done.
     erasure: z.literal('pending').optional(),
+    // The largest serialized page of its dump the driver takes or gives in one call (D-69). The
+    // platform asks for pages within it, so a driver declares what its own runtime can hold.
+    dumpPageMaxBytes: z.number().int().positive(),
   })
   .strict()
   .refine((registration) => registration.isolationBasis.kind !== 'decisionRecord' || registration.verticals !== undefined, {
@@ -431,6 +434,15 @@ export const storeDriverRegistration = z
     path: ['verticals'],
   });
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
+
+/**
+ * How large a page of `driver`'s dump the platform asks for: what its registration declares, within
+ * what a page of a scope's own dump may be.
+ */
+export function storeDriverDumpPageBytes(driver: string): number {
+  const declared = STORE_DRIVERS.find((registration) => registration.driver === driver)?.dumpPageMaxBytes;
+  return Math.min(declared ?? SCOPE_DUMP_PAGE_MAX_BYTES, SCOPE_DUMP_PAGE_MAX_BYTES);
+}
 
 /** Whether a registered driver may serve `vertical`: every vertical, unless its registration names them. */
 export function storeDriverServesVertical(registration: StoreDriverRegistration, vertical: string): boolean {
@@ -455,6 +467,8 @@ export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [
     // added here by name, in a reviewed change.
     verticals: [],
     erasure: 'pending',
+    // Under the driver's 1 MB limit on a request, with room for the envelope around a page.
+    dumpPageMaxBytes: 900_000,
   },
 ];
 
@@ -795,8 +809,8 @@ export type StoreResponse = z.infer<typeof storeResponse>;
 
 /**
  * What each reserved operation takes and answers (#2207). The result schemas are
- * objects so a later field is additive. `import` replaces the whole object and
- * answers how many tables it wrote.
+ * objects so a later field is additive. A store moves in pages (D-69): see
+ * {@link storeExportPageResult}.
  */
 export const storeSizeResult = z.object({ bytes: z.number().int().nonnegative() });
 export type StoreSizeResult = z.infer<typeof storeSizeResult>;
@@ -805,12 +819,80 @@ export const storeEraseInput = z.object({ subjectId: z.string().min(1) });
 export const storeEraseResult = z.object({ erased: z.number().int().nonnegative() });
 export type StoreEraseResult = z.infer<typeof storeEraseResult>;
 
-export const storeExportResult = z.object({ tables: z.array(scopeDumpTable) });
-export type StoreExportResult = z.infer<typeof storeExportResult>;
+/** Builds the driver's whole runtime and answers once it can serve a call (#2814). */
+export const storeSelfcheckResult = z.object({});
+export type StoreSelfcheckResult = z.infer<typeof storeSelfcheckResult>;
 
-export const storeImportInput = z.object({ tables: z.array(scopeDumpTable) });
-export const storeImportResult = z.object({ tables: z.number().int().nonnegative() });
-export type StoreImportResult = z.infer<typeof storeImportResult>;
+/**
+ * One page of a store's dump (D-69). `tables` holds fragments in the shape #2450 gives a scope's
+ * pages: a table's rows may spread over pages, each fragment names its table again, and every table
+ * appears at least once across a chain. A driver may answer an empty last page. `cursor` is opaque:
+ * `null` starts, and each answer's `next` continues, `null` after the last; a `next` equal to the
+ * cursor asked with is a chain that does not move, and the reader refuses it.
+ *
+ * `maxBytes` bounds the page's serialized size, except that a page always holds at least one table
+ * heading and one row. So `maxBytes: 1` is valid and means the smallest page, and one row larger
+ * than `maxBytes` rides alone.
+ *
+ * A chain of pages is one moment of the store. `revision` is opaque and says which: while it stays
+ * the same along a chain the pages are one read, and when it changes the reader starts again. How
+ * the driver keeps that promise is its own (a pinned revision, refusing writes, a snapshot). Any
+ * change to what the dump holds changes the revision, the reserved writes included: a commit, a
+ * wipe, and an erase that erased something. The same state reads the same revision across chains,
+ * and a revision that is a hash of the content is allowed, so a commit of identical content need
+ * not move it. A driver never refuses a `maxBytes`; it may cut a smaller page.
+ *
+ * A row the driver could not take back in one `substrat.stage-page` (over its own declared
+ * `dumpPageMaxBytes` plus the room it allows, which the driver decides) is refused here, naming the
+ * table, so that a backup fails when it is taken and not when it is restored.
+ */
+export const storeExportPageInput = z.object({
+  cursor: z.string().min(1).nullable(),
+  maxBytes: z.number().int().positive(),
+});
+export const storeExportPageResult = z.object({
+  tables: z.array(scopeDumpTable),
+  next: z.string().min(1).nullable(),
+  revision: z.string().min(1),
+});
+export type StoreExportPageResult = z.infer<typeof storeExportPageResult>;
+
+/**
+ * Holds one page aside, changing nothing a call can see. Page `seq` 0 starts the stage and drops any
+ * other, so the old id can then neither stage nor commit. A stage id is not used again: naming the
+ * stage last committed is refused. A stage the object does not hold is refused with status 409,
+ * code `stage_refused`. Pages arrive in order; a `seq` already
+ * held answers `staged: false` and changes nothing, so a lost answer may be retried, and a gap is
+ * refused. A wipe drops every stage, and so does an erase, since a stage may hold the subject: a
+ * restore racing an erase then fails at its commit, cleanly. A stage unused for longer than
+ * `STORE_STAGE_MAX_AGE_MS` is dropped no later than the next call to the object. `substrat.size`
+ * counts the stages a store holds.
+ */
+export const storeStagePageInput = z.object({
+  stageId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  tables: z.array(scopeDumpTable),
+});
+export const storeStagePageResult = z.object({ staged: z.boolean() });
+export type StoreStagePageResult = z.infer<typeof storeStagePageResult>;
+
+/**
+ * Replaces the whole object with the stage, atomically, and answers how many distinct tables it
+ * wrote. This is the one step that changes the object: a stage abandoned or failed before its commit
+ * leaves it as it was. A stage the object does not hold is refused (409 `stage_refused`), except
+ * the one last committed: its commit answers the same count and changes nothing, so a lost answer
+ * can be retried and a commit retry is safe. The driver remembers the last committed stage id and
+ * count; only that stage answers, an older one is refused, and a wipe ends the memory (a new page 0
+ * or an erase does not).
+ */
+export const storeCommitStageInput = z.object({ stageId: z.string().min(1) });
+export const storeCommitStageResult = z.object({ tables: z.number().int().nonnegative() });
+export type StoreCommitStageResult = z.infer<typeof storeCommitStageResult>;
+
+/** Drops a stage, and answers whether the object held it. */
+export const storeDiscardStageInput = z.object({ stageId: z.string().min(1) });
+export const storeDiscardStageResult = z.object({ discarded: z.boolean() });
+export type StoreDiscardStageResult = z.infer<typeof storeDiscardStageResult>;
 
 export const storeWipeResult = z.object({});
 export type StoreWipeResult = z.infer<typeof storeWipeResult>;
@@ -821,8 +903,11 @@ export type StoreWipeResult = z.infer<typeof storeWipeResult>;
  * publishes no zod type of its own.
  */
 export interface ReservedStoreResults {
-  'substrat.export': StoreExportResult;
-  'substrat.import': StoreImportResult;
+  'substrat.selfcheck': StoreSelfcheckResult;
+  'substrat.export-page': StoreExportPageResult;
+  'substrat.stage-page': StoreStagePageResult;
+  'substrat.commit-stage': StoreCommitStageResult;
+  'substrat.discard-stage': StoreDiscardStageResult;
   'substrat.size': StoreSizeResult;
   'substrat.wipe': StoreWipeResult;
   'substrat.erase': StoreEraseResult;

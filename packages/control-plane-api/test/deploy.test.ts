@@ -164,7 +164,7 @@ describe('assertSandboxContract', () => {
   it('refuses a scope store whose driver is not registered, and admits it against a registry holding that driver', () => {
     const declaring = { ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' as const }] };
     // A test fixture, not a registered driver.
-    const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+    const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
     expect(() => assertSandboxContract(declaring, [fixture])).not.toThrow();
     // The hosted registry holds graph (D-67).
     expect(() => assertSandboxContract(declaring)).not.toThrow();
@@ -222,7 +222,7 @@ describe('assertSandboxContract', () => {
 });
 
 describe('scope store upload plan (#2210)', () => {
-  const graph: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  const graph: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
   const stores = [
     { binding: 'GRAPH' as const, driver: 'graph' as const },
     { binding: 'BLOBS' as const, driver: 'graph' as const },

@@ -1851,7 +1851,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => (await platformStoresWipe(c, scope))();
 
   /**
-   * `substrat.export` on each store the lifecycle reaches, for a backup, a full pull or a fork.
+   * A dump in pages (`substrat.export-page`) of each store the lifecycle reaches, for a backup, a full pull or a fork.
    *
    * A dump is only worth taking if it restores, and a restore imports only what the destination's
    * version declares (L8). So a binding only an earlier version declared (#2286) is left out of the

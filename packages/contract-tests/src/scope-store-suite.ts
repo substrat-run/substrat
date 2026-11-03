@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { errorCodeOf, platformActorId, principalId, scopeId, storeEraseInput, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, principalId, scopeId, storeDriverDumpPageBytes, storeEraseInput, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
 import { STORE_CALL_SINK_KEY, tallyStoreCall, type StoreCallTally } from '@substrat-run/kernel/invocation-line';
 import { counterScopeStoreRunner, invalidStoreInput, objectNameOf } from './counter-runner.js';
@@ -8,18 +8,25 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 /**
  * The trivial driver, with what this suite reads back about the host's calls:
  * `address` (what the host handed in), `erased` (the subjects erased on this object),
- * `wiped` (every object wiped), and `fail-wipe` (`true` makes each later `substrat.wipe`
- * answer 503, until `false`).
+ * `wiped` (every object wiped), `fail-wipe` (`true` makes each later `substrat.wipe`
+ * answer 503, until `false`), and `page-calls` (each paged dump call on this object, in order:
+ * its operation, and the cursor, `maxBytes` or `seq` it carried).
  */
 function instrumentedCounterRunner(): ScopeStoreRunner {
   const counter = counterScopeStoreRunner();
   const erased = new Map<string, Set<string>>();
   const wiped = new Set<string>();
   let failWipe = false;
+  const pageCalls = new Map<string, { operation: string; cursor?: string | null; maxBytes?: number; seq?: number }[]>();
   return {
     ...counter,
     async invoke(address, request) {
       const id = objectNameOf(address);
+      if (/^substrat\.(export-page|stage-page|commit-stage|discard-stage)$/.test(request.operation)) {
+        const input = (request.input ?? {}) as { cursor?: string | null; maxBytes?: number; seq?: number };
+        const line = { operation: request.operation, cursor: input.cursor, maxBytes: input.maxBytes, seq: input.seq };
+        pageCalls.set(id, [...(pageCalls.get(id) ?? []), line]);
+      }
       switch (request.operation) {
         case 'address': {
           const { tenantId, vertical, scopeId, binding } = address;
@@ -27,6 +34,8 @@ function instrumentedCounterRunner(): ScopeStoreRunner {
         }
         case 'erased':
           return { result: [...(erased.get(id) ?? [])] };
+        case 'page-calls':
+          return { result: pageCalls.get(id) ?? [] };
         case 'wiped':
           return { result: [...wiped] };
         case 'fail-wipe':
@@ -229,6 +238,42 @@ export function scopeStoreContractSuite(
       await host.restoreScope(staff, tenant, scopeB, dump);
       expect(await store.invoke('read')).toBe(4);
     });
+
+    it('a store too large for one page crosses in pages and back, and a restore replaces it whole (D-69)', async () => {
+      const scope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'docs' });
+      await host.admin.activateScope(staff, tenant, scope);
+      const store = await host.getScopeStore(principal, tenant, scope, 'GRAPH');
+      // Nine subjects of about a megabyte each: more than a dump page holds, so the store is a chain.
+      const subjects = Array.from({ length: 9 }, (_, i) => `${i}:`.padEnd(1_000_000, 'x'));
+      for (const [i, subjectId] of subjects.entries()) await store.invoke('increment', { by: i + 1, subjectId });
+      const total = await store.invoke('read');
+
+      const dump = await host.admin.exportScope(staff, tenant, scope);
+      const [held] = dump.stores;
+      expect(held!.tables).toHaveLength(1);
+      expect(held!.tables[0]!.rows.map((row) => String(row[0]).slice(0, 2))).toEqual(subjects.map((s) => s.slice(0, 2)));
+      const exports = ((await store.invoke('page-calls')) as { operation: string; cursor: string | null; maxBytes: number }[]).filter(
+        (call) => call.operation === 'substrat.export-page',
+      );
+      expect(exports.length).toBeGreaterThan(1);
+      expect(exports[0]!.cursor).toBeNull();
+      expect(exports.every((call) => call.maxBytes === storeDriverDumpPageBytes('counter'))).toBe(true);
+
+      await store.invoke('increment', { by: 100, subjectId: 'later' });
+      await host.restoreScope(staff, tenant, scope, dump);
+      expect(await store.invoke('read')).toBe(total);
+      const calls = (await store.invoke('page-calls')) as { operation: string; seq: number }[];
+      const staged = calls.filter((call) => call.operation === 'substrat.stage-page');
+      expect(staged.length).toBeGreaterThan(1);
+      expect(staged.map((call) => call.seq)).toEqual(staged.map((_, i) => i));
+      expect(calls.filter((call) => call.operation === 'substrat.commit-stage')).toHaveLength(1);
+      expect(calls.at(-1)!.operation).toBe('substrat.commit-stage');
+      // The stage is the store's alone to drop: the restore committed it, so none is left to discard.
+      expect(calls.some((call) => call.operation === 'substrat.discard-stage')).toBe(false);
+      // The later subject was replaced, not merged: the store holds exactly what the dump held.
+      expect(await host.admin.exportScope(staff, tenant, scope)).toMatchObject({ stores: [{ tables: [{ rows: held!.tables[0]!.rows }] }] });
+    }, 60_000);
 
     it('a restore that names an unbound store writes nothing', async () => {
       const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');

@@ -45,6 +45,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
+    dumpPageMaxBytes: 900_000,
   };
   const redactOnly = {
     redactSubject: async () => ({

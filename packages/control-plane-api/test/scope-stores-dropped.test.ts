@@ -38,6 +38,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
+    dumpPageMaxBytes: 900_000,
   };
   const GRAPH = { binding: 'GRAPH', driver: 'graph' };
   const OLD = { binding: 'OLD', driver: 'graph' };

@@ -47,13 +47,24 @@ export const SCOPE_STORE_SIGNATURE_HEADER = 'x-substrat-store-signature';
  * `substrat.erase` included, before a hosted deploy may store tenant data.
  */
 export const RESERVED_STORE_OPERATIONS = [
-  'substrat.export',
-  'substrat.import',
+  'substrat.selfcheck',
+  'substrat.export-page',
+  'substrat.stage-page',
+  'substrat.commit-stage',
+  'substrat.discard-stage',
   'substrat.size',
   'substrat.wipe',
   'substrat.erase',
 ] as const;
 export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
+
+/**
+ * How long a stage (`substrat.stage-page`, D-69) may sit unused before the driver drops it: six hours
+ * of copying plus three 30-minute copy leases, the backstop for a stage whose writer is gone. A stage
+ * unused for longer is dropped no later than the next call to the object, so a driver needs no timer.
+ * The scope's own staged load (`scope-do.ts`) holds the same age, and a test holds the two equal.
+ */
+export const STORE_STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * 30 * 60_000;
 
 export type ScopeStoreAudience = 'caller' | 'platform';
 

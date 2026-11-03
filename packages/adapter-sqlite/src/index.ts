@@ -268,6 +268,7 @@ import {
   type EventFacetResult,
   type HistoryEntry,
   type Page,
+  storeDriverDumpPageBytes,
 } from '@substrat-run/contracts';
 import {
   actorOf,
@@ -920,6 +921,8 @@ import {
   type StoreStub,
   type ScopeStoreStubOptions,
   callReservedStoreOperation,
+  readStoreDump,
+  writeStoreDump,
   type ReservedStoreResult,
   callScopeStore,
   observeStoreCall,
@@ -5191,8 +5194,9 @@ export class SqliteScopeHost implements ScopeHost {
     for (const binding of bindings) {
       const runner = this.scopeStoreRunners.get(binding);
       if (!runner) throw substratError('not_found', `no scope store is bound for '${binding}'`);
-      const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
-      stores.push({ binding, driver: runner.driver, tables: exported.tables });
+      const address = { tenantId, vertical, scopeId, binding };
+      const exported = await readStoreDump((operation, input) => this.invokeReservedStore(address, operation, input), storeDriverDumpPageBytes(runner.driver));
+      stores.push({ binding, driver: runner.driver, tables: exported });
     }
     return stores;
   }
@@ -5209,11 +5213,10 @@ export class SqliteScopeHost implements ScopeHost {
       throw substratError('conflict', `dump carries scope stores, and scope ${scopeId} has no vertical to hold them`);
     }
     for (const store of listed) {
-      await this.invokeReservedStore(
-        { tenantId, vertical, scopeId, binding: store.binding },
-        'substrat.import',
-        { tables: store.tables },
-      );
+      const runner = this.scopeStoreRunners.get(store.binding);
+      if (!runner) throw substratError('not_found', `no scope store is bound for '${store.binding}'`);
+      const address = { tenantId, vertical, scopeId, binding: store.binding };
+      await writeStoreDump((operation, input) => this.invokeReservedStore(address, operation, input), store.tables, storeDriverDumpPageBytes(runner.driver));
     }
   }
 

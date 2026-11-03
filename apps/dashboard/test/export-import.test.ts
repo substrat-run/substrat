@@ -64,18 +64,23 @@ describe('Dashboard export & import — dump out, dump in, safety copy', () => {
     const { node, appScope } = await makeTeamWithApp();
     await host.close();
     let storeRows = [['saved']];
+    let staged: string[][] = [];
     const runner: ScopeStoreRunner = {
       driver: 'counter',
       async start() {},
       async stop() {},
       async invoke(_address, request) {
-        if (request.operation === 'substrat.export') return { result: { tables: [{
+        if (request.operation === 'substrat.export-page') return { result: { tables: [{
           name: 'held', ddl: 'CREATE TABLE held (id TEXT)', columns: ['id'], rows: storeRows,
-        }] } };
-        if (request.operation === 'substrat.import') {
+        }], next: null, revision: JSON.stringify(storeRows) } };
+        if (request.operation === 'substrat.stage-page') {
           const tables = Reflect.get(request.input ?? {}, 'tables') as { rows: string[][] }[];
-          storeRows = tables[0]!.rows;
-          return { result: { tables: tables.length } };
+          staged = tables[0]!.rows;
+          return { result: { staged: true } };
+        }
+        if (request.operation === 'substrat.commit-stage') {
+          storeRows = staged;
+          return { result: { tables: 1 } };
         }
         return { result: { bytes: storeRows.length } };
       },

@@ -19,6 +19,7 @@
  */
 import {
   STORE_RELEASE_MAX_BYTES,
+  mergeDumpPages,
   scopeStoreCanaryObjectName,
   scopeStoreCanaryScriptName,
   scopeStoreScriptName,
@@ -26,6 +27,7 @@ import {
   storeDriverReleaseUpload,
   type PlatformActorId,
   type ReservedStoreOperation,
+  type ScopeDumpTable,
   type ScopeStoreNeed,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
@@ -369,7 +371,10 @@ export async function approveStoredDriverRelease(input: {
   return admin.approveStoreDriverRelease(actor, { driver, sha256, ...input.approval });
 }
 
-/** The reserved calls a canary makes, at the canary script. */
+/** The most pages the canary reads from an object holding no data. */
+const CANARY_MAX_PAGES = 1000;
+
+/** One reserved call at the canary script, on the canary's object. */
 export type CanaryCall = (target: { scriptName: string; objectName: string }, operation: ReservedStoreOperation, input?: unknown) => Promise<unknown>;
 
 /**
@@ -379,13 +384,14 @@ export type CanaryCall = (target: { scriptName: string; objectName: string }, op
  */
 export const canaryObjectName = (binding: string): string => scopeStoreCanaryObjectName(createUlid()(), createUlid()(), binding);
 
-const tablesOf = (answer: unknown) => (answer as { tables: { name: string; rows: unknown[] }[] }).tables;
-
 /**
  * Every reserved operation, on a fresh object of the platform's own (D-63): its tenant and scope
  * ids are new ulids, from the runtime's CSPRNG, never in the directory, and its vertical segment
  * is no vertical's. Each answer is parsed by the call and asserted here; the first that is not
  * what an object holding no data answers fails the canary. The object is wiped at the end.
+ *
+ * A dump is compared as its pages merge (D-69), and its tables are counted once each, so a driver
+ * that cuts its pages differently is not refused. The stage is a round trip over several pages.
  */
 export async function canaryStoreRelease(input: { call: CanaryCall; scriptName: string; binding?: string }): Promise<void> {
   const target = { scriptName: input.scriptName, objectName: canaryObjectName(input.binding ?? 'CANARY') };
@@ -401,13 +407,46 @@ export async function canaryStoreRelease(input: { call: CanaryCall; scriptName: 
     return answer;
   };
   const ok = () => null;
+  const staged = (expected: boolean, otherwise: string) => (a: unknown) => ((a as { staged: boolean }).staged === expected ? null : otherwise);
+  // The smallest page the contract allows, so a driver's chain and its stage run as they do on a large store.
+  const readChain = async (check: (tables: readonly ScopeDumpTable[]) => string | null): Promise<ScopeDumpTable[]> => {
+    const pages: ScopeDumpTable[][] = [];
+    const asked = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const page = (await step('substrat.export-page', ok, { cursor, maxBytes: 1 })) as { tables: ScopeDumpTable[]; next: string | null };
+      pages.push(page.tables);
+      if (page.next !== null && asked.has(page.next)) {
+        throw new ControlPlaneError(502, 'canary refused: substrat.export-page answered a cursor it had already given, so its chain does not move');
+      }
+      if (page.next !== null) asked.add(page.next);
+      cursor = page.next;
+    } while (cursor !== null && pages.length < CANARY_MAX_PAGES);
+    if (cursor !== null) throw new ControlPlaneError(502, `canary refused: substrat.export-page did not end in ${CANARY_MAX_PAGES} pages of an object holding no data`);
+    const merged = mergeDumpPages(pages);
+    const wrong = check(merged);
+    if (wrong) throw new ControlPlaneError(502, `canary refused: substrat.export-page ${wrong}`);
+    return merged;
+  };
+  const holdsNone = (message: string) => (tables: readonly ScopeDumpTable[]) => (tables.some((t) => t.rows.length > 0) ? message : null);
+  await step('substrat.selfcheck', ok);
   await step('substrat.size', ok);
-  const exported = tablesOf(await step('substrat.export', (a) => (tablesOf(a).some((t) => t.rows.length > 0) ? 'exported rows from an object holding none' : null)));
-  await step('substrat.import', (a) => ((a as { tables: number }).tables === exported.length ? null : `imported ${(a as { tables: number }).tables} of ${exported.length} tables`), { tables: exported });
-  await step('substrat.export', (a) => (JSON.stringify(tablesOf(a)) === JSON.stringify(exported) ? null : 'did not export what it imported'));
+  const exported = await readChain(holdsNone('exported rows from an object holding none'));
+  // The dump of an empty object, as fragments over three pages: its tables are named on each, so the
+  // commit must join them (and count each table once), not keep the first page or count fragments.
+  const stageId = ulid();
+  await step('substrat.stage-page', staged(true, 'did not stage a first page'), { stageId, seq: 0, tables: exported });
+  await step('substrat.stage-page', staged(false, 'staged a page it already held'), { stageId, seq: 0, tables: exported });
+  await step('substrat.stage-page', staged(true, 'did not stage a second page'), { stageId, seq: 1, tables: exported });
+  await step('substrat.stage-page', staged(true, 'did not stage a third page'), { stageId, seq: 2, tables: exported });
+  await step('substrat.commit-stage', (a) => ((a as { tables: number }).tables === exported.length ? null : `imported ${(a as { tables: number }).tables} of ${exported.length} tables`), { stageId });
+  await readChain((tables) => (JSON.stringify(tables) === JSON.stringify(exported) ? null : 'did not export what it imported'));
+  const dropped = ulid();
+  await step('substrat.stage-page', ok, { stageId: dropped, seq: 0, tables: exported });
+  await step('substrat.discard-stage', (a) => ((a as { discarded: boolean }).discarded ? null : 'did not discard a stage it held'), { stageId: dropped });
   await step('substrat.erase', (a) => ((a as { erased: number }).erased === 0 ? null : 'erased rows of a subject the object never held'), { subjectId: ulid() });
   await step('substrat.wipe', ok);
-  await step('substrat.export', (a) => (tablesOf(a).some((t) => t.rows.length > 0) ? 'still holds rows after its wipe' : null));
+  await readChain(holdsNone('still holds rows after its wipe'));
 }
 
 export interface StoreDriverRolloutDeps {

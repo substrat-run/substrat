@@ -219,6 +219,58 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(asked).toBe(STORE_CALL_URL);
   });
 
+  it('a bound store object exports a page, and an import stages it and commits it, over the binding (D-69)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const store = await host.getScopeStore(principal, t, s, 'GRAPH');
+    await store.invoke('increment', { by: 5 });
+    const dump = await host.scopeStoreExportLocal(t, s);
+    expect(dump).toEqual([
+      expect.objectContaining({
+        binding: 'GRAPH',
+        tables: [expect.objectContaining({ name: 'counter', rows: [[5]] })],
+      }),
+    ]);
+    await store.invoke('increment', { by: 3 });
+    expect(await store.invoke('read')).toBe(8);
+    await host.scopeStoreImportLocal(t, s, dump);
+    expect(await store.invoke('read')).toBe(5);
+  });
+
+  it('moves a store in pages of the size its driver declares: 900 000 bytes for graph (D-69)', async () => {
+    const asked: number[] = [];
+    const staged: number[] = [];
+    const runner: ScopeStoreRunner = {
+      driver: 'graph',
+      async start() {},
+      async stop() {},
+      async invoke(_address, request) {
+        const input = request.input as { maxBytes?: number; tables?: unknown[] } | undefined;
+        if (request.operation === 'substrat.export-page') {
+          asked.push(input!.maxBytes!);
+          return { result: { tables: [], next: null, revision: '1' } };
+        }
+        if (request.operation === 'substrat.stage-page') {
+          staged.push(JSON.stringify(input!.tables).length);
+          return { result: { staged: true } };
+        }
+        if (request.operation === 'substrat.commit-stage') return { result: { tables: 1 } };
+        return { result: {} };
+      },
+    };
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner }] } });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.scopeStoreExportLocal(t, s);
+    expect(asked).toEqual([900_000]);
+    const big = 'x'.repeat(400_000);
+    const heavy = { name: 'held', ddl: 'CREATE TABLE held (a TEXT)', columns: ['a'], rows: [[big], [big], [big], [big]] };
+    await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', driver: 'graph', tables: [heavy] }]);
+    expect(staged.length).toBeGreaterThan(1);
+    expect(Math.max(...staged)).toBeLessThanOrEqual(900_000);
+  });
+
   it('a host with no control plane names the vertical it was given', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
     const t = tenantId.parse(ulid());
@@ -234,8 +286,9 @@ describe('scope store door (cloudflare host, #2209)', () => {
     async stop() {},
     async invoke(address, request) {
       log.push(`${request.operation} ${address.vertical}/${address.scopeId}`);
-      if (request.operation === 'substrat.export') return { result: { tables: [] } };
-      if (request.operation === 'substrat.import') return { result: { tables: 0 } };
+      if (request.operation === 'substrat.export-page') return { result: { tables: [], next: null, revision: '1' } };
+      if (request.operation === 'substrat.stage-page') return { result: { staged: true } };
+      if (request.operation === 'substrat.commit-stage') return { result: { tables: 0 } };
       return { result: {} };
     },
   });
@@ -253,7 +306,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
     await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
     await host.deleteScopeLocal(s, t);
-    expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
+    expect(log).toEqual([`substrat.export-page docs/${s}`, `substrat.stage-page docs/${s}`, `substrat.commit-stage docs/${s}`, `substrat.wipe docs/${s}`]);
   });
 
   // Not gated on the scope's lifecycle, as the CP-full host and the table export are not: a reap
@@ -275,7 +328,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
       expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
       await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
       await host.deleteScopeLocal(s, t);
-      expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
+      expect(log).toEqual([`substrat.export-page docs/${s}`, `substrat.stage-page docs/${s}`, `substrat.commit-stage docs/${s}`, `substrat.wipe docs/${s}`]);
     },
   );
 
@@ -316,7 +369,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
     );
     expect(errorCodeOf(imported)).toBe('forbidden');
     expect(await reader.admin.getScopeRecord(staff, t, dest)).toBeUndefined();
-    expect(log.filter((line) => line.startsWith('substrat.import'))).toEqual([]);
+    expect(log.filter((line) => line.startsWith('substrat.stage-page') || line.startsWith('substrat.commit-stage'))).toEqual([]);
   });
 
   // #2213: a failed start is retried without starting the runners that already did, and

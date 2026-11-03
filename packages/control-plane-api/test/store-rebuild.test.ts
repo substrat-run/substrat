@@ -56,12 +56,22 @@ const scriptOf = (vertical: string) => `substrat-store-graph-${vertical}`;
 const CANARY = 'substrat-store-graph--canary';
 
 /** Every reserved call answers as an empty object does, so a canary passes. */
-const canaryCall: CanaryCall = async (_target, operation: ReservedStoreOperation, input) => {
+const staged = new Set<string>();
+const canaryCall: CanaryCall = async (target, operation: ReservedStoreOperation, input) => {
   switch (operation) {
-    case 'substrat.export':
-      return { tables: [] };
-    case 'substrat.import':
-      return { tables: (input as { tables: unknown[] }).tables.length };
+    case 'substrat.export-page':
+      return { tables: [], next: null, revision: '1' };
+    case 'substrat.stage-page': {
+      const { stageId, seq } = input as { stageId: string; seq: number };
+      const key = `${target.objectName}/${stageId}/${seq}`;
+      const first = !staged.has(key);
+      staged.add(key);
+      return { staged: first };
+    }
+    case 'substrat.commit-stage':
+      return { tables: 0 };
+    case 'substrat.discard-stage':
+      return { discarded: true };
     case 'substrat.erase':
       return { erased: 0 };
     default:
@@ -93,7 +103,7 @@ describe('the fleet rebuild (#2309)', () => {
       }) } : undefined;
     },
   };
-  const registration: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  const registration: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
   let s1: string;
   let s2: string;
   let keysA: { caller: string; platform: string };

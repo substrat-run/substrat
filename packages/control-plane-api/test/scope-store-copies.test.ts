@@ -42,6 +42,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
+    dumpPageMaxBytes: 900_000,
   };
 
   const held = new Map<string, ScopeDump>();

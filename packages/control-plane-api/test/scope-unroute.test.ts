@@ -37,6 +37,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
+    dumpPageMaxBytes: 900_000,
   };
 
   beforeAll(async () => {
