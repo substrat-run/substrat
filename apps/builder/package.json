@@ -31,7 +31,8 @@
     "@substrat-run/model-providers": "workspace:*",
     "@substrat-run/oidc-rp": "workspace:*",
     "ai": "7.0.152",
-    "hono": "catalog:"
+    "hono": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^3.0.0",

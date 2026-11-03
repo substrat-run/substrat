@@ -525,6 +525,8 @@ export class BuilderAgent extends DurableObject<Env> {
 					threadId: ((await this.ctx.storage.get(`record:${entry.id}`)) as string | undefined) ?? null,
 					title: entry.name,
 					projectId: entry.id,
+					// Always set when hosted: the worker forwards the team on every request.
+					tenantId: this.#tenant || 'unknown',
 					turnId,
 					unfinishedTurnId: (await this.ctx.storage.get(`record-turn:${entry.id}`)) as string | undefined,
 					message,

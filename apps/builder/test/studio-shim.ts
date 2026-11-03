@@ -76,7 +76,7 @@ export class CloudflareScopeHost {
 		await s.host.admin.createTenant(staff(), { id: input.tenantId, slug: 'studio', name: 'Builder studio' });
 		// The sqlite host enforces entitlements at invoke (unlike the un-projected
 		// CF scope, which trusts upstream) — grant each module's own key.
-		for (const key of ['metering', 'assistant']) await s.host.admin.grantEntitlement(staff(), input.tenantId, key);
+		for (const key of ['metering', 'assistant', 'builder']) await s.host.admin.grantEntitlement(staff(), input.tenantId, key);
 		await s.host.provisionScope(staff(), { tenantId: input.tenantId, scopeId: input.scopeId, jurisdiction: 'global' });
 		await s.host.admin.activateScope(staff(), input.tenantId, input.scopeId);
 		for (const role of input.roles) await s.host.admin.defineRole(staff(), input.tenantId, role as never);

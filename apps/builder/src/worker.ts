@@ -35,6 +35,7 @@
 import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { studioUsage } from './metering.js';
+import { listTurns, readTurn } from './record.js';
 import { STUDIO_MODULES } from './studio.js';
 import { refuse, unhandledResponse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
@@ -68,6 +69,22 @@ export interface Env extends OidcEnv, StaffEnv {
 	/** The control plane's SERVICE_TOKEN, under the studio's name for it (the
 	 * dashboard precedent: CP_SERVICE_TOKEN in secrets.mjs). */
 	CP_SERVICE_TOKEN?: string;
+}
+
+/**
+ * The list query, as `studio/list-turns` takes it. The operation's own schema
+ * judges every value; this only turns strings into the types it expects.
+ */
+function turnQuery(params: URLSearchParams): Record<string, unknown> {
+	const query: Record<string, unknown> = {};
+	for (const key of ['tenantId', 'projectId', 'outcome', 'redGate', 'since', 'cursor']) {
+		const value = params.get(key);
+		if (value) query[key] = value;
+	}
+	const limit = params.get('limit');
+	if (limit) query.limit = Number(limit);
+	if (params.get('troubled') === 'true') query.troubled = true;
+	return query;
 }
 
 /** The tenant-selection header — same name, same meaning as the CP API's. */
@@ -136,9 +153,19 @@ const app = new Hono<{ Bindings: Env }>();
 app.all('/internal/*', async (c) => {
 	const supplied = c.req.header('x-service-token');
 	if (!c.env.CP_SERVICE_TOKEN || supplied !== c.env.CP_SERVICE_TOKEN) return refuse(403, 'forbidden');
+	const path = new URL(c.req.url).pathname;
+	// Turn summaries and the turns behind them are studio-wide (turns.ts): the
+	// console reads them across every team, so no team's agent answers them.
+	if (c.req.method === 'GET' && path === '/internal/turns') {
+		return c.json(await listTurns(c.env, turnQuery(new URL(c.req.url).searchParams)));
+	}
+	const turnPath = /^\/internal\/turns\/([^/]+)$/.exec(path);
+	if (c.req.method === 'GET' && turnPath) {
+		const turn = await readTurn(c.env, decodeURIComponent(turnPath[1]!));
+		return turn ? c.json(turn) : refuse(404, 'no such turn');
+	}
 	const tenant = c.req.header('x-substrat-tenant');
 	if (!tenant) return refuse(400, 'tenant context is required');
-	const path = new URL(c.req.url).pathname;
 	if (path !== '/internal/build' && path !== '/internal/projects') return refuse(404, 'not found');
 	const url = new URL(c.req.url);
 	if (path === '/internal/projects') url.pathname = '/api/projects';
