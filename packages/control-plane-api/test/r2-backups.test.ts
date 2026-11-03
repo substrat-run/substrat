@@ -65,10 +65,11 @@ describe('r2 scope-backup store (#493)', () => {
     expect(listed).toEqual([{ ...at, vertical: 'demo-vert', size: meta.size, tables: 1 }]);
     expect(meta.size).toBe([...objects.values()].reduce((n, o) => n + o.body.length, 0));
 
-    expect(await store.get(at)).toEqual({ header, entries: 2 });
+    const held = (await store.get(at))!;
+    expect(held).toMatchObject({ header, entries: 2 });
     // Full fidelity, in order: a backup that cannot restore the real values is not a backup.
-    expect((await store.entry({ ...at, index: 0 })).tables[0]!.rows).toEqual([['c1', 'anna@example.com']]);
-    expect(await store.entry({ ...at, index: 1 })).toMatchObject({ kind: 'changes', tables: [{ rows: [['c2', 'bo@example.com']] }] });
+    expect((await held.entry(0)).tables[0]!.rows).toEqual([['c1', 'anna@example.com']]);
+    expect(await held.entry(1)).toMatchObject({ kind: 'changes', tables: [{ rows: [['c2', 'bo@example.com']] }] });
   });
 
   it('lists a scope’s copies newest-first, walking every page, and never leaks another scope’s', async () => {
@@ -105,8 +106,9 @@ describe('r2 scope-backup store (#493)', () => {
     expect(listed[0]).toMatchObject({ capturedAt: '2026-07-01T00:00:00.000Z', vertical: null, tables: 0 });
     // And it restores: a whole dump from before #2839 reads as a backup of one entry, its tables.
     const at = { tenantId: 'ten1', scopeId: 'sc1', capturedAt: '2026-07-01T00:00:00.000Z' };
-    expect(await store.get(at)).toMatchObject({ entries: 1, header: { scopeId: 'sc1' } });
-    expect(await store.entry({ ...at, index: 0 })).toEqual({ kind: 'page', tables: dumpAt(at.capturedAt).tables });
+    const held = (await store.get(at))!;
+    expect(held).toMatchObject({ entries: 1, header: { scopeId: 'sc1' } });
+    expect(await held.entry(0)).toEqual({ kind: 'page', tables: dumpAt(at.capturedAt).tables });
   });
 
   it('returns null for a copy that is not held, and throws on one that is not a dump', async () => {

@@ -11,6 +11,7 @@ import {
   tenantId,
   type ScopeBackup,
   type ScopeDumpTable,
+  type PermissionKey,
   type ScopeId,
 } from '@substrat-run/contracts';
 import {
@@ -58,10 +59,22 @@ describe('paged scope backups (#2839)', () => {
 
   /** What the deployment was asked to stage, discard, load and wipe. */
   type Calls = { staged: { kind: string; seq: number; stageId: string; tables: ScopeDumpTable[] }[]; discarded: string[]; restored: unknown[]; wiped: string[] };
-  const deployment = (calls: Calls) => ({
+  /** A seat in role 'member', for a person, in the second page when `seats` is set. */
+  const seat: ScopeDumpTable = {
+    name: '_substrat_tuples',
+    ddl: 'CREATE TABLE _substrat_tuples (subject TEXT, relation TEXT, object TEXT, revoked_at TEXT, expires_at TEXT)',
+    columns: ['subject', 'relation', 'object', 'revoked_at', 'expires_at'],
+    rows: [['principal:alice', 'role:member', 'scope', null, null]],
+  };
+  const deployment = (calls: Calls, seats = false) => ({
     exportScopePage: async (_s: ScopeId, cursor: string | null, opts: { capture?: string }) => cursor === null
       ? { tables: [customers], next: 'p1', loadStamp: null, revision: 'r0', ...(opts.capture ? { captured: true } : {}) }
-      : { tables: [{ ...OUTBOX, rows: [['e1', subject, 'direct', pageSecret]], rowids: [1] }], next: null, loadStamp: null, revision: 'r0' },
+      : {
+        tables: [{ ...OUTBOX, rows: [['e1', subject, 'direct', pageSecret]], rowids: [1] }, ...(seats ? [seat] : [])],
+        next: null,
+        loadStamp: null,
+        revision: 'r0',
+      },
     exportScopeChanges: async () => ({
       tables: [{ ...OUTBOX, rows: [['e2', subject, 'direct', changeSecret]], rowids: [2], deleted: [] }],
       final: true,
@@ -88,7 +101,7 @@ describe('paged scope backups (#2839)', () => {
     },
   }) as unknown as VerticalClient;
 
-  const world = (opts: { failOn?: (key: string) => boolean } = {}) => {
+  const world = (opts: { failOn?: (key: string) => boolean; seats?: boolean } = {}) => {
     const calls: Calls = { staged: [], discarded: [], restored: [], wiped: [] };
     const { bucket, objects } = fakeBucket(100, opts);
     const store = createR2BackupStore(bucket);
@@ -96,16 +109,16 @@ describe('paged scope backups (#2839)', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       authenticateTenantService: tenantTokenAuth(TENANT_SECRET, staff),
-      verticals: { 'demo-vert': deployment(calls) },
+      verticals: { 'demo-vert': deployment(calls, opts.seats) },
       scopeBackups: store,
     });
     return { app, calls, objects, store, bucket };
   };
 
-  const install = async (): Promise<ScopeId> => {
+  const install = async (tenant = t): Promise<ScopeId> => {
     const s = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
-    await host.admin.activateScope(staff, t, s);
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, tenant, s);
     return s;
   };
 
@@ -175,9 +188,11 @@ describe('paged scope backups (#2839)', () => {
     expect(calls.restored).toEqual([[customers]]);
   });
 
-  it('refuses the reap when the manifest does not land, and leaves no backup and no entries behind', async () => {
-    const manifest = (key: string) => key.split('/').length === 4;
-    const { app, calls, objects, store } = world({ failOn: manifest });
+  it.each([
+    ['the manifest', 4],
+    ['an entry', 6],
+  ])('refuses the reap when %s does not land, and leaves no backup and no entries behind', async (_, depth) => {
+    const { app, calls, objects, store } = world({ failOn: (key) => key.split('/').length === depth });
     const s = await install();
     await host.admin.archiveScope(staff, t, s);
 
@@ -190,7 +205,27 @@ describe('paged scope backups (#2839)', () => {
     expect(objects.size).toBe(0);
   });
 
-  it('refuses a caller on the backup restore that `POST …/restore` refuses', async () => {
+  it('judges the roles a backup in entries seats before anything is replaced, as `POST …/restore` does (#2555)', async () => {
+    // A tenant whose role 'member' is now held by a system principal: a person's seat in it, with
+    // no definition beside it, cannot be told from a person's, so the load is refused.
+    const roled = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: roled, slug: 'roled-co', name: 'Roled Co' });
+    await host.admin.defineRole(staff, roled, { key: 'member', permissions: ['pb:run' as PermissionKey], source: 'vertical', holder: 'system' });
+    const { app, calls } = world({ seats: true });
+    const s = await install(roled);
+    const taken = await app.request(`/tenants/${roled}/scopes/${s}/backups`, { method: 'POST', headers: asStaff });
+    const { capturedAt } = (await taken.json()) as ScopeBackup;
+
+    const restored = await app.request(`/tenants/${roled}/scopes/${s}/backups/${capturedAt}/restore`, { method: 'POST', headers: asStaff });
+    // Answered as `POST …/restore` answers the host's refusal: a 422 naming it.
+    expect(restored.status).toBe(422);
+    expect(((await restored.json()) as { detail: string }).detail).toMatch(/restore refused: the dump seats role 'member'/);
+    // The deployment loaded nothing, and the stage it was handed is gone.
+    expect(calls.restored).toEqual([]);
+    expect(calls.discarded).toContain(calls.staged.at(-1)!.stageId);
+  });
+
+  it("refuses a caller on the backup restore that `POST …/restore` refuses, and the tenant's own credential", async () => {
     const { app, calls, bucket } = world();
     const s = await install();
     const capturedAt = '2026-07-02T00:00:00.000Z';
@@ -203,6 +238,9 @@ describe('paged scope backups (#2839)', () => {
     const held = await app.request(`/tenants/${t}/scopes/${s}/backups/${capturedAt}/restore`, { method: 'POST', headers: asOther });
     expect(upload.status).toBe(403);
     expect(held.status).toBe(upload.status);
+    // Staff-only, as every backup route is: the tenant's own credential, which `POST …/restore` admits, is refused.
+    const asOwn = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(TENANT_SECRET, { tenantId: t }), 'content-type': 'application/json' };
+    expect((await app.request(`/tenants/${t}/scopes/${s}/backups/${capturedAt}/restore`, { method: 'POST', headers: asOwn })).status).toBe(403);
     expect(calls.restored).toEqual([]);
   });
 });

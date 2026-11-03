@@ -72,9 +72,6 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     }),
     list: async () => [],
     get: async () => null,
-    entry: async () => {
-      throw new Error('no backup is held');
-    },
   };
 
   beforeEach(async () => {

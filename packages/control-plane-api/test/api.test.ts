@@ -3709,14 +3709,14 @@ describe('control-plane API', () => {
       // Full fidelity, not the export route's masked default: a masked copy restores a
       // structurally-valid but factually wrong scope, which is not a backup.
       expect(body.backup).toMatchObject({ tenantId: t, scopeId: s, vertical: 'demo-vert', tables: 1 });
-      const stored = await store.entry({ tenantId: t, scopeId: s, capturedAt: body.backup.capturedAt, index: 0 });
+      const stored = await (await store.get({ tenantId: t, scopeId: s, capturedAt: body.backup.capturedAt }))!.entry(0);
       expect(stored.tables.find((x) => x.name === 'customers')!.rows[0]).toEqual(['c1', 'anna@example.com']);
 
       // The admin log answers "was there a copy, and where" from the reap entry itself.
       const log = await host.admin.auditLog(staff, { tenantId: t, limit: 50 });
       const entry = log.find((e) => e.action === 'reapScope')!;
       expect((entry.after as { backupRef?: string }).backupRef).toBe(
-        `/tenants/${t}/scopes/${s}/backups/${body.backup.capturedAt}`,
+        `/tenants/${t}/scopes/${s}/backups/${body.backup.capturedAt}/restore`,
       );
 
       // Readable AFTER the reap — the directory row survives as a tombstone, and the
