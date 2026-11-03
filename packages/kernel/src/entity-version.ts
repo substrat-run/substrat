@@ -25,8 +25,9 @@ import { ENTITY_STATE_MOVE_TYPES, ifMatchAdmits, substratError, type EntityRef }
  * - **Monotonic and exactly comparable.** `ulid()` uses the spec's monotonic
  *   factory, and its header names that load-bearing precisely because this table
  *   orders by id: two events in one millisecond still sort in creation order.
- * - **Never pruned.** The outbox DRAINS, it does not expire (K-24's split) —
- *   `drained_at` marks a shipped row and nothing deletes it.
+ * - **Never pruned away.** The retention prune (#1334) removes drained rows after
+ *   `OUTBOX_RETENTION_DAYS`, but never an entity's newest row that is not a state
+ *   move, which is exactly the row this reads. A version survives its history.
  * - **Survives erasure.** A shred nulls `payload` and keeps the row, so an
  *   erased entity can still refuse a stale write. A version that vanished with
  *   the data would fail open at exactly the wrong moment.

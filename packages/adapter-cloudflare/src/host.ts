@@ -457,6 +457,9 @@ import {
   undrainedEventsOf,
   type UndrainedEvents,
   type UndrainedRead,
+  type OutboxSubscriber,
+  outboxSubscribersOf,
+  pruneInputOf,
   type SwitchOutcome,
   type SwitchedOff,
   type SystemSwitchReassert,
@@ -2197,6 +2200,8 @@ interface ScopeStubRpc {
   /** The Tier-2 read, and what it stepped over (#1636) — an object, because it crosses the RPC. */
   undrainedEventsRead(limit: number): Promise<UndrainedRead>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
+  /** #1334: the retention prune; executors are the coordinator's to name. */
+  pruneDrainedEvents(drainedBefore: string, limit: number, executors: readonly OutboxSubscriber[], due?: boolean): Promise<number>;
   /** #1705: the producer's release, decided by the DO's own registered exports. */
   /** #2029: `door`, the consumer peer's door — pinned to its gate's instance, or held off. */
   exportedEventsRead(
@@ -2550,6 +2555,19 @@ export interface EventDrainDelegation {
      */
     countOnly?: boolean;
   }): Promise<number>;
+  /**
+   * The retention prune (#1334), where the rows are. `null`: the serving deployment predates
+   * the verb, pruned nothing, and the pass skips it until it is redeployed. Optional, so a
+   * delegation written before it still type-checks; absent reads as the same `null`.
+   */
+  prune?(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    drainedBefore: string;
+    limit: number;
+    due?: boolean;
+  }): Promise<number | null>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -4639,6 +4657,19 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
     return this.scopeStub(scopeId).redrainEvents(drainedBefore);
+  }
+
+  /**
+   * The retention prune on this host's own scope (#1334) — the far end of the delegation's
+   * `prune`. No audit here, as with the stamp: the platform's `pruneDrainedEvents` is the door.
+   */
+  async pruneDrainedEventsLocal(scopeId: ScopeId, drainedBefore: string, limit: number, due?: boolean): Promise<number> {
+    return this.scopeStub(scopeId).pruneDrainedEvents(drainedBefore, limit, this.executorSubscribers(), due);
+  }
+
+  /** The executors an outbox row waits on before it may be pruned (#1334); the DO adds its consumers. */
+  private executorSubscribers(): OutboxSubscriber[] {
+    return outboxSubscribersOf([], this.executors);
   }
 
   /**
@@ -9704,6 +9735,32 @@ export class CloudflareScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      pruneDrainedEvents: async (actor, tenantId, scopeId, raw): Promise<number | null> => {
+        const input = pruneInputOf(raw, new Date().toISOString());
+        const record = await this.scopeRecordForRead(tenantId, scopeId);
+        // Delegated on the stamp's rule: the rows live in the vertical's deployment.
+        const pruned =
+          this.eventDrainDelegation && record.vertical
+            ? ((await this.eventDrainDelegation.prune?.({
+                tenantId,
+                scopeId,
+                vertical: record.vertical,
+                drainedBefore: input.drainedBefore,
+                limit: input.limit,
+                ...(input.due === undefined ? {} : { due: input.due }),
+              })) ?? null)
+            : await this.scopeStub(scopeId).pruneDrainedEvents(input.drainedBefore, input.limit, this.executorSubscribers(), input.due);
+        // Deleting a tenant's events is a mutation, so it is audited, and only when something went.
+        // Written after the delete, with no intent row: a lost answer or a failed write leaves a
+        // deletion unrecorded, accepted because the rows are already in the lake and a rerun is a no-op.
+        if (pruned !== null && pruned > 0) {
+          await this.recordAdmin(actor, 'pruneEvents', { tenantId, scopeId }, null, {
+            pruned,
+            drainedBefore: input.drainedBefore,
+          });
+        }
+        return pruned;
       },
       redrainEvents: async (actor, tenantId, scopeId, input): Promise<number> => {
         // The same refusal the stamp carries: a reaped scope's storage is gone, and

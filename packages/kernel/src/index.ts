@@ -655,6 +655,16 @@ export {
   type StoredRoles,
 } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
+export {
+  OUTBOX_PRUNED_DDL,
+  outboxSubscribersOf,
+  pruneDrainedOutbox,
+  pruneInputOf,
+  WatermarkPruned,
+  type OutboxPruneInput,
+  type OutboxSubscriber,
+  type PruneDrainedEventsInput,
+} from './outbox-prune.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 // RFC wire-signing §4: the nonce store a signed call that changes state spends its nonce in.
 export {

@@ -2247,6 +2247,25 @@ export class VerticalClient {
   }
 
   /**
+   * The retention prune (#1334), in the deployment holding the scope. Answers how many rows
+   * went, or `null` when that deployment predates the route (404) or its adapter predates the
+   * verb (501): it pruned nothing, and the pass skips it until it is redeployed.
+   */
+  async pruneDrainedEvents(scopeId: ScopeId, drainedBefore: string, limit: number, due?: boolean): Promise<number | null> {
+    try {
+      const answer = await this.postInternal<{ pruned: number }>(
+        '/internal/prune-drained',
+        { scopeId, drainedBefore, limit, ...(due === undefined ? {} : { due }) },
+        'prune-drained',
+      );
+      return answer.pruned;
+    } catch (err) {
+      if (err instanceof ControlPlaneError && (err.status === 404 || err.status === 501)) return null;
+      throw err;
+    }
+  }
+
+  /**
    * Reopen rows stamped before `drainedBefore` so the drain ships them again (#1334).
    * Answers how many changed, which is what the platform's receipt is written from.
    *

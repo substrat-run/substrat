@@ -265,7 +265,7 @@ function occurrenceDay(occurredAt: string): string {
  * *"Iceberg is the contract, the query engine is replaceable"*, and the same
  * paragraph leaves R2 SQL's fitness explicitly open pending a benchmark. Writing
  * partitioned NDJSON to a bucket the platform already operates gets the events out
- * of the scope — which is what bounds an outbox that is never pruned — without
+ * of the scope — which is what licenses the retention prune that bounds the outbox — without
  * committing the ingest path to a product decision nobody has made yet. A
  * compaction step turns these objects into Iceberg later, and the seam means the
  * drain never learns which happened.

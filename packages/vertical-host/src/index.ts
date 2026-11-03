@@ -39,6 +39,7 @@ import {
   type AppliedMigration,
   type SwitchedOff,
   type UndrainedEvents,
+  pruneInputOf,
   type ScopeRoleHolder,
   type SubjectRedactionCounts,
   type OrphanSweepReport,
@@ -439,6 +440,11 @@ export interface VerticalScopeHost {
    * count that quietly performs the reopen it was meant to preview.
    */
   redrainCountLocal?(scopeId: ScopeId, drainedBefore: string): Promise<number>;
+  /**
+   * The retention prune on this deployment's own scope (#1334). Optional for `redrainCountLocal`'s
+   * reason: a host built before it answers 501 here, and the platform skips the scope.
+   */
+  pruneDrainedEventsLocal?(scopeId: ScopeId, drainedBefore: string, limit: number, due?: boolean): Promise<number>;
   /**
    * The scope database's size in bytes (#1524), for an on-demand storage reading. OPTIONAL
    * for the reason `redrainCountLocal` is: a host built before it satisfies this interface
@@ -1825,6 +1831,19 @@ export function mountPlatformSurface<Env extends object>(
     const body = markDrainedBody.parse(await c.req.json());
     const drained = await deps.hostFor(c.env).markEventsDrainedLocal(body.scopeId, body.eventIds, body.drainedAt);
     return c.json({ drained });
+  });
+  // The retention prune (#1334). No audit here, as with the stamp: the platform's
+  // `pruneDrainedEvents` is the door and writes the receipt.
+  app.post('/internal/prune-drained', async (c) => {
+    const raw = (await c.req.json()) as { scopeId?: unknown };
+    const scope = scopeIdOf.parse(raw.scopeId);
+    // The kernel's own parse, horizon rule included: a future instant would prune inside the window.
+    const body = pruneInputOf(raw, new Date().toISOString());
+    const host = deps.hostFor(c.env);
+    if (!host.pruneDrainedEventsLocal) {
+      return refuseStatus(c, 501, 'this deployment cannot prune its outbox (#1334) — redeploy it');
+    }
+    return c.json({ pruned: await host.pruneDrainedEventsLocal(scope, body.drainedBefore, body.limit, body.due) });
   });
   // The stamp's inverse. No audit here, as with the stamp: the platform's `redrainEvents`
   // is the door and writes the receipt, whichever deployment held the rows.

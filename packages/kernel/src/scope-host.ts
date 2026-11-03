@@ -230,6 +230,7 @@ import type { SearchHit, SearchOptions } from './search-index.js';
 import type { GrantedEntitiesPage } from './grant-scoped-read.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
+import type { PruneDrainedEventsInput } from './outbox-prune.js';
 // Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
 // imports only types from here.
 import type {
@@ -3320,6 +3321,24 @@ export interface HostAdmin {
   ): Promise<number>;
 
   /**
+   * One prune pass (#1334; the rule is `pruneDrainedOutbox`'s): delete up to `input.limit`
+   * outbox rows drained before `input.drainedBefore` that nothing in the scope still needs, with
+   * their delivery rows, and raise the floor a scope walk refuses to resume below. A pass starts
+   * a new lap only when `due` (default true); one that a cap stopped continues regardless.
+   * A future `drainedBefore` is refused. Returns how many rows went, or
+   * `null` when the deployment holding the scope predates the verb and pruned nothing.
+   *
+   * Admin-logged when it removes anything: deleting a tenant's events is a mutation, even of
+   * rows the lake already holds. Optional, like every retention verb the sweep feature-detects.
+   */
+  pruneDrainedEvents?(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: PruneDrainedEventsInput,
+  ): Promise<number | null>;
+
+  /**
    * The PRODUCER half of a cross-vertical edge (#1705): the events of the types `input.wants`
    * after `input.after` that this scope releases to `input.consumer`, oldest first.
    *
@@ -3387,8 +3406,8 @@ export interface HostAdmin {
    * Pipelines stream cannot do in place — every stamped row is history the drain will
    * never offer again, and the new table starts with a silent hole behind it. This is the
    * rebuild: nothing about the rows changes except that they are eligible to leave again.
-   * It works only while the outbox still holds them, which is true while no outbox
-   * pruning exists.
+   * It works only while the outbox still holds them: for `OUTBOX_RETENTION_DAYS` after the
+   * stamp, after which the drain phase prunes them (#1334). A rebuild reaches back that far.
    *
    * `drainedBefore` is REQUIRED, and it is the whole safety property. Clearing every stamp
    * would also reopen rows shipped AFTER the table was rebuilt, putting them in the new
@@ -3404,8 +3423,8 @@ export interface HostAdmin {
    * when something moved, so a re-run over an exhausted window claims nothing.
    *
    * **Returns the count reopened by THIS call, which is bounded** (`REDRAIN_BATCH`), so the
-   * protocol is a loop: call until it returns 0. The outbox is never pruned, so "every
-   * stamped row before an instant" grows with the scope's whole lifetime, and on the
+   * protocol is a loop: call until it returns 0. Even within retention, "every stamped
+   * row before an instant" can be months of a busy scope's events, and on the
    * Durable-Object host that is one request against a fixed budget — unbounded, the scope
    * that most needs reopening is the one that could never finish, on every retry. A caller
    * that asks once reopens a prefix of the window, and must not report it as the whole.

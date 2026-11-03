@@ -350,9 +350,10 @@ export const causeTerminal = z.enum([
   /** The cap was reached. More chain exists above; ask for it with a higher limit. */
   'depth',
   /**
-   * A cause named an event this scope's outbox does not hold. Should not happen —
-   * the spine is append-only and never pruned — so it is reported rather than
-   * smoothed over: silently stopping here would look exactly like a complete chain.
+   * A cause named an event this scope's outbox does not hold — typically one the
+   * retention prune removed after it was drained to the lake (#1334), where it still is.
+   * Reported rather than smoothed over: silently stopping here would look exactly like
+   * a complete chain.
    *
    * Also the ending when the last entry's cause could not be DECODED (#1636 — its
    * `decodeError` names `caused_by` or `operation`): the trail cannot be followed
@@ -676,9 +677,8 @@ export type DrainedEvent = z.infer<typeof drainedEvent>;
 /**
  * How many rows one `redrainEvents` call reopens at most (#1334).
  *
- * The outbox is never pruned, so "every stamped row before an instant" is unbounded by
- * construction: on an old, busy scope a single UPDATE would scan and rewrite the whole
- * history, and on the Durable-Object host that is one request against a fixed budget —
+ * "Every stamped row before an instant" reaches back the whole retention window (#1334):
+ * on a busy scope a single UPDATE would scan and rewrite months of history, and on the Durable-Object host that is one request against a fixed budget —
  * it would fail, and fail again on every retry, so the scope could never make progress.
  * A bounded call always finishes, which is what makes the operation retryable at all.
  *

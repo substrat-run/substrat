@@ -46,6 +46,8 @@ import {
   type ModelUsageLine,
   unheldMigrationDigest,
   withUpstreamReference,
+  type Page,
+  type ScopeTimelineEntry,
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
@@ -70,6 +72,7 @@ import {
   type AuditLogFilter,
   type OperationHandler,
   type ScopeHost,
+  type ScopeWalkPage,
 } from '@substrat-run/kernel';
 import {
   billedMod,
@@ -2138,6 +2141,84 @@ export function scopeHostContractSuite(
       await expect(
         host.admin.markEventsDrained(staff, t1, scopeId.parse(ulid()), []),
       ).rejects.toThrow(/unknown scope/);
+    });
+
+    it('prunes a drained row nothing here still needs, and a walk resumed below it refuses (#1334)', async () => {
+      // Its own scope, for the drain test's reason: every row in it is this test's input.
+      const sPrune = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sPrune, jurisdiction: 'eu', vertical: 'connector-vertical' });
+      await host.admin.activateScope(staff, t1, sPrune);
+      const stub = await host.getScope(alice, t1, sPrune);
+      const walk = async (page: ScopeWalkPage = {}) =>
+        (await stub.invoke<Page<ScopeTimelineEntry>>('test/scope-timeline', { limit: 100, ...page })).entries.map((e) => e.id);
+      const about = (entityId: string, entityType?: string) =>
+        stub.invoke('test/emit-about', { entityId, ...(entityType ? { entityType } : {}) });
+
+      // One row per case, each but the newest-of-entity case given a newer sibling about the same entity.
+      await stub.invoke('connector/request-effect', { tag: 'ok-prune' }); // delivered: goes
+      await stub.invoke('connector/request-effect', { tag: 'poison-prune' }); // retrying: kept
+      await host.drainDue(t1, sPrune);
+      await about('ok-prune', 'effect');
+      await about('poison-prune', 'effect');
+      await about('pair'); // no subscriber, superseded: goes
+      await about('pair');
+      await about('late'); // never drained: kept
+      await about('late');
+      const [ok, poison, okNewest, poisonNewest, pairOld, pairNewest, lateOld, lateNewest] = await walk();
+      const drained = [ok!, poison!, okNewest!, poisonNewest!, pairOld!, pairNewest!, lateNewest!];
+      expect(await host.admin.markEventsDrained(staff, t1, sPrune, drained)).toBe(drained.length);
+      const stampedAt = (
+        (await host.admin.auditLog(staff, { tenantId: t1 })).find((r) => r.action === 'drainEvents' && r.scopeId === sPrune)!
+          .after as { drainedAt: string }
+      ).drainedAt;
+      const prune = (drainedBefore: string) => host.admin.pruneDrainedEvents!(staff, t1, sPrune, { drainedBefore, limit: 100 });
+
+      // Inside retention (strictly before the stamp) nothing goes.
+      await expect(prune(stampedAt)).resolves.toBe(0);
+      await expect(prune(new Date(Date.now() + 60_000).toISOString())).rejects.toThrow(/future/);
+      // A horizon in the future is refused, so let the clock pass the stamp first (a millisecond).
+      const justAfter = new Date(Date.parse(stampedAt) + 1).toISOString();
+      while (Date.now() <= Date.parse(justAfter)) await new Promise((r) => setTimeout(r, 1));
+      await expect(prune(justAfter)).resolves.toBe(2);
+      const kept = [poison, okNewest, poisonNewest, pairNewest, lateOld, lateNewest];
+      expect(await walk()).toEqual(kept);
+      // A walk that began after the prune pages through the rows still kept below the floor, in
+      // pages small enough that its cursor sits under it; both scope walks.
+      for (const op of ['test/scope-timeline', 'test/scope-history']) {
+        const paged: string[] = [];
+        let cursor: string | null = null;
+        for (let guard = 0; guard < 10; guard++) {
+          const page: Page<ScopeTimelineEntry> = await stub.invoke(op, { limit: 2, ...(cursor ? { cursor } : {}) });
+          paged.push(...page.entries.map((e) => e.id));
+          cursor = page.nextCursor;
+          if (cursor === null) break;
+        }
+        expect(paged).toEqual(kept);
+      }
+      // The delivered row's journal went with it; the retrying one's stays.
+      const deliveries = await host.admin.readScopeTable(staff, t1, sPrune, { table: '_substrat_deliveries', limit: 50, offset: 0 });
+      const journaled = deliveries.rows.map((r) => r[deliveries.columns.indexOf('event_id')]);
+      expect(journaled).not.toContain(ok);
+      expect(journaled).toContain(poison);
+      const receipt = (await host.admin.auditLog(staff, { tenantId: t1 })).filter(
+        (r) => r.action === 'pruneEvents' && r.scopeId === sPrune,
+      );
+      expect(receipt.map((r) => (r.after as { pruned: number }).pruned)).toEqual([2]);
+
+      // A mirror holding a watermark below what went is told to resync; one above it resumes.
+      await expect(walk({ cursor: ok })).rejects.toThrow(/resync from the start/);
+      expect(await walk({ cursor: pairOld })).toEqual([pairNewest, lateOld, lateNewest]);
+
+      // The floor travels in the dump with the outbox it describes, so a restore still refuses
+      // below it; a dump from before the table restores cleanly with no floor, and refuses nothing.
+      const dump = await host.admin.exportScope(staff, t1, sPrune);
+      await host.restoreScope(staff, t1, sPrune, dump);
+      await expect(walk({ cursor: ok })).rejects.toThrow(/resync from the start/);
+      await host.restoreScope(staff, t1, sPrune, {
+        ...dump,
+        tables: dump.tables.filter((t) => t.name !== '_substrat_outbox_pruned'),
+      });
+      expect(await walk({ cursor: ok })).toEqual(kept);
     });
 
     it('stamps and reopens more events than a Durable Object binds parameters (#1776)', async () => {

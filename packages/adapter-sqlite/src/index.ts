@@ -636,6 +636,10 @@ import {
   type SwitchRecordPrior,
   type SwitchOutcome,
   type SwitchSql,
+  OUTBOX_PRUNED_DDL,
+  outboxSubscribersOf,
+  pruneDrainedOutbox,
+  pruneInputOf,
   type PeerGrantsRow,
   type SystemGrantsEntry,
   type PlatformRequestRedactionCandidate,
@@ -1482,6 +1486,7 @@ const KERNEL_DDL = `
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
+  ${OUTBOX_PRUNED_DDL}
   -- #119: the kernel's authorization for one archive/trash move, read by the derived update
   -- trigger. Shared with the other adapter from @substrat-run/kernel; the comments are there.
   ${ENTITY_STATE_MOVES_DDL}
@@ -2426,6 +2431,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
+
   /**
    * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
    * code like `executors`, and keyed the way a run row is: the coalescing key's
@@ -11223,6 +11229,34 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      pruneDrainedEvents: async (actor, tenantId, scopeId, raw) => {
+        const input = pruneInputOf(raw, new Date().toISOString());
+        this.assertScopeReachable(tenantId, scopeId);
+        const db = this.scopeDbFor(tenantId, scopeId);
+        // On the scope actor, like the stamp: issued mid-invoke it would otherwise be a
+        // SAVEPOINT inside the invoke's transaction, and roll back with it.
+        const pruned = await this.runtime(tenantId, scopeId).actor.turn(() =>
+          db.transaction(() =>
+            pruneDrainedOutbox(switchSqlOf(db), {
+              drainedBefore: input.drainedBefore,
+              limit: input.limit,
+              due: input.due ?? true,
+              subscribers: outboxSubscribersOf(this.modules.values(), this.executors),
+              exportTypes: this.crossVertical.exportTypes(),
+            }),
+          )(),
+        );
+        // Deleting a tenant's events is a mutation, so it is audited, and only when something went.
+        // Written after the delete, with no intent row: a lost answer or a failed write leaves a
+        // deletion unrecorded, accepted because the rows are already in the lake and a rerun is a no-op.
+        if (pruned > 0) {
+          this.recordAdmin(actor, 'pruneEvents', { tenantId, scopeId }, null, {
+            pruned,
+            drainedBefore: input.drainedBefore,
+          });
+        }
+        return pruned;
       },
       readExportedEvents: async (actor, tenantId, scopeId, raw): Promise<ExportedBatch> => {
         // #1705: the producer's half. Parsed here, since HostAdmin is public and the control

@@ -140,6 +140,7 @@ export const INDEX_VALUE_EXPORTS = [
   'ORPHAN_SWEEP_UNLICENSED',
   'OUTBOX_ENTITY_INDEX',
   'OUTBOX_MARK_SQL',
+  'OUTBOX_PRUNED_DDL',
   'PEER_BINDINGS_DDL',
   'PEER_SWITCHES_DDL',
   // #2464: one conditional preview expiry write in both directory adapters.
@@ -239,6 +240,7 @@ export const INDEX_VALUE_EXPORTS = [
   'WIRE_NONCE_TABLE_NAMES',
   'WITHHELD_SECRET',
   'WRITE_REVISION_KEY',
+  'WatermarkPruned',
   'actorOf',
   'addStatePlans',
   // #2166: the host's hold on the updated stamps — both adapters call it, nothing else does.
@@ -573,6 +575,7 @@ export const INDEX_VALUE_EXPORTS = [
   'orgChangeBound',
   'orphanSweepLicensedAt',
   'orphanSweepVersionRefusal',
+  'outboxSubscribersOf',
   'parseValidationRecords',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
   'peerCallerAt',
@@ -594,7 +597,9 @@ export const INDEX_VALUE_EXPORTS = [
   'promoteReviewDigest',
   'promoteReviewRefusalOf',
   'provisionedVersionsParams',
+  'pruneDrainedOutbox',
   'pruneFindings',
+  'pruneInputOf',
   'pruneMeterDayRows',
   'pruneRequestDayRows',
   'pruneScopeStorageRows',

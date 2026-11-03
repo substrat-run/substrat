@@ -150,6 +150,10 @@ import {
   systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
+  type OutboxSubscriber,
+  OUTBOX_PRUNED_DDL,
+  outboxSubscribersOf,
+  pruneDrainedOutbox,
   type SwitchedOff,
   type PeerGrantsRow,
   type SystemGrantsEntry,
@@ -1006,6 +1010,7 @@ const KERNEL_DDL = `
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
+  ${OUTBOX_PRUNED_DDL}
   -- #119: the kernel's authorization for one archive/trash move, read by the derived update
   -- trigger. Shared with the other adapter from @substrat-run/kernel; the comments are there.
   ${ENTITY_STATE_MOVES_DDL}
@@ -2687,6 +2692,30 @@ export function defineScopeDO(
         }
         return drained;
       });
+    }
+
+    /**
+     * The retention prune (#1334): the kernel's `pruneDrainedOutbox`, on the queue and in one
+     * transaction, so the rows, their deliveries and the pruned-through floor go together.
+     */
+    async pruneDrainedEvents(
+      drainedBefore: string,
+      limit: number,
+      executors: readonly OutboxSubscriber[],
+      due = true,
+    ): Promise<number> {
+      return this.queue.enqueue(() =>
+        this.revision.transactionSync(() =>
+          pruneDrainedOutbox(this.switchSql(), {
+            drainedBefore,
+            limit,
+            due,
+            // Executors run on the coordinator, which names them; the consumers are this DO's own.
+            subscribers: [...outboxSubscribersOf(this.modules.values(), []), ...executors],
+            exportTypes: this.crossVertical.exportTypes(),
+          }),
+        ),
+      );
     }
 
     /**

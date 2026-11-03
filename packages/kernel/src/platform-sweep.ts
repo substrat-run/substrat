@@ -45,6 +45,7 @@ import { backoffAt, fetchLikeOf, type FetchLike } from './connector-transport.js
 import { assertRowLimit, TELEMETRY_PRUNE_BATCH, type TelemetryPruneReport } from './retention.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
+import { OUTBOX_PRUNE_BATCH, OUTBOX_RETENTION_DAYS, outboxPruneDue } from './outbox-prune.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
 import type { ScheduleSweepReport } from './schedule-state.js';
 import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-identity.js';
@@ -358,6 +359,11 @@ export interface PlatformSweepOptions {
   eventSink?: EventSink;
   /** Events drained per scope per pass. Default 200. */
   eventDrainBatch?: number;
+  /**
+   * Days a drained outbox row is kept before the drain phase prunes it (#1334). Default
+   * `OUTBOX_RETENTION_DAYS` (90). Only with `eventSink`: a scope that never drains is never pruned.
+   */
+  outboxRetentionDays?: number;
   /**
    * Deliver cross-vertical events (#1705). For every active primary scope whose running code
    * imports from another vertical, resolve that vertical's instance in the SAME tenant, read
@@ -1057,6 +1063,13 @@ export interface EventDrainReport {
    * (the digest would mail it on every tick); said in the log line on every pass it lasts.
    */
   notHeld?: { tenantId: TenantId; scopeId: ScopeId }[];
+  /** Outbox rows the pass pruned once retention ran out (#1334). ABSENT when none were. */
+  pruned?: number;
+  /**
+   * Scopes whose deployment cannot prune yet: it predates the verb (#1334), so their drained rows
+   * stay until it is redeployed. ABSENT when none. Not an error: nothing failed, and nothing is lost.
+   */
+  pruneUnsupported?: number;
 }
 
 /** One scope's share of `EventDrainReport.skipped`. */
@@ -2111,6 +2124,14 @@ export async function runPlatformSweep(
     const configured = options.eventDrainBatch ?? EVENT_DRAIN_BATCH;
     const budget =
       Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : EVENT_DRAIN_BATCH;
+    // Retention (#1334): a row drained before this instant, and needed by nothing here, may go.
+    // Pruned after the drain on every pass, whatever it shipped, because retention runs on time.
+    // Normalized like the batch: a NaN, zero or negative window must neither sink the phase nor
+    // prune inside the retention the deployment meant to keep.
+    const days = options.outboxRetentionDays ?? OUTBOX_RETENTION_DAYS;
+    const retentionDays = Number.isFinite(days) && days >= 1 ? Math.floor(days) : OUTBOX_RETENTION_DAYS;
+    const sweptAt = Date.now();
+    const drainedBefore = new Date(sweptAt - retentionDays * 86_400_000).toISOString();
     const drainable = await listScopes({ status: 'active' });
     await mapBounded(drainable, concurrency, async (s) => {
       try {
@@ -2122,12 +2143,23 @@ export async function runPlatformSweep(
         if (skipped) {
           (report.eventDrain!.skipped ??= []).push({ tenantId: s.tenantId, scopeId: s.id, ...skipped });
         }
-        if (shipped === 0) return;
-        report.eventDrain!.scopes += 1;
-        report.eventDrain!.shipped += shipped;
-        // A full batch means the scope has more waiting. Reported, never looped:
-        // one busy scope must not starve every other scope in the pass.
-        if (shipped === budget) report.eventDrain!.incomplete += 1;
+        if (shipped > 0) {
+          report.eventDrain!.scopes += 1;
+          report.eventDrain!.shipped += shipped;
+          // A full batch means the scope has more waiting. Reported, never looped:
+          // one busy scope must not starve every other scope in the pass.
+          if (shipped === budget) report.eventDrain!.incomplete += 1;
+        }
+        if (host.admin.pruneDrainedEvents) {
+          const pruned = await host.admin.pruneDrainedEvents(options.actor, s.tenantId, s.id, {
+            drainedBefore,
+            limit: OUTBOX_PRUNE_BATCH,
+            // A new lap starts in the scope's hour; one a cap stopped continues every pass.
+            due: outboxPruneDue(s.id, sweptAt),
+          });
+          if (pruned === null) report.eventDrain!.pruneUnsupported = (report.eventDrain!.pruneUnsupported ?? 0) + 1;
+          else if (pruned > 0) report.eventDrain!.pruned = (report.eventDrain!.pruned ?? 0) + pruned;
+        }
       } catch (err) {
         if (isNotHeld(err)) {
           (report.eventDrain!.notHeld ??= []).push({ tenantId: s.tenantId, scopeId: s.id });
@@ -2905,8 +2937,9 @@ export async function crossVerticalHealth(
  * the stamp is the only record of what the lake is supposed to hold. A repeat is
  * the acceptable failure here; a silent hole is not.
  *
- * Nothing is pruned. The outbox is still read by consumers, replay and
- * `readHistory`; what the stamp buys today is knowing what has left.
+ * Nothing is pruned here. The stamp is what licenses the prune the phase runs after this
+ * (`pruneDrainedEvents`, #1334), once `outboxRetentionDays` have passed and nothing local
+ * still needs the row.
  *
  * What the read stepped over (#1636) comes back beside the count, for the report —
  * and ONLY for the report: those rows were never in `events`, so nothing here can
