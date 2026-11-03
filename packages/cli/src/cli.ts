@@ -207,8 +207,9 @@ Usage:
                     [--review <token>]           the review the acks answer, as the refusal printed it
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
-  substrat store-driver publish --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>] [--wait <90s|30m|2h>]
                                               store a release of a scope-store driver (staff, signed in)
+  substrat store-driver publish --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>] [--wait <90s|30m|2h>]
+                                              upload, wait for approval, and roll out in one command
   substrat store-driver approve --driver <driver> --sha256 <sha256> --reason <text>
                     --source-references <json-file> --isolation-review <json-file>
                     --schema <n> --class-name <Class> [--operation <name> ...]
