@@ -8,7 +8,7 @@ import {
 } from '@substrat-run/kernel';
 import { isVerticalConnectorProvider } from '@substrat-run/contracts';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
-import { bindingChangeRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
+import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -574,19 +574,28 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
           if (c.provider === 'fortnox') {
             const parsed = options.parse(raw ?? {}) as {
               kind?: 'ledger' | 'supplier-invoice';
+              form?: 'summary' | 'sie';
+              years?: 'all' | number;
               firstPass?: 'all' | number;
               writeback?: { read: string; record: string };
             };
-            const refusal = bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
-            if (refusal) throw new Error(refusal);
             // An option the binding holds and the call leaves out is kept, as every other provider's
-            // merge keeps it: the relay passes only the declaration's options the binding lacks.
-            const held = current as { firstPass?: 'all' | number; writeback?: { read: string; record: string } } | undefined;
-            return {
+            // merge keeps it. Kind is not: a kind left out is `ledger`, and a change of kind is refused.
+            const held = current as
+              | { form?: 'summary' | 'sie'; years?: 'all' | number; firstPass?: 'all' | number; writeback?: { read: string; record: string } }
+              | undefined;
+            const ledger = (parsed.kind ?? 'ledger') === 'ledger';
+            const form = parsed.form ?? (ledger ? held?.form : undefined);
+            const next = {
               kind: parsed.kind,
-              firstPass: parsed.firstPass ?? held?.firstPass,
-              writeback: parsed.writeback ?? held?.writeback,
+              form,
+              years: parsed.years ?? (form === 'sie' ? held?.years : undefined),
+              firstPass: parsed.firstPass ?? (ledger ? undefined : held?.firstPass),
+              writeback: parsed.writeback ?? (ledger ? undefined : held?.writeback),
             };
+            const refusal = bindingOptionsRefusal(c.provider, next) ?? bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
+            if (refusal) throw new Error(refusal);
+            return next;
           }
           return options.parse({
             ...(current ? options.strip().parse(current) : {}),

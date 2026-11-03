@@ -33,6 +33,8 @@ import {
   type FortnoxInvoiceWriteback,
   type FortnoxInvoiceWritebackReceipt,
   type FortnoxLedgerPage,
+  type FortnoxLedgerYears,
+  type FortnoxSieFile,
   type FortnoxSupplierInvoicePage,
 } from '../src/index.js';
 import { SIE_FIXTURE } from './fixture.js';
@@ -67,6 +69,9 @@ describe('fortnox connector — inbound sync', () => {
   /** Every page the landing operation received, in order — the assertion surface. */
   let landed: FortnoxLedgerPage[] = [];
   let invoicesLanded: FortnoxSupplierInvoicePage[] = [];
+  let filesLanded: FortnoxSieFile[] = [];
+  /** The financial year the file landing refuses. */
+  let refuseYear: number | null = null;
   /** The entity type the filed landing names; a test points it at one nothing declares. */
   let fileEntityType = 'invoice';
   /** What the write-back read answers, what asked it, and what came back. */
@@ -97,6 +102,12 @@ describe('fortnox connector — inbound sync', () => {
       [OPERATION]: (async (ctx, input: FortnoxLedgerPage) => {
         assertAllowed(await ctx.check(LEDGER_RECORD));
         landed.push(input);
+        return { ok: true };
+      }) as OperationHandler<never, unknown>,
+      'ledger/record-file': (async (ctx, input: FortnoxSieFile) => {
+        assertAllowed(await ctx.check(LEDGER_RECORD));
+        if (input.financialYear.id === refuseYear) throw new Error(`year ${refuseYear} is closed`);
+        filesLanded.push(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
       [INVOICE_OPERATION]: (async (ctx, input: FortnoxSupplierInvoicePage) => {
@@ -149,6 +160,8 @@ describe('fortnox connector — inbound sync', () => {
     connId = connectionId.parse(ulid());
     landed = [];
     invoicesLanded = [];
+    filesLanded = [];
+    refuseYear = null;
     fileEntityType = 'invoice';
     waiting = { hold: [], decisions: [] };
     writebackAsked = [];
@@ -280,6 +293,172 @@ describe('fortnox connector — inbound sync', () => {
     await bindInvoices();
     await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect((await listFortnoxBindings(host, connId))[0]).toMatchObject({ kind: 'supplier-invoice', operation: INVOICE_OPERATION });
+  });
+
+  describe('the whole SIE file', () => {
+    const FILE_OPERATION = 'ledger/record-file';
+    const NOW = Date.parse('2026-06-15T12:00:00.000Z');
+    const sie = (year: number, text = 'Hyra') =>
+      `#FORMAT PC8\r\n#FNAMN "Testbolaget AB"\r\n#ORGNR 556677-8899\r\n#RAR 0 ${year}0101 ${year}1231\r\n#KONTO 3010 "${text} Ö"\r\n`;
+    const YEARS = [
+      { Id: 4, FromDate: '2023-01-01', ToDate: '2023-12-31' },
+      { Id: 5, FromDate: '2024-01-01', ToDate: '2024-12-31' },
+      { Id: 6, FromDate: '2025-01-01', ToDate: '2025-12-31' },
+      { Id: 7, FromDate: '2026-01-01', ToDate: '2026-12-31' },
+    ];
+    const company = () => {
+      fortnox = new FortnoxMock({ financialYears: YEARS });
+      for (const y of YEARS) fortnox.setSie(y.Id, sie(Number(y.FromDate.slice(0, 4))));
+    };
+    const bindFile = (years?: FortnoxLedgerYears) =>
+      bindFortnoxScope(host, {
+        connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: FILE_OPERATION, permission: LEDGER_RECORD,
+        form: 'sie', ...(years === undefined ? {} : { years }),
+      });
+    const at = (ms: number) => ({ ...options(), fetch: fortnox.fetch, period: undefined, now: () => ms });
+    const fileYears = () => filesLanded.map((f) => f.financialYear.id);
+    const DAY = 24 * 3_600_000;
+    const PASS = 15 * 60_000;
+
+    beforeEach(company);
+
+    it('lands the current year\'s file, decoded, in one call, and refuses nothing a summary would', async () => {
+      await bindFile();
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(result.synced).toEqual([expect.objectContaining({ scopeId: s, changed: true, financialYearId: 7, pages: 1 })]);
+      expect(filesLanded).toEqual([{
+        syncId: expect.stringMatching(/^[0-9a-f]{64}$/),
+        connectionId: connId,
+        company: { name: 'Testbolaget AB', organizationNumber: '556677-8899' },
+        financialYear: { id: 7, from: '2026-01-01', to: '2026-12-31' },
+        sie: sie(2026),
+      }]);
+      expect(landed).toEqual([]);
+      expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=7']);
+    });
+
+    it('lands nothing when the file has not changed, and again when it has', async () => {
+      await bindFile();
+      await sweepFortnoxLedger(host, connId, at(NOW));
+
+      const idle = await sweepFortnoxLedger(host, connId, at(NOW + PASS));
+      expect(idle.unchanged).toBe(1);
+      expect(filesLanded).toHaveLength(1);
+
+      fortnox.setSie(7, sie(2026, 'Hyror'));
+      await sweepFortnoxLedger(host, connId, at(NOW + 2 * PASS));
+      expect(filesLanded).toHaveLength(2);
+      expect(filesLanded[1]!.syncId).not.toBe(filesLanded[0]!.syncId);
+    });
+
+    it('brings older years in newest first, one a pass, and goes no further back than it keeps', async () => {
+      await bindFile(2);
+
+      await sweepFortnoxLedger(host, connId, at(NOW));
+      expect(fileYears()).toEqual([7, 6]);
+
+      for (let n = 1; n < 4; n += 1) await sweepFortnoxLedger(host, connId, at(NOW + n * PASS));
+      expect(fileYears()).toEqual([7, 6, 5]);
+    });
+
+    it('keeps every year with `all`', async () => {
+      await bindFile('all');
+
+      for (let n = 0; n < 4; n += 1) await sweepFortnoxLedger(host, connId, at(NOW + n * PASS));
+
+      expect(fileYears()).toEqual([7, 6, 5, 4]);
+    });
+
+    it('reads an older year again after a day, longest ago first, and lands it only if it moved', async () => {
+      await bindFile(2);
+      for (let n = 0; n < 3; n += 1) await sweepFortnoxLedger(host, connId, at(NOW + n * PASS));
+      fortnox.calls.length = 0;
+      fortnox.setSie(5, sie(2024, 'Omföring'));
+
+      await sweepFortnoxLedger(host, connId, at(NOW + 3 * PASS));
+      expect(fortnox.calls.filter((c) => c.includes('/sie/'))).toEqual(['/3/sie/4?financialyear=7']);
+
+      await sweepFortnoxLedger(host, connId, at(NOW + DAY + PASS));
+      await sweepFortnoxLedger(host, connId, at(NOW + DAY + 2 * PASS));
+      expect(fortnox.calls.filter((c) => c.includes('financialyear=6') || c.includes('financialyear=5'))).toEqual([
+        '/3/sie/4?financialyear=6',
+        '/3/sie/4?financialyear=5',
+      ]);
+      expect(fileYears()).toEqual([7, 6, 5, 5]);
+    });
+
+    it('offers a refused year again, and lets the other year land', async () => {
+      await bindFile(1);
+      refuseYear = 7;
+
+      const first = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/^financial year 7: .*year 7 is closed/) }]);
+      expect(first.synced).toEqual([expect.objectContaining({ financialYearId: 6, changed: true })]);
+      expect(fileYears()).toEqual([6]);
+      expect(Object.keys((await listFortnoxBindings(host, connId))[0]!.yearSync!)).toEqual(['6']);
+
+      refuseYear = null;
+      const second = await sweepFortnoxLedger(host, connId, at(NOW + PASS));
+
+      expect(second.failed).toEqual([]);
+      expect(fileYears()).toEqual([6, 7]);
+    });
+
+    it('puts a refused older year back in the queue, so the years behind it still land', async () => {
+      await bindFile(2);
+      refuseYear = 6;
+
+      await sweepFortnoxLedger(host, connId, at(NOW));
+      await sweepFortnoxLedger(host, connId, at(NOW + PASS));
+      expect(fileYears()).toEqual([7, 5]);
+
+      refuseYear = null;
+      await sweepFortnoxLedger(host, connId, at(NOW + DAY));
+
+      expect(fileYears()).toEqual([7, 5, 6]);
+      expect((await listFortnoxBindings(host, connId))[0]!.yearFailedAt).toBeUndefined();
+    });
+
+    it('leaves a binding unbound during a pass unbound', async () => {
+      await bindFile(1);
+      // Staff unbinds while the pass downloads the older year, after the current one was written.
+      const fetch: typeof fortnox.fetch = async (input, init) => {
+        if (String(input).includes('financialyear=6')) await unbindFortnoxScope(host, connId, s);
+        return fortnox.fetch(input, init);
+      };
+
+      await sweepFortnoxLedger(host, connId, { ...at(NOW), fetch });
+
+      expect(await listFortnoxBindings(host, connId)).toEqual([]);
+    });
+
+    it('refuses `years` on a summary, and `form` on an invoice binding', async () => {
+      const bindWith = (over: Partial<Parameters<typeof bindFortnoxScope>[1]>) => bindFortnoxScope(host, {
+        connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD, ...over,
+      });
+
+      await expect(bindWith({ years: 2 })).rejects.toThrow("years applies to a binding with form 'sie'");
+      await expect(bindWith({ form: 'summary', years: 2 })).rejects.toThrow("years applies to a binding with form 'sie'");
+      await expect(bindWith({ kind: 'supplier-invoice', form: 'sie' })).rejects.toThrow("form applies to a ledger binding, not to 'supplier-invoice'");
+      await expect(bindWith({ form: 'sie', years: -1 })).rejects.toThrow("years is 'all' or a whole number of years");
+      expect(await listFortnoxBindings(host, connId)).toEqual([]);
+    });
+
+    it('keeps what landed through a re-bind that changes nothing, and starts over when one does', async () => {
+      await bindFile();
+      await sweepFortnoxLedger(host, connId, at(NOW));
+
+      await bindFile();
+      expect(Object.keys((await listFortnoxBindings(host, connId))[0]!.yearSync!)).toEqual(['7']);
+
+      await bindFile('all');
+
+      expect((await listFortnoxBindings(host, connId))[0]).toMatchObject({ form: 'sie', years: 'all' });
+      expect((await listFortnoxBindings(host, connId))[0]!.yearSync).toBeUndefined();
+    });
   });
 
   describe('supplier invoices (#2422)', () => {

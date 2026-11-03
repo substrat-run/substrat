@@ -386,7 +386,7 @@ export { resolveObservabilityWindow, observabilityBucketMinutes } from './observ
 export type { ObservabilityWindow, ObservabilityWindowInput } from './observability-window.js';
 
 // #2316: the binding options a provider takes — the staff door and the connector pass validate with it.
-export { bindingChangeRefusal, connectionBindingOptions } from './connection-binding-options.js';
+export { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions } from './connection-binding-options.js';
 export {
   resolveVerticalConnectorTarget,
   verticalConnectorBinder,

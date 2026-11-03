@@ -30,6 +30,7 @@ import {
   FORTNOX_OAUTH_BASE,
   fortnoxSecret,
   type FortnoxApiOptions,
+  type FortnoxFinancialYear,
   type FortnoxSupplierInvoice,
   type FortnoxSupplierInvoiceFile,
 } from './api.js';
@@ -163,6 +164,17 @@ export interface FortnoxBinding {
   /** Absent on pre-kind bindings, which are ledger bindings. */
   kind?: 'ledger' | 'supplier-invoice';
   /**
+   * What a ledger binding lands. Absent is `'summary'`: the monthly sums of {@link fortnoxLedgerPage}.
+   * `'sie'` is the year's whole SIE4 file, {@link fortnoxSieFile}, for a vertical that keeps what the
+   * sums leave out: opening and closing balances, and the vouchers themselves.
+   */
+  form?: FortnoxLedgerForm;
+  /**
+   * How many financial years before the current one a `form: 'sie'` binding keeps, or `'all'`.
+   * Absent is none: the current year alone, as a summary binding has.
+   */
+  years?: FortnoxLedgerYears;
+  /**
    * How far back an invoice binding's first pass reads: a number of days, or `'all'` for every
    * invoice the company has. Absent means {@link INVOICE_FIRST_LOOKBACK_DAYS}.
    */
@@ -196,6 +208,17 @@ export interface FortnoxBinding {
     contentHash: string;
     balances: number;
   };
+  /**
+   * What a `form: 'sie'` binding has landed, per financial year id. `syncedAt` moves when the year
+   * was last read, changed or not, which is how an older year knows it is due.
+   */
+  yearSync?: Record<string, { syncedAt: string; contentHash: string }>;
+  /**
+   * When a `form: 'sie'` binding last failed to land a year, per financial year id, cleared once it
+   * lands. An older year waits as long after a failure as after a read, so one the landing keeps
+   * refusing does not hold back the years behind it.
+   */
+  yearFailedAt?: Record<string, string>;
   /** An invoice binding's cursor (#2422), written only after a landing succeeded. */
   invoiceSync?: {
     /**
@@ -221,6 +244,11 @@ export interface FortnoxBinding {
    */
   files?: FortnoxInvoiceFileEntry[];
 }
+
+/** What a ledger binding lands. See {@link FortnoxBinding.form}. */
+export type FortnoxLedgerForm = 'summary' | 'sie';
+/** How many older years a `form: 'sie'` binding keeps. See {@link FortnoxBinding.years}. */
+export type FortnoxLedgerYears = 'all' | number;
 
 /** How far back an invoice binding's first pass reads. See {@link FortnoxBinding.firstPass}. */
 export type FortnoxInvoiceFirstPass = 'all' | number;
@@ -303,6 +331,36 @@ export type FortnoxLedgerPage = z.infer<typeof fortnoxLedgerPage>;
 
 /** How many balance rows ride one `invoke`. */
 const PAGE_SIZE = 500;
+
+/**
+ * One financial year's whole SIE4 file, as a `form: 'sie'` binding lands it, in one `invoke`.
+ *
+ * The file itself, because it already is the neutral statement of the books, and everything a
+ * reader could want is in it: the opening and closing balances the sums skip, every voucher, every
+ * account name. A vertical that takes uploaded SIE files has a reader for it already, and this way
+ * a file from Fortnox and a file from a person go through the same door.
+ *
+ * Decoded from PC8, so `sie` is text. Parsed on the way out like {@link fortnoxLedgerPage}.
+ */
+export const fortnoxSieFile = z.object({
+  /** The content hash: unchanged books present the same id, so a landing can answer it once. */
+  syncId: z.string().min(1),
+  connectionId: z.string().min(1),
+  company: z.object({
+    name: z.string(),
+    organizationNumber: z.string(),
+  }),
+  financialYear: z.object({
+    id: z.number(),
+    from: z.string(),
+    to: z.string(),
+  }),
+  sie: z.string().min(1),
+});
+export type FortnoxSieFile = z.infer<typeof fortnoxSieFile>;
+
+/** How long a `form: 'sie'` binding leaves an older year before reading it again. */
+const OLDER_YEAR_REFRESH_MS = 24 * 3_600_000;
 
 /**
  * The supplier invoices an invoice binding lands (#2422) — one page per pass that found changes.
@@ -544,6 +602,10 @@ export async function bindFortnoxScope(
     operation: string;
     permission: string;
     kind?: 'ledger' | 'supplier-invoice';
+    /** What a ledger binding lands. See {@link FortnoxBinding.form}. */
+    form?: FortnoxLedgerForm;
+    /** How many older years it keeps. See {@link FortnoxBinding.years}. */
+    years?: FortnoxLedgerYears;
     /** An invoice binding's first pass. See {@link FortnoxBinding.firstPass}. */
     firstPass?: FortnoxInvoiceFirstPass;
     /** An invoice binding's write-back. See {@link FortnoxBinding.writeback}. */
@@ -557,6 +619,15 @@ export async function bindFortnoxScope(
 ): Promise<FortnoxBinding> {
   const tenant = tenantIdSchema.parse(input.tenantId);
   const scope = scopeIdSchema.parse(input.scopeId);
+  if (input.form !== undefined && (input.kind ?? 'ledger') !== 'ledger') {
+    throw new Error(`form applies to a ledger binding, not to '${String(input.kind)}'`);
+  }
+  if (input.years !== undefined && input.form !== 'sie') {
+    throw new Error("years applies to a binding with form 'sie': the summary form lands the current year");
+  }
+  if (input.years !== undefined && input.years !== 'all' && !(Number.isInteger(input.years) && input.years >= 0)) {
+    throw new Error(`years is 'all' or a whole number of years, not ${String(input.years)}`);
+  }
   if ((input.firstPass !== undefined || input.writeback !== undefined) && input.kind !== 'supplier-invoice') {
     throw new Error(`firstPass and writeback apply to a supplier-invoice binding, not to '${input.kind ?? 'ledger'}'`);
   }
@@ -588,9 +659,18 @@ export async function bindFortnoxScope(
     operation: input.operation,
     permission: input.permission,
     ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.form !== undefined ? { form: input.form } : {}),
+    ...(input.years !== undefined ? { years: input.years } : {}),
     ...(input.firstPass !== undefined ? { firstPass: input.firstPass } : {}),
     ...(input.writeback !== undefined ? { writeback: input.writeback } : {}),
     ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
+    // A re-bind that changes nothing keeps the years already landed: an operator re-PUT or a scope
+    // asking again must not re-download a whole history. Any change starts over, a newly recorded
+    // company included, since the years held may be another company's.
+    ...(current?.yearSync && input.form === 'sie' && current.form === 'sie' && current.years === input.years &&
+      current.operation === input.operation && (current.externalAccountRef ?? null) === (input.externalAccountRef ?? null)
+      ? { yearSync: current.yearSync }
+      : {}),
     // A re-bind starts the cursor over but keeps the files already asked for: an invoice outside a
     // narrowed first pass would otherwise never be asked about again.
     ...(current?.files?.length ? { files: current.files } : {}),
@@ -789,6 +869,133 @@ export async function syncFortnoxScope(
     pages: pageCount,
     outOfRange: summary.outOfRange,
   };
+}
+
+/**
+ * Sync ONE `form: 'sie'` binding: land the current year's SIE4 file if it changed, and bring one
+ * older year up to date.
+ *
+ * One older year per pass, because a year is one large download and a pass runs on a timer. A
+ * company's history therefore lands newest year first, a year a quarter of an hour, and after that
+ * each older year is read once a day: a closed year rarely moves, but nothing stops it moving. A
+ * year whose file has not changed lands nothing.
+ *
+ * Each year is written to the binding right after it lands, so a failure on one costs only that one,
+ * and the years that did land are answered beside the ones that failed.
+ */
+export async function syncFortnoxSieFiles(
+  host: ScopeHost,
+  connectionId: ConnectionId,
+  binding: FortnoxBinding,
+  options: FortnoxConnectorOptions & { period?: { from: string; to: string } },
+): Promise<{ synced: FortnoxSyncResult[]; failed: { financialYearId: number; error: unknown }[] }> {
+  const conn = await openFortnoxConnection(
+    host.admin,
+    options.fetch,
+    binding.tenantId,
+    binding.vertical,
+    options.timeoutMs ?? 30_000,
+    { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
+  );
+  const api = new FortnoxApi(conn, apiOptions(options));
+
+  const nowMs = options.now?.() ?? Date.now();
+  const year = new Date(nowMs).toISOString().slice(0, 4);
+  const years = await api.financialYears();
+  const current = financialYearFor(years, options.period ?? { from: `${year}-01-01`, to: `${year}-12-31` });
+  if (!current) return { synced: [], failed: [] };
+
+  const held = (y: FortnoxFinancialYear) => binding.yearSync?.[String(y.Id)];
+  // The last time a year was tried, landed or failed: a failed year waits its turn like a read one.
+  const tried = (y: FortnoxFinancialYear) => {
+    const read = held(y)?.syncedAt;
+    const failed = binding.yearFailedAt?.[String(y.Id)];
+    return read === undefined || (failed !== undefined && failed > read) ? failed : read;
+  };
+  const kept = binding.years === 'all' ? Infinity : (binding.years ?? 0);
+  // Never tried comes first, newest first (the sort is stable), because the recent years are the
+  // ones a reader wants. After that, the one tried longest ago.
+  const due = years
+    .filter((y) => y.FromDate < current.FromDate)
+    .sort((a, b) => (a.FromDate < b.FromDate ? 1 : -1))
+    .slice(0, kept)
+    .filter((y) => {
+      const last = tried(y);
+      return last === undefined || nowMs - Date.parse(last) >= OLDER_YEAR_REFRESH_MS;
+    })
+    .sort((a, b) => (tried(a) ?? '').localeCompare(tried(b) ?? ''));
+
+  const key = bindingKey(binding.scopeId);
+  const synced: FortnoxSyncResult[] = [];
+  const failed: { financialYearId: number; error: unknown }[] = [];
+  for (const financialYear of [current, ...due.slice(0, 1)]) {
+    try {
+      const sie = await api.sieFile(financialYear.Id);
+      const contentHash = await sha256Hex(`sie\n${financialYear.Id}\n${sie}`);
+      const changed = held(financialYear)?.contentHash !== contentHash;
+      if (changed) {
+        // The file names its company (#FNAMN, #ORGNR), as the summary form reads it.
+        const ledger = parseSie4(sie);
+        // The connection acting as itself (#97), gated on the grant the binding was seated with.
+        const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
+        await scope.invoke(
+          binding.operation,
+          fortnoxSieFile.parse({
+            syncId: contentHash,
+            connectionId,
+            company: { name: ledger.company, organizationNumber: ledger.organizationNumber },
+            financialYear: { id: financialYear.Id, from: financialYear.FromDate, to: financialYear.ToDate },
+            sie,
+          }),
+        );
+      }
+      // A year is a long download, so the binding read at the start of the pass may be stale by now:
+      // the cursor goes onto the binding as it stands, and one unbound or re-bound meanwhile is left
+      // as the person left it rather than brought back from this pass's copy.
+      const now = (await host.admin.getConnectorState(connectionId, key)) as FortnoxBinding | null | undefined;
+      if (!now || typeof now !== 'object' || now.boundAt !== binding.boundAt) break;
+      const syncedAt = new Date(nowMs).toISOString();
+      const { [String(financialYear.Id)]: _landed, ...stillFailed } = now.yearFailedAt ?? {};
+      await host.admin.putConnectorState(connectionId, key, {
+        ...now,
+        yearSync: { ...now.yearSync, [String(financialYear.Id)]: { syncedAt, contentHash } },
+        yearFailedAt: Object.keys(stillFailed).length > 0 ? stillFailed : undefined,
+        ...(financialYear === current ? { lastSync: { financialYearId: current.Id, syncedAt, contentHash, balances: 0 } } : {}),
+      } satisfies FortnoxBinding);
+      synced.push({
+        scopeId: binding.scopeId,
+        changed,
+        syncId: contentHash,
+        financialYearId: financialYear.Id,
+        balances: 0,
+        pages: changed ? 1 : 0,
+        outOfRange: 0,
+      });
+    } catch (error) {
+      failed.push({ financialYearId: financialYear.Id, error });
+      // The current year is tried every pass anyway; an older one is put back in the queue.
+      if (financialYear !== current) await markYearFailed(host, connectionId, key, binding, financialYear.Id, nowMs);
+    }
+  }
+  return { synced, failed };
+}
+
+/**
+ * Record that an older year failed, onto the binding as it stands (see the cursor write above). The
+ * year's error is already answered, so a failure to record it only means the year is tried again
+ * next pass, as it was before this was recorded.
+ */
+async function markYearFailed(host: ScopeHost, connectionId: ConnectionId, key: string, binding: FortnoxBinding, financialYearId: number, nowMs: number) {
+  try {
+    const now = (await host.admin.getConnectorState(connectionId, key)) as FortnoxBinding | null | undefined;
+    if (!now || typeof now !== 'object' || now.boundAt !== binding.boundAt) return;
+    await host.admin.putConnectorState(connectionId, key, {
+      ...now,
+      yearFailedAt: { ...now.yearFailedAt, [String(financialYearId)]: new Date(nowMs).toISOString() },
+    } satisfies FortnoxBinding);
+  } catch {
+    // Answered above: the year's own error is in `failed`.
+  }
 }
 
 /** What one invoice binding's pass did. */
@@ -1366,11 +1573,29 @@ export async function sweepFortnoxLedger(
       result.failed.push({ scopeId: binding.scopeId, error: `unknown Fortnox binding kind '${String(binding.kind)}'; upgrade this platform before polling this binding` });
       continue;
     }
+    // The same for the form, so a file binding is never polled as sums of a shape its landing refuses.
+    if (binding.form !== undefined && binding.form !== 'summary' && binding.form !== 'sie') {
+      result.failed.push({ scopeId: binding.scopeId, error: `unknown Fortnox ledger form '${String(binding.form)}'; upgrade this platform before polling this binding` });
+      continue;
+    }
     try {
       if (binding.kind === 'supplier-invoice') {
         const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
         if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped) result.invoices.push(r);
         else result.unchanged += 1;
+        continue;
+      }
+      if (binding.form === 'sie') {
+        const { synced, failed } = await syncFortnoxSieFiles(host, connectionId, binding, pass);
+        const landed = synced.filter((r) => r.changed);
+        result.synced.push(...landed);
+        for (const f of failed) {
+          result.failed.push({
+            scopeId: binding.scopeId,
+            error: `financial year ${f.financialYearId}: ${f.error instanceof Error ? f.error.message : String(f.error)}`,
+          });
+        }
+        if (landed.length === 0 && failed.length === 0) result.unchanged += 1;
         continue;
       }
       const r = await syncFortnoxScope(host, connectionId, binding, pass);
@@ -1518,20 +1743,23 @@ export async function fortnoxConnectionActivity(
         key,
         title: `${b.vertical} — ${b.scopeId}`,
         reference: b.lastSync ? String(b.lastSync.financialYearId) : null,
-        status: b.lastSync || b.invoiceSync ? 'synced' : 'bound — not yet synced',
+        // A file binding may have landed an older year while its current one is refused.
+        status: b.lastSync || b.invoiceSync || (b.yearSync && Object.keys(b.yearSync).length > 0) ? 'synced' : 'bound — not yet synced',
         at: instant.parse(b.lastSync?.syncedAt ?? b.invoiceSync?.syncedAt ?? b.boundAt),
         facts: [
           { label: 'Lands through', value: b.operation },
           { label: 'Permission', value: b.permission },
           ...(b.lastSync
             ? [
-                { label: 'Balances', value: String(b.lastSync.balances) },
+                // A file binding lands no balance rows, so it has no count to show.
+                ...(b.form === 'sie' ? [] : [{ label: 'Balances', value: String(b.lastSync.balances) }]),
                 { label: 'Financial year', value: String(b.lastSync.financialYearId) },
                 // The content hash IS the sync identity, so an operator comparing two
                 // scopes can tell "same books" from "same moment" at a glance.
                 { label: 'Content hash', value: b.lastSync.contentHash.slice(0, 12) },
               ]
             : []),
+          ...(b.yearSync ? [{ label: 'Financial years held', value: String(Object.keys(b.yearSync).length) }] : []),
           ...(b.files?.length ? [{ label: 'Invoice files waiting', value: String(b.files.length) }] : []),
         ],
       };

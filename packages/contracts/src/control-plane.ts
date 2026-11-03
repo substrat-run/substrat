@@ -766,6 +766,10 @@ export const connectionBindingAudit = z.object({
   permission: permissionKey,
   /** Fortnox landing kind; absence is the legacy ledger binding. */
   kind: z.enum(['ledger', 'supplier-invoice']).optional(),
+  /** What a Fortnox ledger binding lands: the monthly sums, or the whole SIE file. */
+  form: z.enum(['summary', 'sie']).optional(),
+  /** How many years before the current one a Fortnox `form: 'sie'` binding keeps. */
+  years: z.union([z.literal('all'), z.number().int().nonnegative()]).optional(),
   /** How far back a Fortnox invoice binding's first pass reads: days, or `all`. */
   firstPass: z.union([z.literal('all'), z.number().int().positive()]).optional(),
   /** The operations a Fortnox invoice binding writes back through. */

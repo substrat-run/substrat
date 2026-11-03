@@ -72,7 +72,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
   const statusOfA = () => relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf()).then((r) => r.bindings);
 
   /** A version of the vertical declaring the landing in `mode`, holding `key`, and every scope given it. */
-  const runs = async (mode: 'on-request' | 'every-install', key = LAND, provider = 'planima', options?: Record<string, unknown>) => {
+  const runs = async (mode: 'on-request' | 'every-install', key = LAND, options?: Record<string, unknown>, provider = 'planima') => {
     const id = ulid();
     await host.admin.publishVersion(relayActor, await heldVersion({
       id, verticalSlug: SLUG, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
@@ -245,6 +245,17 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect([await holdsKey(fresh, INGEST), await holdsKey(fresh, LAND)]).toEqual([false, false]);
   });
 
+  it("keeps a declared option the binding holds through a rebind that omits it, even with a binder that does not merge what it holds", async () => {
+    await runs('on-request', LAND, { horizonYears: 5 });
+    const conn = await own(a);
+    const declarationOnly: ConnectionBinder = { ...binder, options: (raw) => connectionBindingOptions('planima').parse(raw ?? {}) };
+    await relayConnectionBind(host, relayActor, bindBody(a, conn, { horizonYears: 8 }), landings(true, declarationOnly));
+
+    await relayConnectionBind(host, relayActor, bindBody(a, conn, {}), landings(true, declarationOnly));
+
+    expect((await listPlanimaBindings(host, conn))[0]).toMatchObject({ horizonYears: 8 });
+  });
+
   it('rebinds a Fortnox invoice landing the declaration names, keeping its kind and the scope\'s own first pass', async () => {
     // The control plane's Fortnox binder: a missing kind means `ledger`, and a change of kind is refused.
     const fortnox: ConnectionBinder = {
@@ -263,7 +274,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       proven: true,
       landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { fortnox } },
     };
-    await runs('on-request', LAND, 'fortnox', { kind: 'supplier-invoice' });
+    await runs('on-request', LAND, { kind: 'supplier-invoice' }, 'fortnox');
     const conn = await own(a, 'fortnox');
     await relayConnectionBind(host, relayActor, bindBody(a, conn, { firstPass: 'all' }), relay);
 
