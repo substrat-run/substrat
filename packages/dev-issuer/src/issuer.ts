@@ -136,11 +136,10 @@ function problem(
   c: Context,
   code: 'unauthenticated' | 'validation_failed',
   detail: string,
-  status: 400 | 401,
   headers: Record<string, string> = {},
 ) {
   const body = toProblem(substratError(code, detail), c.req.path);
-  return c.body(JSON.stringify(body), status, { ...headers, 'content-type': PROBLEM_CONTENT_TYPE });
+  return c.body(JSON.stringify(body), body.status as 400 | 401, { ...headers, 'content-type': PROBLEM_CONTENT_TYPE });
 }
 
 export function createDevIssuer(opts: DevIssuerOptions): Hono {
@@ -300,19 +299,19 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
   app.get('/userinfo', async (c) => {
     const auth = c.req.header('authorization') ?? '';
     const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : '';
-    // RFC 6750 §3: a refused bearer is announced in WWW-Authenticate; the body is a problem document.
-    const refuse = () =>
-      problem(c, 'unauthenticated', 'the bearer token is missing, invalid or expired', 401, {
-        'www-authenticate': 'Bearer error="invalid_token"',
-      });
-    if (!token) return refuse();
+    // RFC 6750 §3: the refusal is announced in WWW-Authenticate; the body is a problem document.
+    // §3.1: a request that carried no bearer gets the bare challenge, with no error code.
+    const refuse = (challenge: string, detail: string) =>
+      problem(c, 'unauthenticated', detail, { 'www-authenticate': challenge });
+    const invalid = () => refuse('Bearer error="invalid_token"', 'the bearer token is invalid or has expired');
+    if (!token) return refuse('Bearer', 'no bearer token was presented');
     try {
       const { payload } = await jwtVerify(token, await verificationKey(), { issuer: issuerOf(c) });
       const persona = personaOf(String(payload.sub));
-      if (!persona) return refuse();
+      if (!persona) return invalid();
       return c.json(claimsFor(persona));
     } catch {
-      return refuse();
+      return invalid();
     }
   });
 
@@ -347,7 +346,7 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
     const persona = personaOf(sub);
     if (!persona) {
       const known = personas.map((p) => p.sub).join(', ');
-      return problem(c, 'validation_failed', `unknown sub '${sub}' — known: ${known}`, 400);
+      return problem(c, 'validation_failed', `unknown sub '${sub}' — known: ${known}`);
     }
     const base = { iss: issuerOf(c), aud: audience, ...claimsFor(persona) };
     const [idToken, accessToken] = await Promise.all([sign(base, ttl), sign({ ...base, typ: 'access' }, ttl)]);

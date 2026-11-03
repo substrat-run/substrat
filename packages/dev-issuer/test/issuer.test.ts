@@ -188,6 +188,33 @@ describe('what the issuer refuses', () => {
     expect(res.status).toBe(400);
     expect(await res.text()).toContain('Unknown user');
   });
+
+  // RFC 6750 §3.1: no bearer presented → the bare challenge; a bearer that fails → invalid_token.
+  it.each([
+    ['no Authorization header', undefined, 'Bearer'],
+    ['a non-Bearer scheme', 'Basic YTpi', 'Bearer'],
+    ['a token that does not verify', 'Bearer nope', 'Bearer error="invalid_token"'],
+    ['a valid token for a user it does not serve', 'ghost', 'Bearer error="invalid_token"'],
+  ])('refuses /userinfo with %s as a problem document and the matching challenge', async (_name, auth, challenge) => {
+    let authorization = auth;
+    if (auth === 'ghost') {
+      // Same key and origin, so the signature and issuer check out; only the persona is gone.
+      const other = createDevIssuer({ personas: [{ sub: 'dev|ghost', name: 'Ghost', email: 'g@example.test', note: '' }] });
+      const minted = await other.fetch(
+        new Request(`${ISSUER}/dev/token`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sub: 'dev|ghost' }),
+        }),
+      );
+      authorization = `Bearer ${((await minted.json()) as { access_token: string }).access_token}`;
+    }
+    const res = await app.fetch(new Request(`${ISSUER}/userinfo`, { headers: authorization ? { authorization } : {} }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(res.headers.get('www-authenticate')).toBe(challenge);
+    expect(await res.json()).toMatchObject({ code: 'unauthenticated', status: 401 });
+  });
 });
 
 describe('the non-interactive door', () => {
@@ -222,14 +249,6 @@ describe('the non-interactive door', () => {
     expect(res.status).toBe(400);
     expect(res.headers.get('content-type')).toBe('application/problem+json');
     expect(await res.json()).toMatchObject({ code: 'validation_failed', detail: expect.stringContaining('dev|nobody') });
-  });
-
-  it('refuses /userinfo without a valid bearer as a problem document, with the RFC 6750 challenge', async () => {
-    const res = await app.fetch(new Request(`${ISSUER}/userinfo`, { headers: { authorization: 'Bearer nope' } }));
-    expect(res.status).toBe(401);
-    expect(res.headers.get('content-type')).toBe('application/problem+json');
-    expect(res.headers.get('www-authenticate')).toBe('Bearer error="invalid_token"');
-    expect(await res.json()).toMatchObject({ code: 'unauthenticated' });
   });
 });
 
