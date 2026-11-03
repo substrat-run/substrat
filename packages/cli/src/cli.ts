@@ -540,6 +540,8 @@ async function cmdPush(): Promise<void> {
   const linted = assertLayerRules(dir, argv.includes('--skip-lint'), jsonCheck ? console.error : console.log);
 
   const meta = readVerticalMeta(dir);
+  // The slug the push deploys as; `--check` judges the declared surface for the same one.
+  const slug = flag('slug') ?? meta.slug;
   // Before the network and before `--check` returns, so all three see it; under `--strict`
   // it throws like every other failure of the gate.
   reportOutbound(dir, meta.outbound, jsonCheck ? console.error : console.log);
@@ -552,10 +554,11 @@ async function cmdPush(): Promise<void> {
   // rules above have already run, which makes `substrat push --check` the whole local gate.
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
-    const surface = await checkPermissionSurface(dir, {
-      require: dataLossCheckRequired(argv),
-      log: jsonCheck ? console.error : console.log,
-    });
+    const surface = await checkPermissionSurface(
+      dir,
+      { require: dataLossCheckRequired(argv), log: jsonCheck ? console.error : console.log },
+      slug,
+    );
     // The schedule check (#1646) the push would make — `--check` is the whole local gate, so
     // a vertical whose schedules nothing would run is refused here too. A tree with no deploy
     // config has no bindings to judge; the push itself names that refusal.
@@ -600,7 +603,6 @@ async function cmdPush(): Promise<void> {
     return;
   }
 
-  const slug = flag('slug') ?? meta.slug;
   const name = flag('name') ?? meta.name;
   if (!slug) {
     console.error('no --slug given and none in package.json — add `"substrat": { "slug": "…" }` or pass --slug');
