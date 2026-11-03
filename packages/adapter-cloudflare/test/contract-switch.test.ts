@@ -2295,13 +2295,16 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
 
+  /** A restore's answer, without what it did with the dump's own indexes and triggers (#2820). */
+  const switches = <T extends { moduleObjects?: unknown }>({ moduleObjects: _, ...rest }: T) => rest;
+
   it('twin: under the same fault, a restore with nothing to switch lands, and fires', async () => {
     const s = await newScope();
     const before = await host.exportScopeLocal(s);
     await off(s);
     const undo = await refuseMarker(s);
     try {
-      expect(await host.restoreScopeLocal(s, before)).toEqual({ tables: before.length });
+      expect(switches(await host.restoreScopeLocal(s, before))).toEqual({ tables: before.length });
     } finally {
       await undo();
     }
@@ -2355,13 +2358,13 @@ describe('#1742 — a wiped scope is switched off inside the unit that re-seats 
     const before = await host.exportScopeLocal(s);
     await off(s);
     const restored = await host.restoreScopeLocal(s, before, { switchedOff: [SCHED] });
-    expect(restored).toEqual({ tables: before.length, switchedOff: [tookBack] });
+    expect(switches(restored)).toEqual({ tables: before.length, switchedOff: [tookBack] });
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
 
     const twin = await newScope();
     const beforeTwin = await host.exportScopeLocal(twin);
     await host.systemSwitchLocal(twin, SCHED, 'off');
-    expect(await host.restoreScopeLocal(twin, beforeTwin)).toEqual({ tables: beforeTwin.length });
+    expect(switches(await host.restoreScopeLocal(twin, beforeTwin))).toEqual({ tables: beforeTwin.length });
     expect(await pass(twin)).toMatchObject({ fired: 2, failed: 0 });
   });
 });
