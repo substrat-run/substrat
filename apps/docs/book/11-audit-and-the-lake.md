@@ -14,7 +14,7 @@ fleet.
 
 | Record | Lives in | Written by | Witnesses | Kept |
 |---|---|---|---|---|
-| **The outbox** | each scope | the kernel, inside the operation's transaction | every *allowed* mutation, with actor, authorization chain, impersonation, operation, version, and the call it belonged to | for the life of the scope, and copied to the lake |
+| **The outbox** | each scope | the kernel, inside the operation's transaction | every *allowed* mutation, with actor, authorization chain, impersonation, operation, version, and the call it belonged to | 90 days after it is drained to the lake, then in the lake |
 | **The denial log** | each scope | the kernel, after the rollback | every *enforced refusal*: actor, permission, node, operation, impersonation | for the life of the scope |
 | **The admin log** | the control-plane directory | every audited `HostAdmin` verb | every *privileged change*: who provisioned, suspended, granted, admitted, rewound, reaped, with before and after | **never swept**, and it outlives a reaped tenant |
 | **The access log** | the directory, then R2 | every staff or delegated read | every *look*: who read what in which tenant, with how many rows | drained to R2, pruned per retention |
@@ -121,9 +121,12 @@ read looks at no
 more than ten times its batch, so a scope whose next few thousand rows are *all* unreadable
 ships nothing until the dump is repaired, and the report says so.
 
-**Draining copies, it does not move.** The outbox is never pruned after a drain. The scope still
-holds its full history for `readHistory` and every chapter 10 view. The lake is a second copy,
-built for cross-scope questions.
+**Draining copies first, then lets go.** A drained event stays in the scope for 90 days, so
+`readHistory` and every chapter 10 view still read it there. After that the sweep prunes it, as long
+as nothing in the scope still needs it: a consumer that has not taken it yet, a type another
+vertical imports, or an entity's newest event, which its version is read from. Older history is
+the lake's. An offline mirror resuming from before the pruned range is told to resync rather than
+handed a gap.
 
 **The schema is generated.** The lake's columns are derived from the outbox DDL by a tool, and
 `lint:lake-schema` fails CI when the two disagree. So an envelope field added to the kernel

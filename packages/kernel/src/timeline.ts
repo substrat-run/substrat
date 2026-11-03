@@ -31,6 +31,7 @@ import {
 import { rowDecoder, UNDECODED_ACTOR, type RowDecoder } from './row-decode.js';
 import type { ScopedSql, SqlValue } from './scope-host.js';
 import { REFUSAL_JOURNAL_PREFIX } from './delivery-refusal.js';
+import { OUTBOX_PRUNED_THROUGH, WatermarkPruned } from './outbox-prune.js';
 
 /**
  * Reading an entity's history out of the spine (#800).
@@ -326,8 +327,10 @@ const SCOPE_COLUMNS = 'entity_type, entity_id';
  * behind a later one. An id from a rolled-back operation leaves a gap, never a
  * row that appears later below the watermark.
  *
- * `_substrat_outbox` is never pruned — the drain marks `drained_at` and retains the
- * row — so a watermark stays resumable for the life of the scope.
+ * Resumable, with one bound (#1334): the outbox is pruned once a row has been drained to
+ * the lake for `OUTBOX_RETENTION_DAYS`. A watermark below the highest id a prune removed may
+ * have lost rows behind it, so an ascending walk from one refuses (`WatermarkPruned`) and
+ * the mirror resyncs from the start. A watermark above it resumes exactly as before.
  *
  * Unfiltered, this is a range seek on the primary key. With `entityType` it is the
  * same PK walk with a predicate: bounded by `LIMIT`, but costing every row it steps
@@ -359,6 +362,18 @@ function scopeWalkQuery(
       ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`,
     params,
   };
+}
+
+/**
+ * Refuse an ascending walk resumed below what the prune removed (#1334). A descending page
+ * or a walk from the start reads what the scope still holds and needs no check.
+ */
+function assertWatermarkHeld(ctx: TimelineReader, page: ScopeWalkPage | undefined): void {
+  if (page?.cursor === undefined || page.order === 'desc') return;
+  const floor = ctx.sql.query<{ value: string }>('SELECT value FROM _substrat_meta WHERE key = ?', [
+    OUTBOX_PRUNED_THROUGH,
+  ])[0]?.value;
+  if (floor !== undefined && page.cursor < floor) throw new WatermarkPruned(page.cursor, floor);
 }
 
 function entityOfRow(d: RowDecoder, row: ScopeRow): EntityRef {
@@ -408,6 +423,7 @@ export function readScopeTimeline(
   page?: ScopeWalkPage,
 ): Page<ScopeTimelineEntry> {
   const limit = listLimitOf(page?.limit);
+  assertWatermarkHeld(ctx, page);
   const { sql, params } = scopeWalkQuery(TIMELINE_COLUMNS, page, limit);
   const rows = ctx.sql.query<TimelineRow & ScopeRow>(sql, params);
   const entries = rows.map((row) => {
@@ -438,6 +454,7 @@ export function readScopeHistory(
   page?: ScopeWalkPage,
 ): Page<ScopeHistoryEntry> {
   const limit = listLimitOf(page?.limit);
+  assertWatermarkHeld(ctx, page);
   const { sql, params } = scopeWalkQuery(HISTORY_COLUMNS, page, limit);
   const rows = ctx.sql.query<HistoryRow & ScopeRow>(sql, params);
   const entries = rows.map((row) => {

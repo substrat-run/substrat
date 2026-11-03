@@ -2,7 +2,7 @@
  * `readInvocation`'s lookup is indexed, on a new scope AND on one that predates the column
  * (#1237).
  *
- * The query is `WHERE invocation_id = ? ORDER BY id` over an outbox that is never pruned.
+ * The query is `WHERE invocation_id = ? ORDER BY id` over an outbox that keeps 90 days of drained history.
  * Without an index leading with `invocation_id`, SQLite walks the primary key from the
  * oldest event, so the cost of reading one call grows with the scope's whole history —
  * which no functional test notices, because a test scope has a dozen rows.
