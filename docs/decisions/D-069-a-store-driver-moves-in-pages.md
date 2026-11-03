@@ -240,7 +240,8 @@ or its retry was refused after a first answer was lost, since that first try may
 `incomplete: true`. `storeErasureIncomplete: true` says separately that an erasure was not replayed.
 `substrat scope restore` prints all of them.
 The deployment's load has not run, so the router serves what it served. With several stores this is
-partial: those committed stay replaced. Running the restore again finishes it.
+partial: those committed stay replaced. Running the restore again finishes it, unless what ran out was a
+store's own chain, below.
 
 **A store may bring data forward after its commit, and may not be ready.** A driver restoring a dump
 of an older schema version commits at that version and migrates on its later calls, answering 503 until it
@@ -254,7 +255,13 @@ that stays 503 past the wait, or answers a 5xx, is named in `storesNotReady`, an
 `incomplete: true` with `committedStores`, a 502 on both routes, the replay run and the deployment's load
 not run. So a driver may fail a restore this way after its commit. A store still busy may come ready; one
 whose step failed does not, and a caller cannot see why, since a 5xx body is stripped on its way out and
-the driver logs the step's message. The way out is to wipe that store and restore another backup. A
+the driver logs the step's message. The way out is a release with a repaired step. Wiping that store and
+restoring another backup would also do, but nothing sends `substrat.wipe` to one store except the canary, a
+deletion fences it for good, and a stage on such a store is refused like any call. Whether staff need a route
+for it is the maintainer's. A driver moves one step per request, so what the wait allows is bounded: a chain
+longer than 30 s of retries and alarms answers `incomplete` every time, since running the restore again
+commits the old dump and starts the chain over. No driver ships such a chain yet; one that does needs a
+longer wait or a job. A
 backup or a snapshot whose source answers 503 is a store migrating: in a request it answers 503 saying
 the store is busy, and a job treats it as a transient fault that does not count toward the faults a job
 fails after, waiting with a growing backoff (at most 60 s, a `Retry-After` honoured) until its deadline.

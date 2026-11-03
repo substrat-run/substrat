@@ -259,7 +259,7 @@ export async function requireStoresReady(
     new ControlPlaneError(
       502,
       `the restore was committed, but scope store ${named}, so it cannot serve yet. A store busy bringing its data forward may come ready; ` +
-        'one whose step failed does not, and its driver logged why: wipe it and restore another backup.',
+        'one whose step failed does not, and its driver logged why: a release with a repaired step is the way out.',
     ),
     declared.map((s) => s.binding),
     null,

@@ -13,7 +13,7 @@ tracking: ["#2285", "#2291", "#2830"]
 
 > **Proposed 2026-11-03, not ratified.** This closes the item the scope-stores page lists before the
 > first approved release of a driver. It is written so that the choice can be made, and the code in
-> this change follows it. Two choices are the maintainer's, and they are named at the end.
+> this change follows it. Three choices are the maintainer's, and they are named at the end.
 
 **Every path that deletes a scope's stores now sends `substrat.fence`, not `substrat.wipe`. The store
 entry answers it: it writes a tombstone in the object, waits out the calls inside the driver, hands the
@@ -182,9 +182,10 @@ review of a release, beside the others D-63 lists. An alarm a driver sets is not
 entry drops alarms on a fenced object.
 
 The graph driver complies, by reading its source, not by a run: its `fetch` awaits `scope.persist()` before
-it answers, its body is a finished string, and none of its shipped modules uses `wait_until` or a task of its
-own (`create_task` appears once, in a local test server that is not shipped). The alarm it sets for open work
-stops at the entry.
+it answers, its body is a finished string, and nothing it ships uses `wait_until`. It ships tasks of its own: a
+runtime may run owned tasks, one of which can outlast a cancelled call, and a wipe awaits them, as long as
+that runtime is in the same instance. The isolation review of its release names this. The alarm it sets for
+open work stops at the entry.
 
 ## Deploy overlap
 
@@ -201,11 +202,12 @@ matters from the first approved release on: avoid reaping across a deploy that c
 
 ## What is not closed
 
-- **A deployed run has not been made.** Both entries ran on local workerd, the Python one under the
-  runtime's own SDK and under `workers-runtime-sdk` as `uv.lock` pins it
-  (`store-entry-python.workerd.test.ts`), since the two hand it different objects. That test needs no
-  `pywrangler`. The probe in `store-entry-python.yml` runs the entry under `pywrangler dev` and has to pass in
-  CI, and a deployed run follows it before the first approval.
+- **The CI probe.** Both entries ran on local workerd, the Python one under the runtime's own SDK and under
+  `workers-runtime-sdk` as `uv.lock` pins it (`store-entry-python.workerd.test.ts`), since the two hand it
+  different objects. The probe in `store-entry-python.yml` runs the entry under `pywrangler dev` and has to
+  pass in CI. A deployed run has been made, on a real graph driver object on a test account, through a service
+  binding standing in for dispatch: a call in flight finishes, a caller and a platform write then answer 410,
+  the mark outlives a wipe and a redeploy, a drain past 30 s answers 503 and a retried fence succeeds.
 - **A driver's work after its answer**, above. It is a review item, and nothing refuses it.
 - **Durability under a real crash.** Output gates are what make the mark durable before an answer, and
   the crash test models them. An eviction on real storage is shown (`ctx.abort`). A machine failure
@@ -231,6 +233,9 @@ matters from the first approved release on: avoid reaping across a deploy that c
 2. **Should the fence also refuse a platform write?** Yes, as proposed: that is what closes D-69's race.
    If a recovery path ever needs to write into a fenced object, it needs the undo above, explicitly.
 3. **A check at signing.** Not proposed, for the reasons above. It stays available as a faster refusal.
+
+The rule that no work runs after a driver's answer is a review item, and the approval records no field for it.
+Whether it should is a fourth, smaller question.
 
 ## Revisit
 

@@ -538,8 +538,7 @@ Python entry makes check 5 itself (`ctx.id.equals(idFromName(name))`, before the
 constructed). It keeps the body in JavaScript: the verifier module reads it once, bounded as above,
 and returns the bytes as an `ArrayBuffer`, which the default entrypoint forwards to the object and the
 driver's `Request` is built over. The entry makes no Python string of the body, so the driver copies
-it into Python only if it asks for text (#2811; the body used to be read twice and copied to Python
-each time). It constructs the driver once per object instance with an env stripped of
+it into Python only if it asks for text (#2811). It constructs the driver once per object instance with an env stripped of
 `SUBSTRAT_STORE*`, and forwards the alarm.
 Both flags apply to a Python script unchanged: `from workers import env` reads the same
 `cloudflare:workers` env, which `disallow_importable_env` empties, and `ctx.exports` is
@@ -880,7 +879,7 @@ Still open:
 | (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
 | (u) | A store call works only during a request. A call from a Durable Object, a schedule included, does not pass egress and is refused (§9). The platform's own jobs are not affected | §9 | No, later |
 | (v) | Nothing retires a binding from a vertical's record (`vertical_scope_stores`, #2292). The step Q5's decision names, export then wipe then delete the record row, does not exist yet. Until it does, each binding no version still declares costs one store call per scope on every export, wipe, erasure and meter run, and its name cannot be declared again as another driver. It is also the way out for a vertical whose record cannot be read | L17 | No, later |
-| (w) | The fence ran on local workerd on both entries, the Python one under the runtime's SDK and the pinned `workers-runtime-sdk`. The probe under `pywrangler dev` has to pass in CI, and a deployed run follows (D-70) | L6 | Yes, before the first approval |
+| (w) | The fence ran on local workerd on both entries, the Python one under the runtime's SDK and the pinned `workers-runtime-sdk`. A deployed run passed. The probe under `pywrangler dev` has to pass in CI (D-70) | L6 | Yes, before the first approval |
 | (x) | A deleted snapshot or preview loses its row, so `POST /scopes` with that exact id gives a new scope whose stores refuse for good. It fails loudly and holds no data (D-70) | L6 | No, later |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is

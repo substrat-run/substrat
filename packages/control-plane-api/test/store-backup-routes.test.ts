@@ -682,7 +682,7 @@ describe('a store is backed up and restored in pages, through the routes (D-69)'
       expect(res.status).toBe(502);
       expect(answer).toMatchObject({ committedStores: ['GRAPH', 'OTHER'], storesNotReady: ['OTHER'], incomplete: true });
       expect(JSON.stringify(answer)).not.toContain('secret detail');
-      expect(JSON.stringify(answer)).toContain('wipe it and restore another backup');
+      expect(JSON.stringify(answer)).toContain('a release with a repaired step is the way out');
       expect(k.slept).toEqual([]);
       expect(w.driver.idsOf(w.object(s))).toHaveLength(15);
       expect(w.order).not.toContain('deployment-load');

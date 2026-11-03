@@ -23,8 +23,7 @@ The body stays in JavaScript (#2811). The verifier module reads it once, bounded
 that goes past it is refused at the limit), verifies it as the text those bytes decode to, and hands
 back the bytes as an ArrayBuffer. That buffer is what the default entrypoint forwards to the object
 and what the driver's Request is built over, so this module makes no Python string of the body: the
-driver reads it as text only if it asks for text. The body used to be read twice and copied to Python
-each time, which failed with exceededMemory from about 6 MB.
+driver reads it as text only if it asks for text.
 The driver is constructed once per object instance with the object's ctx and an env with none of
 the entry's SUBSTRAT_STORE* bindings. The upload sets disallow_importable_env and
 disable_ctx_exports, and both apply to a Python script: `from workers import env` then reads an
