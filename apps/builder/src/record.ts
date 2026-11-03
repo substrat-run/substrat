@@ -113,6 +113,8 @@ export interface OpenTurn {
 	 * without waiting for the lease to go stale.
 	 */
 	readonly unfinishedTurnId?: string | null;
+	/** Where that unfinished turn's events begin in the thread, when the caller kept it. */
+	readonly unfinishedFirstSeq?: number | null;
 	readonly message: string;
 	/** Who sent it: the session's subject at the issuer, when the worker passed one. */
 	readonly actor: string | null;
@@ -167,7 +169,8 @@ export class TurnRecord {
 	/** What the summary row says about the turn, gathered as its events pass. */
 	readonly #turn: OpenTurn;
 	readonly #startedAt = new Date().toISOString();
-	readonly #firstSeq: number;
+	/** Where this turn's events begin in its thread. */
+	readonly firstSeq: number;
 	#lastSeq: number;
 	#phaseStart: string | null = null;
 	#phaseEnd: string | null = null;
@@ -183,7 +186,7 @@ export class TurnRecord {
 		this.threadId = threadId;
 		this.#runId = turn.turnId;
 		this.#turn = turn;
-		this.#firstSeq = firstSeq;
+		this.firstSeq = firstSeq;
 		this.#lastSeq = firstSeq;
 		this.#log = `record: project ${turn.projectId} turn ${turn.turnId} thread ${threadId}`;
 		this.#timer = setInterval(() => void this.flush(), FLUSH_MS);
@@ -233,7 +236,10 @@ export class TurnRecord {
 				if (turn.unfinishedTurnId) {
 					await recordSummary(env, {
 						...unknownTurn(turn, turn.unfinishedTurnId, threadId),
-						lastSeq: closed.events.at(-1)?.id ?? null,
+						// Its events run from where it began to the turn-error that closes it, so the
+						// turn opens like any other; without a start, it opens empty.
+						firstSeq: turn.unfinishedFirstSeq ?? null,
+						lastSeq: turn.unfinishedFirstSeq != null ? (closed.events.at(-1)?.id ?? null) : null,
 					});
 				}
 				sent = await send();
@@ -341,7 +347,7 @@ export class TurnRecord {
 			projectId: turn.projectId,
 			projectName: clip(turn.title, 200),
 			threadId: this.threadId,
-			firstSeq: this.#firstSeq,
+			firstSeq: this.firstSeq,
 			lastSeq: this.#lastSeq,
 			model: clip(turn.model, 200),
 			phaseStart: this.#phaseStart,

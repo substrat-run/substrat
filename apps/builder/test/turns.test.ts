@@ -115,13 +115,22 @@ describe('turn summaries', () => {
 		expect(await ids({ limit: 2, cursor: page.nextCursor })).toEqual(['A']);
 	});
 
-	it('summarises a turn that died as interrupted when the next turn closes it', async () => {
+	it('summarises a turn that died as interrupted when the next turn closes it, and opens its events', async () => {
 		const died = (await rec.TurnRecord.open(env, turn(null, 'T1')))!;
+		died.event({ type: 'assistant-text', text: 'Starting.' });
 		await died.flush();
-		const next = (await rec.TurnRecord.open(env, { ...turn(died.threadId, 'T2'), unfinishedTurnId: 'T1' }))!;
+		const next = (await rec.TurnRecord.open(env, {
+			...turn(died.threadId, 'T2'),
+			unfinishedTurnId: 'T1',
+			unfinishedFirstSeq: died.firstSeq,
+		}))!;
 		await next.finish({ kind: 'done' });
 
-		expect((await rec.readTurn(env, 'T1'))!.turn).toMatchObject({ outcome: 'interrupted', startedAt: null });
+		const lost = (await rec.readTurn(env, 'T1'))!;
+		expect(lost.turn).toMatchObject({ outcome: 'interrupted', startedAt: null });
+		expect(lost.events[0]).toMatchObject({ t: 'user-message' });
+		expect(lost.events.at(-1)).toMatchObject({ t: 'turn-error', code: 'interrupted' });
+		expect(lost.events.filter((e) => e.t === 'user-message')).toHaveLength(1);
 		expect((await rec.listTurns(env, { outcome: 'interrupted' })).entries.map((t) => t.turnId)).toEqual(['T1']);
 	});
 });
