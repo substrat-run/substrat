@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   STORE_CALLER_KEYS_VAR,
+  STORE_CALL_MAX_BODY_BYTES,
   STORE_CLASS_PLACEHOLDER,
   STORE_ENTRY_PYTHON_SOURCE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
@@ -35,6 +36,7 @@ describe('the Python entry, as shipped', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`VERIFIER_MODULE = "./${STORE_VERIFIER_MODULE}"`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`OBJECT_BINDING = "${STORE_OBJECT_BINDING}"`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`RESERVED_BINDING_PREFIX = "${STORE_RESERVED_BINDING_PREFIX}"`);
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`MAX_BODY_BYTES = ${STORE_CALL_MAX_BODY_BYTES}\n`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`class ${STORE_OBJECT_CLASS}(DurableObject):`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`from ${STORE_DRIVER_PLACEHOLDER} import ${STORE_CLASS_PLACEHOLDER} as StoreDriver`);
   });
