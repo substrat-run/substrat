@@ -7833,7 +7833,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * so both write the same audit row, judge the same roles and stores, replay the same erasures and
    * clear the same receipt. `tables` are opened (#37). `stage`, for a backup stored in several
    * entries (#2839), stages it at the scope's deployment, which then loads the stage, and answers
-   * the tables the host's audited restore judges and records in place of `tables`.
+   * the tables the host's audited restore judges and records in place of `tables`. Those are every
+   * table's schema with the role rows only, so after a staged restore the host's placeholder holds
+   * no data, and its `_substrat_migrations` and `_substrat_meta` journals are empty, where a whole
+   * dump's restore leaves them full. The scope's own journals are the deployment's.
    */
   const loadIntoScope = async (
     c: ReqCtx,

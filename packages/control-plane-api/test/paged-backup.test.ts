@@ -189,10 +189,11 @@ describe('paged scope backups (#2839)', () => {
   });
 
   it.each([
-    ['the manifest', 4],
-    ['an entry', 6],
-  ])('refuses the reap when %s does not land, and leaves no backup and no entries behind', async (_, depth) => {
-    const { app, calls, objects, store } = world({ failOn: (key) => key.split('/').length === depth });
+    ['the manifest', (key: string) => key.split('/').length === 4],
+    // The second entry, so the first has landed and must be discarded with the copy.
+    ['an entry after the first', (key: string) => key.endsWith('/1.json')],
+  ])('refuses the reap when %s does not land, and leaves no backup and no entries behind', async (_, failOn) => {
+    const { app, calls, objects, store } = world({ failOn });
     const s = await install();
     await host.admin.archiveScope(staff, t, s);
 
