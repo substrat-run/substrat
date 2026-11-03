@@ -123,9 +123,11 @@ ships nothing until the dump is repaired, and the report says so.
 
 **Draining copies first, then lets go.** A drained event stays in the scope for 90 days, so
 `readHistory` and every chapter 10 view still read it there. After that the sweep prunes it, as long
-as nothing in the scope still needs it: a consumer that has not taken it yet, a type another
-vertical imports, or an entity's newest event, which its version is read from. Older history is
-the lake's. An offline mirror resuming from before the pruned range is told to resync rather than
+as nothing in the scope still needs it: a consumer that has not taken it yet (or gave up on it), a
+type another vertical imports, an entity's newest event, which its version is read from, or a type's
+newest event, which freshness reads. Older history is the lake's, and so is every chapter 10 view
+beyond 90 days: a process map over a pruned scope sees an older entity as found mid-life. A consumer
+added later starts from what the scope still holds. An offline mirror resuming from before the pruned range is told to resync rather than
 handed a gap.
 
 **The schema is generated.** The lake's columns are derived from the outbox DDL by a tool, and
