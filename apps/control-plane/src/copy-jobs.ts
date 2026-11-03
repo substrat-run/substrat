@@ -1,5 +1,5 @@
 import type { CopyJobDo } from '@substrat-run/adapter-cloudflare';
-import { newCopyJob, type CopyJobRecord, type CopyJobs } from '@substrat-run/control-plane-api';
+import { newCopyJob, newStoreJob, type CopyJobRecord, type CopyJobs, type StoreJobRecord, type StoreJobs } from '@substrat-run/control-plane-api';
 
 /**
  * The preview route's job store over `ScopeCopyJobDO` (#2450): one object per job id. Its own module
@@ -14,5 +14,20 @@ export function durableCopyJobs(ns: DurableObjectNamespace): CopyJobs {
     cancel: (id) => stubOf(id).cancel(),
     forget: (id) => stubOf(id).forget(),
     markNewest: (key, order, holdMs) => stubOf(key).markNewest(order, holdMs),
+  };
+}
+
+/**
+ * The store jobs' side of the same object (D-69): a backup or a restore of a store too large for a
+ * request. One class for both kinds of job, under ids that cannot meet, so no new class is migrated in.
+ */
+export function durableStoreJobs(ns: DurableObjectNamespace): StoreJobs {
+  const stubOf = (id: string) => ns.get(ns.idFromName(id)) as unknown as CopyJobDo<StoreJobRecord>;
+  return {
+    start: (spec, state) => stubOf(spec.id).start(newStoreJob(spec, state)),
+    get: (id) => stubOf(id).get(),
+    claim: (id, holdMs) => stubOf(id).claim(holdMs),
+    cancel: (id) => stubOf(id).cancel(),
+    forget: (id) => stubOf(id).forget(),
   };
 }

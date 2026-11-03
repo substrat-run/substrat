@@ -27,7 +27,19 @@
  * is why the export route's masking default does not apply here.
  */
 
-import type { DirectoryBackup, DirectoryDump, ScopeBackup, ScopeDump } from '@substrat-run/contracts';
+import { scopeDumpTable, z } from '@substrat-run/contracts';
+import type {
+  DirectoryBackup,
+  DirectoryDump,
+  ScopeBackup,
+  ScopeBackupIndex,
+  ScopeBackupObject,
+  ScopeDump,
+  ScopeDumpTable,
+} from '@substrat-run/contracts';
+
+/** What a backup's scope object and each of its page objects hold. */
+export const storedTables = z.object({ tables: z.array(scopeDumpTable) });
 
 // `ScopeBackup` — the metadata shape a stored copy reports — is a WIRE shape (the reap
 // response, the backups list, the console's table), so it lives in `contracts` beside
@@ -42,8 +54,47 @@ export interface ScopeBackupStore {
   put(input: { vertical: string | null; dump: ScopeDump }): Promise<ScopeBackup>;
   /** Every backup held for one scope, newest first. */
   list(input: { tenantId: string; scopeId: string }): Promise<ScopeBackup[]>;
-  /** One backup's dump, by its capture time. Null when no such copy is held. */
-  get(input: { tenantId: string; scopeId: string; capturedAt: string }): Promise<ScopeDump | null>;
+  /**
+   * One backup's dump, by its capture time. Null when no such copy is held: objects written with no
+   * index are not a backup. A backup held in parts (D-69) comes back with its scope's tables and
+   * `storePages` naming its stores' page objects, never their rows.
+   */
+  get(input: BackupAddress): Promise<ScopeDump | null>;
+
+  // A backup held in parts (D-69): the scope's tables and each store's pages as objects of their own
+  // under the backup's key, and last the index, which is what `list` and `get` see. No call here
+  // holds more than one page.
+
+  /** The scope's own (sealed) tables, as one object beside the pages, under a key of this attempt's own. */
+  putScopeTables(input: BackupAddress & { tables: ScopeDumpTable[] }): Promise<ScopeBackupObject & { tables: number }>;
+  /** One page of one chain, at its place. Written again in place, so a resumed step may repeat it. */
+  putStorePage(input: BackupAddress & { moveId: string; seq: number; body: string }): Promise<void>;
+  /** The first `pages` pages of a chain, in order: key, size and digest, from a listing. No page is read. */
+  listStorePages(input: BackupAddress & { moveId: string; pages: number }): Promise<ScopeBackupObject[]>;
+  /** Write the index: the one write that makes the objects a backup. Durable before it returns. */
+  putIndex(input: { vertical: string | null; index: ScopeBackupIndex }): Promise<ScopeBackup>;
+  /** A backup's index, or null when none is held, or the backup holds its stores inline. */
+  getIndex(input: BackupAddress): Promise<ScopeBackupIndex | null>;
+  /**
+   * An object of this backup, checked against `ref`'s size and digest. Null when it is missing;
+   * one that does not match, or lies outside this backup, refuses (422).
+   */
+  readObject(input: BackupAddress & { ref: ScopeBackupObject }): Promise<string | null>;
+  /** Drop one chain's pages. Missing is not an error. */
+  deleteMove(input: BackupAddress & { moveId: string }): Promise<void>;
+  /**
+   * Drop what one attempt at a backup wrote: its scope object, its chains' pages, and the index only
+   * if the index names that scope object. Two attempts in one millisecond share an address and no
+   * object, so one giving up never takes the other's. The last index written is the backup.
+   */
+  deleteAttempt(input: BackupAddress & { scopeKey?: string | undefined; moveIds: readonly string[] }): Promise<void>;
+}
+
+/** Where a backup is: its address, which only the store turns into a key. */
+export interface BackupAddress {
+  tenantId: string;
+  scopeId: string;
+  capturedAt: string;
 }
 
 /**

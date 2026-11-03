@@ -2,8 +2,8 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { copyJobId, type CopyJobRecord, type CopyJobs, type CopyJobSpec } from '@substrat-run/control-plane-api';
-import { durableCopyJobs } from '../src/copy-jobs.js';
+import { copyJobId, storeJobId, type CopyJobRecord, type CopyJobs, type CopyJobSpec, type StoreJobRecord } from '@substrat-run/control-plane-api';
+import { durableCopyJobs, durableStoreJobs } from '../src/copy-jobs.js';
 
 type TransferState = Parameters<CopyJobs['start']>[1];
 
@@ -73,6 +73,25 @@ describe('the preview copy jobs through ScopeCopyJobDO (#2450)', () => {
     expect(await jobs.markNewest(key, 'b', 60_000)).toBe('b');
     expect(await jobs.markNewest(key, 'a', 60_000)).toBe('b');
     expect(await jobs.get(key)).toBeNull();
+  });
+
+  it('a store job runs in the same object under its own stepper (D-69): an unknown scope fails it, naming no dispatch namespace', async () => {
+    const stores = durableStoreJobs(ns);
+    const sid = scope();
+    const id = storeJobId('store-backup', sid);
+    await stores.start({
+      id, kind: 'store-backup', tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(sid), vertical: 'acme/app',
+      capturedAt: new Date().toISOString(), actor: platformActorId.parse(ulid()), startedAt: Date.now(), deadline: Date.now() + 3_600_000,
+    }, { stores: [{ binding: 'GRAPH', driver: 'graph' }], at: 0, move: { moveId: ulid(), seq: 0, cursor: null, revision: null, attempt: 1, reads: 0, tableNames: [], rows: 0 }, moved: [], pages: 0 });
+    let job: StoreJobRecord | null = null;
+    for (let i = 0; i < 200 && job?.status !== 'failed'; i++) {
+      job = await stores.get(id);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(job?.status).toBe('failed');
+    expect(job?.error?.message).not.toContain('dispatch namespace');
+    await stores.forget(id);
+    expect(await stores.get(id)).toBeNull();
   });
 
   it('a started job steps through the deployed advance: with no dispatch namespace here it fails, still naming its stage', async () => {

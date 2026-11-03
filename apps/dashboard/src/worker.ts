@@ -5683,7 +5683,12 @@ const routeHandlers = {
   'dashboard/get-app-release-comparison': async (ctx, { scopeId: app }) => appReleaseComparisonIn(ctx, app),
   'dashboard/rewind-app': async (ctx, { scopeId: app, bookmark }) => rewindAppIn(ctx, app, bookmark),
   'dashboard/export-installed-app': async (ctx, { scopeId: app }) => exportInstalledAppIn(ctx, app),
-  'dashboard/restore-installed-app': async (ctx, { scopeId: app, tables, stores, sourceScopeId }) => restoreInstalledAppIn(ctx, app, tables, stores, sourceScopeId),
+  'dashboard/restore-installed-app': async (ctx, { scopeId: app, tables, stores, sourceScopeId, storePages }) => {
+    if (Array.isArray(storePages) && storePages.length > 0) {
+      throw new HTTPException(422, { message: 'This file is a backup that holds its stores in pages, so it cannot be imported: its stores would stay as they are. Ask staff to restore it where it is held.' });
+    }
+    return restoreInstalledAppIn(ctx, app, tables, stores, sourceScopeId);
+  },
   'dashboard/app-peers': async (ctx, { scopeId: app }) => appPeersIn(ctx, app),
   'dashboard/switch-app-peer': async (ctx, { scopeId: app, vertical, to, reason }) => switchAppPeerIn(ctx, app, { vertical, to, reason }),
   'dashboard/set-app-peer-binding': async (ctx, { scopeId: app, vertical, targetScopeId }) => setAppPeerBindingIn(ctx, app, vertical, targetScopeId),

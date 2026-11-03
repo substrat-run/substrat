@@ -440,6 +440,44 @@ export const scopeStoreDump = z.object({
 });
 export type ScopeStoreDump = z.infer<typeof scopeStoreDump>;
 
+/** One object of a backup held in parts (D-69): where it is, how long, and the SHA-256 hex of its bytes. */
+export const scopeBackupObject = z.object({
+  key: z.string().min(1),
+  bytes: z.number().int().nonnegative(),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type ScopeBackupObject = z.infer<typeof scopeBackupObject>;
+
+/**
+ * One store as a backup holds it (D-69): its pages as objects of their own, in chain order, and the
+ * `revision` they were read at. `tables` is the count of distinct tables across the pages, which a
+ * commit answers again on restore.
+ */
+export const scopeStoreBackup = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  driver: z.string().min(1),
+  revision: z.string().min(1),
+  tables: z.number().int().nonnegative(),
+  pageCount: z.number().int().positive(),
+  pages: z.array(scopeBackupObject).min(1),
+});
+export type ScopeStoreBackup = z.infer<typeof scopeStoreBackup>;
+
+/**
+ * The index of a backup whose stores are held as page objects (D-69), written last under the
+ * backup's own key: until it lands there is no backup, only objects no read names. The scope's own
+ * tables are one object beside the pages, in the form they always had.
+ */
+export const scopeBackupIndex = z.object({
+  form: z.literal('paged'),
+  tenantId: z.string().min(1),
+  scopeId: z.string().min(1),
+  capturedAt: z.string().min(1),
+  scope: scopeBackupObject.extend({ tables: z.number().int().nonnegative() }),
+  stores: z.array(scopeStoreBackup).min(1),
+});
+export type ScopeBackupIndex = z.infer<typeof scopeBackupIndex>;
+
 export const scopeDump = z.object({
   tenantId: z.string().min(1),
   scopeId: z.string().min(1),
@@ -451,6 +489,12 @@ export const scopeDump = z.object({
    * scope stores still loads, as a scope that had none.
    */
   stores: z.array(scopeStoreDump).default([]),
+  /**
+   * The stores of a backup held as page objects (D-69), named rather than carried: `stores` is empty
+   * beside them. Known to this schema so that a loader sees them and refuses, rather than strip them
+   * and load the scope with its stores left as they were. Only the backup's own restore reads them.
+   */
+  storePages: z.array(scopeStoreBackup).optional(),
 });
 /** A dump a caller reads back. `stores` is always present; the schema fills `[]`. */
 export type ScopeDump = z.output<typeof scopeDump>;

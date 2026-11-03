@@ -112,6 +112,16 @@ const send = (as: 'owner' | 'admin' | 'member' | 'viewer', method: string, path:
 }, env);
 const path = (suffix: string) => `/api/teams/${team[0]}/apps/${appScope[0]}/${suffix}`;
 
+it('refuses a backup that holds its stores in pages before anything is asked of the plane', async () => {
+  const res = await send('owner', 'POST', path('restore'), {
+    tables: [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [] }], stores: [],
+    storePages: [{ binding: 'GRAPH' }],
+  });
+  expect(res.status).toBe(422);
+  expect(await res.text()).toContain('holds its stores in pages');
+  expect(restoreBodies).toHaveLength(0);
+});
+
 it('keeps a dump store through export and restore route parsing', async () => {
   const exported = await send('owner', 'GET', path('export'));
   expect(exported.status).toBe(200);

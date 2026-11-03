@@ -13,14 +13,18 @@ import type { DrainedEvent } from '@substrat-run/contracts';
 
 import {
   directoryDump,
+  scopeBackupIndex,
   scopeDump,
   type DirectoryBackup,
   type DirectoryDump,
   type ScopeBackup,
+  type ScopeBackupObject,
   type ScopeDump,
 } from '@substrat-run/contracts';
+import { ulid } from '@substrat-run/kernel';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
-import type { DirectoryBackupStore, ScopeBackupStore } from './backups.js';
+import { storedTables, type BackupAddress, type DirectoryBackupStore, type ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
 interface R2BucketLike {
@@ -33,13 +37,18 @@ interface R2BucketLike {
     },
   ): Promise<unknown>;
   get(key: string): Promise<{ text(): Promise<string> } | null>;
-  delete(key: string): Promise<void>;
+  /** R2 takes up to 1000 keys in one call. */
+  delete(keys: string | string[]): Promise<void>;
   list(options?: {
     prefix?: string;
     cursor?: string;
+    /** Rolls up what lies below it, so a listing of a scope's backups never walks their pages. */
+    delimiter?: string;
     include?: ('customMetadata' | 'httpMetadata')[];
   }): Promise<{
     objects: { key: string; size: number; customMetadata?: Record<string, string> }[];
+    /** What `delimiter` rolled up. */
+    delimitedPrefixes?: string[];
     truncated: boolean;
     cursor?: string;
   }>;
@@ -49,6 +58,12 @@ interface R2BucketLike {
  * Keys are `scopes/<tenantId>/<scopeId>/<capturedAt>.json`, so a scope's copies are one
  * prefix list and a tenant's are one level up. The scheme is private to this module —
  * callers address a backup by (tenant, scope, capturedAt) and never build a path.
+ *
+ * That object is the backup: a whole dump, or the index of one held in parts (D-69). The parts lie
+ * under `<capturedAt>/`, the scope's tables in `scope-<attempt>.json` and a store's pages in
+ * `stores/<moveId>/<seq>.json`, and until the index lands no read names them. They sort after the
+ * index (`.` before `/`), so a prune removes the index first: a backup cut short by one is gone,
+ * not half there.
  */
 function backupKey(tenantId: string, scopeId: string, capturedAt: string): string {
   return `scopes/${tenantId}/${scopeId}/${capturedAt}.json`;
@@ -58,8 +73,62 @@ function scopePrefix(tenantId: string, scopeId: string): string {
   return `scopes/${tenantId}/${scopeId}/`;
 }
 
+const partsPrefix = ({ tenantId, scopeId, capturedAt }: BackupAddress): string =>
+  `${scopePrefix(tenantId, scopeId)}${capturedAt}/`;
+const movePrefix = (at: BackupAddress, moveId: string): string => `${partsPrefix(at)}stores/${moveId}/`;
+/** Padded past the longest chain a reader takes, so the keys of a chain sort in its order. */
+const pageKey = (at: BackupAddress, moveId: string, seq: number): string =>
+  `${movePrefix(at, moveId)}${String(seq).padStart(6, '0')}.json`;
+
+const R2_DELETE_MAX_KEYS = 1000;
+
+async function deleteAll(r2: R2BucketLike, keys: readonly string[]): Promise<void> {
+  for (let at = 0; at < keys.length; at += R2_DELETE_MAX_KEYS) {
+    await r2.delete(keys.slice(at, at + R2_DELETE_MAX_KEYS));
+  }
+}
+
+const utf8 = (text: string) => new TextEncoder().encode(text);
+
+async function sha256Hex(bytes: ReturnType<typeof utf8>): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+
 export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
   const r2 = bucket as R2BucketLike;
+  /** What a backup's own object holds: a whole dump, or an index. Null when there is none. */
+  const readHead = async (at: BackupAddress): Promise<unknown> => {
+    const obj = await r2.get(backupKey(at.tenantId, at.scopeId, at.capturedAt));
+    return obj ? (JSON.parse(await obj.text()) as unknown) : null;
+  };
+  const isIndex = (head: unknown): boolean => (head as { form?: unknown } | null)?.form === 'paged';
+  const readObject = async (at: BackupAddress, ref: ScopeBackupObject): Promise<string | null> => {
+    const what = `object '${ref.key.slice(partsPrefix(at).length)}' of the backup of ${at.capturedAt}`;
+    if (!ref.key.startsWith(partsPrefix(at))) {
+      throw new ControlPlaneError(422, `the backup of ${at.capturedAt} names an object outside itself; nothing was moved`);
+    }
+    const obj = await r2.get(ref.key);
+    if (!obj) return null;
+    const body = await obj.text();
+    const bytes = utf8(body);
+    if (bytes.length !== ref.bytes || (await sha256Hex(bytes)) !== ref.digest) {
+      throw new ControlPlaneError(422, `${what} is not the bytes its index names, so it is damaged; nothing was moved`);
+    }
+    return body;
+  };
+  const listAllUnder = async (prefix: string): Promise<{ key: string; size: number; customMetadata?: Record<string, string> }[]> => {
+    const out: { key: string; size: number; customMetadata?: Record<string, string> }[] = [];
+    let cursor: string | undefined;
+    do {
+      // Include what is asked for and R2 may answer a short page, so only `truncated` ends the walk.
+      const page = await r2.list({ prefix, include: ['customMetadata'], ...(cursor ? { cursor } : {}) });
+      out.push(...page.objects);
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return out;
+  };
   return {
     async put({ vertical, dump }) {
       const body = JSON.stringify(dump);
@@ -96,6 +165,7 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       do {
         const page = await r2.list({
           prefix,
+          delimiter: '/',
           include: ['customMetadata'],
           ...(cursor ? { cursor } : {}),
         });
@@ -109,7 +179,8 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
             scopeId,
             vertical: meta.vertical ?? null,
             capturedAt,
-            size: o.size,
+            // An index's own object is small: the copy's size is what its parts add up to.
+            size: meta.size ? Number(meta.size) : o.size,
             tables: meta.tables ? Number(meta.tables) : 0,
           });
         }
@@ -120,12 +191,101 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       return out.sort((a, b) => (a.capturedAt < b.capturedAt ? 1 : -1));
     },
 
-    async get({ tenantId, scopeId, capturedAt }) {
-      const obj = await r2.get(backupKey(tenantId, scopeId, capturedAt));
-      if (!obj) return null;
-      // Parsed through the contract on the way out: a corrupted or hand-edited object
-      // fails HERE, loudly, rather than at the restore that trusted it.
-      return scopeDump.parse(JSON.parse(await obj.text())) as ScopeDump;
+    async get(at) {
+      const head = await readHead(at);
+      if (head === null) return null;
+      if (!isIndex(head)) {
+        // Parsed through the contract on the way out: a corrupted or hand-edited object
+        // fails HERE, loudly, rather than at the restore that trusted it.
+        return scopeDump.parse(head) as ScopeDump;
+      }
+      const index = scopeBackupIndex.parse(head);
+      const body = await readObject(at, index.scope);
+      if (body === null) {
+        throw new ControlPlaneError(422, `the scope's tables are missing from the backup of ${at.capturedAt}; nothing was moved`);
+      }
+      const { tables } = storedTables.parse(JSON.parse(body));
+      return { tenantId: index.tenantId, scopeId: index.scopeId, capturedAt: index.capturedAt, tables, stores: [], storePages: index.stores };
+    },
+
+    async putScopeTables({ tables, ...at }) {
+      const body = JSON.stringify({ tables });
+      const bytes = utf8(body);
+      const digest = await sha256Hex(bytes);
+      const key = `${partsPrefix(at)}scope-${ulid()}.json`;
+      await r2.put(key, body, {
+        httpMetadata: { contentType: 'application/json' },
+        customMetadata: { capturedAt: at.capturedAt, digest },
+      });
+      return { key, bytes: bytes.length, digest, tables: tables.length };
+    },
+
+    async putStorePage({ moveId, seq, body, ...at }) {
+      await r2.put(pageKey(at, moveId, seq), body, {
+        httpMetadata: { contentType: 'application/json' },
+        // In the metadata, so the index is built from a listing without reading a page, and so
+        // retention can date a page with no index to date it by.
+        customMetadata: { capturedAt: at.capturedAt, digest: await sha256Hex(utf8(body)) },
+      });
+    },
+
+    async listStorePages({ moveId, pages, ...at }) {
+      const prefix = movePrefix(at, moveId);
+      const listed = await listAllUnder(prefix);
+      // A step resumed from an older record can leave pages past where this chain ended.
+      return listed
+        .map((o) => ({ o, seq: Number(o.key.slice(prefix.length).replace(/\.json$/, '')) }))
+        .filter(({ seq }) => seq < pages)
+        .sort((a, b) => a.seq - b.seq)
+        .map(({ o }) => ({ key: o.key, bytes: o.size, digest: o.customMetadata?.digest ?? '' }));
+    },
+
+    async putIndex({ vertical, index }) {
+      const body = JSON.stringify(index);
+      const size = index.stores.reduce(
+        (total, store) => store.pages.reduce((n, page) => n + page.bytes, total),
+        utf8(body).length + index.scope.bytes,
+      );
+      const backup: ScopeBackup = {
+        tenantId: index.tenantId,
+        scopeId: index.scopeId,
+        vertical,
+        capturedAt: index.capturedAt,
+        size,
+        tables: index.scope.tables,
+      };
+      await r2.put(backupKey(index.tenantId, index.scopeId, index.capturedAt), body, {
+        httpMetadata: { contentType: 'application/json' },
+        customMetadata: {
+          tenantId: backup.tenantId,
+          scopeId: backup.scopeId,
+          capturedAt: backup.capturedAt,
+          tables: String(backup.tables),
+          size: String(size),
+          ...(vertical ? { vertical } : {}),
+        },
+      });
+      return backup;
+    },
+
+    async getIndex(at) {
+      const head = await readHead(at);
+      return isIndex(head) ? scopeBackupIndex.parse(head) : null;
+    },
+
+    readObject: ({ ref, ...at }) => readObject(at, ref),
+
+    async deleteMove({ moveId, ...at }) {
+      await deleteAll(r2, (await listAllUnder(movePrefix(at, moveId))).map((o) => o.key));
+    },
+
+    async deleteAttempt({ scopeKey, moveIds, ...at }) {
+      const head = await readHead(at);
+      if (scopeKey !== undefined && isIndex(head) && (head as { scope?: { key?: unknown } }).scope?.key === scopeKey) {
+        await r2.delete(backupKey(at.tenantId, at.scopeId, at.capturedAt));
+      }
+      if (scopeKey !== undefined) await r2.delete(scopeKey);
+      for (const moveId of moveIds) await deleteAll(r2, (await listAllUnder(movePrefix(at, moveId))).map((o) => o.key));
     },
   };
 }
@@ -393,6 +553,8 @@ interface PruneOptions {
   olderThanDays: number;
   /** Injected clock, for tests. */
   now?: () => Date;
+  /** `pruneScopeBackups`: the listings and deletes one pass may spend. Default `SCOPE_PRUNE_PASS_CALLS`. */
+  maxCalls?: number;
 }
 
 /** Walk one prefix completely, returning every object's key + custom metadata. */
@@ -417,6 +579,17 @@ async function listAll(
 const DAY_MS = 86_400_000;
 
 /**
+ * The listings and deletes one retention pass may spend, of the 1000 subrequests a scheduled
+ * invocation shares with every other phase.
+ */
+export const SCOPE_PRUNE_PASS_CALLS = 200;
+
+/** Where a pass that ran out of budget says how far it got, outside `scopes/`, so it is no copy. */
+const SCOPE_PRUNE_CURSOR_KEY = 'retention/scope-backups-cursor';
+
+class PruneBudgetSpent extends Error {}
+
+/**
  * Drop `scopes/…` reap copies (#493) older than the window. A copy's age is its
  * `capturedAt` — the key's last segment, same as the store's own fallback address — so a
  * hand-uploaded object without metadata still ages out rather than living forever by
@@ -426,19 +599,81 @@ const DAY_MS = 86_400_000;
  * Note the interaction with #37 (erasure): per-subject payloads inside these dumps are
  * sealed under per-subject DEKs, so an old copy's PII exposure is bounded by key
  * destruction already — this rule is the cost/hygiene bound, not the privacy one.
+ *
+ * A backup's parts (D-69) age with it, so a page goes with its index and a page no index ever named
+ * (a backup that never finished) goes too. One backup can hold tens of thousands of objects and a
+ * pass has a budget, so this walks scope by scope with a delimiter, never listing a page of a backup
+ * it keeps, and deletes as it goes: the index first, so a backup cut short is gone, not half there.
+ * A pass out of budget leaves a cursor at the last scope it finished and the next starts after it,
+ * so every scope is reached however many stand ahead of it, and a scope with more to delete than a
+ * pass can spend still loses some on each. The answer counts copies, not their parts.
  */
 export async function pruneScopeBackups(bucket: unknown, options: PruneOptions): Promise<number> {
   const r2 = bucket as R2BucketLike;
   const cutoff = (options.now?.() ?? new Date()).getTime() - options.olderThanDays * DAY_MS;
-  let pruned = 0;
-  for (const o of await listAll(r2, 'scopes/')) {
-    const capturedAt =
-      o.customMetadata?.capturedAt ?? o.key.slice(o.key.lastIndexOf('/') + 1).replace(/\.json$/, '');
+  let calls = options.maxCalls ?? SCOPE_PRUNE_PASS_CALLS;
+  const spend = (): void => {
+    if (calls <= 0) throw new PruneBudgetSpent();
+    calls -= 1;
+  };
+  /** One level below `prefix`: what lies directly there, and what `/` rolled up. */
+  const level = async (prefix: string) => {
+    const objects: { key: string; customMetadata?: Record<string, string> }[] = [];
+    const prefixes: string[] = [];
+    let cursor: string | undefined;
+    do {
+      spend();
+      const page = await r2.list({ prefix, delimiter: '/', include: ['customMetadata'], ...(cursor ? { cursor } : {}) });
+      objects.push(...page.objects);
+      prefixes.push(...(page.delimitedPrefixes ?? []));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return { objects, prefixes: prefixes.sort() };
+  };
+  const isStale = (capturedAt: string): boolean => {
     const at = new Date(capturedAt).getTime();
-    if (Number.isNaN(at) || at >= cutoff) continue;
-    await r2.delete(o.key);
-    pruned += 1;
+    return !Number.isNaN(at) && at < cutoff;
+  };
+  const deleteUnder = async (prefix: string): Promise<void> => {
+    for (;;) {
+      spend();
+      const page = await r2.list({ prefix });
+      if (page.objects.length === 0) return;
+      spend();
+      await r2.delete(page.objects.slice(0, R2_DELETE_MAX_KEYS).map((o) => o.key));
+    }
+  };
+  let pruned = 0;
+  const pruneScope = async (scope: string): Promise<void> => {
+    const { objects, prefixes } = await level(scope);
+    for (const o of objects) {
+      const capturedAt = o.customMetadata?.capturedAt ?? o.key.slice(scope.length).replace(/\.json$/, '');
+      if (!isStale(capturedAt)) continue;
+      spend();
+      await r2.delete(o.key);
+      pruned += 1;
+    }
+    for (const parts of prefixes) {
+      if (isStale(parts.slice(scope.length, -1))) await deleteUnder(parts);
+    }
+  };
+  const resume = await (await r2.get(SCOPE_PRUNE_CURSOR_KEY))?.text();
+  let finished = resume;
+  try {
+    for (const tenant of (await level('scopes/')).prefixes) {
+      if (resume && tenant < resume.slice(0, resume.indexOf('/', 'scopes/'.length) + 1)) continue;
+      for (const scope of (await level(tenant)).prefixes) {
+        if (resume && scope <= resume) continue;
+        await pruneScope(scope);
+        finished = scope;
+      }
+    }
+  } catch (e) {
+    if (!(e instanceof PruneBudgetSpent)) throw e;
+    if (finished && finished !== resume) await r2.put(SCOPE_PRUNE_CURSOR_KEY, finished);
+    return pruned;
   }
+  if (resume) await r2.delete(SCOPE_PRUNE_CURSOR_KEY);
   return pruned;
 }
 

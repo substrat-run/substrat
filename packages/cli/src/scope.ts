@@ -184,8 +184,16 @@ export async function pullScope(opts: {
 /** Read a dump from disk: a real `.sqlite` file (node:sqlite), or a `.dump.json`. */
 async function readDump(file: string): Promise<Backup> {
   if (!file.endsWith('.sqlite')) {
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<PulledDump>;
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<PulledDump> & { storePages?: unknown[] };
     if (!Array.isArray(parsed.tables)) throw new Error(`${file} is not a scope dump (no tables)`);
+    // A backup read back names its stores' pages and carries no row. Sent on, it would load the
+    // scope's tables and leave the stores as they were, under a success message.
+    if (parsed.storePages?.length) {
+      throw new Error(
+        `${file} is a backup that holds its stores in pages, so a file of it restores nothing of them. ` +
+          `Restore it where it lies: POST …/scopes/<destination>/backups/restore with { sourceScopeId: "${String(parsed.scopeId)}", capturedAt: "${String(parsed.capturedAt)}" }.`,
+      );
+    }
     // The file is whatever the builder passed to --file, and all of it — the names
     // AND the schema text — ends up in SQL on the server's loader. Refuse a crafted
     // one here rather than forwarding it: the server refuses it too, but a dump that
@@ -286,9 +294,24 @@ export async function restoreScope(opts: {
       // is not: here `detail` is ADDITIONAL to `error` — the loader's complaint beside the
       // refusal — where everywhere else it is the RFC 9457 duplicate OF it. Reading one in
       // place of the other would drop half of the only message that says what to fix.
-      const body = refusalBody(e) as { error?: string; detail?: string } | null;
+      const body = refusalBody(e) as {
+        error?: string;
+        detail?: string;
+        committedStores?: string[];
+        commitUnknown?: string;
+        incomplete?: boolean;
+        storeErasureIncomplete?: boolean;
+      } | null;
       const base = body?.error ?? `restore refused: ${e.status} ${e.statusText}`;
-      return new Error(body?.detail ? `${base} — ${body.detail}` : base);
+      // What a failed restore left behind, which the refusal's sentence does not say.
+      const left = [
+        ...(body?.committedStores?.length ? [`stores replaced: ${body.committedStores.join(', ')}`] : []),
+        ...(body?.commitUnknown ? [`store that may have been replaced: ${body.commitUnknown}`] : []),
+        ...(body?.storeErasureIncomplete ? ['an erasure that applies was not replayed'] : []),
+        ...(body?.incomplete ? ['the restore is incomplete; run it again'] : []),
+      ];
+      const said = body?.detail ? `${base} — ${body.detail}` : base;
+      return new Error(left.length > 0 ? `${said} (${left.join('; ')})` : said);
     },
   );
   console.log(`✓ restored ${tables.length} tables (${rows} rows) into scope ${opts.scopeId}`);

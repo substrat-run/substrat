@@ -202,10 +202,13 @@ import {
   type ScopeDeployment,
   type ScopeDeploymentLadder,
   advanceCopyJob,
+  advanceStoreJob,
+  isStoreJob,
+  type StoreJobRecord,
   copyJobThrewRetryMs,
   type CopyJobRecord,
 } from '@substrat-run/control-plane-api';
-import { durableCopyJobs } from './copy-jobs.js';
+import { durableCopyJobs, durableStoreJobs } from './copy-jobs.js';
 import { refuse, refuseStatus } from './problem.js';
 import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
@@ -263,8 +266,18 @@ export const CrossVerticalKickDO = defineKickCoalescerDO<Env>({
  * their names; the object itself decides only when the next step runs. A control plane with no
  * dispatch namespace has nothing to copy through, so a job there fails rather than waits.
  */
-export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
+export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord | StoreJobRecord>({
   advance: async (env, job, step) => {
+    // D-69: a store's backup or restore, by its own stepper, under no lease of a scope's move.
+    if (isStoreJob(job)) {
+      // Built inside the step: a binding that cannot be built is a counted fault, not a step that
+      // throws and is retried past the job's deadline.
+      return advanceStoreJob(() => ({
+        stores: platformStoresFor(env),
+        backups: env.SCOPE_BACKUPS ? createR2BackupStore(env.SCOPE_BACKUPS) : undefined,
+        admin: hostFor(env).admin,
+      }), job, { stopped: step.stopped });
+    }
     const clientForRef = resolveVerticalRefFor(env);
     if (!clientForRef) {
       return {
@@ -276,7 +289,7 @@ export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
     return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job, { stopped: step.stopped });
   },
   onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
-  threwRetryMs: copyJobThrewRetryMs,
+  threwRetryMs: (job) => (isStoreJob(job) ? 30_000 : copyJobThrewRetryMs(job)),
 });
 
 /** One producer's outgoing edges, now: the kick's pass. The sweep's reach, gates and recorder. */
@@ -3582,7 +3595,7 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
-        ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
+        ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS), storeJobs: durableStoreJobs(env.COPY_JOBS) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
         sourceBuilds: sourceBuildService(env.SOURCE_BUILDER, env.SERVICE_TOKEN),

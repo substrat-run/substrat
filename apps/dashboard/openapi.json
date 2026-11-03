@@ -7604,6 +7604,73 @@
                         "additionalProperties": false
                       }
                     },
+                    "storePages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "binding": {
+                            "type": "string",
+                            "pattern": "^[A-Z][A-Z0-9_]*$"
+                          },
+                          "driver": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revision": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "tables": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "pageCount": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "pages": {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "bytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "digest": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{64}$"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "bytes",
+                                "digest"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "binding",
+                          "driver",
+                          "revision",
+                          "tables",
+                          "pageCount",
+                          "pages"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
                     "masked": {
                       "type": "boolean"
                     }
@@ -23652,7 +23719,8 @@
                     "type": "string",
                     "minLength": 1
                   },
-                  "sourceScopeId": {}
+                  "sourceScopeId": {},
+                  "storePages": {}
                 },
                 "required": [
                   "tables",

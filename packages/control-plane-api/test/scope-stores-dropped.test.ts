@@ -20,6 +20,7 @@ import {
   type PlatformScopeStores,
   type VerticalClient,
 } from '../src/index.js';
+import { pagedFromWhole } from './helpers/store-fakes.js';
 
 /**
  * A binding a later version dropped (#2286, RFC scope-stores L17). Its objects keep their data,
@@ -98,13 +99,12 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
     const rows = new Map<string, number>();
     const asked: string[] = [];
     const key = (s: string, binding: string) => `${s}/${binding}`;
-    const caller: PlatformScopeStores = {
-      exportStores: async ({ scopeId: s, stores }) => stores.map((store) => ({
-        ...store,
-        tables: [{ name: 'nodes', ddl: 'CREATE TABLE nodes (id TEXT)', columns: ['id'], rows: Array.from({ length: rows.get(key(s, store.binding)) ?? 0 }, (_, i) => [`n${i}`]) }],
-      })),
-      importStores: async ({ scopeId: s, stores }) => {
-        for (const store of stores) rows.set(key(s, store.binding), store.tables.reduce((n, table) => n + table.rows.length, 0));
+    const caller: PlatformScopeStores = pagedFromWhole({
+      exportTables: ({ scopeId: s, binding }) => [
+        { name: 'nodes', ddl: 'CREATE TABLE nodes (id TEXT)', columns: ['id'], rows: Array.from({ length: rows.get(key(s, binding)) ?? 0 }, (_, i) => [`n${i}`]) },
+      ],
+      imported: ({ scopeId: s, binding, tables }) => {
+        rows.set(key(s, binding), tables.reduce((n, table) => n + table.rows.length, 0));
       },
       eraseSubject: async ({ stores }) => {
         asked.push(...stores.map((store) => `erase ${store.binding}`));
@@ -115,7 +115,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
         for (const store of stores) rows.delete(key(s, store.binding));
       },
       sizeStores: async ({ stores }) => stores.map((store) => ({ binding: store.binding, bytes: 0 })),
-    };
+    });
     return { caller, asked, put: (s: ScopeId, binding: string, n: number) => rows.set(key(s, binding), n) };
   };
 

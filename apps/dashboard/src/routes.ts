@@ -1257,6 +1257,9 @@ export const dashboardRoutes = defineRoutes({
     summary: 'Replace this app’s data from an uploaded dump after making a safety copy',
     input: scopeDump.pick({ tables: true, stores: true }).extend({
       scopeId: z.string().min(1), tables: scopeDump.shape.tables.min(1), sourceScopeId: z.unknown().optional(),
+      // Kept so that a backup holding its stores in pages is seen and refused, not stripped into a
+      // restore that leaves the stores as they were (D-69).
+      storePages: z.unknown().optional(),
     }),
     output: z.object({ restored: z.string(), tables: z.number().int(), safetyCopyId: z.string() }),
     http: { method: 'POST', path: '/apps/{scopeId}/restore' },

@@ -320,7 +320,8 @@ Three decisions worth not re-litigating:
   retirement is about to delete, and it counts as a live scope in `countScopesForVertical`
   — re-blocking the `deleteVertical` the reap was clearing. A dump leaves the deployment,
   and `POST …/restore` already loads one back, so export → store → restore is the round
-  trip that closes.
+  trip that closes. (A backup holding its stores in pages comes back through
+  `POST …/scopes/<new>/backups/restore`, naming the reaped scope as its source: D-69.)
 - **Full fidelity, never masked.** The `GET …/export` route masks by default because it
   hands bytes to a *caller* (§6's governed pull). A backup goes platform→platform and is
   never handed out, so the masking default does not apply — and a masked dump restores a
@@ -345,7 +346,7 @@ window is a deliberate choice, never a shipped TTL. (Erasure does not wait for i
 seals per-subject payloads under per-subject DEKs, so an old copy's PII exposure is
 bounded by key destruction — this window is the cost/hygiene bound, not the privacy one.)
 Jurisdiction-pinned scopes are refused outright until a per-jurisdiction store exists
-(K-32), because the reap must not wipe what the platform may not legally copy.
+(K-32), because the reap must not wipe what the platform may not legally copy. A store the platform reaches is held as page objects with an index written last (D-69), and one too large for the request refuses the reap, naming `POST …/backups`, which runs as a job.
 
 ### 4.3 The entitlement store
 

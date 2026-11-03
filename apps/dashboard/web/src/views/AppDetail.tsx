@@ -2165,6 +2165,9 @@ function ExportImport({ teamId, app, canRestore }: { teamId: string; app: AppRow
       if (!Array.isArray(parsed.tables) || parsed.tables.length === 0) {
         throw new Error(`${file.name} is not a scope dump (no tables) — expected a .dump.json export`);
       }
+      if (Array.isArray((parsed as { storePages?: unknown }).storePages) && (parsed as { storePages: unknown[] }).storePages.length > 0) {
+        throw new Error(`${file.name} is a backup that holds its stores in pages, so it cannot be imported here: its stores would stay as they are. Ask staff to restore it where it is held.`);
+      }
       const rows = parsed.tables.reduce((n, t) => n + (Array.isArray(t.rows) ? t.rows.length : 0), 0);
       setPending({ name: file.name, tables: parsed.tables, stores: parsed.stores ?? [], rows });
     } catch (e) {

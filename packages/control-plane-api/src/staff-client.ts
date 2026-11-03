@@ -64,6 +64,7 @@ import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
 import type { ClientProvisionScopeInput, RebindReview } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
+import type { StoreJobProgress } from './store-jobs.js';
 import { logsIncompleteOf, type ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
@@ -564,7 +565,19 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   listScopeBackups = (t: TenantId, s: ScopeId): Promise<ScopeBackup[]> =>
     this.call(`/tenants/${t}/scopes/${s}/backups`);
   /** Take a copy without reaping — a pre-migration checkpoint, or an export to keep. */
-  backupScope = (t: TenantId, s: ScopeId): Promise<ScopeBackup> => this.post(`/tenants/${t}/scopes/${s}/backups`);
+  /**
+   * Take a backup. A store too large for one request runs as a job, answered as its progress: ask
+   * again naming its `capturedAt`. A call that names none is told of that job while it runs, and
+   * once it has ended takes another backup (D-69).
+   */
+  backupScope = (t: TenantId, s: ScopeId, capturedAt?: string): Promise<ScopeBackup | StoreJobProgress> =>
+    this.post(`/tenants/${t}/scopes/${s}/backups${capturedAt ? `?capturedAt=${encodeURIComponent(capturedAt)}` : ''}`);
+  /**
+   * Restore a stored backup into scope `s`, its stores' pages read where they lie (D-69). The backup
+   * is `sourceScopeId`'s when it names one: a reaped scope's backup lands in a new scope.
+   */
+  restoreBackup = (t: TenantId, s: ScopeId, capturedAt: string, sourceScopeId?: ScopeId): Promise<{ restored: string; tables: number } | StoreJobProgress> =>
+    this.post(`/tenants/${t}/scopes/${s}/backups/restore`, { capturedAt, ...(sourceScopeId ? { sourceScopeId } : {}) });
 
   // The PLATFORM's own copies (#40) — the directory, not a tenant's scope. Read and
   // take-now only: `POST /directory/restore` is deliberately NOT on this client. A

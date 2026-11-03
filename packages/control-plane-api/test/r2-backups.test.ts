@@ -24,8 +24,11 @@ interface StoredObject {
 /** A fake `R2Bucket` with a settable page size, so the cursor walk is actually exercised. */
 function fakeBucket(pageSize = 100) {
   const objects = new Map<string, StoredObject>();
+  /** How many keys each delete call named. */
+  const deletes: number[] = [];
   return {
     objects,
+    deletes,
     bucket: {
       put: async (
         key: string,
@@ -38,17 +41,25 @@ function fakeBucket(pageSize = 100) {
         const o = objects.get(key);
         return o ? { text: async () => o.body } : null;
       },
-      delete: async (key: string) => {
-        objects.delete(key);
+      delete: async (keys: string | string[]) => {
+        deletes.push(Array.isArray(keys) ? keys.length : 1);
+        for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
       },
-      list: async (opts?: { prefix?: string; cursor?: string; include?: string[] }) => {
-        const all = [...objects.values()]
-          .filter((o) => (opts?.prefix ? o.key.startsWith(opts.prefix) : true))
+      list: async (opts?: { prefix?: string; cursor?: string; include?: string[]; delimiter?: string }) => {
+        const prefix = opts?.prefix ?? '';
+        const under = [...objects.values()]
+          .filter((o) => o.key.startsWith(prefix))
           .sort((a, b) => (a.key < b.key ? -1 : 1));
+        const below = (o: StoredObject) => o.key.slice(prefix.length).includes('/');
+        const all = opts?.delimiter ? under.filter((o) => !below(o)) : under;
+        const delimitedPrefixes = opts?.delimiter
+          ? [...new Set(under.filter(below).map((o) => `${prefix}${o.key.slice(prefix.length).split('/')[0]}/`))]
+          : [];
         const from = opts?.cursor ? Number(opts.cursor) : 0;
         const slice = all.slice(from, from + pageSize);
         const next = from + pageSize;
         return {
+          delimitedPrefixes,
           objects: slice.map((o) => ({
             key: o.key,
             size: o.body.length,
@@ -78,6 +89,160 @@ const dumpAt = (capturedAt: string, tenantId = 'ten1', scopeId = 'sc1'): ScopeDu
       rows: [['c1', 'anna@example.com']],
     },
   ],
+});
+
+describe('r2 scope-backup store, a backup held in parts (D-69)', () => {
+  const at = { tenantId: 'ten1', scopeId: 'sc1', capturedAt: '2026-08-06T10:00:00.000Z' };
+  const held = async (pages: number) => {
+    const { bucket, objects, deletes } = fakeBucket();
+    const store = createR2BackupStore(bucket);
+    const scope = await store.putScopeTables({ ...at, tables: dumpAt(at.capturedAt).tables });
+    for (let seq = 0; seq < pages; seq += 1) {
+      await store.putStorePage({ ...at, moveId: 'MOVE', seq, body: JSON.stringify({ tables: [], seq }) });
+    }
+    const listed = await store.listStorePages({ ...at, moveId: 'MOVE', pages });
+    const index = {
+      form: 'paged' as const, ...at, scope,
+      stores: [{ binding: 'GRAPH', driver: 'graph', revision: 'r1', tables: 0, pageCount: listed.length, pages: listed }],
+    };
+    return { store, bucket, objects, deletes, listed, index };
+  };
+
+  it('lists pages in chain order past any one page of a listing, with size and digest from metadata alone', async () => {
+    const { listed } = await held(12);
+    expect(listed.map((page) => page.key.slice(-11))).toEqual(Array.from({ length: 12 }, (_, i) => `${String(i).padStart(6, '0')}.json`));
+    for (const page of listed) expect(page.digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('lists only the pages of the chain as it ended, after a resume that had gone further', async () => {
+    const { store } = await held(5);
+    expect(await store.listStorePages({ ...at, moveId: 'MOVE', pages: 3 })).toHaveLength(3);
+  });
+
+  it('a listing names the backup and never its parts', async () => {
+    const { store, index } = await held(2);
+    expect(await store.list({ tenantId: 'ten1', scopeId: 'sc1' })).toEqual([]);
+    const backup = await store.putIndex({ vertical: 'v', index });
+    expect(await store.list({ tenantId: 'ten1', scopeId: 'sc1' })).toEqual([backup]);
+    expect(backup.tables).toBe(1);
+  });
+
+  it('reads an object only of this backup, only as the index names it', async () => {
+    const { store, objects, listed } = await held(2);
+    const ref = listed[0]!;
+    await expect(store.readObject({ ...at, capturedAt: '2026-01-01T00:00:00.000Z', ref })).rejects.toMatchObject({ status: 422 });
+    await expect(store.readObject({ ...at, ref })).resolves.toContain('"seq":0');
+    objects.get(ref.key)!.body = objects.get(ref.key)!.body.replace('"seq":0', '"seq":9');
+    await expect(store.readObject({ ...at, ref })).rejects.toMatchObject({ status: 422, message: expect.stringContaining('damaged') });
+    objects.delete(ref.key);
+    await expect(store.readObject({ ...at, ref })).resolves.toBeNull();
+  });
+
+  it('a damaged scope object refuses at the read, not at the load', async () => {
+    const { store, objects, index } = await held(1);
+    await store.putIndex({ vertical: 'v', index });
+    expect((await store.get(at))?.tables[0]?.name).toBe('customers');
+    objects.get(index.scope.key)!.body += ' ';
+    await expect(store.get(at)).rejects.toMatchObject({ status: 422 });
+    objects.delete(index.scope.key);
+    await expect(store.get(at)).rejects.toMatchObject({ status: 422, message: expect.stringContaining('missing') });
+  });
+
+  it('two attempts at one address share no object, and one giving up takes nothing of the other', async () => {
+    const { store, objects, index, listed } = await held(2);
+    const second = await store.putScopeTables({ ...at, tables: dumpAt(at.capturedAt).tables });
+    expect(second.key).not.toBe(index.scope.key);
+    await store.putStorePage({ ...at, moveId: 'OTHER', seq: 0, body: '{}' });
+    await store.putIndex({ vertical: 'v', index });
+    await store.deleteAttempt({ ...at, scopeKey: second.key, moveIds: ['OTHER'] });
+    expect(objects.has(`scopes/ten1/sc1/${at.capturedAt}.json`)).toBe(true);
+    expect(objects.has(index.scope.key)).toBe(true);
+    expect(objects.has(listed[0]!.key)).toBe(true);
+    expect(objects.has(second.key)).toBe(false);
+    await store.deleteAttempt({ ...at, scopeKey: index.scope.key, moveIds: ['MOVE'] });
+    expect(objects.size).toBe(0);
+  });
+
+  it('drops one chain', async () => {
+    const { store, objects, listed } = await held(2);
+    await store.deleteMove({ ...at, moveId: 'OTHER' });
+    expect(objects.has(listed[0]!.key)).toBe(true);
+    await store.deleteMove({ ...at, moveId: 'MOVE' });
+    expect(objects.has(listed[0]!.key)).toBe(false);
+  });
+
+  const old = () => new Date('2026-09-01T00:00:00.000Z');
+
+  it('retention deletes thousands of parts in batches, the index first, and counts one copy', async () => {
+    const { bucket, objects, deletes, index, store } = await held(2_500);
+    await store.putIndex({ vertical: 'v', index });
+    const first = [...objects.keys()].sort()[0];
+    expect(first).toBe(`scopes/ten1/sc1/${at.capturedAt}.json`);
+    const seen: string[] = [];
+    const watching = { ...bucket, delete: async (keys: string | string[]) => {
+      seen.push(...(Array.isArray(keys) ? keys : [keys]));
+      return bucket.delete(keys);
+    } };
+    expect(await pruneScopeBackups(watching, { olderThanDays: 1, now: old, maxCalls: 1000 })).toBe(1);
+    expect(seen[0]).toBe(first);
+    expect(objects.size).toBe(0);
+    expect(deletes.every((n) => n <= 1000)).toBe(true);
+  });
+
+  it('a scope object of the right bytes and the wrong shape refuses at the read', async () => {
+    const { store, index } = await held(1);
+    const scope = await store.putScopeTables({ ...at, tables: [{ name: 'broken' }] as never });
+    await store.putIndex({ vertical: 'v', index: { ...index, scope } });
+    await expect(store.get(at)).rejects.toThrow();
+  });
+
+  it('a pass resuming from a cursor does not walk the tenants already behind it', async () => {
+    const { bucket } = fakeBucket();
+    const store = createR2BackupStore(bucket);
+    await store.put({ vertical: null, dump: dumpAt('2026-08-30T10:00:00.000Z', 'ten1', 's1') });
+    await store.put({ vertical: null, dump: dumpAt('2026-08-30T10:00:00.000Z', 'ten2', 's1') });
+    await bucket.put('retention/scope-backups-cursor', 'scopes/ten2/s0/');
+    const listed: string[] = [];
+    const watching = { ...bucket, list: async (opts?: { prefix?: string }) => {
+      listed.push(opts?.prefix ?? '');
+      return bucket.list(opts);
+    } };
+    await pruneScopeBackups(watching, { olderThanDays: 30, now: old, maxCalls: 100 });
+    expect(listed).toContain('scopes/ten2/');
+    expect(listed).not.toContain('scopes/ten1/');
+  });
+
+  it('a pass out of budget has still deleted, and the next goes on from there', async () => {
+    const { bucket, objects, index, store } = await held(2_500);
+    await store.putIndex({ vertical: 'v', index });
+    const before = objects.size;
+    await pruneScopeBackups(bucket, { olderThanDays: 1, now: old, maxCalls: 8 });
+    expect(objects.has(`scopes/ten1/sc1/${at.capturedAt}.json`)).toBe(false);
+    expect(objects.size).toBeLessThan(before);
+    expect(objects.size).toBeGreaterThan(0);
+    // Short pages of the listing here, so each pass gets through a couple of hundred parts.
+    for (let pass = 0; pass < 20 && objects.size > 0; pass += 1) await pruneScopeBackups(bucket, { olderThanDays: 1, now: old, maxCalls: 8 });
+    expect(objects.size).toBe(0);
+  });
+
+  it('a budget that cannot walk every scope in one pass reaches each in turn, however many fresh ones stand ahead', async () => {
+    const { bucket, objects } = fakeBucket();
+    const store = createR2BackupStore(bucket);
+    const scopes = Array.from({ length: 12 }, (_, i) => `s${String(i).padStart(2, '0')}`);
+    for (const scopeId of scopes) await store.put({ vertical: null, dump: dumpAt('2026-08-30T10:00:00.000Z', 'ten1', scopeId) });
+    const stale = 'scopes/ten1/s11/2026-01-01T00:00:00.000Z.json';
+    await store.put({ vertical: null, dump: dumpAt('2026-01-01T00:00:00.000Z', 'ten1', 's11') });
+    const pruned: number[] = [];
+    for (let pass = 0; pass < 5 && objects.has(stale); pass += 1) {
+      pruned.push(await pruneScopeBackups(bucket, { olderThanDays: 30, now: old, maxCalls: 5 }));
+    }
+    expect(objects.has(stale)).toBe(false);
+    expect(pruned.reduce((a, b) => a + b, 0)).toBe(1);
+    // The cursor lies outside what a copy is, and a whole pass takes it away.
+    await pruneScopeBackups(bucket, { olderThanDays: 30, now: old, maxCalls: 1000 });
+    expect([...objects.keys()].filter((key) => !key.startsWith('scopes/'))).toEqual([]);
+    expect(objects.size).toBe(12);
+  });
 });
 
 describe('r2 scope-backup store (#493)', () => {

@@ -12,18 +12,17 @@ import {
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeEraseResult,
-  storeDriverDumpPageBytes,
   storeSizeResult,
   StoreError,
   type PlatformActorId,
   type ReservedStoreOperation,
   type Scope,
-  type ScopeDumpTable,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
-import { callReservedStoreOperation, readStoreDump, writeStoreDump, type HostAdmin, type ReservedStoreCall } from '@substrat-run/kernel';
+import { callReservedStoreOperation, type HostAdmin, type ReservedStoreCall } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { storedDeployManifest } from './deploy.js';
+import { PAGE_CALL_DEADLINE_MS, retryTransientOver, withDeadline } from './vertical-client.js';
 
 /**
  * A reserved scope-store call, made by the control plane straight at the store
@@ -35,7 +34,14 @@ export interface PlatformScopeStoreDispatch {
   /** PKCS8 Ed25519 private key, base64url. Signs audience `platform`. */
   readonly platformKey: string;
   fetch(scriptName: string, request: Request): Promise<Response>;
+  /** How long one store call may take, its answer read, ms. Default `PAGE_CALL_DEADLINE_MS`. */
+  readonly deadlineMs?: number;
+  /** The wait before each retry of a call that met a transient fault, ms. Default `STORE_CALL_RETRY_DELAYS_MS`. */
+  readonly retryDelaysMs?: readonly number[];
 }
+
+/** ~3 s worst case between the three tries a store call gets, as a provisioning call's are. */
+export const STORE_CALL_RETRY_DELAYS_MS: readonly number[] = [750, 2500];
 
 export interface PlatformScopeStoreTarget {
   readonly vertical: string;
@@ -52,18 +58,12 @@ export interface DeclaredScopeStore {
 }
 
 export interface PlatformScopeStores {
-  exportStores(input: {
-    tenantId: string;
-    scopeId: string;
-    vertical: string;
-    stores: readonly DeclaredScopeStore[];
-  }): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]>;
-  importStores(input: {
-    tenantId: string;
-    scopeId: string;
-    vertical: string;
-    stores: readonly { binding: string; driver: string; tables: ScopeDumpTable[] }[];
-  }): Promise<void>;
+  /**
+   * One reserved call on one store object, under a deadline and with a transient fault retried
+   * (`platformScopeStoresFor`). Everything that moves a store's data goes through this, a page at a
+   * time (`store-move.ts`), so nothing here holds a dump.
+   */
+  callStore(target: PlatformScopeStoreTarget): ReservedStoreCall;
   eraseSubject(input: {
     tenantId: string;
     scopeId: string;
@@ -296,6 +296,7 @@ export async function callPlatformScopeStore(
   target: PlatformScopeStoreTarget,
   operation: ReservedStoreOperation,
   input?: unknown,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   return callPlatformScopeStoreAt(
     dispatch,
@@ -305,6 +306,7 @@ export async function callPlatformScopeStore(
     },
     operation,
     input,
+    signal,
   );
 }
 
@@ -317,6 +319,7 @@ export async function callPlatformScopeStoreAt(
   target: { readonly scriptName: string; readonly objectName: string },
   operation: ReservedStoreOperation,
   input?: unknown,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   if (!dispatch.platformKey) {
     throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
@@ -349,18 +352,25 @@ export async function callPlatformScopeStoreAt(
         console.warn(`scope store call refused: STORE_PLATFORM_KEY is set but unusable (${error.message})`);
         throw new ControlPlaneError(503, 'this control plane holds no usable scope-store key');
       }
-      const response = await dispatch.fetch(
-        scriptName,
-        new Request('https://scope-store/invoke', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
-            [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
-          },
-          body,
-        }),
-      );
+      let response: Response;
+      try {
+        response = await dispatch.fetch(
+          scriptName,
+          new Request('https://scope-store/invoke', {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
+              [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
+            },
+            body,
+            ...(signal ? { signal } : {}),
+          }),
+        );
+      } catch (error) {
+        // An end that cannot be reached is a fault to retry, not a route's 500.
+        throw new ControlPlaneError(502, `scope store script '${scriptName}' could not be reached: ${error instanceof Error ? error.message : String(error)}`);
+      }
       try {
         return await response.json();
       } catch {
@@ -372,28 +382,49 @@ export async function callPlatformScopeStoreAt(
   }
 }
 
-/** The reserved operations a platform call makes, a dump in pages (D-69), one chain per declared binding. */
+/**
+ * A commit refused on its retry, after an earlier try whose answer was lost: that try may have landed
+ * and another writer then moved on, so a refusal here does not say the store was left as it was.
+ */
+export class RefusedAfterRetry extends ControlPlaneError {
+  constructor(cause: ControlPlaneError) {
+    super(cause.status, cause.message);
+  }
+}
+
+/**
+ * The reserved operations a platform call makes. Each runs under a deadline and retries a transient
+ * fault with backoff; a refusal, the 5 MB limit's 413 and a 409 among them, is never retried. A retry
+ * is safe by the contract (D-69): a read and a discard change nothing, a page already staged answers
+ * `staged: false` and changes nothing, and a commit asked again for the stage last committed answers
+ * the same count. So a `staged: false` on a retry is this call's own lost answer, and is answered as
+ * staged. A refusal on a commit's retry surfaces as a failure, as the contract has it, marked
+ * `RefusedAfterRetry`: the first try's answer was lost, so the commit may have landed.
+ */
 export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): PlatformScopeStores {
-  const call = (target: PlatformScopeStoreTarget, operation: ReservedStoreOperation, input?: unknown) =>
-    callPlatformScopeStore(dispatch, target, operation, input);
-  const reservedAt = (target: PlatformScopeStoreTarget) =>
-    ((operation, input) => call(target, operation, input)) as ReservedStoreCall;
+  const delays = dispatch.retryDelaysMs ?? STORE_CALL_RETRY_DELAYS_MS;
+  const deadlineMs = dispatch.deadlineMs ?? PAGE_CALL_DEADLINE_MS;
+  const call = (target: PlatformScopeStoreTarget, operation: ReservedStoreOperation, input?: unknown): Promise<unknown> => {
+    let tries = 0;
+    return retryTransientOver(delays, async () => {
+      tries += 1;
+      const answer = await withDeadline(
+        `'${operation}'`,
+        deadlineMs,
+        (signal) => callPlatformScopeStore(dispatch, target, operation, input, signal),
+        `scope store '${target.binding}'`,
+      ).catch((e: unknown) => {
+        const refused = e instanceof ControlPlaneError && e.status < 500 && e.status !== 0;
+        throw refused && tries > 1 && operation === 'substrat.commit-stage' ? new RefusedAfterRetry(e) : e;
+      });
+      if (tries > 1 && operation === 'substrat.stage-page' && (answer as { staged?: unknown }).staged === false) {
+        return { staged: true };
+      }
+      return answer;
+    });
+  };
   return {
-    async exportStores({ tenantId, scopeId, vertical, stores }) {
-      const exported = [];
-      for (const store of stores) {
-        const target = { ...store, tenantId, scopeId, vertical };
-        const tables = await readStoreDump(reservedAt(target), storeDriverDumpPageBytes(store.driver));
-        exported.push({ binding: store.binding, driver: store.driver, tables });
-      }
-      return exported;
-    },
-    async importStores({ tenantId, scopeId, vertical, stores }) {
-      for (const store of stores) {
-        const target = { ...store, tenantId, scopeId, vertical };
-        await writeStoreDump(reservedAt(target), store.tables, storeDriverDumpPageBytes(store.driver));
-      }
-    },
+    callStore: (target) => ((operation, input) => call(target, operation, input)) as ReservedStoreCall,
     async eraseSubject({ tenantId, scopeId, vertical, subjectId, stores }) {
       const erased = [];
       for (const store of stores) {
@@ -431,5 +462,5 @@ export function unreachablePlatformScopeStores(): PlatformScopeStores {
   const refuse = async (): Promise<never> => {
     throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
   };
-  return { exportStores: refuse, importStores: refuse, eraseSubject: refuse, wipeStores: refuse, sizeStores: refuse };
+  return { callStore: () => refuse as ReservedStoreCall, eraseSubject: refuse, wipeStores: refuse, sizeStores: refuse };
 }

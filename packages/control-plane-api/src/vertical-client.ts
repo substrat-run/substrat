@@ -404,13 +404,18 @@ export const PAGE_CALL_DEADLINE_MS = 60_000;
  * response body stream, so the call stops rather than idling on. The caller is answered `504`
  * whether or not `run` ever settles.
  */
-async function withDeadline<T>(verb: string, ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export async function withDeadline<T>(
+  verb: string,
+  ms: number,
+  run: (signal: AbortSignal) => Promise<T>,
+  who = 'the vertical',
+): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
-      reject(new ControlPlaneError(504, `the vertical did not answer ${verb} within ${ms / 1000} s; it may have stopped part-way`));
+      reject(new ControlPlaneError(504, `${who} did not answer ${verb} within ${ms / 1000} s; it may have stopped part-way`));
     }, ms);
   });
   try {
@@ -419,6 +424,24 @@ async function withDeadline<T>(verb: string, ms: number, run: (signal: AbortSign
     clearTimeout(timer);
   }
 }
+
+/**
+ * Run `fn`, again after each of `delays` (ms) while it fails with a transient fault (#559): a 5xx or
+ * an unreachable end. An honest refusal (a 4xx, and 501, not implemented) surfaces at once, since
+ * asking again only delays the real message. A persistent fault surfaces when the delays run out.
+ */
+export const retryTransientOver = async <T>(delays: readonly number[], fn: () => Promise<T>): Promise<T> => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const transient = e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));
+      const delay = delays[attempt];
+      if (!transient || delay === undefined) throw e;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+};
 
 export interface VerticalClientOptions {
   /**

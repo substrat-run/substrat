@@ -592,13 +592,22 @@ for dev, where the host process is the platform.
 
 **Export** (backup, full pull, snapshot source). The control plane reads the scope's
 bindings from the version record (§10.6) and reads each one's pages with `substrat.export-page`,
-in pages of the size the driver's registration declares. It puts the merged pages in the dump's
-`stores` as `{ binding, driver, tables }`. A masked pull or a masked
-export carries no stores. A store that fails to export fails the export: a dump that says
-it is whole while missing a store is not written.
+in pages of the size the driver's registration declares, holding one at a time (D-69). A backup
+writes each page as an object of its own under the backup's key, then an index last, which is what
+makes it a backup. A full pull and a full tenant export answer one body, so they merge the pages into
+the dump's `stores` as `{ binding, driver, tables }` and refuse with 413 past
+`STORE_PULL_MAX_BYTES`, and until links or a stream are decided no path exports such a store (D-69). A masked pull or a masked export carries no stores. A store that fails to
+export fails the export: a dump that says it is whole while missing a store is not written. Every
+call has a deadline, a transient fault is retried, a chain whose revision moved starts again after a
+longer wait each time, and a backup past what a request can spend runs as a job. A scope and its
+stores are not one moment, and a backup does not claim to be.
 
-**Restore and import.** The control plane loads the scope's own tables, then stages the dump's `stores` on each of its bindings with
-`substrat.stage-page` and commits each with `substrat.commit-stage`. Only bindings the destination's
+**Restore and import.** A dump held whole (an upload, a backup from before D-69) is staged after the
+scope's own tables load. A backup held in pages is restored by its own route, `POST …/scopes/<destination>/backups/restore`,
+which stages first, each page verified against the index's digest, so a page missing or mangled
+refuses with nothing changed; past a request's budget the staging is a job and a later call finishes
+it. Then the control plane loads the scope's own tables and commits each binding with
+`substrat.commit-stage`. Only bindings the destination's
 version declares, with the same driver, are imported. A dump binding the destination does
 not declare refuses the restore before any write. The check therefore runs ahead of
 `host.restoreScope`, which loads the scope's own tables first (L8, the recommended answer
@@ -625,8 +634,9 @@ plane's. Before that commit, #2254 read only the source's marks, through a caugh
 loop. Which destination stores the replay reaches is decided by the version resolution in
 §10.6 (item (i)).
 
-**Snapshot and fork.** A snapshot is an export of the source scope, then an import into
-the snapshot scope, then the replay above. The snapshot scope has its own id, so it has its
+**Snapshot and fork.** A snapshot reads each page of the source scope's stores and stages it on the
+snapshot scope with nothing gathered (D-69), commits, then runs the replay above. It runs in its
+request, so a store past the request's budget refuses. The snapshot scope has its own id, so it has its
 own store objects. Deleting a snapshot wipes its stores before its own storage (L6). The
 snapshot's replay outcome is reported as a restore's is (L10, L11). #2254 does this at
 `2f442969d`: the snapshot route returns `storeReplayFields`.

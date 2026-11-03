@@ -53,6 +53,31 @@ describe('scope restore backup provenance (#1880)', () => {
     expect(log).not.toHaveBeenCalledWith(expect.stringContaining('backup origin is unknown'));
   });
 
+  it('refuses a backup that holds its stores in pages, sending nothing, and says what to do', async () => {
+    const file = join(dir, 'paged.dump.json');
+    writeFileSync(file, JSON.stringify({
+      tenantId: sourceTenant, scopeId: sourceScope, capturedAt, tables, stores: [],
+      storePages: [{ binding: 'GRAPH', driver: 'graph', revision: 'r', tables: 1, pageCount: 1, pages: [] }],
+    }));
+    const posts = capturePost();
+    await expect(restoreScope(opts(file))).rejects.toThrow(/holds its stores in pages.*backups\/restore/);
+    expect(posts).toHaveLength(0);
+  });
+
+  it('says what a failed restore left behind', async () => {
+    const file = join(dir, 'failing.dump.json');
+    writeFileSync(file, JSON.stringify({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, tables }));
+    globalThis.fetch = (async () => Response.json({
+      status: 409, error: 'scope store answered 409 (stage_refused)',
+      committedStores: ['GRAPH'], commitUnknown: 'OTHER', incomplete: true, storeErasureIncomplete: true,
+    }, { status: 409, headers: { 'content-type': 'application/problem+json' } })) as typeof fetch;
+    const error = await restoreScope(opts(file)).catch((e: Error) => e.message);
+    expect(error).toContain('stores replaced: GRAPH');
+    expect(error).toContain('may have been replaced: OTHER');
+    expect(error).toContain('an erasure that applies was not replayed');
+    expect(error).toContain('incomplete');
+  });
+
   it('a full pull that carries scope stores restores them: it is written as the JSON dump, not .sqlite', async () => {
     const stores = [
       { binding: 'GRAPH', driver: 'graph', tables: [{ name: 'nodes', ddl: 'CREATE TABLE nodes (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['g1']] }] },

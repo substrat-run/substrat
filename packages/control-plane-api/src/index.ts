@@ -163,6 +163,23 @@ export {
   type DeclaredScopeStore,
   declaredStoresOf,
 } from './platform-scope-stores.js';
+export { STORE_REQUEST_BUDGET, type StoreMovePlan, type StoreRequestBudget } from './store-move.js';
+export { STORE_PULL_MAX_BYTES } from './store-pull.js';
+export {
+  advanceStoreJob,
+  isStoreJob,
+  newStoreJob,
+  STORE_JOB_MAX_FAULTS,
+  STORE_JOB_MAX_MS,
+  STORE_JOB_STEP_MS,
+  storeJobId,
+  type StoreJobDeps,
+  type StoreJobKind,
+  type StoreJobProgress,
+  type StoreJobRecord,
+  type StoreJobs,
+  type StoreJobSpec,
+} from './store-jobs.js';
 export {
   assertSandboxContract,
   deployManifest,
@@ -354,6 +371,7 @@ export { sqlCubeStore, CUBE_RETENTION_MS } from './cube-store-sql.js';
 export type { SqlExecLike } from './cube-store-sql.js';
 export type { CfObservabilityOptions } from './cf-observability.js';
 export type {
+  BackupAddress,
   ScopeBackup,
   ScopeBackupStore,
   DirectoryBackup,

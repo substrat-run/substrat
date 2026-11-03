@@ -19,12 +19,14 @@ import {
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
+  createR2BackupStore,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   unreachablePlatformScopeStores,
   type PlatformScopeStores,
   type ScopeBackupStore,
 } from '../src/index.js';
+import { fakeBucket, pagedFromWhole } from './helpers/store-fakes.js';
 
 /**
  * Subject erasure end to end (#37) — the claim as a round trip rather than a claim.
@@ -446,19 +448,17 @@ describe('subject erasure (#37)', () => {
           snapshotScope: async () => ({}),
         },
       } as never,
-      platformScopeStores: {
-        exportStores: async () => [{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }],
+      platformScopeStores: pagedFromWhole({
+        exportTables: () => [graphTable],
         eraseSubject: async ({ subjectId }) => {
           if (calls.failErase) throw new Error('store unavailable');
           calls.erased.push(subjectId);
           return [{ binding: 'GRAPH', erased: 1 }];
         },
-        wipeStores: async () => undefined,
-        sizeStores: async () => [],
-        importStores: async (input) => {
-          calls.imported.push(input.stores);
+        imported: ({ binding, tables }) => {
+          calls.imported.push([{ binding, driver: 'graph', tables }]);
         },
-      },
+      }),
     });
 
   it('a hosted restore imports the dump stores through the platform, not the vertical', async () => {
@@ -528,12 +528,12 @@ describe('subject erasure (#37)', () => {
       vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] },
     };
     type Calls = { exported: string[]; imported: string[]; erased: string[]; wiped: string[] };
-    const recording = (calls: Calls): PlatformScopeStores => ({
-      exportStores: async ({ scopeId: s2, stores }) => {
+    const recording = (calls: Calls): PlatformScopeStores => pagedFromWhole({
+      exportTables: ({ scopeId: s2 }) => {
         calls.exported.push(s2);
-        return stores.map((store) => ({ ...store, tables: [graphTable] }));
+        return [graphTable];
       },
-      importStores: async ({ scopeId: s2 }) => {
+      imported: ({ scopeId: s2 }) => {
         calls.imported.push(s2);
       },
       eraseSubject: async ({ subjectId, stores }) => {
@@ -545,11 +545,12 @@ describe('subject erasure (#37)', () => {
       },
       sizeStores: async () => [],
     });
+    const paged = createR2BackupStore(fakeBucket().bucket);
     const api = (stores: PlatformScopeStores, drivers: readonly unknown[] = [graphDriver]) =>
       createControlPlaneApi({
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
-        scopeBackups: store,
+        scopeBackups: paged,
         platformScopeStores: stores,
         storeDrivers: drivers as never,
         resolveVerticalRef: async () => ({
@@ -598,8 +599,12 @@ describe('subject erasure (#37)', () => {
       const res = await api(recording(calls)).request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
       expect(res.status).toBeLessThan(300);
       expect(calls.exported).toEqual([scoped]);
-      const taken = [...held.values()].find((d) => d.scopeId === scoped);
-      expect(taken!.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
+      const { capturedAt } = (await res.json()) as ScopeBackup;
+      const taken = await paged.get({ tenantId: t, scopeId: scoped, capturedAt });
+      expect(taken!.stores).toEqual([]);
+      expect(taken!.storePages?.map((s2) => [s2.binding, s2.driver, s2.pageCount])).toEqual([['GRAPH', 'graph', 1]]);
+      const page = await paged.readObject({ tenantId: t, scopeId: scoped, capturedAt, ref: taken!.storePages![0]!.pages[0]! });
+      expect(JSON.parse(page!)).toEqual({ tables: [graphTable] });
     });
 
     it('is carried WITH its store in a full tenant export (Art. 20)', async () => {

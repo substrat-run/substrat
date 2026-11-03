@@ -57,8 +57,8 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
   let refuseRebind: ((scopeId: string) => string | { status: number; body: Record<string, unknown> } | null) | null;
   let calls: string[];
 
-  /** The kind of backup store a deployed plane holds: enough to satisfy `backup: true`. */
-  const backups: NonNullable<ControlPlaneApiOptions['scopeBackups']> = {
+  /** The kind of backup store a deployed plane holds: enough to satisfy `backup: true`, of a scope with no store. */
+  const backups = {
     put: async ({ vertical, dump }: { vertical: string | null; dump: ScopeDump }): Promise<ScopeBackup> => ({
       tenantId: dump.tenantId,
       scopeId: dump.scopeId,
@@ -69,7 +69,7 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     }),
     list: async () => [],
     get: async () => null,
-  };
+  } as unknown as NonNullable<ControlPlaneApiOptions['scopeBackups']>;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-bound-scopes-'));

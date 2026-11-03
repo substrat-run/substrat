@@ -14,6 +14,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
+  createR2BackupStore,
   DEV_ACTOR_HEADER,
   unreachablePlatformScopeStores,
   UNSAFE_devPlatformActorAuth,
@@ -21,6 +22,7 @@ import {
   type ScopeBackupStore,
   type VerticalClient,
 } from '../src/index.js';
+import { fakeBucket } from './helpers/store-fakes.js';
 
 /**
  * The platform's copies of a scope (backup, full pull, snapshot, and the reap that wipes
@@ -47,6 +49,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
 
   const held = new Map<string, ScopeDump>();
   const backups: ScopeBackupStore = {
+    ...createR2BackupStore(fakeBucket().bucket),
     put: async ({ dump }) => {
       held.set(dump.capturedAt, dump);
       return {
@@ -122,8 +125,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     const asked: string[] = [];
     const refuse = unreachablePlatformScopeStores();
     const caller: PlatformScopeStores = {
-      exportStores: async (input) => (asked.push('export'), refuse.exportStores(input)),
-      importStores: async (input) => (asked.push('import'), refuse.importStores(input)),
+      callStore: (target) => ((operation: string, input?: unknown) => (asked.push('export'), refuse.callStore(target)(operation as 'substrat.size', input))) as never,
       eraseSubject: async (input) => (asked.push('erase'), refuse.eraseSubject(input)),
       wipeStores: async (input) => (asked.push('wipe'), refuse.wipeStores(input)),
       sizeStores: async (input) => (asked.push('size'), refuse.sizeStores(input)),

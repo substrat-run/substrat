@@ -634,6 +634,12 @@ that file, stores included. A local harness loads it with `adapter-sqlite`'s `im
 host whose `scopeStores` binds a runner of the same driver for each store the dump names; a store
 the host does not bind is refused before anything is written.
 
+A full pull answers one body, which holds at most 32 MB of store data. Past that the pull is
+refused (413), and **no path exports such a store through the API** until links or a stream are
+decided. A backup holds it and restores it, but cannot be downloaded. `substrat scope restore`
+refuses a file of such a backup, whose stores it could not restore, and when a restore fails it
+prints which stores were replaced.
+
 The pull crosses the platform's trust boundary on purpose, so the server side is the gate:
 
 - **Pseudonymized by default** — a column or payload field whose *name* the PII heuristic

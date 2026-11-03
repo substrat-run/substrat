@@ -214,7 +214,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { abandonCopy, beginTransfer, connectionGrantsForScope, retryTransientOver, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
   type CopyJobRecord, type CopyJobs,
@@ -237,6 +237,41 @@ import { NON_PROBLEM_REFUSAL, coded, mapError, relayed, type ApiError } from './
 import { maskDump, maskRecords } from './mask.js';
 import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
+import {
+  abandonStorePlan,
+  movesOf,
+  newStorePlan,
+  runStorePlanInRequest,
+  STORE_REQUEST_BUDGET,
+  unfinishedInRequest,
+  type MovedStore,
+  type StoreMovePlan,
+  type StoreRequestBudget,
+} from './store-move.js';
+import {
+  backupEnds,
+  commitStages,
+  discardStages,
+  importWholeStores,
+  refuseOverCap,
+  restoreEnds,
+  snapshotEnds,
+  storeHoldsRows,
+  StoreLandFailure,
+  writeBackupIndex,
+  type BackupPlace,
+} from './store-move-ends.js';
+import { readStoreForBody, STORE_PULL_MAX_BYTES, type PullBudget } from './store-pull.js';
+import {
+  restorePageBytes,
+  STORE_JOB_CLAIM_MS,
+  STORE_JOB_MAX_MS,
+  storeJobAt,
+  storeJobId,
+  type StoreJobProgress,
+  type StoreJobRecord,
+  type StoreJobs,
+} from './store-jobs.js';
 import {
   assertSandboxContract,
   verticalUploadBindings,
@@ -503,6 +538,15 @@ export interface ControlPlaneApiOptions {
    * stores. Present on the hosted control plane, which is the only caller.
    */
   platformScopeStores?: PlatformScopeStores;
+  /**
+   * D-69: where a backup or a restore of a store too large for one request runs (the copy jobs'
+   * Durable Object, hosted). Without it such a move is refused, naming why.
+   */
+  storeJobs?: StoreJobs;
+  /** How much of a store's move one request does. Default `STORE_REQUEST_BUDGET`. */
+  storeRequestBudget?: StoreRequestBudget;
+  /** The most store data one pull or tenant export answers, bytes. Default `STORE_PULL_MAX_BYTES`. */
+  storePullMaxBytes?: number;
   /**
    * The registered scope-store drivers (#2207) this control plane judges a scope's stores against
    * (`mayHoldScopeStores`, #2242), and a push's declared drivers and both uploads' plans
@@ -1814,6 +1858,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const { host, authenticate, authenticateBuilder, authenticateTenantService } = options;
   const copyLeaseMs = options.copyLeaseMs ?? SCOPE_COPY_LEASE_MS;
 
+  const requestBudget = (): StoreRequestBudget => options.storeRequestBudget ?? STORE_REQUEST_BUDGET;
+
   /** The stores of the version the scope's deployment runs (`scopeStoresOf`, #2207). */
   const manifestStores = (c: ReqCtx, scope: Scope, running?: RunningVersion): Promise<DeclaredScopeStore[]> =>
     scopeStoresOf(c.var.admin, c.get('actor'), scope, options.storeDrivers, running);
@@ -1851,34 +1897,58 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => (await platformStoresWipe(c, scope))();
 
   /**
-   * A dump in pages (`substrat.export-page`) of each store the lifecycle reaches, for a backup, a full pull or a fork.
+   * The stores a dump of `scope` holds, for a backup or a full pull. None to say when the platform
+   * reaches no store for it.
    *
    * A dump is only worth taking if it restores, and a restore imports only what the destination's
    * version declares (L8). So a binding only an earlier version declared (#2286) is left out of the
-   * dump when its export is empty, which is what an object that was never written, or one already
-   * wiped, answers. One that still holds rows refuses the export (409), naming the binding and the
-   * way out, rather than produce a dump its own scope could not restore. Wipe, reap and erasure
-   * never export, so they reach such a store regardless.
+   * dump when it is empty, which is what an object that was never written, or one already wiped,
+   * answers. One that still holds rows refuses the export (409), naming the binding and the way out,
+   * rather than produce a dump its own scope could not restore. Wipe, reap and erasure never export,
+   * so they reach such a store regardless.
    */
-  const exportPlatformStores = async (c: ReqCtx, scope: Scope): Promise<ScopeDump['stores'] | undefined> => {
+  const dumpStoresOf = async (
+    c: ReqCtx,
+    scope: Scope,
+  ): Promise<{ caller: PlatformScopeStores; vertical: string; stores: DeclaredScopeStore[] } | undefined> => {
     const caller = options.platformScopeStores;
     if (!caller || !scope.vertical) return undefined;
     const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeDrivers);
     if (all.length === 0) return undefined;
-    const exported = await caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores: all });
     const current = new Set(running.map((store) => store.binding));
-    const dropped = exported.filter((store) => !current.has(store.binding));
-    const held = dropped.find((store) => store.tables.some((table) => table.rows.length > 0));
-    if (held) {
-      throw new ControlPlaneError(
-        409,
-        `scope ${scope.id}'s store '${held.binding}' was declared by an earlier version of '${scope.vertical}' and ` +
-          `still holds data, and the version the scope runs does not declare it, so a dump of it could not be ` +
-          `restored. Declare '${held.binding}' as a '${held.driver}' again in a version the scope runs, then export; ` +
-          `or reap the scope without a backup, which wipes it`,
-      );
+    for (const store of all) {
+      if (current.has(store.binding)) continue;
+      if (await storeHoldsRows(caller.callStore({ ...store, tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical }))) {
+        throw new ControlPlaneError(
+          409,
+          `scope ${scope.id}'s store '${store.binding}' was declared by an earlier version of '${scope.vertical}' and ` +
+            `still holds data, and the version the scope runs does not declare it, so a dump of it could not be ` +
+            `restored. Declare '${store.binding}' as a '${store.driver}' again in a version the scope runs, then export; ` +
+            `or reap the scope without a backup, which wipes it`,
+        );
+      }
     }
-    return exported.filter((store) => current.has(store.binding));
+    return { caller, vertical: scope.vertical, stores: running };
+  };
+
+  const pullBudget = (): PullBudget => {
+    const limit = options.storePullMaxBytes ?? STORE_PULL_MAX_BYTES;
+    return { left: limit, limit };
+  };
+
+  /**
+   * Each store's dump, whole, for an answer that has to carry it in one body (a full pull, a full
+   * tenant export), read in pages and refused (413) once it would pass `budget`, naming the size.
+   */
+  const exportPlatformStores = async (c: ReqCtx, scope: Scope, budget: PullBudget): Promise<ScopeDump['stores'] | undefined> => {
+    const reach = await dumpStoresOf(c, scope);
+    if (!reach) return undefined;
+    const exported: ScopeDump['stores'] = [];
+    for (const store of reach.stores) {
+      const call = reach.caller.callStore({ ...store, tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical });
+      exported.push({ ...store, tables: await readStoreForBody(call, store, scope.id, budget, requestBudget()) });
+    }
+    return exported;
   };
 
   /**
@@ -1926,7 +1996,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ? {}
       : {
           storeErasuresReplayed: replays.reduce((n, r) => n + r.storeErasuresReplayed, 0),
-          ...(replays.some((r) => r.storeErasureIncomplete) ? { incomplete: true } : {}),
+          ...(replays.some((r) => r.storeErasureIncomplete) ? { incomplete: true, storeErasureIncomplete: true } : {}),
           ...(replays.some((r) => r.storeErasureSourceUnknown) ? { sourceUnknown: true } : {}),
         };
 
@@ -2442,20 +2512,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // delays, well inside a Worker request budget; a persistent fault still exhausts
   // and surfaces (and lands an ops-failure row via the paths that record).
   const PROVISION_RETRY_DELAYS_MS: readonly number[] = [750, 2500];
-  const retryTransient = async <T>(fn: () => Promise<T>): Promise<T> => {
-    const delays = options.provisionRetryDelaysMs ?? PROVISION_RETRY_DELAYS_MS;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await fn();
-      } catch (e) {
-        const transient =
-          e instanceof ControlPlaneError && (e.status === 0 || (e.status >= 500 && e.status !== 501));
-        const delay = delays[attempt];
-        if (!transient || delay === undefined) throw e;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-  };
+  const retryTransient = <T>(fn: () => Promise<T>): Promise<T> =>
+    retryTransientOver(options.provisionRetryDelaysMs ?? PROVISION_RETRY_DELAYS_MS, fn);
 
   // One error boundary for every route: adapters throw plain Errors, and each
   // one is a fail-closed refusal that must reach the caller as a status, not a
@@ -2602,6 +2660,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       for (const scope of await c.var.admin.listScopes(actor, { tenantId })) {
         if (scope.status === 'reaped') continue;
         if (scope.status !== 'archived') await c.var.admin.archiveScope(actor, tenantId, scope.id);
+        await stopStoreJobs(scope);
         // A backup here is OPT-IN, the inverse of the per-scope reap's default (#493).
         // A scope reap is operational cleanup, so leaving a copy is the safe default; a
         // TENANT reap is the deletion of a customer, and §4.8 exists partly to serve an
@@ -6462,6 +6521,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     scope: Scope,
     opts: { kind?: string; expiresAt?: string },
+    /** What unblocks whoever asked, when a store is too large to copy in the request. */
+    overBudget = 'A snapshot runs in its request. A backup of this scope runs as a job, and holds up to 20 000 pages of a store.',
   ): Promise<{ snapId: ScopeId; replay?: StoreErasureReplay }> => {
     const actor = c.get('actor');
     const deployment = await deploymentForScope(c, scope);
@@ -6509,29 +6570,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const moveId = ref ? ulid() : null;
     let replay: StoreErasureReplay | undefined;
+    let staged: readonly MovedStore[] = [];
     try {
       if (moveId && ref) {
         // No load stamp: the vertical's in-script copy leaves none, so a crash-recovery sweep keeps
         // this copy (`retained`) rather than wiping it, and reap and erasure still reach it.
         await c.var.admin.recordScopeScriptCopy(actor, tenantId, snapId, ref, moveId, { role: 'destination', leaseMs: copyLeaseMs });
       }
+      // Bound to the SOURCE's current version: source and fork share a deployment, so the fork
+      // resolves to the DO namespace its bytes actually live in. A fork with stores binds before they
+      // are copied: if it fails, the sweep that reaps it has to name its version to reach them.
+      const bindFork = async (): Promise<void> => {
+        if (scope.verticalVersionId) await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
+      };
+      if (reach) await bindFork();
       await retryTransient(() => copier.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
       // The scope file was copied inside the script. The store objects are per scope, so the
-      // fork gets its own copy through the reserved export and import, signed by the
-      // control plane. A version that declares no stores has nothing to copy.
+      // fork gets its own copy, a page at a time from the source's chain to the fork's stage (D-69),
+      // signed by the control plane and held nowhere between. Each store commits once all are staged.
+      // A version that declares no stores has nothing to copy. This runs in the request, so a store
+      // past its budget refuses: a snapshot's directory steps are not yet a job's to finish.
       if (reach) {
-        const stores = await reach.caller.exportStores({ tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
-        if (stores.length > 0) {
-          await reach.caller.importStores({ tenantId, scopeId: snapId, vertical: reach.vertical, stores });
-          replay = await replayPlatformStoreErasures(c, { ...scope, id: snapId }, scope.id);
+        const place = { tenantId, vertical: reach.vertical, from: scope.id, to: snapId };
+        const endsOf = snapshotEnds(reach.caller, place);
+        const copied = await runStorePlanInRequest(endsOf, newStorePlan(reach.stores), requestBudget());
+        if ('state' in copied) {
+          await abandonStorePlan(endsOf, copied.state);
+          throw unfinishedInRequest(`A snapshot of scope ${scope.id}'s stores`, copied.state, overBudget);
         }
+        staged = copied.done;
+        await commitStages(reach.caller, { tenantId, scopeId: snapId, vertical: reach.vertical }, copied.done);
+        replay = await replayPlatformStoreErasures(c, { ...scope, id: snapId }, scope.id);
       }
       await c.var.admin.activateScope(actor, tenantId, snapId);
-      // Bound to the SOURCE's current version: source and fork share a deployment, so
-      // the fork resolves to the DO namespace its bytes actually live in.
-      if (scope.verticalVersionId) {
-        await c.var.admin.bindScopeVersion(actor, tenantId, snapId, scope.verticalVersionId);
-      }
+      if (!reach) await bindFork();
       // The fork's route is the script its bytes were copied into, never the serving pointer
       // `provisionScope` stamped (which may have moved since), and the write that sets it confirms
       // the move. A fork of a bound source routes by its bound version, whose script is `ref`: its
@@ -6545,6 +6617,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (moveId && ref) {
         await c.var.admin.settleScopeScriptCopy(actor, tenantId, snapId, ref, moveId, 'retained').catch(() => undefined);
       }
+      // The fork is new, so nothing is lost by dropping it: its stores now, the rest by the sweep,
+      // which reaps a row past its expiry. Best effort, and never over the failure that led here.
+      if (reach) {
+        const fork = { tenantId, scopeId: snapId, vertical: reach.vertical };
+        await discardStages(reach.caller, fork, staged);
+        await reach.caller.wipeStores({ ...fork, stores: reach.stores }).catch(() => undefined);
+      }
+      await c.var.admin.setScopeExpiresAt(actor, tenantId, snapId, new Date().toISOString()).catch(() => undefined);
       throw e;
     }
     return { snapId, replay };
@@ -6689,11 +6769,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // entry, and IS the bytes when the host is co-located — and a vertical-held scope's
   // real tables overlay it. FULL fidelity, never masked: a masked dump cannot restore,
   // and a backup that cannot restore is a false promise (see `backups.ts`).
-  const backupScope = async (
+  //
+  // A store's data is not in the dump (D-69): its pages go to objects of their own under the
+  // backup's key, as the request's budget allows and then as a job (`jobs`, on a route that can
+  // answer 202), with an index written last that makes it a backup. A scope and its stores are not
+  // one moment, here or before: the scope is read, then each store, each store's chain one moment of
+  // its own. A store the platform does not reach (a co-located host's) stays inline, as its own
+  // dump has it.
+  const takeBackup = async (
     c: ReqCtx,
     tenantId: TenantId,
     scope: Scope,
-  ): Promise<ScopeBackup> => {
+    jobs?: StoreJobs,
+  ): Promise<ScopeBackup | StoreJobRecord> => {
     const store = options.scopeBackups;
     if (!store) {
       throw new ControlPlaneError(
@@ -6719,7 +6807,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
     // Store tables are opaque and stay unsealed. The platform reads them from the store script
     // (#2207); a store it cannot name or reach refuses the backup rather than omitting it.
-    const stores = (await exportPlatformStores(c, scope)) ?? dump.stores;
+    const reach = await dumpStoresOf(c, scope);
     // Seal classified payloads per subject on the way in (#37). This copy is full-fidelity
     // and the platform keeps it, which is precisely why an erasure could never reach it: a
     // redaction fixes the live scope and does nothing to the object already in R2. Sealed
@@ -6727,7 +6815,110 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Restores open it again (`restoreFromBackup`) — except for subjects shredded in the
     // meantime, which is the mechanism working rather than the copy being damaged.
     const sealed = await sealDump(tables, sealerFor(c, tenantId, scope.id));
-    return store.put({ vertical: scope.vertical, dump: { ...dump, tables: sealed, stores } });
+    if (!reach || reach.stores.length === 0) {
+      return store.put({ vertical: scope.vertical, dump: { ...dump, tables: sealed, stores: reach ? [] : dump.stores } });
+    }
+    const place: BackupPlace = { tenantId, scopeId: scope.id, vertical: reach.vertical, capturedAt: dump.capturedAt };
+    for (const declared of reach.stores) await refuseOverCap(reach.caller.callStore({ ...place, ...declared }), declared);
+    const scopeObject = await store.putScopeTables({ ...place, tables: sealed });
+    const giveUp = (plan?: StoreMovePlan) => store.deleteAttempt({
+      ...place, scopeKey: scopeObject.key, moveIds: plan ? movesOf(plan).map((m) => m.moveId) : [],
+    }).catch(() => undefined);
+    const moved = await runStorePlanInRequest(
+      backupEnds({ stores: reach.caller, backups: store }, place),
+      newStorePlan(reach.stores),
+      requestBudget(),
+    ).catch(async (e: unknown) => {
+      await giveUp();
+      throw e;
+    });
+    if ('done' in moved) {
+      const moves = moved.done;
+      const giveUpMoved = () => store.deleteAttempt({ ...place, scopeKey: scopeObject.key, moveIds: moves.map((m) => m.moveId) }).catch(() => undefined);
+      // The pages took time: a reap in that time wiped the store, and this copy must not land after it.
+      if ((await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scope.id))?.status === 'reaped') {
+        await giveUpMoved();
+        throw new ControlPlaneError(409, `scope ${scope.id} was reaped while its backup ran; nothing was kept`);
+      }
+      return writeBackupIndex(store, place, scopeObject, moves).catch(async (e: unknown) => {
+        await giveUpMoved();
+        throw e;
+      });
+    }
+    if (!jobs) {
+      await giveUp(moved.state);
+      throw unfinishedInRequest(
+        `A backup of scope ${scope.id}'s stores`,
+        moved.state,
+        options.storeJobs
+          ? 'Take it first with POST …/backups, which runs as a job and holds up to 20 000 pages of a store, then reap with backup=false.'
+          : 'This control plane runs no job that could finish it.',
+      );
+    }
+    const now = Date.now();
+    const job = await jobs.start({
+      id: storeJobId('store-backup', scope.id), kind: 'store-backup', tenantId, scopeId: scope.id, vertical: reach.vertical,
+      capturedAt: place.capturedAt, scopeObject, actor: c.get('actor'), startedAt: now, deadline: now + STORE_JOB_MAX_MS,
+    }, moved.state).catch(async (e: unknown) => {
+      await giveUp(moved.state);
+      throw e;
+    });
+    // Another call started this scope's job first: its backup is the one under way.
+    if (job.spec.scopeObject?.key !== scopeObject.key) await giveUp(moved.state);
+    return job;
+  };
+
+  /**
+   * Stop a scope's store jobs before a reap wipes it (D-69), waiting for a step running now, so no copy
+   * lands after the wipe, `backup: false` included, and no commit between the wipe and the status
+   * flip. A backup still moving is dropped with what it wrote; one finished stays, as any held copy
+   * does. A restore's stages go. A restore a call is finishing right now refuses the reap, to retry.
+   */
+  const stopStoreJobs = async (scope: Scope): Promise<void> => {
+    const jobs = options.storeJobs;
+    if (!jobs) return;
+    const restoreId = storeJobId('store-restore', scope.id);
+    const restore = await jobs.cancel(restoreId);
+    if (restore) {
+      if (restore.status === 'done' && (restore.claimedUntil ?? 0) > Date.now()) {
+        throw new ControlPlaneError(409, `scope ${scope.id} is being restored from its backup of ${restore.spec.capturedAt} right now; reap again when that is done`);
+      }
+      const moves = restore.done?.moved ?? (restore.state ? movesOf(restore.state) : []);
+      if (options.platformScopeStores) {
+        await discardStages(options.platformScopeStores, { tenantId: scope.tenantId, scopeId: scope.id, vertical: restore.spec.vertical }, moves);
+      }
+      await jobs.forget(restoreId);
+    }
+    const backupId = storeJobId('store-backup', scope.id);
+    const backup = await jobs.cancel(backupId);
+    if (backup) {
+      if (!backup.done && options.scopeBackups) {
+        await options.scopeBackups.deleteAttempt({
+          tenantId: scope.tenantId, scopeId: scope.id, capturedAt: backup.spec.capturedAt, scopeKey: backup.spec.scopeObject?.key,
+          moveIds: backup.state ? movesOf(backup.state).map((m) => m.moveId) : [],
+        }).catch(() => undefined);
+      }
+      await jobs.forget(backupId);
+    }
+  };
+
+  const backupScope = async (c: ReqCtx, tenantId: TenantId, scope: Scope): Promise<ScopeBackup> =>
+    (await takeBackup(c, tenantId, scope)) as ScopeBackup;
+
+  /** A job's progress, as a route answers it while the job runs (202): ask again, naming `capturedAt`. */
+  const storeJobAnswer = (job: StoreJobRecord): StoreJobProgress => ({
+    copying: true, capturedAt: job.spec.capturedAt, pages: job.pages, rows: job.rows, attempt: job.attempt,
+  });
+
+  /**
+   * A job's failure, as the route answers it. A refusal keeps its status and sentence. A fault the
+   * job met (its deadline, an end it could not reach) is answered 409, naming that status: the call
+   * reporting it did not fail, the job did, earlier, and a 5xx reads to every client as a gateway's.
+   */
+  const storeJobFailure = (job: StoreJobRecord): ControlPlaneError => {
+    const status = job.error?.status ?? 500;
+    const message = job.error?.message ?? `the job for scope ${job.spec.scopeId} failed`;
+    return status >= 500 ? new ControlPlaneError(409, `${message} (${status})`) : new ControlPlaneError(status, message);
   };
 
   // The copies held for one scope — metadata only, so listing a reaped scope's backups
@@ -6761,7 +6952,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // authorized read opening them with the keys the platform holds. A subject shredded
     // since the copy was taken opens to a null payload, which is exactly the erasure
     // working: the ciphertext never left the object, and nothing turns it back into a
-    // person. A dump taken before sealing existed passes through untouched.
+    // person. A dump taken before sealing existed passes through untouched. A backup held in
+    // parts names its stores' pages here (`storePages`) rather than carry them: `POST …/restore`
+    // refuses such a dump, and this backup's own restore route reads them.
     const opened = await openDump(dump.tables, sealerFor(c, tenantId, scopeId));
     return c.json({ ...dump, tables: opened });
   });
@@ -6775,7 +6968,44 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     try {
-      return c.json(await backupScope(c, tenantId, scope), 201);
+      // D-69: a store too large for the request runs as a job, answered 202 with its `capturedAt`. A
+      // call that names it (`?capturedAt=`) is asking about that backup: its progress, its failure or
+      // the backup itself, as often as it asks, so an answer lost on the way is asked for again. Any
+      // other call takes a new backup: a backup that finished earlier is never answered as if taken
+      // now. Only one runs per scope, so while one moves, that call is answered 202 for it, under its
+      // own name, and takes none.
+      const jobs = options.storeJobs;
+      const named = c.req.query('capturedAt');
+      const id = storeJobId('store-backup', scopeId);
+      const stored = await jobs?.get(id);
+      if (jobs && stored) {
+        const held = storeJobAt(stored, Date.now());
+        const mine = named === held.spec.capturedAt;
+        if (held.status === 'copying' && (!named || mine)) return c.json(storeJobAnswer(held), 202);
+        if (stored.status === 'copying' && held.status === 'failed') {
+          // Its steps stopped, so nothing will settle it but this.
+          await jobs.forget(id);
+          await options.scopeBackups?.deleteAttempt({
+            tenantId, scopeId, capturedAt: held.spec.capturedAt, scopeKey: held.spec.scopeObject?.key,
+            moveIds: stored.state ? movesOf(stored.state).map((m) => m.moveId) : [],
+          }).catch(() => undefined);
+          if (mine) throw storeJobFailure(held);
+        } else if (mine && held.status === 'failed') {
+          throw storeJobFailure(held);
+        } else if (mine && held.done?.backup) {
+          return c.json(held.done.backup, 201);
+        } else if (!named) {
+          await jobs.forget(id);
+        }
+      }
+      if (named) {
+        // No job answers for it, finished or forgotten: what is held says.
+        if (!options.scopeBackups) return refuseStatus(c, 501, 'no backup target configured');
+        const listed = (await options.scopeBackups.list({ tenantId, scopeId })).find((b) => b.capturedAt === named);
+        return listed ? c.json(listed, 201) : refuse(c, 'not_found', `no backup for scope ${scopeId} at ${named}`);
+      }
+      const taken = await takeBackup(c, tenantId, scope, jobs);
+      return 'spec' in taken ? c.json(storeJobAnswer(taken), 202) : c.json(taken, 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return relayRefusal(c, e);
@@ -7366,6 +7596,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `unbind it before reaping (reap wipes storage and cannot be undone)`,
       );
     }
+    try {
+      await stopStoreJobs(scope);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+      throw e;
+    }
     // The recoverable copy, BEFORE any byte is wiped (#493). Ordering is the whole
     // guarantee: `backupScope` has to have resolved — durably stored — before
     // `deleteScope` runs, so a store that throws (or is missing when one was asked for)
@@ -7445,7 +7681,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (full) {
         // Store tables are opaque. The platform reads them from the store script (#2207); a
         // store it cannot name or reach refuses the pull rather than omitting it.
-        const stores = (await exportPlatformStores(c, scope)) ?? dump.stores;
+        const stores = (await exportPlatformStores(c, scope, pullBudget())) ?? dump.stores;
         return c.json({ ...dump, tables, stores, masked: false });
       }
       // One pseudonymizer for the whole response (#1034): the same customer has to read
@@ -7541,6 +7777,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const mask = full ? undefined : await createPseudonymizer(options.maskSalt ?? crypto.randomUUID());
       const live = scopes.filter((s) => s.status !== 'reaped');
       const data: ScopeDump[] = [];
+      const storeBudget = pullBudget();
       for (const scope of live) {
         const dump = await c.var.admin.exportScope(actor, tenantId, scope.id);
         const vertical = await verticalForScope(c, scope);
@@ -7552,7 +7789,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // A masked export omits them rather than shipping them unmasked. A full one reads them
           // where they live, as a backup does (#2207): the host's own dump has none on the hosted
           // plane, and a store that cannot be named refuses the export rather than leave it out.
-          stores: mask ? [] : ((await exportPlatformStores(c, scope)) ?? dump.stores),
+          stores: mask ? [] : ((await exportPlatformStores(c, scope, storeBudget)) ?? dump.stores),
         });
       }
 
@@ -7614,32 +7851,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /** #1869: the optional re-point hint a restore body may carry beside the dump. */
   const restoreSourceHint = z.object({ sourceScopeId: scopeIdSchema.optional() });
 
-  app.post('/tenants/:tenantId/scopes/:scopeId/restore', async (c) => {
-    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+  const reapedScope = (scopeId: ScopeId): ControlPlaneError =>
+    new ControlPlaneError(409, `scope ${scopeId} was reaped, so nothing can be restored into it. Restore into a new scope: POST …/scopes/<new>/backups/restore, naming the backup's sourceScopeId`);
+
+  /**
+   * Load a dump into `scope`: the host's load (the audit, and the co-located bytes), the stores
+   * (`landStores`, the one step that changes them, answering the bindings it committed), the erasure
+   * replay, and the deployment's load, in that order.
+   *
+   * A store that fails stops it before the deployment's load, so what the router serves stays as it
+   * was. Once a commit was attempted the replay runs even so: a store replaced by an old backup holds
+   * subjects erased since, and a commit whose answer was lost may have landed. The answer names what
+   * was committed, with `incomplete: true`. So does a deployment that refuses the load after the
+   * commits, which nothing can ask it beforehand: see D-69.
+   */
+  const landDump = async (
+    c: Context<{ Variables: Vars }>,
+    tenantId: TenantId,
+    scope: Scope,
+    dump: ScopeDump,
+    sourceHint: ScopeId | undefined,
+    landStores: (caller: PlatformScopeStores, vertical: string) => Promise<readonly string[]>,
+  ): Promise<Response> => {
     const actor = c.get('actor');
-    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-    const raw: unknown = await c.req.json();
-    const dump = scopeDump.parse(raw);
-    // #1869: where the uploaded file says it came from, when the caller had to set the dump's
-    // own `scopeId` to something else. A hint for the grant re-point ONLY: the dump's
-    // `tenantId`/`scopeId` below still choose the keys that open its sealed payloads.
-    const { sourceScopeId: sourceHint } = restoreSourceHint.parse(raw);
-    // A backup with no tables is not a scope dump — name that plainly rather than letting
-    // the empty replay reach the checker and surface as a bare `internal error` (#321).
-    if (dump.tables.length === 0) {
-      return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
-    }
-    // #2207: the dump's stores against the destination's declaration, before anything is written.
-    if (options.platformScopeStores) {
-      try {
-        await refuseUndeclaredDumpStores(c, scope, dump.stores);
-      } catch (e) {
-        if (e instanceof ControlPlaneError) return relayRefusal(c, e);
-        throw e;
-      }
-    }
+    const scopeId = scope.id;
+    if (scope.status === 'reaped') return relayRefusal(c, reapedScope(scopeId));
+    let committed: readonly string[] = [];
     try {
       // Belt and braces for #37: a caller who fetched the object bytes by some other route
       // may POST a still-sealed dump, and a scope restored full of ciphertext is a silent
@@ -7655,18 +7892,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
       const vertical = await verticalForScope(c, scope);
       const storesCaller = options.platformScopeStores;
-      const landing = { ...dump, tables, stores: storesCaller && vertical ? [] : dump.stores };
+      const { storePages: _named, ...whole } = dump;
+      const landing = { ...whole, tables, stores: storesCaller && vertical ? [] : dump.stores };
       // #2185: cleared before the load as well as after it (below): a step after the load can still
       // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       const hostReplay = await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
-      if (storesCaller && vertical && scope.vertical && dump.stores.length > 0) {
-        await storesCaller.importStores({
-          tenantId,
-          scopeId,
-          vertical: scope.vertical,
-          stores: dump.stores,
-        });
+      // A backup's named pages are never the host's to load, so they land here with no deployment too.
+      if (storesCaller && scope.vertical && (vertical || dump.storePages)) {
+        try {
+          committed = await landStores(storesCaller, scope.vertical);
+        } catch (e) {
+          if (!(e instanceof StoreLandFailure)) throw e;
+          const replay = await replayPlatformStoreErasures(c, scope, sourceHint ?? origin.scopeId)
+            .catch((): StoreErasureReplay => ({ storeErasuresReplayed: 0, storeErasureIncomplete: true }));
+          await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
+          return relayRefusal(c, e, {
+            ...storeReplayFields([hostReplay, replay].filter((r): r is StoreErasureReplay => !!r)),
+            committedStores: e.committed,
+            ...(e.unknown ? { commitUnknown: e.unknown } : {}),
+            incomplete: true,
+          });
+        }
       }
       const platformReplay = storesCaller && scope.vertical
         ? await replayPlatformStoreErasures(c, scope, sourceHint ?? origin.scopeId)
@@ -7702,8 +7949,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // receipt between the clear above and the throw. Clearing is always safe (at worst one more
       // reconcile); a clear that fails here must not hide the restore's own error.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
+      const stayed = committed.length > 0 ? { committedStores: committed, incomplete: true } : {};
       if (e instanceof ControlPlaneError) {
-        return relayRefusal(c, e);
+        return relayRefusal(c, e, stayed);
       }
       // A restore throw is driven by the caller-supplied dump (a shape the target cannot
       // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
@@ -7711,7 +7959,175 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // secondary obs #2). The route is staff- or own-tenant-gated and the detail is about the
       // dump the caller sent, not another tenant's state.
       const detail = e instanceof Error ? e.message : String(e);
-      return refuseStatus(c, 422, 'restore failed — the backup could not be loaded', { detail });
+      return refuseStatus(c, 422, 'restore failed — the backup could not be loaded', { detail, ...stayed });
+    }
+  };
+
+  /** A whole dump's stores, staged and committed in pages: an old backup's or an uploaded file's. */
+  const landWholeStores = (scope: Scope, dump: ScopeDump) => (caller: PlatformScopeStores, vertical: string): Promise<string[]> =>
+    importWholeStores(caller, { tenantId: scope.tenantId, scopeId: scope.id, vertical }, dump.stores);
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/restore', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const raw: unknown = await c.req.json();
+    const dump = scopeDump.parse(raw);
+    // #1869: where the uploaded file says it came from, when the caller had to set the dump's
+    // own `scopeId` to something else. A hint for the grant re-point ONLY: the dump's
+    // `tenantId`/`scopeId` below still choose the keys that open its sealed payloads.
+    const { sourceScopeId: sourceHint } = restoreSourceHint.parse(raw);
+    // A backup with no tables is not a scope dump — name that plainly rather than letting
+    // the empty replay reach the checker and surface as a bare `internal error` (#321).
+    if (dump.tables.length === 0) {
+      return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
+    }
+    // D-69: this dump names its stores' pages and does not carry them. Loaded here it would leave
+    // the stores as they were and read as a restore; a key in a request body is never read either.
+    if (dump.storePages?.length) {
+      return refuseStatus(c, 422, `restore refused: this backup holds its stores in pages, so it cannot be sent as a body. Restore it with POST …/scopes/<destination>/backups/restore and { sourceScopeId: '${dump.scopeId}', capturedAt: '${dump.capturedAt}' }`);
+    }
+    // #2207: the dump's stores against the destination's declaration, before anything is written.
+    if (options.platformScopeStores) {
+      try {
+        await refuseUndeclaredDumpStores(c, scope, dump.stores);
+      } catch (e) {
+        if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+        throw e;
+      }
+    }
+    return landDump(c, tenantId, scope, dump, sourceHint, landWholeStores(scope, dump));
+  });
+
+  // Restore a stored backup (D-69): the route that reads the page objects, which a body could not
+  // carry. The URL names where it lands and the body names the backup: `sourceScopeId`, the scope it
+  // was taken of, defaulting to the destination, and `capturedAt`. A reap's copy is the only recoverable
+  // form of a reaped scope, so its source may be reaped; only a reaped destination refuses. Every store
+  // is staged first, each page verified as it is read, so a page missing or mangled refuses with nothing
+  // changed; only then the host's load, the commits, the erasure replay (over the source's marks too,
+  // reaped or not) and the deployment's load, as `landDump` runs them. What fits the request's budget
+  // finishes here. The rest is a job, answered 202, one per destination: a later call finds it done, and
+  // loads and commits. A backup holding its stores inline loads as a body's dump does. Staff-only, as the
+  // backup's read is (not in BUILDER_ROUTES or TENANT_ROUTES).
+  const restoreBackupBody = z.object({ sourceScopeId: scopeIdSchema.optional(), capturedAt: z.string().min(1) });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/backups/restore', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const backups = options.scopeBackups;
+    if (!backups) return refuseStatus(c, 501, 'no backup target configured');
+    const { capturedAt, sourceScopeId } = await readJsonBody(c, restoreBackupBody);
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (scope.status === 'reaped') return relayRefusal(c, reapedScope(scopeId));
+    // The tenant cross-check on the source too: the store is keyed by (tenant, scope), and nothing
+    // there proves this tenant owns it. A reaped source keeps its row, as a tombstone.
+    const from = sourceScopeId ?? scopeId;
+    if (from !== scopeId && !(await c.var.admin.getScopeRecord(actor, tenantId, from))) {
+      return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${from})`);
+    }
+    const address = { tenantId, scopeId: from, capturedAt };
+    const jobs = options.storeJobs;
+    const id = storeJobId('store-restore', scopeId);
+    try {
+      const stored = await jobs?.get(id);
+      const held = stored ? storeJobAt(stored, Date.now()) : null;
+      const sameBackup = held !== null && held.spec.capturedAt === capturedAt && (held.spec.sourceScopeId ?? scopeId) === from;
+      if (jobs && held) {
+        if (!sameBackup) {
+          // A restore of another backup that is staged and waiting gives way to this call; one that
+          // is still moving, or being finished, does not.
+          if (held.status === 'done' && !(await backups.get(address))) {
+            return refuse(c, 'not_found', `no backup for scope ${from} at ${capturedAt}`);
+          }
+          const superseded = held.status === 'done' ? await jobs.claim(id, STORE_JOB_CLAIM_MS) : null;
+          if (held.status === 'copying' || (held.status === 'done' && !superseded)) {
+            throw new ControlPlaneError(409, `scope ${scopeId} is being restored from a backup of ${held.spec.capturedAt}; ask again when that is done`);
+          }
+          if (superseded?.done && options.platformScopeStores) {
+            await discardStages(options.platformScopeStores, { tenantId, scopeId, vertical: held.spec.vertical }, superseded.done.moved);
+          }
+          if (superseded) await jobs.forget(id);
+        } else if (held.status === 'copying') {
+          return c.json(storeJobAnswer(held), 202);
+        }
+        if (held.status === 'failed') {
+          await jobs.forget(id);
+          if (stored?.status === 'copying' && held.state && options.platformScopeStores) {
+            await discardStages(options.platformScopeStores, { tenantId, scopeId, vertical: held.spec.vertical }, movesOf(held.state));
+          }
+          if (sameBackup) throw storeJobFailure(held);
+        }
+      }
+      const mine = sameBackup && held?.status === 'done' ? held : null;
+      const finishing = jobs && mine ? await jobs.claim(id, STORE_JOB_CLAIM_MS) : null;
+      if (mine && !finishing) return c.json(storeJobAnswer(mine), 202);
+      const dump = await backups.get(address);
+      if (!dump) return refuse(c, 'not_found', `no backup for scope ${from} at ${capturedAt}`);
+      if (dump.tables.length === 0) {
+        return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
+      }
+      if (!dump.storePages) {
+        if (options.platformScopeStores) await refuseUndeclaredDumpStores(c, scope, dump.stores);
+        return await landDump(c, tenantId, scope, dump, undefined, landWholeStores(scope, dump));
+      }
+      const caller = options.platformScopeStores;
+      if (!caller) throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
+      await refuseUndeclaredDumpStores(c, scope, dump.storePages);
+      const target = { tenantId, scopeId, vertical: scope.vertical! };
+      // A scope archived while this ran is on its way to a reap, whose wipe a commit must not follow.
+      const stillThere = async (): Promise<void> => {
+        const now = (await c.var.admin.getScopeRecord(actor, tenantId, scopeId))?.status;
+        if (now === 'reaped' || (now === 'archived' && scope.status !== 'archived')) throw reapedScope(scopeId);
+      };
+      const finish = async (moved: readonly MovedStore[]): Promise<Response> => {
+        try {
+          // The staging took time: a reap in that time must not meet this load, or these commits.
+          await stillThere();
+        } catch (e) {
+          await jobs?.forget(id).catch(() => undefined);
+          await discardStages(caller, target, moved);
+          throw e;
+        }
+        const landed = await landDump(c, tenantId, scope, dump, undefined, async (stores, vertical) => {
+          await stillThere();
+          return commitStages(stores, { tenantId, scopeId, vertical }, moved);
+        });
+        await jobs?.forget(id).catch(() => undefined);
+        if (!landed.ok) await discardStages(caller, target, moved);
+        return landed;
+      };
+      if (finishing?.done) return await finish(finishing.done.moved);
+      const endsOf = restoreEnds({ stores: caller, backups }, address, target, dump.storePages);
+      const stores = dump.storePages.map(({ binding, driver }) => ({ binding, driver }));
+      const moved = await runStorePlanInRequest(endsOf, newStorePlan(stores), requestBudget());
+      if ('done' in moved) return await finish(moved.done);
+      if (!jobs) {
+        await abandonStorePlan(endsOf, moved.state);
+        throw unfinishedInRequest(`A restore of scope ${scopeId}'s stores`, moved.state, 'This control plane runs no job that could finish it.');
+      }
+      const now = Date.now();
+      const job = await jobs.start({
+        id, kind: 'store-restore', tenantId, scopeId, vertical: target.vertical, capturedAt,
+        ...(from !== scopeId ? { sourceScopeId: from } : {}),
+        pageBytes: restorePageBytes(stores), actor, startedAt: now, deadline: now + STORE_JOB_MAX_MS,
+      }, moved.state).catch(async (e: unknown) => {
+        await abandonStorePlan(endsOf, moved.state);
+        throw e;
+      });
+      // Another call started this scope's job first. Its stage is the one that counts, so this call's
+      // goes, and a call asking for backup X is never told of a job for backup Y as if it were X.
+      if (job.state?.move.moveId !== moved.state.move.moveId) await abandonStorePlan(endsOf, moved.state);
+      if (job.spec.capturedAt !== capturedAt || (job.spec.sourceScopeId ?? scopeId) !== from) {
+        throw new ControlPlaneError(409, `scope ${scopeId} is being restored from a backup of ${job.spec.capturedAt}; ask again when that is done`);
+      }
+      return c.json(storeJobAnswer(job), 202);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+      throw e;
     }
   });
 
@@ -8269,7 +8685,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             // Asked again after the carry: a promote landing since the first question would
             // otherwise leave an archive behind for a bind the host then refuses.
             await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
-            await orchestratedSnapshot(c, tenantId, scope, {});
+            await orchestratedSnapshot(c, tenantId, scope, {}, 'Nothing was bound: this bind asks for a snapshot first, and one runs in its request. Take a backup with POST …/backups, which runs as a job, then bind without `snapshot: true`.');
           } catch (e) {
             // #1722: no bind follows, so the copy the carry restored is reached by nothing.
             if (carried) await dropUnboundCopy(c, scope, versionId, carried);
