@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import {
   addDecimal,
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   connectionActivity,
   connectionId as connectionIdSchema,
+  entityRef,
   instant,
   money,
   mulDecimal,
@@ -12,6 +14,7 @@ import {
   type ConnectionCredential,
   type ConnectionProbe,
   type ConnectionId,
+  type ScopeId,
 } from '@substrat-run/contracts';
 import type {
   ConnectorConnection,
@@ -28,6 +31,7 @@ import {
   fortnoxSecret,
   type FortnoxApiOptions,
   type FortnoxSupplierInvoice,
+  type FortnoxSupplierInvoiceFile,
 } from './api.js';
 import { financialYearFor, summarizeLedger } from './aggregate.js';
 import { parseSie4 } from './sie4.js';
@@ -50,6 +54,7 @@ export {
   type FortnoxSecret,
   type FortnoxApiOptions,
   type FortnoxSupplierInvoice,
+  type FortnoxSupplierInvoiceFile,
 } from './api.js';
 export {
   parseSie4,
@@ -158,6 +163,11 @@ export interface FortnoxBinding {
   /** Absent on pre-kind bindings, which are ledger bindings. */
   kind?: 'ledger' | 'supplier-invoice';
   /**
+   * How far back an invoice binding's first pass reads: a number of days, or `'all'` for every
+   * invoice the company has. Absent means {@link INVOICE_FIRST_LOOKBACK_DAYS}.
+   */
+  firstPass?: FortnoxInvoiceFirstPass;
+  /**
    * WHICH company's connection reads the books (#2316): the connection's `externalAccountRef`.
    *
    * A bureau holds one Fortnox connection per client company in the same (tenant, vertical)
@@ -183,8 +193,11 @@ export interface FortnoxBinding {
   };
   /** An invoice binding's cursor (#2422), written only after a landing succeeded. */
   invoiceSync?: {
-    /** Invoices changed at or after this instant, less {@link INVOICE_OVERLAP_MS}, are read next pass. */
-    since: string;
+    /**
+     * Invoices changed at or after this instant, less {@link INVOICE_OVERLAP_MS}, are read next
+     * pass. `null` while a `firstPass: 'all'` run drains: the list then has no filter.
+     */
+    since: string | null;
     syncedAt: string;
     /** How many invoices the last landing carried. */
     landed: number;
@@ -195,7 +208,36 @@ export interface FortnoxBinding {
      */
     pending?: { startedAt: string; through: string };
   };
+  /**
+   * An invoice binding's files still to be read, oldest first. Held because an invoice that does
+   * not change is never landed again, so nothing else would ask for its file a second time.
+   * Bounded: a pass reads what is queued before it lands more. Beside the cursor rather than in it,
+   * so a re-bind, which starts the cursor over, keeps what was asked.
+   */
+  files?: FortnoxInvoiceFileEntry[];
 }
+
+/** How far back an invoice binding's first pass reads. See {@link FortnoxBinding.firstPass}. */
+export type FortnoxInvoiceFirstPass = 'all' | number;
+
+/** One invoice whose file the landing asked for. */
+export interface FortnoxInvoiceFileEntry {
+  givenNumber: string;
+  /** The entity the file lands on, as the landing named it. */
+  entity: { entityType: string; entityId: string };
+}
+
+/**
+ * The files of one invoice already landed on an entity, one row per invoice, so an invoice asked
+ * about again (it changed, the binding was re-bound) lands only what is new. A row naming another
+ * entity counts for nothing: the landing moved the invoice, and its files follow it.
+ */
+interface FortnoxInvoiceFilesLanded {
+  entity: { entityType: string; entityId: string };
+  fileIds: string[];
+}
+const FILES_LANDED_PREFIX = 'fortnox:files-landed:';
+const filesLandedKey = (scope: string, givenNumber: string): string => `${FILES_LANDED_PREFIX}${scope}:${givenNumber}`;
 
 /**
  * One page of parsed bookkeeping, as it crosses into a scope.
@@ -275,13 +317,36 @@ export const fortnoxSupplierInvoicePage = z.object({
         dueDate: z.string(),
         /** In the invoice's own currency. */
         total: money,
+        /** What is left to pay, in the invoice's currency. Absent when Fortnox states none. */
+        balance: money.optional(),
+        /** In the invoice's currency. Absent when Fortnox states none. */
+        vat: money.optional(),
+        ocr: z.string().nullable().optional(),
         booked: z.boolean(),
         cancelled: z.boolean(),
+        /** A credit note. */
+        credit: z.boolean().optional(),
+        /** A payment of the invoice is on its way. */
+        paymentPending: z.boolean().optional(),
+        /** The old single comment, while an invoice still has one. New comments are in `commentLog`. */
+        comments: z.string().nullable().optional(),
+        /** Fortnox's comment log, oldest first as Fortnox lists it. Its web UI writes only here. */
+        commentLog: z
+          .array(z.object({ comment: z.string(), createdAt: z.string().nullable(), userName: z.string().nullable() }))
+          .optional(),
+        /** The voucher the invoice was booked on. `year` is Fortnox's number for the financial year. */
+        voucher: z.object({ series: z.string().nullable(), number: z.number().int(), year: z.number().int().nullable() }).nullable().optional(),
+        project: z.string().nullable().optional(),
+        costCentre: z.string().nullable().optional(),
         /** The invoice's accounting rows: debit-positive, in SEK, as the ledger page states them. */
         rows: z.array(
           z.object({
             account: z.string(),
+            /** The account's name, as Fortnox writes it on the row. */
+            accountDescription: z.string().nullable().optional(),
             costCentre: z.string().nullable(),
+            project: z.string().nullable().optional(),
+            transactionInformation: z.string().nullable().optional(),
             amount: money,
           }),
         ),
@@ -290,6 +355,16 @@ export const fortnoxSupplierInvoicePage = z.object({
     .min(1),
 });
 export type FortnoxSupplierInvoicePage = z.infer<typeof fortnoxSupplierInvoicePage>;
+
+/**
+ * What a landing operation may answer. `files` names the invoices whose file the vertical wants
+ * and the entity each one lands on, which must be a declared attachment target the connection
+ * can write. An answer without it, or that does not parse, asks for no file.
+ */
+export const fortnoxSupplierInvoiceLandingAnswer = z
+  .object({ files: z.array(z.object({ givenNumber: z.string().min(1), entity: entityRef })).optional() })
+  .passthrough();
+export type FortnoxSupplierInvoiceLandingAnswer = z.infer<typeof fortnoxSupplierInvoiceLandingAnswer>;
 
 /**
  * Invoice details read per connection per pass. The client paces every read to Fortnox's limit,
@@ -303,8 +378,28 @@ const INVOICE_DETAILS_PER_PASS = 200;
  * it runs. Past this, what was read lands and the next pass resumes after it.
  */
 const INVOICE_PASS_DEADLINE_MS = 90_000;
-/** How far back a binding's first pass reads. */
-const INVOICE_FIRST_LOOKBACK_MS = 90 * 86_400_000;
+/** How far back a binding's first pass reads when its declaration does not say. */
+export const INVOICE_FIRST_LOOKBACK_DAYS = 90;
+/** What one queued invoice costs from a pass's budget at the least: its connections, one file. */
+const INVOICE_FILE_READS = 2;
+/** The largest file a pass will hold. A larger one is skipped by name, never truncated. */
+const INVOICE_FILE_MAX_BYTES = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES;
+/** A file's type by its name, for an archive read that does not say or says only "bytes". */
+const FILE_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+};
+const fileType = (name: string, stated: string | null): string => {
+  const type = stated?.split(';')[0]?.trim().toLowerCase();
+  if (type && type !== 'application/octet-stream') return type;
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  return Object.hasOwn(FILE_TYPES, ext) ? FILE_TYPES[ext]! : 'application/octet-stream';
+};
 /**
  * Read back from each cursor. Fortnox's filter is to the minute in Swedish local time, and the
  * landing upserts, so re-reading a few minutes costs a resend and missing them costs an invoice.
@@ -381,6 +476,8 @@ export async function bindFortnoxScope(
     operation: string;
     permission: string;
     kind?: 'ledger' | 'supplier-invoice';
+    /** An invoice binding's first pass. See {@link FortnoxBinding.firstPass}. */
+    firstPass?: FortnoxInvoiceFirstPass;
     /** Internal automatic-pass path: the declaration was checked and its grant follows this write. */
     grantPreflighted?: boolean;
     /** The connection's `externalAccountRef` — the company. See {@link FortnoxBinding.externalAccountRef}. */
@@ -390,6 +487,9 @@ export async function bindFortnoxScope(
 ): Promise<FortnoxBinding> {
   const tenant = tenantIdSchema.parse(input.tenantId);
   const scope = scopeIdSchema.parse(input.scopeId);
+  if (input.firstPass !== undefined && input.kind !== 'supplier-invoice') {
+    throw new Error(`firstPass applies to a supplier-invoice binding, not to '${input.kind ?? 'ledger'}'`);
+  }
   const current = (await listFortnoxBindings(host, input.connectionId)).find((b) => b.scopeId === input.scopeId);
   if (current && (current.kind ?? 'ledger') !== (input.kind ?? 'ledger')) {
     throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${current.kind ?? 'ledger'} to ${input.kind ?? 'ledger'} on scope ${input.scopeId})`);
@@ -418,7 +518,11 @@ export async function bindFortnoxScope(
     operation: input.operation,
     permission: input.permission,
     ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.firstPass !== undefined ? { firstPass: input.firstPass } : {}),
     ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
+    // A re-bind starts the cursor over but keeps the files already asked for: an invoice outside a
+    // narrowed first pass would otherwise never be asked about again.
+    ...(current?.files?.length ? { files: current.files } : {}),
     boundAt: new Date(input.now?.() ?? Date.now()).toISOString(),
   };
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -615,17 +719,25 @@ export interface FortnoxInvoiceSyncResult {
   scopeId: string;
   /** Invoices landed this pass; 0 when nothing changed or the pass's budget was spent. */
   landed: number;
-  /** True when changed invoices are left for a later pass. */
+  /** Invoice files landed this pass. */
+  files: number;
+  /** Files stepped over, and why. Their invoice is asked about again when it next lands. */
+  skipped?: { givenNumber: string; reason: string }[];
+  /** True when changed invoices or queued files are left for a later pass. */
   pending: boolean;
 }
 
 /**
- * Sync ONE invoice binding (#2422): list the supplier invoices changed since its cursor, read
- * each one's rows, and land them in one page through the binding's operation as the connection.
+ * Sync ONE invoice binding (#2422): read the files earlier passes left, list the supplier invoices
+ * changed since its cursor, read each one's rows, land them in one page through the binding's
+ * operation as the connection, then read the files the landing asked for.
  *
- * Read-only toward Fortnox. Reads at most `budget.details` invoices, oldest number first, and
- * spends from the budget so bindings sharing a pass share Fortnox's rate limit. The cursor is
- * written only after the landing succeeded, so a refused page is read again next pass.
+ * Read-only toward Fortnox. Reads at most `budget.details` times for invoices and files, oldest
+ * number first, and spends from the budget so bindings sharing a pass share Fortnox's rate limit.
+ * The cursor is written only after the landing succeeded, so a refused page is read again next pass.
+ *
+ * Files come after the cursor, because a file that cannot be read says nothing about the invoice:
+ * the invoices keep landing, and the file stays queued and fails the scope's row by its number.
  */
 export async function syncFortnoxSupplierInvoices(
   host: ScopeHost,
@@ -647,15 +759,50 @@ export async function syncFortnoxSupplierInvoices(
   const api = new FortnoxApi(conn, apiOptions(options));
 
   const nowMs = options.now?.() ?? Date.now();
+  const expired = () => (options.now?.() ?? Date.now()) - nowMs >= INVOICE_PASS_DEADLINE_MS;
   const cursor = binding.invoiceSync;
-  const since = cursor ? Date.parse(cursor.since) : nowMs - INVOICE_FIRST_LOOKBACK_MS;
+  const budget = options.budget ?? { details: INVOICE_DETAILS_PER_PASS };
+  const scopeRef = scopeIdSchema.parse(binding.scopeId);
+
+  const files = new InvoiceFiles(host, connectionId, binding.scopeId, scopeRef, api, budget, expired, binding.files);
+  const withFiles = (base: FortnoxBinding): FortnoxBinding => {
+    const { files: _held, ...rest } = base;
+    return { ...rest, ...files.held() };
+  };
+  const saveFiles = async (base: FortnoxBinding): Promise<void> => {
+    if (!files.moved) return;
+    await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), withFiles(base));
+    files.moved = false;
+  };
+  // The queue goes first, so it never outgrows one pass's budget, and it is saved at once, so a
+  // landing that throws below does not cost what was read. Its failures wait for the end.
+  await files.drain();
+  await saveFiles(binding);
+
+  const finish = (landed: number, pending: boolean): FortnoxInvoiceSyncResult => ({
+    scopeId: binding.scopeId,
+    landed,
+    files: files.landed,
+    ...(files.skipped.length > 0 ? { skipped: files.skipped } : {}),
+    pending: pending || files.queued > 0,
+  });
+
+  if (budget.details <= 0 || expired()) {
+    files.throwIfFailed();
+    return finish(0, true);
+  }
+
+  const since = cursor ? (cursor.since === null ? null : Date.parse(cursor.since)) : firstPassSince(binding, nowMs);
   const through = cursor?.pending ? Number(cursor.pending.through) : -Infinity;
-  const changed = [...new Set(await api.supplierInvoicesModifiedSince(lastModifiedFilter(since - INVOICE_OVERLAP_MS)))]
+  const filter = since === null ? null : lastModifiedFilter(since - INVOICE_OVERLAP_MS);
+  const changed = [...new Set(await api.supplierInvoicesModifiedSince(filter))]
     .filter((n) => Number(n) > through)
     .sort((a, b) => Number(a) - Number(b));
-  const budget = options.budget ?? { details: INVOICE_DETAILS_PER_PASS };
   const batch = changed.slice(0, budget.details);
-  if (batch.length === 0) return { scopeId: binding.scopeId, landed: 0, pending: changed.length > 0 };
+  if (batch.length === 0) {
+    files.throwIfFailed();
+    return finish(0, changed.length > 0);
+  }
   budget.details -= batch.length;
 
   // Read in number order, stopping at the first read that fails. What was read before it still
@@ -680,7 +827,7 @@ export async function syncFortnoxSupplierInvoices(
     }
     handled += 1;
     // Checked after a read, so every pass makes progress however slow the list was.
-    if ((options.now?.() ?? Date.now()) - nowMs >= INVOICE_PASS_DEADLINE_MS) break;
+    if (expired()) break;
   }
   if (handled === 0) throw failure!;
 
@@ -692,24 +839,177 @@ export async function syncFortnoxSupplierInvoices(
       invoices,
     });
     // The connection acting as itself (#97), gated on the grant the binding was seated with.
-    const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
-    await scope.invoke(binding.operation, payload);
+    const scope = await host.getConnectorScope(connectionId, scopeRef);
+    files.ask(await scope.invoke(binding.operation, payload));
   }
 
   const more = changed.length > handled;
   const startedAt = cursor?.pending?.startedAt ?? new Date(nowMs).toISOString();
-  const synced: FortnoxBinding = {
+  const synced: FortnoxBinding = withFiles({
     ...binding,
     invoiceSync: {
-      since: more ? new Date(since).toISOString() : startedAt,
+      since: more ? (since === null ? null : new Date(since).toISOString()) : startedAt,
       syncedAt: new Date(nowMs).toISOString(),
       landed: invoices.length,
       ...(more ? { pending: { startedAt, through: batch[handled - 1]! } } : {}),
     },
-  };
+  });
   await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
+  files.moved = false;
+  await files.drain();
+  await saveFiles(synced);
   if (failure) throw failure;
-  return { scopeId: binding.scopeId, landed: invoices.length, pending: more };
+  files.throwIfFailed();
+  return finish(invoices.length, more);
+}
+
+/** Where an invoice binding's first pass starts: a number of days back, or `null` for everything. */
+const firstPassSince = (binding: FortnoxBinding, nowMs: number): number | null =>
+  binding.firstPass === 'all' ? null : nowMs - (binding.firstPass ?? INVOICE_FIRST_LOOKBACK_DAYS) * 86_400_000;
+
+const triedKey = (entry: FortnoxInvoiceFileEntry): string =>
+  JSON.stringify([entry.givenNumber, entry.entity.entityType, entry.entity.entityId]);
+
+/**
+ * The invoice files one pass reads: the queue the binding carries, plus what the landing asks for.
+ *
+ * Each queued invoice costs its connections plus one read per file. A failure names the invoice and
+ * moves it to the back, so one file that cannot be read does not stop the others. A refusal stops
+ * them all: it is the company's consent, and every other file would answer the same.
+ */
+class InvoiceFiles {
+  private queue: FortnoxInvoiceFileEntry[];
+  private attachments: Awaited<ReturnType<ScopeHost['getConnectorAttachments']>> | undefined;
+  private failure: Error | null = null;
+  /** The company's consent refused a read, so the rest of the pass asks nothing more. */
+  private refused = false;
+  /**
+   * What failed this pass, by invoice and entity, so the drain after the landing does not read it
+   * again. A landing that names another entity for the invoice is a new request, and is read.
+   */
+  private readonly tried = new Set<string>();
+  /** Files landed so far this pass. */
+  landed = 0;
+  readonly skipped: { givenNumber: string; reason: string }[] = [];
+  /** True once the queue differs from what the binding holds. */
+  moved = false;
+
+  constructor(
+    private readonly host: ScopeHost,
+    private readonly connectionId: ConnectionId,
+    private readonly scopeId: string,
+    private readonly scopeRef: ScopeId,
+    private readonly api: FortnoxApi,
+    private readonly budget: { details: number },
+    private readonly expired: () => boolean,
+    held: readonly FortnoxInvoiceFileEntry[] = [],
+  ) {
+    this.queue = [...held];
+  }
+
+  get queued(): number {
+    return this.queue.length;
+  }
+
+  /** The binding's `files` field: absent when nothing is queued. */
+  held(): { files?: FortnoxInvoiceFileEntry[] } {
+    return this.queue.length > 0 ? { files: this.queue } : {};
+  }
+
+  /** Queue what a landing asked for. Re-asking for a queued invoice takes its newer entity. */
+  ask(answer: unknown): void {
+    const asked = fortnoxSupplierInvoiceLandingAnswer.safeParse(answer);
+    if (!asked.success) return;
+    for (const { givenNumber, entity } of asked.data.files ?? []) {
+      const entry: FortnoxInvoiceFileEntry = { givenNumber, entity };
+      const at = this.queue.findIndex((e) => e.givenNumber === givenNumber);
+      if (at >= 0) this.queue[at] = { ...this.queue[at]!, entity };
+      else this.queue.push(entry);
+      this.moved = true;
+    }
+  }
+
+  /** Read what the budget and the deadline allow. */
+  async drain(): Promise<void> {
+    const failed: FortnoxInvoiceFileEntry[] = [];
+    while (!this.refused && this.budget.details >= INVOICE_FILE_READS && !this.expired()) {
+      const at = this.queue.findIndex((e) => !this.tried.has(triedKey(e)));
+      if (at < 0) break;
+      const [entry] = this.queue.splice(at, 1) as [FortnoxInvoiceFileEntry];
+      this.moved = true;
+      try {
+        if (!(await this.read(entry))) {
+          // The budget or the deadline ran out between its files: it stays first, and what it
+          // landed is recorded, so the next pass reads only the rest.
+          this.queue.unshift(entry);
+          break;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (err instanceof FortnoxApiError && err.refused) {
+          this.queue.unshift(entry);
+          this.refused = true;
+          this.failure = new Error(
+            `invoice files: Fortnox refused the read (${message}). The company's consent must cover ` +
+              `the connectfile and archive scopes; connect the company again.`,
+          );
+          break;
+        }
+        this.tried.add(triedKey(entry));
+        failed.push(entry);
+        this.failure ??= new Error(`file of supplier invoice ${entry.givenNumber}: ${message}`);
+      }
+    }
+    this.queue.push(...failed);
+  }
+
+  /** Land an invoice's files not yet landed on its entity. False when the pass ran out first. */
+  private async read(entry: FortnoxInvoiceFileEntry): Promise<boolean> {
+    this.budget.details -= 1;
+    const connected = await this.api.supplierInvoiceFiles(entry.givenNumber);
+    const key = filesLandedKey(this.scopeId, entry.givenNumber);
+    const held = (await this.host.admin.getConnectorState(this.connectionId, key)) as FortnoxInvoiceFilesLanded | null | undefined;
+    const sameEntity = held?.entity.entityType === entry.entity.entityType && held.entity.entityId === entry.entity.entityId;
+    let landed = sameEntity ? held.fileIds : [];
+    for (const file of connected) {
+      if (landed.includes(file.FileId)) continue;
+      if (this.budget.details < 1 || this.expired()) return false;
+      this.budget.details -= 1;
+      await this.land(entry, file);
+      landed = [...landed, file.FileId];
+      await this.host.admin.putConnectorState(this.connectionId, key, { entity: entry.entity, fileIds: landed } satisfies FortnoxInvoiceFilesLanded);
+    }
+    return true;
+  }
+
+  private async land(entry: FortnoxInvoiceFileEntry, file: FortnoxSupplierInvoiceFile): Promise<void> {
+    const name = file.Name || `supplier-invoice-${entry.givenNumber}`;
+    let read: Awaited<ReturnType<FortnoxApi['archiveFile']>>;
+    try {
+      read = await this.api.archiveFile(file.FileId, INVOICE_FILE_MAX_BYTES);
+    } catch (err) {
+      if (!(err instanceof FortnoxApiError && err.status === 404)) throw err;
+      this.skipped.push({ givenNumber: entry.givenNumber, reason: `${name} is gone from the archive` });
+      return;
+    }
+    if (read.tooLarge !== undefined) {
+      this.skipped.push({ givenNumber: entry.givenNumber, reason: `${name} is ${read.tooLarge} bytes, over ${INVOICE_FILE_MAX_BYTES}` });
+      return;
+    }
+    this.attachments ??= await this.host.getConnectorAttachments(this.connectionId, this.scopeRef);
+    await this.attachments.upload({
+      entity: entry.entity,
+      filename: name,
+      contentType: fileType(name, read.contentType),
+      visibility: 'internal',
+      body: read.bytes,
+    });
+    this.landed += 1;
+  }
+
+  throwIfFailed(): void {
+    if (this.failure) throw this.failure;
+  }
 }
 
 /** One Fortnox invoice as the page carries it, parsed here so a bad one is named by number. */
@@ -722,11 +1022,27 @@ const landedInvoice = (invoice: FortnoxSupplierInvoice): FortnoxSupplierInvoiceP
     invoiceDate: invoice.InvoiceDate,
     dueDate: invoice.DueDate,
     total: { amount: invoice.Total, currency: invoice.Currency },
+    ...(invoice.Balance === null ? {} : { balance: { amount: invoice.Balance, currency: invoice.Currency } }),
+    ...(invoice.VAT === null ? {} : { vat: { amount: invoice.VAT, currency: invoice.Currency } }),
+    ocr: invoice.OCR || null,
     booked: invoice.Booked,
     cancelled: invoice.Cancelled,
+    credit: invoice.Credit,
+    paymentPending: invoice.PaymentPending,
+    comments: invoice.Comments || null,
+    commentLog: invoice.CommentLog.map((c) => ({ comment: c.Comment, createdAt: c.CreatedAt || null, userName: c.UserName || null })),
+    voucher:
+      invoice.VoucherNumber === null || invoice.VoucherNumber === '0'
+        ? null
+        : { series: invoice.VoucherSeries || null, number: Number(invoice.VoucherNumber), year: invoice.VoucherYear === null ? null : Number(invoice.VoucherYear) },
+    project: invoice.Project || null,
+    costCentre: invoice.CostCenter || null,
     rows: invoice.SupplierInvoiceRows.map((row) => ({
       account: row.Account,
+      accountDescription: row.AccountDescription || null,
       costCentre: row.CostCenter || null,
+      project: row.Project || null,
+      transactionInformation: row.TransactionInformation || null,
       amount: { amount: addDecimal(row.Debit, mulDecimal('-1', row.Credit)), currency: 'SEK' },
     })),
   });
@@ -736,7 +1052,7 @@ export interface FortnoxSweepResult {
   found: number;
   /** Ledger bindings whose books changed and landed. */
   synced: FortnoxSyncResult[];
-  /** Invoice bindings that landed invoices. */
+  /** Invoice bindings that landed invoices or files. */
   invoices: FortnoxInvoiceSyncResult[];
   unchanged: number;
   failed: { scopeId: string; error: string }[];
@@ -779,7 +1095,7 @@ export async function sweepFortnoxLedger(
     try {
       if (binding.kind === 'supplier-invoice') {
         const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
-        if (r.landed > 0) result.invoices.push(r);
+        if (r.landed > 0 || r.files > 0 || r.skipped) result.invoices.push(r);
         else result.unchanged += 1;
         continue;
       }
@@ -942,6 +1258,7 @@ export async function fortnoxConnectionActivity(
                 { label: 'Content hash', value: b.lastSync.contentHash.slice(0, 12) },
               ]
             : []),
+          ...(b.files?.length ? [{ label: 'Invoice files waiting', value: String(b.files.length) }] : []),
         ],
       };
     });

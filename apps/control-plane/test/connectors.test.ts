@@ -60,7 +60,13 @@ describe('connector registry', () => {
     const options = fortnox.options!;
     expect(options(undefined)).toEqual({ kind: undefined });
     expect(options({ kind: 'supplier-invoice' })).toEqual({ kind: 'supplier-invoice' });
+    expect(options({ kind: 'supplier-invoice', firstPass: 'all' })).toEqual({ kind: 'supplier-invoice', firstPass: 'all' });
+    expect(options({ kind: 'supplier-invoice', firstPass: 365 })).toEqual({ kind: 'supplier-invoice', firstPass: 365 });
+    expect(() => options({ kind: 'supplier-invoice', firstPass: 'some' })).toThrow();
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
+    // A rebind that restates only the kind keeps the first pass the binding holds.
+    const held = { ...invoice, firstPass: 'all' };
+    expect(options({ kind: 'supplier-invoice' }, held)).toEqual({ kind: 'supplier-invoice', firstPass: 'all' });
     expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
     const legacy = { ...invoice, kind: undefined };
