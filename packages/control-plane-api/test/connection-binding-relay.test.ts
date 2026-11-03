@@ -25,10 +25,14 @@ import {
   connectionBindingOptions,
   relayConnectionBind,
   relayConnectionBindings,
+  relayConnectionSync,
   relayConnectionUnbind,
   relayConnectionUpsert,
   verticalConnectorInspector,
   type ConnectionBindingRelayOptions,
+  type ConnectionSyncRelayOptions,
+  type ScopeSync,
+  type ScopeSyncResult,
   type VerticalConnectorDeps,
 } from '../src/index.js';
 import { heldVersion } from './held-manifest.js';
@@ -400,6 +404,86 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     });
 
     expect(bindings).toEqual([expect.objectContaining({ connectionId: conn, provider: 'acme.files', options: { folder: 'f-1', folderId: 'id-1' }, boundAt: stored.boundAt })]);
+  });
+
+  describe('sync now (#2672)', () => {
+    /** The tenant's connection and a's own, both bound to a; b's own bound to b. */
+    const boundWorld = async () => {
+      await runs('on-request');
+      const tenants = connectionId.parse(ulid());
+      await host.admin.createConnection(relayActor, { id: tenants, tenantId: t, vertical: SLUG, provider: 'planima', label: 'tenant', secret: { token: 'tok' } });
+      await host.admin.grantToConnection(relayActor, { connectionId: tenants, permission: LAND, node: { tenantId: t, scopeId: a }, grantedBy: relayActor });
+      await bindPlanimaScope(host, { tenantId: t, scopeId: a, vertical: SLUG, operation: 'drive/land', permission: LAND, connectionId: tenants });
+      const ofA = await own(a);
+      await relayConnectionBind(host, relayActor, bindBody(a, ofA), landings());
+      await relayConnectionBind(host, relayActor, bindBody(b, await own(b)), landings());
+      return { tenants, ofA };
+    };
+    const polled: [ConnectionId, ScopeId][] = [];
+    const syncing = (sync: ScopeSync, proven = true): ConnectionSyncRelayOptions => ({
+      ...landings(proven),
+      syncScope: (provider) => (provider === 'planima' || provider === 'fortnox' ? sync : undefined),
+    });
+    const recording = (outcome: ScopeSyncResult): ScopeSync => async (_h, row, s) => {
+      polled.push([row.id, s]);
+      return outcome;
+    };
+    const syncA = (options: ConnectionSyncRelayOptions, provider = 'planima') => relayConnectionSync(host, relayActor, { tenantId: t, scopeId: a, provider }, options);
+    beforeEach(() => {
+      polled.length = 0;
+    });
+
+    it("polls every binding of the scope, the tenant's and its own, records each, and refuses a second ask inside a minute", async () => {
+      const { tenants, ofA } = await boundWorld();
+      const options = syncing(recording({ outcome: 'landed', pending: true, errors: [] }));
+      // Just now on the shared connection: the platform's pass and another scope's poll. Neither is a's.
+      await host.admin.recordSweepRun({ kind: 'connector', unit: tenants, outcome: 'ok', tenantId: t, connectionId: tenants });
+      await host.admin.recordSweepRun({ kind: 'connector', unit: tenants, outcome: 'ok', tenantId: t, scopeId: b, connectionId: tenants });
+
+      const { bindings } = await syncA(options);
+
+      expect(polled.map(([c, s]) => [c, s]).sort()).toEqual([[tenants, a], [ofA, a]].sort());
+      expect(bindings.map((x) => [x.connectionId, x.outcome, x.pending]).sort()).toEqual([[tenants, 'landed', true], [ofA, 'landed', true]].sort());
+      const rows = await host.admin.listSweepRuns(relayActor, { kind: 'connector', scopeId: a });
+      expect(rows.map((r) => [r.unit, r.outcome, r.operation]).sort()).toEqual([[tenants, 'ok', 'sync.connector:planima'], [ofA, 'ok', 'sync.connector:planima']].sort());
+      // The scope's own binding reads the poll as its last sync.
+      expect((await statusOfA()).find((x) => x.connectionId === ofA)?.lastSyncedAt).toBe(bindings.find((x) => x.connectionId === ofA)?.at);
+
+      expect(await refusal(syncA(options))).toBe(429);
+      expect(polled).toHaveLength(2);
+    });
+
+    it("answers a failed poll with a reference, and files the provider's words on staff's row alone", async () => {
+      const { ofA } = await boundWorld();
+      const RAW = 'provider says: company 0000000000 is locked';
+
+      const { bindings } = await syncA(syncing(recording({ outcome: 'failed', pending: false, errors: [RAW] })));
+
+      expect(bindings).toEqual(expect.arrayContaining([expect.objectContaining({ connectionId: ofA, outcome: 'failed', error: expect.stringMatching(/^the binding did not land \(reference \w+\)$/) })]));
+      expect(JSON.stringify(bindings)).not.toContain('0000000000');
+      const failed = bindings.find((x) => x.connectionId === ofA)!;
+      const reference = /reference (\w+)/.exec(failed.error!)![1];
+      const staff = await host.admin.listOpsFailures(relayActor, { reference });
+      expect(staff).toEqual([expect.objectContaining({ tenantId: null, message: expect.stringContaining(RAW) })]);
+      // The tenant-readable sweep row says exactly what the answer did.
+      const [row] = await host.admin.listSweepRuns(relayActor, { kind: 'connector', unit: ofA, scopeId: a, limit: 1 });
+      expect([row?.outcome, row?.error]).toEqual(['failed', failed.error]);
+    });
+
+    it('refuses an unproven caller and a provider with no scope poll, and answers a provider the scope has no binding of with none', async () => {
+      await boundWorld();
+      const options = syncing(recording({ outcome: 'unchanged', pending: false, errors: [] }));
+
+      expect(await refusal(syncA(syncing(recording({ outcome: 'unchanged', pending: false, errors: [] }), false)))).toBe(403);
+      expect(await refusal(syncA(options, 'scrive'))).toBe(501);
+      expect(await syncA(options, 'fortnox')).toEqual({ bindings: [] });
+      expect(polled).toEqual([]);
+
+      // A binding another poll holds: answered in progress, nothing recorded, so asking again is not refused.
+      const busy = await syncA(syncing(recording({ outcome: 'in-progress', pending: false, errors: [] })));
+      expect(busy.bindings.map((x) => x.outcome)).toEqual(['in-progress', 'in-progress']);
+      expect(await host.admin.listSweepRuns(relayActor, { kind: 'connector', scopeId: a })).toEqual([]);
+    });
   });
 
   it("makes each scope's own connection on one account through the upsert, refused where it cannot be the scope's", async () => {

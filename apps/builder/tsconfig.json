@@ -18,6 +18,8 @@
     "src/agent.ts",
     "src/providers-worker.ts",
     "src/metering.ts",
+    "src/studio.ts",
+    "src/record.ts",
     "src/repositories.ts"
   ]
 }

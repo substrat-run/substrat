@@ -7,7 +7,7 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { isVerticalConnectorProvider } from '@substrat-run/contracts';
-import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
+import type { ConnectFlowSpec, ConnectionInspector, ScopeSync } from '@substrat-run/control-plane-api';
 import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
@@ -30,6 +30,7 @@ import {
   fortnoxCredentialSummary,
   probeFortnoxConnection,
   probeFortnoxSecret,
+  pollFortnoxScope,
   sweepFortnoxLedger,
 } from '@substrat-run/connector-fortnox';
 import {
@@ -185,6 +186,13 @@ export interface ConnectorRegistration {
   dispatch?(env: ConnectorEnv): ConnectorHandler;
   /** The poll floor (#574): re-read the provider's truth and write it back. */
   sweep(env: ConnectorEnv): ConnectorSweeper;
+  /**
+   * #2672: poll ONE scope's bindings now, for the sync relay, inside the budget and deadline a pass
+   * has. Absent, the relay answers 501 for the provider: its sweep can only poll a whole connection.
+   * A provider with `sweepEveryMinutes` must not add one before the cadence ignores a scope's own
+   * poll, or a manual poll of one scope postpones the connection's other bindings.
+   */
+  syncScope?(env: ConnectorEnv): ScopeSync;
   /** Poll this provider's connections no more often than this many minutes; absent means every pass. */
   readonly sweepEveryMinutes?: number;
   /**
@@ -394,6 +402,12 @@ const FORTNOX: ConnectorRegistration = {
   sweep: (env) => async (h, id, o) =>
     sweepFortnoxLedger(h, id, {
       ...o,
+      ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
+      ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+    }),
+  syncScope: (env) => (h, row, scopeId) =>
+    pollFortnoxScope(h, row.id, scopeId, {
+      fetch: globalFetch,
       ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
       ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
     }),

@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/builder",
-  "version": "0.7.32",
+  "version": "0.7.33",
   "private": true,
   "description": "The builder studio — chat → vertical. Terminal driver today; Worker + chat pane to come (builder-studio.md §7).",
   "type": "module",
@@ -25,6 +25,7 @@
     "@substrat-run/cli": "workspace:*",
     "@substrat-run/contracts": "workspace:*",
     "@substrat-run/control-plane-api": "workspace:*",
+    "@substrat-run/engine-assistant": "workspace:*",
     "@substrat-run/engine-metering": "workspace:*",
     "@substrat-run/kernel": "workspace:*",
     "@substrat-run/model-providers": "workspace:*",

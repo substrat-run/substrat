@@ -121,8 +121,10 @@ describe('failureDigestWatermark', () => {
     const direct = sweepRun(previousPass);
     const drained = sweepRun('2026-09-18T09:46:00.000Z');
     const older = sweepRun('2026-09-18T09:30:02.000Z');
+    // #2672: a poll a vertical requested after the pass marks no pass, however new.
+    const requested = { ...sweepRun('2026-09-18T09:55:00.000Z'), operation: 'sync.connector:fortnox' };
     // ids are ULIDs minted in construction order; make the drained row the newest.
-    const stub = stubAdmin({ sweepRuns: [older, direct, drained] });
+    const stub = stubAdmin({ sweepRuns: [older, direct, drained, requested] });
     expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(
       '2026-09-18T09:46:00.000Z',
     );

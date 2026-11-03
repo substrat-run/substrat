@@ -55,6 +55,7 @@ const VALID = [
   { t: 'source', sid: 's1', title: 'Deploys', url: 'https://substrat.net/concepts/deploys' },
   { t: 'data-provenance', producedAt: '2026-10-15T10:00:00.000Z', model: 'cloudflare:@cf/meta/llama', sources: 3 },
   { t: 'budget-notice', exhausted: true, resetsAt: '2026-10-16T00:00:00.000Z' },
+  { t: 'host-event', kind: 'commit', text: 'committed 68608398', data: { sha: '68608398' } },
 ] as const;
 
 const ok = (body: unknown) => assistantStreamBody.safeParse(body).success;

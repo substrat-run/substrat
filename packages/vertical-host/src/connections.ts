@@ -1,10 +1,12 @@
-import { PLATFORM_SECRET_HEADER, connectionBindResult, connectionBindingsResult, connectionRelayResult, connectionUnbindResult } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, connectionBindResult, connectionBindingsResult, connectionRelayResult, connectionSyncResult, connectionUnbindResult } from '@substrat-run/contracts';
 import type {
   ConnectionBindingsRequest,
   ConnectionBindingsResult,
   ConnectionBindRequest,
   ConnectionBindResult,
   ConnectionRelayResult,
+  ConnectionSyncRequest,
+  ConnectionSyncResult,
   ConnectionUnbindRequest,
   ConnectionUnbindResult,
   connectionRelayRequest,
@@ -53,6 +55,7 @@ export type UpsertConnectionRequest = ConnectionRelayAccess & z.input<typeof con
 export type BindConnectionRequest = ConnectionRelayAccess & ConnectionBindRequest;
 export type UnbindConnectionRequest = ConnectionRelayAccess & ConnectionUnbindRequest;
 export type ListBindingsRequest = ConnectionRelayAccess & ConnectionBindingsRequest;
+export type SyncConnectionsRequest = ConnectionRelayAccess & ConnectionSyncRequest;
 
 /** The relay refused, or answered something other than its result. Carries the status so a caller can map it. */
 export class ConnectionRequestError extends Error {
@@ -111,4 +114,13 @@ export function unbindConnection(request: UnbindConnectionRequest): Promise<Conn
  */
 export function listBindings(request: ListBindingsRequest): Promise<ConnectionBindingsResult> {
   return relay(request, '/internal/connections/bindings', connectionBindingsResult, 'list connection bindings');
+}
+
+/**
+ * Poll the scope's bindings of `provider` now (#2672), the tenant's connections bound to it as well
+ * as its own, and answer what each poll did. A binding polled in the last minute refuses the call
+ * with 429; nothing is queued. A provider whose bindings cannot be polled on request answers 501.
+ */
+export function syncConnections(request: SyncConnectionsRequest): Promise<ConnectionSyncResult> {
+  return relay(request, '/internal/connections/sync', connectionSyncResult, `poll ${request.provider} bindings`);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SweepRunEntry } from '@substrat-run/contracts';
-import { SWEEP_WINDOW_MINUTES, deriveFreshnessHealth, deriveScheduleHealth } from '../src/schedules.js';
+import { SWEEP_WINDOW_MINUTES, deriveFreshnessHealth, deriveScheduleHealth, lastScopeSweepAt } from '../src/schedules.js';
 
 /**
  * The verdict table (#1232). Pure over its inputs, so every boundary the panel
@@ -140,5 +140,23 @@ describe('deriveScheduleHealth — the verdicts', () => {
     const row = one(60, [run(min(30), 'failed', 'operation threw')], iso(min(5)));
     expect(row.health).toBe('healthy'); // it RAN — failing is the lastRun's fact, not lateness
     expect(row.lastRun).toMatchObject({ outcome: 'failed', error: 'operation threw' });
+  });
+});
+
+describe('lastScopeSweepAt — the liveness the verdicts take', () => {
+  const at = (kind: string, when: string) => ({ kind, scopeId: 'sc1', at: when }) as SweepRunEntry;
+  const lastOf = (rows: SweepRunEntry[]) => lastScopeSweepAt(async (f) => rows.filter((r) => r.kind === f.kind && r.scopeId === f.scopeId), 'sc1');
+  // A requested poll (#2672) is newer than every pass row below, and never counts.
+  const requested = at('connector', '2026-09-07T12:00:00.000Z');
+
+  it.each(['schedule', 'freshness', 'vertical-events'])("counts a %s row, alone or newest, and never a poll the vertical asked for", async (kind) => {
+    const others = ['schedule', 'freshness', 'vertical-events'].filter((k) => k !== kind).map((k) => at(k, '2026-09-07T10:00:00.000Z'));
+
+    expect(await lastOf([requested, at(kind, '2026-09-07T11:00:00.000Z')])).toBe('2026-09-07T11:00:00.000Z');
+    expect(await lastOf([requested, ...others, at(kind, '2026-09-07T11:00:00.000Z')])).toBe('2026-09-07T11:00:00.000Z');
+  });
+
+  it('reads a scope only polled on request as unswept', async () => {
+    expect(await lastOf([requested])).toBeNull();
   });
 });

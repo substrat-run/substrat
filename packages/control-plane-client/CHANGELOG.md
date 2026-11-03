@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-client
 
+## 0.5.4
+
+### Patch Changes
+
+- 8d5d1a2: A scope dump carries each module table's own indexes and guard triggers, and a restore puts them back, so a module's own invariants come back with a restore; the restore's admin row says what was carried and which triggers were left out.
+- Updated dependencies [74b0e7a]
+- Updated dependencies [1e8abe0]
+- Updated dependencies [3630807]
+- Updated dependencies [e1ce6d8]
+- Updated dependencies [ab8f9c2]
+- Updated dependencies [8d5d1a2]
+- Updated dependencies [be155c1]
+  - @substrat-run/contracts@0.176.0
+
 ## 0.5.3
 
 ### Patch Changes

@@ -217,6 +217,17 @@ export const assistantStreamBody = z.discriminatedUnion('t', [
     exhausted: z.boolean(),
     resetsAt: instant.optional(),
   }),
+
+  // Something the HOST did in a turn that is neither text nor a tool call the model made: a
+  // check that ran, a commit, a limit the loop hit. `kind` is the host's own name for it and
+  // opaque to a generic client, which shows `text` as a line; `data` is what the host's own
+  // view reads, bounded like a tool's input.
+  z.object({
+    t: z.literal('host-event'),
+    kind: z.string().min(1).max(64),
+    text: z.string().max(2_000),
+    data: boundedJson(ASSISTANT_TOOL_INPUT_MAX_BYTES).optional(),
+  }),
 ]);
 export type AssistantStreamBody = z.infer<typeof assistantStreamBody>;
 
