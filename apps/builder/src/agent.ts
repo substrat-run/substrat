@@ -525,10 +525,12 @@ export class BuilderAgent extends DurableObject<Env> {
 					threadId: ((await this.ctx.storage.get(`record:${entry.id}`)) as string | undefined) ?? null,
 					title: entry.name,
 					projectId: entry.id,
-					// Always set when hosted: the worker forwards the team on every request.
-					tenantId: this.#tenant || 'unknown',
+					// The worker forwards the team on every request; were it ever missing, the
+					// summary is refused (and logged) rather than filed under a team nobody has.
+					tenantId: this.#tenant,
 					turnId,
 					unfinishedTurnId: (await this.ctx.storage.get(`record-turn:${entry.id}`)) as string | undefined,
+					unfinishedFirstSeq: (await this.ctx.storage.get(`record-turn-seq:${entry.id}`)) as number | undefined,
 					message,
 					actor,
 					model: modelSpec,
@@ -537,6 +539,8 @@ export class BuilderAgent extends DurableObject<Env> {
 					await this.ctx.storage.put(`record:${entry.id}`, record.threadId);
 					// Cleared when the turn reaches rest; still set means it never did.
 					await this.ctx.storage.put(`record-turn:${entry.id}`, turnId);
+					// Where its events begin, so the turn after a lost one can say where it was.
+					await this.ctx.storage.put(`record-turn-seq:${entry.id}`, record.firstSeq);
 				}
 				// A slept container reopens the authoritative Git branch.
 				await this.#restoreProject(pair, entry);
@@ -678,6 +682,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (record) {
 					await record.finish(outcome);
 					await this.ctx.storage.delete(`record-turn:${entry.id}`);
+					await this.ctx.storage.delete(`record-turn-seq:${entry.id}`);
 				}
 				await this.ctx.storage.put(`state:${entry.id}`, state);
 				entry.updatedAt = new Date().toISOString();

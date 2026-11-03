@@ -86,7 +86,7 @@ export type TurnSummaryInput = z.infer<typeof turnSummaryInput>;
 export const turnSummary = turnSummaryInput.extend({ id: z.string(), endedAt: instant });
 export type TurnSummary = z.infer<typeof turnSummary>;
 
-const listTurnsInput = z.object({
+export const listTurnsInput = z.object({
 	tenantId: z.string().min(1).optional(),
 	projectId: z.string().min(1).optional(),
 	outcome: outcome.optional(),
@@ -116,8 +116,8 @@ export const turnOperations = defineOperations(entities, PERMISSIONS)({
 		output: turnSummary,
 		// Handler-composed: the red-gate filter reads into a JSON column, which the
 		// kernel's equality filters cannot say. Ids are ULIDs, so `id` is unique and
-		// orders by when the row was written.
-		paged: { sortKey: 'id' },
+		// orders by when the row was written; newest first.
+		paged: { sortKey: 'id', order: 'desc' },
 	},
 	'studio/get-turn': {
 		summary: "One turn's summary, by the turn's id",
@@ -324,3 +324,9 @@ CREATE INDEX studio_turns_project ON studio_turns (project_id, id);`,
 		},
 	}),
 };
+
+/** The list read's filters plus its page, as `GET /internal/turns` takes them. */
+export const listTurnsQuery = listTurnsInput.extend({
+	limit: z.number().int().min(1).max(LIST_PAGE_MAX).optional(),
+	cursor: z.string().min(1).max(64).optional(),
+});
