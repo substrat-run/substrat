@@ -599,7 +599,7 @@ for the platform's next pass, and show what the poll did.
 ```ts
 // from a permission-checked operation, as with bind
 const { bindings } = await syncConnections({ ...access, provider: 'fortnox' });
-// [{ connectionId, outcome: 'landed' | 'unchanged' | 'failed', at, pending, error? }]
+// [{ connectionId, outcome: 'landed' | 'unchanged' | 'failed' | 'in-progress', at, pending, error? }]
 ```
 
 Every binding of the scope counts: a tenant's connection bound here as well as the scope's own.
@@ -607,7 +607,9 @@ The poll is the platform's own sweep narrowed to this scope, so an unchanged boo
 and it runs inside the same budget and deadline a pass has: `pending: true` says the budget or the
 deadline ran out and a later pass takes the rest, while what landed stays landed. `at` is when the
 poll finished, the "last fetched" a screen shows. A `failed` binding's `error` is the platform's
-words with a reference staff can trace. An empty `bindings` means the scope has no binding of the
+words with a reference staff can trace. `in-progress` means another poll of that binding (the
+platform's own pass, or an earlier ask still running) was under way, so nothing ran for it and
+nothing was recorded; ask again later. An empty `bindings` means the scope has no binding of the
 provider.
 
 A binding polled for this scope in the last minute refuses the whole call with `429`; nothing is
