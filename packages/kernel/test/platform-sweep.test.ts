@@ -2357,6 +2357,35 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
     expect(report.eventDrain).not.toHaveProperty('skipped');
   });
 
+  it('prunes after the stamp at the retention horizon, and skips a deployment that cannot (#1334)', async () => {
+    const scope = sid();
+    const h = eventHost(scope, () => [drained(scope)]);
+    const admin = h.host.admin as unknown as Record<string, unknown>;
+    const calls: string[] = [];
+    const mark = admin.markEventsDrained as (...a: unknown[]) => Promise<number>;
+    admin.markEventsDrained = async (...a: unknown[]) => {
+      calls.push('mark');
+      return mark(...a);
+    };
+    const answers: (number | null)[] = [3, null];
+    let before = '';
+    admin.pruneDrainedEvents = async (_a: unknown, _t: unknown, _s: unknown, input: { drainedBefore: string; limit: number }) => {
+      calls.push(`prune ${input.limit}`);
+      before = input.drainedBefore;
+      return answers.shift()!;
+    };
+    const started = Date.now();
+    expect((await sweep(h)).eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0, pruned: 3 });
+    expect(calls).toEqual(['mark', 'prune 500']);
+    const age = started - Date.parse(before);
+    expect(age).toBeGreaterThanOrEqual(90 * 86_400_000 - 1000);
+    expect(age).toBeLessThanOrEqual(90 * 86_400_000 + 1000);
+    // A deployment older than the verb answers null: counted, never an error, nothing pruned.
+    const report = await sweep(h);
+    expect(report.eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0, pruneUnsupported: 1 });
+    expect(report.errors).toEqual([]);
+  });
+
   it('counts an active scope its deployment does not hold, on every tick, and never as an error (#2544)', async () => {
     const scope = sid();
     const h = eventHost(scope, () => {
