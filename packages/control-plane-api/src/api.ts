@@ -8132,12 +8132,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuse(c, 'conflict', `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved`);
     }
     // #2450: a page at a time into the live store's stage, so a kept copy of any size goes forward.
-    // Unstamped: the kept copy is only read. It takes no writes, so it reads at one moment.
+    // Unstamped: the kept copy is only read. A write it takes meanwhile is caught up on through the
+    // copy's capture, and one after the copy moves its revision, which the discard below is fenced on.
     const { dump } = await transferScope(holder, live, { from: scopeId }, { retry: retryTransient, stamp: false });
-    // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
-    // re-assert) cannot leave the receipt set over older data.
-    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
     try {
+      // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
+      // re-assert) cannot leave the receipt set over older data.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
         scopeId,
         exact: true,

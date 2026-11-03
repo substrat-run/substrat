@@ -1240,6 +1240,32 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(names.filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
     });
 
+    it('a paged restore forward the live store refuses leaves no stage behind, so a retry goes through', async () => {
+      const p = await keptByLateWrite('kept-paged-refused');
+      const v1ref = refOf.get(version.v1)!;
+      const { kept } = (await (await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth })).json()) as { kept: { keptAt: string } };
+      const body = { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } };
+      let wrote = false;
+      // A write to the live store after its marker was read: the load is refused.
+      hooks.restore = async (_ref, sid) => {
+        if (wrote || sid !== p.scopeId) return;
+        wrote = true;
+        await writeOn('v2', p.scopeId, 'n-live', 'written during the restore');
+      };
+      paged = true;
+      try {
+        expect((await resolve(p.scopeId, body)).status).toBe(412);
+        const names = (await tablesOrNone(hostFor('v2'), p.scopeId)).map((tb) => tb.name);
+        expect(names.filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
+        delete hooks.restore;
+        expect((await resolve(p.scopeId, body)).status).toBe(200);
+      } finally {
+        paged = false;
+        delete hooks.restore;
+      }
+      expect(wrote).toBe(true);
+    });
+
     /**
      * #2185, review of #2218 round 3: the kept copy can land in the live store and the resolution
      * still fail after it. A sweep reconcile that wrote the receipt in between must not survive the
