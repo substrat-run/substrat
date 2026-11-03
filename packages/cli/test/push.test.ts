@@ -1030,7 +1030,8 @@ export const permissions = {
     expect(r.stderr).toMatch(/connectors\.mjs exports no `connectors` with a `declarations\(\)`/);
   });
 
-  it.runIf(built)('refuses a scope store whose driver is not registered, as a push does (#2812)', () => {
+  // `graph` is registered (D-67) and serves no vertical yet, so a push of this one is refused.
+  it.runIf(built)('refuses a scope store whose driver does not serve the vertical, as a push does (#2812)', () => {
     const r = runCheck(
       verticalWith(SURFACE, {
         substrat: {
@@ -1040,7 +1041,7 @@ export const permissions = {
       }),
     );
     expect(r.status).not.toBe(0);
-    expect(r.stderr).toContain("scope store 'GRAPH' declares driver 'graph', which is not registered.");
+    expect(r.stderr).toContain("scope store 'GRAPH' declares driver 'graph', which does not serve vertical 'helpdesk'.");
     expect(r.stdout).not.toMatch(/digest:/);
   });
 
