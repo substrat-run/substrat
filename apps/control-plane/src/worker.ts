@@ -152,6 +152,7 @@ import {
   relayConnectionUpsert,
   relayConnectionBind,
   relayConnectionBindings,
+  relayConnectionSync,
   relayConnectionUnbind,
   ConnectionRelayError,
   relayConnectUrl,
@@ -3324,6 +3325,17 @@ export default {
                 : undefined,
           },
         });
+    // #2672: poll the scope's bindings of one provider now, through the provider's own scope poll.
+    app.post(
+      '/internal/connections/sync',
+      bindingRelay((env, host, body, proven) =>
+        relayConnectionSync(host, CONNECTION_RELAY_ACTOR, body, {
+          proven,
+          landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: connectionBindersFor(env) },
+          syncScope: (provider) => CONNECTORS.find((c) => c.provider === provider)?.syncScope?.(env),
+        }),
+      ),
+    );
     app.post('/internal/connections/bind', bindingRelay(bindingChange(relayConnectionBind)));
     app.post('/internal/connections/unbind', bindingRelay(bindingChange(relayConnectionUnbind)));
     app.post(

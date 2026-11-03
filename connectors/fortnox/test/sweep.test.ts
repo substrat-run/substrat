@@ -25,6 +25,7 @@ import {
   bindFortnoxScope,
   fortnoxConnectionActivity,
   listFortnoxBindings,
+  pollFortnoxScope,
   sweepFortnoxLedger,
   syncFortnoxScope,
   syncFortnoxSupplierInvoices,
@@ -287,6 +288,76 @@ describe('fortnox connector — inbound sync', () => {
     // financialyears + sie = two authenticated reads on one token.
     expect(fortnox.mints).toHaveLength(1);
     expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=2']);
+  });
+
+  it("polls only the named scope's binding on request, and answers what it did (#2672)", async () => {
+    const other = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: other, jurisdiction: 'eu', vertical: 'forecast' });
+    await host.admin.activateScope(staff, t, other);
+    await host.admin.grantToConnection(staff, { connectionId: connId, permission: LEDGER_RECORD, node: { tenantId: t, scopeId: other }, grantedBy: staff });
+    await bind();
+    await bindInvoices(INVOICE_OPERATION, other);
+
+    const first = await pollFortnoxScope(host, connId, s, options());
+    const again = await pollFortnoxScope(host, connId, s, options());
+
+    expect([first, again]).toEqual([{ outcome: 'landed', pending: false, errors: [] }, { outcome: 'unchanged', pending: false, errors: [] }]);
+    expect([landed.length, invoicesLanded.length]).toEqual([1, 0]);
+    expect(fortnox.calls.some((c) => c.includes('supplierinvoices'))).toBe(false);
+  });
+
+  it('skips a binding another poll holds, in a pass and on request, and takes over a lease that expired (#2672)', async () => {
+    await bind();
+    const lease = (untilMs: number) => host.admin.putConnectorState(connId, `fortnox:lease:${s}`, { token: 'another poll', until: new Date(untilMs).toISOString() });
+    await lease(Date.now() + 60_000);
+
+    const pass = await sweepFortnoxLedger(host, connId, options());
+    const asked = await pollFortnoxScope(host, connId, s, options());
+
+    expect([pass.found, pass.busy, pass.unchanged, asked.outcome, landed.length]).toEqual([1, [s], 0, 'in-progress', 0]);
+    await lease(Date.now() - 1);
+    expect((await pollFortnoxScope(host, connId, s, options())).outcome).toBe('landed');
+    // Given back once done, so the next pass polls it.
+    expect(await host.admin.getConnectorState(connId, `fortnox:lease:${s}`)).toBeNull();
+  });
+
+  it('leaves alone a lease another poll took over after its own expired mid-poll (#2672)', async () => {
+    await bind();
+    let clock = Date.parse('2026-06-15T12:00:00.000Z');
+    let planted = false;
+    // The first request outlives the lease, and another poll takes the binding over meanwhile.
+    const fetch: typeof fortnox.fetch = async (input, init) => {
+      if (!planted) {
+        planted = true;
+        clock += 10 * 60_000;
+        await host.admin.putConnectorState(connId, `fortnox:lease:${s}`, { token: 'the other poll', until: new Date(clock + 60_000).toISOString() });
+      }
+      return fortnox.fetch(input, init);
+    };
+
+    await pollFortnoxScope(host, connId, s, { ...options(), fetch, now: () => clock });
+
+    expect(await host.admin.getConnectorState(connId, `fortnox:lease:${s}`)).toMatchObject({ token: 'the other poll' });
+  });
+
+  it('keeps its lease through a poll that runs longer than the lease (#2672)', async () => {
+    await bind();
+    let clock = Date.parse('2026-06-15T12:00:00.000Z');
+    const heldUntil: number[] = [];
+    // Every Fortnox read takes 100 s, so the poll outlives one lease of 150 s.
+    const fetch: typeof fortnox.fetch = async (input, init) => {
+      if (!String(input).includes('/oauth-v1/')) {
+        clock += 100_000;
+        const lease = (await host.admin.getConnectorState(connId, `fortnox:lease:${s}`)) as { until: string };
+        heldUntil.push(Date.parse(lease.until) - clock);
+      }
+      return fortnox.fetch(input, init);
+    };
+
+    await pollFortnoxScope(host, connId, s, { ...options(), fetch, now: () => clock });
+
+    expect(heldUntil.length).toBeGreaterThan(1);
+    expect(heldUntil.every((left) => left > 0)).toBe(true);
   });
 
   it('refuses to turn an invoice binding into a ledger one', async () => {
@@ -974,7 +1045,8 @@ describe('fortnox connector — inbound sync', () => {
       expect(first.invoices).toEqual([{ scopeId: s, landed: 8, files: 0, held: 0, written: 0, pending: true }]);
       expect(invoicesLanded[0]!.invoices.map((i) => i.givenNumber)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
 
-      await sweepFortnoxLedger(host, connId, slow());
+      // A poll on request (#2672) is held to the same deadline, and says work is left.
+      expect(await pollFortnoxScope(host, connId, s, slow())).toEqual({ outcome: 'landed', pending: true, errors: [] });
       expect(invoicesLanded[1]!.invoices[0]!.givenNumber).toBe('9');
     });
 

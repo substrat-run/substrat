@@ -45,7 +45,7 @@ export class ConnectionRelayError extends Error {
      * 500 (what an unrecognised throw collapses to) sent an operator looking for a bug
      * in the credential or the relay, when the plane knew at boot that it had no key.
      */
-    readonly status: 400 | 403 | 404 | 409 | 422 | 501 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 422 | 429 | 501 | 503,
     /** The provider's own answer, when the refusal came from a pre-flight probe (#605). */
     readonly probe?: ConnectionProbe,
   ) {

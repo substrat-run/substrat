@@ -4,6 +4,7 @@ import {
   isPrimaryScope,
   onRequestLandingFor,
   ulid,
+  withheldStaffFailure,
   type ConnectionBinder,
   type ConnectionLandingOptionsInput,
   type ScopeHost,
@@ -16,9 +17,12 @@ import {
   connectionUnbindResult,
   connectionBindingsRequest,
   connectionBindingsResult,
+  connectionSyncRequest,
+  connectionSyncResult,
   isVerticalConnectorProvider,
   type Connection,
   type ConnectionBindingsResult,
+  type ConnectionSyncResult,
   type ConnectionBindResult,
   type ConnectionUnbindResult,
   type PlatformActorId,
@@ -255,6 +259,112 @@ export async function relayConnectionBindings(
     }),
   );
   return connectionBindingsResult.parse({ bindings: listed.flat() });
+}
+
+/** What a provider's scope poll did for the binding it was handed. */
+export interface ScopeSyncResult {
+  /** `not-bound` when the binding was gone by the time the poll read it; `in-progress` when another poll of it was running, so nothing ran. */
+  outcome: 'landed' | 'unchanged' | 'failed' | 'not-bound' | 'in-progress';
+  pending: boolean;
+  /** On `failed`, the connector's own words: staff's ledger row, never the answer. */
+  errors: string[];
+}
+
+/** Poll ONE scope's binding on a connection, inside the same budget and deadline a sweep pass has. */
+export type ScopeSync = (host: ScopeHost, connection: Connection, scopeId: Scope['id']) => Promise<ScopeSyncResult>;
+
+/**
+ * The operation a requested poll's sweep row carries (`sync.connector:<provider>`). Such a row is
+ * written between passes, so it is not a pass's mark: the staff digest's watermark skips it.
+ */
+export const SYNC_OPERATION_PREFIX = 'sync.connector:';
+
+/** The least time between two polls of one binding through the sync relay. */
+const SYNC_MIN_INTERVAL_MS = 60_000;
+
+export interface ConnectionSyncRelayOptions extends ConnectionBindingRelayOptions {
+  /** The provider's scope poll; undefined for a provider that offers none, which answers 501. */
+  syncScope: (provider: string) => ScopeSync | undefined;
+}
+
+/**
+ * `/internal/connections/sync` (#2672): poll the scope's bindings of one provider now. Every binding
+ * of the scope counts, the tenant's connections' as well as the scope's own, since a poll changes
+ * when the sweep's work happens, never what it does. Each poll is recorded as a sweep of that
+ * connection for that scope, so the cadence's ledger and the bindings read see it; a failure's own
+ * text is staff's row under the reference the answer names, as the pass files it.
+ */
+export async function relayConnectionSync(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  body: unknown,
+  options: ConnectionSyncRelayOptions,
+): Promise<ConnectionSyncResult> {
+  const input = parsed(connectionSyncRequest, body, 'connection sync');
+  const scope = await primaryScope(host, actor, input, options);
+  const sync = options.syncScope(input.provider);
+  if (!sync) throw new ConnectionRelayError(`'${input.provider}' bindings cannot be polled on request`, 501);
+  const live = await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical, provider: input.provider });
+  const bound: Connection[] = [];
+  for (const connection of live) {
+    if (connection.ownerScopeId !== null && connection.ownerScopeId !== scope.id) continue;
+    const binder = binderOf(options.landings, connection);
+    if (binder && (await binder.list(host, connection)).some((b) => b.scopeId === scope.id)) bound.push(connection);
+  }
+  // Refused, never queued: the poll is idempotent, so a second one a moment later only spends the
+  // provider's allowance.
+  const now = Date.now();
+  for (const connection of bound) {
+    const [last] = await host.admin.listSweepRuns(actor, { kind: 'connector', unit: connection.id, scopeId: scope.id, limit: 1 });
+    const since = last ? Math.max(0, now - Date.parse(last.at)) : Infinity;
+    if (since < SYNC_MIN_INTERVAL_MS) {
+      throw new ConnectionRelayError(`connection ${connection.id} was polled for this scope ${Math.ceil(since / 1000)} s ago; ask again in ${Math.ceil((SYNC_MIN_INTERVAL_MS - since) / 1000)} s`, 429);
+    }
+  }
+  const operation = `${SYNC_OPERATION_PREFIX}${input.provider}`;
+  const bindings: z.input<typeof connectionSyncResult>['bindings'] = [];
+  // One at a time: the bindings share the provider's rate limit.
+  for (const connection of bound) {
+    const started = Date.now();
+    const result = await sync(host, connection, scope.id).catch((err: unknown): ScopeSyncResult => ({ outcome: 'failed', pending: false, errors: [said(err)] }));
+    if (result.outcome === 'not-bound') continue;
+    if (result.outcome === 'in-progress') {
+      // Nothing ran, so nothing is recorded: the poll holding the binding records its own.
+      bindings.push({ connectionId: connection.id, outcome: 'in-progress', at: new Date().toISOString(), pending: false });
+      continue;
+    }
+    let error: string | undefined;
+    if (result.outcome === 'failed') {
+      const reference = ulid();
+      error = `the binding did not land (reference ${reference})`;
+      await host.admin
+        .recordOpsFailure({
+          actor,
+          ...withheldStaffFailure({ operation, stage: 'sweep', vertical: scope.vertical }, result.errors.join('; '), reference, `connection ${connection.id} of tenant ${scope.tenantId}: `),
+        })
+        // The row is the text's only copy: say which reference lost it, never the text.
+        .catch((err: unknown) => console.error('sync-failure record failed', { reference, error: said(err) }));
+    }
+    const at = new Date().toISOString();
+    // The record never sinks the answer: the poll already happened.
+    await host.admin
+      .recordSweepRun({
+        kind: 'connector',
+        unit: connection.id,
+        outcome: result.outcome === 'failed' ? 'failed' : 'ok',
+        tenantId: scope.tenantId,
+        scopeId: scope.id,
+        vertical: scope.vertical,
+        operation,
+        connectionId: connection.id,
+        error: error ?? null,
+        elapsedMs: Date.now() - started,
+        at,
+      })
+      .catch(() => undefined);
+    bindings.push({ connectionId: connection.id, outcome: result.outcome, at, pending: result.pending, ...(error ? { error } : {}) });
+  }
+  return connectionSyncResult.parse({ bindings });
 }
 
 export async function relayConnectionUnbind(

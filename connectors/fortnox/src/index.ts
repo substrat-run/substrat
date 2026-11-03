@@ -22,7 +22,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
-import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
+import { deadlineFetch, settleConnectionUse, ulid } from '@substrat-run/kernel';
 import {
   FortnoxApi,
   FortnoxApiError,
@@ -1533,10 +1533,64 @@ export interface FortnoxSweepResult {
   found: number;
   /** Ledger bindings whose books changed and landed. */
   synced: FortnoxSyncResult[];
-  /** Invoice bindings that landed invoices or files, or wrote back. */
+  /** Invoice bindings that landed invoices or files, wrote back, or left work for a later pass. */
   invoices: FortnoxInvoiceSyncResult[];
   unchanged: number;
   failed: { scopeId: string; error: string }[];
+  /** Bindings another poll was polling (#2672): skipped this pass, never failed; the next pass polls them. */
+  busy: string[];
+}
+
+/**
+ * How long a binding's poll lease lasts (#2672): the invoice pass's deadline and a margin, so a
+ * poll that crashed holds no binding past it.
+ */
+const POLL_LEASE_MS = INVOICE_PASS_DEADLINE_MS + 60_000;
+const leaseKey = (scope: string): string => `fortnox:lease:${scope}`;
+type FortnoxPollLease = { token: string; until: string };
+
+/**
+ * Take a binding's poll lease, so a pass and a poll asked for on request do not poll one binding at
+ * once (#2672). Null when a live lease is another's. Best effort: connector state has no
+ * compare-and-set, so the take is a write and a read back of its token, and two takers that
+ * interleave within those few milliseconds can both hold it.
+ */
+async function takePollLease(host: ScopeHost, connectionId: ConnectionId, scopeId: string, nowMs: number): Promise<string | null> {
+  const key = leaseKey(scopeId);
+  const held = (await host.admin.getConnectorState(connectionId, key)) as FortnoxPollLease | null | undefined;
+  if (held && Date.parse(held.until) > nowMs) return null;
+  const token = ulid();
+  await host.admin.putConnectorState(connectionId, key, { token, until: new Date(nowMs + POLL_LEASE_MS).toISOString() } satisfies FortnoxPollLease);
+  const after = (await host.admin.getConnectorState(connectionId, key)) as FortnoxPollLease | null | undefined;
+  return after?.token === token ? token : null;
+}
+
+/**
+ * `fetch`, renewing the lease while the poll still asks Fortnox, so a slow poll (the ledger has no
+ * deadline of its own) keeps it. Every request is a step boundary; a lease another poll took over is
+ * left alone. A body read is not a boundary: one that streams longer than the lease can outlive it.
+ * Best effort, as the release: a renewal that fails leaves the lease to expire, never the request.
+ */
+function leaseRenewing(host: ScopeHost, connectionId: ConnectionId, scopeId: string, token: string, fetch: FetchLike, now: () => number): FetchLike {
+  let renewedAt = now();
+  const renew = async (at: number) => {
+    const held = (await host.admin.getConnectorState(connectionId, leaseKey(scopeId))) as FortnoxPollLease | null | undefined;
+    if (held?.token === token) await host.admin.putConnectorState(connectionId, leaseKey(scopeId), { token, until: new Date(at + POLL_LEASE_MS).toISOString() } satisfies FortnoxPollLease);
+  };
+  return async (input, init) => {
+    if (now() - renewedAt >= POLL_LEASE_MS / 3) {
+      renewedAt = now();
+      await renew(renewedAt).catch(() => undefined);
+    }
+    return fetch(input, init);
+  };
+}
+
+/** Give the lease back, unless it expired and another poll took it over. */
+async function releasePollLease(host: ScopeHost, connectionId: ConnectionId, scopeId: string, token: string): Promise<void> {
+  const key = leaseKey(scopeId);
+  const held = (await host.admin.getConnectorState(connectionId, key)) as FortnoxPollLease | null | undefined;
+  if (held?.token === token) await host.admin.putConnectorState(connectionId, key, null);
 }
 
 /**
@@ -1556,13 +1610,18 @@ export interface FortnoxSweepResult {
 export async function sweepFortnoxLedger(
   host: ScopeHost,
   connectionId: ConnectionId,
-  options: FortnoxConnectorOptions & { period?: { from: string; to: string } },
+  options: FortnoxConnectorOptions & {
+    period?: { from: string; to: string };
+    /** Poll only this scope's bindings (#2672): the same pass, budget and deadline, for one scope. */
+    scopeId?: string;
+  },
 ): Promise<FortnoxSweepResult> {
-  const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
-  const result: FortnoxSweepResult = { found: 0, synced: [], invoices: [], unchanged: 0, failed: [] };
+  const rows = await host.admin.listConnectorState(connectionId, options.scopeId === undefined ? BINDING_PREFIX : bindingKey(options.scopeId));
+  const result: FortnoxSweepResult = { found: 0, synced: [], invoices: [], unchanged: 0, failed: [], busy: [] };
   // One budget and one rate window per pass: every binding on this connection reads the same company.
   const budget = { details: INVOICE_DETAILS_PER_PASS };
   const pass = { ...options, rateWindow: options.rateWindow ?? [] };
+  const clock = () => options.now?.() ?? Date.now();
 
   for (const { value } of rows) {
     // A tombstoned binding (`unbindFortnoxScope`) — present as a row, not a target.
@@ -1578,15 +1637,22 @@ export async function sweepFortnoxLedger(
       result.failed.push({ scopeId: binding.scopeId, error: `unknown Fortnox ledger form '${String(binding.form)}'; upgrade this platform before polling this binding` });
       continue;
     }
+    let lease: string | null = null;
     try {
+      lease = await takePollLease(host, connectionId, binding.scopeId, clock());
+      if (lease === null) {
+        result.busy.push(binding.scopeId);
+        continue;
+      }
+      const leased = { ...pass, fetch: leaseRenewing(host, connectionId, binding.scopeId, lease, pass.fetch, clock) };
       if (binding.kind === 'supplier-invoice') {
-        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
-        if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped) result.invoices.push(r);
+        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...leased, budget });
+        if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped || r.pending) result.invoices.push(r);
         else result.unchanged += 1;
         continue;
       }
       if (binding.form === 'sie') {
-        const { synced, failed } = await syncFortnoxSieFiles(host, connectionId, binding, pass);
+        const { synced, failed } = await syncFortnoxSieFiles(host, connectionId, binding, leased);
         const landed = synced.filter((r) => r.changed);
         result.synced.push(...landed);
         for (const f of failed) {
@@ -1598,7 +1664,7 @@ export async function sweepFortnoxLedger(
         if (landed.length === 0 && failed.length === 0) result.unchanged += 1;
         continue;
       }
-      const r = await syncFortnoxScope(host, connectionId, binding, pass);
+      const r = await syncFortnoxScope(host, connectionId, binding, leased);
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
     } catch (err) {
@@ -1606,10 +1672,42 @@ export async function sweepFortnoxLedger(
         scopeId: binding.scopeId,
         error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      // A release that fails leaves the lease to expire.
+      if (lease !== null) await releasePollLease(host, connectionId, binding.scopeId, lease).catch(() => undefined);
     }
   }
 
   return result;
+}
+
+/** What polling one scope's bindings on request did (#2672): the sync relay's answer for it. */
+export interface FortnoxScopePoll {
+  /** `not-bound` when the scope has no binding on this connection; `in-progress` when another poll holds it. */
+  outcome: 'landed' | 'unchanged' | 'failed' | 'not-bound' | 'in-progress';
+  /** True when the pass's budget or deadline left work for a later pass. */
+  pending: boolean;
+  /** On `failed`, each binding's own error: staff's to read, never the tenant's. */
+  errors: string[];
+}
+
+/**
+ * Poll ONE scope's bindings now — {@link sweepFortnoxLedger} narrowed to the scope, so the same
+ * budget, deadline and rate window bound it as bound a pass.
+ */
+export async function pollFortnoxScope(
+  host: ScopeHost,
+  connectionId: ConnectionId,
+  scopeId: string,
+  options: FortnoxConnectorOptions,
+): Promise<FortnoxScopePoll> {
+  const r = await sweepFortnoxLedger(host, connectionId, { ...options, scopeId });
+  const pending = r.invoices.some((i) => i.pending);
+  if (r.failed.length > 0) return { outcome: 'failed', pending, errors: r.failed.map((f) => f.error) };
+  if (r.found === 0) return { outcome: 'not-bound', pending: false, errors: [] };
+  if (r.busy.length > 0) return { outcome: 'in-progress', pending: false, errors: [] };
+  const landed = r.synced.length > 0 || r.invoices.some((i) => i.landed > 0 || i.files > 0 || i.held > 0 || i.written > 0);
+  return { outcome: landed ? 'landed' : 'unchanged', pending, errors: [] };
 }
 
 /**

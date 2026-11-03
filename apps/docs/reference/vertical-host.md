@@ -520,7 +520,7 @@ preview or a fork, and for a provider with no platform consent round. A refusal 
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
 
-## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`, `listBindings(request)`
+## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`, `listBindings(request)`, `syncConnections(request)`
 
 How a vertical stores a provider credential from its **own** admin screen, and binds a
 scope's own connection to that scope with that scope's options (#2732) — one folder of a
@@ -590,6 +590,40 @@ Only sweeps since `boundAt` count, so a rebind starts afresh. Sweep records are 
 `lastSyncedAt`: compare the two to tell a past failure from a current one. A binding nothing polls
 (its sweep is skipped, or unsupported for that binding) reads `null` in both, as one not swept yet
 does.
+
+### `syncConnections(request)`
+
+A "Sync now" button (#2672): poll the scope's bindings of one provider now, instead of waiting
+for the platform's next pass, and show what the poll did.
+
+```ts
+// from a permission-checked operation, as with bind
+const { bindings } = await syncConnections({ ...access, provider: 'fortnox' });
+// [{ connectionId, outcome: 'landed' | 'unchanged' | 'failed' | 'in-progress', at, pending, error? }]
+```
+
+Every binding of the scope counts: a tenant's connection bound here as well as the scope's own.
+The poll is the platform's own sweep narrowed to this scope, so an unchanged book lands nothing,
+and each call is paced under Fortnox's request rate as a pass is. A supplier-invoice binding is also
+held to a pass's budget of reads and its 90 s deadline: `pending: true` says one of them ran out and
+a later pass takes the rest, while what landed stays landed. A ledger binding has neither, so its
+poll runs to the end and `pending` is always false for it. The polls of a scope's bindings run one
+after another inside the one HTTP request (two invoice bindings can take up to 90 s each), and a
+caller that times out does not cancel them: the poll still runs and is recorded, so asking again
+straight away answers `429`. Those limits are the call's own, not shared:
+a poll of this scope while the platform's pass polls another scope on the same Fortnox company
+paces separately, so Fortnox may answer some requests "too many" and the poll waits them out, and
+every call spends a fresh budget. Ask when a person asks, not on a timer. `at` is when the
+poll finished, the "last fetched" a screen shows. A `failed` binding's `error` is the platform's
+words with a reference staff can trace. `in-progress` means another poll of that binding (the
+platform's own pass, or an earlier ask still running) was under way, so nothing ran for it and
+nothing was recorded; ask again later. An empty `bindings` means the scope has no binding of the
+provider.
+
+A binding polled for this scope in the last minute refuses the whole call with `429`; nothing is
+queued, so ask again later. A provider whose bindings cannot be polled on request answers `501`;
+today that is every provider but Fortnox. The caller must be proven as the scope, as with bind.
+The call goes through `POST /internal/connections/sync`.
 
 ## `mailInAddress(request)`
 
