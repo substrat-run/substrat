@@ -1,5 +1,25 @@
 # @substrat-run/connector-fortnox
 
+## 0.6.0
+
+### Minor Changes
+
+- 1e8abe0: Fortnox invoice bindings land each invoice's file on the entity the landing names, carry the balance, comment log and the rest of what a reader needs, and can read further back on their first pass with `options.firstPass`.
+- 3630807: Fortnox invoice bindings can write decisions back with `options.writeback`: the sweep asks the vertical what is waiting, keeps undecided invoices from being paid, books the approved ones and adds to the comment log.
+- e1ce6d8: A Fortnox ledger binding can land the year's whole SIE4 file with `options.form: 'sie'`, and keep older financial years with `options.years`.
+
+### Patch Changes
+
+- Updated dependencies [74b0e7a]
+- Updated dependencies [1e8abe0]
+- Updated dependencies [3630807]
+- Updated dependencies [e1ce6d8]
+- Updated dependencies [ab8f9c2]
+- Updated dependencies [8d5d1a2]
+- Updated dependencies [be155c1]
+  - @substrat-run/contracts@0.176.0
+  - @substrat-run/kernel@0.176.0
+
 ## 0.5.8
 
 ### Patch Changes

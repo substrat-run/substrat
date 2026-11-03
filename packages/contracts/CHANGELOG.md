@@ -1,5 +1,20 @@
 # @substrat-run/contracts
 
+## 0.176.0
+
+### Minor Changes
+
+- 74b0e7a: The assistant stream gains a `host-event`: something the host did in a turn that is neither text nor a tool call, as a `kind`, a line of text and optional bounded `data`.
+- 1e8abe0: Fortnox invoice bindings land each invoice's file on the entity the landing names, carry the balance, comment log and the rest of what a reader needs, and can read further back on their first pass with `options.firstPass`.
+- 3630807: Fortnox invoice bindings can write decisions back with `options.writeback`: the sweep asks the vertical what is waiting, keeps undecided invoices from being paid, books the approved ones and adds to the comment log.
+- e1ce6d8: A Fortnox ledger binding can land the year's whole SIE4 file with `options.form: 'sie'`, and keep older financial years with `options.years`.
+- ab8f9c2: An operation may declare `impersonation: 'refused'`: an act only the person may make, which both hosts refuse under any impersonation session before its handler runs.
+- be155c1: Unbinding a record now revokes its pending binding links in the same transaction, and the unbind answers `revokedLinks`: a link must not outlive the binding it was made for.
+
+### Patch Changes
+
+- 8d5d1a2: A scope dump carries each module table's own indexes and guard triggers, and a restore puts them back, so a module's own invariants come back with a restore; the restore's admin row says what was carried and which triggers were left out.
+
 ## 0.175.0
 
 ### Minor Changes
@@ -7307,7 +7322,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
