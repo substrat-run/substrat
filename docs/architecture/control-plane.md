@@ -327,9 +327,12 @@ Three decisions worth not re-litigating:
   still copied as of one moment). Each page and each batch of writes caught meanwhile is one
   sealed object, and a manifest at `scopes/<t>/<s>/<capturedAt>.json`, written last, makes them
   a backup: a copy that did not finish has none, so it is never listed and never lets a reap
-  wipe. The restore stages the entries back at the deployment, which loads the stage.
-  `GET …/backups/:capturedAt` serves only a copy stored in one entry, and answers `413` for
-  one stored in several. A copy written before #2839 is one whole dump at the manifest's key,
+  wipe. The restore stages the entries back at the deployment, which loads the stage, and the
+  reap's `backupRef` names that restore route. `GET …/backups/:capturedAt` serves only a copy
+  stored in one entry, and answers `413` for one stored in several. Limits that remain: the
+  backup and its restore each run inside one request, the scope's stores stay whole in the
+  manifest, and a scope that keeps writing faster than the copy catches up is refused after
+  three attempts (409), which aborts a reap that asked for a backup. A copy written before #2839 is one whole dump at the manifest's key,
   and reads, serves and restores as a copy of one entry.
 - **Full fidelity, never masked.** The `GET …/export` route masks by default because it
   hands bytes to a *caller* (§6's governed pull). A backup goes platform→platform and is

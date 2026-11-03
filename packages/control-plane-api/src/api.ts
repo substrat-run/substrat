@@ -7761,7 +7761,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   // Restore a held backup into its scope, read from the store here rather than handed in (#2839):
   // a backup stored in parts is staged at the deployment one entry at a time, opened with the
-  // backup's own provenance, and loaded from the stage, so a backup of any size goes back. One
+  // backup's own provenance, and loaded from the stage, so no call holds the whole backup. One
   // stored whole loads as `POST …/restore` loads a dump, through the same path. Staff-only, as the
   // backup routes are (not in TENANT_ROUTES or BUILDER_ROUTES).
   app.post('/tenants/:tenantId/scopes/:scopeId/backups/:capturedAt/restore', async (c) => {
