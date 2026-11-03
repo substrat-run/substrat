@@ -51,7 +51,8 @@ def _too_large(request):
     malformed (a chunked request) is refused rather than read without a bound.
     """
     declared = request.js_object.headers.get("content-length")
-    if declared is None or not str(declared).isdigit():
+    declared = None if declared is None else str(declared)
+    if declared is None or not (declared.isascii() and declared.isdigit()):
         return Response("length required: send a Content-Length", status=411)
     if int(declared) > MAX_BODY_BYTES:
         return Response(f"payload too large: at most {MAX_BODY_BYTES} bytes", status=413)

@@ -412,6 +412,18 @@ try {
     duplex: 'half',
   });
   check(chunked.status === 411, 'a body with no Content-Length (chunked) is answered 411 before it is read', { status: chunked.status });
+  // A non-ASCII digit passes str.isdigit() and breaks int(): it must fall to the 411, never a 500.
+  // The runtime may refuse such a header itself first (400); either way it is no 500.
+  const odd = await new Promise((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': '\u00b2' } }, (res) => {
+      res.resume();
+      resolve({ status: res.statusCode });
+      req.destroy();
+    });
+    req.on('error', (err) => (err.code === 'ECONNRESET' ? resolve({ status: 'reset' }) : reject(err)));
+    req.end();
+  });
+  check([400, 411].includes(odd.status), 'a Content-Length of a non-ASCII digit is refused (411), not a 500', odd);
   const atLimit = await send({ headers: {}, body: 'x'.repeat(entry.STORE_CALL_MAX_BODY_BYTES) });
   check(atLimit.status === 401 && atLimit.text === 'unauthorized: missing', 'a body at the limit is read and verified', { status: atLimit.status });
 
