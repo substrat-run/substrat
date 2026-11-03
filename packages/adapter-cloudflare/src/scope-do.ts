@@ -189,6 +189,8 @@ import {
   NotListable,
   listIndexPlans,
   moduleMigrations,
+  REGISTERED_MIGRATIONS,
+  registeredMigrationsOf,
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
   assertJournalDumpCoherent,
@@ -1621,6 +1623,14 @@ export function defineScopeDO(
     noteDeclaredKeys(declaredListed, m.manifest);
   }
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
+    /**
+     * #2351: the migrations this class registers, read by the control plane, which evaluates the
+     * bundle in an isolate with no bindings and calls this before it stores the version. The same
+     * list `registerModule` keeps for each module (`moduleMigrations`).
+     */
+    static [REGISTERED_MIGRATIONS](): ReturnType<typeof registeredMigrationsOf> {
+      return registeredMigrationsOf(modules);
+    }
     private readonly sql: SqlStorage;
     private continuationOrder = 0;
     /** DO storage KV is private to the adapter; neither module SQL nor dumps can read it. */

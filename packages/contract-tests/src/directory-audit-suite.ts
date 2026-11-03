@@ -423,6 +423,21 @@ const CASES: DirectoryCase[] = [
       };
     },
   },
+  {
+    // #2351: the digest of the migrations read from a version's bundle.
+    action: 'recordMigrationsExtracted',
+    write: { table: 'vertical_versions', verb: 'UPDATE' },
+    arrange: async (host, staff) => {
+      const slug = await newVertical(host, staff);
+      const version = await publish(host, staff, slug);
+      return {
+        call: () => host.admin.recordMigrationsExtracted!(staff, slug, version, 'e'.repeat(32)),
+        state: () => host.admin.versionMigrationsExtracted!(staff, slug, version),
+        changed: 'e'.repeat(32),
+        row: { before: null, after: { vertical: slug, versionId: version, digest: 'e'.repeat(32) } },
+      };
+    },
+  },
   // #2526: the role, grant and org writes at a tenant node.
   {
     action: 'defineRole',

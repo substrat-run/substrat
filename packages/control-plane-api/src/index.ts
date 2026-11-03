@@ -181,6 +181,15 @@ export type {
   DeclaredBinding,
   DeployManifest,
 } from './deploy.js';
+export {
+  extractedMigrationsDigest,
+  extractedMigrationsProblem,
+  loaderMigrationExtractor,
+  MigrationExtractionError,
+  readExtraction,
+  type ExtractMigrationsFn,
+  type MigrationLoader,
+} from './migration-extract.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
 export { createWfpWireSettingsApi, type WireSettingsApi } from './wire-settings.js';
 export {

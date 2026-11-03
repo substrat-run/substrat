@@ -88,6 +88,15 @@ What the platform hands back differs by capability, and the difference is worth 
   build whose worker registers other migrations than the push declared. A scope with nothing to
   apply is never checked, and a version pushed without its migrations in the manifest carries no
   digest and is not checked.
+- **The same check, before upload.** Where the platform can evaluate bundles, it does so on every
+  push, in an isolate with no bindings and no network, and reads the migrations each scope class
+  the worker entry exports registers. A push whose manifest carries migrations other than those is
+  refused before anything is uploaded, and so is one whose worker entry cannot be evaluated without
+  its bindings: keep the entry free of import-time work, as the permission entry already is. A
+  version pushed before this is read once, at its first promote, and the promote is refused if
+  they differ. The promote review says whether the migrations it shows were read from the bundle or
+  only declared by the push. This checks the build, not the code's intent: what is read is what
+  the bundle registers when evaluated, so the apply-time check above stays.
 
 Either way, "how a vertical gets a dependency" is: declare the request, get it granted, call what
 the platform hands over — never bind the raw resource yourself.

@@ -17,7 +17,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
-import { asUploaded } from '../../tools/workerd-as-uploaded.mjs';
+import { asUploaded, bundledEntry } from '../../tools/workerd-as-uploaded.mjs';
 import { defineConfig } from 'vitest/config';
 import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
@@ -38,8 +38,12 @@ writeFileSync(
   JSON.stringify({
     ...uploaded,
     name: 'fixture-scheduled-vertical',
+    // #2351: the Worker Loader the control plane reads a bundle's migrations in, and the fixture's
+    // entry bundled as a push bundles it, which bundle-migrations.test.ts hands to it.
+    worker_loaders: [{ binding: 'MIGRATION_LOADER' }],
     vars: {
       ...uploaded.vars,
+      FIXTURE_ENTRY_BUNDLE: new TextDecoder().decode(await bundledEntry(join(fixture, 'worker.ts'))),
       PLATFORM_SECRET: 'test-platform-secret',
       ROUTER_SECRET: 'test-router-secret',
       CONTROL_PLANE_URL: 'https://control-plane.test',

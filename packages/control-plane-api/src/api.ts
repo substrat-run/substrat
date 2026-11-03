@@ -119,6 +119,7 @@ import {
   tenantStatus,
   versionOrigin,
   z,
+  type DeclaredMigration,
   PROBLEM_CONTENT_TYPE,
   toProblem,
   validationIssuesFrom,
@@ -332,6 +333,13 @@ import type {
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
+import {
+  extractedMigrationsDigest,
+  extractedMigrationsProblem,
+  extractedMigrationsRefusal,
+  MigrationExtractionError,
+  type ExtractMigrationsFn,
+} from './migration-extract.js';
 import { wireSettingsRefusal, wireUploadFor, type WireUpload, type WireUploadSettings } from './wire-upload.js';
 import type { WireSettingsApi } from './wire-settings.js';
 import {
@@ -594,6 +602,13 @@ export interface ControlPlaneApiOptions {
    * place (the pre-#286 behavior: scopes stay on per-version dispatch).
    */
   fetchVerticalModules?: FetchVerticalModulesFn;
+  /**
+   * #2351: evaluates a bundle in an isolate with no bindings and reads the migrations it
+   * registers (`loaderMigrationExtractor`). Given, a push whose declared migrations are not the
+   * registered ones is refused before upload, and a promote checks a version pushed before this
+   * once. Absent ⇒ nothing is read, and every version reads as never read.
+   */
+  extractMigrations?: ExtractMigrationsFn;
   /**
    * Reads one static file's bytes back from a script in the namespace (#578) — the
    * asset twin of `fetchVerticalModules`. The runtime's asset store dedupes per
@@ -8934,7 +8949,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         { ...incomingVersion, migrations: incoming },
       ),
     };
-    return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline), review });
+    // #2351: whether the incoming set was read from the version's bundle, or only declared by its
+    // push (pushed before the read, or a bundle that exposes no registrations).
+    const readFromBundle = !!(await c.var.admin.versionMigrationsExtracted?.(c.get('actor'), slug, incomingId));
+    return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline), review, readFromBundle });
   });
 
   // The emitted entity model (#1214) one version ships: entities, field schemas, parent
@@ -9293,6 +9311,63 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       console.error(JSON.stringify({ substrat: 'wire-upload-record-failed', vertical, deploymentRef, error: error instanceof Error ? error.name : 'error' }));
       recordFailure({ actor, operation: 'deploy.wire-record', vertical, version: versionId, message: `the capability record of ${deploymentRef} was not written` }, error);
     }
+  };
+
+  /**
+   * #2351: what a bundle registers, against the migrations its version declares (`declared`, null
+   * when it stores none): `read` with the digest to record, `unmarked` when the bundle exposes no
+   * registrations (an adapter from before them) or nothing is configured to read it, `differs`
+   * when the two sets are not the same, `failed` when the bundle could not be evaluated.
+   */
+  type BundleMigrationsRead =
+    | { kind: 'read'; digest: string }
+    | { kind: 'unmarked' }
+    | { kind: 'differs' | 'failed'; message: string };
+  const readBundleMigrations = async (
+    bundle: Parameters<ExtractMigrationsFn>[0],
+    declared: readonly DeclaredMigration[] | null,
+  ): Promise<BundleMigrationsRead> => {
+    if (!options.extractMigrations) return { kind: 'unmarked' };
+    let registered: DeclaredMigration[] | null;
+    try {
+      registered = await options.extractMigrations(bundle);
+    } catch (e) {
+      if (!(e instanceof MigrationExtractionError)) throw e;
+      return { kind: 'failed', message: e.message };
+    }
+    if (!registered) return { kind: 'unmarked' };
+    const problem = declared && extractedMigrationsProblem(declared, registered);
+    if (problem) return { kind: 'differs', message: extractedMigrationsRefusal(problem) };
+    return { kind: 'read', digest: await extractedMigrationsDigest(registered) };
+  };
+
+  /**
+   * #2351: a version pushed before its bundle was read is read once, at its first promote, from
+   * its archive script. Same set: recorded, and the promote goes on. Another set: the refusal,
+   * before anything moves. No registrations, or a bundle that cannot be evaluated here (it was
+   * accepted at push, before this read existed): the promote goes on as it did, unrecorded. A
+   * version storing no migrations has nothing to compare.
+   */
+  const bundleMigrationsRefusal = async (admin: HostAdmin, actor: PlatformActorId, slug: string, versionId: string): Promise<string | null> => {
+    if (!options.extractMigrations || !options.fetchVerticalModules || !admin.versionMigrationsExtracted || !admin.recordMigrationsExtracted) {
+      return null;
+    }
+    if ((await admin.versionMigrationsExtracted(actor, slug, versionId)) !== null) return null;
+    const declared = await admin.versionMigrations(actor, slug, versionId);
+    const version = await admin.getVersion(actor, versionId, slug);
+    const manifestJson = await admin.versionManifest(actor, slug, versionId);
+    if (declared === null || !version?.deploymentRef || !manifestJson) return null;
+    const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
+    // An archive that cannot be read back is the serve's to report, after the promote, as it is today.
+    const modules = await options.fetchVerticalModules(version.deploymentRef).catch(() => null);
+    if (!modules) return null;
+    const read = await readBundleMigrations(
+      { entry: manifest.entry, compatibilityDate: manifest.compatibilityDate, compatibilityFlags: manifest.compatibilityFlags, modules },
+      declared,
+    );
+    if (read.kind === 'differs') return read.message;
+    if (read.kind === 'read') await admin.recordMigrationsExtracted(actor, slug, versionId, read.digest);
+    return null;
   };
 
   /**
@@ -9713,6 +9788,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       : await releaseRoleRefusalsOf(c, slug, versionId);
     const answer = roleStateAnswer(roles, confinedTenant(p));
     if (answer) return refuseStatus(c, answer.status, answer.message, answer.extra);
+    // #2351: a version whose bundle was never read is read now, before anything moves.
+    const bundleRefusal = await bundleMigrationsRefusal(c.var.admin, c.get('actor'), slug, versionId);
+    if (bundleRefusal) return refuseStatus(c, 422, bundleRefusal);
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
@@ -10177,6 +10255,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const sweeper = platformSweeperDecision(manifest, { entry: manifest.entry, modules });
     if ('refuse' in sweeper) return refuseStatus(c, 422, sweeper.refuse);
 
+    // #2351: the migrations the bundle registers, read before anything is uploaded. Where the
+    // manifest carries migrations they must be the registered ones, or the push is refused, and
+    // so is a bundle that cannot be evaluated: the stored set is then provably what the version
+    // runs. A manifest that leaves them off (over the caps a manifest carries) stores none, so
+    // nothing is gated: its push is accepted however the read went, and records the digest of
+    // what was read, if anything was.
+    const read = await readBundleMigrations(
+      { entry: manifest.entry, compatibilityDate: manifest.compatibilityDate, compatibilityFlags: manifest.compatibilityFlags, modules },
+      manifest.migrations ?? null,
+    );
+    if (read.kind === 'differs' || (read.kind === 'failed' && manifest.migrations)) return refuseStatus(c, 422, read.message);
+    const migrationsExtracted = read.kind === 'read' ? read.digest : null;
+
     // Mint the version id first: the deploymentRef (the dispatch script name) is keyed
     // on it, so it is CF-valid and unique per version.
     const id = ulid();
@@ -10294,6 +10385,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       manifestJson: JSON.stringify({ ...manifest, platformSweeper: sweeper.supply }),
     });
     await recordWireUpload(c.var.admin, c.get('actor'), id, wire);
+    if (migrationsExtracted) await c.var.admin.recordMigrationsExtracted?.(c.get('actor'), slug, id, migrationsExtracted);
     // Same spirit as the permission-surface gate, advisory tier: when the push DECLARES
     // surfaces, name any surface that hostnames are still bound to but the declaration
     // dropped — the URL keeps resolving (routing never keys on the declaration), it just

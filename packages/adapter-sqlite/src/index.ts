@@ -625,6 +625,8 @@ import {
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
+  versionMigrationsExtractedOf,
+  recordVersionMigrationsExtracted,
   deriveVersionMigrationDigest,
   publishedMigrationDigest,
   migrationChangeRefusal,
@@ -2788,6 +2790,8 @@ export class SqliteScopeHost implements ScopeHost {
         -- 1 once migration_digest is the one derived from the stored migrations (#2339).
         -- NULL = stored before, still the pushed digest; derived on its next read.
         migration_digest_derived INTEGER,
+        -- #2351: the digest of the migrations read from the version's bundle. NULL = never read.
+        migrations_extracted TEXT,
         created_at        TEXT NOT NULL,
         UNIQUE (vertical_slug, version)
       );
@@ -3212,6 +3216,7 @@ export class SqliteScopeHost implements ScopeHost {
       this.ensureColumn(this.directory, 'vertical_versions', 'migration_count', 'migration_count INTEGER');
       this.ensureColumn(this.directory, 'vertical_versions', 'migrations_split', 'migrations_split INTEGER');
       this.ensureColumn(this.directory, 'vertical_versions', 'migration_digest_derived', 'migration_digest_derived INTEGER');
+      this.ensureColumn(this.directory, 'vertical_versions', 'migrations_extracted', 'migrations_extracted TEXT');
     }
     this.applyDirectorySchema();
     // #2322: a migration's declared moves and discards, on a table created before they were carried.
@@ -11098,6 +11103,25 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
+      },
+      versionMigrationsExtracted: async (actor, verticalSlug: string, versionId: string) => {
+        const v = versionMigrationsExtractedOf(switchSqlOf(this.directory), versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        this.recordAccess(actor, 'versionMigrationsExtracted', {}, { verticalSlug, versionId }, v.digest ? 1 : 0);
+        return v.digest;
+      },
+      recordMigrationsExtracted: async (actor, verticalSlug: string, versionId: string, digest: string) => {
+        const db = switchSqlOf(this.directory);
+        const v = versionMigrationsExtractedOf(db, versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        this.directoryWriteAndAudit(() => {
+          recordVersionMigrationsExtracted(db, versionId, digest);
+          return true;
+        }, () => this.recordAdmin(actor, 'recordMigrationsExtracted', { tenantId: null, vertical: verticalSlug }, null, { vertical: verticalSlug, versionId, digest }));
       },
       recordWireAuth: async (actor, input) => {
         const row = deploymentWireAuth.parse(input);
