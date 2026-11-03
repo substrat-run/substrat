@@ -1,10 +1,12 @@
 /**
- * `substrat store-driver upload | rollout | rollback | status --driver <driver>` (D-63, #2300). Staff
+ * `substrat store-driver upload | publish | rollout | rollback | status --driver <driver>` (D-63, #2300). Staff
  * only, and a write must be made from a person's sign-in (`substrat login`): the control plane
  * refuses the service token.
  *
  * - `upload` packs the driver's package from `--dir` and stores it. The control plane names the
  *   release by its sha256; a staff person approves those bytes separately.
+ * - `publish` is upload, a wait for the approval (`--wait`), and rollout in one command: a thin
+ *   client of the same routes, safe to run again. It never grants an approval.
  * - `rollout --sha256` moves every vertical to a stored, pinned release, after a canary. A big
  *   fleet takes more than one request: the command says so, and running it again continues.
  * - `rollback` returns the driver to the immediately previous good release.
@@ -36,6 +38,7 @@ import {
 } from '@substrat-run/contracts';
 import type { StoreDriverRebuildView, StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
+import { uploadApprovalLine } from './store-driver-approval.js';
 
 function base64(bytes: Uint8Array): string {
   let text = '';
@@ -227,4 +230,60 @@ export function storeDriverStatusLines(driver: string, view: StoreDriverView): s
     ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
     ...(view.rebuild ? storeDriverRebuildLines(view.rebuild) : []),
   ];
+}
+
+/** `--wait 90s | 30m | 2h` as milliseconds; anything else is refused before a request. */
+export function parseWaitMs(text: string): number {
+  const match = /^([1-9][0-9]*)([smh])$/.exec(text);
+  if (!match) throw new Error(`--wait takes a duration such as 90s, 30m or 2h, not '${text}'`);
+  return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[match[2] as 's' | 'm' | 'h'];
+}
+
+type PublishClient = Pick<ReturnType<typeof planeFor>, 'uploadStoreDriverRelease' | 'getStoreDriver' | 'rollOutStoreDriver'>;
+
+/** A rollout that moves nothing this many requests running is not making progress. */
+const ROLLOUT_STALLED_AFTER = 3;
+
+/**
+ * `store-driver publish`: upload, wait for the separate approval, then roll out, over the routes the
+ * three commands use. Running it again is safe: the same bytes are the same release, an approval is
+ * read and never granted, and a partial rollout continues. `awaiting-approval` is not a success.
+ * Waiting is counted in polls, not read off a clock, so a test needs no timer.
+ */
+export async function publishStoreDriver(input: {
+  client: PublishClient; driver: string; body: StoreDriverReleaseUpload;
+  waitMs: number; pollMs: number; sleep: (ms: number) => Promise<void>; log: (line: string) => void;
+}): Promise<{ outcome: 'published' | 'awaiting-approval'; sha256: string }> {
+  const { client, driver, log } = input;
+  const { release } = await client.uploadStoreDriverRelease(driver, input.body);
+  const sha256 = release.sha256;
+  log(`✓ stored ${driver} ${sha256} (commit ${release.sourceCommit})`);
+  for (let waited = 0; ; waited += input.pollMs) {
+    const view = await client.getStoreDriver(driver);
+    if (view.current?.sha256 === sha256) {
+      log(`✓ ${driver} is already on ${sha256}`);
+      return { outcome: 'published', sha256 };
+    }
+    if (!view.approvals || view.approvals.some((a) => a.sha256 === sha256 && !a.revokedAt)) break;
+    if (waited >= input.waitMs) {
+      log(`  ${driver} ${sha256} is not approved${input.waitMs > 0 ? ' within --wait' : ''}; nothing was rolled out`);
+      log(uploadApprovalLine(driver, sha256));
+      log('  once it is approved, run the same publish command again');
+      return { outcome: 'awaiting-approval', sha256 };
+    }
+    if (waited === 0) log('  waiting for a staff person to approve these bytes');
+    await input.sleep(input.pollMs);
+  }
+  let stalled = 0;
+  while (true) {
+    const { rollout, moved, complete } = await client.rollOutStoreDriver(driver, sha256);
+    log(`  rollout #${rollout.seq}: ${rollout.state} (${moved.length} vertical(s) this run)`);
+    if (complete) {
+      if (rollout.state !== 'good') throw new Error(`the rollout of ${sha256} ended ${rollout.state}${rollout.detail ? `: ${rollout.detail}` : ''}; \`substrat store-driver status --driver ${driver}\` shows where it stands`);
+      log(`✓ ${driver} rolled out to ${sha256}`);
+      return { outcome: 'published', sha256 };
+    }
+    stalled = moved.length === 0 ? stalled + 1 : 0;
+    if (stalled >= ROLLOUT_STALLED_AFTER) throw new Error(`the rollout of ${sha256} moved no vertical in ${ROLLOUT_STALLED_AFTER} requests (${rollout.state}${rollout.detail ? `: ${rollout.detail}` : ''}); run publish again, or check \`substrat store-driver status --driver ${driver}\``);
+  }
 }
