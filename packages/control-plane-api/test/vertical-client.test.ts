@@ -556,6 +556,36 @@ describe('VerticalClient → runPlatformSweep — an old vertical’s unvalidate
   });
 });
 
+describe('VerticalClient.pruneDrainedEvents (#1334)', () => {
+  // A deployment older than the route (404) or whose adapter lacks the verb (501) pruned
+  // nothing: that is `null`, which the sweep counts and skips, never a 0 or an error.
+  it.each([
+    [200, JSON.stringify({ pruned: 4 }), 4],
+    [404, JSON.stringify({ title: 'not found' }), null],
+    [501, JSON.stringify({ title: 'redeploy it' }), null],
+  ])('answers %i as %s', async (status, body, expected) => {
+    const sent: unknown[] = [];
+    const client = new VerticalClient({
+      fetch: (async (_url: string, init: RequestInit) => {
+        sent.push(JSON.parse(init.body as string));
+        return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const s = scopeId.parse(ulid());
+    await expect(client.pruneDrainedEvents(s, '2026-01-01T00:00:00.000Z', 500)).resolves.toBe(expected);
+    expect(sent).toEqual([{ scopeId: s, drainedBefore: '2026-01-01T00:00:00.000Z', limit: 500 }]);
+  });
+
+  it('throws on any other refusal', async () => {
+    const client = new VerticalClient({
+      fetch: (async () => new Response('{}', { status: 500 })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    await expect(client.pruneDrainedEvents(scopeId.parse(ulid()), '2026-01-01T00:00:00.000Z', 500)).rejects.toThrow();
+  });
+});
+
 /**
  * #1524: a scope's database size, read through the deployment that holds it. The answer
  * lands in a sum, so anything that is not a size must throw here rather than read as 0,

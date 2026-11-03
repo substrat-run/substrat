@@ -69,6 +69,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     // reply that came from the reopen above is recognisable as the wrong verb.
     redrainCountLocal: async (_s: unknown, before?: unknown) =>
       note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
+    pruneDrainedEventsLocal: async (_s: unknown, before?: unknown, limit?: unknown) =>
+      note('pruneDrainedEventsLocal', before === '2026-09-16T00:00:00.000Z' && limit === 500 ? 3 : -1),
     loadMarkerLocal: async () => note('loadMarkerLocal', { loadStamp: 'st', revision: null }),
     keptCopyLocal: async () => note('keptCopyLocal', { carriedTo: 'v2-script', keptAt: '2026-10-03T00:00:00.000Z', revision: '4' }),
     releaseKeptCopyLocal: async (_s: unknown, revision?: unknown) =>
@@ -536,6 +538,24 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const older = fakeHost({ redrainCountLocal: undefined });
     const refused = await post(older, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z' });
     expect(refused.status).toBe(501);
+    expect(older.calls).toHaveLength(0);
+  });
+
+  // #1334: the retention prune, its own route, so a deployment built before it answers 404; a
+  // host without the verb answers 501. Both read as "cannot prune" on the platform's side.
+  it('serves the prune with the instant and batch carried through, and 501s on a host that cannot prune', async () => {
+    const post = (h: ReturnType<typeof fakeHost>, body: unknown) =>
+      appWith(h).request('/internal/prune-drained', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, ENV);
+    const host = fakeHost();
+    const ok = await post(host, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', limit: 500 });
+    expect(await ok.json()).toEqual({ pruned: 3 });
+    expect((await post(host, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', limit: 5000 })).status).toBe(400);
+    const older = fakeHost({ pruneDrainedEventsLocal: undefined });
+    expect((await post(older, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', limit: 500 })).status).toBe(501);
     expect(older.calls).toHaveLength(0);
   });
 
