@@ -1160,7 +1160,8 @@ it('restoreScope sends the recorded-off peers and their tenant-held ones, and re
   expect(bodies).toEqual([
     { tenantId: t, scopeId: s, tables: [], switchedOffPeers: ['acme/board-room'], tenantHeldPeers: ['acme/board-room'] },
   ]);
-  expect(out).toEqual({ tables: 0, switchedOff: [moved] });
+  // #2820: a deployment that says nothing about the dump's own objects put none back.
+  expect(out).toEqual({ tables: 0, switchedOff: [moved], moduleObjects: { carried: 'not carried', skipped: [] } });
 });
 
 it('exportScopeStamped asks for the stamp and reads it off the export, null from a deployment that sends none (#1722)', async () => {

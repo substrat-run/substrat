@@ -21,6 +21,8 @@ const notes = (n: number): ScopeDumpTable => ({
   ddl: 'CREATE TABLE pg_notes (id TEXT PRIMARY KEY, body TEXT, n INTEGER)',
   columns: ['id', 'body', 'n'],
   rows: Array.from({ length: n }, (_, i) => [`n${String(i).padStart(4, '0')}`, `body ${i} `.repeat(20), i]),
+  // #2820: the table's own index travels in every page and through the stage, as in a whole dump.
+  objects: [{ type: 'index', name: 'pg_notes_n', ddl: 'CREATE UNIQUE INDEX pg_notes_n ON pg_notes (n)' }],
 });
 // Read by offset: it has no rowid to page on.
 const tags = (n: number): ScopeDumpTable => ({
@@ -28,8 +30,9 @@ const tags = (n: number): ScopeDumpTable => ({
   ddl: 'CREATE TABLE pg_tags (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID',
   columns: ['k', 'v'],
   rows: Array.from({ length: n }, (_, i) => [`k${String(i).padStart(4, '0')}`, `v${i}`]),
+  objects: [],
 });
-const empty: ScopeDumpTable = { name: 'pg_empty', ddl: 'CREATE TABLE pg_empty (x TEXT)', columns: ['x'], rows: [] };
+const empty: ScopeDumpTable = { name: 'pg_empty', ddl: 'CREATE TABLE pg_empty (x TEXT)', columns: ['x'], rows: [], objects: [] };
 
 /** The vertical's tables of a dump (the spine is the scope's own, and differs by scope id). */
 const vertical = (tables: ScopeDumpTable[]) =>
@@ -121,6 +124,15 @@ describe('a scope carried in pages lands as the whole dump would (#2450)', () =>
     const before = await host.loadMarkerLocal(dest);
     await stageAll(dest, ulid(), await readAll(source, { maxBytes: 1_000 }));
     expect(await host.loadMarkerLocal(dest)).toEqual(before);
+  });
+
+  it("a page whose table carries no objects, after one whose table did, is refused as a changed table (#2820)", async () => {
+    const dest = scopeId.parse(ulid());
+    const stageId = ulid();
+    expect(await host.stageScopePageLocal(dest, stageId, 0, [notes(2)])).toEqual({ staged: true });
+    const refused = await host.stageScopePageLocal(dest, stageId, 1, [{ ...tags(2), objects: undefined }]).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('precondition_failed');
+    expect(String((refused as Error).message)).toContain('changed between dump pages');
   });
 
   it('a retried page changes nothing; a page out of order is refused', async () => {

@@ -132,6 +132,9 @@ import {
   WRITE_REVISION_HEADER,
   mergeDumpPages,
   scopeDumpChanges,
+  moduleObjectsRecord,
+  MODULE_OBJECTS_NOT_CARRIED,
+  type ModuleObjectsRecord,
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, DeadlineOptions, FetchLike, IncrementalSha256, KeptCopy, LoadMarker, OpenedAttachment, OpenedAttachmentStream, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
@@ -1787,13 +1790,13 @@ export class VerticalClient {
       /** #1722: the copy move's lease, carried to the store; a load after `notAfter` is refused. */
       fence?: CopyRestoreFence;
     },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[] }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOffInUnit[]; moduleObjects: ModuleObjectsRecord }> {
     // `exact` vouches for a named source; the vertical refuses it without one, so say so here.
     if (opts?.exact && !opts.sourceScopeId) {
       throw substratError('validation_failed', 'restore: `exact` needs `sourceScopeId`, the scope the dump came from');
     }
     const staged = !Array.isArray(tables);
-    const { tables: count, switchedOff } = await this.postInternal<{ tables: number; switchedOff?: unknown }>(
+    const { tables: count, switchedOff, moduleObjects } = await this.postInternal<{ tables: number; switchedOff?: unknown; moduleObjects?: unknown }>(
       staged ? '/internal/restore-staged' : '/internal/restore',
       {
         tenantId,
@@ -1813,7 +1816,9 @@ export class VerticalClient {
       },
       'restore',
     );
-    return { tables: count, ...switchedOffFrom(switchedOff) };
+    // #2820: a deployment that does not say put none back (one from before objects were carried).
+    const objects = moduleObjectsRecord.safeParse(moduleObjects);
+    return { tables: count, ...switchedOffFrom(switchedOff), moduleObjects: objects.success ? objects.data : MODULE_OBJECTS_NOT_CARRIED };
   }
 
   /**

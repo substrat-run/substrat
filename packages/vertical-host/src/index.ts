@@ -138,6 +138,7 @@ import {
   type HistoryEntry,
   type Page,
   queryScopeInput,
+  scopeDumpObject,
   errorCodeOf,
   PARENT_REQUEST_ID_HEADER,
   type ScopeId,
@@ -149,6 +150,7 @@ import {
   type Visibility,
   type RoleDefinition,
   type ScopeDumpTable,
+  type ModuleObjectsRecord,
   type ScopeDumpChange,
   type ScopeDumpChanges,
   type ScopeDumpPage,
@@ -318,7 +320,7 @@ export interface VerticalScopeHost {
        *  the route then repairs with `projectRolesLocal`, as before. */
       roles?: RoleDefinition[];
     },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }>;
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord }>;
   /** #2005: mark one scope a copy in its own storage, given the directory's classification of it,
    *  which must be non-primary — the repair of a copy that predates the marker. */
   markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }>;
@@ -389,7 +391,7 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     stageId: string,
     opts?: Parameters<VerticalScopeHost['restoreScopeLocal']>[2],
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }>;
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord }>;
   /** #2450: drop the stage, if it is still `stageId`'s. */
   discardStagedScopeLocal?(scopeId: ScopeId, stageId: string): Promise<{ discarded: boolean }>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
@@ -852,6 +854,9 @@ const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
   return parsed?.success ? { switchedOff: parsed.data } : {};
 };
 
+/** #2820: what the load did with the dump's own indexes and triggers, when the host said. */
+const moduleObjectsAnswer = (record: ModuleObjectsRecord | undefined) => (record ? { moduleObjects: record } : {});
+
 /**
  * #2185: the reconcile's retirement report, parsed on the way OUT like `switchedOffAnswer`: a count
  * that does not parse is left out, and the platform then counts the retirements not finished.
@@ -953,6 +958,8 @@ const dumpTable = z.object({
   ddl: z.string(),
   columns: z.array(z.string()),
   rows: z.array(z.array(z.unknown())),
+  /** #2820: the table's own indexes and triggers; absent from a dump that predates them. */
+  objects: z.array(scopeDumpObject).optional(),
 });
 const dumpTables = z.array(dumpTable);
 /** #2450: a table's fragment in a page, with each row's source rowid on a page read under a capture. */
@@ -1479,7 +1486,7 @@ export function mountPlatformSurface<Env extends object>(
       roles: deps.roles,
     });
     await repairRolesUnlessProjected(host, body.tenantId, body.scopeId, result);
-    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff), ...moduleObjectsAnswer(result.moduleObjects) });
   });
 
   /**
@@ -1573,7 +1580,7 @@ export function mountPlatformSurface<Env extends object>(
       roles: deps.roles,
     });
     await repairRolesUnlessProjected(host, body.tenantId, body.scopeId, result);
-    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff), ...moduleObjectsAnswer(result.moduleObjects) });
   });
 
   app.post('/internal/stage/discard', async (c) => {

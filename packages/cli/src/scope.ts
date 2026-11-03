@@ -1,6 +1,10 @@
 import {
   assertReplayableDump,
   assertSqlIdentifier,
+  DUMP_OBJECTS_QUERY,
+  dumpObjectsOf,
+  type DumpObjectRow,
+  replayDumpObjects,
   problemDetail,
   rebindReviewReasonIn,
   scopeId,
@@ -79,7 +83,7 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   // DDL. Checked here rather than only at the caller because this is the site that
   // interpolates and executes them — and checked ahead of the `rmSync` so a refused
   // dump leaves the previous pull's file where it was instead of deleting it first.
-  assertReplayableDump(dump.tables);
+  const objects = assertReplayableDump(dump.tables);
   rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
@@ -98,6 +102,8 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
       const stmt = db.prepare(`INSERT INTO "${t.name}" (${cols}) VALUES (${marks})`);
       for (const row of t.rows) stmt.run(...row.map(bindable));
     }
+    // #2820: the module tables' own indexes and triggers, after every row they judge.
+    replayDumpObjects(objects, (ddl) => db.prepare(ddl).run());
   } finally {
     db.close();
   }
@@ -112,16 +118,20 @@ export async function pullScope(opts: {
   full: boolean;
   outDir: string;
 }): Promise<void> {
-  const dump = await viaPlane(
+  const pulled = await viaPlane(
     () => planeFor(opts.controlPlaneUrl, opts.header).exportScope(opts.tenantId, opts.scopeId, opts.full),
     (e) => new Error(problemDetail(refusalBody(e)) ?? `pull refused: ${e.status} ${e.statusText}`),
   );
+  // #2820: a masked pull carries no module indexes or triggers, which masked values would break.
+  const dump = pulled.masked ? { ...pulled, tables: pulled.tables.map(({ objects: _, ...t }) => t) } : pulled;
   // The WHOLE rule, checked before EITHER writer, so the node-<22.13 JSON fallback
   // cannot leave a dump on disk that a later `scope restore` would then have to
   // refuse. Names alone would not do it: `writeSqlite` returns before its own check
   // when `node:sqlite` is missing, so the schema text would go unjudged on exactly
   // the path that skips the SQLite writer.
-  assertReplayableDump(dump.tables);
+  // #2820: a .sqlite holds only the objects it can create, so a pull carrying one a restore leaves
+  // out is written as the JSON dump, which carries it as it came (and a restore names it again).
+  const { skipped } = assertReplayableDump(dump.tables);
 
   mkdirSync(opts.outDir, { recursive: true });
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
@@ -132,7 +142,7 @@ export async function pullScope(opts: {
   // it then restores the stores too, instead of leaving them as they were. An earlier
   // pull's `.sqlite` is removed, so the stale copy is not the file left to restore.
   const stores = dump.stores?.length ?? 0;
-  const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
+  const wroteSqlite = stores === 0 && skipped.length === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
     // Written beside the target and renamed into place, so a crash or a failed write
@@ -145,13 +155,15 @@ export async function pullScope(opts: {
       rmSync(staged, { force: true });
       throw e;
     }
-    if (stores > 0) rmSync(`${base}.sqlite`, { force: true });
+    if (stores > 0 || skipped.length > 0) rmSync(`${base}.sqlite`, { force: true });
   }
 
   console.log(`✓ pulled ${dump.tables.length} tables (${rows} rows), captured ${dump.capturedAt}`);
   console.log(`  → ${file}`);
   if (stores > 0) {
     console.log(`  (JSON — the pull carries ${stores} scope store${stores === 1 ? '' : 's'}, which a .sqlite file cannot hold)`);
+  } else if (skipped.length > 0) {
+    console.log(`  (JSON — the pull carries ${skipped.join(', ')}, which a restore leaves out and a .sqlite file cannot hold)`);
   } else if (!wroteSqlite) {
     console.log('  (JSON fallback — node 22.13+ writes a ready-to-run .sqlite instead)');
   }
@@ -161,6 +173,8 @@ export async function pullScope(opts: {
     console.log('    column the heuristic does not recognize is untouched.');
     console.log('    Still personal data — a rare combination can re-identify. Pass --full');
     console.log('    for a break-glass pull of the real values.');
+    console.log('  masked pulls carry no module indexes or triggers: a restore from this file');
+    console.log('    puts none back.');
   } else {
     console.log('  ⚠ FULL-FIDELITY pull: this file contains real customer data.');
     console.log('    Treat it as production data — do not share it, delete it when done.');
@@ -208,6 +222,8 @@ async function readDump(file: string): Promise<Backup> {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
     const tables: DumpTable[] = [];
+    // #2820: the module tables' own indexes and triggers ride with them, as an export carries them.
+    const objects = dumpObjectsOf(db.prepare(DUMP_OBJECTS_QUERY).all() as DumpObjectRow[]);
     const rows = db
       .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'`)
       .all() as { name: string; sql: string }[];
@@ -218,8 +234,11 @@ async function readDump(file: string): Promise<Backup> {
       const cols = (db.prepare(`PRAGMA table_info("${t.name}")`).all() as { name: string }[]).map((c) => c.name);
       for (const c of cols) assertSqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
-      tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
+      tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])), ...objects(t.name) });
     }
+    // A file holding none (a pull from before they were written, or a masked one) carries no
+    // `objects` at all, so the restore records them as not carried rather than as none.
+    if (!tables.some((t) => t.objects?.length)) for (const t of tables) delete t.objects;
     const namedOrigin = /^([0-9A-HJKMNP-TV-Z]{26})__([0-9A-HJKMNP-TV-Z]{26})\.sqlite$/i.exec(basename(file));
     const origin = namedOrigin
       ? { tenantId: tenantId.parse(namedOrigin[1]!.toUpperCase()), scopeId: scopeId.parse(namedOrigin[2]!.toUpperCase()) }

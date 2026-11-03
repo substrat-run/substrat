@@ -250,11 +250,15 @@ describe('a copy catches up on the writes its source took while it was read (#24
     expect(await captureLeft(source)).toEqual([]);
   });
 
-  it('a table added while the copy reads ends the capture and refuses it', async () => {
+  it.each([
+    ['a table', 'CREATE TABLE cc_late (x TEXT)'],
+    // #2820: a dumped table's trigger travels in its pages, so one added after them moves the schema too.
+    ['a trigger', `CREATE TRIGGER cc_notes_kept BEFORE DELETE ON cc_notes BEGIN SELECT RAISE(ABORT, 'kept'); END`],
+  ])('%s added while the copy reads ends the capture and refuses it', async (_, ddl) => {
     const source = await seed();
     const copyId = ulid();
     await host.exportScopePageLocal(source, null, { capture: copyId });
-    await sql(source, 'CREATE TABLE cc_late (x TEXT)');
+    await sql(source, ddl);
     const refused = await host.exportScopeChangesLocal(source, copyId, 0).catch((e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('precondition_failed');
     expect(String((refused as Error).message)).toContain('schema changed');

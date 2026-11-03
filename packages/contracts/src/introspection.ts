@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { eventId } from './ids.js';
-import { namesSpineTable, referencedTables } from './sql-tokens.js';
+import { namesSpineTable, referencedTables, tokenizeSql, type SqlToken } from './sql-tokens.js';
 
 /**
  * Read-only introspection of a scope's own database — the console/dashboard "Data"
@@ -282,6 +282,24 @@ export const scopeQueryResult = z.object({
 export type ScopeQueryResult = z.infer<typeof scopeQueryResult>;
 
 /**
+ * One of a module table's own indexes or triggers, as `sqlite_master` holds it (#2820). Some are
+ * invariants rather than speed: a partial unique index, an append-only trigger. A restore drops
+ * the table and its migrations are journaled, so they never run again; the dump is what brings
+ * them back. Kernel-derived objects (`_substrat_*`) are never carried: a load derives them again.
+ */
+export const scopeDumpObject = z.object({
+  /**
+   * `index` or `trigger`. A string, not an enum, so a reader older than its exporter still parses
+   * a dump that names another kind; a load skips that one and says so (`dumpObjectsPlan`).
+   */
+  type: z.string().min(1),
+  name: z.string().min(1),
+  /** The `CREATE INDEX` / `CREATE TRIGGER` statement from `sqlite_master`. */
+  ddl: z.string().min(1),
+});
+export type ScopeDumpObject = z.infer<typeof scopeDumpObject>;
+
+/**
  * A COMPLETE, byte-faithful dump of one scope's database — the deliberate opposite
  * of `readScopeTable` above (bounded, blob-as-null, "not a dump"). This is the whole
  * scope: every table, its DDL, and every row, so it can rebuild the scope elsewhere.
@@ -305,6 +323,12 @@ export const scopeDumpTable = z.object({
    * preserved as bytes (never nulled as in a UI read) so the dump reloads faithfully.
    */
   rows: z.array(z.array(z.unknown())),
+  /**
+   * The table's own indexes and triggers (#2820), put back after its rows. Absent from a dump
+   * written before they were carried, which a load reads as "not known" and the restore's admin
+   * row says so; `[]` is a table that has none. Never on a spine table.
+   */
+  objects: z.array(scopeDumpObject).optional(),
 });
 export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
 
@@ -718,12 +742,13 @@ function assertNoSpineParent(ddl: string, name: string): void {
  * entry point a replay site calls, so a new one cannot pick up half the rules.
  */
 export function assertReplayableDump(
-  tables: { name: string; ddl: string; columns?: string[] }[],
+  tables: ReplayableTable[],
   opts: { maxColumns?: number } = {},
-): void {
+): DumpObjectsPlan {
   assertDumpIdentifiers(tables);
   for (const t of tables) assertSingleCreateTable(t.ddl, t.name);
   for (const t of tables) assertNoSpineParent(t.ddl, t.name);
+  const objects = dumpObjectsPlan(tables);
   // #1811: a Durable Object cannot hold a table past its column cap, and no change to the replay
   // can help — the `CREATE TABLE` itself is refused. Said here, before any of it runs, so a
   // restore or fork onto one fails with a sentence instead of a bare SQLITE_ERROR partway
@@ -744,4 +769,267 @@ export function assertReplayableDump(
       }
     }
   }
+  return objects;
+}
+
+/** What `assertReplayableDump` judges: a dumped table, rows aside. */
+export type ReplayableTable = { name: string; ddl: string; columns?: string[]; objects?: ScopeDumpObject[] };
+
+/**
+ * ## A module's own invariants come back with a restore (#2820)
+ *
+ * What a load does with the indexes and triggers a dump carries: `replay` is put back after the
+ * rows, in dump order; `skipped` names what was left out; `carried` counts what the dump held,
+ * `null` for a dump written before objects were carried.
+ *
+ * **Refused**, the whole dump, before any of it is replayed: an object filed under a platform
+ * table, one with a reserved name, and DDL that is not exactly one statement of the shape a dump
+ * carries for the table it is filed under. An index is `CREATE [UNIQUE] INDEX <name> ON <table> (…)
+ * [WHERE …]`. A trigger is `CREATE TRIGGER <name> [BEFORE|AFTER] INSERT|DELETE|UPDATE [OF …] ON
+ * <table> [FOR EACH ROW] [WHEN …] BEGIN … END`, each body statement one SQLite allows there.
+ *
+ * **Skipped**, and named, so a restore stays possible whatever a module wrote: a kind this reader
+ * does not know, a name that is not a plain identifier or that another table or object in the dump
+ * already has, DDL with characters outside ASCII that are not quoted, and every trigger but a guard.
+ * A guard is a trigger whose `WHEN` reads no other row and whose every body statement is
+ * `SELECT RAISE(ABORT|FAIL|ROLLBACK, '<literal>') [WHERE …]` or
+ * `SELECT CASE WHEN … THEN RAISE(ABORT|FAIL|ROLLBACK, '<literal>') END [WHERE …]`, reading no other
+ * row either: the append-only and refusal shape that holds an invariant.
+ */
+export interface DumpObjectsPlan {
+  readonly replay: readonly (ScopeDumpObject & { table: string })[];
+  readonly skipped: readonly string[];
+  readonly carried: number | null;
+}
+
+/** Object names a dump never carries: the kernel's, SQLite's, and workerd's own. */
+function isReservedObjectName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return namesSpineTable(lower) || lower.startsWith('sqlite_') || lower.startsWith('_cf_');
+}
+
+/**
+ * The read an exporter runs against `sqlite_master` (#2820), and `dumpObjectsOf` what it keeps of
+ * the rows: each module table's own indexes and triggers. An autoindex has no `sql` and is SQLite's
+ * to rebuild; a spine table's come from the kernel's DDL, so a spine table carries no `objects`.
+ */
+export const DUMP_OBJECTS_QUERY = `SELECT type, name, tbl_name, sql FROM sqlite_master
+  WHERE type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY name`;
+export type DumpObjectRow = { type: string; name: string; tbl_name: string; sql: string };
+
+/** A dumped table's `objects` field, by table name: `[]` for a module table with none. */
+export function dumpObjectsOf(rows: readonly DumpObjectRow[]): (table: string) => { objects?: ScopeDumpObject[] } {
+  const byTable = new Map<string, ScopeDumpObject[]>();
+  for (const { type, name, tbl_name, sql } of rows) {
+    if ((type !== 'index' && type !== 'trigger') || isReservedObjectName(name) || isReservedObjectName(tbl_name)) continue;
+    const key = tbl_name.toLowerCase();
+    byTable.set(key, [...(byTable.get(key) ?? []), { type, name, ddl: sql }]);
+  }
+  return (table) => (namesSpineTable(table) ? {} : { objects: byTable.get(table.toLowerCase()) ?? [] });
+}
+
+/** Judge every object a dump carries; throws on the first one that must refuse the dump. */
+export function dumpObjectsPlan(tables: readonly ReplayableTable[]): DumpObjectsPlan {
+  // Judged per table: a table without `objects` is one whose objects are not known (a dump from
+  // before them, or a table added to an export by hand, as a targeted repair supplies it), and a
+  // restore puts none back for it, as it did before. `[]` is a table that has none.
+  const names = new Set(tables.map((t) => t.name.toLowerCase()));
+  const replay: (ScopeDumpObject & { table: string })[] = [];
+  const skipped: string[] = [];
+  let carried: number | null = null;
+  for (const t of tables) {
+    if (t.objects === undefined) continue;
+    carried = (carried ?? 0) + t.objects.length;
+    for (const o of t.objects) {
+      if (objectVerdict(o, t.name, names) === 'replay') replay.push({ ...o, table: t.name });
+      else skipped.push(o.name);
+    }
+  }
+  return { replay, skipped, carried };
+}
+
+/**
+ * What a restore's admin row records about the objects its load judged (#2820), and what a load
+ * answers with. An answer without it (a host or deployment from before objects) put none back:
+ * `MODULE_OBJECTS_NOT_CARRIED`.
+ */
+export const moduleObjectsRecord = z.object({
+  carried: z.union([z.number().int().nonnegative(), z.literal('not carried')]),
+  skipped: z.array(z.string()),
+});
+export type ModuleObjectsRecord = z.infer<typeof moduleObjectsRecord>;
+export const MODULE_OBJECTS_NOT_CARRIED: ModuleObjectsRecord = { carried: 'not carried', skipped: [] };
+
+export function dumpObjectsAudit(plan: DumpObjectsPlan): ModuleObjectsRecord {
+  return { carried: plan.carried ?? 'not carried', skipped: [...plan.skipped] };
+}
+
+/**
+ * Put a plan's objects back, inside the load's transaction, after the rows. A unique index the
+ * dump's own rows break is refused in a sentence; the load rolls back with it.
+ */
+export function replayDumpObjects(plan: DumpObjectsPlan, run: (ddl: string) => void): void {
+  for (const o of plan.replay) {
+    try {
+      run(o.ddl);
+    } catch (e) {
+      throw new Error(
+        `refusing this dump: the ${o.type} ${JSON.stringify(o.name)} on table ${JSON.stringify(o.table)} could not be put ` +
+          `back over the dump's own rows (${e instanceof Error ? e.message : String(e)}). Nothing was changed.`,
+      );
+    }
+  }
+}
+
+const RAISE_ACTIONS = new Set(['abort', 'fail', 'rollback']);
+const TRIGGER_BODY_VERBS = new Set(['select', 'insert', 'update', 'delete', 'replace', 'with', 'values']);
+
+function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): 'replay' | 'skip' {
+  const refuse = (why: string): never => {
+    throw new Error(
+      `refusing this dump: the ${o.type} ${JSON.stringify(o.name)} on table ${JSON.stringify(table)} ${why}. ` +
+        'A dumped index or trigger is one statement on its own module table; one that is not is corrupt or ' +
+        'crafted, and the dump is not loaded. Nothing was changed.',
+    );
+  };
+  if (namesSpineTable(table)) refuse('is filed under a platform table, whose indexes and triggers the kernel builds');
+  if (isReservedObjectName(o.name)) refuse('has a reserved name');
+  // Not judged further, and never run: a kind this reader does not know, a name it would not read
+  // back out of its own export, or text its tokenizer would read differently from SQLite.
+  if ((o.type !== 'index' && o.type !== 'trigger') || !SQL_IDENTIFIER.test(o.name) || hasBareNonAscii(o.ddl)) return 'skip';
+
+  const tokens = tokenizeSql(o.ddl, { punctuation: true });
+  while (tokens.length && isPunct(tokens[tokens.length - 1], ';')) tokens.pop();
+  let i = 0;
+  const kw = (word: string): boolean => {
+    if (!isWord(tokens[i], word)) return false;
+    i += 1;
+    return true;
+  };
+  const expect = (word: string): void => {
+    if (!kw(word)) refuse(`does not read as \`CREATE ${o.type.toUpperCase()}\` in the shape a dump carries`);
+  };
+  // A name as written, or, where SQLite's grammar takes one (`main`), qualified with `main.`,
+  // which SQLite keeps as written: an index's or a trigger's own name, and a trigger's table.
+  const named = (want: string, what: string, qualifiable: boolean): void => {
+    const parts = tokens[i]?.punct ? undefined : tokens[i]?.parts;
+    const [schema, name] = parts?.length === 2 && qualifiable ? parts : [undefined, parts?.length === 1 ? parts[0] : undefined];
+    if (name?.toLowerCase() !== want.toLowerCase() || (schema !== undefined && schema.toLowerCase() !== 'main')) {
+      refuse(`names another ${what} in its own text`);
+    }
+    i += 1;
+  };
+  expect('create');
+  if (o.type === 'index') kw('unique');
+  expect(o.type);
+  if (kw('if')) {
+    expect('not');
+    expect('exists');
+  }
+  named(o.name, 'name', true);
+  let guard = true;
+  if (o.type === 'index') {
+    expect('on');
+    named(table, 'table', false);
+    if (!isPunct(tokens[i], '(')) refuse('has no column list');
+    if (tokens.some((t) => isPunct(t, ';'))) refuse('carries more than one statement');
+  } else {
+    if (!kw('before')) kw('after');
+    if (kw('update')) {
+      // `UPDATE OF a, b`: past each column name and the comma after it.
+      if (kw('of')) for (i += 1; isPunct(tokens[i], ','); i += 2);
+    } else if (!kw('insert') && !kw('delete')) refuse('fires on no INSERT, UPDATE or DELETE');
+    expect('on');
+    named(table, 'table', true);
+    if (kw('for')) {
+      expect('each');
+      expect('row');
+    }
+    const begin = tokens.findIndex((t, k) => k >= i && isWord(t, 'begin'));
+    if (begin < 0 || !isWord(tokens[tokens.length - 1], 'end')) refuse('does not end with the END of its one BEGIN … END body');
+    const when = tokens.slice(i, begin);
+    if (when.some((t) => isPunct(t, ';'))) refuse('carries more than one statement');
+    const statements: SqlToken[][] = [[]];
+    for (const t of tokens.slice(begin + 1, -1)) {
+      if (isPunct(t, ';')) statements.push([]);
+      else statements[statements.length - 1]!.push(t);
+    }
+    // Every body statement ends in `;`, so what follows the last one is empty.
+    if (statements.pop()!.length !== 0 || statements.length === 0) refuse('has a body SQLite would not accept');
+    for (const s of statements) {
+      if (!TRIGGER_BODY_VERBS.has(s[0] && !s[0].quoted && !s[0].punct ? s[0].text.toLowerCase() : '')) refuse('carries more than one statement');
+    }
+    guard = !readsRows(when) && statements.every(isGuard);
+  }
+  if (!guard || names.has(o.name.toLowerCase())) return 'skip';
+  names.add(o.name.toLowerCase());
+  return 'replay';
+}
+
+/**
+ * `SELECT RAISE(<action>, '<literal>') [WHERE …]`, or the same RAISE as the one result of
+ * `SELECT CASE WHEN … THEN … END [WHERE …]`, reading no other row: refuses, writes nothing.
+ */
+function isGuard(s: readonly SqlToken[]): boolean {
+  if (!isWord(s[0], 'select') || readsRows(s.slice(1))) return false;
+  let k = 1;
+  if (isWord(s[1], 'case') && isWord(s[2], 'when')) {
+    k = s.findIndex((t) => isWord(t, 'then')) + 1;
+    if (k === 0) return false;
+  }
+  k = raiseEnd(s, k);
+  if (k < 0) return false;
+  if (isWord(s[1], 'case')) {
+    if (!isWord(s[k], 'end')) return false;
+    k += 1;
+  }
+  return k === s.length || isWord(s[k], 'where');
+}
+
+/** Past `RAISE(ABORT|FAIL|ROLLBACK, '<one string literal>')` at `k`, or -1. */
+function raiseEnd(s: readonly SqlToken[], k: number): number {
+  const action = s[k + 2];
+  const ok =
+    isWord(s[k], 'raise') && isPunct(s[k + 1], '(') && !!action && !action.quoted && !action.punct &&
+    RAISE_ACTIONS.has(action.text.toLowerCase()) && isPunct(s[k + 3], ',') && s[k + 4]?.quote === "'" && isPunct(s[k + 5], ')');
+  return ok ? k + 6 : -1;
+}
+
+/**
+ * A read of rows beyond the one the trigger fired for: a subquery, a CTE, an IN over a table. A FROM
+ * needs no rule of its own: in a guard it can only follow a SELECT, or a RAISE whose shape ends it.
+ */
+function readsRows(tokens: readonly SqlToken[]): boolean {
+  return tokens.some((t, k) => isWord(t, 'select') || isWord(t, 'with') || (isWord(t, 'in') && !isPunct(tokens[k + 1], '(')));
+}
+
+/**
+ * A character outside ASCII that is not inside a string, a quoted name or a comment. SQLite reads
+ * one as part of an identifier, and the shared tokenizer does not, so such text is never judged.
+ */
+function hasBareNonAscii(sql: string): boolean {
+  for (let i = 0; i < sql.length; i += 1) {
+    const c = sql[i]!;
+    if (c === '-' && sql[i + 1] === '-') {
+      while (i < sql.length && sql[i] !== '\n') i += 1;
+    } else if (c === '/' && sql[i + 1] === '*') {
+      i += 2;
+      while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
+      i += 1;
+    } else if (c === "'" || c === '"' || c === '`' || c === '[') {
+      const close = c === '[' ? ']' : c;
+      for (i += 1; i < sql.length && sql[i] !== close; i += 1);
+    } else if (c.charCodeAt(0) > 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isWord(t: SqlToken | undefined, word: string): boolean {
+  return !!t && !t.quoted && !t.punct && t.text.toLowerCase() === word;
+}
+
+function isPunct(t: SqlToken | undefined, p: string): boolean {
+  return !!t?.punct && t.text === p;
 }

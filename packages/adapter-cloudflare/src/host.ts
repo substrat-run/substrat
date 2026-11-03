@@ -272,6 +272,8 @@ import {
   outboundOfManifestJson,
   SCOPE_GATE_REASONS,
   substratError,
+  MODULE_OBJECTS_NOT_CARRIED,
+  type ModuleObjectsRecord,
   errorCodeOf,
   redrainEventsInput,
   coverage,
@@ -2087,7 +2089,7 @@ interface ScopeStubRpc {
   ): Promise<
     | { refused: 'changed' | 'kept' | 'lapsed' }
     | { refused: 'tenant' | 'roles'; message: string }
-    | { refused: false; switchedOff: SwitchedOff[]; rolesProjected?: true }
+    | { refused: false; switchedOff: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord }
   >;
   /** #2531: `importDumpChecked` with the role repair judged and projected in the load's transaction. */
   importDumpJudged(
@@ -2102,7 +2104,7 @@ interface ScopeStubRpc {
     destScopeId: ScopeId,
     opts: { switchOff?: RecordedOffCarry & { at: string }; sourceScopeId?: ScopeId; exact?: boolean },
     projection: LoadProjection | null,
-  ): Promise<DoReply<{ switchedOff: SwitchedOff[] } | { refusedRoles: string }>>;
+  ): Promise<DoReply<{ switchedOff: SwitchedOff[]; moduleObjects?: ModuleObjectsRecord } | { refusedRoles: string }>>;
   /** #2531: `commitStagedDumpChecked` with the role repair in the load's transaction. */
   commitStagedDumpJudged(
     stageId: string,
@@ -4132,7 +4134,7 @@ export class CloudflareScopeHost implements ScopeHost {
        *  `projectRolesLocal` left to call. */
       roles?: RoleDefinition[];
     },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord }> {
     const out = await this.loadLocal(scopeId, opts, (load, repair) =>
       repair ? this.scopeStub(scopeId).importDumpJudged(tables, scopeId, load, repair) : this.scopeStub(scopeId).importDumpChecked(tables, scopeId, load),
     );
@@ -4194,7 +4196,7 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     stageId: string,
     opts?: Parameters<CloudflareScopeHost['restoreScopeLocal']>[2],
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord }> {
     return this.loadLocal(scopeId, opts, (load, repair) =>
       repair
         ? this.scopeStub(scopeId).commitStagedDumpJudged(stageId, scopeId, load, repair)
@@ -4215,7 +4217,7 @@ export class CloudflareScopeHost implements ScopeHost {
       load: Parameters<ScopeStubRpc['importDumpChecked']>[2],
       repair: LoadRoleRepair | undefined,
     ) => Promise<Awaited<ReturnType<ScopeStubRpc['importDumpChecked']>> & { tables?: number }>,
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
     if (opts?.roles && !opts.tenantId) {
       throw substratError('validation_failed', 'restore refused: a role repair needs the tenant it is projected for; nothing was loaded');
@@ -4249,6 +4251,7 @@ export class CloudflareScopeHost implements ScopeHost {
         ...(carry ? { switchedOff: out.switchedOff } : {}),
         // Only a load that ran the judged method can say the repair landed in it.
         ...(repair && out.rolesProjected === true ? { rolesProjected: true as const } : {}),
+        ...(out.moduleObjects ? { moduleObjects: out.moduleObjects } : {}),
       };
     }
     if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
@@ -5586,7 +5589,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const ownStore = this.cpLess || existing.vertical === null;
     const replayAt = new Date().toISOString();
     const carry = ownStore ? await this.recordedOffCarry(tenantId, scopeId, replayAt) : undefined;
-    const switchedOff = await this.loadProjected(
+    const { switchedOff, moduleObjects } = await this.loadProjected(
       scopeId,
       dump.tables,
       { switchOff: carry ? { at: replayAt, ...carry } : undefined, sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId) },
@@ -5613,6 +5616,9 @@ export class CloudflareScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
+        // #2820: only where this load IS the scope's store. A hosted scope is loaded again in its
+        // deployment after this row is written, so what this copy took would say nothing true there.
+        ...(ownStore ? { moduleObjects } : {}),
         ...replay,
         ...(reprojected ? { reprojected } : {}),
       },
@@ -12532,9 +12538,10 @@ export class CloudflareScopeHost implements ScopeHost {
     opts: Parameters<ScopeStubRpc['importDumpProjected']>[2],
     projection: LoadProjection | null,
     verb: 'restore' | 'import',
-  ): Promise<SwitchedOff[]> {
+  ): Promise<{ switchedOff: SwitchedOff[]; moduleObjects: ModuleObjectsRecord }> {
     const loaded = unwrapReply(await this.scopeStub(scopeId).importDumpProjected(tables, scopeId, opts, projection));
-    if ('switchedOff' in loaded) return loaded.switchedOff;
+    // #2820: what the load did with the dump's own objects; a store that does not say put none back.
+    if ('switchedOff' in loaded) return { switchedOff: loaded.switchedOff, moduleObjects: loaded.moduleObjects ?? MODULE_OBJECTS_NOT_CARRIED };
     const refused = substratError('forbidden', `${verb} refused: ${loaded.refusedRoles}`);
     loadRoleRefusals.add(refused);
     throw refused;

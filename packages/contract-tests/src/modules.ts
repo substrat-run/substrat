@@ -43,6 +43,7 @@ import { bindMod } from './bind-module.js';
 import { uploadLinkMod } from './upload-link-module.js';
 import { manyMigrationsMod } from './many-migrations.js';
 import { commentedDdlMod } from './migration-comments.js';
+import { moduleObjectsMod } from './module-objects.js';
 import { fenceDeclaredMod, fenceReusedRightMod, fenceReusedWrongMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 import {
   assertAllowed,
@@ -3166,6 +3167,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #2068 r5: a module whose migrations comment their DDL and then drop the last column. Every
   // scope in the kit migrates it, so a regression fails loudly everywhere.
   commentedDdlMod,
+  // #2820: a module's own index and triggers across a restore. Inert for every other suite — only
+  // `moduleObjectsContractSuite` grants its entitlement.
+  moduleObjectsMod,
   // #2553: a module with more migrations than the applied-migrations read once capped at. Every
   // scope in the kit carries it, so the #1236 case reads back over 100 rows on every adapter.
   manyMigrationsMod,

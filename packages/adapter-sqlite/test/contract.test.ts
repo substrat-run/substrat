@@ -74,6 +74,7 @@ import {
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
+  moduleObjectsContractSuite,
   manyMigrationsContractSuite,
   overCapMigrationsContractSuite,
   migrationFenceContractSuite,
@@ -1145,6 +1146,23 @@ bindingInviteContractSuite(
     statement.run(...params);
     return [];
   },
+);
+
+// #2820: a module's own index and triggers across a restore.
+moduleObjectsContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-objects-'));
+    const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  { audited: true },
 );
 
 // #2068 r5: commented migration DDL, then a DROP COLUMN of the last column.

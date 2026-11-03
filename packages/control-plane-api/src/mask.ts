@@ -120,7 +120,9 @@ export async function maskDump(
   const values = new Set<string>();
   sweepTables(tables, collector(values));
   await mask.prepare(values);
-  return sweepTables(tables, (kind, original) => mask.valueFor(kind, original));
+  // #2820: a masked dump carries no module indexes or triggers. Masked values collide (a constant
+  // for free text, a short list of names), so a unique index over them would refuse the load.
+  return sweepTables(tables, (kind, original) => mask.valueFor(kind, original)).map(({ objects: _, ...t }) => t);
 }
 
 /**
