@@ -436,6 +436,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     it("polls every binding of the scope, the tenant's and its own, records each, and refuses a second ask inside a minute", async () => {
       const { tenants, ofA } = await boundWorld();
       const options = syncing(recording({ outcome: 'landed', pending: true, errors: [] }));
+      // Just now on the shared connection: the platform's pass and another scope's poll. Neither is a's.
+      await host.admin.recordSweepRun({ kind: 'connector', unit: tenants, outcome: 'ok', tenantId: t, connectionId: tenants });
+      await host.admin.recordSweepRun({ kind: 'connector', unit: tenants, outcome: 'ok', tenantId: t, scopeId: b, connectionId: tenants });
 
       const { bindings } = await syncA(options);
 
@@ -458,9 +461,13 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
 
       expect(bindings).toEqual(expect.arrayContaining([expect.objectContaining({ connectionId: ofA, outcome: 'failed', error: expect.stringMatching(/^the binding did not land \(reference \w+\)$/) })]));
       expect(JSON.stringify(bindings)).not.toContain('0000000000');
-      const reference = /reference (\w+)/.exec(bindings[0]!.error!)![1];
+      const failed = bindings.find((x) => x.connectionId === ofA)!;
+      const reference = /reference (\w+)/.exec(failed.error!)![1];
       const staff = await host.admin.listOpsFailures(relayActor, { reference });
       expect(staff).toEqual([expect.objectContaining({ tenantId: null, message: expect.stringContaining(RAW) })]);
+      // The tenant-readable sweep row says exactly what the answer did.
+      const [row] = await host.admin.listSweepRuns(relayActor, { kind: 'connector', unit: ofA, scopeId: a, limit: 1 });
+      expect([row?.outcome, row?.error]).toEqual(['failed', failed.error]);
     });
 
     it('refuses an unproven caller and a provider with no scope poll, and answers a provider the scope has no binding of with none', async () => {
@@ -471,6 +478,11 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       expect(await refusal(syncA(options, 'scrive'))).toBe(501);
       expect(await syncA(options, 'fortnox')).toEqual({ bindings: [] });
       expect(polled).toEqual([]);
+
+      // A binding another poll holds: answered in progress, nothing recorded, so asking again is not refused.
+      const busy = await syncA(syncing(recording({ outcome: 'in-progress', pending: false, errors: [] })));
+      expect(busy.bindings.map((x) => x.outcome)).toEqual(['in-progress', 'in-progress']);
+      expect(await host.admin.listSweepRuns(relayActor, { kind: 'connector', scopeId: a })).toEqual([]);
     });
   });
 

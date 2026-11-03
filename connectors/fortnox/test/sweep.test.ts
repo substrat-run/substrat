@@ -306,6 +306,21 @@ describe('fortnox connector — inbound sync', () => {
     expect(fortnox.calls.some((c) => c.includes('supplierinvoices'))).toBe(false);
   });
 
+  it('skips a binding another poll holds, in a pass and on request, and takes over a lease that expired (#2672)', async () => {
+    await bind();
+    const lease = (untilMs: number) => host.admin.putConnectorState(connId, `fortnox:lease:${s}`, { token: 'another poll', until: new Date(untilMs).toISOString() });
+    await lease(Date.now() + 60_000);
+
+    const pass = await sweepFortnoxLedger(host, connId, options());
+    const asked = await pollFortnoxScope(host, connId, s, options());
+
+    expect([pass.found, pass.busy, pass.unchanged, asked.outcome, landed.length]).toEqual([1, [s], 0, 'in-progress', 0]);
+    await lease(Date.now() - 1);
+    expect((await pollFortnoxScope(host, connId, s, options())).outcome).toBe('landed');
+    // Given back once done, so the next pass polls it.
+    expect(await host.admin.getConnectorState(connId, `fortnox:lease:${s}`)).toBeNull();
+  });
+
   it('refuses to turn an invoice binding into a ledger one', async () => {
     await bindInvoices();
     await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');

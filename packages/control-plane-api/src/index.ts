@@ -24,6 +24,7 @@ export {
   relayConnectionBindings,
   relayConnectionSync,
   relayConnectionUnbind,
+  SYNC_OPERATION_PREFIX,
   type ConnectionBindingRelayOptions,
   type ConnectionSyncRelayOptions,
   type ScopeSync,

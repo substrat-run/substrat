@@ -263,8 +263,8 @@ export async function relayConnectionBindings(
 
 /** What a provider's scope poll did for the binding it was handed. */
 export interface ScopeSyncResult {
-  /** `not-bound` when the binding was gone by the time the poll read it. */
-  outcome: 'landed' | 'unchanged' | 'failed' | 'not-bound';
+  /** `not-bound` when the binding was gone by the time the poll read it; `in-progress` when another poll of it was running, so nothing ran. */
+  outcome: 'landed' | 'unchanged' | 'failed' | 'not-bound' | 'in-progress';
   pending: boolean;
   /** On `failed`, the connector's own words: staff's ledger row, never the answer. */
   errors: string[];
@@ -272,6 +272,12 @@ export interface ScopeSyncResult {
 
 /** Poll ONE scope's binding on a connection, inside the same budget and deadline a sweep pass has. */
 export type ScopeSync = (host: ScopeHost, connection: Connection, scopeId: Scope['id']) => Promise<ScopeSyncResult>;
+
+/**
+ * The operation a requested poll's sweep row carries (`sync.connector:<provider>`). Such a row is
+ * written between passes, so it is not a pass's mark: the staff digest's watermark skips it.
+ */
+export const SYNC_OPERATION_PREFIX = 'sync.connector:';
 
 /** The least time between two polls of one binding through the sync relay. */
 const SYNC_MIN_INTERVAL_MS = 60_000;
@@ -310,18 +316,23 @@ export async function relayConnectionSync(
   const now = Date.now();
   for (const connection of bound) {
     const [last] = await host.admin.listSweepRuns(actor, { kind: 'connector', unit: connection.id, scopeId: scope.id, limit: 1 });
-    const since = last ? now - Date.parse(last.at) : Infinity;
+    const since = last ? Math.max(0, now - Date.parse(last.at)) : Infinity;
     if (since < SYNC_MIN_INTERVAL_MS) {
       throw new ConnectionRelayError(`connection ${connection.id} was polled for this scope ${Math.ceil(since / 1000)} s ago; ask again in ${Math.ceil((SYNC_MIN_INTERVAL_MS - since) / 1000)} s`, 429);
     }
   }
-  const operation = `sync.connector:${input.provider}`;
+  const operation = `${SYNC_OPERATION_PREFIX}${input.provider}`;
   const bindings: z.input<typeof connectionSyncResult>['bindings'] = [];
   // One at a time: the bindings share the provider's rate limit.
   for (const connection of bound) {
     const started = Date.now();
     const result = await sync(host, connection, scope.id).catch((err: unknown): ScopeSyncResult => ({ outcome: 'failed', pending: false, errors: [said(err)] }));
     if (result.outcome === 'not-bound') continue;
+    if (result.outcome === 'in-progress') {
+      // Nothing ran, so nothing is recorded: the poll holding the binding records its own.
+      bindings.push({ connectionId: connection.id, outcome: 'in-progress', at: new Date().toISOString(), pending: false });
+      continue;
+    }
     let error: string | undefined;
     if (result.outcome === 'failed') {
       const reference = ulid();
@@ -331,7 +342,8 @@ export async function relayConnectionSync(
           actor,
           ...withheldStaffFailure({ operation, stage: 'sweep', vertical: scope.vertical }, result.errors.join('; '), reference, `connection ${connection.id} of tenant ${scope.tenantId}: `),
         })
-        .catch(() => undefined);
+        // The row is the text's only copy: say which reference lost it, never the text.
+        .catch((err: unknown) => console.error('sync-failure record failed', { reference, error: said(err) }));
     }
     const at = new Date().toISOString();
     // The record never sinks the answer: the poll already happened.

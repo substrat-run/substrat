@@ -1686,8 +1686,12 @@ export type ConnectionSyncRequest = z.infer<typeof connectionSyncRequest>;
 export const connectionSyncOutcome = z
   .object({
     connectionId,
-    /** `landed`: something changed and landed; `unchanged`: nothing to land; `failed`: see `error`. */
-    outcome: z.enum(['landed', 'unchanged', 'failed']),
+    /**
+     * `landed`: something changed and landed; `unchanged`: nothing to land; `failed`: see `error`;
+     * `in-progress`: another poll of the binding (the platform's pass, or an earlier ask) was running, so
+     * nothing ran and nothing was recorded.
+     */
+    outcome: z.enum(['landed', 'unchanged', 'failed', 'in-progress']),
     /** When the poll finished. */
     at: instant,
     /** True when the pass's budget or deadline left work for a later poll; what did land stays. */
