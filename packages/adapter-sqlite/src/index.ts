@@ -11248,6 +11248,8 @@ export class SqliteScopeHost implements ScopeHost {
           )(),
         );
         // Deleting a tenant's events is a mutation, so it is audited, and only when something went.
+        // Written after the delete, with no intent row: a lost answer or a failed write leaves a
+        // deletion unrecorded, accepted because the rows are already in the lake and a rerun is a no-op.
         if (pruned > 0) {
           this.recordAdmin(actor, 'pruneEvents', { tenantId, scopeId }, null, {
             pruned,

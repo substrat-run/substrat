@@ -62,8 +62,10 @@ export function outboxSubscribersOf(
 
 /**
  * Whether this is the scope's hour to start a prune lap: one UTC hour a day, spread across the
- * fleet by the scope id. A lap that stopped at a cap continues on every pass regardless, so a
- * backlog drains at the sweep's cadence and only a scope that is caught up waits for its hour.
+ * fleet by the scope id. A lap that finishes inside that hour lets the next pass start another,
+ * so a small scope runs up to about four laps a day at a 15-minute sweep. A lap that stopped at a
+ * cap continues on every pass regardless, so a backlog drains at the sweep's cadence and only a
+ * scope that is caught up waits for its hour.
  */
 export function outboxPruneDue(scopeId: string, nowMs: number): boolean {
   let h = 2166136261;

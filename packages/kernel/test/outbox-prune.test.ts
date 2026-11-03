@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { ENTITY_STATE_MOVE_TYPES } from '@substrat-run/contracts';
 import { describe, expect, it } from 'vitest';
-import { OUTBOX_PRUNED_DDL, pruneDrainedOutbox, walkCursorAt, walkCursorPastFloor, WatermarkPruned, type OutboxPruneInput } from '../src/outbox-prune.js';
+import { OUTBOX_PRUNED_DDL, outboxPruneDue, pruneDrainedOutbox, walkCursorAt, walkCursorPastFloor, WatermarkPruned, type OutboxPruneInput } from '../src/outbox-prune.js';
 import { COPY_ORIGIN_DDL } from '../src/scope-copy.js';
 import type { SwitchSql } from '../src/system-switch.js';
 
@@ -137,6 +137,14 @@ describe('pruneDrainedOutbox (#1334)', () => {
     expect(pass(false)).toBe(1); // and continues to E06
     expect(ids(s.db)).toEqual(['E01', 'E02', 'E03', 'E09']);
   });
+});
+
+it("starts a lap only in the scope's own UTC hour", () => {
+  // Pinned literally: a flipped comparison would start a lap in 23 hours of 24.
+  const scope = '01JZ0000000000000000SCOPE1';
+  expect(outboxPruneDue(scope, Date.UTC(2026, 10, 3, 1, 30))).toBe(true);
+  expect(outboxPruneDue(scope, Date.UTC(2026, 10, 3, 2, 30))).toBe(false);
+  expect(outboxPruneDue(scope, Date.UTC(2026, 10, 3, 0, 30))).toBe(false);
 });
 
 describe('scope walk cursors against the pruned floor (#1334)', () => {
