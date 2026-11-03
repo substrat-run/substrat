@@ -6,9 +6,6 @@ import { timelineOf } from '../lib/builder-turn';
 
 const PAGE = 25;
 
-/** The builder's gates, in the order a turn runs them (builder-workspace's GateName). */
-const GATES = ['install', 'model', 'model-emit', 'typecheck', 'boundary-lint', 'permissions', 'api', 'scenario', 'migration-replay'];
-
 const OUTCOME_BADGE: Record<BuilderTurnOutcome, 'success' | 'danger' | 'warning' | 'neutral'> = {
   done: 'success',
   error: 'danger',
@@ -95,6 +92,7 @@ export function BuilderTurns({ api, tenants }: BuilderTurnsProps) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string>();
   const [error, setError] = useState<string>();
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const [tenantFilter, setTenantFilter] = useState('all');
   const [outcomeFilter, setOutcomeFilter] = useState<'all' | BuilderTurnOutcome>('all');
@@ -135,13 +133,26 @@ export function BuilderTurns({ api, tenants }: BuilderTurnsProps) {
   }, [api, tenantFilter, outcomeFilter, gateFilter, troubled]);
 
   async function loadOlder() {
-    if (!cursor) return;
+    // One older page at a time: a second click on the same cursor would append it twice.
+    if (!cursor || loadingOlder) return;
     const at = generation.current;
-    const page = await api.listBuilderTurns({ limit: PAGE, cursor, ...filter });
-    if (at !== generation.current) return;
-    setEntries((prev) => [...prev, ...page.entries]);
-    setCursor(page.nextCursor);
+    setLoadingOlder(true);
+    try {
+      const page = await api.listBuilderTurns({ limit: PAGE, cursor, ...filter });
+      if (at !== generation.current) return;
+      setEntries((prev) => [...prev, ...page.entries]);
+      setCursor(page.nextCursor);
+      setError(undefined);
+    } catch (e) {
+      if (at === generation.current) setError((e as Error).message);
+    } finally {
+      setLoadingOlder(false);
+    }
   }
+
+  // The gates offered are the ones the turns name, never a copy of the builder's list that drifts
+  // when a gate is added; the chosen one stays offered when a filter leaves no row naming it.
+  const gates = [...new Set([...entries.flatMap((t) => t.redGates.map((g) => g.name)), ...(gateFilter === 'all' ? [] : [gateFilter])])].sort();
 
   const th: React.CSSProperties = {
     textAlign: 'left',
@@ -194,7 +205,7 @@ export function BuilderTurns({ api, tenants }: BuilderTurnsProps) {
           style={{ width: 140 }}
         />
         <Select
-          options={[{ value: 'all', label: 'Any red gate' }, ...GATES.map((g) => ({ value: g, label: g }))]}
+          options={[{ value: 'all', label: 'Any red gate' }, ...gates.map((g) => ({ value: g, label: g }))]}
           value={gateFilter}
           onChange={(e) => setGateFilter(e.target.value)}
           style={{ width: 160 }}
@@ -302,8 +313,8 @@ export function BuilderTurns({ api, tenants }: BuilderTurnsProps) {
         </table>
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>
-              Load older turns
+            <Button variant="ghost" size="sm" disabled={loadingOlder} onClick={() => void loadOlder()}>
+              {loadingOlder ? 'Loading…' : 'Load older turns'}
             </Button>
           </div>
         )}

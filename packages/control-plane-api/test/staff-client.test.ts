@@ -110,6 +110,8 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   adminLog: [(c) => c.adminLog({ action: ['tenant.create', 'scope.reap'] as never, actor: 'x' }), 'GET', '/admin-log?action=tenant.create&action=scope.reap&actor=x'],
   listOpsFailures: [(c) => c.listOpsFailures({ reference: 'r1' }), 'GET', '/ops-failures?reference=r1'],
   listSweepRuns: [(c) => c.listSweepRuns({ kind: 'connection' as never, outcome: 'failed' }), 'GET', '/sweep-runs?kind=connection&outcome=failed'],
+  listBuilderTurns: [(c) => c.listBuilderTurns({ troubled: true, redGate: 'model-emit' }), 'GET', '/builder-turns?troubled=true&redGate=model-emit'],
+  getBuilderTurn: [(c) => c.getBuilderTurn('a/b'), 'GET', '/builder-turns/a%2Fb'],
   listSystemSwitches: [(c) => c.listSystemSwitches({ position: 'all' }), 'GET', '/system-switches?position=all'],
   listConnectionHealth: [(c) => c.listConnectionHealth({ q: 'a b' }), 'GET', '/connections/health?q=a+b'],
   connectorCalls: [(c) => c.connectorCalls({ hours: 24, provider: 'scrive' }), 'GET', '/connections/calls?hours=24&provider=scrive'],
