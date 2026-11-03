@@ -8131,11 +8131,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if ((await isCarriedAway(live, scope)) || (await live.keptCopy(scopeId))) {
       return refuse(c, 'conflict', `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved`);
     }
-    const dump = await retryTransient(() => holder.exportScope(scopeId));
-    // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
-    // re-assert) cannot leave the receipt set over older data.
-    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
+    // #2450: a page at a time into the live store's stage, so a kept copy of any size goes forward.
+    // Unstamped: the kept copy is only read. A write it takes meanwhile is caught up on through the
+    // copy's capture, and one after the copy moves its revision, which the discard below is fenced on.
+    const { dump } = await transferScope(holder, live, { from: scopeId }, { retry: retryTransient, stamp: false });
     try {
+      // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
+      // re-assert) cannot leave the receipt set over older data.
+      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
       const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
         scopeId,
         exact: true,
@@ -8146,6 +8149,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     } catch (e) {
       // And on a failure, for a sweep reconcile that wrote the receipt after the clear above.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
+      // A stage the refused load left at the live store goes now rather than waiting for a wipe.
+      if (!Array.isArray(dump)) await abandonCopy({ dest: live }, { from: scopeId, into: scopeId, stageId: dump.stageId });
       throw e;
     }
     // #2185: the kept copy is an older store's data, which may predate a reconcile the live store
