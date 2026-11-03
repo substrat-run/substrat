@@ -575,6 +575,7 @@ export const INDEX_VALUE_EXPORTS = [
   'orgChangeBound',
   'orphanSweepLicensedAt',
   'orphanSweepVersionRefusal',
+  'outboxSubscribersOf',
   'parseValidationRecords',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
   'peerCallerAt',
@@ -598,6 +599,7 @@ export const INDEX_VALUE_EXPORTS = [
   'provisionedVersionsParams',
   'pruneDrainedOutbox',
   'pruneFindings',
+  'pruneInputOf',
   'pruneMeterDayRows',
   'pruneRequestDayRows',
   'pruneScopeStorageRows',
