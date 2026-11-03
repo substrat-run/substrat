@@ -1568,15 +1568,19 @@ async function takePollLease(host: ScopeHost, connectionId: ConnectionId, scopeI
 /**
  * `fetch`, renewing the lease while the poll still asks Fortnox, so a slow poll (the ledger has no
  * deadline of its own) keeps it. Every request is a step boundary; a lease another poll took over is
- * left alone.
+ * left alone. A body read is not a boundary: one that streams longer than the lease can outlive it.
+ * Best effort, as the release: a renewal that fails leaves the lease to expire, never the request.
  */
 function leaseRenewing(host: ScopeHost, connectionId: ConnectionId, scopeId: string, token: string, fetch: FetchLike, now: () => number): FetchLike {
   let renewedAt = now();
+  const renew = async (at: number) => {
+    const held = (await host.admin.getConnectorState(connectionId, leaseKey(scopeId))) as FortnoxPollLease | null | undefined;
+    if (held?.token === token) await host.admin.putConnectorState(connectionId, leaseKey(scopeId), { token, until: new Date(at + POLL_LEASE_MS).toISOString() } satisfies FortnoxPollLease);
+  };
   return async (input, init) => {
     if (now() - renewedAt >= POLL_LEASE_MS / 3) {
       renewedAt = now();
-      const held = (await host.admin.getConnectorState(connectionId, leaseKey(scopeId))) as FortnoxPollLease | null | undefined;
-      if (held?.token === token) await host.admin.putConnectorState(connectionId, leaseKey(scopeId), { token, until: new Date(renewedAt + POLL_LEASE_MS).toISOString() } satisfies FortnoxPollLease);
+      await renew(renewedAt).catch(() => undefined);
     }
     return fetch(input, init);
   };
