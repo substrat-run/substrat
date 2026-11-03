@@ -458,6 +458,8 @@ import {
   type UndrainedEvents,
   type UndrainedRead,
   type OutboxSubscriber,
+  outboxSubscribersOf,
+  pruneInputOf,
   type SwitchOutcome,
   type SwitchedOff,
   type SystemSwitchReassert,
@@ -2199,7 +2201,7 @@ interface ScopeStubRpc {
   undrainedEventsRead(limit: number): Promise<UndrainedRead>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   /** #1334: the retention prune; executors are the coordinator's to name. */
-  pruneDrainedEvents(drainedBefore: string, limit: number, executors: readonly OutboxSubscriber[]): Promise<number>;
+  pruneDrainedEvents(drainedBefore: string, limit: number, executors: readonly OutboxSubscriber[], due?: boolean): Promise<number>;
   /** #1705: the producer's release, decided by the DO's own registered exports. */
   /** #2029: `door`, the consumer peer's door — pinned to its gate's instance, or held off. */
   exportedEventsRead(
@@ -2563,6 +2565,7 @@ export interface EventDrainDelegation {
     vertical: string;
     drainedBefore: string;
     limit: number;
+    due?: boolean;
   }): Promise<number | null>;
 }
 
@@ -4659,13 +4662,13 @@ export class CloudflareScopeHost implements ScopeHost {
    * The retention prune on this host's own scope (#1334) — the far end of the delegation's
    * `prune`. No audit here, as with the stamp: the platform's `pruneDrainedEvents` is the door.
    */
-  async pruneDrainedEventsLocal(scopeId: ScopeId, drainedBefore: string, limit: number): Promise<number> {
-    return this.scopeStub(scopeId).pruneDrainedEvents(drainedBefore, Math.min(Math.max(limit, 1), 1000), this.executorSubscribers());
+  async pruneDrainedEventsLocal(scopeId: ScopeId, drainedBefore: string, limit: number, due?: boolean): Promise<number> {
+    return this.scopeStub(scopeId).pruneDrainedEvents(drainedBefore, limit, this.executorSubscribers(), due);
   }
 
   /** The executors an outbox row waits on before it may be pruned (#1334); the DO adds its consumers. */
   private executorSubscribers(): OutboxSubscriber[] {
-    return [...this.executors].map(([id, e]) => ({ deliveryId: `executor:${id}`, eventType: e.eventType }));
+    return outboxSubscribersOf([], this.executors);
   }
 
   /**
@@ -9732,9 +9735,9 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         return drained;
       },
-      pruneDrainedEvents: async (actor, tenantId, scopeId, input): Promise<number | null> => {
+      pruneDrainedEvents: async (actor, tenantId, scopeId, raw): Promise<number | null> => {
+        const input = pruneInputOf(raw, new Date().toISOString());
         const record = await this.scopeRecordForRead(tenantId, scopeId);
-        const limit = Math.min(assertRowLimit('limit', input.limit), 1000);
         // Delegated on the stamp's rule: the rows live in the vertical's deployment.
         const pruned =
           this.eventDrainDelegation && record.vertical
@@ -9743,9 +9746,10 @@ export class CloudflareScopeHost implements ScopeHost {
                 scopeId,
                 vertical: record.vertical,
                 drainedBefore: input.drainedBefore,
-                limit,
+                limit: input.limit,
+                ...(input.due === undefined ? {} : { due: input.due }),
               })
-            : await this.scopeStub(scopeId).pruneDrainedEvents(input.drainedBefore, limit, this.executorSubscribers());
+            : await this.scopeStub(scopeId).pruneDrainedEvents(input.drainedBefore, input.limit, this.executorSubscribers(), input.due);
         // Deleting a tenant's events is a mutation, so it is audited, and only when something went.
         if (pruned !== null && pruned > 0) {
           await this.recordAdmin(actor, 'pruneEvents', { tenantId, scopeId }, null, {

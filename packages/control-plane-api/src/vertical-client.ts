@@ -2251,11 +2251,11 @@ export class VerticalClient {
    * went, or `null` when that deployment predates the route (404) or its adapter predates the
    * verb (501): it pruned nothing, and the pass skips it until it is redeployed.
    */
-  async pruneDrainedEvents(scopeId: ScopeId, drainedBefore: string, limit: number): Promise<number | null> {
+  async pruneDrainedEvents(scopeId: ScopeId, drainedBefore: string, limit: number, due?: boolean): Promise<number | null> {
     try {
       const answer = await this.postInternal<{ pruned: number }>(
         '/internal/prune-drained',
-        { scopeId, drainedBefore, limit },
+        { scopeId, drainedBefore, limit, ...(due === undefined ? {} : { due }) },
         'prune-drained',
       );
       return answer.pruned;

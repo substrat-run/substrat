@@ -45,7 +45,7 @@ import { backoffAt, fetchLikeOf, type FetchLike } from './connector-transport.js
 import { assertRowLimit, TELEMETRY_PRUNE_BATCH, type TelemetryPruneReport } from './retention.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
-import { OUTBOX_PRUNE_BATCH, OUTBOX_RETENTION_DAYS } from './outbox-prune.js';
+import { OUTBOX_PRUNE_BATCH, OUTBOX_RETENTION_DAYS, outboxPruneDue } from './outbox-prune.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
 import type { ScheduleSweepReport } from './schedule-state.js';
 import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-identity.js';
@@ -2126,8 +2126,12 @@ export async function runPlatformSweep(
       Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : EVENT_DRAIN_BATCH;
     // Retention (#1334): a row drained before this instant, and needed by nothing here, may go.
     // Pruned after the drain on every pass, whatever it shipped, because retention runs on time.
-    const retentionDays = options.outboxRetentionDays ?? OUTBOX_RETENTION_DAYS;
-    const drainedBefore = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+    // Normalized like the batch: a NaN, zero or negative window must neither sink the phase nor
+    // prune inside the retention the deployment meant to keep.
+    const days = options.outboxRetentionDays ?? OUTBOX_RETENTION_DAYS;
+    const retentionDays = Number.isFinite(days) && days >= 1 ? Math.floor(days) : OUTBOX_RETENTION_DAYS;
+    const sweptAt = Date.now();
+    const drainedBefore = new Date(sweptAt - retentionDays * 86_400_000).toISOString();
     const drainable = await listScopes({ status: 'active' });
     await mapBounded(drainable, concurrency, async (s) => {
       try {
@@ -2150,6 +2154,8 @@ export async function runPlatformSweep(
           const pruned = await host.admin.pruneDrainedEvents(options.actor, s.tenantId, s.id, {
             drainedBefore,
             limit: OUTBOX_PRUNE_BATCH,
+            // A new lap starts in the scope's hour; one a cap stopped continues every pass.
+            due: outboxPruneDue(s.id, sweptAt),
           });
           if (pruned === null) report.eventDrain!.pruneUnsupported = (report.eventDrain!.pruneUnsupported ?? 0) + 1;
           else if (pruned > 0) report.eventDrain!.pruned = (report.eventDrain!.pruned ?? 0) + pruned;

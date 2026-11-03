@@ -230,6 +230,7 @@ import type { SearchHit, SearchOptions } from './search-index.js';
 import type { GrantedEntitiesPage } from './grant-scoped-read.js';
 import type { EntityVersion } from './entity-version.js';
 import type { UndrainedEvents } from './outbox-event.js';
+import type { PruneDrainedEventsInput } from './outbox-prune.js';
 // Type-only, and the cycle it completes is therefore not one at runtime: `job-run.ts`
 // imports only types from here.
 import type {
@@ -3320,9 +3321,11 @@ export interface HostAdmin {
   ): Promise<number>;
 
   /**
-   * Delete up to `input.limit` outbox rows drained before `input.drainedBefore` that nothing in
-   * the scope still needs (#1334; the rule is `pruneDrainedOutbox`'s), with their delivery rows,
-   * and raise the floor a scope walk refuses to resume below. Returns how many rows went, or
+   * One prune pass (#1334; the rule is `pruneDrainedOutbox`'s): delete up to `input.limit`
+   * outbox rows drained before `input.drainedBefore` that nothing in the scope still needs, with
+   * their delivery rows, and raise the floor a scope walk refuses to resume below. A pass starts
+   * a new lap only when `due` (default true); one that a cap stopped continues regardless.
+   * A future `drainedBefore` is refused. Returns how many rows went, or
    * `null` when the deployment holding the scope predates the verb and pruned nothing.
    *
    * Admin-logged when it removes anything: deleting a tenant's events is a mutation, even of
@@ -3332,7 +3335,7 @@ export interface HostAdmin {
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    input: { drainedBefore: string; limit: number },
+    input: PruneDrainedEventsInput,
   ): Promise<number | null>;
 
   /**
