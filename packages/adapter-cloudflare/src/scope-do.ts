@@ -8599,6 +8599,11 @@ export function defineScopeDO(
               )
               .toArray()[0] as { ord: number; ddl: string; columns: string; objects: string | null } | undefined;
             if (!held) {
+              // #2820: an export carries objects for every module table or for none. A page that
+              // disagrees with the tables already staged was read across a change of version.
+              if (!isSpineTable(t.name) && this.stagedModuleObjects().some((has) => has !== (objects !== null))) {
+                throw substratError('precondition_failed', `table ${t.name} changed between dump pages; nothing more was staged`);
+              }
               const ord = Number((this.sql.exec(`SELECT COUNT(*) AS n FROM _substrat_stage_tables`).toArray()[0] as { n: number }).n);
               this.sql.exec(
                 `INSERT INTO _substrat_stage_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`,
@@ -8759,6 +8764,17 @@ export function defineScopeDO(
         if (batch.length < STAGE_READ_BATCH) return;
         after = Number(batch[batch.length - 1]![0]);
       }
+    }
+
+    /** #2820: for each module table staged so far, whether its pages carried its objects. */
+    private stagedModuleObjects(): boolean[] {
+      return (
+        this.sql
+          .exec(`SELECT s.name, o.name IS NOT NULL AS has FROM _substrat_stage_tables s LEFT JOIN _substrat_stage_objects o ON o.name = s.name`)
+          .toArray() as { name: string; has: number }[]
+      )
+        .filter((r) => !isSpineTable(r.name))
+        .map((r) => Boolean(r.has));
     }
 
     /** The staged load this store holds (#2450), or null. */

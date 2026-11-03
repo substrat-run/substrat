@@ -830,6 +830,16 @@ export function dumpObjectsOf(rows: readonly DumpObjectRow[]): (table: string) =
 
 /** Judge every object a dump carries; throws on the first one that must refuse the dump. */
 export function dumpObjectsPlan(tables: readonly ReplayableTable[]): DumpObjectsPlan {
+  // Every exporter writes `objects` on every module table or on none, so a mix is a dump read across
+  // a change of version (or edited): its tables without them would come back stripped, unannounced.
+  const modules = tables.filter((t) => !namesSpineTable(t.name));
+  const without = modules.find((t) => t.objects === undefined);
+  if (without && modules.some((t) => t.objects !== undefined)) {
+    throw new Error(
+      `refusing this dump: some of its module tables carry their indexes and triggers and ${JSON.stringify(without.name)} ` +
+        'does not. An export carries them for every module table or for none, so the dump is not loaded. Nothing was changed.',
+    );
+  }
   const names = new Set(tables.map((t) => t.name.toLowerCase()));
   const replay: (ScopeDumpObject & { table: string })[] = [];
   const skipped: string[] = [];

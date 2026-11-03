@@ -85,9 +85,6 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   // dump leaves the previous pull's file where it was instead of deleting it first.
   const objects = assertReplayableDump(dump.tables);
   rmSync(path, { force: true });
-  if (objects.skipped.length > 0) {
-    console.log(`  left out of the .sqlite: ${objects.skipped.join(', ')} (an index or trigger a restore does not put back)`);
-  }
   const db = new DatabaseSync(path);
   try {
     // Insert parents before children — this writer defers no FK check, so an
@@ -132,7 +129,9 @@ export async function pullScope(opts: {
   // refuse. Names alone would not do it: `writeSqlite` returns before its own check
   // when `node:sqlite` is missing, so the schema text would go unjudged on exactly
   // the path that skips the SQLite writer.
-  assertReplayableDump(dump.tables);
+  // #2820: a .sqlite holds only the objects it can create, so a pull carrying one a restore leaves
+  // out is written as the JSON dump, which carries it as it came (and a restore names it again).
+  const { skipped } = assertReplayableDump(dump.tables);
 
   mkdirSync(opts.outDir, { recursive: true });
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
@@ -143,7 +142,7 @@ export async function pullScope(opts: {
   // it then restores the stores too, instead of leaving them as they were. An earlier
   // pull's `.sqlite` is removed, so the stale copy is not the file left to restore.
   const stores = dump.stores?.length ?? 0;
-  const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
+  const wroteSqlite = stores === 0 && skipped.length === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
     // Written beside the target and renamed into place, so a crash or a failed write
@@ -156,13 +155,15 @@ export async function pullScope(opts: {
       rmSync(staged, { force: true });
       throw e;
     }
-    if (stores > 0) rmSync(`${base}.sqlite`, { force: true });
+    if (stores > 0 || skipped.length > 0) rmSync(`${base}.sqlite`, { force: true });
   }
 
   console.log(`✓ pulled ${dump.tables.length} tables (${rows} rows), captured ${dump.capturedAt}`);
   console.log(`  → ${file}`);
   if (stores > 0) {
     console.log(`  (JSON — the pull carries ${stores} scope store${stores === 1 ? '' : 's'}, which a .sqlite file cannot hold)`);
+  } else if (skipped.length > 0) {
+    console.log(`  (JSON — the pull carries ${skipped.join(', ')}, which a restore leaves out and a .sqlite file cannot hold)`);
   } else if (!wroteSqlite) {
     console.log('  (JSON fallback — node 22.13+ writes a ready-to-run .sqlite instead)');
   }

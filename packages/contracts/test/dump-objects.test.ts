@@ -9,7 +9,7 @@ import { assertReplayableDump, type ScopeDumpObject } from '../src/index.js';
 const LEDGER = 'CREATE TABLE ledger (id TEXT PRIMARY KEY, who TEXT, lead INTEGER)';
 const dump = (...objects: ScopeDumpObject[]) => [
   { name: 'ledger', ddl: LEDGER, columns: ['id', 'who', 'lead'], objects },
-  { name: 'other', ddl: 'CREATE TABLE other (id TEXT)', columns: ['id'] },
+  { name: 'other', ddl: 'CREATE TABLE other (id TEXT)', columns: ['id'], objects: [] as ScopeDumpObject[] },
 ];
 const index = (name: string, ddl: string): ScopeDumpObject => ({ type: 'index', name, ddl });
 const trigger = (name: string, ddl: string): ScopeDumpObject => ({ type: 'trigger', name, ddl });
@@ -37,8 +37,8 @@ describe('assertReplayableDump: the objects a dump carries', () => {
   });
 
   it('reads a dump written before objects were carried as not carrying them', () => {
-    const [ledger, other] = dump();
-    expect(assertReplayableDump([{ ...ledger!, objects: undefined }, other!])).toEqual({ replay: [], skipped: [], carried: null });
+    const legacy = dump().map((t) => ({ ...t, objects: undefined }));
+    expect(assertReplayableDump(legacy)).toEqual({ replay: [], skipped: [], carried: null });
   });
 
   // Left out and named, never refused: a restore stays possible whatever a module wrote.
@@ -87,6 +87,11 @@ describe('assertReplayableDump: the objects a dump carries', () => {
       expect(() => assertReplayableDump(dump(object))).toThrow(message);
     });
   }
+
+  it('refuses a dump where some module tables carry objects and others do not', () => {
+    const [ledger, other] = dump(ONE_LEAD);
+    expect(() => assertReplayableDump([ledger!, { ...other!, objects: undefined }])).toThrow(/"other" does not/);
+  });
 
   it('refuses an object filed under a platform table', () => {
     const spine = {

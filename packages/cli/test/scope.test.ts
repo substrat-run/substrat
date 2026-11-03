@@ -101,6 +101,23 @@ describe('scope restore backup provenance (#1880)', () => {
     expect(posts[0]!.body).toMatchObject({ tables: [{ name: 'notes', objects }] });
   });
 
+  it('a pull carrying a trigger a restore leaves out is written as the JSON dump, which keeps it (#2820)', async () => {
+    const objects = [{ type: 'trigger', name: 'notes_touch', ddl: "CREATE TRIGGER notes_touch AFTER INSERT ON notes BEGIN UPDATE notes SET id = 'x'; END" }];
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ tenantId: sourceTenant, scopeId: sourceScope, capturedAt, masked: false, tables: [{ ...tables[0], objects }] }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outDir = join(dir, 'with-skipped');
+    await pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: sourceTenant, scopeId: sourceScope, full: true, outDir });
+    const base = join(outDir, `${sourceTenant}__${sourceScope}`);
+    expect(existsSync(`${base}.sqlite`)).toBe(false);
+    const posts = capturePost();
+    await restoreScope(opts(`${base}.dump.json`));
+    expect(posts[0]!.body).toMatchObject({ tables: [{ name: 'notes', objects }] });
+  });
+
   it('a masked pull writes its file with no module objects, so masked values that collide still land (#2820)', async () => {
     const masked = {
       name: 'notes',
