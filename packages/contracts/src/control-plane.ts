@@ -1673,6 +1673,35 @@ export type ConnectionBindingStatus = z.infer<typeof connectionBindingStatus>;
 export const connectionBindingsResult = z.object({ bindings: z.array(connectionBindingStatus) }).strict();
 export type ConnectionBindingsResult = z.infer<typeof connectionBindingsResult>;
 
+/**
+ * `/internal/connections/sync` (#2672): poll the scope's bindings of `provider` now, whatever the
+ * provider's cadence: the tenant's connections bound to the scope and the scope's own. The poll is
+ * the sweep's own, so it lands nothing an unchanged book would not have skipped anyway. A binding
+ * polled in the last minute refuses the whole call (429); nothing is queued.
+ */
+export const connectionSyncRequest = z.object({ tenantId, scopeId, provider: connectionProvider });
+export type ConnectionSyncRequest = z.infer<typeof connectionSyncRequest>;
+
+/** What one binding's poll did. An allow-list, as {@link connectionBindingStatus}. */
+export const connectionSyncOutcome = z
+  .object({
+    connectionId,
+    /** `landed`: something changed and landed; `unchanged`: nothing to land; `failed`: see `error`. */
+    outcome: z.enum(['landed', 'unchanged', 'failed']),
+    /** When the poll finished. */
+    at: instant,
+    /** True when the pass's budget or deadline left work for a later poll; what did land stays. */
+    pending: z.boolean(),
+    /** On `failed`, in the platform's words with a reference; the provider's own answer is staff's. */
+    error: z.string().optional(),
+  })
+  .strict();
+export type ConnectionSyncOutcome = z.infer<typeof connectionSyncOutcome>;
+
+/** Every binding of the scope the poll found; empty when the scope has no binding of the provider. */
+export const connectionSyncResult = z.object({ bindings: z.array(connectionSyncOutcome) }).strict();
+export type ConnectionSyncResult = z.infer<typeof connectionSyncResult>;
+
 /** What the relay answers — metadata only, the secret is never echoed. */
 export const connectionRelayResult = z.object({
   connectionId,

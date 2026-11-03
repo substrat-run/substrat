@@ -19,7 +19,16 @@ export {
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL, PROVEN_CALLER_REFUSAL } from './connection-relay.js';
 // #2732: a scope binds its own connection to itself, unbinds it, and reads its bindings' status.
-export { relayConnectionBind, relayConnectionBindings, relayConnectionUnbind, type ConnectionBindingRelayOptions } from './connection-binding-relay.js';
+export {
+  relayConnectionBind,
+  relayConnectionBindings,
+  relayConnectionSync,
+  relayConnectionUnbind,
+  type ConnectionBindingRelayOptions,
+  type ConnectionSyncRelayOptions,
+  type ScopeSync,
+  type ScopeSyncResult,
+} from './connection-binding-relay.js';
 export type { ConnectionCandidateContext, ConnectionCandidatePrepare, ConnectionCandidatePreparer, ConnectionCandidateProbe, VerticalConnectorDeclarationOf } from './connection-relay.js';
 export { signConnectState, verifyConnectState, ConnectStateError } from './connect-state.js';
 export type { ConnectStateClaim } from './connect-state.js';

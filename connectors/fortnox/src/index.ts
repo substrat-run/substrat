@@ -1533,7 +1533,7 @@ export interface FortnoxSweepResult {
   found: number;
   /** Ledger bindings whose books changed and landed. */
   synced: FortnoxSyncResult[];
-  /** Invoice bindings that landed invoices or files, or wrote back. */
+  /** Invoice bindings that landed invoices or files, wrote back, or left work for a later pass. */
   invoices: FortnoxInvoiceSyncResult[];
   unchanged: number;
   failed: { scopeId: string; error: string }[];
@@ -1556,9 +1556,13 @@ export interface FortnoxSweepResult {
 export async function sweepFortnoxLedger(
   host: ScopeHost,
   connectionId: ConnectionId,
-  options: FortnoxConnectorOptions & { period?: { from: string; to: string } },
+  options: FortnoxConnectorOptions & {
+    period?: { from: string; to: string };
+    /** Poll only this scope's bindings (#2672): the same pass, budget and deadline, for one scope. */
+    scopeId?: string;
+  },
 ): Promise<FortnoxSweepResult> {
-  const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
+  const rows = await host.admin.listConnectorState(connectionId, options.scopeId === undefined ? BINDING_PREFIX : bindingKey(options.scopeId));
   const result: FortnoxSweepResult = { found: 0, synced: [], invoices: [], unchanged: 0, failed: [] };
   // One budget and one rate window per pass: every binding on this connection reads the same company.
   const budget = { details: INVOICE_DETAILS_PER_PASS };
@@ -1581,7 +1585,7 @@ export async function sweepFortnoxLedger(
     try {
       if (binding.kind === 'supplier-invoice') {
         const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
-        if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped) result.invoices.push(r);
+        if (r.landed > 0 || r.files > 0 || r.held > 0 || r.written > 0 || r.skipped || r.pending) result.invoices.push(r);
         else result.unchanged += 1;
         continue;
       }
@@ -1610,6 +1614,34 @@ export async function sweepFortnoxLedger(
   }
 
   return result;
+}
+
+/** What polling one scope's bindings on request did (#2672): the sync relay's answer for it. */
+export interface FortnoxScopePoll {
+  /** `not-bound` when the scope has no binding on this connection. */
+  outcome: 'landed' | 'unchanged' | 'failed' | 'not-bound';
+  /** True when the pass's budget or deadline left work for a later pass. */
+  pending: boolean;
+  /** On `failed`, each binding's own error: staff's to read, never the tenant's. */
+  errors: string[];
+}
+
+/**
+ * Poll ONE scope's bindings now — {@link sweepFortnoxLedger} narrowed to the scope, so the same
+ * budget, deadline and rate window bound it as bound a pass.
+ */
+export async function pollFortnoxScope(
+  host: ScopeHost,
+  connectionId: ConnectionId,
+  scopeId: string,
+  options: FortnoxConnectorOptions,
+): Promise<FortnoxScopePoll> {
+  const r = await sweepFortnoxLedger(host, connectionId, { ...options, scopeId });
+  const pending = r.invoices.some((i) => i.pending);
+  if (r.failed.length > 0) return { outcome: 'failed', pending, errors: r.failed.map((f) => f.error) };
+  if (r.found === 0) return { outcome: 'not-bound', pending: false, errors: [] };
+  const landed = r.synced.length > 0 || r.invoices.some((i) => i.landed > 0 || i.files > 0 || i.held > 0 || i.written > 0);
+  return { outcome: landed ? 'landed' : 'unchanged', pending, errors: [] };
 }
 
 /**

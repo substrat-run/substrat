@@ -25,6 +25,7 @@ import {
   bindFortnoxScope,
   fortnoxConnectionActivity,
   listFortnoxBindings,
+  pollFortnoxScope,
   sweepFortnoxLedger,
   syncFortnoxScope,
   syncFortnoxSupplierInvoices,
@@ -287,6 +288,22 @@ describe('fortnox connector — inbound sync', () => {
     // financialyears + sie = two authenticated reads on one token.
     expect(fortnox.mints).toHaveLength(1);
     expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=2']);
+  });
+
+  it("polls only the named scope's binding on request, and answers what it did (#2672)", async () => {
+    const other = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: other, jurisdiction: 'eu', vertical: 'forecast' });
+    await host.admin.activateScope(staff, t, other);
+    await host.admin.grantToConnection(staff, { connectionId: connId, permission: LEDGER_RECORD, node: { tenantId: t, scopeId: other }, grantedBy: staff });
+    await bind();
+    await bindInvoices(INVOICE_OPERATION, other);
+
+    const first = await pollFortnoxScope(host, connId, s, options());
+    const again = await pollFortnoxScope(host, connId, s, options());
+
+    expect([first, again]).toEqual([{ outcome: 'landed', pending: false, errors: [] }, { outcome: 'unchanged', pending: false, errors: [] }]);
+    expect([landed.length, invoicesLanded.length]).toEqual([1, 0]);
+    expect(fortnox.calls.some((c) => c.includes('supplierinvoices'))).toBe(false);
   });
 
   it('refuses to turn an invoice binding into a ledger one', async () => {
@@ -974,7 +991,8 @@ describe('fortnox connector — inbound sync', () => {
       expect(first.invoices).toEqual([{ scopeId: s, landed: 8, files: 0, held: 0, written: 0, pending: true }]);
       expect(invoicesLanded[0]!.invoices.map((i) => i.givenNumber)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
 
-      await sweepFortnoxLedger(host, connId, slow());
+      // A poll on request (#2672) is held to the same deadline, and says work is left.
+      expect(await pollFortnoxScope(host, connId, s, slow())).toEqual({ outcome: 'landed', pending: true, errors: [] });
       expect(invoicesLanded[1]!.invoices[0]!.givenNumber).toBe('9');
     });
 

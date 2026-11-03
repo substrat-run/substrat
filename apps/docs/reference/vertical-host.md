@@ -520,7 +520,7 @@ preview or a fork, and for a provider with no platform consent round. A refusal 
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
 
-## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`, `listBindings(request)`
+## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`, `listBindings(request)`, `syncConnections(request)`
 
 How a vertical stores a provider credential from its **own** admin screen, and binds a
 scope's own connection to that scope with that scope's options (#2732) — one folder of a
@@ -590,6 +590,30 @@ Only sweeps since `boundAt` count, so a rebind starts afresh. Sweep records are 
 `lastSyncedAt`: compare the two to tell a past failure from a current one. A binding nothing polls
 (its sweep is skipped, or unsupported for that binding) reads `null` in both, as one not swept yet
 does.
+
+### `syncConnections(request)`
+
+A "Sync now" button (#2672): poll the scope's bindings of one provider now, instead of waiting
+for the platform's next pass, and show what the poll did.
+
+```ts
+// from a permission-checked operation, as with bind
+const { bindings } = await syncConnections({ ...access, provider: 'fortnox' });
+// [{ connectionId, outcome: 'landed' | 'unchanged' | 'failed', at, pending, error? }]
+```
+
+Every binding of the scope counts: a tenant's connection bound here as well as the scope's own.
+The poll is the platform's own sweep narrowed to this scope, so an unchanged book lands nothing,
+and it runs inside the same budget and deadline a pass has: `pending: true` says the budget or the
+deadline ran out and a later pass takes the rest, while what landed stays landed. `at` is when the
+poll finished, the "last fetched" a screen shows. A `failed` binding's `error` is the platform's
+words with a reference staff can trace. An empty `bindings` means the scope has no binding of the
+provider.
+
+A binding polled for this scope in the last minute refuses the whole call with `429`; nothing is
+queued, so ask again later. A provider whose bindings cannot be polled on request answers `501`;
+today that is every provider but Fortnox. The caller must be proven as the scope, as with bind.
+The call goes through `POST /internal/connections/sync`.
 
 ## `mailInAddress(request)`
 
