@@ -1943,6 +1943,7 @@ export async function buildRelease(
     tenantStores: stores.tenantStores,
     blobStores: stores.blobStores,
     scopeStores: needs?.scopeStores,
+    vertical: opts.slug,
   });
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build

@@ -355,7 +355,10 @@ export const storeCatalogOperation = storeOperationName.refine((name) => !name.s
 export const storeDriverId = z.string().regex(STORE_DRIVER_ID, { message: 'a store driver id is [a-z0-9]+' });
 
 /** A decision-record lift must be admitted here in a reviewed change before it can register a driver. */
-export const STORE_DRIVER_ADMITTED_ISOLATION_LIFTS = [] as const satisfies readonly `D-${number}`[];
+export const STORE_DRIVER_ADMITTED_ISOLATION_LIFTS = [
+  // The graph driver, kept apart per object by its own design and by the review of each release.
+  'D-67',
+] as const satisfies readonly `D-${number}`[];
 
 /** Normalized canonical identity shared by every published workspace package. */
 export const STORE_DRIVER_PLATFORM_REPOSITORY = 'https://github.com/substrat-run/substrat';
@@ -415,22 +418,72 @@ export const storeDriverRegistration = z
     // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
     driver: storeDriverId.pipe(z.literal('graph')),
     isolationBasis: storeDriverIsolationBasis,
+    // The verticals the driver may serve. Absent, every vertical; a driver on a decision-record
+    // lift must name them, so serving one more is a reviewed change here, not an operating rule.
+    verticals: z.array(verticalSlug).readonly().optional(),
+    // The driver's `substrat.erase` is not implemented yet: a subject erasure that would reach one
+    // of its stores refuses and keeps the key, rather than record `{ erased: 0 }` as done.
+    erasure: z.literal('pending').optional(),
   })
-  .strict();
+  .strict()
+  .refine((registration) => registration.isolationBasis.kind !== 'decisionRecord' || registration.verticals !== undefined, {
+    message: 'a driver registered on a decision record names the verticals it serves',
+    path: ['verticals'],
+  });
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
+/** Whether a registered driver may serve `vertical`: every vertical, unless its registration names them. */
+export function storeDriverServesVertical(registration: StoreDriverRegistration, vertical: string): boolean {
+  return registration.verticals === undefined || registration.verticals.includes(vertical);
+}
+
+/** Whether a registered driver's stores can erase a subject, so an erasure may count their answer. */
+export function storeDriverErasesSubjects(registration: StoreDriverRegistration): boolean {
+  return registration.erasure !== 'pending';
+}
+
 /**
- * Registered store drivers. None yet: a driver is registered by its id once the approval flow in
- * docs/rfc/store-driver-release-approval.md serves (its step 5), and a third-party driver such as
- * graph also waits for a decision record lifting D-63's isolation requirement for it (#2210, #2394).
+ * Registered store drivers (D-63, D-65). A registered driver runs nothing until a person approves
+ * a release of it in the control plane. `graph` is written outside this repo, so it stands on the
+ * decision record that lifts D-63's isolation requirement for it (D-67).
  */
-export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
+export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [
+  {
+    driver: 'graph',
+    isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' },
+    // D-67's narrow first use: none yet. A vertical whose operator accepts the shared isolate is
+    // added here by name, in a reviewed change.
+    verticals: [],
+    erasure: 'pending',
+  },
+];
 
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
 
-/** The most modules one release bundle may carry (#2300, #2390). A bigger upload is 422. */
+/**
+ * The most code modules one release bundle may carry (#2300, #2390, D-68): files Python can import
+ * or load, by {@link isPythonCodeModule}. A data file beside them counts toward
+ * {@link STORE_RELEASE_MAX_BYTES} and {@link STORE_RELEASE_MAX_FILES} only, and the module rule still
+ * judges its name. A bigger upload is 422.
+ */
 export const STORE_RELEASE_MAX_MODULES = 1000;
+
+/** The most files, code and data, one release bundle may carry (D-68). A bigger upload is 422. */
+export const STORE_RELEASE_MAX_FILES = 4000;
+
+/**
+ * What Python loads code from under Pyodide: source (`.py`), bytecode (`.pyc`, imported without its
+ * source), and a compiled extension or the shared library it links (`.so`, with an ABI tag before it
+ * or a version after it, as in `libfoo.so.1.2`).
+ */
+const PYTHON_CODE_FILE = /\.(?:py|pyc)$|\.so(?:\.\d+)*$/;
+
+/** The code forms {@link isPythonCodeModule} counts, as messages name them. */
+export const PYTHON_CODE_FORMS = '.py, .pyc, .so';
+
+/** Whether a release module is code Python can import or load, so it counts toward {@link STORE_RELEASE_MAX_MODULES} (D-68). */
+export const isPythonCodeModule = (name: string): boolean => PYTHON_CODE_FILE.test(name);
 
 /**
  * A driver's own module: one top-level package that starts with `driver_`, then identifiers,
@@ -570,7 +623,10 @@ export const storeDriverReleaseUpload = z
     modules: z
       .array(z.object({ name: z.string().min(1), contentBase64: z.string() }).strict())
       .min(1)
-      .max(STORE_RELEASE_MAX_MODULES),
+      .max(STORE_RELEASE_MAX_FILES)
+      .refine((modules) => modules.filter((module) => isPythonCodeModule(module.name)).length <= STORE_RELEASE_MAX_MODULES, {
+        message: `a release carries at most ${STORE_RELEASE_MAX_MODULES} code modules (${PYTHON_CODE_FORMS})`,
+      }),
   })
   .strict();
 export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;
@@ -996,7 +1052,29 @@ export function assertScopeStoresRegistered(
   }
 }
 
-/** Both refusals a push and the control plane apply to a scope-store declaration. */
+/**
+ * A scope store whose driver does not serve this vertical is refused (D-67): a registration that
+ * names its verticals serves those only. A driver that is not registered is
+ * {@link assertScopeStoresRegistered}'s refusal, not this one's.
+ */
+export function assertScopeStoresServeVertical(
+  vertical: string,
+  stores: readonly ScopeStoreNeed[],
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+): void {
+  for (const store of stores) {
+    const registration = drivers.find((driver) => driver.driver === store.driver);
+    if (registration && !storeDriverServesVertical(registration, vertical)) {
+      throw substratError(
+        'forbidden',
+        `deploy refused: scope store '${store.binding}' declares driver '${store.driver}', which does not serve vertical '${vertical}'. ` +
+          `The verticals it serves are named in its registration, in this repo.`,
+      );
+    }
+  }
+}
+
+/** Both refusals a push and the control plane apply to a scope-store declaration, and the vertical's when it is named. */
 export function assertDeclaredScopeStores(input: {
   readonly own?: readonly { binding: string }[];
   readonly tenantStores?: readonly { binding: string }[];
@@ -1005,9 +1083,12 @@ export function assertDeclaredScopeStores(input: {
   readonly bindingNames?: readonly string[];
   /** The registry the scope stores are judged against; {@link STORE_DRIVERS} when absent. */
   readonly drivers?: readonly StoreDriverRegistration[];
+  /** The vertical declaring them, judged by {@link assertScopeStoresServeVertical} when given. */
+  readonly vertical?: string;
 }): void {
   assertStoreBindingsDistinct(input);
   assertScopeStoresRegistered(input.scopeStores ?? [], input.drivers);
+  if (input.vertical !== undefined) assertScopeStoresServeVertical(input.vertical, input.scopeStores ?? [], input.drivers);
 }
 
 /**

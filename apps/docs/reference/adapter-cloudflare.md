@@ -78,9 +78,10 @@ pnpm add @substrat-run/adapter-cloudflare
 - **Scope stores** — additional storage declared per scope, reached through
   `host.getScopeStore`. With no in-process runner or explicit `transport: 'binding'`, the
   host uses the platform hop; merely supplying a control plane does not select a direct
-  binding. Calls carry a signed envelope to a pinned store release. Backup, restore,
-  erasure, reap and metering also reach the stores. No hosted driver is registered yet, so
-  this is implemented infrastructure rather than a store a vertical can deploy today.
+  binding. Calls carry a signed envelope to an approved store release. Backup, restore,
+  erasure, reap and metering also reach the stores. The `graph` driver is registered, but no
+  release of it is approved yet, so this is implemented infrastructure rather than a store a
+  vertical can deploy today.
   See [Scope stores](/concepts/scope-stores) for the lifecycle, dropped bindings and limits.
 - **Live reads** — `host.liveReads` subscribes a principal to a scope's change feed. The
   scope checks the declared read permission before sending a hint; the client re-reads

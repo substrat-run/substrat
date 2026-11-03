@@ -81,7 +81,7 @@ describe('scopeStoresOf (#2207)', () => {
   for (const [what, a, scope] of [
     ['no version at all', admin({ older: manifest(GRAPH) }, null), { servingRef: null, verticalVersionId: null }],
     ['a serving pin with nothing served', admin({ older: manifest(GRAPH) }, null), { servingRef: 'stable', verticalVersionId: null }],
-    ['a vertical the registry does not know', admin({}, 'unknown-vertical'), { servingRef: 'stable', verticalVersionId: null }],
+    ['a serving pointer that cannot be read', admin({ older: manifest(GRAPH) }, 'unknown-vertical'), { servingRef: 'stable', verticalVersionId: null }],
     ['a pin naming another script than the serving pointer', admin({ served: manifest(GRAPH) }, 'served'), { servingRef: 'older-script', verticalVersionId: null }],
     ['a manifest that does not read', admin({ bound: '{nope' }, null), { servingRef: null, verticalVersionId: 'bound' }],
   ] as const) {
@@ -106,6 +106,41 @@ describe('scopeStoresOf (#2207)', () => {
       expect(await ask(a, scope, [])).toEqual([]);
     });
   }
+
+  // The sweep resolves this for nearly every scope it meters or reaps (#2394): a vertical that never
+  // declared a store costs the one read of its record, and nothing else is read, under the hosted registry.
+  it('a vertical that never declared a store costs one directory read, the record, under the default registry', async () => {
+    /** `a`, recording each directory read it answers. */
+    const counting = (a: ReturnType<typeof admin>) => {
+      const reads: string[] = [];
+      const spy = {
+        verticalServing: async (...args: Parameters<typeof a.verticalServing>) => (reads.push('verticalServing'), a.verticalServing(...args)),
+        versionManifest: async (...args: Parameters<typeof a.versionManifest>) => (reads.push('versionManifest'), a.versionManifest(...args)),
+        verticalScopeStores: async () => (reads.push('verticalScopeStores'), a.verticalScopeStores()),
+      };
+      return { spy, reads };
+    };
+    const none = counting(admin({ served: manifest([]), bound: manifest([]) }, 'served'));
+    for (const scope of [
+      { servingRef: 'stable', verticalVersionId: null },
+      { servingRef: 'older-script', verticalVersionId: null },
+      { servingRef: null, verticalVersionId: 'bound' },
+    ]) {
+      for (const resolve of [scopeStoresOf, runningVersionStoresOf]) {
+        none.reads.length = 0;
+        expect(await resolve(none.spy, actor, { id, vertical: 'docs', ...scope })).toEqual([]);
+        expect(none.reads).toEqual(['verticalScopeStores']);
+      }
+    }
+    // The twin: once a version declared one, the record is read once, then the running version.
+    const declaring = counting(admin({ served: manifest(GRAPH) }, 'served'));
+    expect(await scopeStoresOf(declaring.spy, actor, { id, vertical: 'docs', servingRef: 'stable', verticalVersionId: null })).toEqual(GRAPH);
+    expect(declaring.reads).toEqual(['verticalScopeStores', 'verticalServing', 'versionManifest']);
+    // A running version that cannot be told there still refuses (503).
+    const refusal = await scopeStoresOf(declaring.spy, actor, { id, vertical: 'docs', servingRef: 'older-script', verticalVersionId: null })
+      .then(() => undefined, (e: unknown) => e);
+    expect((refusal as { status?: number } | undefined)?.status).toBe(503);
+  });
 
   it('a version unknown whose vertical’s declarations cannot be read refuses (503): only a record that reads as empty says none', async () => {
     const a = admin({ older: '{nope' }, null);

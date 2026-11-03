@@ -25,7 +25,15 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { classifyPythonStoreModule, STORE_RELEASE_MAX_BYTES, STORE_RELEASE_MAX_MODULES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
+import {
+  classifyPythonStoreModule,
+  isPythonCodeModule,
+  PYTHON_CODE_FORMS,
+  STORE_RELEASE_MAX_BYTES,
+  STORE_RELEASE_MAX_FILES,
+  STORE_RELEASE_MAX_MODULES,
+  type StoreDriverReleaseUpload,
+} from '@substrat-run/contracts';
 import type { StoreDriverRebuildView, StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
 
@@ -35,7 +43,7 @@ function base64(bytes: Uint8Array): string {
   return btoa(text);
 }
 
-/** How deep a driver's tree may go: past it, it is not one package. How many files is the release's own limit. */
+/** How deep a driver's tree may go: past it, it is not one package. How many files is set by the release's own limits. */
 const MAX_DEPTH = 16;
 
 /** Where a release's dependencies are, under `--dir`: the one directory the commit does not vouch for. */
@@ -52,10 +60,12 @@ const isVendored = (file: string) => file.startsWith(`${VENDORED_DIR}/`);
 /**
  * Every file under `dir`, by its path relative to it, `__pycache__`, `.pyc` and the
  * {@link INSTALLER_MARKERS} left out. A symbolic link is refused, not followed: it could pack a
- * file from outside `dir`, or loop forever.
+ * file from outside `dir`, or loop forever. More files, or more code modules, than a release
+ * carries is refused as soon as the walk meets one, before anything is read.
  */
 export function packedFilesOf(dir: string): string[] {
   const out: string[] = [];
+  let code = 0;
   // The `/` form the packed list uses, so an error names `driver_graph/x.py` on every OS too.
   const shown = (path: string): string => relative(dir, path).split(sep).join('/');
   const walk = (at: string, depth: number) => {
@@ -70,8 +80,11 @@ export function packedFilesOf(dir: string): string[] {
         const file = shown(path);
         if (INSTALLER_MARKERS.includes(file)) continue;
         out.push(file);
-        if (out.length > STORE_RELEASE_MAX_MODULES) {
-          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_MODULES} files; a release carries at most ${STORE_RELEASE_MAX_MODULES} modules`);
+        if (out.length > STORE_RELEASE_MAX_FILES) {
+          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_FILES} files; a release carries at most ${STORE_RELEASE_MAX_FILES}`);
+        }
+        if (isPythonCodeModule(file) && ++code > STORE_RELEASE_MAX_MODULES) {
+          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_MODULES} code modules; a release carries at most ${STORE_RELEASE_MAX_MODULES} (${PYTHON_CODE_FORMS})`);
         }
       }
     }
@@ -122,9 +135,9 @@ export function packStoreDriverDir(dir: string, entry: string, sourceCommit: str
   const modules = files.map((name) => {
     const content = readFileSync(join(dir, name));
     total += content.byteLength;
+    if (total > STORE_RELEASE_MAX_BYTES) throw new Error(`the package is over ${STORE_RELEASE_MAX_BYTES} bytes at ${name}; a release carries at most ${STORE_RELEASE_MAX_BYTES}`);
     return { name, contentBase64: base64(content) };
   });
-  if (total > STORE_RELEASE_MAX_BYTES) throw new Error(`the package is ${total} bytes; a release carries at most ${STORE_RELEASE_MAX_BYTES}`);
   return { sourceCommit, entry, modules };
 }
 

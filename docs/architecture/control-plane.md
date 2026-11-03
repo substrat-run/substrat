@@ -593,9 +593,9 @@ takes its place. A table holding rows under **both** names cannot be resolved by
 logs `the directory holds rows under both …`, keeps both, and every directory dump of it is
 refused at restore until one is cleared. The remedy is to restore a directory dump taken before
 the pre-rename code ran again (a restore replaces every table), or to export the `store_kind_*`
-rows, carry over any still wanted, and drop the `store_kind_*` tables by hand. Today this cannot
-arise: no driver has been registered, so no pre-rename build could write a release, rollout or
-hold.
+rows, carry over any still wanted, and drop the `store_kind_*` tables by hand. This cannot
+arise: no pre-rename build registers a driver, so none can write a release, rollout or hold,
+even if one runs again.
 
 One invariant this log carries alone, worth naming: grant tuples persist no `grantedBy` —
 the tuple table stores `(subject, relation, object, expires_at, revoked_at)` and nothing
