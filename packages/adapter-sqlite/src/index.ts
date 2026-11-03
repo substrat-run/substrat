@@ -636,6 +636,8 @@ import {
   type SwitchRecordPrior,
   type SwitchOutcome,
   type SwitchSql,
+  type OutboxSubscriber,
+  pruneDrainedOutbox,
   type PeerGrantsRow,
   type SystemGrantsEntry,
   type PlatformRequestRedactionCandidate,
@@ -2426,6 +2428,14 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
+
+  /** Every local subscriber an outbox row waits on before it may be pruned (#1334): consumers and executors. */
+  private outboxSubscribers(): OutboxSubscriber[] {
+    return [
+      ...[...this.modules.values()].flatMap((mod) => mod.consumers.map((c) => ({ deliveryId: mod.id, eventType: c.eventType }))),
+      ...[...this.executors].map(([id, e]) => ({ deliveryId: `executor:${id}`, eventType: e.eventType })),
+    ];
+  }
   /**
    * `<moduleId>/<job>` → the pass body and its default step policy (#1577). Host
    * code like `executors`, and keyed the way a run row is: the coalescing key's
@@ -11223,6 +11233,30 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      pruneDrainedEvents: async (actor, tenantId, scopeId, input) => {
+        this.assertScopeReachable(tenantId, scopeId);
+        const db = this.scopeDbFor(tenantId, scopeId);
+        // On the scope actor, like the stamp: issued mid-invoke it would otherwise be a
+        // SAVEPOINT inside the invoke's transaction, and roll back with it.
+        const pruned = await this.runtime(tenantId, scopeId).actor.turn(() =>
+          db.transaction(() =>
+            pruneDrainedOutbox(switchSqlOf(db), {
+              drainedBefore: input.drainedBefore,
+              limit: Math.min(assertRowLimit('limit', input.limit), 1000),
+              subscribers: this.outboxSubscribers(),
+              exportTypes: this.crossVertical.exportTypes(),
+            }),
+          )(),
+        );
+        // Deleting a tenant's events is a mutation, so it is audited, and only when something went.
+        if (pruned > 0) {
+          this.recordAdmin(actor, 'pruneEvents', { tenantId, scopeId }, null, {
+            pruned,
+            drainedBefore: input.drainedBefore,
+          });
+        }
+        return pruned;
       },
       readExportedEvents: async (actor, tenantId, scopeId, raw): Promise<ExportedBatch> => {
         // #1705: the producer's half. Parsed here, since HostAdmin is public and the control

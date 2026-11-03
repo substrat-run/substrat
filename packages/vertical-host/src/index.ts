@@ -440,6 +440,11 @@ export interface VerticalScopeHost {
    */
   redrainCountLocal?(scopeId: ScopeId, drainedBefore: string): Promise<number>;
   /**
+   * The retention prune on this deployment's own scope (#1334). Optional for `redrainCountLocal`'s
+   * reason: a host built before it answers 501 here, and the platform skips the scope.
+   */
+  pruneDrainedEventsLocal?(scopeId: ScopeId, drainedBefore: string, limit: number): Promise<number>;
+  /**
    * The scope database's size in bytes (#1524), for an on-demand storage reading. OPTIONAL
    * for the reason `redrainCountLocal` is: a host built before it satisfies this interface
    * without it, and the route answers 501 rather than 0, which a sum would add.
@@ -1080,6 +1085,13 @@ const markDrainedBody = z.object({
  * a different run. The two are separate PATHS for the reason written at the route.
  */
 const redrainEventsBody = z.object({ scopeId: scopeIdOf, drainedBefore: instant });
+
+/** `/internal/prune-drained` body (#1334): the platform's retention instant and its batch. */
+const pruneDrainedBody = z.object({
+  scopeId: scopeIdOf,
+  drainedBefore: instant,
+  limit: z.number().int().min(1).max(1000),
+});
 
 /** `/internal/connector-invoke` body (#574) — one operation, invoked as the connection. */
 const connectorInvokeBody = z.object({
@@ -1825,6 +1837,16 @@ export function mountPlatformSurface<Env extends object>(
     const body = markDrainedBody.parse(await c.req.json());
     const drained = await deps.hostFor(c.env).markEventsDrainedLocal(body.scopeId, body.eventIds, body.drainedAt);
     return c.json({ drained });
+  });
+  // The retention prune (#1334). No audit here, as with the stamp: the platform's
+  // `pruneDrainedEvents` is the door and writes the receipt.
+  app.post('/internal/prune-drained', async (c) => {
+    const body = pruneDrainedBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.pruneDrainedEventsLocal) {
+      return refuseStatus(c, 501, 'this deployment cannot prune its outbox (#1334) — redeploy it');
+    }
+    return c.json({ pruned: await host.pruneDrainedEventsLocal(body.scopeId, body.drainedBefore, body.limit) });
   });
   // The stamp's inverse. No audit here, as with the stamp: the platform's `redrainEvents`
   // is the door and writes the receipt, whichever deployment held the rows.

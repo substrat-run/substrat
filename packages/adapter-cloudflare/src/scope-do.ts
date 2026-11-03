@@ -150,6 +150,8 @@ import {
   systemSwitchedOff,
   type SwitchOutcome,
   type SwitchSql,
+  type OutboxSubscriber,
+  pruneDrainedOutbox,
   type SwitchedOff,
   type PeerGrantsRow,
   type SystemGrantsEntry,
@@ -2687,6 +2689,29 @@ export function defineScopeDO(
         }
         return drained;
       });
+    }
+
+    /**
+     * The retention prune (#1334): the kernel's `pruneDrainedOutbox`, on the queue and in one
+     * transaction, so the rows, their deliveries and the pruned-through floor go together.
+     */
+    async pruneDrainedEvents(drainedBefore: string, limit: number, executors: readonly OutboxSubscriber[]): Promise<number> {
+      return this.queue.enqueue(() =>
+        this.revision.transactionSync(() =>
+          pruneDrainedOutbox(this.switchSql(), {
+            drainedBefore,
+            limit,
+            // Executors run on the coordinator, which names them; the consumers are this DO's own.
+            subscribers: [
+              ...[...this.modules.values()].flatMap((mod) =>
+                mod.consumers.map((c) => ({ deliveryId: mod.id, eventType: c.eventType })),
+              ),
+              ...executors,
+            ],
+            exportTypes: this.crossVertical.exportTypes(),
+          }),
+        ),
+      );
     }
 
     /**

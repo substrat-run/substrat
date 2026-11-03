@@ -1674,6 +1674,8 @@ function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
     // reopened by the far end, and the client picks the read-only path from this flag.
     redrain: async (a) =>
       (await clientFor(a.tenantId, a.scopeId, a.vertical)).redrainEvents(a.scopeId, a.drainedBefore, a.countOnly),
+    prune: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId, a.vertical)).pruneDrainedEvents(a.scopeId, a.drainedBefore, a.limit),
   };
 }
 
