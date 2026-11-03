@@ -7,6 +7,8 @@ import {
   pruneAccessLogBatches,
   pruneScopeBackups,
 } from '../src/r2-backups.js';
+import type { ScopeBackupStore } from '../src/backups.js';
+import { fakeBucket } from './fake-r2-bucket.js';
 
 /**
  * The R2 half of the scope-backup seam (#493). Driven against a fake bucket rather than
@@ -15,54 +17,12 @@ import {
  * without fetching megabytes of dump.
  */
 
-interface StoredObject {
-  key: string;
-  body: string;
-  customMetadata?: Record<string, string>;
-}
-
-/** A fake `R2Bucket` with a settable page size, so the cursor walk is actually exercised. */
-function fakeBucket(pageSize = 100) {
-  const objects = new Map<string, StoredObject>();
-  return {
-    objects,
-    bucket: {
-      put: async (
-        key: string,
-        value: string,
-        options?: { customMetadata?: Record<string, string> },
-      ) => {
-        objects.set(key, { key, body: value, ...(options?.customMetadata ? { customMetadata: options.customMetadata } : {}) });
-      },
-      get: async (key: string) => {
-        const o = objects.get(key);
-        return o ? { text: async () => o.body } : null;
-      },
-      delete: async (key: string) => {
-        objects.delete(key);
-      },
-      list: async (opts?: { prefix?: string; cursor?: string; include?: string[] }) => {
-        const all = [...objects.values()]
-          .filter((o) => (opts?.prefix ? o.key.startsWith(opts.prefix) : true))
-          .sort((a, b) => (a.key < b.key ? -1 : 1));
-        const from = opts?.cursor ? Number(opts.cursor) : 0;
-        const slice = all.slice(from, from + pageSize);
-        const next = from + pageSize;
-        return {
-          objects: slice.map((o) => ({
-            key: o.key,
-            size: o.body.length,
-            // Mirrors R2: custom metadata only comes back when it was asked for.
-            ...(opts?.include?.includes('customMetadata') && o.customMetadata
-              ? { customMetadata: o.customMetadata }
-              : {}),
-          })),
-          truncated: next < all.length,
-          cursor: next < all.length ? String(next) : undefined,
-        };
-      },
-    },
-  };
+/** Store a whole dump as a backup of one entry, as a backup of a scope that fits one page lands. */
+async function putDump(store: ScopeBackupStore, vertical: string | null, dump: ScopeDump) {
+  const { tables, ...header } = dump;
+  const writer = store.begin({ vertical, header });
+  await writer.put('stage', 0, { kind: 'page', tables });
+  return writer.commit({ stageId: 'stage', entries: 1, tables: tables.length });
 }
 
 const dumpAt = (capturedAt: string, tenantId = 'ten1', scopeId = 'sc1'): ScopeDump => ({
@@ -81,28 +41,34 @@ const dumpAt = (capturedAt: string, tenantId = 'ten1', scopeId = 'sc1'): ScopeDu
 });
 
 describe('r2 scope-backup store (#493)', () => {
-  it('round-trips a dump and reports its metadata without reading the body back', async () => {
+  it('stores a backup as entries under a manifest written last, and reads each entry back (#2839)', async () => {
     const { bucket, objects } = fakeBucket();
     const store = createR2BackupStore(bucket);
+    const at = { tenantId: 'ten1', scopeId: 'sc1', capturedAt: '2026-08-06T10:00:00.000Z' };
+    const { tables: [customers], ...header } = dumpAt(at.capturedAt);
+    const writer = store.begin({ vertical: 'demo-vert', header });
+    await writer.put('s1', 0, { kind: 'page', tables: [customers!] });
+    await writer.put('s1', 1, { kind: 'changes', tables: [{ ...customers!, rows: [['c2', 'bo@example.com']], rowids: [2], deleted: [] }] });
 
-    const meta = await store.put({ vertical: 'demo-vert', dump: dumpAt('2026-08-06T10:00:00.000Z') });
-    expect(meta).toMatchObject({
-      tenantId: 'ten1',
-      scopeId: 'sc1',
-      vertical: 'demo-vert',
-      capturedAt: '2026-08-06T10:00:00.000Z',
-      tables: 1,
-    });
-    expect(meta.size).toBeGreaterThan(0);
+    // Until the manifest lands there is no backup: nothing lists, nothing reads.
+    expect(await store.list({ tenantId: 'ten1', scopeId: 'sc1' })).toEqual([]);
+    expect(await store.get(at)).toBeNull();
 
-    // The key scheme is what makes a scope's copies one prefix list — and it keeps
-    // capturedAt last so the ISO ordering IS the chronological ordering.
-    expect([...objects.keys()]).toEqual(['scopes/ten1/sc1/2026-08-06T10:00:00.000Z.json']);
+    const meta = await writer.commit({ stageId: 's1', entries: 2, tables: 1 });
+    expect([...objects.keys()].sort()).toEqual([
+      'scopes/ten1/sc1/2026-08-06T10:00:00.000Z.json',
+      'scopes/ten1/sc1/2026-08-06T10:00:00.000Z/s1/0.json',
+      'scopes/ten1/sc1/2026-08-06T10:00:00.000Z/s1/1.json',
+    ]);
+    // One backup listed, sized as everything it holds, its entries never listed as copies.
+    const listed = await store.list({ tenantId: 'ten1', scopeId: 'sc1' });
+    expect(listed).toEqual([{ ...at, vertical: 'demo-vert', size: meta.size, tables: 1 }]);
+    expect(meta.size).toBe([...objects.values()].reduce((n, o) => n + o.body.length, 0));
 
-    const got = await store.get({ tenantId: 'ten1', scopeId: 'sc1', capturedAt: '2026-08-06T10:00:00.000Z' });
-    // Full fidelity: the row comes back exactly as stored, unmasked — a backup that
-    // cannot restore the real values is not a backup.
-    expect(got!.tables[0]!.rows[0]).toEqual(['c1', 'anna@example.com']);
+    expect(await store.get(at)).toEqual({ header, entries: 2 });
+    // Full fidelity, in order: a backup that cannot restore the real values is not a backup.
+    expect((await store.entry({ ...at, index: 0 })).tables[0]!.rows).toEqual([['c1', 'anna@example.com']]);
+    expect(await store.entry({ ...at, index: 1 })).toMatchObject({ kind: 'changes', tables: [{ rows: [['c2', 'bo@example.com']] }] });
   });
 
   it('lists a scope’s copies newest-first, walking every page, and never leaks another scope’s', async () => {
@@ -111,12 +77,12 @@ describe('r2 scope-backup store (#493)', () => {
     const { bucket } = fakeBucket(2);
     const store = createR2BackupStore(bucket);
     for (const at of ['2026-08-01T00:00:00.000Z', '2026-08-03T00:00:00.000Z', '2026-08-02T00:00:00.000Z']) {
-      await store.put({ vertical: 'demo-vert', dump: dumpAt(at) });
+      await putDump(store, 'demo-vert', dumpAt(at));
     }
     // A different scope under the same tenant, and a same-id scope under another tenant —
     // both must stay out of the listing (the prefix is the isolation).
-    await store.put({ vertical: 'demo-vert', dump: dumpAt('2026-08-04T00:00:00.000Z', 'ten1', 'sc2') });
-    await store.put({ vertical: 'demo-vert', dump: dumpAt('2026-08-05T00:00:00.000Z', 'ten2', 'sc1') });
+    await putDump(store, 'demo-vert', dumpAt('2026-08-04T00:00:00.000Z', 'ten1', 'sc2'));
+    await putDump(store, 'demo-vert', dumpAt('2026-08-05T00:00:00.000Z', 'ten2', 'sc1'));
 
     const listed = await store.list({ tenantId: 'ten1', scopeId: 'sc1' });
     expect(listed.map((b) => b.capturedAt)).toEqual([
@@ -137,6 +103,10 @@ describe('r2 scope-backup store (#493)', () => {
     const listed = await store.list({ tenantId: 'ten1', scopeId: 'sc1' });
     expect(listed).toHaveLength(1);
     expect(listed[0]).toMatchObject({ capturedAt: '2026-07-01T00:00:00.000Z', vertical: null, tables: 0 });
+    // And it restores: a whole dump from before #2839 reads as a backup of one entry, its tables.
+    const at = { tenantId: 'ten1', scopeId: 'sc1', capturedAt: '2026-07-01T00:00:00.000Z' };
+    expect(await store.get(at)).toMatchObject({ entries: 1, header: { scopeId: 'sc1' } });
+    expect(await store.entry({ ...at, index: 0 })).toEqual({ kind: 'page', tables: dumpAt(at.capturedAt).tables });
   });
 
   it('returns null for a copy that is not held, and throws on one that is not a dump', async () => {
@@ -322,15 +292,21 @@ describe('stored-copy retention (#557)', () => {
       '2026-07-09T00:00:01.000Z', // fresh by a second
       '2026-08-07T00:00:00.000Z', // fresh
     ]) {
-      await store.put({ vertical: 'demo-vert', dump: dumpAt(at) });
+      await putDump(store, 'demo-vert', dumpAt(at));
     }
-    await store.put({ vertical: 'demo-vert', dump: dumpAt('2026-01-01T00:00:00.000Z', 'ten2', 'sc9') });
+    await putDump(store, 'demo-vert', dumpAt('2026-01-01T00:00:00.000Z', 'ten2', 'sc9'));
+    // An entry without metadata (a hand copy of a fresh one) is dated by the path segment after the
+    // scope (#2839), never by its own name: '0' parses as the year 2000.
+    await bucket.put('scopes/ten1/sc1/2026-08-07T00:00:00.000Z/s9/0.json', '{}');
 
-    expect(await pruneScopeBackups(bucket, { olderThanDays: 30, now: NOW })).toBe(3);
+    // Each stale copy is a manifest and its entry (#2839).
+    expect(await pruneScopeBackups(bucket, { olderThanDays: 30, now: NOW })).toBe(6);
     // Age is per copy, across every tenant and scope — ten2's January copy went too.
     expect(await store.list({ tenantId: 'ten1', scopeId: 'sc1' })).toHaveLength(2);
     expect(await store.list({ tenantId: 'ten2', scopeId: 'sc9' })).toHaveLength(0);
-    expect([...objects.keys()].every((k) => k.startsWith('scopes/'))).toBe(true);
+    // Every object left is a fresh copy's manifest or entry.
+    expect([...objects.keys()].every((k) => /^scopes\/ten1\/sc1\/2026-0[78]-/.test(k))).toBe(true);
+    expect(objects.size).toBe(5);
   });
 
   it('keeps a scope copy it cannot date, and never reaches outside scopes/', async () => {
