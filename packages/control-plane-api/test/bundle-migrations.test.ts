@@ -138,6 +138,9 @@ describe('a version’s migrations, read from its bundle (#2351)', () => {
     expect(res.status, JSON.stringify(body)).toBe(201);
     expect(await extractedOf(body)).toBe(extracted);
     expect(await host.admin.versionMigrations(staff, body.verticalSlug, body.id)).toBeNull();
+    // Nothing stored was compared, so the review never says the set it shows was read.
+    const review = await app.request(`/verticals/${encodeURIComponent(body.verticalSlug)}/versions/${body.id}/migrations`, { headers: auth });
+    expect(((await review.json()) as { readFromBundle: boolean }).readFromBundle).toBe(false);
   });
 
   it.each([
