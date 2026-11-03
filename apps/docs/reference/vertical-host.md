@@ -604,8 +604,12 @@ const { bindings } = await syncConnections({ ...access, provider: 'fortnox' });
 
 Every binding of the scope counts: a tenant's connection bound here as well as the scope's own.
 The poll is the platform's own sweep narrowed to this scope, so an unchanged book lands nothing,
-and it runs inside the same budget and deadline a pass has: `pending: true` says the budget or the
-deadline ran out and a later pass takes the rest, while what landed stays landed. `at` is when the
+and each call is held to the limits a pass sets itself: a budget of reads, a deadline, and pacing
+under Fortnox's request rate. `pending: true` says the budget or the deadline ran out and a later
+pass takes the rest, while what landed stays landed. Those limits are the call's own, not shared:
+a poll of this scope while the platform's pass polls another scope on the same Fortnox company
+paces separately, so Fortnox may answer some requests "too many" and the poll waits them out, and
+every call spends a fresh budget. Ask when a person asks, not on a timer. `at` is when the
 poll finished, the "last fetched" a screen shows. A `failed` binding's `error` is the platform's
 words with a reference staff can trace. `in-progress` means another poll of that binding (the
 platform's own pass, or an earlier ask still running) was under way, so nothing ran for it and
