@@ -2571,7 +2571,7 @@ describe('ticket0 on workerd — invites through the deployed worker (#1686)', (
     expect((await as('sub-anna', '/api/accept-invite', { token: tokenOf(agentInvite.acceptUrl) })).status).toBe(200);
     expect((await as('sub-anna', `/api/bindings/contact/${contactId}/unbind`)).status).toBe(403);
     const unbound = await as('sub-owner', `/api/bindings/contact/${contactId}/unbind`);
-    expect(await unbound.json()).toEqual({ unbound: [invite.principal] });
+    expect(await unbound.json()).toEqual({ unbound: [invite.principal], revokedLinks: [] });
     expect(await contactPrincipal(contactId)).toBeNull();
     expect((await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
   });
@@ -2589,7 +2589,7 @@ describe('ticket0 on workerd — invites through the deployed worker (#1686)', (
     const refused = await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId });
     expect(refused.status).toBe(409);
     expect(JSON.stringify(await refused.json())).toContain('already has a portal customer from an earlier invite');
-    expect(await (await as('sub-owner', `/api/bindings/contact/${contactId}/unbind`)).json()).toEqual({ unbound: [legacy] });
+    expect(await (await as('sub-owner', `/api/bindings/contact/${contactId}/unbind`)).json()).toEqual({ unbound: [legacy], revokedLinks: [] });
     expect((await as('sub-owner', '/api/invites', { roleKey: 'customer', contactId })).status).toBe(201);
   });
 });

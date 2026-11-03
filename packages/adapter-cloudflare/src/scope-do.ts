@@ -5982,12 +5982,13 @@ export function defineScopeDO(
       return await this.queue.enqueue(async (): Promise<BoundedUnbind> => {
         const liveSince = this.liveHighWaterMark();
         const now = instant.parse(new Date().toISOString());
-        let answer: BoundedUnbind = { ok: true, unbound: [] };
+        let answer: BoundedUnbind = { ok: true, unbound: [], revokedLinks: [] };
         await this.revision.transaction(async () => {
           answer = await unbindEntityHolderBounded(
             {
               sql: doSpineSql(this.sql),
               now,
+              caller: by,
               allowed: allowedFor(this.checker, by, { tenantId, scopeId }),
               emit: (event) =>
                 kernelEmit(this.operationContext(

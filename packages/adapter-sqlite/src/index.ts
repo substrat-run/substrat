@@ -6111,6 +6111,7 @@ export class SqliteScopeHost implements ScopeHost {
           {
             sql: spineSql(rt.db),
             now,
+            caller: by,
             allowed: allowedFor(this.checker, by, { tenantId, scopeId }),
             emit: (event) =>
               kernelEmit(this.operationContext(rt, asPrincipal(by), undefined, undefined, undefined, ENTITY_UNBIND_OPERATION, [], now), event),
