@@ -272,6 +272,18 @@ export async function callScopeStore(
   return storeResult(await send(storeRequest.parse({ operation, input })), from);
 }
 
+/**
+ * What a host answers an unarchive, an un-delete, a restore or a copy of a scope whose stores a deletion
+ * has fenced (D-71). The objects refuse for good, so the way out is a new scope, with new objects. Only a
+ * backup stored in one entry, with each store in one page, can get there today: it downloads whole and
+ * restores into another scope. A larger one restores only into its own scope (D-69).
+ */
+export const storesFencedRefusal = (scopeId: string): string =>
+  `scope ${scopeId} had its stores fenced by a reap, and a fenced store refuses for good. Finish the reap. ` +
+  'Its data is in the backup the reap took, if it took one: a backup stored in one entry downloads whole ' +
+  '(GET …/backups/<capturedAt>) and restores into a new scope (POST …/scopes/<new>/restore). ' +
+  'A backup stored in several entries or pages cannot be restored into another scope yet.';
+
 const RESERVED_RESULT = {
   'substrat.export-page': storeExportPageResult,
   'substrat.stage-page': storeStagePageResult,

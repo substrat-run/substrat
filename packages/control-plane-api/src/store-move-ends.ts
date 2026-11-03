@@ -1,5 +1,5 @@
 import { storeDriverDumpPageBytes, type ScopeDumpPageTable, type ScopeDumpTable } from '@substrat-run/contracts';
-import { storeDumpPages, type ReservedStoreCall } from '@substrat-run/kernel';
+import { storeDumpPages, storesFencedRefusal, type ReservedStoreCall } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import type { ScopeBackupWriter } from './backups.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
@@ -81,19 +81,24 @@ export const restoreEnds = (caller: PlatformScopeStores, to: StorePlace, sourceO
  * A store's landing that failed once a commit was attempted: which bindings were committed, and
  * which were not. The commit of `failed` may have run with its answer lost, so the store under it is
  * either. The route replays erasures even so, since a store replaced by an old copy holds subjects
- * erased since, and running the restore again converges: every commit is a whole replace.
+ * erased since, and running the restore again converges: every commit is a whole replace. Except
+ * after a 410: a store a deletion has fenced refuses for good (D-71), so the answer names the way
+ * out instead of a retry.
  */
 export class StoreLandFailure extends ControlPlaneError {
   constructor(
     cause: unknown,
+    scopeId: string,
     readonly committed: readonly string[],
     readonly uncommitted: readonly string[],
   ) {
     const message = cause instanceof Error ? cause.message : String(cause);
+    const status = cause instanceof ControlPlaneError ? cause.status : 502;
     super(
-      cause instanceof ControlPlaneError ? cause.status : 502,
+      status,
       `${message}. The scope's stores were committed in part: ${committed.length ? committed.join(', ') : 'none'} committed, ` +
-        `${uncommitted.join(', ')} not known to be; restore again to finish`,
+        `${uncommitted.join(', ')} not known to be; ` +
+        (status === 410 ? storesFencedRefusal(scopeId) : 'restore again to finish'),
     );
   }
 }
@@ -120,7 +125,7 @@ export async function commitStages(
     } catch (e) {
       const rest = moved.slice(at);
       for (const left of rest.slice(1)) await callAt(caller, place, left)('substrat.discard-stage', { stageId: left.moveId }).catch(() => undefined);
-      throw new StoreLandFailure(e, committed, rest.map((s) => s.binding));
+      throw new StoreLandFailure(e, place.scopeId, committed, rest.map((s) => s.binding));
     }
     committed.push(store.binding);
   }

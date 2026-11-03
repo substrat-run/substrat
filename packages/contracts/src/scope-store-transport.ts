@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { scopeId } from './ids.js';
-import { RESERVED_STORE_OPERATIONS, storeOperationName } from './deploy.js';
+import { RESERVED_STORE_OPERATIONS, STORE_FENCE_OPERATION, storeOperationName } from './deploy.js';
 
 /**
  * The hosted transport for a scope-store call (#2207).
@@ -43,7 +43,7 @@ export type StoreCallRequest = z.infer<typeof storeCallRequest>;
 export const storeCallAudience = z.enum(['caller', 'platform']);
 export type StoreCallAudience = z.infer<typeof storeCallAudience>;
 
-const reserved = new Set<string>(RESERVED_STORE_OPERATIONS);
+const reserved = new Set<string>([...RESERVED_STORE_OPERATIONS, STORE_FENCE_OPERATION]);
 
 /** A `substrat.*` operation is the platform's. A caller signature does not open it. */
 export function storeAudienceAllows(operation: string, audience: StoreCallAudience): boolean {

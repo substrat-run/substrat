@@ -790,6 +790,7 @@ export const INDEX_VALUE_EXPORTS = [
   'storeDriverRolloutWalkedIn',
   'storeDriverStateIn',
   'storeDumpPages',
+  'storesFencedRefusal',
   'strandJudgmentsOf',
   'subjectErasureClaimParams',
   'subjectGrantState',

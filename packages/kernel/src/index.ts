@@ -124,6 +124,7 @@ export {
 export { GRANT_CHILDREN_INDEX_DDL } from './grant-scoped-read.js';
 export {
   callReservedStoreOperation,
+  storesFencedRefusal,
   callScopeStore,
   observeStoreCall,
   readStoreDump,
