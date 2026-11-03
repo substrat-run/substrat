@@ -276,6 +276,35 @@ async function send(call, query = '') {
   return { status: response.status, text: await response.text() };
 }
 
+/**
+ * The status of a POST that declares `length` and writes at most `chunk` of it. The server answers
+ * without the body, so the destroy after the response ends the socket on purpose and its reset is
+ * ignored; a reset or silence BEFORE the response rejects, with a bounded wait, rather than hang.
+ */
+function declaredLength(length, chunk) {
+  return new Promise((resolve, reject) => {
+    let answered = false;
+    const timer = setTimeout(() => fail(new Error(`no response to a declared Content-Length of ${length} within 30s`)), 30_000);
+    const fail = (err) => {
+      clearTimeout(timer);
+      req.destroy();
+      reject(err);
+    };
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': length } }, (res) => {
+      answered = true;
+      clearTimeout(timer);
+      res.resume();
+      resolve({ status: res.statusCode });
+      req.destroy();
+    });
+    req.on('error', (err) => {
+      if (!answered) fail(new Error(`the connection failed before a response to a declared Content-Length of ${length}: ${err.message}`));
+    });
+    if (chunk) req.write(chunk);
+    else req.end();
+  });
+}
+
 const result = (answer) => JSON.parse(answer.text).result;
 
 try {
@@ -393,18 +422,7 @@ try {
   // A body over the limit is refused on its declared length, before it is read; one at it is not.
   // Only a few bytes are written against the declared length, so the answer cannot depend on a
   // race with the server closing the connection mid-upload: it is given without the body.
-  const oversize = await new Promise((resolve, reject) => {
-    const req = httpRequest(
-      { host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': String(entry.STORE_CALL_MAX_BODY_BYTES + 1) } },
-      (res) => {
-        res.resume();
-        resolve({ status: res.statusCode });
-        req.destroy();
-      },
-    );
-    req.on('error', (err) => (err.code === 'ECONNRESET' ? undefined : reject(err)));
-    req.write('x');
-  });
+  const oversize = await declaredLength(String(entry.STORE_CALL_MAX_BODY_BYTES + 1), 'x');
   check(oversize.status === 413, 'a body declared over the limit is answered 413 before it is read', oversize);
   const chunked = await fetch(`http://127.0.0.1:${port}/invoke`, {
     method: 'POST',
@@ -414,15 +432,7 @@ try {
   check(chunked.status === 411, 'a body with no Content-Length (chunked) is answered 411 before it is read', { status: chunked.status });
   // A non-ASCII digit passes str.isdigit() and breaks int(): it must fall to the 411, never a 500.
   // The runtime may refuse such a header itself first (400); either way it is no 500.
-  const odd = await new Promise((resolve, reject) => {
-    const req = httpRequest({ host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': '\u00b2' } }, (res) => {
-      res.resume();
-      resolve({ status: res.statusCode });
-      req.destroy();
-    });
-    req.on('error', (err) => (err.code === 'ECONNRESET' ? resolve({ status: 'reset' }) : reject(err)));
-    req.end();
-  });
+  const odd = await declaredLength('\u00b2');
   check([400, 411].includes(odd.status), 'a Content-Length of a non-ASCII digit is refused (411), not a 500', odd);
   const atLimit = await send({ headers: {}, body: 'x'.repeat(entry.STORE_CALL_MAX_BODY_BYTES) });
   check(atLimit.status === 401 && atLimit.text === 'unauthorized: missing', 'a body at the limit is read and verified', { status: atLimit.status });
