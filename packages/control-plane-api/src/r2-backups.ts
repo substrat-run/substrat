@@ -40,6 +40,7 @@ interface R2BucketLike {
     prefix?: string;
     cursor?: string;
     include?: ('customMetadata' | 'httpMetadata')[];
+    delimiter?: string;
   }): Promise<{
     objects: { key: string; size: number; customMetadata?: Record<string, string> }[];
     truncated: boolean;
@@ -91,19 +92,6 @@ const byteLength = (body: string): number => new TextEncoder().encode(body).leng
 
 export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
   const r2 = bucket as R2BucketLike;
-
-  /** A held backup's manifest, or the whole dump a backup from before #2839 is. */
-  const read = async (tenantId: string, scopeId: string, capturedAt: string) => {
-    const obj = await r2.get(backupKey(tenantId, scopeId, capturedAt));
-    if (!obj) return null;
-    // Parsed through the contract on the way out: a corrupted or hand-edited object
-    // fails HERE, loudly, rather than at the restore that trusted it.
-    const raw: unknown = JSON.parse(await obj.text());
-    const manifest = backupManifest.safeParse(raw);
-    return manifest.success
-      ? { paged: true as const, manifest: manifest.data }
-      : { paged: false as const, whole: scopeDump.parse(raw) };
-  };
 
   return {
     begin({ vertical, header }) {
@@ -161,14 +149,14 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       const out: ScopeBackup[] = [];
       let cursor: string | undefined;
       do {
+        // One level: a backup's entries sit under a directory of their own, and are not backups.
         const page = await r2.list({
           prefix,
+          delimiter: '/',
           include: ['customMetadata'],
           ...(cursor ? { cursor } : {}),
         });
         for (const o of page.objects) {
-          // A backup's entries sit one level down; only the manifest (or a whole dump) is a backup.
-          if (o.key.slice(prefix.length).includes('/')) continue;
           const meta = o.customMetadata ?? {};
           // The key is the fallback address: an object written before the metadata
           // existed (or by a manual upload) still lists rather than vanishing.
@@ -190,26 +178,33 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
     },
 
     async get({ tenantId, scopeId, capturedAt }) {
-      const held = await read(tenantId, scopeId, capturedAt);
-      if (!held) return null;
-      if (!held.paged) {
-        const { tables: _, ...header } = held.whole;
-        return { header, entries: 1 };
+      const obj = await r2.get(backupKey(tenantId, scopeId, capturedAt));
+      if (!obj) return null;
+      // Parsed through the contract on the way out: a corrupted or hand-edited object
+      // fails HERE, loudly, rather than at the restore that trusted it. A manifest says so,
+      // so a damaged one is refused as a manifest rather than as a whole dump.
+      const raw: unknown = JSON.parse(await obj.text());
+      if ((raw as { format?: unknown } | null)?.format !== 'paged') {
+        const { tables, ...header } = scopeDump.parse(raw);
+        return {
+          header,
+          entries: 1,
+          entry: async (index) => {
+            if (index !== 0) throw new Error(`backup ${capturedAt} of scope ${scopeId} has one entry`);
+            return { kind: 'page', tables };
+          },
+        };
       }
-      const { format: _, stageId: __, entries, tables: ___, ...header } = held.manifest;
-      return { header, entries };
-    },
-
-    async entry({ tenantId, scopeId, capturedAt, index }): Promise<ScopeBackupEntry> {
-      const held = await read(tenantId, scopeId, capturedAt);
-      if (!held) throw new Error(`no backup for scope ${scopeId} at ${capturedAt}`);
-      if (!held.paged) {
-        if (index !== 0) throw new Error(`backup ${capturedAt} of scope ${scopeId} has one entry`);
-        return { kind: 'page', tables: held.whole.tables };
-      }
-      const obj = await r2.get(entryKey(tenantId, scopeId, capturedAt, held.manifest.stageId, index));
-      if (!obj) throw new Error(`backup ${capturedAt} of scope ${scopeId} is missing entry ${index}`);
-      return backupEntry.parse(JSON.parse(await obj.text()));
+      const { format: _, stageId, entries, tables: __, ...header } = backupManifest.parse(raw);
+      return {
+        header,
+        entries,
+        entry: async (index): Promise<ScopeBackupEntry> => {
+          const part = await r2.get(entryKey(tenantId, scopeId, capturedAt, stageId, index));
+          if (!part) throw new Error(`backup ${capturedAt} of scope ${scopeId} is missing entry ${index}`);
+          return backupEntry.parse(JSON.parse(await part.text()));
+        },
+      };
     },
   };
 }

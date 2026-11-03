@@ -25,9 +25,11 @@ export function fakeBucket(pageSize = 100, opts: { failOn?: (key: string) => boo
       delete: async (key: string) => {
         objects.delete(key);
       },
-      list: async (listOpts?: { prefix?: string; cursor?: string; include?: string[] }) => {
+      list: async (listOpts?: { prefix?: string; cursor?: string; include?: string[]; delimiter?: string }) => {
         const all = [...objects.values()]
           .filter((o) => (listOpts?.prefix ? o.key.startsWith(listOpts.prefix) : true))
+          // Mirrors R2: with a delimiter, only the keys one level below the prefix are objects.
+          .filter((o) => !listOpts?.delimiter || !o.key.slice(listOpts.prefix?.length ?? 0).includes(listOpts.delimiter))
           .sort((a, b) => (a.key < b.key ? -1 : 1));
         const from = listOpts?.cursor ? Number(listOpts.cursor) : 0;
         const slice = all.slice(from, from + pageSize);

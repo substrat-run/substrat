@@ -56,10 +56,14 @@ export type ScopeBackupEntry =
   | { kind: 'page'; tables: ScopeDumpPageTable[] }
   | { kind: 'changes'; tables: ScopeDumpChange[] };
 
-/** A held backup as a restore reads it: its header, and how many entries hold its tables. */
+/**
+ * A held backup as a restore reads it: its header, how many entries hold its tables, and each
+ * entry, read in the order it was written.
+ */
 export interface StoredScopeBackup {
   header: ScopeDumpHeader;
   entries: number;
+  entry(index: number): Promise<ScopeBackupEntry>;
 }
 
 /**
@@ -85,8 +89,6 @@ export interface ScopeBackupStore {
   list(input: { tenantId: string; scopeId: string }): Promise<ScopeBackup[]>;
   /** One backup, by its capture time. Null when no such copy is held. */
   get(input: { tenantId: string; scopeId: string; capturedAt: string }): Promise<StoredScopeBackup | null>;
-  /** Entry `index` of a held backup, in the order it was written. */
-  entry(input: { tenantId: string; scopeId: string; capturedAt: string; index: number }): Promise<ScopeBackupEntry>;
 }
 
 /**
