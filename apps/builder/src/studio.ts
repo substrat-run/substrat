@@ -58,46 +58,47 @@ export function hostFor(env: StudioEnv): CloudflareScopeHost {
 }
 
 /**
- * Provision-or-heal, memoized per isolate. `provisionScopeLocal` is idempotent
- * (migrations no-op once applied; the projection rewrites the same rows), so a
- * cold start re-running it is a self-heal, not a hazard — and it is how an
- * already-provisioned studio scope gains the assistant engine's tables and
+ * Provision-or-heal, once per isolate once it has succeeded. `provisionScopeLocal`
+ * is idempotent (migrations no-op once applied; the projection rewrites the same
+ * rows), so a cold start re-running it is a self-heal, not a hazard — and it is
+ * how an already-provisioned studio scope gains the assistant engine's tables and
  * keys. Entitlements are deliberately omitted: an un-projected scope trusts
  * upstream (#304), which is the truthful state — the studio has no plan.
+ *
+ * Only SUCCESS is shared across requests, never an in-flight promise: its I/O
+ * belongs to the request that started it, and a cancelled request can leave it
+ * never settling, which would hold every later turn in the isolate. Concurrent
+ * cold starts each provision instead, which is idempotent.
  */
-let ready: Promise<void> | null = null;
+let provisioned = false;
 
-export function ensureStudio(env: StudioEnv): Promise<void> {
-	ready ??= (async () => {
-		const host = hostFor(env);
-		await host.provisionScopeLocal({
-			tenantId: STUDIO_NODE.tenantId,
-			scopeId: STUDIO_NODE.scopeId,
-			owner: STUDIO_RECORDER,
-			roles: [
-				{
-					key: STUDIO_ROLE,
-					permissions: [
-						METERING_PERM.read,
-						METERING_PERM.record,
-						METERING_PERM.configure,
-						METERING_PERM.close,
-						ASSISTANT_PERM.use,
-					].map((p) => permissionKey.parse(p)),
-					source: 'vertical',
-				},
-				{ key: HOST_ROLE, permissions: [ASSISTANT_PERM.run], source: 'vertical', holder: 'system' },
-			],
-			ownerRoleKey: STUDIO_ROLE,
-		});
-		await host.assignScopeRole(STUDIO_NODE.scopeId, STUDIO_HOST, HOST_ROLE);
-		// Meters are per-model and configured lazily by recordTurnUsage — a new
-		// model id must never require a deploy to start metering.
-	})().catch((err) => {
-		ready = null; // a failed bootstrap must not poison every later turn
-		throw err;
+export async function ensureStudio(env: StudioEnv): Promise<void> {
+	if (provisioned) return;
+	const host = hostFor(env);
+	await host.provisionScopeLocal({
+		tenantId: STUDIO_NODE.tenantId,
+		scopeId: STUDIO_NODE.scopeId,
+		owner: STUDIO_RECORDER,
+		roles: [
+			{
+				key: STUDIO_ROLE,
+				permissions: [
+					METERING_PERM.read,
+					METERING_PERM.record,
+					METERING_PERM.configure,
+					METERING_PERM.close,
+					ASSISTANT_PERM.use,
+				].map((p) => permissionKey.parse(p)),
+				source: 'vertical',
+			},
+			{ key: HOST_ROLE, permissions: [ASSISTANT_PERM.run], source: 'vertical', holder: 'system' },
+		],
+		ownerRoleKey: STUDIO_ROLE,
 	});
-	return ready;
+	await host.assignScopeRole(STUDIO_NODE.scopeId, STUDIO_HOST, HOST_ROLE);
+	// Meters are per-model and configured lazily by recordTurnUsage — a new
+	// model id must never require a deploy to start metering.
+	provisioned = true;
 }
 
 /** A stub acting as `principal` in the studio scope, provisioned first. */

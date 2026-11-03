@@ -36,6 +36,12 @@ const BATCH = 50;
 /** How often buffered events are appended while a turn runs. */
 const FLUSH_MS = 5_000;
 /**
+ * How long a turn waits for its record to open. The record is best-effort: a
+ * studio scope that is slow or stuck must not hold the turn up, so past this
+ * the turn runs unrecorded (logged), and the next turn closes the one it left.
+ */
+const OPEN_TIMEOUT_MS = 10_000;
+/**
  * The lease's staleness. A turn can sit in one long command with nothing to
  * append; the BuilderAgent runs one turn at a time per team, so another run
  * never contends for the lease — the default 15 s would only invite a takeover.
@@ -63,11 +69,18 @@ function fit(value: unknown): unknown {
 	return { truncated: true, bytes, preview: text.slice(0, DATA_BYTES_MAX / 4) };
 }
 
-/** The message as `send-message` takes it: at most 32 000 characters and 32 KiB serialized. */
-function fitMessage(text: string): string {
-	let out = text.length > MESSAGE_MAX ? text.slice(0, MESSAGE_MAX) : text;
-	while (byteLength(JSON.stringify(out)) > MESSAGE_BYTES_MAX) out = out.slice(0, Math.floor(out.length * 0.9));
-	return out.length < text.length ? `${out.slice(0, -40)}\n…[cut: the message was ${text.length} characters]` : out;
+/**
+ * The message as `send-message` takes it: at most 32 000 characters and 32 KiB
+ * serialized. A longer one keeps its head and says it was cut — both bounds are
+ * judged on the final string, note included, so the cut message always fits.
+ */
+export function fitMessage(text: string): string {
+	const fits = (s: string) => s.length <= MESSAGE_MAX && byteLength(JSON.stringify(s)) <= MESSAGE_BYTES_MAX;
+	if (fits(text)) return text;
+	const note = `\n…[cut: the message was ${text.length} characters]`;
+	let keep = Math.min(text.length, MESSAGE_MAX - note.length);
+	while (keep > 0 && !fits(text.slice(0, keep) + note)) keep = Math.floor(keep * 0.9);
+	return text.slice(0, keep) + note;
 }
 
 function hostEvent(kind: string, text: string, data?: unknown): AssistantStreamBody {
@@ -99,7 +112,8 @@ export interface OpenTurn {
 	readonly model: string;
 }
 
-export type TurnOutcome = { readonly kind: 'done' } | { readonly kind: 'stopped' } | { readonly kind: 'error'; readonly message: string };
+/** How a turn ended. A failure's message is the turn's fatal `error` event, already recorded. */
+export type TurnOutcome = { readonly kind: 'done' | 'stopped' | 'error' };
 
 /**
  * One turn being written into its project's thread. `open` returns null when
@@ -117,6 +131,8 @@ export class TurnRecord {
 	#pid: string | null = null;
 	#parts = 0;
 	#finished = false;
+	/** The last fatal `error` event's message — what a failed turn ends with. */
+	#failure: string | null = null;
 
 	private constructor(env: StudioEnv, threadId: string, turn: OpenTurn) {
 		this.#env = env;
@@ -127,6 +143,21 @@ export class TurnRecord {
 	}
 
 	static async open(env: StudioEnv, turn: OpenTurn): Promise<TurnRecord | null> {
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const timeout = new Promise<null>((resolve) => {
+			timer = setTimeout(() => {
+				console.error(`record: project ${turn.projectId} turn ${turn.turnId} not opened within ${OPEN_TIMEOUT_MS} ms`);
+				resolve(null);
+			}, OPEN_TIMEOUT_MS);
+		});
+		try {
+			return await Promise.race([TurnRecord.#open(env, turn), timeout]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	static async #open(env: StudioEnv, turn: OpenTurn): Promise<TurnRecord | null> {
 		try {
 			const owner = await studioScope(env);
 			const host = await studioScope(env, STUDIO_HOST);
@@ -170,6 +201,7 @@ export class TurnRecord {
 	/** One event from the turn loop, as it was streamed. */
 	event(e: BuildEvent): void {
 		if (e.type === 'thinking') return; // presence only, never content
+		if (e.type === 'error' && e.fatal) this.#failure = e.message;
 		if (e.type === 'assistant-text') {
 			if (!this.#pid) {
 				this.#pid = `p${++this.#parts}`;
@@ -219,7 +251,7 @@ export class TurnRecord {
 		this.#closeText();
 		this.#push(
 			outcome.kind === 'error'
-				? { t: 'turn-error', code: 'turn_failed', message: clip(outcome.message, TEXT_MAX) }
+				? { t: 'turn-error', code: 'turn_failed', message: clip(this.#failure ?? 'The turn failed.', TEXT_MAX) }
 				: { t: 'turn-finish', reason: outcome.kind },
 		);
 		await this.flush();

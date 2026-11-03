@@ -668,9 +668,9 @@ export class BuilderAgent extends DurableObject<Env> {
 				state.history.push(...transcript);
 				if (signal.aborted) outcome = { kind: 'stopped' };
 			} catch (err) {
-				const failure = turnFailure(err);
-				outcome = { kind: 'error', message: failure };
-				emit({ type: 'error', message: failure, fatal: true });
+				// The record takes the message from this fatal event (record.ts).
+				outcome = { kind: 'error' };
+				emit({ type: 'error', message: turnFailure(err), fatal: true });
 			} finally {
 				clearInterval(heartbeat);
 				if (record) {

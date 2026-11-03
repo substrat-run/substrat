@@ -80,7 +80,8 @@ describe('the conversation record', () => {
 	it('keeps a failed turn with its error, and the next turn appends to the same thread', async () => {
 		const first = (await rec.TurnRecord.open(env, turn(null, 'T1', 'Continue')))!;
 		first.event({ type: 'truncated', steps: 21, maxSteps: 40 });
-		await first.finish({ kind: 'error', message: 'The model provider refused the request.' });
+		first.event({ type: 'error', message: 'The model provider refused the request.', fatal: true });
+		await first.finish({ kind: 'error' });
 		const second = (await rec.TurnRecord.open(env, turn(first.threadId, 'T2', 'What is the state?')))!;
 		await second.finish({ kind: 'stopped' });
 
@@ -90,13 +91,14 @@ describe('the conversation record', () => {
 			'turn-start',
 			'host-event:turn-context',
 			'host-event:truncated',
+			'host-event:error',
 			'turn-error',
 			'user-message',
 			'turn-start',
 			'host-event:turn-context',
 			'turn-finish',
 		]);
-		expect(events[4]).toMatchObject({ code: 'turn_failed', message: 'The model provider refused the request.' });
+		expect(events[5]).toMatchObject({ code: 'turn_failed', message: 'The model provider refused the request.' });
 		expect(events.at(-1)).toMatchObject({ reason: 'stopped' });
 	});
 
@@ -131,6 +133,18 @@ describe('the conversation record', () => {
 		const { events } = await rec.readRecord(env, record.threadId, 0);
 		expect(shape(events).slice(3)).toEqual(['host-event:check', 'turn-finish']);
 		expect(events[3]).toMatchObject({ data: { truncated: true, preview: expect.stringMatching(/^\{"type":"check"/) } });
+	});
+
+	it.each([
+		['over the character bound', 'a'.repeat(40_000)],
+		['over the byte bound only', 'ä'.repeat(20_000)],
+	])('records a message %s, cut to fit with a note saying so', async (_name, message) => {
+		const record = (await rec.TurnRecord.open(env, turn(null, 'T1', message)))!;
+		await record.finish({ kind: 'done' });
+
+		const [sent] = (await rec.readRecord(env, record.threadId, 0)).events;
+		expect(sent).toMatchObject({ t: 'user-message', text: expect.stringMatching(/…\[cut: the message was (?:40000|20000) characters\]$/) });
+		expect(rec.fitMessage(message)).toBe((sent as { text: string }).text);
 	});
 
 	it('leaves the assistant side to the turn loop: the recorder that owns the thread cannot append to it', async () => {
