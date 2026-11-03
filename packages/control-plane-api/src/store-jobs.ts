@@ -10,7 +10,7 @@ import type { HostAdmin } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import type { ScopeBackup, ScopeBackupStore } from './backups.js';
 import type { CopyJobStatus } from './copy-job.js';
-import type { PlatformScopeStores } from './platform-scope-stores.js';
+import { isStoreBusy, retryAfterOf, type PlatformScopeStores } from './platform-scope-stores.js';
 import { backupEnds, discardStages, restoreEnds, writeBackupIndex, type BackupPlace } from './store-move-ends.js';
 import { advanceStorePlan, countingWrites, movesOf, STORE_REQUEST_BUDGET, type MovedStore, type StoreMovePlan } from './store-move.js';
 
@@ -23,6 +23,8 @@ export const STORE_JOB_STEP_MS = 20_000;
 export const STORE_JOB_STEP_PAGES = STORE_REQUEST_BUDGET.pages;
 /** How long a job may run before it fails, ms: within what a stage holds (`STORE_STAGE_MAX_AGE_MS`). */
 export const STORE_JOB_MAX_MS = 6 * 3_600_000;
+/** The longest a job waits before asking a busy store again, ms. */
+export const STORE_JOB_BUSY_MAX_MS = 60_000;
 /** Consecutive transient faults a job rides out before it fails. */
 export const STORE_JOB_MAX_FAULTS = 6;
 /** Past this with no step recorded, a job's steps have stopped: a step and its longest wait fit well inside. */
@@ -74,6 +76,11 @@ export interface StoreJobRecord {
   rows: number;
   attempt: number;
   faults: number;
+  /**
+   * Consecutive times a store answered 503 (busy, bringing restored data forward), for the backoff. Not
+   * a fault: it does not count toward `STORE_JOB_MAX_FAULTS`, and the job's deadline bounds it.
+   */
+  busy?: number;
   nextDelayMs: number;
   updatedAt: number;
 }
@@ -170,8 +177,14 @@ export async function advanceStoreJob(
     }
     return { ...job, status: 'failed', error: { status, message }, nextDelayMs: 0, updatedAt: now() };
   };
-  const faulted = async (status: number, message: string): Promise<StoreJobRecord> => {
-    const faults = job.faults + 1;
+  /**
+   * A store that answered 503 is busy, not broken: a driver migrating restored data answers it for as
+   * long as the migration runs. The job waits and asks again with a growing backoff (`Retry-After`
+   * honoured), and its deadline is what ends it.
+   */
+  const faulted = async (status: number, message: string, busyWith?: unknown): Promise<StoreJobRecord> => {
+    const busy = busyWith !== undefined ? (job.busy ?? 0) + 1 : undefined;
+    const faults = busy === undefined ? job.faults + 1 : job.faults;
     if (faults >= STORE_JOB_MAX_FAULTS) return failed(status, `${message} (after ${faults} attempts)`);
     const recorded = new Set(movesOf(plan).map((m) => m.moveId));
     const unrecorded = movesOf(last).filter((m) => !recorded.has(m.moveId));
@@ -179,6 +192,10 @@ export async function advanceStoreJob(
       for (const { moveId } of unrecorded) await built?.backups?.deleteMove({ ...place, moveId }).catch(() => undefined);
     } else if (built) {
       await discardStages(built.stores, place, unrecorded);
+    }
+    if (busy !== undefined) {
+      const wait = Math.min(STORE_JOB_BUSY_MAX_MS, Math.max(faultBackoffMs(busy), retryAfterOf(busyWith)));
+      return { ...job, busy, nextDelayMs: wait, updatedAt: now() };
     }
     return { ...job, faults, nextDelayMs: faultBackoffMs(faults), updatedAt: now() };
   };
@@ -216,7 +233,7 @@ export async function advanceStoreJob(
       const { state, delayMs } = progress;
       return {
         ...job, state, pages: state.pages, rows: state.move.rows, attempt: state.move.attempt,
-        faults: 0, nextDelayMs: delayMs, updatedAt: now(),
+        faults: 0, busy: 0, nextDelayMs: delayMs, updatedAt: now(),
       };
     }
     if (spec.kind === 'store-backup') {
@@ -231,6 +248,6 @@ export async function advanceStoreJob(
     const status = e instanceof ControlPlaneError ? e.status : 500;
     const message = e instanceof Error ? e.message : String(e);
     const transient = status === 0 || (status >= 500 && status !== 501);
-    return transient ? await faulted(status, message) : await failed(status, message);
+    return transient ? await faulted(status, message, isStoreBusy(e) ? e : undefined) : await failed(status, message);
   }
 }

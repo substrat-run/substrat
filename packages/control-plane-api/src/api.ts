@@ -254,12 +254,14 @@ import {
   discardStages,
   importWholeStores,
   refuseOverCap,
+  requireStoresReady,
   restoreEnds,
   snapshotEnds,
   storeHoldsRows,
   StoreLandFailure,
   writeBackupIndex,
   type BackupPlace,
+  type StoreReadyWait,
 } from './store-move-ends.js';
 import { readStoreForBody, STORE_PULL_MAX_BYTES, type PullBudget } from './store-pull.js';
 import {
@@ -545,6 +547,11 @@ export interface ControlPlaneApiOptions {
   storeJobs?: StoreJobs;
   /** How much of a store's move one request does. Default `STORE_REQUEST_BUDGET`. */
   storeRequestBudget?: StoreRequestBudget;
+  /**
+   * How long a restore waits for the stores it committed to answer `substrat.selfcheck` (D-69).
+   * Default `STORE_READY_WAIT_MS` and a real wait; a test injects its clock.
+   */
+  storeReadyWait?: StoreReadyWait;
   /** The most store data one pull or tenant export answers, bytes. Default `STORE_PULL_MAX_BYTES`. */
   storePullMaxBytes?: number;
   /**
@@ -7886,6 +7893,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * subjects erased since, and a commit whose answer was lost may have landed. The answer names what
    * was committed, with `incomplete: true`. So does a deployment that refuses the load after the
    * commits, which nothing can ask it beforehand: see D-69.
+   *
+   * `landStores` ends with the probe (`requireStoresReady`): a committed store may still be bringing
+   * its data forward, so `substrat.selfcheck` is asked of each before the replay and the load, and a
+   * store that does not come ready is answered in `storesNotReady`, with `incomplete: true`.
    */
   const landDump = async (
     c: Context<{ Variables: Vars }>,
@@ -7935,6 +7946,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             ...storeReplayFields([hostReplay, replay].filter((r): r is StoreErasureReplay => !!r)),
             committedStores: e.committed,
             ...(e.unknown ? { commitUnknown: e.unknown } : {}),
+            ...(e.notReady.length > 0 ? { storesNotReady: e.notReady } : {}),
             incomplete: true,
           });
         }
@@ -7989,7 +8001,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   /** A whole dump's stores, staged and committed in pages: an old backup's or an uploaded file's. */
   const landWholeStores = (scope: Scope, dump: ScopeDump) => (caller: PlatformScopeStores, vertical: string): Promise<string[]> =>
-    importWholeStores(caller, { tenantId: scope.tenantId, scopeId: scope.id, vertical }, dump.stores);
+    importWholeStores(caller, { tenantId: scope.tenantId, scopeId: scope.id, vertical }, dump.stores)
+      .then(async (committed) => {
+        await requireStoresReady(caller, { tenantId: scope.tenantId, scopeId: scope.id, vertical }, dump.stores, options.storeReadyWait);
+        return committed;
+      });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/restore', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
@@ -8120,7 +8136,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         const landed = await landDump(c, tenantId, scope, dump, undefined, async (stores, vertical) => {
           await stillThere();
-          return commitStages(stores, { tenantId, scopeId, vertical }, moved);
+          const place = { tenantId, scopeId, vertical };
+          const committed = await commitStages(stores, place, moved);
+          await requireStoresReady(stores, place, moved, options.storeReadyWait);
+          return committed;
         });
         await jobs?.forget(id).catch(() => undefined);
         if (!landed.ok) await discardStages(caller, target, moved);

@@ -242,6 +242,23 @@ or its retry was refused after a first answer was lost, since that first try may
 The deployment's load has not run, so the router serves what it served. With several stores this is
 partial: those committed stay replaced. Running the restore again finishes it.
 
+**A store may bring data forward after its commit, and may not be ready.** A driver restoring a dump
+of an older schema version commits at that version and migrates on its later calls, answering 503 until it
+is done, or 500 if a step fails on those rows. So a good count from `substrat.commit-stage` does not
+say the store works. After the last commit the platform asks each committed store `substrat.selfcheck`,
+with the call's own retry and deadline, and waits for a 503 with a backoff (a `Retry-After` honoured)
+for up to `STORE_READY_WAIT_MS` (30 s) across all the stores. This runs after the commits and before the
+erasure replay and the deployment's load, since the replay calls `substrat.erase` on each store and the
+load makes the scope serve from them: both would meet the same 503 or 500 instead of the cause. A store
+that stays 503 past the wait, or answers a 5xx, is named in `storesNotReady`, and the answer is
+`incomplete: true` with `committedStores`, a 502 on both routes, the replay run and the deployment's load
+not run. So a driver may fail a restore this way after its commit. A store still busy may come ready; one
+whose step failed does not, and a caller cannot see why, since a 5xx body is stripped on its way out and
+the driver logs the step's message. The way out is to wipe that store and restore another backup. A
+backup or a snapshot whose source answers 503 is a store migrating: in a request it answers 503 saying
+the store is busy, and a job treats it as a transient fault that does not count toward the faults a job
+fails after, waiting with a growing backoff (at most 60 s, a `Retry-After` honoured) until its deadline.
+
 **A deployment that refuses the load after the commits** is the one case that running it again does
 not finish. The deployment's load comes last, and it judges the dump inside `/internal/restore`: a role
 set it cannot define, a journal that is not coherent, a dump this release cannot take. No endpoint asks

@@ -154,6 +154,7 @@ export {
   callPlatformScopeStore,
   callPlatformScopeStoreAt,
   platformScopeStoresFor,
+  ScopeStoreFault,
   runningVersionStoresOf,
   scopeStoresOf,
   unrouteScope,
@@ -164,11 +165,13 @@ export {
   declaredStoresOf,
 } from './platform-scope-stores.js';
 export { STORE_REQUEST_BUDGET, type StoreMovePlan, type StoreRequestBudget } from './store-move.js';
+export { STORE_READY_WAIT_MS, type StoreReadyWait } from './store-move-ends.js';
 export { STORE_PULL_MAX_BYTES } from './store-pull.js';
 export {
   advanceStoreJob,
   isStoreJob,
   newStoreJob,
+  STORE_JOB_BUSY_MAX_MS,
   STORE_JOB_MAX_FAULTS,
   STORE_JOB_MAX_MS,
   STORE_JOB_STEP_MS,

@@ -292,9 +292,34 @@ export async function scopeStoresOf(
   return (await scopeStoreReachOf(admin, actor, scope, drivers, running)).all;
 }
 
-function asControlPlane(error: unknown): never {
+/**
+ * A store's own refusal or fault, as the control plane carries it on: the status it answered. A 503 is
+ * a store busy bringing restored data forward (D-69), which clears by itself, so a job waits it out
+ * (`isStoreBusy`). `retryAfterMs` is the answer's `Retry-After`, when it had one.
+ */
+export class ScopeStoreFault extends ControlPlaneError {
+  constructor(status: number, message: string, readonly retryAfterMs?: number) {
+    super(status, message);
+  }
+}
+
+/** Whether a fault is a store saying it is busy (503), not the control plane failing to reach or sign. */
+export const isStoreBusy = (e: unknown): e is ScopeStoreFault => e instanceof ScopeStoreFault && e.status === 503;
+
+/** How long a store's answer asked to be left alone, ms; 0 when it did not say. Callers cap it to what they can wait. */
+export const retryAfterOf = (e: unknown): number => (e instanceof ScopeStoreFault && e.retryAfterMs ? e.retryAfterMs : 0);
+
+/** A `Retry-After` header as milliseconds: delta-seconds or an HTTP date. Undefined when absent or unreadable. */
+export function retryAfterMsOf(header: string | null, now: number = Date.now()): number | undefined {
+  if (header === null) return undefined;
+  const text = header.trim();
+  const ms = /^\d+$/.test(text) ? Number(text) * 1000 : Date.parse(text) - now;
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+}
+
+function asControlPlane(error: unknown, retryAfterMs?: number): never {
   if (error instanceof StoreError) {
-    throw new ControlPlaneError(error.storeStatus, error.message);
+    throw new ScopeStoreFault(error.storeStatus, error.message, retryAfterMs);
   }
   throw error;
 }
@@ -330,10 +355,15 @@ export async function callPlatformScopeStoreAt(
   input?: unknown,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  let retryAfterMs: number | undefined;
   try {
-    return await callReservedStoreOperation(signedStoreSend(dispatch, target, signal), operation, input);
+    return await callReservedStoreOperation(
+      signedStoreSend(dispatch, target, signal, (response) => { retryAfterMs = retryAfterMsOf(response.headers.get('retry-after')); }),
+      operation,
+      input,
+    );
   } catch (error) {
-    asControlPlane(error);
+    asControlPlane(error, retryAfterMs);
   }
 }
 
@@ -342,6 +372,7 @@ function signedStoreSend(
   dispatch: PlatformScopeStoreDispatch,
   { scriptName, objectName }: { readonly scriptName: string; readonly objectName: string },
   signal?: AbortSignal,
+  answered?: (response: Response) => void,
 ): (request: { operation: string; input?: unknown }) => Promise<unknown> {
   return async (request) => {
     if (!dispatch.platformKey) {
@@ -391,6 +422,7 @@ function signedStoreSend(
       // An end that cannot be reached is a fault to retry, not a route's 500.
       throw new ControlPlaneError(502, `scope store script '${scriptName}' could not be reached: ${error instanceof Error ? error.message : String(error)}`);
     }
+    answered?.(response);
     try {
       return await response.json();
     } catch {
@@ -458,6 +490,14 @@ export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): Pl
     return retryTransientOver(delays, async () => {
       tries += 1;
       const answer = await bounded(target, operation, (signal) => callPlatformScopeStore(dispatch, target, operation, input, signal)).catch((e: unknown) => {
+        // A 5xx body is stripped on its way to a caller, so the sentence has to say what a 503 means.
+        if (isStoreBusy(e)) {
+          throw new ScopeStoreFault(
+            503,
+            `scope store '${target.binding}' is busy: it answered 503 to '${operation}', as a store bringing restored data forward does until it is done. Nothing was lost; ask again shortly.`,
+            e.retryAfterMs,
+          );
+        }
         const refused = e instanceof ControlPlaneError && e.status < 500 && e.status !== 0;
         throw refused && tries > 1 && operation === 'substrat.commit-stage' ? new RefusedAfterRetry(e) : e;
       });

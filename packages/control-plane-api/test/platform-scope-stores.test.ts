@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { SCOPE_DUMP_PAGE_MAX_BYTES, STORE_CALL_MAX_BYTES, scopeStoreBodyBytes, scopeStoreScriptName } from '@substrat-run/contracts';
 import { verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
-import { callPlatformScopeStore, callPlatformScopeStoreAt, platformScopeStoresFor } from '../src/platform-scope-stores.js';
+import { callPlatformScopeStore, callPlatformScopeStoreAt, isStoreBusy, platformScopeStoresFor, retryAfterMsOf, retryAfterOf } from '../src/platform-scope-stores.js';
 import { importWholeStores } from '../src/store-move-ends.js';
 import { readStoreForBody } from '../src/store-pull.js';
 
@@ -219,5 +219,33 @@ describe('the platform refuses a call body over the limit before it signs (#2811
     const entry = { code: 'payload_too_large', status: 413, body: { limit: STORE_CALL_MAX_BYTES } };
     const dispatch = { platformKey: vector.privateKeyPkcs8, fetch: async () => Response.json({ error: entry }, { status: 413 }) };
     await expect(callPlatformScopeStoreAt(dispatch, target, 'substrat.size')).rejects.toMatchObject({ status: 413 });
+  });
+});
+
+describe('a store answering 503 is busy, and its Retry-After is read (D-69)', () => {
+  const callWith = (headers: Record<string, string>) => {
+    const stores = platformScopeStoresFor({
+      platformKey: vector.privateKeyPkcs8,
+      retryDelaysMs: [],
+      fetch: async () => new Response(JSON.stringify({ error: { code: 'migrating', status: 503 } }), { status: 503, headers }),
+    });
+    const target = { vertical: 'v', driver: 'graph', tenantId: 't', scopeId: 's', binding: 'GRAPH' };
+    return stores.callStore(target)('substrat.selfcheck').catch((e: unknown) => e);
+  };
+
+  it('reads delta-seconds and an HTTP date, and nothing from a header it cannot read', () => {
+    expect(retryAfterMsOf('7')).toBe(7_000);
+    expect(retryAfterMsOf(new Date(Date.now() + 30_000).toUTCString())).toBeGreaterThan(20_000);
+    expect(retryAfterMsOf('soon')).toBeUndefined();
+    expect(retryAfterMsOf('0')).toBeUndefined();
+    expect(retryAfterMsOf(null)).toBeUndefined();
+  });
+
+  it('carries the 503 as a store busy, with the sentence saying so and the wait it asked for', async () => {
+    const e = await callWith({ 'retry-after': '3' });
+    expect(isStoreBusy(e)).toBe(true);
+    expect(retryAfterOf(e)).toBe(3_000);
+    expect((e as Error).message).toContain("scope store 'GRAPH' is busy");
+    expect(retryAfterOf(await callWith({}))).toBe(0);
   });
 });

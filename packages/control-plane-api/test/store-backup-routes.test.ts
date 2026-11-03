@@ -21,6 +21,8 @@ import {
   pruneScopeBackups,
   storeJobId,
   UNSAFE_devPlatformActorAuth,
+  STORE_JOB_MAX_FAULTS,
+  type StoreReadyWait,
   type StoreRequestBudget,
   type VerticalClient,
 } from '../src/index.js';
@@ -85,7 +87,7 @@ describe('a store is backed up and restored in pages, through the routes (D-69)'
     await host.admin.reapScope(staff, t, s, { force: true });
   };
 
-  const world = (opts: { budget?: StoreRequestBudget; jobs?: boolean; pullMax?: number } = {}) => {
+  const world = (opts: { budget?: StoreRequestBudget; jobs?: boolean; pullMax?: number; ready?: StoreReadyWait } = {}) => {
     const driver = fakeStoreDriver({ pageRows: 10 });
     const r2 = fakeBucket({ held: driver.held });
     const stores = platformOver(driver);
@@ -146,6 +148,7 @@ describe('a store is backed up and restored in pages, through the routes (D-69)'
       storeRequestBudget: opts.budget ?? roomy,
       ...(jobs ? { storeJobs: jobs } : {}),
       ...(opts.pullMax !== undefined ? { storePullMaxBytes: opts.pullMax } : {}),
+      ...(opts.ready ? { storeReadyWait: opts.ready } : {}),
     });
     const post = (path: string, body?: unknown) =>
       api.request(`/tenants/${t}${path}`, { method: 'POST', headers: auth, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
@@ -610,6 +613,182 @@ describe('a store is backed up and restored in pages, through the routes (D-69)'
       expect(res.status).toBe(409);
       expect(((await res.json()) as { error: string }).error).toContain('no progress');
       expect(w.driver.stageOf(w.object(s))).toBeUndefined();
+    });
+  });
+
+  describe('a store may bring restored data forward after its commit (D-69)', () => {
+    const busy = () => Response.json({ error: { code: 'migrating', status: 503 } });
+    /** A wait on a clock of its own: sleeping moves it, and nothing really waits. */
+    const clock = (waitMs = 10_000) => {
+      let at = 0;
+      const slept: number[] = [];
+      const ready: StoreReadyWait = { waitMs, now: () => at, sleep: async (ms) => { slept.push(ms); at += ms; } };
+      return { slept, ready, total: () => slept.reduce((n, ms) => n + ms, 0) };
+    };
+    const selfchecks = (w: ReturnType<typeof world>) => w.driver.callsOf('substrat.selfcheck');
+
+    it('a store that answers 503 past the call retries and then ok is waited for, and the restore completes', async () => {
+      const k = clock();
+      const w = world({ ready: k.ready });
+      const { s, backup } = await backedUp(w, 15);
+      w.driver.put(w.object(s), 1);
+      w.order.length = 0;
+      // Three tries make one probe (the caller retries a 503 twice), so five answers outlast the first probe.
+      let busyFor = 5;
+      w.driver.intercept((call) => (call.operation === 'substrat.selfcheck' && busyFor-- > 0 ? busy() : undefined));
+      const res = await w.restoreOf(s, backup.capturedAt);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).not.toHaveProperty('incomplete');
+      expect(selfchecks(w)).toBe(6);
+      expect(k.slept).toEqual([500]);
+      expect(w.driver.idsOf(w.object(s))).toHaveLength(15);
+      expect(w.order).toContain('deployment-load');
+    });
+
+    it('the probe sits after the commits and before the erasure replay and the deployment load', async () => {
+      const w = world({ ready: clock().ready });
+      const { s, backup } = await backedUp(w, 15);
+      await host.admin.shredSubject(staff, t, s, 'n7');
+      w.order.length = 0;
+      w.driver.intercept((call) => {
+        if (call.operation === 'substrat.selfcheck') w.order.push('selfcheck');
+        if (call.operation === 'substrat.commit-stage') w.order.push('commit');
+        if (call.operation === 'substrat.erase') w.order.push('erase');
+        return undefined;
+      });
+      expect((await w.restoreOf(s, backup.capturedAt)).status).toBe(200);
+      const at = (step: string) => w.order.indexOf(step);
+      expect(at('host-load')).toBeLessThan(at('commit'));
+      expect(at('commit')).toBeLessThan(at('selfcheck'));
+      expect(at('selfcheck')).toBeLessThan(at('erase'));
+      expect(at('erase')).toBeLessThan(at('deployment-load'));
+    });
+
+    it('a store whose check answers 500 is named, the restore is incomplete, and nothing waits', async () => {
+      const k = clock();
+      const w = world({ ready: k.ready });
+      const s = await graphScope(['GRAPH', 'OTHER']);
+      w.driver.put(w.object(s), 15);
+      w.driver.put(w.object(s, 'OTHER'), 15);
+      const backup = (await (await w.post(`/scopes/${s}/backups`)).json()) as ScopeBackup;
+      w.driver.put(w.object(s), 1);
+      w.driver.put(w.object(s, 'OTHER'), 1);
+      w.order.length = 0;
+      w.driver.intercept((call) => (call.operation === 'substrat.selfcheck' && call.objectName === w.object(s, 'OTHER')
+        ? Response.json({ error: { code: 'step_failed', status: 500, body: 'ALTER TABLE nodes: secret detail' } })
+        : undefined));
+      const res = await w.restoreOf(s, backup.capturedAt);
+      const answer = await res.json();
+      expect(res.status).toBe(502);
+      expect(answer).toMatchObject({ committedStores: ['GRAPH', 'OTHER'], storesNotReady: ['OTHER'], incomplete: true });
+      expect(JSON.stringify(answer)).not.toContain('secret detail');
+      expect(JSON.stringify(answer)).toContain('wipe it and restore another backup');
+      expect(k.slept).toEqual([]);
+      expect(w.driver.idsOf(w.object(s))).toHaveLength(15);
+      expect(w.order).not.toContain('deployment-load');
+    });
+
+    it('a store that never leaves 503 is waited for no longer than the bound, then named, in a request', async () => {
+      const k = clock();
+      const w = world({ ready: k.ready });
+      const { s, backup } = await backedUp(w, 15);
+      w.driver.put(w.object(s), 1);
+      w.order.length = 0;
+      w.driver.intercept((call) => (call.operation === 'substrat.selfcheck' ? busy() : undefined));
+      const res = await w.restoreOf(s, backup.capturedAt);
+      expect(res.status).toBe(502);
+      expect(await res.json()).toMatchObject({ committedStores: ['GRAPH'], storesNotReady: ['GRAPH'], incomplete: true });
+      expect(k.total()).toBe(10_000);
+      expect(selfchecks(w)).toBeLessThan(30);
+      expect(w.order).not.toContain('deployment-load');
+    });
+
+    it('the same when the restore ran as a job and a second call finished it', async () => {
+      const k = clock();
+      const w = world({ budget: tight, jobs: true, ready: k.ready });
+      const s = await graphScope();
+      w.driver.put(w.object(s), 95);
+      const { capturedAt } = (await (await w.post(`/scopes/${s}/backups`)).json()) as { capturedAt: string };
+      await w.jobs!.pump(storeJobId('store-backup', s));
+      expect((await w.restoreOf(s, capturedAt)).status).toBe(202);
+      await w.jobs!.pump(storeJobId('store-restore', s));
+      expect(w.jobs!.jobs.get(storeJobId('store-restore', s))?.status).toBe('done');
+      w.driver.intercept((call) => (call.operation === 'substrat.selfcheck' ? busy() : undefined));
+      const res = await w.restoreOf(s, capturedAt);
+      expect(res.status).toBe(502);
+      expect(await res.json()).toMatchObject({ committedStores: ['GRAPH'], storesNotReady: ['GRAPH'], incomplete: true });
+      expect(k.total()).toBe(10_000);
+      expect(await w.jobs!.get(storeJobId('store-restore', s))).toBeNull();
+    });
+
+    it('a whole dump sent as a body is probed the same way', async () => {
+      const k = clock();
+      const w = world({ ready: k.ready });
+      const s = await graphScope();
+      const dump = {
+        tenantId: t, scopeId: s, capturedAt: '2026-01-02T03:04:05.000Z',
+        tables: [{ name: 'notes', ddl: 'CREATE TABLE notes (id TEXT)', columns: ['id'], rows: [['own']] }],
+        stores: [{ binding: 'GRAPH', driver: 'graph', tables: [{ name: 'nodes', ddl: 'graph nodes', columns: ['id', 'pad'], rows: [['a', 'x']] }] }],
+      };
+      let busyFor = 4;
+      w.driver.intercept((call) => (call.operation === 'substrat.selfcheck' && busyFor-- > 0 ? busy() : undefined));
+      expect((await w.post(`/scopes/${s}/restore`, dump)).status).toBe(200);
+      expect(k.slept).toEqual([500]);
+      w.driver.intercept((call) => (call.operation === 'substrat.selfcheck' ? Response.json({ error: { code: 'step_failed', status: 500 } }) : undefined));
+      const failed = await w.post(`/scopes/${s}/restore`, dump);
+      expect(failed.status).toBe(502);
+      expect(await failed.json()).toMatchObject({ committedStores: ['GRAPH'], storesNotReady: ['GRAPH'], incomplete: true });
+    });
+
+    describe('a backup whose source answers 503, a store migrating', () => {
+      it('in a request says the store is busy, and nothing is kept', async () => {
+        const w = world();
+        const s = await graphScope();
+        w.driver.put(w.object(s), 15);
+        w.driver.intercept((call) => (call.operation === 'substrat.export-page' ? busy() : undefined));
+        const res = await w.post(`/scopes/${s}/backups`);
+        expect(res.status).toBe(503);
+        expect(((await res.json()) as { error: string }).error).toContain('is busy');
+        expect(w.parts()).toEqual([]);
+      });
+
+      it('in a job waits with a growing backoff past the faults a job rides out, and finishes when the store clears', async () => {
+        const w = world({ budget: tight, jobs: true });
+        const s = await graphScope();
+        w.driver.put(w.object(s), 95);
+        expect((await w.post(`/scopes/${s}/backups`)).status).toBe(202);
+        const id = storeJobId('store-backup', s);
+        w.driver.intercept((call) => (call.operation === 'substrat.export-page' ? busy() : undefined));
+        const delays: number[] = [];
+        for (let i = 0; i < STORE_JOB_MAX_FAULTS + 4; i += 1) {
+          const job = (await w.jobs!.pump(id))!;
+          expect(job.status).toBe('copying');
+          expect(job.faults).toBe(0);
+          delays.push(job.nextDelayMs);
+        }
+        expect(delays.slice(0, 5)).toEqual([2_000, 4_000, 8_000, 16_000, 32_000]);
+        expect(Math.max(...delays)).toBeLessThanOrEqual(60_000);
+        w.driver.intercept(undefined);
+        const done = (await w.jobs!.pump(id))!;
+        expect(done.status).toBe('done');
+        expect(done.done?.backup).toBeDefined();
+      });
+
+      it('in a job honours a Retry-After, and still fails a store that is not busy', async () => {
+        const w = world({ budget: tight, jobs: true });
+        const s = await graphScope();
+        w.driver.put(w.object(s), 95);
+        await w.post(`/scopes/${s}/backups`);
+        const id = storeJobId('store-backup', s);
+        w.driver.intercept((call) => (call.operation === 'substrat.export-page'
+          ? new Response(JSON.stringify({ error: { code: 'migrating', status: 503 } }), { status: 503, headers: { 'retry-after': '45' } })
+          : undefined));
+        expect((await w.jobs!.pump(id))!.nextDelayMs).toBe(45_000);
+        w.driver.intercept((call) => (call.operation === 'substrat.export-page' ? Response.json({ error: { code: 'step_failed', status: 500 } }) : undefined));
+        let job = (await w.jobs!.pump(id))!;
+        for (let i = 0; i < STORE_JOB_MAX_FAULTS && job.status === 'copying'; i += 1) job = (await w.jobs!.pump(id))!;
+        expect(job.status).toBe('failed');
+      });
     });
   });
 

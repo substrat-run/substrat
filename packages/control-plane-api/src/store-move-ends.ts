@@ -8,7 +8,7 @@ import {
 import { storeDumpPages, writeStoreDump, type ReservedStoreCall } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { storedTables, type BackupAddress, type ScopeBackup, type ScopeBackupStore } from './backups.js';
-import { RefusedAfterRetry, type DeclaredScopeStore, type PlatformScopeStores, type PlatformScopeStoreTarget } from './platform-scope-stores.js';
+import { isStoreBusy, RefusedAfterRetry, retryAfterOf, type DeclaredScopeStore, type PlatformScopeStores, type PlatformScopeStoreTarget } from './platform-scope-stores.js';
 import { STORE_MOVE_MAX_PAGES, type MovedStore, type PageMoveEnds, type StorePlanEnds } from './store-move.js';
 
 type Stores = Pick<PlatformScopeStores, 'callStore'>;
@@ -151,6 +151,8 @@ export class StoreLandFailure extends ControlPlaneError {
     cause: unknown,
     readonly committed: readonly string[],
     readonly unknown: string | null,
+    /** The committed bindings that did not come ready (`requireStoresReady`). */
+    readonly notReady: readonly string[] = [],
   ) {
     super(cause instanceof ControlPlaneError ? cause.status : 502, cause instanceof Error ? cause.message : String(cause));
   }
@@ -179,6 +181,90 @@ export async function commitStages(stores: Stores, place: Place, moved: readonly
     committed.push(store.binding);
   }
   return committed;
+}
+
+/** The most a restore waits, in all, for its committed stores to answer `substrat.selfcheck`, ms. */
+export const STORE_READY_WAIT_MS = 30_000;
+/** The wait before the probe after attempt `attempt`, ms: doubling from half a second to five. */
+export const storeReadyBackoffMs = (attempt: number): number => Math.min(5_000, 500 * 2 ** (attempt - 1));
+
+export interface StoreReadyWait {
+  /** Default `STORE_READY_WAIT_MS`. */
+  waitMs?: number;
+  /** Default a real wait. A test injects its clock with `now`. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * Probe each of these stores with `substrat.selfcheck`, which a driver answers once it can serve a call
+ * (#2814). A store may bring restored data forward after its commit (D-69): a driver that restored an
+ * older dump committed at the older schema version and migrates on later calls, answering 503 until it
+ * is done and 500 if a step fails on those rows. `callStore` retries a transient fault over its own
+ * short delays; past those, a 503 is waited for with backoff (a `Retry-After` honoured), all stores
+ * sharing one `waitMs`, since a step of a job cannot be asked to sleep for a store. Any other answer, a
+ * 5xx that is not 503 included, ends the wait for that store: a failed step does not clear by waiting.
+ * Answers the bindings that did not come ready, in order, each with whether it was still busy.
+ */
+export async function awaitStoresReady(
+  stores: Stores,
+  place: Place,
+  declared: readonly DeclaredScopeStore[],
+  wait: StoreReadyWait = {},
+): Promise<{ binding: string; busy: boolean; message: string }[]> {
+  const waitMs = wait.waitMs ?? STORE_READY_WAIT_MS;
+  const now = wait.now ?? Date.now;
+  const sleep = wait.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const startedAt = now();
+  const notReady: { binding: string; busy: boolean; message: string }[] = [];
+  for (const store of declared) {
+    const call = stores.callStore(targetOf(place, store));
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await call('substrat.selfcheck');
+        break;
+      } catch (e) {
+        const left = waitMs - (now() - startedAt);
+        if (isStoreBusy(e) && left > 0) {
+          await sleep(Math.min(left, Math.max(storeReadyBackoffMs(attempt), retryAfterOf(e))));
+          continue;
+        }
+        notReady.push({ binding: store.binding, busy: isStoreBusy(e), message: e instanceof Error ? e.message : String(e) });
+        break;
+      }
+    }
+  }
+  return notReady;
+}
+
+/**
+ * Fail a restore whose committed stores are not all ready: `StoreLandFailure`, naming them, committed
+ * as they are. Run after the last commit and before the erasure replay and the deployment's load,
+ * since the replay calls `substrat.erase` on each store and the load makes the scope serve from them:
+ * both would meet the same 503 or 500 instead of the cause. A store that stays busy may yet finish, and
+ * one that failed a step cannot be repaired by asking again: it is wiped and another backup restored.
+ */
+export async function requireStoresReady(
+  stores: Stores,
+  place: Place,
+  declared: readonly DeclaredScopeStore[],
+  wait: StoreReadyWait = {},
+): Promise<void> {
+  const notReady = await awaitStoresReady(stores, place, declared, wait);
+  if (notReady.length === 0) return;
+  const named = notReady
+    .map((n) => (n.busy ? `'${n.binding}' was still busy after ${wait.waitMs ?? STORE_READY_WAIT_MS} ms` : `'${n.binding}' failed its check (${n.message})`))
+    .join('; ');
+  throw new StoreLandFailure(
+    new ControlPlaneError(
+      502,
+      `the restore was committed, but scope store ${named}, so it cannot serve yet. A store busy bringing its data forward may come ready; ` +
+        'one whose step failed does not, and its driver logged why: wipe it and restore another backup.',
+    ),
+    declared.map((s) => s.binding),
+    null,
+    notReady.map((n) => n.binding),
+  );
 }
 
 /** Discard these moves' stages, best effort: the driver drops an abandoned stage itself. */

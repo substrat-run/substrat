@@ -93,6 +93,8 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
     if (object.fenced && (operation === 'substrat.stage-page' || operation === 'substrat.commit-stage')) return storeError(410, 'store_fenced');
     if (operation === 'substrat.fence') object.fenced = true;
     switch (operation) {
+      case 'substrat.selfcheck':
+        return Response.json({ result: {} });
       case 'substrat.size':
         return Response.json({ result: { bytes: JSON.stringify(object.tables).length } });
       case 'substrat.export-page':
@@ -307,6 +309,7 @@ export function pagedFromWhole(
         }
         if (operation === 'substrat.discard-stage') return { discarded: stages.delete(input!.stageId!) };
         if (operation === 'substrat.size') return { bytes: 0 };
+        if (operation === 'substrat.selfcheck') return {};
         throw new Error(`pagedFromWhole does not answer ${operation}`);
       }) as never,
     eraseSubject: fake.eraseSubject ?? (async ({ stores }) => stores.map((store) => ({ binding: store.binding, erased: 0 }))),

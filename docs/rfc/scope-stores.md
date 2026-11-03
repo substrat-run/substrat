@@ -613,7 +613,7 @@ not declare refuses the restore before any write. The check therefore runs ahead
 `host.restoreScope`, which loads the scope's own tables first (L8, the recommended answer
 to Q4). #2254 does this at `2f442969d` (`refuseUndeclaredDumpStores`, called before
 `host.restoreScope`). It reads the destination's declaration through the one resolver of
-item (i). Erasures are then replayed (L9–L11):
+item (i). A committed store may still be bringing restored data forward (D-69): it answers 503 until it is done, or 500 if a step fails. So the control plane asks each committed store `substrat.selfcheck`, waiting a bounded time for a 503, before the replay and the deployment load. A store that does not come ready makes the restore `incomplete`, named in `storesNotReady`; the way out is a wipe and another backup. Erasures are then replayed (L9–L11):
 
 - The subjects are the union of the target scope's tombstones and the source scope's.
   Each is erased once, on every binding the target declares.
