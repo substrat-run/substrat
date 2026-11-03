@@ -86,7 +86,7 @@ export function pruneDrainedOutbox(sql: SwitchSql, input: OutboxPruneInput): num
         ORDER BY o.drained_at, o.id LIMIT ?`,
       input.drainedBefore,
       JSON.stringify(input.exportTypes),
-      JSON.stringify(input.subscribers.map(({ deliveryId, eventType }) => ({ deliveryId, eventType }))),
+      JSON.stringify(input.subscribers),
       JSON.stringify(ENTITY_STATE_MOVE_TYPES),
       input.limit,
     )

@@ -2190,6 +2190,17 @@ export function scopeHostContractSuite(
       // A mirror holding a watermark below what went is told to resync; one above it resumes.
       await expect(walk({ cursor: ok })).rejects.toThrow(/resync from the start/);
       expect(await walk({ cursor: pairOld })).toEqual([pairNewest, lateOld, lateNewest]);
+
+      // The floor travels in the dump with the outbox it describes, so a restore still refuses
+      // below it; a dump from before the table restores cleanly with no floor, and refuses nothing.
+      const dump = await host.admin.exportScope(staff, t1, sPrune);
+      await host.restoreScope(staff, t1, sPrune, dump);
+      await expect(walk({ cursor: ok })).rejects.toThrow(/resync from the start/);
+      await host.restoreScope(staff, t1, sPrune, {
+        ...dump,
+        tables: dump.tables.filter((t) => t.name !== '_substrat_outbox_pruned'),
+      });
+      expect(await walk({ cursor: ok })).toEqual([poison, okNewest, poisonNewest, pairNewest, lateOld, lateNewest]);
     });
 
     it('stamps and reopens more events than a Durable Object binds parameters (#1776)', async () => {
