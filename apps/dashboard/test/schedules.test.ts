@@ -144,13 +144,19 @@ describe('deriveScheduleHealth — the verdicts', () => {
 });
 
 describe('lastScopeSweepAt — the liveness the verdicts take', () => {
-  it("is the newest of the pass's own rows for the scope, never a poll the vertical asked for (#2672)", async () => {
-    const at = (kind: string, when: string) => ({ kind, scopeId: 'sc1', at: when }) as SweepRunEntry;
-    const rows = [at('connector', '2026-09-07T12:00:00.000Z'), at('freshness', '2026-09-07T11:00:00.000Z'), at('schedule', '2026-09-07T10:00:00.000Z')];
-    const list = async (f: { kind: string; scopeId: string }) => rows.filter((r) => r.kind === f.kind && r.scopeId === f.scopeId);
+  const at = (kind: string, when: string) => ({ kind, scopeId: 'sc1', at: when }) as SweepRunEntry;
+  const lastOf = (rows: SweepRunEntry[]) => lastScopeSweepAt(async (f) => rows.filter((r) => r.kind === f.kind && r.scopeId === f.scopeId), 'sc1');
+  // A requested poll (#2672) is newer than every pass row below, and never counts.
+  const requested = at('connector', '2026-09-07T12:00:00.000Z');
 
-    expect(await lastScopeSweepAt(list, 'sc1')).toBe('2026-09-07T11:00:00.000Z');
-    // A scope only polled on request reads as unswept.
-    expect(await lastScopeSweepAt(async (f) => rows.slice(0, 1).filter((r) => r.kind === f.kind), 'sc1')).toBeNull();
+  it.each(['schedule', 'freshness', 'vertical-events'])("counts a %s row, alone or newest, and never a poll the vertical asked for", async (kind) => {
+    const others = ['schedule', 'freshness', 'vertical-events'].filter((k) => k !== kind).map((k) => at(k, '2026-09-07T10:00:00.000Z'));
+
+    expect(await lastOf([requested, at(kind, '2026-09-07T11:00:00.000Z')])).toBe('2026-09-07T11:00:00.000Z');
+    expect(await lastOf([requested, ...others, at(kind, '2026-09-07T11:00:00.000Z')])).toBe('2026-09-07T11:00:00.000Z');
+  });
+
+  it('reads a scope only polled on request as unswept', async () => {
+    expect(await lastOf([requested])).toBeNull();
   });
 });

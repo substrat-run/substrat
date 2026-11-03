@@ -103,7 +103,9 @@ export async function failureDigestWatermark(opts: {
     const rows = await opts.admin.listSweepRuns(opts.actor, { limit: WATERMARK_ROWS });
     for (const row of rows) {
       // #2672: a poll a vertical requested is written between passes, so it marks no pass: read as
-      // the previous pass, it would move the window past a failure filed since that pass.
+      // the previous pass, it would move the window past a failure filed since that pass. The
+      // sweep-run read cannot exclude them, so more than WATERMARK_ROWS of them since the pass leave
+      // no pass row in the tail, and the window falls back to the floor: mailed twice, never zero.
       if (row.operation?.startsWith(SYNC_OPERATION_PREFIX)) continue;
       if (previous === undefined || row.at > previous) previous = row.at;
     }

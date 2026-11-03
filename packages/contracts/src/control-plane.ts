@@ -1692,7 +1692,7 @@ export const connectionSyncOutcome = z
      * nothing ran and nothing was recorded.
      */
     outcome: z.enum(['landed', 'unchanged', 'failed', 'in-progress']),
-    /** When the poll finished. */
+    /** When the poll finished; for `in-progress`, when the call was answered. */
     at: instant,
     /** True when the pass's budget or deadline left work for a later poll; what did land stays. */
     pending: z.boolean(),

@@ -604,9 +604,13 @@ const { bindings } = await syncConnections({ ...access, provider: 'fortnox' });
 
 Every binding of the scope counts: a tenant's connection bound here as well as the scope's own.
 The poll is the platform's own sweep narrowed to this scope, so an unchanged book lands nothing,
-and each call is held to the limits a pass sets itself: a budget of reads, a deadline, and pacing
-under Fortnox's request rate. `pending: true` says the budget or the deadline ran out and a later
-pass takes the rest, while what landed stays landed. Those limits are the call's own, not shared:
+and each call is paced under Fortnox's request rate as a pass is. A supplier-invoice binding is also
+held to a pass's budget of reads and its 90 s deadline: `pending: true` says one of them ran out and
+a later pass takes the rest, while what landed stays landed. A ledger binding has neither, so its
+poll runs to the end and `pending` is always false for it. The polls of a scope's bindings run one
+after another inside the one HTTP request (two invoice bindings can take up to 90 s each), and a
+caller that times out does not cancel them: the poll still runs and is recorded, so asking again
+straight away answers `429`. Those limits are the call's own, not shared:
 a poll of this scope while the platform's pass polls another scope on the same Fortnox company
 paces separately, so Fortnox may answer some requests "too many" and the poll waits them out, and
 every call spends a fresh budget. Ask when a person asks, not on a timer. `at` is when the
