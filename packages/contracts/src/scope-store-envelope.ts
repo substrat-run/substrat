@@ -66,6 +66,27 @@ export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
  */
 export const STORE_STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * 30 * 60_000;
 
+/**
+ * The most bytes one store call's body may have (#2811): the number a caller checks before it signs,
+ * and both store entries check before they verify. The envelope's digest is over the exact body, so
+ * an entry must hold the whole of it to verify it, and a Python entry fails with `exceededMemory` on
+ * a body of about 6 MB while one of 5 MB went through. A body is counted in UTF-8 bytes, as the
+ * digest is.
+ *
+ * It is the largest size measured to pass, 5 000 000, not 5 MiB: it holds the 4 MiB of a dump page
+ * (`SCOPE_DUMP_PAGE_MAX_BYTES`, 4 194 304) with room for the call around it. A driver measures the
+ * page it declares against this, not against its own request limit alone (D-69).
+ */
+export const STORE_CALL_MAX_BYTES = 5_000_000;
+
+/** The `code` of the store envelope's error a store entry answers a body over {@link STORE_CALL_MAX_BYTES} with, status 413. */
+export const STORE_CALL_TOO_LARGE_CODE = 'payload_too_large';
+
+/** The number of bytes a store call's body has, in UTF-8: the unit {@link STORE_CALL_MAX_BYTES} and the digest count in. */
+export function scopeStoreBodyBytes(body: string): number {
+  return new TextEncoder().encode(body).length;
+}
+
 export type ScopeStoreAudience = 'caller' | 'platform';
 
 export interface ScopeStoreEnvelope {

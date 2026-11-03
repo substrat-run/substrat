@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Miniflare } from 'miniflare';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { scopeStoreObjectName, scopeStoreScriptName } from '@substrat-run/contracts';
+import { STORE_CALL_MAX_BYTES, scopeStoreBodyBytes, scopeStoreObjectName, scopeStoreScriptName } from '@substrat-run/contracts';
 import {
   bytesToBase64Url,
   base64UrlToBytes,
@@ -17,7 +19,8 @@ import { storeScriptAsUploaded } from '../../../tools/workerd-as-uploaded.mjs';
  * uploads it (#2289). L4: each refusal leaves the counter where it was. L5: an object is bound
  * to the id of the name it was addressed by, so a valid envelope for another name does not
  * open it, a used object or a fresh one. The driver is handed the exact body the entry verified,
- * and an env without the entry's own bindings.
+ * and an env without the entry's own bindings. A body over STORE_CALL_MAX_BYTES is 413 at the entry
+ * and at the object (#2811), before the driver is reached.
  */
 
 const SCRIPT = scopeStoreScriptName('docs', 'counter');
@@ -329,5 +332,158 @@ describe('the counter behind the store entry (#2289)', () => {
     const first = await seen();
     expect(first).toBeGreaterThan(1);
     expect(await seen()).toBe(first + 1);
+  });
+
+  describe('the limit on a call body (#2811)', () => {
+    const TOO_LARGE = {
+      code: 'payload_too_large',
+      status: 413,
+      body: { message: `a store call body is at most ${STORE_CALL_MAX_BYTES} bytes`, limit: STORE_CALL_MAX_BYTES },
+    };
+
+    /** A body of exactly `bytes` UTF-8 bytes naming the operation and the object, padded with `fill`. */
+    const bodyOf = (bytes: number, operation: string, fill = 'x', objectName = NAME): string => {
+      const frame = (pad: string) => JSON.stringify({ operation, input: { pad }, objectName });
+      const base = scopeStoreBodyBytes(frame(''));
+      const count = Math.floor((bytes - base) / scopeStoreBodyBytes(fill));
+      const body = frame(fill.repeat(count) + 'x'.repeat(bytes - base - count * scopeStoreBodyBytes(fill)));
+      expect(scopeStoreBodyBytes(body)).toBe(bytes);
+      return body;
+    };
+    const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+    const sign = (body: string, op: string, name = NAME) => issueScopeStoreEnvelope({ privateKey: callerKey, aud: 'caller', script: SCRIPT, name, op, body });
+
+    /**
+     * A POST written by hand on a socket, so its `Content-Length` can be a size whose body is never
+     * sent: the entry has to answer without waiting for it. Resolves with the status and body of
+     * the answer, and rejects if none comes.
+     */
+    async function declared(length: number, partial: string): Promise<{ status: number; text: string }> {
+      const issued = await sign(partial, 'put');
+      const url = await mf.ready;
+      return new Promise((resolve, reject) => {
+        const socket = connect({ host: url.hostname, port: Number(url.port) });
+        let received = '';
+        const timer = setTimeout(() => {
+          socket.destroy();
+          reject(new Error('no answer before the body was sent'));
+        }, 10_000);
+        socket.on('data', (chunk) => {
+          received += chunk.toString('utf8');
+          const split = received.indexOf('\r\n\r\n');
+          if (split < 0) return;
+          const status = Number(received.slice(0, received.indexOf('\r\n')).split(' ')[1]);
+          const lengthHeader = /content-length: (\d+)/i.exec(received.slice(0, split));
+          const text = received.slice(split + 4);
+          if (lengthHeader && text.length < Number(lengthHeader[1])) return;
+          clearTimeout(timer);
+          socket.destroy();
+          resolve({ status, text });
+        });
+        socket.on('error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        socket.write(
+          [
+            'POST /invoke HTTP/1.1',
+            'host: store',
+            'content-type: application/json',
+            `content-length: ${length}`,
+            `x-substrat-store-envelope: ${issued.header}`,
+            `x-substrat-store-signature: ${issued.signature}`,
+            '',
+            partial,
+          ].join('\r\n'),
+        );
+      });
+    }
+
+    it('answers a Content-Length over the limit with 413 without waiting for the body', async () => {
+      const before = (await counter()).result;
+      const answer = await declared(STORE_CALL_MAX_BYTES + 1, '{"operation":"put"');
+      expect(answer.status).toBe(413);
+      expect(JSON.parse(answer.text)).toEqual({ error: TOO_LARGE });
+      expect((await counter()).result).toBe(before);
+    });
+
+    it('answers a body over the limit sent without a Content-Length with 413, signed or not', async () => {
+      const before = (await counter()).result;
+      for (const signed of [true, false]) {
+        const body = bodyOf(STORE_CALL_MAX_BYTES + 1, 'increment');
+        const issued = await sign(body, 'increment');
+        const encoded = new TextEncoder().encode(body);
+        let at = 0;
+        // A stream body goes out chunked, so the request has no Content-Length.
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (at >= encoded.length) return controller.close();
+            controller.enqueue(encoded.slice(at, at + 256 * 1024));
+            at += 256 * 1024;
+          },
+        });
+        const res = await (await mf.getWorker('store')).fetch('https://store/invoke', {
+          method: 'POST',
+          headers: signed ? { 'x-substrat-store-envelope': issued.header, 'x-substrat-store-signature': issued.signature } : {},
+          body: stream,
+          duplex: 'half',
+        });
+        expect(res.status).toBe(413);
+        expect(await res.json()).toEqual({ error: TOO_LARGE });
+      }
+      expect((await counter()).result).toBe(before);
+    }, 30_000);
+
+    it('admits a body at the limit and the driver receives the exact bytes, non-ASCII included', async () => {
+      const body = bodyOf(STORE_CALL_MAX_BYTES, 'inspect', 'é€😀');
+      const answer = await call({ op: 'inspect', body });
+      expect(answer.status).toBe(200);
+      expect(JSON.parse(answer.text)).toEqual({ result: { bytes: STORE_CALL_MAX_BYTES, sha256: sha256(body) } });
+      // A smaller body echoes back as the same text, so the digest it was signed under still holds.
+      const small = bodyOf(2_000, 'echo', 'é€😀');
+      const echoed = await call({ op: 'echo', body: small });
+      expect(echoed.status).toBe(200);
+      expect((JSON.parse(echoed.text) as { result: string }).result).toBe(small);
+    }, 60_000);
+
+    it('hands the driver only bytes that were signed: a BOM, an FF for a U+FFFD, a cut sequence are refused', async () => {
+      const before = (await counter()).result;
+      const text = JSON.stringify({ operation: 'increment', input: { s: 'a�bé' }, objectName: NAME });
+      const good = new TextEncoder().encode(text);
+      const issued = await sign(text, 'increment');
+      const headers = { 'x-substrat-store-envelope': issued.header, 'x-substrat-store-signature': issued.signature };
+      const at = good.findIndex((b, i) => b === 0xef && good[i + 1] === 0xbf && good[i + 2] === 0xbd);
+      const lead = good.lastIndexOf(0xc3);
+      const variants: [string, number[]][] = [
+        ['a BOM', [0xef, 0xbb, 0xbf, ...good]],
+        ['an FF for the U+FFFD', [...good.slice(0, at), 0xff, ...good.slice(at + 3)]],
+        ['a cut sequence', [...good.slice(0, lead + 1), ...good.slice(lead + 2)]],
+      ];
+      const store = await mf.getWorker('store');
+      for (const [label, bytes] of variants) {
+        const res = await store.fetch('https://store/invoke', { method: 'POST', headers, body: Uint8Array.from(bytes) });
+        expect(`${res.status} ${await res.text()}`, label).toBe('401 unauthorized: digest');
+      }
+      expect((await counter()).result).toBe(before);
+      // The canonical body, a literal U+FFFD in it, is admitted and reaches the driver as signed.
+      const echoed = await call({ op: 'echo', body: JSON.stringify({ operation: 'echo', input: { s: 'a�bé﻿' }, objectName: NAME }) });
+      expect(echoed.status).toBe(200);
+      expect((JSON.parse(echoed.text) as { result: string }).result).toContain('a�bé﻿');
+    });
+
+    it('refuses a body one byte over the limit at the object too, before the driver runs', async () => {
+      const before = (await counter()).result;
+      const probe = await mf.getWorker('probe');
+      const body = bodyOf(STORE_CALL_MAX_BYTES + 1, 'increment');
+      const issued = await sign(body, 'increment');
+      const res = await probe.fetch(`https://probe/invoke?name=${encodeURIComponent(NAME)}`, {
+        method: 'POST',
+        headers: { 'x-substrat-store-envelope': issued.header, 'x-substrat-store-signature': issued.signature },
+        body,
+      });
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual({ error: TOO_LARGE });
+      expect((await counter()).result).toBe(before);
+    }, 30_000);
   });
 });

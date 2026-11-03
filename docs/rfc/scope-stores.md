@@ -482,7 +482,20 @@ signature. The store checks, before any of the driver's code runs:
 
 Checks 1–4 are one function, `verifyScopeStoreCall`, which the store entry calls; check 5
 needs the object's id and is the entry's own (#2295). The entry reads the body once,
-verifies that string, and hands the driver that same string.
+verifies it, and hands the driver those same bytes.
+
+**The size of a call.** The digest is over the exact body, so an entry must hold the whole body
+to verify it, and the body is bounded: `STORE_CALL_MAX_BYTES` (contracts, beside the envelope), 5 000 000
+bytes in UTF-8, the unit the digest counts in. The entry refuses a larger one with 413 in the store
+envelope, `{ error: { code: 'payload_too_large', status: 413, body: { limit } } }`, which the router
+and the platform read as the store's own refusal at its status. It checks a declared `Content-Length`
+first, and refuses before it reads any of the body. A body with no `Content-Length`, or a false one, is
+counted as it is read and refused at the limit, the rest unread. Both callers check the same number
+before they sign: the platform's `callPlatformScopeStoreAt` throws a 413 `ControlPlaneError`, and the
+router's `handleStoreCall` answers 413 to the vertical, in each case with nothing sent. The limit is
+the largest size measured to pass the Python entry (5 MB passed, 6 MB failed with `exceededMemory`,
+#2811), not a size chosen from a budget, and it holds a dump page of `SCOPE_DUMP_PAGE_MAX_BYTES`
+(4 MiB) with room for the call around it. A driver measures the page it declares against it (D-69).
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a driver operation's retry safety is the vertical's (§9). Per-object nonce memory is
@@ -522,8 +535,12 @@ because it runs the same code. Checks 1–4 are not ported to Python. The upload
 (`substrat-store-verify.js`) beside the Python entry, and the Python entry calls it through
 the runtime's JavaScript bridge. So the two entries cannot disagree about an envelope. The
 Python entry makes check 5 itself (`ctx.id.equals(idFromName(name))`, before the driver is
-constructed). It reads the body once and hands that string to the driver, constructs the driver
-once per object instance with an env stripped of `SUBSTRAT_STORE*`, and forwards the alarm.
+constructed). It keeps the body in JavaScript: the verifier module reads it once, bounded as above,
+and returns the bytes as an `ArrayBuffer`, which the default entrypoint forwards to the object and the
+driver's `Request` is built over. The entry makes no Python string of the body, so the driver copies
+it into Python only if it asks for text (#2811; the body used to be read twice and copied to Python
+each time). It constructs the driver once per object instance with an env stripped of
+`SUBSTRAT_STORE*`, and forwards the alarm.
 Both flags apply to a Python script unchanged: `from workers import env` reads the same
 `cloudflare:workers` env, which `disallow_importable_env` empties, and `ctx.exports` is
 absent under `disable_ctx_exports`. The probe shows all of this under `pywrangler dev`. It

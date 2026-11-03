@@ -28,7 +28,8 @@ Until now a store's data crossed in one call each way: `substrat.export` answere
 `{ tables }` and `substrat.import` took it. So a store was bounded by the smallest limit on that
 path, whatever the driver:
 
-- the store entry reads the whole request body, and the Python entry fails at about 5 to 6 MB
+- the store entry reads the whole request body, bounded since by `STORE_CALL_MAX_BYTES` (5 000 000
+  bytes), where the Python entry used to fail at about 5 to 6 MB
   ([#2811](https://github.com/substrat-run/substrat/issues/2811));
 - the control plane holds the string, the parsed JSON and the schema-checked copy of the answer in
   one isolate;
@@ -76,10 +77,13 @@ writes it for any driver rather than for one language.
   refuses a `maxBytes`: it may cut a smaller page. The platform asks for
   a page within what the registration declares in `dumpPageMaxBytes` (counted on the serialized
   page), and never above a page of a scope's own dump (4 MiB). Every host uses the declared size of
-  the driver it reaches. A row the driver could not take back in one `substrat.stage-page` (over its
-  own declared size plus the room it allows, which the driver decides) is refused by
+  the driver it reaches. A row the driver could not take back in one `substrat.stage-page` is refused by
   `substrat.export-page`, naming the table, so that a backup fails when it is taken and not when it
-  is restored. The graph driver declares 900 000, under its 1 MB limit on a request with room for the
+  is restored. What a driver measures that against is the smaller of its own limit on a request and
+  `STORE_CALL_MAX_BYTES` (5 000 000 bytes, [#2811](https://github.com/substrat-run/substrat/issues/2811)),
+  the most a store entry takes in one call body: a row whose `stage-page` call, the page with its
+  envelope around it, would be over either is refused at export. A store entry refuses a body over the
+  limit with 413, and the platform refuses to send one. The graph driver declares 900 000, under its 1 MB limit on a request with room for the
   envelope around a page. A TypeScript driver may declare large pages and a Python one small ones.
 - **Commit is the one step that changes the object.** A stage is held aside and changes nothing a
   call can see. Page `seq` 0 starts a stage and drops any other, so the old id can then neither stage

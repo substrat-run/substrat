@@ -730,3 +730,37 @@ describe('the age of an abandoned store stage (D-69)', () => {
     expect(STORE_STAGE_MAX_AGE_MS).toBe(6 * 3_600_000 + 3 * SCOPE_COPY_LEASE_MS);
   });
 });
+
+describe('a store entry refusing a call body as too large (#2811)', () => {
+  const refusing = (seen: string[]): ReservedStoreCall =>
+    ((operation, input) =>
+      callReservedStoreOperation(
+        async (request) => {
+          seen.push(request.operation);
+          return request.operation === 'substrat.discard-stage'
+            ? { result: { discarded: false } }
+            : { error: { code: 'payload_too_large', status: 413, body: { limit: 5_000_000 } } };
+        },
+        operation,
+        input,
+      )) as ReservedStoreCall;
+
+  it('is a StoreError at status 413 with the entry\'s code, and nothing is retried on it', async () => {
+    const error = await callReservedStoreOperation(async () => ({ error: { code: 'payload_too_large', status: 413 } }), 'substrat.size').then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(StoreError);
+    expect(error).toMatchObject({ storeStatus: 413, storeCode: 'payload_too_large' });
+  });
+
+  it('is never retried: a read asks once, a stage-page is sent once', async () => {
+    const reads: string[] = [];
+    await expect(readStoreDump(refusing(reads), 50)).rejects.toMatchObject({ storeStatus: 413 });
+    expect(reads).toEqual(['substrat.export-page']);
+    const writes: string[] = [];
+    const tables = [{ name: 't', ddl: 'CREATE TABLE t (a TEXT)', columns: ['a'], rows: [['x']] }];
+    await expect(writeStoreDump(refusing(writes), tables, 100)).rejects.toMatchObject({ storeStatus: 413 });
+    expect(writes.filter((operation) => operation === 'substrat.stage-page')).toHaveLength(1);
+  });
+});

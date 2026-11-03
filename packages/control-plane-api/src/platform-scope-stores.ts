@@ -7,6 +7,8 @@ import {
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
   ScopeStoreKeyError,
+  STORE_CALL_MAX_BYTES,
+  scopeStoreBodyBytes,
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeEraseResult,
@@ -323,6 +325,14 @@ export async function callPlatformScopeStoreAt(
   try {
     return await callReservedStoreOperation(async (request) => {
       const body = JSON.stringify({ ...request, objectName });
+      // The store entry refuses a body over the limit (#2811), so it is refused here, before it is signed.
+      const bytes = scopeStoreBodyBytes(body);
+      if (bytes > STORE_CALL_MAX_BYTES) {
+        throw new ControlPlaneError(
+          413,
+          `scope store call '${request.operation}' carries a body of ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
+        );
+      }
       let issued;
       try {
         issued = await issueScopeStoreEnvelope({

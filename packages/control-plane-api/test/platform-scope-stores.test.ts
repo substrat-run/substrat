@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { SCOPE_DUMP_PAGE_MAX_BYTES, scopeStoreScriptName } from '@substrat-run/contracts';
+import { SCOPE_DUMP_PAGE_MAX_BYTES, STORE_CALL_MAX_BYTES, scopeStoreBodyBytes, scopeStoreScriptName } from '@substrat-run/contracts';
 import { verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
-import { callPlatformScopeStore, platformScopeStoresFor } from '../src/platform-scope-stores.js';
+import { callPlatformScopeStore, callPlatformScopeStoreAt, platformScopeStoresFor } from '../src/platform-scope-stores.js';
 
 const vector = JSON.parse(
   readFileSync(new URL('../../contracts/test/vectors/scope-store-envelope.json', import.meta.url), 'utf8'),
@@ -119,5 +119,67 @@ describe('platformScopeStoresFor moves a store in pages the driver declared (D-6
     const { calls, stores } = recording(() => ({ tables: [table([])], next: null, revision: '1' }));
     await stores.exportStores({ ...target, stores: [{ binding: 'X', driver: 'unregistered' }] });
     expect(calls[0]!.input.maxBytes).toBe(SCOPE_DUMP_PAGE_MAX_BYTES);
+  });
+});
+
+describe('the platform refuses a call body over the limit before it signs (#2811)', () => {
+  const target = { scriptName: scopeStoreScriptName('acme/crm', 'graph'), objectName: 'T/acme/crm/S/GRAPH' };
+  const dispatchOf = (sent: Request[]) => ({
+    platformKey: vector.privateKeyPkcs8,
+    fetch: async (_script: string, request: Request) => {
+      sent.push(request);
+      return Response.json({ result: { staged: true } });
+    },
+  });
+  /** A stage-page input whose whole call body is `bytes` UTF-8 bytes, non-ASCII included. */
+  const stageOf = (bytes: number) => {
+    const body = (pad: string) =>
+      JSON.stringify({ operation: 'substrat.stage-page', input: { stageId: 's', seq: 0, tables: [{ name: 't', ddl: 'd', columns: ['a'], rows: [[pad]] }] }, objectName: target.objectName });
+    const base = scopeStoreBodyBytes(body(''));
+    // 'é' is two bytes: use pairs and fill an odd remainder with one ASCII character.
+    const pad = 'é'.repeat(Math.floor((bytes - base) / 2)) + 'x'.repeat((bytes - base) % 2);
+    expect(scopeStoreBodyBytes(body(pad))).toBe(bytes);
+    return { stageId: 's', seq: 0, tables: [{ name: 't', ddl: 'd', columns: ['a'], rows: [[pad]] }] };
+  };
+
+  it('answers 413 and sends nothing for a body one byte over', async () => {
+    const sent: Request[] = [];
+    await expect(callPlatformScopeStoreAt(dispatchOf(sent), target, 'substrat.stage-page', stageOf(STORE_CALL_MAX_BYTES + 1))).rejects.toMatchObject({
+      status: 413,
+      message: expect.stringContaining(`over the limit of ${STORE_CALL_MAX_BYTES}`),
+    });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('sends a body at the limit, signed over exactly those bytes', async () => {
+    const sent: Request[] = [];
+    await expect(callPlatformScopeStoreAt(dispatchOf(sent), target, 'substrat.stage-page', stageOf(STORE_CALL_MAX_BYTES))).resolves.toEqual({ staged: true });
+    expect(sent).toHaveLength(1);
+    const raw = await sent[0]!.text();
+    expect(scopeStoreBodyBytes(raw)).toBe(STORE_CALL_MAX_BYTES);
+    const verdict = await verifyScopeStoreCall({
+      envelope: sent[0]!.headers.get('x-substrat-store-envelope'),
+      signature: sent[0]!.headers.get('x-substrat-store-signature'),
+      body: raw,
+      keys: { caller: [], platform: [vector.publicKey] },
+      script: target.scriptName,
+      nowSeconds: Math.floor(Date.now() / 1000),
+    });
+    expect(verdict.ok).toBe(true);
+  });
+
+  it('counts bytes, not characters: a body of 4 000 000 two-byte characters is over', async () => {
+    const sent: Request[] = [];
+    const pad = 'é'.repeat(3_000_000);
+    await expect(
+      callPlatformScopeStoreAt(dispatchOf(sent), target, 'substrat.stage-page', { stageId: 's', seq: 0, tables: [{ name: 't', ddl: 'd', columns: ['a'], rows: [[pad]] }] }),
+    ).rejects.toMatchObject({ status: 413 });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("reads a store entry's own 413 as a 413, not a 5xx", async () => {
+    const entry = { code: 'payload_too_large', status: 413, body: { limit: STORE_CALL_MAX_BYTES } };
+    const dispatch = { platformKey: vector.privateKeyPkcs8, fetch: async () => Response.json({ error: entry }, { status: 413 }) };
+    await expect(callPlatformScopeStoreAt(dispatch, target, 'substrat.size')).rejects.toMatchObject({ status: 413 });
   });
 });
