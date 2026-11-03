@@ -2557,9 +2557,10 @@ export interface EventDrainDelegation {
   }): Promise<number>;
   /**
    * The retention prune (#1334), where the rows are. `null`: the serving deployment predates
-   * the verb, pruned nothing, and the pass skips it until it is redeployed.
+   * the verb, pruned nothing, and the pass skips it until it is redeployed. Optional, so a
+   * delegation written before it still type-checks; absent reads as the same `null`.
    */
-  prune(args: {
+  prune?(args: {
     tenantId: TenantId;
     scopeId: ScopeId;
     vertical: string;
@@ -9741,14 +9742,14 @@ export class CloudflareScopeHost implements ScopeHost {
         // Delegated on the stamp's rule: the rows live in the vertical's deployment.
         const pruned =
           this.eventDrainDelegation && record.vertical
-            ? await this.eventDrainDelegation.prune({
+            ? ((await this.eventDrainDelegation.prune?.({
                 tenantId,
                 scopeId,
                 vertical: record.vertical,
                 drainedBefore: input.drainedBefore,
                 limit: input.limit,
                 ...(input.due === undefined ? {} : { due: input.due }),
-              })
+              })) ?? null)
             : await this.scopeStub(scopeId).pruneDrainedEvents(input.drainedBefore, input.limit, this.executorSubscribers(), input.due);
         // Deleting a tenant's events is a mutation, so it is audited, and only when something went.
         // Written after the delete, with no intent row: a lost answer or a failed write leaves a

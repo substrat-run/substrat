@@ -42,7 +42,7 @@ describe('event-drain delegation (#1334)', () => {
       const reopens = seen.redrain.filter((c) => !(c as { countOnly?: boolean }).countOnly);
       return reopens.length === 1 ? 3 : 0;
     },
-    prune: async () => null,
+    // No `prune` (#1334): a delegation written before the verb, which reads as "cannot prune".
   };
   const hostFor = () =>
     new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, eventDrainDelegation: delegation });
@@ -52,6 +52,12 @@ describe('event-drain delegation (#1334)', () => {
     await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
     await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
     await host.admin.activateScope(staff, t, s);
+  });
+
+  it('reads a delegation without `prune` as a deployment that cannot prune (#1334)', async () => {
+    await expect(
+      hostFor().admin.pruneDrainedEvents!(staff, t, s, { drainedBefore: '2026-01-01T00:00:00.000Z', limit: 10 }),
+    ).resolves.toBeNull();
   });
 
   it('reads through the delegation, naming the vertical, with the limit bounded', async () => {
