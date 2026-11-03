@@ -6,7 +6,7 @@ description: The record of a chat with an assistant — an append-only event log
 
 # `engine-assistant` — the record of a chat with an assistant
 
-Status: **built** — in the repo, composed by nothing yet; not published to npm
+Status: **built** — composed by nothing yet; configured for public npm publication, first npm release pending
 
 > Placement and reasons: [K-51](../decisions/K-051-the-assistant-s-record-is-an-engine-composed-by-call-the-run-is-host-code.md).
 > Tracking: [#2283](https://github.com/substrat-run/substrat/issues/2283). The package's own

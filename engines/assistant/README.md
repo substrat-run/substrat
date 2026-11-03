@@ -4,8 +4,8 @@ The record of a chat between a person and an assistant, for [Substrat](https://g
 An append-only event log, a single-writer run lease, and tool calls whose gated writes need an
 approval bound to the exact input.
 
-**Not published yet** (`private: true`). Nothing composes it yet; it is the first part of the
-assistant described in [#2283](https://github.com/substrat-run/substrat/issues/2283).
+Configured for **public npm publication**; the first npm release is pending. Nothing composes
+it yet; it is the first part of the assistant described in [#2283](https://github.com/substrat-run/substrat/issues/2283).
 
 ## How a host uses it
 

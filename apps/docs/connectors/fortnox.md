@@ -113,7 +113,8 @@ and lands them in **one** call to the declared operation, parsed by `fortnoxSupp
     ocr, booked, cancelled, credit, paymentPending,
     comments,                                // the old single comment, while it has one
     commentLog: [{ comment, createdAt, userName }],
-    voucher: { series, number, year } | null, // year is Fortnox's number for the financial year
+    voucher: { series, number, year } | null, // year is Fortnox's number for the financial year;
+                                             // series and year are null when Fortnox states none
     project, costCentre,
     rows: [{ account, accountDescription, costCentre, project, transactionInformation,
              amount }],                       // debit-positive, in SEK
@@ -173,9 +174,13 @@ the attachment on the entity is the record.
   not land again. So what has been asked for is held on the binding until it has been read, across
   passes. A pass reads the queue before it lists new invoices, so the queue stays within one pass's
   budget. An invoice costs one read and a file two from the pass's 200, which puts a first pass over
-  2,000 invoices with one file each at about eight hours.
-- **Upload is at least once.** A pass that stops between the upload and writing the queue uploads
-  the file again on the next pass. A landing that shows an invoice's attachments should expect it.
+  2,000 invoices with one file each at about eight hours. The budget is checked before each file,
+  so an invoice with many files is read across passes rather than overrunning one. A re-bind keeps
+  the queue.
+- **A file lands once per entity.** What has landed is recorded per invoice, by `FileId`, so an
+  invoice that changes and is asked about again lands only files connected since. Naming another
+  entity for the invoice lands its files there too. Upload is still at least once: a pass that
+  stops between an upload and its record uploads that file again on the next pass.
 - **A file that cannot be read** stays queued and fails the scope's row by the invoice's number,
   and the pass moves on to the next one. The invoices keep landing. After eight failed passes it is
   stepped over, with the last error in the pass's result, so files that never read cannot use up
@@ -184,7 +189,8 @@ the attachment on the entity is the record.
   consent and every other file would answer the same. The scope's row says the consent must cover
   `connectfile` and `archive`. A company that consented before those scopes were asked for has to
   connect again; nothing compares granted with requested scopes, so this row is how it shows.
-- **Stepped over, with the reason in the pass's result:** a file gone from the archive, and a file
+- **Stepped over, with the reason in the pass's result** (a pass that only stepped over a file is
+  reported, not counted as unchanged): a file gone from the archive, and a file
   over 16 MiB, which is the most a pass holds. An invoice with no file connected asks nothing more
   until it next lands. Whether connecting a file later moves an invoice's `lastmodified` is not
   verified, so a file connected after the fact may wait for the next change to the invoice.

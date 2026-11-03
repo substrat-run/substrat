@@ -1,7 +1,6 @@
 {
   "name": "@substrat-run/engine-assistant",
   "version": "0.1.27",
-  "private": true,
   "description": "Substrat engine: the assistant's record — chat threads as an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -26,10 +25,14 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",

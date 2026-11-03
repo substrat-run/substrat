@@ -11,6 +11,7 @@
 | `assistant/send-message` | `assistant:use` | Say something in a thread, which begins a turn |
 | `assistant/resolve-approval` | `assistant:use` | Approve or deny a gated tool call, bound to the input shown |
 | `assistant/close-thread` | `assistant:use` | Close a thread; nothing more is appended |
+| `assistant/authorize-file-upload` | `assistant:use` | Confirm the caller may attach a file to their own open thread, before a host stores it (owner only, even with `assistant:audit`) |
 | `assistant/acquire-run` | `assistant:run` | Take the single-writer lease on a thread (host only) |
 | `assistant/release-run` | `assistant:run` | Give the lease back when a run comes to rest (host only) |
 | `assistant/append-events` | `assistant:run` | Append the assistant's events to a thread, fenced by the lease (host only) |
@@ -22,8 +23,8 @@ Engines declare no HTTP paths. A composing vertical binds operations with
 ## In-scope functions
 
 `createThread`, `listThreads`, `getThread`, `readEvents`, `sendMessage`,
-`resolveApproval`, `closeThread`, `acquireRun`, `releaseRun`, `appendEvents` and
-`claimExecution` are exported for composition inside the caller's transaction.
+`authorizeFileUpload`, `resolveApproval`, `closeThread`, `acquireRun`, `releaseRun`,
+`appendEvents` and `claimExecution` are exported for composition inside the caller's transaction.
 
 The caller checks permissions before invoking them. In particular, `getThread` and
 `readEvents` do not decide visibility: check `assistant:use` at the boundary and
