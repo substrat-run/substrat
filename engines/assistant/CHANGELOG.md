@@ -1,5 +1,20 @@
 # @substrat-run/engine-assistant
 
+## 0.1.28
+
+### Patch Changes
+
+- 781e3fe: Enable public npm publication of the assistant engine so projects outside the Substrat workspace can install it. Add the standard pnpm publish guard so the published package carries registry-compatible dependency ranges.
+- Updated dependencies [74b0e7a]
+- Updated dependencies [1e8abe0]
+- Updated dependencies [3630807]
+- Updated dependencies [e1ce6d8]
+- Updated dependencies [ab8f9c2]
+- Updated dependencies [8d5d1a2]
+- Updated dependencies [be155c1]
+  - @substrat-run/contracts@0.176.0
+  - @substrat-run/kernel@0.176.0
+
 ## 0.1.27
 
 ### Patch Changes

@@ -1,5 +1,30 @@
 # @substrat-run/control-plane-api
 
+## 0.176.0
+
+### Minor Changes
+
+- 1e8abe0: Fortnox invoice bindings land each invoice's file on the entity the landing names, carry the balance, comment log and the rest of what a reader needs, and can read further back on their first pass with `options.firstPass`.
+- 3630807: Fortnox invoice bindings can write decisions back with `options.writeback`: the sweep asks the vertical what is waiting, keeps undecided invoices from being paid, books the approved ones and adds to the comment log.
+- e1ce6d8: A Fortnox ledger binding can land the year's whole SIE4 file with `options.form: 'sie'`, and keep older financial years with `options.years`.
+
+### Patch Changes
+
+- 1509a1b: Restoring a kept copy forward moves it a page at a time, so a kept copy of any size can be resolved.
+- 94c39f8: The Python store entry refuses a request with no Content-Length (411) or a declared body over 4 MiB (413) before reading it, instead of running out of memory.
+- 3630807: A scope's rebind through the connection relay keeps a declared option its binding already holds, so a Fortnox invoice landing is no longer refused as a change of kind.
+- 8d5d1a2: A scope dump carries each module table's own indexes and guard triggers, and a restore puts them back, so a module's own invariants come back with a restore; the restore's admin row says what was carried and which triggers were left out.
+- Updated dependencies [74b0e7a]
+- Updated dependencies [1e8abe0]
+- Updated dependencies [3630807]
+- Updated dependencies [e1ce6d8]
+- Updated dependencies [ab8f9c2]
+- Updated dependencies [8d5d1a2]
+- Updated dependencies [be155c1]
+  - @substrat-run/contracts@0.176.0
+  - @substrat-run/kernel@0.176.0
+  - @substrat-run/control-plane-client@0.5.4
+
 ## 0.175.0
 
 ### Minor Changes
