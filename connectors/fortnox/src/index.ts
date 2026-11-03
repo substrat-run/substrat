@@ -208,6 +208,12 @@ export interface FortnoxBinding {
    * was last read, changed or not, which is how an older year knows it is due.
    */
   yearSync?: Record<string, { syncedAt: string; contentHash: string }>;
+  /**
+   * When a `form: 'sie'` binding last failed to land a year, per financial year id, cleared once it
+   * lands. An older year waits as long after a failure as after a read, so one the landing keeps
+   * refusing does not hold back the years behind it.
+   */
+  yearFailedAt?: Record<string, string>;
   /** An invoice binding's cursor (#2422), written only after a landing succeeded. */
   invoiceSync?: {
     /**
@@ -823,18 +829,24 @@ export async function syncFortnoxSieFiles(
   if (!current) return { synced: [], failed: [] };
 
   const held = (y: FortnoxFinancialYear) => binding.yearSync?.[String(y.Id)];
+  // The last time a year was tried, landed or failed: a failed year waits its turn like a read one.
+  const tried = (y: FortnoxFinancialYear) => {
+    const read = held(y)?.syncedAt;
+    const failed = binding.yearFailedAt?.[String(y.Id)];
+    return read === undefined || (failed !== undefined && failed > read) ? failed : read;
+  };
   const kept = binding.years === 'all' ? Infinity : (binding.years ?? 0);
-  // Never read comes first, newest first (the sort is stable), because the recent years are the
-  // ones a reader wants. After that, the one read longest ago.
+  // Never tried comes first, newest first (the sort is stable), because the recent years are the
+  // ones a reader wants. After that, the one tried longest ago.
   const due = years
     .filter((y) => y.FromDate < current.FromDate)
     .sort((a, b) => (a.FromDate < b.FromDate ? 1 : -1))
     .slice(0, kept)
     .filter((y) => {
-      const last = held(y)?.syncedAt;
+      const last = tried(y);
       return last === undefined || nowMs - Date.parse(last) >= OLDER_YEAR_REFRESH_MS;
     })
-    .sort((a, b) => (held(a)?.syncedAt ?? '').localeCompare(held(b)?.syncedAt ?? ''));
+    .sort((a, b) => (tried(a) ?? '').localeCompare(tried(b) ?? ''));
 
   const key = bindingKey(binding.scopeId);
   const synced: FortnoxSyncResult[] = [];
@@ -866,9 +878,11 @@ export async function syncFortnoxSieFiles(
       const now = (await host.admin.getConnectorState(connectionId, key)) as FortnoxBinding | null | undefined;
       if (!now || typeof now !== 'object' || now.boundAt !== binding.boundAt) break;
       const syncedAt = new Date(nowMs).toISOString();
+      const { [String(financialYear.Id)]: _landed, ...stillFailed } = now.yearFailedAt ?? {};
       await host.admin.putConnectorState(connectionId, key, {
         ...now,
         yearSync: { ...now.yearSync, [String(financialYear.Id)]: { syncedAt, contentHash } },
+        yearFailedAt: Object.keys(stillFailed).length > 0 ? stillFailed : undefined,
         ...(financialYear === current ? { lastSync: { financialYearId: current.Id, syncedAt, contentHash, balances: 0 } } : {}),
       } satisfies FortnoxBinding);
       synced.push({
@@ -882,9 +896,29 @@ export async function syncFortnoxSieFiles(
       });
     } catch (error) {
       failed.push({ financialYearId: financialYear.Id, error });
+      // The current year is tried every pass anyway; an older one is put back in the queue.
+      if (financialYear !== current) await markYearFailed(host, connectionId, key, binding, financialYear.Id, nowMs);
     }
   }
   return { synced, failed };
+}
+
+/**
+ * Record that an older year failed, onto the binding as it stands (see the cursor write above). The
+ * year's error is already answered, so a failure to record it only means the year is tried again
+ * next pass, as it was before this was recorded.
+ */
+async function markYearFailed(host: ScopeHost, connectionId: ConnectionId, key: string, binding: FortnoxBinding, financialYearId: number, nowMs: number) {
+  try {
+    const now = (await host.admin.getConnectorState(connectionId, key)) as FortnoxBinding | null | undefined;
+    if (!now || typeof now !== 'object' || now.boundAt !== binding.boundAt) return;
+    await host.admin.putConnectorState(connectionId, key, {
+      ...now,
+      yearFailedAt: { ...now.yearFailedAt, [String(financialYearId)]: new Date(nowMs).toISOString() },
+    } satisfies FortnoxBinding);
+  } catch {
+    // Answered above: the year's own error is in `failed`.
+  }
 }
 
 /** What one invoice binding's pass did. */

@@ -379,6 +379,21 @@ describe('fortnox connector — inbound sync', () => {
       expect(fileYears()).toEqual([6, 7]);
     });
 
+    it('puts a refused older year back in the queue, so the years behind it still land', async () => {
+      await bindFile(2);
+      refuseYear = 6;
+
+      await sweepFortnoxLedger(host, connId, at(NOW));
+      await sweepFortnoxLedger(host, connId, at(NOW + PASS));
+      expect(fileYears()).toEqual([7, 5]);
+
+      refuseYear = null;
+      await sweepFortnoxLedger(host, connId, at(NOW + DAY));
+
+      expect(fileYears()).toEqual([7, 5, 6]);
+      expect((await listFortnoxBindings(host, connId))[0]!.yearFailedAt).toBeUndefined();
+    });
+
     it('leaves a binding unbound during a pass unbound', async () => {
       await bindFile(1);
       // Staff unbinds while the pass downloads the older year, after the current one was written.
