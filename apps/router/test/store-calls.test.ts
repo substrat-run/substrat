@@ -95,7 +95,7 @@ describe("handleStoreCall hands on the store's own answer", () => {
   const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
   const request = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' };
   const answering = (answer: () => Response) => ({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => ({ fetch: async () => answer() }) } });
-  const BAD_ENVELOPE = { ok: true, status: 502, body: { error: { code: 'bad_envelope', status: 502 } } };
+  const BAD_ENVELOPE = { ok: true, status: 502, body: { error: { code: 'substrat.bad_envelope', status: 502 } } };
   const warnings: string[] = [];
   beforeEach(() => {
     warnings.length = 0;
@@ -131,11 +131,13 @@ describe("handleStoreCall hands on the store's own answer", () => {
       () => new Response('secret traceback', { status: 200 }),
       () => Response.json({ result: 'secret traceback' }, { status: 500 }),
       () => Response.json({ error: { code: 'odd', status: 200 } }, { status: 404 }),
+      // #2815: a code reserved to the platform, so it never reads as the platform's answer.
+      () => Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 200 }),
     ];
     for (const answer of outside) {
       expect(await handleStoreCall(answering(answer), caller, request)).toEqual(BAD_ENVELOPE);
     }
-    expect(warnings).toHaveLength(4);
+    expect(warnings).toHaveLength(5);
     expect(warnings.join('\n')).not.toContain('secret');
   });
 

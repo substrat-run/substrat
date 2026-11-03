@@ -1,6 +1,8 @@
 import {
   clientSafeStoreError,
+  isPlatformStoreCode,
   issueScopeStoreEnvelope,
+  PLATFORM_STORE_CODE,
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
   ScopeStoreKeyError,
@@ -27,7 +29,7 @@ export interface StoreCallCaller {
 /**
  * `ok` is what the store answered: `{ result }`, or `{ error }` with the store's status,
  * already cut to what a client may read. A store reached that answered outside the
- * envelope is `ok` too, as `bad_envelope` with 502, the code the in-process path gives it.
+ * envelope is `ok` too, as `substrat.bad_envelope` with 502, the code the in-process path gives it.
  * The store's `code` travels only as the envelope's `code`, which the vertical reads as
  * `storeCode`; the platform's code is derived from the status. Not `ok` is the
  * platform's own refusal, or a store it could not reach.
@@ -131,18 +133,19 @@ function dispatchFailure(error: unknown): string {
  * Read what the store script answered. An `{ error }` envelope is the store's refusal
  * whatever the HTTP status, as it is on the in-process path, which has none. A
  * `{ result }` counts only on a 2xx. Anything else, such as the store entry's own text
- * refusal or a platform error page, is `bad_envelope`: its body is not passed on or
- * logged, since a store's failure text can carry its traceback.
+ * refusal or a platform error page, is a bad envelope: its body is not passed on or
+ * logged, since a store's failure text can carry its traceback. So is an `{ error }` whose
+ * code is reserved to the platform (#2815): a store's answer must not read as the platform's.
  */
 async function storeAnswer(scriptName: string, response: Response): Promise<StoreCallOutcome> {
   const parsed = storeResponse.safeParse(await response.json().catch(() => undefined));
-  if (parsed.success && 'error' in parsed.data) {
+  if (parsed.success && 'error' in parsed.data && !isPlatformStoreCode(parsed.data.error.code)) {
     const error = clientSafeStoreError(parsed.data.error);
     return { ok: true, status: error.status, body: { error } };
   }
-  if (parsed.success && response.ok) {
+  if (parsed.success && 'result' in parsed.data && response.ok) {
     return { ok: true, status: response.status, body: parsed.data };
   }
   console.warn(`scope store ${scriptName} answered ${response.status} outside the store envelope`);
-  return { ok: true, status: 502, body: { error: { code: 'bad_envelope', status: 502 } } };
+  return { ok: true, status: 502, body: { error: { code: PLATFORM_STORE_CODE.badEnvelope, status: 502 } } };
 }

@@ -74,6 +74,7 @@ import {
   peerCallRequest,
   PARENT_REQUEST_ID_HEADER,
   parentRequestIdOf,
+  PLATFORM_STORE_CODE,
   RELAY_CALLER_HEADER,
   type StoreResponse,
 } from '@substrat-run/contracts';
@@ -419,13 +420,19 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
   });
 }
 
-/** Hand one scope-store call to the router (#2207). The caller is the dispatch, not the body. */
+/**
+ * Hand one scope-store call to the router (#2207). The caller is the dispatch, not the body.
+ * The platform's own answers carry a code reserved to it (#2815), so the vertical can tell
+ * them from its store's: `substrat.refused` for a 4xx, `substrat.unavailable` for a 5xx.
+ */
 async function storeCall(request: Request, env: Env): Promise<Response> {
-  const problem = (status: number, error: string): Response =>
-    new Response(JSON.stringify({ error: { code: 'unavailable', status, body: error } }), {
+  const problem = (status: number, error: string): Response => {
+    const code = status < 500 ? PLATFORM_STORE_CODE.refused : PLATFORM_STORE_CODE.unavailable;
+    return new Response(JSON.stringify({ error: { code, status, body: error } }), {
       status,
       headers: { 'content-type': 'application/json' },
     });
+  };
   const policy = env.OUTBOUND_POLICY;
   if (!env.STORE_CALLS) {
     return problem(503, 'scope stores are not available in this environment: the egress worker has no STORE_CALLS binding');

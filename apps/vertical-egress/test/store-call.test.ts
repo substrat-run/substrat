@@ -29,7 +29,7 @@ describe('a store call through egress', () => {
       env,
     );
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: { code: 'unavailable', status: 503, body: 'the router could not be reached' } });
+    expect(await res.json()).toEqual({ error: { code: 'substrat.unavailable', status: 503, body: 'the router could not be reached' } });
     expect(JSON.stringify(lines)).not.toContain('secret');
   });
 });

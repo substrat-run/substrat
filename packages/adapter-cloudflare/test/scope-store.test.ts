@@ -119,7 +119,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
       (err: unknown) => err,
     );
     expect(errorCodeOf(refusal)).toBe('unavailable');
-    expect((refusal as { storeCode?: string }).storeCode).toBe('bad_envelope');
+    expect((refusal as { storeCode?: string }).storeCode).toBe('substrat.bad_envelope');
   });
 
   // #2288: on the platform hop the stores exist elsewhere. "No stores" would let the control
@@ -409,7 +409,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
       (err: unknown) => err,
     );
     expect(errorCodeOf(plain)).toBe('unavailable');
-    expect((plain as { storeCode?: string }).storeCode).toBe('bad_envelope');
+    expect((plain as { storeCode?: string }).storeCode).toBe('substrat.bad_envelope');
     const failed = await store.invoke('fail').then(
       () => undefined,
       (err: unknown) => err,

@@ -587,8 +587,8 @@ import {
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, callScopeStoreThroughPlatform, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
+import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverApprovalRecord,
@@ -3082,7 +3082,7 @@ function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (reque
     try {
       return await response.json();
     } catch {
-      throw new StoreError({ code: 'bad_envelope', status: 502 });
+      throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 });
     }
   };
 }
@@ -5826,7 +5826,7 @@ export class CloudflareScopeHost implements ScopeHost {
             binding,
             operation,
             () =>
-              callScopeStore(async (request) => {
+              callScopeStoreThroughPlatform(async (request) => {
                 const response = await this.fetchImpl(STORE_CALL_URL, {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
@@ -5835,7 +5835,7 @@ export class CloudflareScopeHost implements ScopeHost {
                 try {
                   return await response.json();
                 } catch {
-                  throw new StoreError({ code: 'bad_envelope', status: 502 });
+                  throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 });
                 }
               }, operation, input, ...extra),
             options?.onStoreCall,

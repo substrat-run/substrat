@@ -794,6 +794,25 @@ export const storeResponse = z.union([
 export type StoreResponse = z.infer<typeof storeResponse>;
 
 /**
+ * The codes the platform answers a store call with, never a store (#2815). A vertical
+ * reads them as `storeCode`, so `substrat.` is reserved there as it is for operation
+ * names: a store's own answer must not be mistaken for a platform answer, and one
+ * carrying a reserved code is answered as `badEnvelope`. `refused` is the platform
+ * saying no (a 4xx), `unavailable` the platform unable to serve the call (a 5xx), and
+ * `badEnvelope` a store answering outside this envelope.
+ */
+export const PLATFORM_STORE_CODE = {
+  refused: 'substrat.refused',
+  unavailable: 'substrat.unavailable',
+  badEnvelope: 'substrat.bad_envelope',
+} as const;
+
+/** Whether `code` is reserved to the platform. See {@link PLATFORM_STORE_CODE}. */
+export function isPlatformStoreCode(code: string): boolean {
+  return code.startsWith('substrat.');
+}
+
+/**
  * What each reserved operation takes and answers (#2207). The result schemas are
  * objects so a later field is additive. `import` replaces the whole object and
  * answers how many tables it wrote.
