@@ -150,14 +150,20 @@ describe('scope store door (cloudflare host, #2209)', () => {
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
       controlPlane: env.CONTROL_PLANE,
-      fetch: async (input) => {
+      fetch: async (input, init) => {
         asked = String(input);
+        if (String(init?.body).includes('"refuse"')) {
+          return Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 403 });
+        }
         return Response.json({ result: 9 });
       },
     });
     const store = await host.getScopeStore(principal, tenantId.parse(ulid()), scopeId.parse(ulid()), 'GRAPH');
     expect(await store.invoke('read')).toBe(9);
     expect(asked).toBe(STORE_CALL_URL);
+    // #2815: the platform's own refusal keeps its reserved code on this hop.
+    const refusal = await store.invoke('refuse').then(() => undefined, (err: unknown) => err);
+    expect(refusal).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
   });
 
   it("refuses transport 'platform' beside runners, which would never be used (#2288)", () => {

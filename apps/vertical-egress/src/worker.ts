@@ -66,6 +66,7 @@
 
 import {
   isPeerCallHost,
+  isPlatformStoreCode,
   isStoreCallHost,
   storeCallRequest,
   isPlatformHost,
@@ -463,6 +464,14 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
     return problem(503, 'the router could not be reached');
   }
   if (!outcome.ok) return problem(outcome.status, outcome.message);
+  // The router already answers a store's reserved code as a bad envelope; this holds it here
+  // too, so a store's answer never reads as the platform's whichever deploy comes first.
+  if ('error' in outcome.body && isPlatformStoreCode(outcome.body.error.code)) {
+    return new Response(JSON.stringify({ error: { code: PLATFORM_STORE_CODE.badEnvelope, status: 502 } }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   // The store's envelope as the router cut it, its own refusal included: its code reaches
   // the vertical as `storeCode`, beside the platform code its status maps to.
   return new Response(JSON.stringify(outcome.body), {

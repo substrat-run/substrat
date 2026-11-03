@@ -139,13 +139,19 @@ function dispatchFailure(error: unknown): string {
  */
 async function storeAnswer(scriptName: string, response: Response): Promise<StoreCallOutcome> {
   const parsed = storeResponse.safeParse(await response.json().catch(() => undefined));
-  if (parsed.success && 'error' in parsed.data && !isPlatformStoreCode(parsed.data.error.code)) {
+  if (parsed.success && 'error' in parsed.data) {
+    if (isPlatformStoreCode(parsed.data.error.code)) {
+      console.warn(`scope store ${scriptName} answered with a code reserved to the platform`);
+      return BAD_ENVELOPE;
+    }
     const error = clientSafeStoreError(parsed.data.error);
     return { ok: true, status: error.status, body: { error } };
   }
-  if (parsed.success && 'result' in parsed.data && response.ok) {
+  if (parsed.success && response.ok) {
     return { ok: true, status: response.status, body: parsed.data };
   }
   console.warn(`scope store ${scriptName} answered ${response.status} outside the store envelope`);
-  return { ok: true, status: 502, body: { error: { code: PLATFORM_STORE_CODE.badEnvelope, status: 502 } } };
+  return BAD_ENVELOPE;
 }
+
+const BAD_ENVELOPE: StoreCallOutcome = { ok: true, status: 502, body: { error: { code: PLATFORM_STORE_CODE.badEnvelope, status: 502 } } };

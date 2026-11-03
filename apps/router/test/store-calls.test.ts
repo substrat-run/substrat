@@ -131,14 +131,18 @@ describe("handleStoreCall hands on the store's own answer", () => {
       () => new Response('secret traceback', { status: 200 }),
       () => Response.json({ result: 'secret traceback' }, { status: 500 }),
       () => Response.json({ error: { code: 'odd', status: 200 } }, { status: 404 }),
-      // #2815: a code reserved to the platform, so it never reads as the platform's answer.
-      () => Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 200 }),
     ];
     for (const answer of outside) {
       expect(await handleStoreCall(answering(answer), caller, request)).toEqual(BAD_ENVELOPE);
     }
-    expect(warnings).toHaveLength(5);
+    expect(warnings).toHaveLength(4);
     expect(warnings.join('\n')).not.toContain('secret');
+  });
+
+  it("answers a store's code reserved to the platform as bad_envelope (#2815)", async () => {
+    const reserved = () => Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 403 });
+    expect(await handleStoreCall(answering(reserved), caller, request)).toEqual(BAD_ENVELOPE);
+    expect(warnings).toEqual(['scope store substrat-store-graph-docs answered with a code reserved to the platform']);
   });
 
   it('answers 503 for a store it cannot reach, and logs no word of the error message', async () => {

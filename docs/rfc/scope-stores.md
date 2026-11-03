@@ -609,7 +609,7 @@ no route to the store scripts, refuses the delete with 503 and keeps the scope (
 tell. The key is destroyed only after every store that may hold the subject has answered.
 "Cannot tell" and "cannot ask" are `unavailable`, which is 503
 (`packages/contracts/src/errors.ts`). 502 stays what it already means: a downstream that
-answered badly (`bad_envelope`). There are two arms. They are written in the #2242 review
+answered badly (`substrat.bad_envelope`). There are two arms. They are written in the #2242 review
 fix, which was not pushed when this amendment was written (local head `a070e7f46`; the
 pushed #2242 is `6349900b3`, where a host with no control plane and no configured vertical
 reads as "no store" and fails open):
