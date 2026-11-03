@@ -30,6 +30,7 @@ import {
   operationConcurrencyOf,
   operationChecksOf,
   operationIdempotencyOptOutsOf,
+  operationImpersonationRefusalsOf,
   operationInputsOf,
   type DerivedKeys,
   type OperationCheck,
@@ -46,6 +47,7 @@ interface DerivedMaps {
   readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   readonly idempotencyOptOuts?: readonly string[];
+  readonly impersonationRefused?: readonly string[];
   /** #2387: the operations the host holds to a `ctx.check` — see {@link checkHeldOperationsOf}. */
   readonly checkHeld?: readonly string[];
   readonly checks?: Readonly<Record<string, OperationCheck>>;
@@ -104,6 +106,8 @@ export class BoundOperations<H = HandlerMap> {
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
   readonly idempotencyOptOuts?: readonly string[];
+  /** The operations that declared `impersonation: 'refused'`, which no impersonation session may invoke (#2821). */
+  readonly impersonationRefused?: readonly string[];
   /**
    * name → the check each operation declares (#2384), read by the permission checkpoint so
    * `PERMISSIONS.md` names the key each operation checks. Empty for `undeclaredOperations`, whose
@@ -133,6 +137,9 @@ export class BoundOperations<H = HandlerMap> {
       );
     }
     if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = Object.freeze([...derived.idempotencyOptOuts]);
+    if (derived.impersonationRefused !== undefined) {
+      this.impersonationRefused = Object.freeze([...derived.impersonationRefused]);
+    }
     if (derived.checks !== undefined) this.checks = deepFreeze(derived.checks);
     Object.freeze(this);
   }
@@ -223,6 +230,7 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+      impersonationRefused: operationImpersonationRefusalsOf(declaration),
       checkHeld: checkHeldOf(declaration),
       checks: operationChecksOf(declaration),
     }),

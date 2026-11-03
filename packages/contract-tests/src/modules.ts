@@ -13,6 +13,7 @@ import {
   operationInputsOf,
   operationConcurrencyOf,
   operationIdempotencyOptOutsOf,
+  operationImpersonationRefusalsOf,
   IDEMPOTENCY_RESULT_LIMIT,
   permissionKey,
   pageVisible,
@@ -1801,6 +1802,9 @@ export const permMod: ModuleRegistration = {
     'perm/read-check-log': readCheckLogOp as OperationHandler<never, unknown>,
     // K-42 (#868)
     'perm/write-note': noteWriteOp as OperationHandler<never, unknown>,
+    // #2821: the same write, declared `impersonation: 'refused'` below — an act only the
+    // person may make, so no impersonation session reaches the handler.
+    'perm/attest': noteWriteOp as OperationHandler<never, unknown>,
     'perm/read-notes': noteReadOp as OperationHandler<never, unknown>,
     'perm/request-intent': requestIntentOp as OperationHandler<never, unknown>,
     'perm/read-intents': readIntentsOp as OperationHandler<never, unknown>,
@@ -1880,6 +1884,8 @@ export const permMod: ModuleRegistration = {
       );
       return { revoked: true };
     }) as OperationHandler<never, unknown>,
+  }, {
+    impersonationRefused: operationImpersonationRefusalsOf({ 'perm/attest': { impersonation: 'refused' } }),
   }),
   consumers: {
     'perm.check-requested': checkRequestedConsumer,

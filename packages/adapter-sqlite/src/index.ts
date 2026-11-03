@@ -647,6 +647,7 @@ import {
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
   ImpersonationRefused,
+  assertImpersonationAdmitted,
   assertImpersonationWrites,
   assertModuleEnqueueableKind,
   assertSessionUsable,
@@ -2409,6 +2410,8 @@ export class SqliteScopeHost implements ScopeHost {
    * exceptions rather than a map of participants.
    */
   private readonly operationIdempotencyOptOut = new Set<string>();
+  /** #2821: the operations that declared `impersonation: 'refused'` — no session may invoke them. */
+  private readonly operationImpersonationRefused = new Set<string>();
   /**
    * #2387: the operations held to a `ctx.check` — declared with a `permission`, handler authored
    * (`checkHeldOperationsOf`). One that returns without asking is recorded (`noteUncheckedCompletion`).
@@ -3596,6 +3599,7 @@ export class SqliteScopeHost implements ScopeHost {
     // and reads worse — it looks like a deliberate exclusion of something that is
     // not there, so nobody goes looking for what actually honours the header.
     const declaredOptOuts = registration.operations?.idempotencyOptOuts ?? [];
+    const impersonationRefused = registration.operations?.impersonationRefused ?? [];
     const unboundOptOuts = declaredOptOuts.filter((name) => !ownOperations.has(name));
     if (unboundOptOuts.length > 0) {
       throw new Error(
@@ -3624,6 +3628,9 @@ export class SqliteScopeHost implements ScopeHost {
       if (guarded && this.operations.has(name)) this.operationConcurrency.set(name, guarded);
       if (declaredOptOuts.includes(name) && this.operations.has(name)) {
         this.operationIdempotencyOptOut.add(name);
+      }
+      if (impersonationRefused.includes(name) && this.operations.has(name)) {
+        this.operationImpersonationRefused.add(name);
       }
       const target = trashTargets.get(name);
       if (target && this.operations.has(name)) this.operationTarget.set(name, target);
@@ -6839,6 +6846,8 @@ export class SqliteScopeHost implements ScopeHost {
           try {
             session = this.readImpersonation(sessionId);
             assertSessionUsable(session, this.clock(), { tenantId, scopeId });
+            // #2821: before the parse, the guards and the handler — and under read-only too.
+            assertImpersonationAdmitted(session, operation, this.operationImpersonationRefused);
           } catch (err) {
             return Promise.reject(err);
           }

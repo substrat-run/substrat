@@ -32,6 +32,7 @@ const notesOperations = {
     permission: 'note:write',
     input: z.object({ text: z.string() }),
     output: note,
+    impersonation: 'refused',
   },
   'notes/rename': {
     permission: 'note:write',
@@ -113,6 +114,7 @@ describe('operationsFor (#1835)', () => {
     expect(bound.idempotencyOptOuts).toEqual(operationIdempotencyOptOutsOf(notesOperations));
     expect(bound.concurrency).toEqual({ 'notes/rename': { entity: 'note', idFrom: 'id' } });
     expect(bound.idempotencyOptOuts).toEqual(['notes/rename']);
+    expect(bound.impersonationRefused).toEqual(['notes/add']);
     expect(() => bound.inputs?.['notes/add']?.parse({})).toThrow();
   });
 });

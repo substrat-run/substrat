@@ -158,6 +158,7 @@ import {
   type DenialRow,
   type DenialWindowRow,
   PermissionDenied,
+  assertImpersonationAdmitted,
   assertImpersonationWrites,
   assertModuleEnqueueableKind,
   impersonationStampOf,
@@ -1649,6 +1650,8 @@ export function defineScopeDO(
     private readonly purgeSchedules = new Map<string, { moduleId: string; entityType: string }>();
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
+    /** #2821: the operations that declared `impersonation: 'refused'` — no session may invoke them. */
+    private readonly operationImpersonationRefused = new Set<string>();
     /** #2387: the operations held to a `ctx.check` — the pure adapter's set, from the same kernel read. */
     private readonly operationCheckHeld = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
@@ -1957,6 +1960,7 @@ export function defineScopeDO(
       // #116: same rule again for an opt-out — one on an unbound name reads as a
       // deliberate exclusion of an operation that is not there.
       const declaredOptOuts = registration.operations?.idempotencyOptOuts ?? [];
+      const impersonationRefused = registration.operations?.impersonationRefused ?? [];
       const unboundOptOuts = declaredOptOuts.filter((name) => !ownOps.has(name));
       if (unboundOptOuts.length > 0) {
         throw new Error(
@@ -1977,6 +1981,9 @@ export function defineScopeDO(
         if (guarded && this.operations.has(name)) this.operationConcurrency.set(name, guarded);
         if (declaredOptOuts.includes(name) && this.operations.has(name)) {
           this.operationIdempotencyOptOut.add(name);
+        }
+        if (impersonationRefused.includes(name) && this.operations.has(name)) {
+          this.operationImpersonationRefused.add(name);
         }
         const target = trashTargets.get(name);
         if (target && this.operations.has(name)) this.operationTarget.set(name, target);
@@ -3335,6 +3342,8 @@ export function defineScopeDO(
       // to reach a 404, because the platform's own refusals were as untyped as anything
       // else. Naming the code once here is what lets those patterns go.
       if (!handler) throw substratError('not_found', `unknown operation: ${operation}`);
+      // #2821: before the parse, the guards and the handler — and under read-only too.
+      assertImpersonationAdmitted(impersonation, operation, this.operationImpersonationRefused);
       // #304 entitlement gate, scope-local path: fail closed on the projected view exactly as
       // the coordinator fails closed against the CP. Only active once entitlements have been
       // projected (the `entitlements_enforced` marker) — before that the scope trusts upstream,

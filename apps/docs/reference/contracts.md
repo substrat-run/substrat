@@ -443,7 +443,7 @@ compiler checks the joins between them. Full walkthrough in
 | `manifestEntities(entities, refs)` | composes the entity-referencing manifest fragments; derives `entityRelations` from each entity's `parents` |
 | `permissionsUsedBy` · `eventsEmittedBy` | derive the manifest's `permissions` and `events.emits` from the operations |
 | `operationInputsOf(ops)` | the `inputs` map a registration's `operations` carries — every operation's declared input schema, which the **host** parses on every path in before the guards and the handler. A module gets it from `operationsFor` in the kernel rather than calling it |
-| `operationConcurrencyOf(ops)` · `operationIdempotencyOptOutsOf(ops)` | the `concurrency` map (which entity's version each operation's `If-Match` is checked against) and the operations that opted out of `Idempotency-Key` — both derived, never written a second time |
+| `operationConcurrencyOf(ops)` · `operationIdempotencyOptOutsOf(ops)` · `operationImpersonationRefusalsOf(ops)` | the `concurrency` map (which entity's version each operation's `If-Match` is checked against), the operations that opted out of `Idempotency-Key`, and those no impersonation session may invoke — all derived, never written a second time |
 | `emitModel` | renders the registry to deterministic JSON — the artifact `pnpm lint:model --check` gates |
 | `EntityRow<T, K>` | a declared entity's row type, for `ctx.sql.query<…>` |
 | `OperationImpl<Ops, Ctx>` | the handler map an operation set requires; the kernel's `operationsFor` holds a module's map to it |
