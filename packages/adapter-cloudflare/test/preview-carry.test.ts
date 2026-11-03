@@ -1215,6 +1215,31 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await resolve(p.scopeId, { script: v1ref, action: 'discard', acknowledge: { discard: true } })).status).toBe(409);
     });
 
+    // #2450: a kept copy too large for one call goes forward a page at a time, through the live store's stage.
+    it('a kept copy that takes many pages is restored forward through the stage', async () => {
+      const p = await keptByLateWrite('kept-paged');
+      const v1ref = refOf.get(version.v1)!;
+      // More than one page.
+      expect((await hostFor('v1').exportScopePageLocal(p.scopeId, null, { maxBytes: PAGE_BYTES })).next).not.toBeNull();
+      const { kept } = (await (await api.request(`/tenants/${t}/scopes/${p.scopeId}/kept-copy?script=${v1ref}`, { headers: auth })).json()) as { kept: { keptAt: string } };
+      let staged: boolean | undefined;
+      hooks.restore = async (_ref, sid, dump) => {
+        if (sid === p.scopeId) staged = dump === undefined;
+      };
+      paged = true;
+      try {
+        const done = await resolve(p.scopeId, { script: v1ref, action: 'restore-forward', acknowledge: { replacesLiveWritesSince: kept.keptAt } });
+        expect(done.status).toBe(200);
+      } finally {
+        paged = false;
+        delete hooks.restore;
+      }
+      expect(staged).toBe(true);
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['carried', 'written after the export'] });
+      const names = (await tablesOrNone(hostFor('v2'), p.scopeId)).map((tb) => tb.name);
+      expect(names.filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
+    });
+
     /**
      * #2185, review of #2218 round 3: the kept copy can land in the live store and the resolution
      * still fail after it. A sweep reconcile that wrote the receipt in between must not survive the
