@@ -7677,6 +7677,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({
         restored: scopeId,
         tables: tables.length,
+        // #2820: what the deployment serving the scope did with the dump's own indexes and triggers.
+        ...(restored ? { moduleObjects: restored.moduleObjects } : {}),
         ...storeReplayFields(replays),
       });
     } catch (e) {

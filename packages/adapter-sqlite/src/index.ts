@@ -4652,9 +4652,8 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<DumpObjectsPlan> {
     const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
-    // #2820: what the load did with the dump's own indexes and triggers, for the restore's admin row.
-    let judged: DumpObjectsPlan | undefined;
-    const load = db.transaction((dumped: ScopeDumpTable[]) => {
+    // #2820: answers what it did with the dump's own indexes and triggers, for the restore's admin row.
+    const load = db.transaction((dumped: ScopeDumpTable[]): DumpObjectsPlan => {
       beforeLoad?.();
       // Deferred foreign keys cover the WHOLE drop-then-replay, drops included.
       //
@@ -4703,7 +4702,6 @@ export class SqliteScopeHost implements ScopeHost {
       // TABLE. Judged as a whole before any of it executes — a check interleaved with
       // the replay has already let the earlier tables happen.
       const objects = assertReplayableDump(replayable);
-      judged = objects;
       // A vertical's tables take the dump's own DDL. The spine never does (#1883): its tables
       // come from KERNEL_DDL, which also fills in any the dump omits (#321) — e.g.
       // `_substrat_migrations`, which the frontier refresh below reads — and the dump
@@ -4768,13 +4766,14 @@ export class SqliteScopeHost implements ScopeHost {
       // #1742: inside the replay's transaction, so a failure here rolls the whole load back and
       // the dump's grants never commit without the switch that should cover them.
       afterLoad?.(rt);
+      return objects;
     });
     // On the scope actor (#1678): issued while an invoke held its transaction open, the
     // load was a SAVEPOINT inside it, and that invoke's rollback undid the restore after
     // this verb had audited it.
-    await rt.actor.turn(() => {
+    return rt.actor.turn(() => {
       // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
-      load(capabilitiesForLoad(dump.tables, scopeId, dump.scopeId));
+      const objects = load(capabilitiesForLoad(dump.tables, scopeId, dump.scopeId));
       // #1335 / #1686: ids resume above the outbox the dump brought, as on a reopen, so a copy's
       // own events sort above every copied one (`emittedHere()`). A top id that is no ULID leaves
       // the floor where it was.
@@ -4793,8 +4792,8 @@ export class SqliteScopeHost implements ScopeHost {
       // and the next invocation. Old locators must be gone before that next turn.
       this.directory.prepare('DELETE FROM private_continuation_positions WHERE scope_id = ?').run(scopeId);
       this.directory.prepare('DELETE FROM private_continuation_keys WHERE scope_id = ?').run(scopeId);
+      return objects;
     });
-    return judged!;
   }
 
   async restoreScope(

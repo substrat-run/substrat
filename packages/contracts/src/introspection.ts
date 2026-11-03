@@ -792,8 +792,9 @@ export type ReplayableTable = { name: string; ddl: string; columns?: string[]; o
  * does not know, a name that is not a plain identifier or that another table or object in the dump
  * already has, DDL with characters outside ASCII that are not quoted, and every trigger but a guard.
  * A guard is a trigger whose `WHEN` reads no other row and whose every body statement is
- * `SELECT RAISE(ABORT|FAIL|ROLLBACK[, '…']) [WHERE …]`, reading no other row either: the append-only
- * and refusal shape that holds an invariant.
+ * `SELECT RAISE(ABORT|FAIL|ROLLBACK, '<literal>') [WHERE …]` or
+ * `SELECT CASE WHEN … THEN RAISE(ABORT|FAIL|ROLLBACK, '<literal>') END [WHERE …]`, reading no other
+ * row either: the append-only and refusal shape that holds an invariant.
  */
 export interface DumpObjectsPlan {
   readonly replay: readonly (ScopeDumpObject & { table: string })[];
@@ -844,8 +845,19 @@ export function dumpObjectsPlan(tables: readonly ReplayableTable[]): DumpObjects
   return { replay, skipped, carried };
 }
 
-/** What a restore's admin row records about the objects its load judged (#2820). */
-export function dumpObjectsAudit(plan: DumpObjectsPlan): { carried: number | 'not carried'; skipped: string[] } {
+/**
+ * What a restore's admin row records about the objects its load judged (#2820), and what a load
+ * answers with. An answer without it (a host or deployment from before objects) put none back:
+ * `MODULE_OBJECTS_NOT_CARRIED`.
+ */
+export const moduleObjectsRecord = z.object({
+  carried: z.union([z.number().int().nonnegative(), z.literal('not carried')]),
+  skipped: z.array(z.string()),
+});
+export type ModuleObjectsRecord = z.infer<typeof moduleObjectsRecord>;
+export const MODULE_OBJECTS_NOT_CARRIED: ModuleObjectsRecord = { carried: 'not carried', skipped: [] };
+
+export function dumpObjectsAudit(plan: DumpObjectsPlan): ModuleObjectsRecord {
   return { carried: plan.carried ?? 'not carried', skipped: [...plan.skipped] };
 }
 
@@ -867,7 +879,7 @@ export function replayDumpObjects(plan: DumpObjectsPlan, run: (ddl: string) => v
 }
 
 const RAISE_ACTIONS = new Set(['abort', 'fail', 'rollback']);
-const TRIGGER_BODY_VERBS = new Set(['select', 'insert', 'update', 'delete', 'replace', 'with']);
+const TRIGGER_BODY_VERBS = new Set(['select', 'insert', 'update', 'delete', 'replace', 'with', 'values']);
 
 function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): 'replay' | 'skip' {
   const refuse = (why: string): never => {
@@ -894,9 +906,13 @@ function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): '
   const expect = (word: string): void => {
     if (!kw(word)) refuse(`does not read as \`CREATE ${o.type.toUpperCase()}\` in the shape a dump carries`);
   };
+  // A name as written, or qualified with `main.`, which SQLite keeps as written.
   const named = (want: string, what: string): void => {
-    const t = tokens[i];
-    if (!t || t.punct || t.parts?.length !== 1 || t.text.toLowerCase() !== want.toLowerCase()) refuse(`names another ${what} in its own text`);
+    const parts = tokens[i]?.punct ? undefined : tokens[i]?.parts;
+    const [schema, name] = parts?.length === 2 ? parts : [undefined, parts?.length === 1 ? parts[0] : undefined];
+    if (name?.toLowerCase() !== want.toLowerCase() || (schema !== undefined && schema.toLowerCase() !== 'main')) {
+      refuse(`names another ${what} in its own text`);
+    }
     i += 1;
   };
   expect('create');
@@ -946,17 +962,40 @@ function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): '
   return 'replay';
 }
 
-/** `SELECT RAISE(ABORT|FAIL|ROLLBACK[, '<message>']) …` that reads no other row: refuses, writes nothing. */
+/**
+ * `SELECT RAISE(<action>, '<literal>') [WHERE …]`, or the same RAISE as the one result of
+ * `SELECT CASE WHEN … THEN … END [WHERE …]`, reading no other row: refuses, writes nothing.
+ */
 function isGuard(s: readonly SqlToken[]): boolean {
-  if (!isWord(s[0], 'select') || !isWord(s[1], 'raise') || !isPunct(s[2], '(')) return false;
-  const action = s[3];
-  if (!action || action.quoted || action.punct || !RAISE_ACTIONS.has(action.text.toLowerCase())) return false;
-  return !readsRows(s.slice(4));
+  if (!isWord(s[0], 'select') || readsRows(s.slice(1))) return false;
+  let k = 1;
+  if (isWord(s[1], 'case') && isWord(s[2], 'when')) {
+    k = s.findIndex((t) => isWord(t, 'then')) + 1;
+    if (k === 0) return false;
+  }
+  k = raiseEnd(s, k);
+  if (k < 0) return false;
+  if (isWord(s[1], 'case')) {
+    if (!isWord(s[k], 'end')) return false;
+    k += 1;
+  }
+  return k === s.length || isWord(s[k], 'where');
 }
 
-/** A subquery or a CTE: a read of rows beyond the one the trigger fired for. */
+/** Past `RAISE(ABORT|FAIL|ROLLBACK, '<one string literal>')` at `k`, or -1. */
+function raiseEnd(s: readonly SqlToken[], k: number): number {
+  const action = s[k + 2];
+  const ok =
+    isWord(s[k], 'raise') && isPunct(s[k + 1], '(') && !!action && !action.quoted && !action.punct &&
+    RAISE_ACTIONS.has(action.text.toLowerCase()) && isPunct(s[k + 3], ',') && s[k + 4]?.quote === "'" && isPunct(s[k + 5], ')');
+  return ok ? k + 6 : -1;
+}
+
+/** A read of rows beyond the one the trigger fired for: a subquery, a CTE, a FROM, an IN over a table. */
 function readsRows(tokens: readonly SqlToken[]): boolean {
-  return tokens.some((t) => isWord(t, 'select') || isWord(t, 'with'));
+  return tokens.some(
+    (t, k) => isWord(t, 'select') || isWord(t, 'with') || isWord(t, 'from') || isWord(t, 'values') || (isWord(t, 'in') && !isPunct(tokens[k + 1], '(')),
+  );
 }
 
 /**

@@ -25,6 +25,11 @@ export interface SqlToken {
   /** A quoted identifier or string literal — never read as a keyword. */
   readonly quoted: boolean;
   /**
+   * The mark a quoted token opened with: `'` for a string literal, `"`, `\`` or `[` for a quoted
+   * name. Absent on a bare word, on punctuation, and on a dotted name joined from parts.
+   */
+  readonly quote?: string;
+  /**
    * The name's parts as SQLite reads them, each unquoted: `main.n` and `"main"."n"` are
    * `['main', 'n']`, a schema and a name; `"main.n"` is `['main.n']`, ONE identifier that holds a
    * dot. `text` joins them and cannot tell the two apart, so a reader deciding which schema a name
@@ -49,12 +54,12 @@ export function tokenizeSql(sql: string, options?: { readonly punctuation?: bool
   // Set when the previous token ended on a `.`, so `main . tbl` folds into one name.
   let continues = false;
 
-  const push = (text: string, quoted: boolean): void => {
+  const push = (text: string, quoted: boolean, quote?: string): void => {
     const prev = tokens[tokens.length - 1];
     if (continues && prev) {
       tokens[tokens.length - 1] = { text: `${prev.text}.${text}`, quoted: prev.quoted || quoted, parts: [...(prev.parts ?? [prev.text]), text] };
     } else {
-      tokens.push({ text, quoted, parts: [text] });
+      tokens.push({ text, quoted, ...(quote ? { quote } : {}), parts: [text] });
     }
     // Look ahead for the dot that joins this name to the next part. SQLite treats a
     // COMMENT as whitespace, so `main /* … */ . _substrat_tuples` is one qualified
@@ -116,7 +121,7 @@ export function tokenizeSql(sql: string, options?: { readonly punctuation?: bool
         text += sql[i];
         i += 1;
       }
-      push(text, true);
+      push(text, true, c);
       continue;
     }
     if (c === '[') {
@@ -127,7 +132,7 @@ export function tokenizeSql(sql: string, options?: { readonly punctuation?: bool
         i += 1;
       }
       i += 1;
-      push(text, true);
+      push(text, true, '[');
       continue;
     }
     if (/[A-Za-z_]/.test(c)) {

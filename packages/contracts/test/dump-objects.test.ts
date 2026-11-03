@@ -20,13 +20,16 @@ const ONE_LEAD = index('ledger_one_lead', 'CREATE UNIQUE INDEX ledger_one_lead O
 const NO_UPDATE = trigger(
   'ledger_no_update',
   "CREATE TRIGGER ledger_no_update BEFORE UPDATE OF who, lead ON ledger FOR EACH ROW WHEN OLD.id IS NOT NULL\n" +
-    "BEGIN SELECT RAISE(ABORT, 'ledger is append-only; END here is text'); SELECT RAISE(FAIL) WHERE NEW.lead = 2; END",
+    "BEGIN SELECT RAISE(ABORT, 'ledger is append-only; END here is text'); SELECT RAISE(FAIL, 'no') WHERE NEW.lead = 2; END",
 );
+// The common append-only idiom, and a table qualified with `main.` as SQLite keeps it.
+const NO_DELETE = guard('ledger_no_delete', "SELECT CASE WHEN OLD.lead IN (0, 1) THEN RAISE(ROLLBACK, 'kept') END;");
+const MAIN = index('ledger_by_who', 'CREATE INDEX ledger_by_who ON main.ledger (who)');
 
 describe('assertReplayableDump: the objects a dump carries', () => {
-  it('puts back an index and a guard trigger', () => {
-    const plan = assertReplayableDump(dump(ONE_LEAD, NO_UPDATE));
-    expect(plan).toEqual({ replay: [{ ...ONE_LEAD, table: 'ledger' }, { ...NO_UPDATE, table: 'ledger' }], skipped: [], carried: 2 });
+  it('puts back an index and the guard trigger shapes', () => {
+    const plan = assertReplayableDump(dump(ONE_LEAD, NO_UPDATE, NO_DELETE, MAIN));
+    expect(plan).toEqual({ replay: [ONE_LEAD, NO_UPDATE, NO_DELETE, MAIN].map((o) => ({ ...o, table: 'ledger' })), skipped: [], carried: 4 });
   });
 
   it('reads a dump written before objects were carried as not carrying them', () => {
@@ -42,6 +45,10 @@ describe('assertReplayableDump: the objects a dump carries', () => {
     ['a guard whose WHEN reads other rows', guard('t1', "SELECT RAISE(ABORT, 'no');", ' WHEN (SELECT COUNT(*) FROM other) > 0')],
     ['a guard whose body reads other rows', guard('t1', "SELECT RAISE(ABORT, 'no') WHERE EXISTS (SELECT 1 FROM other);")],
     ['a guard reading through a CTE', guard('t1', "WITH x AS (SELECT 1) SELECT RAISE(ABORT, 'no');")],
+    ['a guard reading FROM another table', guard('t1', "SELECT RAISE(ABORT, 'no') FROM other;")],
+    ['a guard whose WHEN tests IN a table', guard('t1', "SELECT RAISE(ABORT, 'no');", ' WHEN OLD.id IN other')],
+    ['a guard whose message is not one string literal', guard('t1', 'SELECT RAISE(ABORT, OLD.id);')],
+    ['a body of VALUES', guard('t1', 'VALUES (1);')],
     ['a name SQLite reads with a character outside ASCII', index('t1', 'CREATE INDEX t1é ON ledger (who)')],
     ['a quoted name that is not a plain identifier', index('by-who', 'CREATE INDEX "by-who" ON ledger (who)')],
     ['a trigger named as its table', guard('ledger', "SELECT RAISE(ABORT, 'no');")],

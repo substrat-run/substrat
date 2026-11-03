@@ -71,6 +71,9 @@ import {
   dumpObjectsOf,
   type DumpObjectRow,
   replayDumpObjects,
+  dumpObjectsAudit,
+  type DumpObjectsPlan,
+  type ModuleObjectsRecord,
   type ScopeDumpObject,
   REDRAIN_BATCH,
 } from '@substrat-run/contracts';
@@ -1089,6 +1092,9 @@ type ImportDumpOptions = {
   /** #2555: this store's `permission_source` and `entitlements_enforced` stay as they were before
    *  the load, never the dump's. Reached only through `importDumpProjected`. */
   keepPermissionFlags?: boolean;
+  /** #2820: told what the load did with the dump's own indexes and triggers, so its answer can say.
+   *  Set by the methods in this object, never sent over the wire. */
+  onObjects?: (plan: DumpObjectsPlan) => void;
 };
 
 /** #2555: the `_substrat_meta` keys a control-plane-full load keeps from the destination. */
@@ -1098,7 +1104,7 @@ const PERMISSION_FLAG_KEYS = ['permission_source', 'entitlements_enforced'] as c
 type CheckedLoad =
   | { refused: 'changed' | 'kept' | 'lapsed' }
   | { refused: 'tenant' | 'roles'; message: string }
-  | { refused: false; switchedOff: SwitchedOff[]; rolesProjected?: true };
+  | { refused: false; switchedOff: SwitchedOff[]; rolesProjected?: true; moduleObjects?: ModuleObjectsRecord };
 
 /** #2450: a commit or a page naming a stage this store no longer holds. */
 const STAGE_GONE = 'the staged load is not here any more (another carry replaced it, or it was already loaded); nothing was loaded';
@@ -7696,7 +7702,9 @@ export function defineScopeDO(
           .toArray() as { type: string; tbl_name: string; name: string; sql: string }[]
       ).filter((o) => names.has(o.tbl_name));
       const of = (type: string) => objects.filter((o) => o.type === type).map((o) => [o.name, o.sql]);
-      return JSON.stringify({ tables: defs, indexes: of('index'), triggers: of('trigger') });
+      // Named only when there are some, so a capture opened before triggers were part of it still reads alike.
+      const triggers = of('trigger');
+      return JSON.stringify({ tables: defs, indexes: of('index'), ...(triggers.length ? { triggers } : {}) });
     }
 
     /**
@@ -8133,6 +8141,7 @@ export function defineScopeDO(
         onRolesProjected,
         projection,
         keepPermissionFlags,
+        onObjects,
       }: ImportDumpOptions = {},
       stageId?: string,
     ): Promise<SwitchedOff[]> {
@@ -8170,6 +8179,7 @@ export function defineScopeDO(
       // only the first statement, so the text itself has to be the one statement.
       // Pure input validation, so it runs before the first DROP: a refused dump touches nothing.
       const objects = assertReplayableDump(replayable, { maxColumns: DO_SQL_LIMITS.columns });
+      onObjects?.(objects);
       // #1869: `exact` vouches for a named source; without one it would silently fall back.
       if (exact && !sourceScopeId) {
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
@@ -8456,7 +8466,7 @@ export function defineScopeDO(
       destScopeId: ScopeId,
       opts: ImportDumpOptions,
     ): Promise<CheckedLoad> {
-      return this.checkedLoad(() => this.importDump(tables, destScopeId, opts));
+      return this.checkedLoad((onObjects) => this.importDump(tables, destScopeId, { ...opts, onObjects }));
     }
 
     /**
@@ -8473,7 +8483,7 @@ export function defineScopeDO(
       roleRepair: LoadRoleRepair,
     ): Promise<CheckedLoad> {
       return this.judgedLoad((onRolesProjected) =>
-        this.checkedLoad(() => this.importDump(tables, destScopeId, { ...opts, roleRepair, onRolesProjected })),
+        this.checkedLoad((onObjects) => this.importDump(tables, destScopeId, { ...opts, roleRepair, onRolesProjected, onObjects })),
       );
     }
 
@@ -8491,18 +8501,19 @@ export function defineScopeDO(
       destScopeId: ScopeId,
       opts: Pick<ImportDumpOptions, 'switchOff' | 'sourceScopeId' | 'exact'>,
       projection: LoadProjection | null,
-    ): Promise<DoReply<{ switchedOff: SwitchedOff[] } | { refusedRoles: string }>> {
+    ): Promise<DoReply<{ switchedOff: SwitchedOff[]; moduleObjects?: ModuleObjectsRecord } | { refusedRoles: string }>> {
       return replyOf(async () => {
         try {
-          return {
-            switchedOff: await this.importDump(tables, destScopeId, {
-              switchOff: opts.switchOff,
-              sourceScopeId: opts.sourceScopeId,
-              exact: opts.exact,
-              keepPermissionFlags: true,
-              ...(projection ? { projection } : {}),
-            }),
-          };
+          let plan: DumpObjectsPlan | undefined;
+          const switchedOff = await this.importDump(tables, destScopeId, {
+            switchOff: opts.switchOff,
+            sourceScopeId: opts.sourceScopeId,
+            exact: opts.exact,
+            keepPermissionFlags: true,
+            ...(projection ? { projection } : {}),
+            onObjects: (judged) => (plan = judged),
+          });
+          return { switchedOff, ...(plan ? { moduleObjects: dumpObjectsAudit(plan) } : {}) };
         } catch (e) {
           if (e instanceof Error && roleRefusals.has(e)) return { refusedRoles: e.message };
           throw e;
@@ -8690,7 +8701,7 @@ export function defineScopeDO(
       opts: ImportDumpOptions,
     ): Promise<CheckedLoad & { tables?: number }> {
       let count = 0;
-      const out = await this.checkedLoad(() => {
+      const out = await this.checkedLoad((onObjects) => {
         const head = this.stageHead();
         if (head?.stageId !== stageId) throw substratError('precondition_failed', STAGE_GONE);
         // Read only: a stage opened before objects were staged has no table for them, and loads none.
@@ -8711,7 +8722,7 @@ export function defineScopeDO(
           rows: () => this.stagedRows(t.ord),
         }));
         count = tables.length;
-        return this.loadTables(tables, destScopeId, opts, stageId);
+        return this.loadTables(tables, destScopeId, { ...opts, onObjects }, stageId);
       });
       return out.refused === false ? { ...out, tables: count } : out;
     }
@@ -8769,9 +8780,11 @@ export function defineScopeDO(
     }
 
     /** A load's refusals answered as values (#1722): across the RPC a throw carries only its message. */
-    private async checkedLoad(run: () => Promise<SwitchedOff[]>): Promise<CheckedLoad> {
+    private async checkedLoad(run: (onObjects: (plan: DumpObjectsPlan) => void) => Promise<SwitchedOff[]>): Promise<CheckedLoad> {
       try {
-        return { refused: false, switchedOff: await run() };
+        let plan: DumpObjectsPlan | undefined;
+        const switchedOff = await run((judged) => (plan = judged));
+        return { refused: false, switchedOff, ...(plan ? { moduleObjects: dumpObjectsAudit(plan) } : {}) };
       } catch (e) {
         if (e instanceof Error && fenceRefusals.has(e)) return { refused: 'lapsed' };
         if (e instanceof Error && roleRefusals.has(e)) return { refused: 'roles', message: e.message };
