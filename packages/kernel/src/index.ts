@@ -656,10 +656,7 @@ export {
 } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export {
-  OUTBOX_PRUNE_BATCH,
   OUTBOX_PRUNED_DDL,
-  OUTBOX_PRUNED_THROUGH_SQL,
-  OUTBOX_RETENTION_DAYS,
   pruneDrainedOutbox,
   WatermarkPruned,
   type OutboxPruneInput,
