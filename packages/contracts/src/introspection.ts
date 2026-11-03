@@ -906,10 +906,11 @@ function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): '
   const expect = (word: string): void => {
     if (!kw(word)) refuse(`does not read as \`CREATE ${o.type.toUpperCase()}\` in the shape a dump carries`);
   };
-  // A name as written, or qualified with `main.`, which SQLite keeps as written.
-  const named = (want: string, what: string): void => {
+  // A name as written, or, where SQLite's grammar takes one (`main`), qualified with `main.`,
+  // which SQLite keeps as written: an index's or a trigger's own name, and a trigger's table.
+  const named = (want: string, what: string, qualifiable: boolean): void => {
     const parts = tokens[i]?.punct ? undefined : tokens[i]?.parts;
-    const [schema, name] = parts?.length === 2 ? parts : [undefined, parts?.length === 1 ? parts[0] : undefined];
+    const [schema, name] = parts?.length === 2 && qualifiable ? parts : [undefined, parts?.length === 1 ? parts[0] : undefined];
     if (name?.toLowerCase() !== want.toLowerCase() || (schema !== undefined && schema.toLowerCase() !== 'main')) {
       refuse(`names another ${what} in its own text`);
     }
@@ -922,11 +923,11 @@ function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): '
     expect('not');
     expect('exists');
   }
-  named(o.name, 'name');
+  named(o.name, 'name', true);
   let guard = true;
   if (o.type === 'index') {
     expect('on');
-    named(table, 'table');
+    named(table, 'table', false);
     if (!isPunct(tokens[i], '(')) refuse('has no column list');
     if (tokens.some((t) => isPunct(t, ';'))) refuse('carries more than one statement');
   } else {
@@ -936,7 +937,7 @@ function objectVerdict(o: ScopeDumpObject, table: string, names: Set<string>): '
       if (kw('of')) for (i += 1; isPunct(tokens[i], ','); i += 2);
     } else if (!kw('insert') && !kw('delete')) refuse('fires on no INSERT, UPDATE or DELETE');
     expect('on');
-    named(table, 'table');
+    named(table, 'table', true);
     if (kw('for')) {
       expect('each');
       expect('row');
@@ -991,11 +992,12 @@ function raiseEnd(s: readonly SqlToken[], k: number): number {
   return ok ? k + 6 : -1;
 }
 
-/** A read of rows beyond the one the trigger fired for: a subquery, a CTE, a FROM, an IN over a table. */
+/**
+ * A read of rows beyond the one the trigger fired for: a subquery, a CTE, an IN over a table. A FROM
+ * needs no rule of its own: in a guard it can only follow a SELECT, or a RAISE whose shape ends it.
+ */
 function readsRows(tokens: readonly SqlToken[]): boolean {
-  return tokens.some(
-    (t, k) => isWord(t, 'select') || isWord(t, 'with') || isWord(t, 'from') || isWord(t, 'values') || (isWord(t, 'in') && !isPunct(tokens[k + 1], '(')),
-  );
+  return tokens.some((t, k) => isWord(t, 'select') || isWord(t, 'with') || (isWord(t, 'in') && !isPunct(tokens[k + 1], '(')));
 }
 
 /**

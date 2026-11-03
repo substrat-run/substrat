@@ -1703,15 +1703,20 @@ migrationCommentsContractSuite('adapter-cloudflare', async () => {
 });
 
 // #2820: a module's own index and triggers across a restore. `moduleObjectsMod` is in `contractTestModules`.
-moduleObjectsContractSuite('adapter-cloudflare', async () => {
-  const host = new CloudflareScopeHost({
-    scope: env.SCOPE,
-    controlPlane: env.CONTROL_PLANE,
-    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-    checker: UNSAFE_allowAllChecker,
-  });
-  return { host, cleanup: async () => host.close() };
-});
+// A control-plane host whose scope has a vertical: the deployment loads it again, so the row records nothing.
+moduleObjectsContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      checker: UNSAFE_allowAllChecker,
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  { audited: false },
+);
 
 // #2553: the applied-migrations read answers with every row, past the 100 it once stopped at.
 // `manyMigrationsMod` is in `contractTestModules`.

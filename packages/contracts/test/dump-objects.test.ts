@@ -22,14 +22,18 @@ const NO_UPDATE = trigger(
   "CREATE TRIGGER ledger_no_update BEFORE UPDATE OF who, lead ON ledger FOR EACH ROW WHEN OLD.id IS NOT NULL\n" +
     "BEGIN SELECT RAISE(ABORT, 'ledger is append-only; END here is text'); SELECT RAISE(FAIL, 'no') WHERE NEW.lead = 2; END",
 );
-// The common append-only idiom, and a table qualified with `main.` as SQLite keeps it.
+// The common append-only idiom; a change test; and `main.` where SQLite's grammar takes it, kept as written.
 const NO_DELETE = guard('ledger_no_delete', "SELECT CASE WHEN OLD.lead IN (0, 1) THEN RAISE(ROLLBACK, 'kept') END;");
-const MAIN = index('ledger_by_who', 'CREATE INDEX ledger_by_who ON main.ledger (who)');
+const NO_MOVE = trigger(
+  'ledger_no_move',
+  "CREATE TRIGGER ledger_no_move BEFORE UPDATE ON main.ledger WHEN NEW.who IS DISTINCT FROM OLD.who BEGIN SELECT RAISE(ABORT, 'kept'); END",
+);
+const MAIN = index('ledger_by_who', 'CREATE INDEX main.ledger_by_who ON ledger (who)');
 
 describe('assertReplayableDump: the objects a dump carries', () => {
   it('puts back an index and the guard trigger shapes', () => {
-    const plan = assertReplayableDump(dump(ONE_LEAD, NO_UPDATE, NO_DELETE, MAIN));
-    expect(plan).toEqual({ replay: [ONE_LEAD, NO_UPDATE, NO_DELETE, MAIN].map((o) => ({ ...o, table: 'ledger' })), skipped: [], carried: 4 });
+    const shapes = [ONE_LEAD, NO_UPDATE, NO_DELETE, NO_MOVE, MAIN];
+    expect(assertReplayableDump(dump(...shapes))).toEqual({ replay: shapes.map((o) => ({ ...o, table: 'ledger' })), skipped: [], carried: 5 });
   });
 
   it('reads a dump written before objects were carried as not carrying them', () => {
@@ -71,6 +75,7 @@ describe('assertReplayableDump: the objects a dump carries', () => {
     ['a statement after an index', index('i1', 'CREATE INDEX i1 ON ledger (who); DROP TABLE other'), /more than one statement/],
     ['an object on another table', index('i1', 'CREATE INDEX i1 ON other (id)'), /names another table/],
     ['an object on the spine', index('i1', 'CREATE INDEX i1 ON _substrat_tuples (subject)'), /names another table/],
+    ['an index on a qualified table, which SQLite does not parse', index('i1', 'CREATE INDEX i1 ON main.ledger (who)'), /names another table/],
     ['a name its own text does not give', index('i1', 'CREATE INDEX i2 ON ledger (who)'), /names another name/],
     ['a reserved name', index('_substrat_list_x', 'CREATE INDEX _substrat_list_x ON ledger (who)'), /reserved name/],
     ['a TEMP trigger', trigger('t1', "CREATE TEMP TRIGGER t1 BEFORE DELETE ON ledger BEGIN SELECT RAISE(ABORT, 'no'); END"), /shape a dump carries/],

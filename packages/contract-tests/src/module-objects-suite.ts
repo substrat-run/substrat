@@ -5,6 +5,10 @@
  * the ones that hold invariants: here a partial unique index and an append-only trigger, judged by
  * what they refuse afterwards. A trigger that writes, planted in the dump, is left out, and the
  * restore's admin row names it. The fixture is `moduleObjectsMod`.
+ *
+ * `audited`: the host's restore row records what its load did with them. A host whose scope has a
+ * vertical and a control plane does not: the scope is loaded again in its deployment after the row
+ * is written, so the host's own copy would say nothing true there, and the row records nothing.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeDump } from '@substrat-run/contracts';
@@ -12,7 +16,12 @@ import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { moduleObjectsMod } from './module-objects.js';
 
-export function moduleObjectsContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
+export function moduleObjectsContractSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture>,
+  { audited }: { audited: boolean },
+): void {
+  const audit = (record: unknown) => (audited ? record : undefined);
   describe(`a module's own indexes and triggers across a restore (#2820): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
     let host: ScopeHost;
@@ -61,7 +70,7 @@ export function moduleObjectsContractSuite(adapterName: string, makeFixture: () 
       expect(await stub.invoke('mo/count', undefined)).toBe(0);
       // Counted over the whole dump: on a host that migrates every kit module into a scope, other
       // tables carry their own indexes too.
-      expect(moduleObjects).toEqual({ carried: expect.any(Number), skipped: ['mo_count'] });
+      expect(moduleObjects).toEqual(audit({ carried: expect.any(Number), skipped: ['mo_count'] }));
     });
 
     it("refuses a dump whose own rows break its unique index, and the scope keeps its rows and its index", async () => {
@@ -87,7 +96,7 @@ export function moduleObjectsContractSuite(adapterName: string, makeFixture: () 
         tables: dump.tables.map(({ objects: _, ...table }) => table),
       }));
       await stub.invoke('mo/insert', { id: 'b', who: 'x', lead: 1 });
-      expect(moduleObjects).toEqual({ carried: 'not carried', skipped: [] });
+      expect(moduleObjects).toEqual(audit({ carried: 'not carried', skipped: [] }));
     });
   });
 }

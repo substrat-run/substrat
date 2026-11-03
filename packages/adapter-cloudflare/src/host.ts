@@ -5616,7 +5616,9 @@ export class CloudflareScopeHost implements ScopeHost {
         sourceScopeId: dump.scopeId,
         tables: dump.tables.length,
         capturedAt: dump.capturedAt,
-        moduleObjects,
+        // #2820: only where this load IS the scope's store. A hosted scope is loaded again in its
+        // deployment after this row is written, so what this copy took would say nothing true there.
+        ...(ownStore ? { moduleObjects } : {}),
         ...replay,
         ...(reprojected ? { reprojected } : {}),
       },

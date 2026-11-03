@@ -849,12 +849,13 @@ const reconcileBody = z.object({
  * failing an operation that succeeded. The platform reads it only to audit, and its own
  * re-assert after the call still switches the modules, exactly as for a host that sends none.
  */
-/** #2820: what the load did with the dump's own indexes and triggers, when the host said. */
-const moduleObjectsAnswer = (record: ModuleObjectsRecord | undefined) => (record ? { moduleObjects: record } : {});
 const switchedOffAnswer = (switched: SwitchedOff[] | undefined) => {
   const parsed = switched ? z.array(switchedOffInUnit).safeParse(switched) : undefined;
   return parsed?.success ? { switchedOff: parsed.data } : {};
 };
+
+/** #2820: what the load did with the dump's own indexes and triggers, when the host said. */
+const moduleObjectsAnswer = (record: ModuleObjectsRecord | undefined) => (record ? { moduleObjects: record } : {});
 
 /**
  * #2185: the reconcile's retirement report, parsed on the way OUT like `switchedOffAnswer`: a count
