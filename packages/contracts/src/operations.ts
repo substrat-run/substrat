@@ -866,12 +866,14 @@ export function defineOperations<
   >(
     operations: Ops,
   ): Ops => {
-    assertListsArePaged(operations);
-    assertConcurrencyMovesVersion(operations);
-    assertFieldBagsDeclareConcurrency(operations, entities, engines ?? []);
-    assertPatchInputs(operations);
-    assertTrashedDeclarations(operations, entities);
-    assertHandlersDeclared(operations, entities);
+    assertDeclarations(operations, [
+      assertListsArePaged,
+      assertConcurrencyMovesVersion,
+      (ops) => assertFieldBagsDeclareConcurrency(ops, entities, engines ?? []),
+      assertPatchInputs,
+      (ops) => assertTrashedDeclarations(ops, entities),
+      (ops) => assertHandlersDeclared(ops, entities),
+    ]);
     return operations;
   };
 }
@@ -924,6 +926,62 @@ export function defineOperations<
  *
  * What it does not judge is any field of an object, which is the nested-array rule above.
  */
+/** The operation a check's refusal names: every one opens `model: '<name>'`. */
+const OFFENDER = /^model: '([^']+)'/;
+
+/**
+ * Run every check over every operation and refuse once, with everything found.
+ *
+ * Each check throws at the FIRST operation it refuses, and they used to run one
+ * after another, so a declaration with three problems reported one: a builder
+ * agent fixed it, met the next, and spent a whole repair pass per problem. Here a
+ * check that refuses an operation is run again over the rest, so every operation
+ * it would refuse is found, and every check runs over the whole set — an
+ * operation refused by one check is still judged by the others. One problem keeps
+ * its own message, word for word; several are numbered in one.
+ */
+function assertDeclarations(
+  operations: Record<string, unknown>,
+  checks: readonly ((operations: Record<string, unknown>) => void)[],
+): void {
+  const offences: string[] = [];
+  for (const check of checks) {
+    const rest = { ...operations };
+    for (;;) {
+      try {
+        check(rest);
+        break;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        offences.push(message);
+        const name = OFFENDER.exec(message)?.[1];
+        // A refusal that names no operation of this set cannot be stepped past.
+        if (name === undefined || !(name in rest)) break;
+        delete rest[name];
+      }
+    }
+  }
+  if (offences.length === 1) throw new Error(offences[0]);
+  if (offences.length > 1) {
+    // A remedy already printed is named, not repeated: five unpaged list reads would otherwise
+    // repeat one six-line remedy five times, and a reader that keeps the tail (the builder's
+    // repair prompt does) would lose the first problems to the repetition.
+    const seen = new Map<string, number>();
+    const listed = offences.map((offence, i) => {
+      const cut = offence.indexOf('\n');
+      const head = cut < 0 ? offence : offence.slice(0, cut);
+      const rest = cut < 0 ? '' : offence.slice(cut);
+      const first = seen.get(rest);
+      if (rest && first === undefined) seen.set(rest, i + 1);
+      return `${i + 1}. ${head}${first === undefined ? rest : `\n  Remedy: as for ${first}.`}`;
+    });
+    throw new Error(
+      `model: ${offences.length} problems in the operation declarations — fix them all before re-running:\n\n` +
+        listed.join('\n\n'),
+    );
+  }
+}
+
 function assertListsArePaged(operations: Record<string, unknown>): void {
   for (const [name, op] of Object.entries(operations)) {
     const decl = op as { output?: unknown; paged?: unknown };
@@ -932,16 +990,19 @@ function assertListsArePaged(operations: Record<string, unknown>): void {
     if (verdict.kind === 'ok') continue;
     const under = verdict.via.length > 0 ? ` (under ${verdict.via.join(' > ')})` : '';
     const entryOrPaged =
-      '  Remedy: declare the real entry schema as `output`, or add `paged` if the handler composes its own page.';
+      '  Remedy: declare the real entry schema as `output`, or add `paged` — `paged.over` for a page the kernel ' +
+      'composes, `paged.sortKey` for one the handler composes.';
     switch (verdict.kind) {
       case 'array':
         throw new Error(
           `model: '${name}' returns ${verdict.via.length > 0 ? `an array${under}` : 'a bare array'} and does not ` +
             'declare `paged` — a list read that answers with the whole table is unbounded by construction.\n' +
-            '  Remedy: declare the ENTRY as `output` and add `paged`. Either the kernel composes the walk —\n' +
-            "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }\n" +
-            '  — or, where it cannot (a kernel table, a correlated subquery, a per-row permission walk),\n' +
-            '  the handler composes its own and names the entry field the cursor walks:\n' +
+            '  Remedy: declare the ENTRY as `output` and add `paged`. A list of one entity\'s own rows is a page\n' +
+            '  the kernel composes, and its handler is derived — no handler to write:\n' +
+            "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }, derive: 'list'\n" +
+            '  Only where the kernel cannot (a kernel table, a correlated subquery, a per-row permission walk)\n' +
+            '  does the handler compose its own page, naming the entry field the cursor walks. That handler is\n' +
+            '  hand-written by construction, so the operation declares no `authored`:\n' +
             "    paged: { sortKey: 'article' }",
         );
       case 'container':
@@ -2207,10 +2268,17 @@ function assertHandlersDeclared(operations: Record<string, unknown>, entities: R
     const plan = derivationOf(decl, entities);
     if (plan === undefined) {
       if (authored !== undefined) {
+        // The one way into this an agent was led (the paged remedy offered `sortKey` beside `over`):
+        // a handler-composed page reads as needing `authored`, and is the one page that cannot.
+        const sortKeyed = (decl as { paged?: { sortKey?: unknown } }).paged?.sortKey !== undefined;
         throw new Error(
           `model: '${name}' declares \`authored\`, but nothing about it is derivable — it matches none of ` +
             `${DERIVED_KINDS.join(', ')}, so every handler for it is authored already.\n` +
-            '  Remedy: remove `authored`.',
+            (sortKeyed
+              ? '  A `paged: { sortKey }` page is composed by its handler, so it is hand-written by construction.\n' +
+                "  Remedy: remove `authored` — or, for a list of one entity's own rows, declare " +
+                "`paged: { over: { entity, … } }` with `derive: 'list'` and delete the handler."
+              : '  Remedy: remove `authored`.'),
         );
       }
       continue;
