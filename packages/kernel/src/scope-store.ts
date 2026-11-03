@@ -234,12 +234,22 @@ function storeResult(answer: unknown, from: 'store' | 'platform'): unknown {
   throw new StoreError(parsed.data.error);
 }
 
-async function invokeScopeStore(
-  from: 'store' | 'platform',
-  send: (request: StoreRequest) => Promise<unknown>,
+type StoreSend = (request: StoreRequest) => Promise<unknown>;
+
+/**
+ * Send one envelope and read the answer (#2207). Reserved names are refused
+ * here, before `send`, so the store never sees a `substrat.*` call from a
+ * vertical. The platform's own caller does not come through this function.
+ *
+ * `send` reaches the store directly. `{ send, through: 'platform' }` is a `send` that
+ * reaches it through the platform's hop, whose answer carries the platform's own codes
+ * as well as the store's, already judged there (#2815).
+ */
+export async function callScopeStore(
+  via: StoreSend | { readonly send: StoreSend; readonly through: 'platform' },
   operation: string,
-  input: unknown,
-  extra: unknown[],
+  input?: unknown,
+  ...extra: unknown[]
 ): Promise<unknown> {
   if (extra.length > 0) {
     throw substratError('forbidden', 'a scope store invoke takes an operation and an input, and nothing else');
@@ -248,34 +258,8 @@ async function invokeScopeStore(
   if (operation.startsWith('substrat.')) {
     throw substratError('forbidden', `store operation '${operation}' is reserved for the platform`);
   }
+  const [send, from] = typeof via === 'function' ? [via, 'store' as const] : [via.send, 'platform' as const];
   return storeResult(await send(storeRequest.parse({ operation, input })), from);
-}
-
-/**
- * Send one envelope to a store and read its answer (#2207). Reserved names are refused
- * here, before `send`, so the store never sees a `substrat.*` call from a
- * vertical. The platform's own caller does not come through this function.
- */
-export async function callScopeStore(
-  send: (request: StoreRequest) => Promise<unknown>,
-  operation: string,
-  input?: unknown,
-  ...extra: unknown[]
-): Promise<unknown> {
-  return invokeScopeStore('store', send, operation, input, extra);
-}
-
-/**
- * {@link callScopeStore} when `send` reaches the store through the platform's hop, which
- * answers with the platform's own codes as well as the store's (#2815).
- */
-export async function callScopeStoreThroughPlatform(
-  send: (request: StoreRequest) => Promise<unknown>,
-  operation: string,
-  input?: unknown,
-  ...extra: unknown[]
-): Promise<unknown> {
-  return invokeScopeStore('platform', send, operation, input, extra);
 }
 
 const RESERVED_RESULT = {

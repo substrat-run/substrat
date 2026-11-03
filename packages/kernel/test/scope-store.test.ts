@@ -3,7 +3,6 @@ import { errorCodeOf, platformActorId, scopeId, StoreError, substratError, tenan
 import {
   callReservedStoreOperation,
   callScopeStore,
-  callScopeStoreThroughPlatform,
   observeStoreCall,
   replayStoreErasures,
   scopeStoreLifecycleOf,
@@ -92,7 +91,7 @@ describe('callScopeStore (#2209)', () => {
     const caught = (call: Promise<unknown>) => call.then(() => undefined, (err: unknown) => err as StoreError);
     expect(await caught(callScopeStore(answer, 'read'))).toMatchObject({ storeCode: 'substrat.bad_envelope', storeStatus: 502 });
     expect(await caught(callReservedStoreOperation(answer, 'substrat.size'))).toMatchObject({ storeCode: 'substrat.bad_envelope' });
-    expect(await caught(callScopeStoreThroughPlatform(answer, 'read'))).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
+    expect(await caught(callScopeStore({ send: answer, through: 'platform' }, 'read'))).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
   });
 });
 
