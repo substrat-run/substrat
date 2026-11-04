@@ -4594,7 +4594,11 @@ async function assertMayManageApps(host: ScopeHost, node: DashboardNode): Promis
 async function assertMay(
   host: ScopeHost,
   node: DashboardNode,
-  gate: 'dashboard/authorize-scope-change' | 'dashboard/authorize-findings-read' | 'dashboard/authorize-findings-change',
+  gate:
+    | 'dashboard/authorize-scope-change'
+    | 'dashboard/authorize-findings-read'
+    | 'dashboard/authorize-findings-change'
+    | 'dashboard/authorize-event-lake-read',
 ): Promise<void> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   await dash.invoke(gate, {});
@@ -5644,6 +5648,13 @@ const routeHandlers = {
   },
   'dashboard/list-team-audit': async ({ c, host, node }, { scopeId: asked, ...page }) =>
     auditLogOf(c, host, node, listPageQuery.parse(page), asked || undefined),
+  'dashboard/list-team-lake-events': async (ctx, input) => {
+    await assertMay(ctx.host, ctx.node, 'dashboard/authorize-event-lake-read');
+    const page = await teamPlane(ctx).lakeEvents(input);
+    return page === null
+      ? { available: false, events: [], nextCursor: null, consistency: 'eventual' }
+      : { available: true, ...page };
+  },
   'dashboard/fleet-health': async (ctx) => fleetHealthIn(ctx),
   'dashboard/identity-mirror': async (ctx) => identityMirrorIn(ctx),
   'dashboard/list-findings': async (ctx, filter) => {

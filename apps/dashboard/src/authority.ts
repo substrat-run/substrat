@@ -1,5 +1,7 @@
 import type {
   AdminLogEntry,
+  LakeEventsInput,
+  LakeEventsPage,
   ConnectLink,
   ConnectLinkConsume,
   Connection,
@@ -2332,6 +2334,21 @@ export class TenantNarrowedControlPlane {
       };
     } catch (e) {
       if (e instanceof ControlPlaneError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  /**
+   * One page of this tenant's events from the Tier-2 lake (#1334), newest first. `null` while
+   * the plane has no lake engine (its 501): "the lake is off" is not an empty history.
+   */
+  async lakeEvents(input: LakeEventsInput): Promise<LakeEventsPage | null> {
+    const q = new URLSearchParams();
+    for (const [key, value] of Object.entries(input)) if (value !== undefined) q.set(key, String(value));
+    try {
+      return await this.call<LakeEventsPage>(`/tenants/${this.tenantId}/lake/events?${q}`);
+    } catch (e) {
+      if (e instanceof ControlPlaneError && e.status === 501) return null;
       throw e;
     }
   }

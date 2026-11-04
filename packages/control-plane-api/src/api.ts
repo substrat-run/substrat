@@ -359,7 +359,7 @@ import {
 } from './wire-walk.js';
 import { wireKeyDropSince, wireReadinessReport, WIRE_READINESS_LIMIT_DEFAULT, WIRE_READINESS_LIMIT_MAX } from './wire-readiness.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
-import { queryLakeEvents, type LakeQueryEngine } from './lake-gateway.js';
+import { queryLakeEvents, teamWindowRefusal, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
 import {
   isCustomHostname,
@@ -1673,6 +1673,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // grant (`tenantGrantableEntitlement`): the pin alone would let it grant itself any.
   { method: 'PUT', re: /\/tenants\/[^/]+\/entitlements\/[^/]+$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/cross-vertical\/edges$/, pin: 'path' },
+  // #1334: the team's own lake events. The handler adds the window rule for this credential.
+  { method: 'GET', re: /\/tenants\/[^/]+\/lake\/events$/, pin: 'path' },
   // Findings (#1748): the tenant's inbox, its verdicts and its suppress rules. The dashboard
   // checks WHO inside the tenant may read or act (its findings permissions) before calling.
   { method: 'PUT', re: /\/tenants\/[^/]+\/findings\/[^/]+\/status$/, pin: 'path' },
@@ -7421,9 +7423,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // closed `.strict()` list with no tenant in it, and a row of any other tenant fails the
   // read whole. Envelope only — no payload until erasure reaches the lake.
   //
-  // Staff only, by default-deny: on neither BUILDER_ROUTES nor TENANT_ROUTES. A tenant's
-  // own credential reaching this is a separate decision, with a dashboard call site and a
-  // member permission in front of it.
+  // Staff, and a team's own credential (TENANT_ROUTES, path-pinned). The dashboard checks
+  // `dashboard:read-event-lake` before it calls. A team's read must name a window of at most
+  // `LAKE_TEAM_WINDOW_DAYS` (`teamWindowRefusal`): nothing below the gateway prunes by tenant,
+  // so the window is what bounds the scan. Builders stay refused (not in BUILDER_ROUTES).
   //
   // K-24: the access row is written AFTER the engine answers and BEFORE anything is
   // returned, and a failed write fails the request — rows whose disclosure went unrecorded
@@ -7443,6 +7446,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         errors: validationIssuesFrom(parsed.error),
         issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })),
       });
+    }
+    if (c.get('principal').kind === 'tenant') {
+      const refusal = teamWindowRefusal(parsed.data, Date.now());
+      if (refusal) return refuse(c, 'validation_failed', refusal);
     }
     let page;
     try {

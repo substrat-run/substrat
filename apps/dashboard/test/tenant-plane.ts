@@ -12,12 +12,17 @@ const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
  * what every other call presents — so a suite meets the tenant-confined surface the dashboard
  * really reaches, never a staff one. `actor` is the audited subject both readers resolve to.
  */
-export function tenantPlane(host: ControlPlaneApiOptions['host'], actor: PlatformActorId) {
+export function tenantPlane(
+  host: ControlPlaneApiOptions['host'],
+  actor: PlatformActorId,
+  extra: Pick<ControlPlaneApiOptions, 'lakeQuery'> = {},
+) {
   return createControlPlaneApi({
     host,
     authenticate: serviceTokenAuth(SERVICE_TOKEN, actor),
     authenticateTenantService: tenantTokenAuth(TENANT_TOKEN_SECRET, actor),
     tenantTokenSecret: TENANT_TOKEN_SECRET,
+    ...extra,
   });
 }
 

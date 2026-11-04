@@ -171,6 +171,7 @@ export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/read-app-invocation': 'deployed app data was not an assistant tool before this route moved',
   'dashboard/list-app-denials': 'deployed app data was not an assistant tool before this route moved',
   'dashboard/list-app-dead-letters': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/list-team-lake-events': 'each lake read scans the shared lake and is held to owners and admins; not an assistant tool',
   'dashboard/app-peers': 'app peer disclosure was not an assistant tool before this route moved',
   'dashboard/app-edges': 'app event edges were not an assistant tool before this route moved',
   'dashboard/app-scopes': 'app scope choices were not an assistant tool before this route moved',
