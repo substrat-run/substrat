@@ -44,6 +44,12 @@ class CounterStore(DurableObject):
             return _json(self._row().n)
         if operation == "body":
             return _json(body)
+        if operation == "inspect":
+            # The size and digest of the body, for one too big to answer with: the exact bytes the entry verified.
+            import hashlib
+
+            raw = body.encode("utf-8")
+            return _json({"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
         if operation == "constructed":
             # How often, and how long before the first call it served the last construction was.
             seen = CONSTRUCTED[self.ctx.id.toString()]

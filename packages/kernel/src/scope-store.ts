@@ -1,27 +1,35 @@
 import {
   errorCodeOf,
   isPlatformStoreCode,
+  mergeDumpPages,
   PLATFORM_STORE_CODE,
   RESERVED_STORE_OPERATIONS,
   STORE_OPERATION_NAME_MAX,
   StoreError,
+  storeCommitStageInput,
+  storeCommitStageResult,
+  storeDiscardStageInput,
+  storeDiscardStageResult,
   storeEraseInput,
   storeEraseResult,
-  storeExportResult,
-  storeImportInput,
-  storeImportResult,
+  storeExportPageInput,
+  storeExportPageResult,
   storeOperationName,
   storeRequest,
   storeResponse,
   storeSelfcheckResult,
   storeSizeResult,
+  storeStagePageInput,
+  storeStagePageResult,
   storeWipeResult,
   substratError,
   type CheckSubject,
   type PlatformActorId,
   type ReservedStoreOperation,
   type ReservedStoreResults,
+  type ScopeDumpTable,
   type ScopeId,
+  type StoreExportPageResult,
   type StoreOperationCatalog,
   type StoreRequest,
   type StoreResponse,
@@ -29,6 +37,7 @@ import {
 } from '@substrat-run/contracts';
 import { currentStoreCallSink, type StoreCallLine } from './invocation-line.js';
 import type { HostAdmin } from './scope-host.js';
+import { ulid } from './ulid.js';
 
 /** Who a scope-store object belongs to. The host builds it. The runner keys on it. */
 export interface ScopeStoreAddress {
@@ -264,8 +273,10 @@ export async function callScopeStore(
 }
 
 const RESERVED_RESULT = {
-  'substrat.export': storeExportResult,
-  'substrat.import': storeImportResult,
+  'substrat.export-page': storeExportPageResult,
+  'substrat.stage-page': storeStagePageResult,
+  'substrat.commit-stage': storeCommitStageResult,
+  'substrat.discard-stage': storeDiscardStageResult,
   'substrat.size': storeSizeResult,
   'substrat.wipe': storeWipeResult,
   'substrat.erase': storeEraseResult,
@@ -277,10 +288,18 @@ export type ReservedStoreResult<O extends ReservedStoreOperation> = ReservedStor
 
 const reservedNames: readonly string[] = RESERVED_STORE_OPERATIONS;
 
+const PAGED_INPUT = {
+  'substrat.export-page': { schema: storeExportPageInput, takes: '{ cursor, maxBytes }' },
+  'substrat.stage-page': { schema: storeStagePageInput, takes: '{ stageId, seq, tables }' },
+  'substrat.commit-stage': { schema: storeCommitStageInput, takes: '{ stageId }' },
+  'substrat.discard-stage': { schema: storeDiscardStageInput, takes: '{ stageId }' },
+} as const;
+
 function reservedInput(operation: ReservedStoreOperation, input: unknown): unknown {
-  if (operation === 'substrat.import') {
-    const parsed = storeImportInput.safeParse(input);
-    if (!parsed.success) throw substratError('validation_failed', 'substrat.import takes { tables }');
+  const paged = PAGED_INPUT[operation as keyof typeof PAGED_INPUT];
+  if (paged) {
+    const parsed = paged.schema.safeParse(input);
+    if (!parsed.success) throw substratError('validation_failed', `${operation} takes ${paged.takes}`);
     return parsed.data;
   }
   if (operation === 'substrat.erase') {
@@ -314,6 +333,142 @@ export async function callReservedStoreOperation<O extends ReservedStoreOperatio
     throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502, body: result.error.issues });
   }
   return result.data as ReservedStoreResult<O>;
+}
+
+/** One reserved call on one store object, however the host reaches it. */
+export type ReservedStoreCall = <O extends ReservedStoreOperation>(
+  operation: O,
+  input?: unknown,
+) => Promise<ReservedStoreResult<O>>;
+
+/** A driver that broke the contract: a 502 `badEnvelope`, as an answer of the wrong shape is. */
+const driverFault = (message: string): StoreError => new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 }, message);
+
+/** How many times a store's dump is read from the start when writes keep landing along a chain. */
+const STORE_READ_ATTEMPTS = 3;
+
+/** The most pages one chain of a store's dump may have: a longer one is a driver that does not end. */
+const STORE_READ_MAX_PAGES = 100_000;
+
+/**
+ * A store's whole dump, read page by page (D-69). The pages are one read only while their `revision`
+ * stays the same, so a change along the chain starts it again. A store written to on every attempt
+ * refuses as a conflict rather than answer with a dump of no one moment: under steady writes a
+ * multi-page read can fail this way. A page whose `next` is a cursor the chain was already asked
+ * with, or a chain of more than 100 000 pages, is a driver that does not move or does not end. Such a
+ * fault is the driver's, and reaches the caller as a 502 `badEnvelope`, not a 500 with no detail.
+ */
+export async function readStoreDump(call: ReservedStoreCall, maxBytes: number): Promise<ScopeDumpTable[]> {
+  for (let attempt = 0; attempt < STORE_READ_ATTEMPTS; attempt += 1) {
+    const pages: ScopeDumpTable[][] = [];
+    const asked = new Set<string>();
+    let cursor: string | null = null;
+    let revision: string | null = null;
+    let moved = false;
+    do {
+      const page: StoreExportPageResult = await call('substrat.export-page', { cursor, maxBytes });
+      if (revision !== null && page.revision !== revision) {
+        moved = true;
+        break;
+      }
+      revision = page.revision;
+      pages.push(page.tables);
+      if (cursor !== null) asked.add(cursor);
+      if (page.next !== null && asked.has(page.next)) {
+        throw driverFault('substrat.export-page answered a cursor the chain was already asked with, so the chain does not end');
+      }
+      if (page.next !== null && pages.length >= STORE_READ_MAX_PAGES) {
+        throw driverFault(`substrat.export-page did not end in ${STORE_READ_MAX_PAGES} pages`);
+      }
+      cursor = page.next;
+    } while (cursor !== null);
+    if (!moved) return mergeDumpPages(pages);
+  }
+  throw substratError('conflict', `the store was written to throughout ${STORE_READ_ATTEMPTS} reads of its dump`);
+}
+
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
+
+const encoder = new TextEncoder();
+const bytesOf = (value: unknown): number => encoder.encode(JSON.stringify(value)).length;
+// The brackets around a page's tables. A table heading and a row each count their comma, so a page never serializes past maxBytes.
+const PAGE_FRAME_BYTES = 2;
+
+/**
+ * `tables` cut into pages of at most `maxBytes` when serialized, except that a page always holds at
+ * least one table heading and one row, so one heading or one row larger than it rides alone (D-69).
+ * Every table appears, empty or not, so its schema travels, and no tables at all
+ * is still one page, since an empty stage replaces the object as any other does.
+ */
+export function storeDumpPages(tables: readonly ScopeDumpTable[], maxBytes: number): ScopeDumpTable[][] {
+  const pages: ScopeDumpTable[][] = [];
+  let page: ScopeDumpTable[] = [];
+  let used = PAGE_FRAME_BYTES;
+  const close = () => {
+    pages.push(page);
+    page = [];
+    used = PAGE_FRAME_BYTES;
+  };
+  for (const table of tables) {
+    const heading = bytesOf({ ...table, rows: [] }) + 1;
+    if (page.length > 0 && used + heading > maxBytes) close();
+    let fragment: ScopeDumpTable = { ...table, rows: [] };
+    page.push(fragment);
+    used += heading;
+    for (const row of table.rows) {
+      const size = bytesOf(row) + 1;
+      if ((page.length > 1 || fragment.rows.length > 0) && used + size > maxBytes) {
+        close();
+        fragment = { ...table, rows: [] };
+        page.push(fragment);
+        used = PAGE_FRAME_BYTES + heading;
+      }
+      fragment.rows.push(row);
+      used += size;
+    }
+  }
+  close();
+  return pages;
+}
+
+/**
+ * Replaces a store with `tables`, page by page (D-69): cut by `storeDumpPages`, then written by
+ * {@link writeStoreDumpPages}.
+ */
+export async function writeStoreDump(
+  call: ReservedStoreCall,
+  tables: readonly ScopeDumpTable[],
+  maxBytes: number,
+): Promise<{ tables: number }> {
+  return writeStoreDumpPages(call, storeDumpPages(tables, maxBytes));
+}
+
+/**
+ * Replaces a store with `pages`, staged in order under one fresh id and then committed. Nothing
+ * changes until the commit, and a stage that fails is discarded where the store can still answer.
+ * A failed discard does not hide the failure that led to it; the driver drops an abandoned stage
+ * itself. Each page goes once under a fresh id, so `staged: false` is an error, and so is a commit
+ * that answers any other number of tables than the distinct tables sent.
+ */
+export async function writeStoreDumpPages(call: ReservedStoreCall, pages: readonly (readonly ScopeDumpTable[])[]): Promise<{ tables: number }> {
+  const stageId = ulid();
+  const distinct = new Set(pages.flatMap((page) => page.map((table) => table.name))).size;
+  try {
+    for (const [seq, page] of pages.entries()) {
+      const { staged } = await call('substrat.stage-page', { stageId, seq, tables: page });
+      if (!staged) throw driverFault(`substrat.stage-page held page ${seq} of a stage it was only just given`);
+    }
+    const committed = await call('substrat.commit-stage', { stageId });
+    if (committed.tables !== distinct) {
+      throw driverFault(
+        `substrat.commit-stage wrote ${committed.tables} tables of the ${distinct} it was sent; the commit ran, so the store may already have been replaced`,
+      );
+    }
+    return committed;
+  } catch (error) {
+    await call('substrat.discard-stage', { stageId }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

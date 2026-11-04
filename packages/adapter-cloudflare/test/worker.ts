@@ -626,11 +626,17 @@ export class ScopeStoreCounterDO extends DurableObject {
     // names this object's state shows which object a size read reached.
     if (operation === 'substrat.size') return Response.json({ result: { bytes: current } });
     if (operation === 'substrat.wipe') {
+      this.ctx.storage.sql.exec('DROP TABLE IF EXISTS stage_pages');
       this.ctx.storage.sql.exec('DELETE FROM counter');
       return Response.json({ result: {} });
     }
-    if (operation === 'substrat.erase') return Response.json({ result: { erased: 0 } });
-    if (operation === 'substrat.export') {
+    if (operation === 'substrat.erase') {
+      // A stage may hold the subject: an erase drops every stage.
+      this.ctx.storage.sql.exec('DROP TABLE IF EXISTS stage_pages');
+      return Response.json({ result: { erased: 0 } });
+    }
+    if (operation === 'substrat.export-page') {
+      // One page: the counter is one row. Its revision is its value, so a write moves it.
       return Response.json({
         result: {
           tables: [
@@ -641,20 +647,55 @@ export class ScopeStoreCounterDO extends DurableObject {
               rows: [[current]],
             },
           ],
+          next: null,
+          revision: String(current),
         },
       });
     }
-    if (operation === 'substrat.import') {
-      const tables = typeof input === 'object' && input !== null ? Reflect.get(input, 'tables') : undefined;
-      const count = Array.isArray(tables) ? tables.length : 0;
-      const first = Array.isArray(tables) ? tables[0] : undefined;
+    // A stage is held aside, one row a page, until its commit replaces the counter with it.
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS stage_pages (stage_id TEXT NOT NULL, seq INTEGER NOT NULL, n INTEGER NOT NULL, names TEXT NOT NULL)');
+    const staged = (stageId: string) =>
+      this.ctx.storage.sql.exec('SELECT seq, n, names FROM stage_pages WHERE stage_id = ? ORDER BY seq', stageId).toArray();
+    const stageIdOf = typeof input === 'object' && input !== null ? Reflect.get(input, 'stageId') : undefined;
+    if (operation === 'substrat.stage-page') {
+      const seq = Reflect.get(input as object, 'seq');
+      const tables = Reflect.get(input as object, 'tables');
+      if (typeof stageIdOf !== 'string' || typeof seq !== 'number' || !Array.isArray(tables)) {
+        return Response.json({ error: { code: 'validation_failed', status: 400 } });
+      }
+      // Page 0 starts the stage and drops any other.
+      if (seq === 0 && staged(stageIdOf).length === 0) this.ctx.storage.sql.exec('DELETE FROM stage_pages');
+      const held = staged(stageIdOf).length;
+      if (seq < held) return Response.json({ result: { staged: false } });
+      if (seq > held) return Response.json({ error: { code: 'validation_failed', status: 400 } });
+      const first = tables[0];
       const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
       const row = Array.isArray(rows) ? rows[0] : undefined;
       const cell = Array.isArray(row) ? row[0] : undefined;
-      const next = typeof cell === 'number' ? cell : 0;
+      this.ctx.storage.sql.exec(
+        'INSERT INTO stage_pages (stage_id, seq, n, names) VALUES (?, ?, ?, ?)',
+        stageIdOf,
+        seq,
+        typeof cell === 'number' ? cell : 0,
+        JSON.stringify(tables.map((table) => (typeof table === 'object' && table !== null ? Reflect.get(table, 'name') : null))),
+      );
+      return Response.json({ result: { staged: true } });
+    }
+    if (operation === 'substrat.commit-stage') {
+      const pages = typeof stageIdOf === 'string' ? staged(stageIdOf) : [];
+      if (pages.length === 0) return Response.json({ error: { code: 'validation_failed', status: 400 } });
+      const withRow = pages.find((page) => Reflect.get(page, 'names') !== '[]');
+      const next = Number(Reflect.get(withRow ?? pages[0]!, 'n'));
       this.ctx.storage.sql.exec('DELETE FROM counter');
       this.ctx.storage.sql.exec('INSERT INTO counter (n) VALUES (?)', next);
-      return Response.json({ result: { tables: count } });
+      this.ctx.storage.sql.exec('DELETE FROM stage_pages');
+      const names = new Set(pages.flatMap((page) => JSON.parse(String(Reflect.get(page, 'names'))) as string[]));
+      return Response.json({ result: { tables: names.size } });
+    }
+    if (operation === 'substrat.discard-stage') {
+      const held = typeof stageIdOf === 'string' && staged(stageIdOf).length > 0;
+      if (held) this.ctx.storage.sql.exec('DELETE FROM stage_pages');
+      return Response.json({ result: { discarded: held } });
     }
     if (operation === 'plain') {
       return new Response('not-json', { status: 200, headers: { 'content-type': 'text/plain' } });

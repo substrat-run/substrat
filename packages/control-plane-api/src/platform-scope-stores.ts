@@ -7,10 +7,12 @@ import {
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
   ScopeStoreKeyError,
+  STORE_CALL_MAX_BYTES,
+  scopeStoreBodyBytes,
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeEraseResult,
-  storeExportResult,
+  storeDriverDumpPageBytes,
   storeSizeResult,
   StoreError,
   type PlatformActorId,
@@ -19,7 +21,7 @@ import {
   type ScopeDumpTable,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
-import { callReservedStoreOperation, type HostAdmin } from '@substrat-run/kernel';
+import { callReservedStoreOperation, readStoreDump, writeStoreDump, type HostAdmin, type ReservedStoreCall } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { storedDeployManifest } from './deploy.js';
 
@@ -323,6 +325,14 @@ export async function callPlatformScopeStoreAt(
   try {
     return await callReservedStoreOperation(async (request) => {
       const body = JSON.stringify({ ...request, objectName });
+      // The store entry refuses a body over the limit (#2811), so it is refused here, before it is signed.
+      const bytes = scopeStoreBodyBytes(body);
+      if (bytes > STORE_CALL_MAX_BYTES) {
+        throw new ControlPlaneError(
+          413,
+          `scope store call '${request.operation}' carries a body of ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
+        );
+      }
       let issued;
       try {
         issued = await issueScopeStoreEnvelope({
@@ -362,24 +372,26 @@ export async function callPlatformScopeStoreAt(
   }
 }
 
-/** The five reserved operations, one call per declared binding. */
+/** The reserved operations a platform call makes, a dump in pages (D-69), one chain per declared binding. */
 export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): PlatformScopeStores {
   const call = (target: PlatformScopeStoreTarget, operation: ReservedStoreOperation, input?: unknown) =>
     callPlatformScopeStore(dispatch, target, operation, input);
+  const reservedAt = (target: PlatformScopeStoreTarget) =>
+    ((operation, input) => call(target, operation, input)) as ReservedStoreCall;
   return {
     async exportStores({ tenantId, scopeId, vertical, stores }) {
       const exported = [];
       for (const store of stores) {
-        const { tables } = storeExportResult.parse(
-          await call({ ...store, tenantId, scopeId, vertical }, 'substrat.export'),
-        );
+        const target = { ...store, tenantId, scopeId, vertical };
+        const tables = await readStoreDump(reservedAt(target), storeDriverDumpPageBytes(store.driver));
         exported.push({ binding: store.binding, driver: store.driver, tables });
       }
       return exported;
     },
     async importStores({ tenantId, scopeId, vertical, stores }) {
       for (const store of stores) {
-        await call({ ...store, tenantId, scopeId, vertical }, 'substrat.import', { tables: store.tables });
+        const target = { ...store, tenantId, scopeId, vertical };
+        await writeStoreDump(reservedAt(target), store.tables, storeDriverDumpPageBytes(store.driver));
       }
     },
     async eraseSubject({ tenantId, scopeId, vertical, subjectId, stores }) {

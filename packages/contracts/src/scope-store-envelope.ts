@@ -47,14 +47,47 @@ export const SCOPE_STORE_SIGNATURE_HEADER = 'x-substrat-store-signature';
  * `substrat.erase` included, before a hosted deploy may store tenant data.
  */
 export const RESERVED_STORE_OPERATIONS = [
-  'substrat.export',
-  'substrat.import',
+  'substrat.export-page',
+  'substrat.stage-page',
+  'substrat.commit-stage',
+  'substrat.discard-stage',
   'substrat.size',
   'substrat.wipe',
   'substrat.erase',
   'substrat.selfcheck',
 ] as const;
 export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
+
+/**
+ * How long a stage (`substrat.stage-page`, D-69) may sit unused before the driver drops it: six hours
+ * of copying plus three 30-minute copy leases, the backstop for a stage whose writer is gone. A stage
+ * unused for longer is dropped no later than the next call to the object, so a driver needs no timer.
+ * It is the formula the scope's own staged load (`scope-do.ts`) uses; a kernel test holds this value to
+ * that formula over `SCOPE_COPY_LEASE_MS`, not to the scope's constant itself, which is private.
+ */
+export const STORE_STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * 30 * 60_000;
+
+/**
+ * The most bytes one store call's body may have (#2811): the number a caller checks before it signs,
+ * and both store entries check before they verify. The envelope's digest is over the exact body, so
+ * an entry must hold the whole of it to verify it, and a Python entry that copied the body into
+ * Python failed with `exceededMemory` at about 6 MB. A body is counted in UTF-8 bytes, as the digest is.
+ * 4 MiB, the limit #2832 shipped: a page needs far less, and a larger limit can come later where a
+ * smaller one could not.
+ */
+export const STORE_CALL_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The largest page of a store's dump the platform asks any driver for (D-69): 3 MiB, so a page and
+ * the call around it stay under {@link STORE_CALL_MAX_BYTES}. A driver declares its own page size at
+ * or under this (`dumpPageMaxBytes`).
+ */
+export const STORE_DUMP_PAGE_MAX_BYTES = 3 * 1024 * 1024;
+
+/** The number of bytes a store call's body has, in UTF-8: the unit {@link STORE_CALL_MAX_BYTES} and the digest count in. */
+export function scopeStoreBodyBytes(body: string): number {
+  return new TextEncoder().encode(body).length;
+}
 
 export type ScopeStoreAudience = 'caller' | 'platform';
 

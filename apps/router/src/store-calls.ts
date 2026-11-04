@@ -6,6 +6,8 @@ import {
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
   ScopeStoreKeyError,
+  STORE_CALL_MAX_BYTES,
+  scopeStoreBodyBytes,
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeCallRequest,
@@ -81,6 +83,15 @@ export async function handleStoreCall(
   const objectName = scopeStoreObjectName(caller.tenantId, caller.vertical, request.scopeId, request.binding);
   const scriptName = scopeStoreScriptName(caller.vertical, declared.driver);
   const body = JSON.stringify({ ...request, objectName });
+  // The store entry refuses a body over the limit (#2811), so it is refused here, before it is signed.
+  const bytes = scopeStoreBodyBytes(body);
+  if (bytes > STORE_CALL_MAX_BYTES) {
+    return {
+      ok: false,
+      status: 413,
+      message: `store call refused: its body is ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
+    };
+  }
   let issued;
   try {
     issued = await issueScopeStoreEnvelope({

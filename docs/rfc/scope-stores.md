@@ -152,8 +152,10 @@ Reserved names, only the platform may send:
 
 | operation | input | result | what it does |
 |---|---|---|---|
-| `substrat.export` | none | `{ tables }` | the driver's dump, each table a `scopeDumpTable` |
-| `substrat.import` | `{ tables }` | `{ tables }` | load that dump into this object |
+| `substrat.export-page` | `{ cursor, maxBytes }` | `{ tables, next, revision }` | one page of the driver's dump: table fragments, an opaque cursor for the next page, and an opaque revision (D-69) |
+| `substrat.stage-page` | `{ stageId, seq, tables }` | `{ staged }` | hold one page of a dump aside, changing no data a call reads (only `substrat.size`, which counts held stages). A `seq` already held answers `staged: false` |
+| `substrat.commit-stage` | `{ stageId }` | `{ tables }` | replace the whole object with the stage, atomically. The one step that changes the object |
+| `substrat.discard-stage` | `{ stageId }` | `{ discarded }` | drop a stage, and say whether the object held it |
 | `substrat.size` | none | `{ bytes }` | the object's whole storage. The spike read `databaseSize` |
 | `substrat.wipe` | none | `{}` | remove all of it |
 | `substrat.erase` | `{ subjectId }` | `{ erased }` | the driver's answer to subject erasure (#2068, D-45) |
@@ -180,6 +182,40 @@ and unsaved drafts are not part of it, so a fork or a restored scope starts with
 them. The dump format is `scopeDumpTable` (`packages/contracts/src/introspection.ts`):
 name, DDL, columns, rows. Nothing in the four lifecycle operations is specific to that driver.
 
+**A dump moves in pages (D-69).** `substrat.export` and `substrat.import` are gone, with no
+compatibility form: a store crossed in one call each way, so it was bounded by the smallest limit on
+that path, whatever the driver. A page is a list of table fragments in the shape #2450 gives a scope's
+pages, so a table's rows may spread over pages, each fragment names its table again, and every table
+appears at least once across a chain (a driver may answer an empty last page). A chain of pages is
+one moment of the store: `revision` is opaque, a reader that sees it change along a chain starts
+again, and how a driver keeps the promise (a pinned revision, refused writes, a snapshot) is its
+own. Any change to what the dump holds changes the revision, the reserved writes included: a
+commit, a wipe, and an erase that erased something. The same state reads the same revision across
+chains, and a revision that is a hash of the content is allowed, so a commit of identical content
+need not move it. A driver never refuses a `maxBytes`; it may cut a smaller page. Under steady writes a multi-page read can answer
+409 after three attempts, which the old single call could not; the later bounded paths add backoff.
+`maxBytes` bounds the serialized size of a page, except that a page always holds at least one table
+heading and one row, so `maxBytes: 1` is valid and means the smallest page. The page the platform
+and every host ask for is within the `dumpPageMaxBytes` the registration declares, counted on the
+serialized page. A row the driver could not take back in one `substrat.stage-page` is refused by
+`substrat.export-page`, naming the table, so that a backup fails when it is taken and not when it
+is restored.
+
+A write stages its pages in order under one `stageId` and then commits. A stage that fails or is
+abandoned before its commit leaves the object as it was; a lost commit answer can leave it replaced
+while the writer reports failure, and the commit is safe to retry. Page 0 of a new stage drops the
+old one. A wipe drops every stage, and so does an erase, since a stage may hold the subject: a
+restore racing an erase fails at its commit, cleanly. `substrat.size` counts stages. A stage unused
+for longer than `STORE_STAGE_MAX_AGE_MS` (seven and a half hours, the age the scope's own staged
+load holds) is dropped no later than the next call to the object, so a driver needs no timer. A
+commit answers the count of distinct tables, and asked again for the stage last committed it
+answers the same count and changes nothing. Only that stage answers: an older one is refused, and a
+wipe ends the memory (a new page 0 or an erase does not). A stage id is not used again, so a stage
+page naming the stage last committed is refused, and a stage the object does not hold is refused
+with status 409, code `stage_refused`. The kernel's `readStoreDump` and `writeStoreDump` are
+the reader and the writer every host and the platform use; the writer treats `staged: false` and a
+wrong table count as errors.
+
 ## 5. Registering a driver
 
 A driver is registered, not owned. The registration lives in this repo, the way `CONNECTORS`
@@ -194,12 +230,13 @@ A release is published by a person with a staff credential, never by the CI or a
 service token. That rule keys on the actor: the service token resolves to the staff
 principal kind too, so publishing refuses a service actor rather than admitting "staff".
 The rollout's canary runs on a platform-owned canary object that holds no tenant data and
-is never a tenant's scope. It calls every reserved operation (`substrat.export`,
-`substrat.import`, `substrat.size`, `substrat.wipe`, `substrat.erase`, `substrat.selfcheck`)
-and asserts each answer before the rollout continues. Since #2814 the object does not stay
-empty: it imports the release's own canary fixture, `driver_<package>/substrat_canary.json`
-(a small `substrat.export` holding rows, covered by the release digest and never uploaded into
-a script), must export it back unchanged, and must then build its runtime over it and serve
+is never a tenant's scope. It calls every reserved operation (`substrat.size`, `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage`,
+`substrat.discard-stage`, `substrat.selfcheck`, `substrat.erase`, `substrat.wipe`) and asserts each
+answer before the rollout continues. Since #2814 the object does not stay
+empty: it loads the release's own canary fixture, `driver_<package>/substrat_canary.json`
+(a small store dump, `{ tables }`, holding at most 200 rows, covered by the release digest and never
+uploaded into a script), a row a page between two heading-only pages through the kernel's `writeStoreDumpPages`, must read it back unchanged through
+`readStoreDump`, and must then build its runtime over it and serve
 exactly the catalog the release's approval records. A release with no fixture is refused. A rollback goes to the immediately previous good
 release. The module names in a release are validated, and the names the platform's entry
 module imports are reserved. A Python release is one `driver_<package>` package of `.py`
@@ -340,8 +377,8 @@ carried across attempts.
 
 What remains unsealed is the backup file at rest, until someone restores it. That is
 the limit. Tenant deletion wipes each declared store before the scope's own storage
-goes. Tenant export reads `substrat.export` through the platform, not through the
-vertical.
+goes. Tenant export reads the store's pages (`substrat.export-page`) through the platform, not
+through the vertical.
 
 ## 9. Not in this RFC
 
@@ -451,7 +488,20 @@ signature. The store checks, before any of the driver's code runs:
 
 Checks 1–4 are one function, `verifyScopeStoreCall`, which the store entry calls; check 5
 needs the object's id and is the entry's own (#2295). The entry reads the body once,
-verifies that string, and hands the driver that same string.
+verifies it, and hands the driver those same bytes.
+
+**The size of a call.** The digest is over the exact body, so an entry must hold the whole body
+to verify it, and the body is bounded: `STORE_CALL_MAX_BYTES` (contracts, beside the envelope), 4 MiB
+in UTF-8 bytes, the unit the digest counts in. The entry refuses a larger one with a plain-text 413,
+outside the store envelope like its other refusals, since an answer of the entry's own is never a
+store's (#2815). It checks a declared `Content-Length`
+first, and refuses before it reads any of the body. A body with no `Content-Length`, or a false one, is
+counted as it is read and refused at the limit, the rest unread. Both callers check the same number
+before they sign: the platform's `callPlatformScopeStoreAt` throws a 413 `ControlPlaneError`, and the
+router's `handleStoreCall` answers 413 to the vertical, in each case with nothing sent. The limit is
+the one #2832 shipped; a Python entry that copied the body into Python failed with `exceededMemory`
+at about 6 MB (#2811). A store page is at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB), so a page and the
+call around it stay under it (D-69).
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a driver operation's retry safety is the vertical's (§9). Per-object nonce memory is
@@ -491,8 +541,12 @@ because it runs the same code. Checks 1–4 are not ported to Python. The upload
 (`substrat-store-verify.js`) beside the Python entry, and the Python entry calls it through
 the runtime's JavaScript bridge. So the two entries cannot disagree about an envelope. The
 Python entry makes check 5 itself (`ctx.id.equals(idFromName(name))`, before the driver is
-constructed). It reads the body once and hands that string to the driver, constructs the driver
-once per object instance with an env stripped of `SUBSTRAT_STORE*`, and forwards the alarm.
+constructed). It keeps the body in JavaScript: the verifier module reads it once, bounded as above,
+and returns the bytes as an `ArrayBuffer`, which the default entrypoint forwards to the object and the
+driver's `Request` is built over. The entry makes no Python string of the body, so the driver copies
+it into Python only if it asks for text (#2811; the body used to be read twice and copied to Python
+each time). It constructs the driver once per object instance with an env stripped of
+`SUBSTRAT_STORE*`, and forwards the alarm.
 Both flags apply to a Python script unchanged: `from workers import env` reads the same
 `cloudflare:workers` env, which `disallow_importable_env` empties, and `ctx.exports` is
 absent under `disable_ctx_exports`. The probe shows all of this under `pywrangler dev`. It
@@ -529,8 +583,8 @@ Generating, provisioning, checking and rotating these keys is
 |---|---|---|
 | `substrat.size` (meter) | Control plane, then the vertical's `/internal/scope-store-sizes`, then the host, then the ambient binding | Control plane, then the store script |
 | `substrat.erase` (shred) | Control plane, then `/internal/scope-store-erase`, then the host | Control plane, then the store script |
-| `substrat.export` (backup, pull, snapshot) | Control plane, then `/internal/scope-store-export`, then the host | Control plane, then the store script |
-| `substrat.import` (restore, snapshot) | Control plane, then `/internal/scope-store-import`, then the host | Control plane, then the store script |
+| `substrat.export-page` (backup, pull, snapshot) | Control plane, then `/internal/scope-store-export`, then the host | Control plane, then the store script |
+| `substrat.stage-page`, `substrat.commit-stage` (restore, snapshot) | Control plane, then `/internal/scope-store-import`, then the host | Control plane, then the store script |
 | `substrat.wipe` (reap, snapshot delete) | Inside the host's `deleteScopeLocal` / `reapScope`, reached by `/internal/delete-scope` | Control plane, then the store script, before the scope's own delete |
 | Erasure replay after a copy | none | Control plane, then the store script |
 | A vertical's own operation | `getScopeStore`, then the ambient binding | `getScopeStore`, then the router hop (§1) |
@@ -543,13 +597,16 @@ for dev, where the host process is the platform.
 ### 10.5 Each operation
 
 **Export** (backup, full pull, snapshot source). The control plane reads the scope's
-bindings from the version record (§10.6) and calls `substrat.export` on each. It puts the
-result in the dump's `stores` as `{ binding, driver, tables }`. A masked pull or a masked
+bindings from the version record (§10.6) and reads each one's pages with `substrat.export-page`,
+in pages of the size the driver's registration declares. It puts the merged pages in the dump's
+`stores` as `{ binding, driver, tables }`. A masked pull or a masked
 export carries no stores. A store that fails to export fails the export: a dump that says
 it is whole while missing a store is not written.
 
-**Restore and import.** The control plane loads the scope's own tables and calls
-`substrat.import` on each binding in the dump's `stores`. Only bindings the destination's
+**Restore and import.** In this order: the control plane refuses a dump binding the destination
+does not declare (`refuseUndeclaredDumpStores`), loads the scope's own tables (`host.restoreScope`),
+then stages the dump's `stores` on each of its bindings with `substrat.stage-page` and commits each
+with `substrat.commit-stage`. Only bindings the destination's
 version declares, with the same driver, are imported. A dump binding the destination does
 not declare refuses the restore before any write. The check therefore runs ahead of
 `host.restoreScope`, which loads the scope's own tables first (L8, the recommended answer
@@ -976,8 +1033,8 @@ not show these, and the isolation argument in §1 rests on the first two:
 - **The router hop.** `store.substrat.internal`, egress forwarding, the `ScopeStoreCalls`
   entrypoint and the declared-binding check are not in the spike; callers there address
   the namespace directly.
-- **`substrat.erase`.** Not implemented by either probe, and `substrat.export` and
-  `substrat.import` were not run on the Python object.
+- **`substrat.erase`.** Not implemented by either probe, and the whole-dump export and import the
+  spike had (replaced by pages in D-69) were not run on the Python object.
 - **Admission before dispatch.** The store initialises its table before the signature is
   checked in the object, and a binding holder can reach object activation for any name.
   Resource limits on rejected traffic are not measured.

@@ -283,7 +283,8 @@ any store can hold data. **The class name, the catalog and the `schema` move to 
 they are facts about one release of another project. *(Proposed)* `storeDriverRegistration` loses
 `releases`, `className`, `operations` and `platformOperations`. Dropping `platformOperations`
 loses nothing, because the canary asserts every entry of `RESERVED_STORE_OPERATIONS`, on the
-bytes, at every rollout.
+bytes, at every rollout. Since D-69 that list names a dump's paged operations (`substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage`, `substrat.discard-stage`) in
+place of `substrat.export` and `substrat.import`, and a registration also carries `dumpPageMaxBytes`.
 
 **Rejected alternatives,** in one place:
 

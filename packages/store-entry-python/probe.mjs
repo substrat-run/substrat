@@ -21,7 +21,7 @@
  * leaves out.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID, webcrypto } from 'node:crypto';
+import { createHash, randomUUID, webcrypto } from 'node:crypto';
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
@@ -34,6 +34,7 @@ import {
   issueScopeStoreEnvelope,
   scopeStoreBodyDigest,
   scopeStoreKeyId,
+  STORE_CALL_MAX_BYTES,
 } from '../contracts/dist/scope-store-envelope.js';
 import * as entry from '../control-plane-api/src/store-entry.generated.ts';
 import { withPythonStoreEntry } from '../control-plane-api/src/store-entry.ts';
@@ -118,14 +119,14 @@ class Default(store_entry.Default):
     async def fetch(self, request):
         query = parse_qs(urlparse(request.url).query)
         if query.get("unconfigured"):
-            refused = await store_entry._verified(request, await request.text(), _Unconfigured(self.env))
+            refused = await store_entry._verified(request, _Unconfigured(self.env))
             return refused if isinstance(refused, Response) else Response("admitted", status=200)
         asked = query.get("object")
         if not asked:
             return await super().fetch(request)
         namespace = getattr(self.env, "${entry.STORE_OBJECT_BINDING}")
         stub = namespace.get(namespace.idFromName(asked[0]))
-        return await stub.fetch(request.url, method="POST", headers=request.js_object.headers, body=await request.text())
+        return await stub.fetch(request.url, method="POST", headers=request.js_object.headers, body=await request.js_object.arrayBuffer())
 `,
 );
 
@@ -419,23 +420,80 @@ try {
   const exact = JSON.stringify({ objectName: name, operation: 'body', input: { text: 'é   \\u00e9' } });
   check(result(await send(await signed(name, 'body', { body: exact }))) === exact, 'the driver receives the exact body that was verified');
 
-  // A body over the limit is refused on its declared length, before it is read; one at it is not.
-  // Only a few bytes are written against the declared length, so the answer cannot depend on a
-  // race with the server closing the connection mid-upload: it is given without the body.
-  const oversize = await declaredLength(String(entry.STORE_CALL_MAX_BODY_BYTES + 1), 'x');
-  check(oversize.status === 413, 'a body declared over the limit is answered 413 before it is read', oversize);
-  const chunked = await fetch(`http://127.0.0.1:${port}/invoke`, {
-    method: 'POST',
-    body: new ReadableStream({ start: (c) => (c.enqueue(new TextEncoder().encode('{}')), c.close()) }),
-    duplex: 'half',
-  });
-  check(chunked.status === 411, 'a body with no Content-Length (chunked) is answered 411 before it is read', { status: chunked.status });
-  // A non-ASCII digit passes str.isdigit() and breaks int(): it must fall to the 411, never a 500.
-  // The runtime may refuse such a header itself first (400); either way it is no 500.
+  // ---- the limit on a call body (#2811) ----
+  // A body of exactly `bytes` UTF-8 bytes naming the operation and object, padded with `fill`.
+  const bodyOfSize = (bytes, operation, fill = 'x', objectName = name) => {
+    const frame = (pad) => JSON.stringify({ operation, input: { pad }, objectName });
+    const size = (text) => Buffer.byteLength(text, 'utf8');
+    const base = size(frame(''));
+    const count = Math.floor((bytes - base) / size(fill));
+    const body = frame(fill.repeat(count) + 'x'.repeat(bytes - base - count * size(fill)));
+    if (size(body) !== bytes) throw new Error(`built ${size(body)} bytes, not ${bytes}`);
+    return body;
+  };
+  const tooLarge = `payload too large: at most ${STORE_CALL_MAX_BYTES} bytes`;
+  // Refused on its declared length, before it is read. Only a few bytes are written against the
+  // declared length, so the answer cannot depend on a race with the server closing mid-upload.
+  const declaredOver = await declaredLength(String(STORE_CALL_MAX_BYTES + 1), 'x');
+  check(declaredOver.status === 413, 'a body declared over the limit is answered 413 before it is read', declaredOver);
+  // A non-ASCII digit says nothing about the length, so the body read decides. The runtime may refuse such a header itself.
   const odd = await declaredLength('\u00b2');
-  check([400, 411].includes(odd.status), 'a Content-Length of a non-ASCII digit is refused (411), not a 500', odd);
-  const atLimit = await send({ headers: {}, body: 'x'.repeat(entry.STORE_CALL_MAX_BODY_BYTES) });
-  check(atLimit.status === 401 && atLimit.text === 'unauthorized: missing', 'a body at the limit is read and verified', { status: atLimit.status });
+  check(odd.status < 500, 'a Content-Length of a non-ASCII digit is no 500', odd);
+  const countBefore = result(await send(await signed(name, 'read')));
+  // Over the limit and chunked, with no Content-Length: read to the limit and refused there. A body
+  // over the limit WITH a Content-Length is the declared-length case above; uploading it whole would
+  // race the server closing after its early 413.
+  const over = bodyOfSize(STORE_CALL_MAX_BYTES + 1, 'increment');
+  const overBytes = Buffer.from(over, 'utf8');
+  // Every byte is sent before the entry can decide, so the 413 cannot race the upload. The object is
+  // probed the same way: its route forwards the body as a stream, so a declared length alone would wait.
+  const sendChunked = async (query = '') => {
+    const response = await fetch(`http://127.0.0.1:${port}/invoke${query}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(await signed(name, 'increment', { body: over })).headers },
+      body: new ReadableStream({
+        start(controller) {
+          for (let at = 0; at < overBytes.length; at += 256 * 1024) controller.enqueue(overBytes.subarray(at, at + 256 * 1024));
+          controller.close();
+        },
+      }),
+      duplex: 'half',
+    });
+    return { status: response.status, text: await response.text() };
+  };
+  const chunked = await sendChunked();
+  check(chunked.status === 413 && chunked.text === tooLarge, 'a body over the limit with no Content-Length is 413', chunked.status);
+  const objectSide = await sendChunked(`?object=${encodeURIComponent(name)}`);
+  check(objectSide.status === 413, 'and the object refuses it too', objectSide.status);
+  check(result(await send(await signed(name, 'read'))) === countBefore, 'the driver was not reached by any of them');
+  // At the limit, with characters of two, three and four bytes: the driver gets the bytes that were signed.
+  const atLimit = bodyOfSize(STORE_CALL_MAX_BYTES, 'inspect', 'é€\u{1f600}');
+  const admittedAtLimit = await send(await signed(name, 'inspect', { body: atLimit }));
+  check(
+    admittedAtLimit.status === 200 &&
+      JSON.stringify(result(admittedAtLimit)) === JSON.stringify({ bytes: STORE_CALL_MAX_BYTES, sha256: createHash('sha256').update(atLimit, 'utf8').digest('hex') }),
+    'a body at the limit is admitted and the driver receives its exact bytes, non-ASCII included',
+    admittedAtLimit.status === 200 ? result(admittedAtLimit) : admittedAtLimit,
+  );
+  // Bytes nobody signed are refused: a BOM, an FF for a U+FFFD, a cut multi-byte sequence.
+  const canonical = JSON.stringify({ operation: 'inspect', input: { s: 'a�bé' }, objectName: name });
+  const good = Buffer.from(canonical, 'utf8');
+  const cut = good.indexOf(Buffer.from([0xef, 0xbf, 0xbd]));
+  const lead = good.lastIndexOf(0xc3);
+  const unsignedBytes = [
+    ['a BOM', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), good])],
+    ['an FF for a U+FFFD', Buffer.concat([good.subarray(0, cut), Buffer.from([0xff]), good.subarray(cut + 3)])],
+    ['a cut sequence', Buffer.concat([good.subarray(0, lead + 1), good.subarray(lead + 2)])],
+  ];
+  const canonicalCall = await signed(name, 'inspect', { body: canonical });
+  for (const [label, bytes] of unsignedBytes) {
+    const refusedBytes = await fetch(`http://127.0.0.1:${port}/invoke`, { method: 'POST', headers: canonicalCall.headers, body: bytes });
+    check(refusedBytes.status === 401 && (await refusedBytes.text()) === 'unauthorized: digest', `${label} on a signed body is refused as a digest mismatch`);
+  }
+  const literal = await send(canonicalCall);
+  check(literal.status === 200 && result(literal).sha256 === createHash('sha256').update(canonical, 'utf8').digest('hex'), 'the canonical body with a literal U+FFFD is admitted as signed');
+  const lastAfter = await send(await signed(name, 'read'));
+  check(lastAfter.status === 200, 'and the entry serves the next call after a body that size');
 
   const env = result(await send(await signed(name, 'env')));
   check(JSON.stringify(env.given) === JSON.stringify(['DRIVER_SETTING']), "the driver's env has none of the entry's bindings", env);

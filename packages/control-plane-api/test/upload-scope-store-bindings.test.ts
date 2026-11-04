@@ -70,7 +70,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
    * (`storeDrivers`, `drivers`). The reviewed `STORE_DRIVERS` is never written to. The release above
    * is recorded and approved in the directory, which is what makes it runnable (D-65).
    */
-  const testDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  const testDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
   let releaseSha: string;
 
   beforeAll(async () => {

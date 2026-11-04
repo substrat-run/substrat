@@ -31,7 +31,7 @@ describe('store driver registration isolation basis (D-65)', () => {
   });
 
   it('is an id and a basis: a registration still carrying a release pin or its facts is refused', () => {
-    const registration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+    const registration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 1000 };
     expect(storeDriverRegistration.safeParse(registration).success).toBe(true);
     for (const pinned of [
       { releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }] },
@@ -43,19 +43,19 @@ describe('store driver registration isolation basis (D-65)', () => {
   });
 
   it('a driver on a decision record names the verticals it serves; one in the repo may serve every vertical', () => {
-    const lifted = { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' } };
+    const lifted = { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, dumpPageMaxBytes: 1000 };
     const parsed = storeDriverRegistration.safeParse(lifted);
     expect(parsed.success).toBe(false);
     expect(JSON.stringify(parsed.error?.issues)).toContain('names the verticals it serves');
     expect(storeDriverRegistration.safeParse({ ...lifted, verticals: ['notes'] }).success).toBe(true);
-    const inRepo = storeDriverRegistration.parse({ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } });
+    const inRepo = storeDriverRegistration.parse({ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 1000 });
     expect(storeDriverServesVertical(inRepo, 'any')).toBe(true);
   });
 
   it('a driver whose erasure is pending is marked so, and the hosted graph driver is', () => {
     const graph = STORE_DRIVERS.find((d) => d.driver === 'graph')!;
     expect(storeDriverErasesSubjects(graph)).toBe(false);
-    expect(storeDriverErasesSubjects({ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } })).toBe(true);
+    expect(storeDriverErasesSubjects({ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 1000 })).toBe(true);
   });
 
   it('normalizes only the platform repo identity and refuses mirrors and look-alikes', () => {

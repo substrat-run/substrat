@@ -25,6 +25,11 @@ describe('storeDriversOfPlane', () => {
     expect(seen).toEqual(['https://cp.test/store-drivers?vertical=helpdesk']);
   });
 
+  it('reads a registration carrying a key this CLI does not know, as a newer plane serves it', async () => {
+    plane(200, { drivers: [{ ...GRAPH, addedLater: true }] });
+    await expect(storeDriversOfPlane('https://cp.test', {}, 'helpdesk')).resolves.toEqual([GRAPH]);
+  });
+
   it('sends the workspace the push is pinned to', async () => {
     const sent: Headers[] = [];
     vi.stubGlobal('fetch', async (_: unknown, init: RequestInit) => {

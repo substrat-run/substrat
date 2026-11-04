@@ -15,6 +15,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
+    dumpPageMaxBytes: 900_000,
   };
 
   /** A routed fork of a source bound to a version that declares one store. */

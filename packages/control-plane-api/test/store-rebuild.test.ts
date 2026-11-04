@@ -6,10 +6,12 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { manualClock, ulid, type ManualClock } from '@substrat-run/kernel';
 import {
+  mergeDumpPages,
   platformActorId,
   STORE_DRIVER_PLATFORM_REPOSITORY,
   storeDriverReleaseDigest,
   type ReservedStoreOperation,
+  type ScopeDumpTable,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
@@ -59,15 +61,27 @@ const wire = (b: ReturnType<typeof bundle>) => ({
 const scriptOf = (vertical: string) => `substrat-store-graph-${vertical}`;
 const CANARY = 'substrat-store-graph--canary';
 
-/** Every reserved call answers as a working store does, keeping what each object imported, so a canary passes. */
-const held = new Map<string, unknown[]>();
+/** Every reserved call answers as a working store does, keeping what each object committed, so a canary passes. */
+const held = new Map<string, ScopeDumpTable[]>();
+const stages = new Map<string, ScopeDumpTable[][]>();
 const canaryCall: CanaryCall = async ({ objectName }, operation: ReservedStoreOperation, input) => {
+  const { stageId, seq, tables } = (input ?? {}) as { stageId: string; seq: number; tables: ScopeDumpTable[] };
   switch (operation) {
-    case 'substrat.export':
-      return { tables: held.get(objectName) ?? [] };
-    case 'substrat.import':
-      held.set(objectName, (input as { tables: unknown[] }).tables);
-      return { tables: (input as { tables: unknown[] }).tables.length };
+    case 'substrat.export-page':
+      return { tables: held.get(objectName) ?? [], next: null, revision: JSON.stringify(held.get(objectName) ?? []) };
+    case 'substrat.stage-page': {
+      const pages = stages.get(`${objectName}/${stageId}`) ?? [];
+      if (seq < pages.length) return { staged: false };
+      stages.set(`${objectName}/${stageId}`, [...pages, tables]);
+      return { staged: true };
+    }
+    case 'substrat.commit-stage': {
+      const merged = mergeDumpPages(stages.get(`${objectName}/${stageId}`) ?? []);
+      held.set(objectName, merged);
+      return { tables: merged.length };
+    }
+    case 'substrat.discard-stage':
+      return { discarded: stages.delete(`${objectName}/${stageId}`) };
     case 'substrat.wipe':
       held.delete(objectName);
       return {};
@@ -104,7 +118,7 @@ describe('the fleet rebuild (#2309)', () => {
       }) } : undefined;
     },
   };
-  const registration: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  const registration: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
   let s1: string;
   let s2: string;
   let keysA: { caller: string; platform: string };

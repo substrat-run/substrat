@@ -52,7 +52,9 @@ if (!js.includes(names.STORE_DRIVER_PLACEHOLDER) || !js.includes(names.STORE_CLA
 }
 
 // One constant per export of names.ts, with its doc comment, so the uploader and the entry share them.
-const namesSource = readFileSync(join(ROOT, 'packages/control-plane-api/store-entry/names.ts'), 'utf8');
+// LF whatever the checkout's autocrlf: the bytes uploaded and the CI check must not depend on it.
+const lf = (text: string): string => text.replace(/\r\n/g, '\n');
+const namesSource = lf(readFileSync(join(ROOT, 'packages/control-plane-api/store-entry/names.ts'), 'utf8'));
 const constants = Object.entries(names)
   .map(([name, value]) => {
     const doc = namesSource.match(new RegExp(`(/\\*\\*(?:(?!\\*/)[\\s\\S])*\\*/)\\s*export const ${name} =`))?.[1];
@@ -61,7 +63,7 @@ const constants = Object.entries(names)
   })
   .join('\n\n');
 
-const python = readFileSync(join(ROOT, PYTHON), 'utf8');
+const python = lf(readFileSync(join(ROOT, PYTHON), 'utf8'));
 if (!python.includes(names.STORE_DRIVER_PLACEHOLDER) || !python.includes(names.STORE_CLASS_PLACEHOLDER)) {
   console.error('store-entry: the Python entry lost a placeholder. The uploader would have nothing to replace.');
   process.exit(1);
@@ -97,7 +99,7 @@ export const STORE_ENTRY_PYTHON_VERIFIER_SOURCE: string = ${JSON.stringify(verif
 `;
 
 const outPath = join(ROOT, OUT);
-const current = existsSync(outPath) ? readFileSync(outPath, 'utf8') : '';
+const current = existsSync(outPath) ? lf(readFileSync(outPath, 'utf8')) : '';
 if (current === generated) {
   console.log(`store-entry: ${OUT} is current (${js.length} bytes).`);
   process.exit(0);

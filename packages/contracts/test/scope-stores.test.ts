@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   HISTORIC_ADMIN_ACTIONS,
   RESERVED_STORE_OPERATIONS,
+  STORE_DUMP_PAGE_MAX_BYTES,
   SCOPE_STORE_DUMP_KIND_RENAMED,
   adminAction,
   scopeDump,
@@ -27,9 +28,12 @@ import {
   STORE_OPERATION_NAME_MAX,
   tenantStoreBindingName,
   storeEraseResult,
-  storeExportResult,
-  storeImportResult,
+  storeCommitStageResult,
+  storeDiscardStageResult,
+  storeDriverDumpPageBytes,
+  storeExportPageResult,
   storeSelfcheckResult,
+  storeStagePageResult,
   storeSizeResult,
   storeWipeResult,
 } from '../src/index.js';
@@ -166,7 +170,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
   it('registers graph on the hosted registry, on the decision record that lifts its isolation (D-67)', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
     expect(STORE_DRIVERS).toEqual([
-      { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, verticals: [], erasure: 'pending' },
+      { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, verticals: [], erasure: 'pending', dumpPageMaxBytes: 900_000 },
     ]);
     expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
@@ -174,7 +178,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
 
   it('serves only the verticals a registration names (D-67): graph serves none yet', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
-    const named: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, verticals: ['notes'] };
+    const named: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, verticals: ['notes'], dumpPageMaxBytes: 1000 };
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, vertical: 'notes' })).toThrow(
       "deploy refused: scope store 'GRAPH' declares driver 'graph', which does not serve vertical 'notes'.",
     );
@@ -185,14 +189,14 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
   it('judges against the registry a caller passes: a test fixture holding graph admits it', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
     // A test fixture, not a registered driver.
-    const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+    const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 1000 };
     expect(() => assertScopeStoresRegistered(stores, [fixture])).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [fixture] })).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(/not registered/);
   });
 
   it('holds a driver id to [a-z0-9]+ (L20), at the registration and in every registered driver', () => {
-    const registration = (driver: string) => ({ driver, isolationBasis: { kind: 'writtenInRepo' } });
+    const registration = (driver: string) => ({ driver, isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 1000 });
     for (const driver of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
       expect(storeDriverId.safeParse(driver).success, driver).toBe(false);
       const parsed = storeDriverRegistration.safeParse(registration(driver));
@@ -310,7 +314,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 // #2242: subject erasure destroys the key once the stores answer, so "cannot tell" must
 // never read as "holds none". The gate is the registry: no registered driver, no store.
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
-  const graph: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  const graph: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 1000 };
   const manifest = (scopeStores?: unknown[]) =>
     JSON.stringify({
       version: '1.0.0',
@@ -348,13 +352,44 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   });
 });
 
+describe('a store driver declares the page of its dump it takes (D-69)', () => {
+  it('names the reserved operations a store moves in pages, and none of the whole-dump pair', () => {
+    expect([...RESERVED_STORE_OPERATIONS]).toEqual([
+      'substrat.export-page',
+      'substrat.stage-page',
+      'substrat.commit-stage',
+      'substrat.discard-stage',
+      'substrat.size',
+      'substrat.wipe',
+      'substrat.erase',
+      'substrat.selfcheck',
+    ]);
+  });
+
+  it('asks the platform for the page the registration declares, and the store page cap for a driver it does not hold', () => {
+    expect(storeDriverDumpPageBytes('graph')).toBe(900_000);
+    expect(storeDriverDumpPageBytes('unregistered')).toBe(STORE_DUMP_PAGE_MAX_BYTES);
+  });
+
+  it('admits a registration with no page size, as a plane that predates it serves; refuses one over the cap or not a positive integer', () => {
+    const registration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+    expect(storeDriverRegistration.safeParse(registration).success).toBe(true);
+    for (const bad of [0, -1, 1.5, '900000', STORE_DUMP_PAGE_MAX_BYTES + 1]) {
+      expect(storeDriverRegistration.safeParse({ ...registration, dumpPageMaxBytes: bad }).success, String(bad)).toBe(false);
+    }
+    expect(storeDriverRegistration.safeParse({ ...registration, dumpPageMaxBytes: 1 }).success).toBe(true);
+  });
+});
+
 describe('reserved store results are additive (#2239)', () => {
   it('a later field on any reserved result still parses', () => {
     expect(storeWipeResult.safeParse({ ok: true }).success).toBe(true);
     expect(storeSizeResult.safeParse({ bytes: 1, driver: 'graph' }).success).toBe(true);
     expect(storeEraseResult.safeParse({ erased: 0, note: 'x' }).success).toBe(true);
-    expect(storeImportResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
-    expect(storeExportResult.safeParse({ tables: [], at: 'now' }).success).toBe(true);
+    expect(storeCommitStageResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
+    expect(storeExportPageResult.safeParse({ tables: [], next: null, revision: '1', at: 'now' }).success).toBe(true);
+    expect(storeStagePageResult.safeParse({ staged: true, took: 3 }).success).toBe(true);
+    expect(storeDiscardStageResult.safeParse({ discarded: false, took: 3 }).success).toBe(true);
     expect(storeSelfcheckResult.safeParse({ operations: ['read'], took: 3 }).success).toBe(true);
   });
 

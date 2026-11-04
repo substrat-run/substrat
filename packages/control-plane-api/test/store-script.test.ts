@@ -48,7 +48,7 @@ const artifact = (source: string) => ({
 const v1 = artifact('class Store:\n    pass\n');
 const v2 = artifact('class Store:\n    version = 2\n');
 
-const GRAPH: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+const GRAPH: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
 
 /** One approved release, as the facts its approval fixed: live unless `revoked`. */
 type Approved = { sha256: string; schema: number; className?: string; revoked?: true; repository?: string };

@@ -12,8 +12,9 @@
  * - `rollback` returns the driver to the immediately previous good release.
  *
  * What is packed is the driver's own package, every `driver_<name>/…/*.py` under `--dir`, its
- * canary fixture `driver_<name>/substrat_canary.json` (#2814: a small `substrat.export` holding
- * rows, which a rollout's canary imports; a release without one is not rolled out), and a
+ * canary fixture `driver_<name>/substrat_canary.json` (#2814: a small store dump, `{ tables }`, of
+ * at most 200 rows, which a rollout's canary loads a page at a time and reads back; a release
+ * without one is not rolled out), and a
  * `python_modules/` directory next to it (#2390). Paths are relative to `--dir`. `__pycache__`
  * is skipped, and so are the two markers `pywrangler sync` writes into `python_modules/`
  * (`.synced` and `pyvenv.cfg`), which the output names. Anything else is refused by the same

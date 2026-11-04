@@ -631,6 +631,7 @@ export const INDEX_VALUE_EXPORTS = [
   'readRequestMeterDayRows',
   'readScopeHistory',
   'readScopeTimeline',
+  'readStoreDump',
   'readTenantRequestMeterRows',
   'readTimeline',
   'readUndrainedOutbox',
@@ -780,6 +781,7 @@ export const INDEX_VALUE_EXPORTS = [
   'storeDriverRolloutPendingIn',
   'storeDriverRolloutWalkedIn',
   'storeDriverStateIn',
+  'storeDumpPages',
   'strandJudgmentsOf',
   'subjectErasureClaimParams',
   'subjectGrantState',
@@ -853,5 +855,7 @@ export const INDEX_VALUE_EXPORTS = [
   'writeDeploymentWireAuth',
   'writeExplicitTupleIn',
   'writeLifecycle',
+  'writeStoreDump',
+  'writeStoreDumpPages',
   'writeVersionMigrations',
 ] as const;

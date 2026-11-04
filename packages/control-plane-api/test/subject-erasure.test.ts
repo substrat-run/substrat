@@ -287,8 +287,9 @@ describe('subject erasure (#37)', () => {
                 erasedHere.push(String(Reflect.get(request.input ?? {}, 'subjectId')));
                 return { result: { erased: 1 } };
               }
-              if (request.operation === 'substrat.export') return { result: { tables: [] } };
-              if (request.operation === 'substrat.import') return { result: { tables: 0 } };
+              if (request.operation === 'substrat.export-page') return { result: { tables: [], next: null, revision: '1' } };
+              if (request.operation === 'substrat.stage-page') return { result: { staged: true } };
+              if (request.operation === 'substrat.commit-stage') return { result: { tables: 0 } };
               return { result: {} };
             },
           },
@@ -422,7 +423,7 @@ describe('subject erasure (#37)', () => {
   };
   const graphTable = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
   /** A registered graph driver: with none registered no store can exist (`mayHoldScopeStores`, #2242). */
-  const graphDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  const graphDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, dumpPageMaxBytes: 900_000 };
 
   /** The control plane against a hosted `docs`, its stores reached through the platform. */
   const hosted = (calls: { imported: unknown[][]; erased: string[]; failErase?: boolean }, tables: number) =>

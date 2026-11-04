@@ -4,7 +4,7 @@ import { DurableObject, env as ambient } from 'cloudflare:workers';
  * The test driver. Its counter moves only when the entry constructed it and handed it a call.
  * `env` answers the binding names the driver was constructed with, `ambient` the ones its module
  * reads from `cloudflare:workers`, `exports` what `ctx.exports` reaches, `echo` the exact body it
- * received, `arm` sets an alarm and `alarmed` counts the alarms the entry forwarded, `seen`
+ * received and `inspect` its UTF-8 byte count and SHA-256 (for a body too big to echo), `arm` sets an alarm and `alarmed` counts the alarms the entry forwarded, `seen`
  * counts the calls this instance has had (in memory, so a driver built per call answers 1).
  * `refuse` answers a 404 refusal in the envelope, `fail` a 500 one carrying a traceback, and
  * `garble` a 500 that is not the envelope. The reserved operations answer the way a driver's
@@ -35,6 +35,11 @@ export class CounterStore extends DurableObject<Record<string, unknown>> {
       }
       case 'echo':
         return Response.json({ result: raw });
+      case 'inspect': {
+        const bytes = new TextEncoder().encode(raw);
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+        return Response.json({ result: { bytes: bytes.length, sha256: [...hash].map((b) => b.toString(16).padStart(2, '0')).join('') } });
+      }
       case 'seen':
         return Response.json({ result: this.#seen });
       case 'arm':

@@ -687,7 +687,7 @@ restoring a scope nor forking one touches an instance.
   instance cannot inherit a teardown that does not exist.
 - **The full tenant export** gains an `instances` section beside `data`: each instance's
   driver, its connections, and one dump per partition (shape ii) or one for the instance
-  (shape i). It uses `substrat.export` through the platform, as K-50 has it for scopes. A
+  (shape i). It reads the store's pages (`substrat.export-page`) through the platform, as K-50 has it for scopes. A
   masked export carries none.
 - **The scope dump format is unchanged.** `scopeDump.stores` stays per scope and carries
   scope-grain stores only. An instance is never in a scope dump, because it is not the
@@ -833,7 +833,7 @@ Grain is per driver, so A and B coexist, and nothing in B requires removing A. T
 is the first driver shipping as scope-grain, holding tenant data, and then being wanted at
 tenant grain. There is no platform migration between the two today:
 
-- `substrat.import` replaces a whole object (scope-stores §4);
+- `substrat.commit-stage` replaces a whole object (scope-stores §4);
 - object names carry the scope;
 - the data's identifiers are scope-local.
 

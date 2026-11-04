@@ -303,6 +303,7 @@ import {
   type LifecycleDelivery,
   type ScopeLifecycle,
   type StoredScopeLifecycle,
+  storeDriverDumpPageBytes,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -587,7 +588,7 @@ import {
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
-import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
+import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, readStoreDump, writeStoreDump, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
@@ -6087,11 +6088,12 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!vertical) return [];
     const stores: { binding: string; driver: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
-      const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
+      const address = { tenantId, vertical, scopeId, binding };
+      const exported = await readStoreDump((operation, input) => this.invokeReservedStore(address, operation, input), storeDriverDumpPageBytes(this.scopeStoreDriver(binding)));
       stores.push({
         binding,
         driver: this.scopeStoreDriver(binding),
-        tables: exported.tables,
+        tables: exported,
       });
     }
     return stores;
@@ -6109,11 +6111,8 @@ export class CloudflareScopeHost implements ScopeHost {
       throw substratError('conflict', `dump carries scope stores, and scope ${scopeId} has no vertical to hold them`);
     }
     for (const store of listed) {
-      await this.invokeReservedStore(
-        { tenantId, vertical, scopeId, binding: store.binding },
-        'substrat.import',
-        { tables: store.tables },
-      );
+      const address = { tenantId, vertical, scopeId, binding: store.binding };
+      await writeStoreDump((operation, input) => this.invokeReservedStore(address, operation, input), store.tables, storeDriverDumpPageBytes(this.scopeStoreDriver(store.binding)));
     }
   }
 

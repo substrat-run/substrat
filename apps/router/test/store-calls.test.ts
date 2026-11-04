@@ -6,6 +6,7 @@ import {
   tenantId,
 } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair, verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
+import { STORE_CALL_MAX_BYTES, scopeStoreBodyBytes } from '@substrat-run/contracts';
 import { handleStoreCall } from '../src/store-calls.js';
 
 const TENANT = tenantId.parse('01JTESTATTACHTENANT000000A');
@@ -156,5 +157,36 @@ describe("handleStoreCall hands on the store's own answer", () => {
       'scope store call to substrat-store-graph-docs failed: Error',
       'scope store call to substrat-store-graph-docs failed: a non-error was thrown',
     ]);
+  });
+});
+
+describe('handleStoreCall and the limit on a store call body (#2811)', () => {
+  const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
+  const objectName = scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH');
+  /** A request whose signed body is exactly `bytes` UTF-8 bytes (two-byte characters, one ASCII filler for an odd remainder). */
+  const requestOf = (bytes: number) => {
+    const frame = (pad: string) => ({ scopeId: SCOPE, binding: 'GRAPH', operation: 'put', input: { pad } });
+    const sizeOf = (pad: string) => scopeStoreBodyBytes(JSON.stringify({ ...frame(pad), objectName }));
+    const base = sizeOf('');
+    const request = frame('é'.repeat(Math.floor((bytes - base) / 2)) + 'x'.repeat((bytes - base) % 2));
+    expect(sizeOf(request.input.pad)).toBe(bytes);
+    return request;
+  };
+  const recording = (sent: Request[], answer: () => Response = () => Response.json({ result: 1 })) => ({
+    STORE_CALLER_KEY: KEY,
+    DISPATCH: { get: () => ({ fetch: async (request: Request) => { sent.push(request); return answer(); } }) },
+  });
+
+  it('refuses a body one byte over with 413 before it signs or dispatches', async () => {
+    const sent: Request[] = [];
+    const outcome = await handleStoreCall(recording(sent), caller, requestOf(STORE_CALL_MAX_BYTES + 1));
+    expect(outcome).toMatchObject({ ok: false, status: 413, message: expect.stringContaining(`over the limit of ${STORE_CALL_MAX_BYTES}`) });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('sends a body at the limit', async () => {
+    const sent: Request[] = [];
+    expect(await handleStoreCall(recording(sent), caller, requestOf(STORE_CALL_MAX_BYTES))).toMatchObject({ ok: true, status: 200 });
+    expect(scopeStoreBodyBytes(await sent[0]!.text())).toBe(STORE_CALL_MAX_BYTES);
   });
 });
