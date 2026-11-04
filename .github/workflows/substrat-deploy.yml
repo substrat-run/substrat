@@ -4,7 +4,7 @@ name: Deploy to Substrat
 # channel, previews as the only non-prod environment — is documented at
 # https://substrat.net/guide/environments-and-previews
 #
-# Monorepo: this deploys the 'meridian' vertical from apps/meridian/. Dependencies still install
+# Monorepo: this deploys the 'meridian' vertical from demos/meridian/. Dependencies still install
 # at the repo root (the workspace lockfile lives there), and the workspace packages this
 # vertical imports are built before every push — a sibling resolves through its dist/.
 #
@@ -22,11 +22,11 @@ permissions:
 on:
   push:
     branches: [main]
-    # Only changes that can affect apps/meridian deploy it. If this package depends on other
+    # Only changes that can affect demos/meridian deploy it. If this package depends on other
     # directories of the repo (workspace packages, shared config), add their paths here —
     # or remove the filter to build on every merge.
     paths:
-      - 'apps/meridian/**'
+      - 'demos/meridian/**'
       - '.github/workflows/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -36,11 +36,11 @@ on:
   # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    # Only changes that can affect apps/meridian deploy it. If this package depends on other
+    # Only changes that can affect demos/meridian deploy it. If this package depends on other
     # directories of the repo (workspace packages, shared config), add their paths here —
     # or remove the filter to build on every merge.
     paths:
-      - 'apps/meridian/**'
+      - 'demos/meridian/**'
       - '.github/workflows/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -100,13 +100,13 @@ jobs:
         # package.json lists workspaces in, so list dependencies before dependents.
         # Delete this step if the package imports no workspace packages.
         run: |
-          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{apps/meridian}^..." run --if-present build
-          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\.'; then yarn workspaces foreach --all --topological-dev --exclude 'apps/meridian' run build
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{demos/meridian}^..." run --if-present build
+          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\.'; then yarn workspaces foreach --all --topological-dev --exclude 'demos/meridian' run build
           elif [ -f yarn.lock ]; then yarn workspaces run build
           else npm run build --workspaces --if-present
           fi
       - name: Gate the push (typecheck, tests, layer rules)
-        # Runs the gates apps/meridian/package.json declares — a violation fails the job before anything
+        # Runs the gates demos/meridian/package.json declares — a violation fails the job before anything
         # is uploaded. Add `test`, `typecheck` and `lint:boundaries` scripts to gate more;
         # `lint:boundaries` is `substrat-boundary-lint` from @substrat-run/boundary-lint.
         run: |
@@ -115,15 +115,15 @@ jobs:
           elif [ -f yarn.lock ]; then PM=yarn
           else PM=npm
           fi
-          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" 'apps/meridian/package.json' "$1"; }
+          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" 'demos/meridian/package.json' "$1"; }
           RAN=''
           for s in typecheck test lint:boundaries; do
-            if declares "$s"; then ( cd apps/meridian && $PM run "$s" ); RAN="$RAN $s"
-            else echo "no '$s' script in apps/meridian/package.json — skipped"
+            if declares "$s"; then ( cd demos/meridian && $PM run "$s" ); RAN="$RAN $s"
+            else echo "no '$s' script in demos/meridian/package.json — skipped"
             fi
           done
           if [ -z "$RAN" ]; then
-            echo "::warning::no typecheck, test or lint:boundaries script in apps/meridian/package.json — this push is UNGATED. See https://substrat.net/guide/deploying"
+            echo "::warning::no typecheck, test or lint:boundaries script in demos/meridian/package.json — this push is UNGATED. See https://substrat.net/guide/deploying"
           else
             echo "gates passed:$RAN"
           fi
@@ -134,7 +134,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push apps/meridian --slug meridian | tee push.out
+          npx @substrat-run/cli push demos/meridian --slug meridian | tee push.out
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
           # Promote only while this commit is still the branch tip. Queued runs resume in
@@ -160,8 +160,8 @@ jobs:
           SUBSTRAT_TEST_SCOPE_ID: ${{ vars.SUBSTRAT_TEST_SCOPE_ID }}
         run: |
           set -euo pipefail
-          BASE=$(node -p "require('./apps/meridian/package.json').version")
-          npx @substrat-run/cli push apps/meridian --slug meridian --version "$BASE-test.${{ github.run_number }}" | tee push.out
+          BASE=$(node -p "require('./demos/meridian/package.json').version")
+          npx @substrat-run/cli push demos/meridian --slug meridian --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
@@ -203,13 +203,13 @@ jobs:
         # package.json lists workspaces in, so list dependencies before dependents.
         # Delete this step if the package imports no workspace packages.
         run: |
-          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{apps/meridian}^..." run --if-present build
-          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\.'; then yarn workspaces foreach --all --topological-dev --exclude 'apps/meridian' run build
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{demos/meridian}^..." run --if-present build
+          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\.'; then yarn workspaces foreach --all --topological-dev --exclude 'demos/meridian' run build
           elif [ -f yarn.lock ]; then yarn workspaces run build
           else npm run build --workspaces --if-present
           fi
       - name: Gate the push (typecheck, tests, layer rules)
-        # Runs the gates apps/meridian/package.json declares — a violation fails the job before anything
+        # Runs the gates demos/meridian/package.json declares — a violation fails the job before anything
         # is uploaded. Add `test`, `typecheck` and `lint:boundaries` scripts to gate more;
         # `lint:boundaries` is `substrat-boundary-lint` from @substrat-run/boundary-lint.
         run: |
@@ -218,15 +218,15 @@ jobs:
           elif [ -f yarn.lock ]; then PM=yarn
           else PM=npm
           fi
-          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" 'apps/meridian/package.json' "$1"; }
+          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" 'demos/meridian/package.json' "$1"; }
           RAN=''
           for s in typecheck test lint:boundaries; do
-            if declares "$s"; then ( cd apps/meridian && $PM run "$s" ); RAN="$RAN $s"
-            else echo "no '$s' script in apps/meridian/package.json — skipped"
+            if declares "$s"; then ( cd demos/meridian && $PM run "$s" ); RAN="$RAN $s"
+            else echo "no '$s' script in demos/meridian/package.json — skipped"
             fi
           done
           if [ -z "$RAN" ]; then
-            echo "::warning::no typecheck, test or lint:boundaries script in apps/meridian/package.json — this push is UNGATED. See https://substrat.net/guide/deploying"
+            echo "::warning::no typecheck, test or lint:boundaries script in demos/meridian/package.json — this push is UNGATED. See https://substrat.net/guide/deploying"
           else
             echo "gates passed:$RAN"
           fi
@@ -236,7 +236,7 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli preview create apps/meridian --slug meridian --tag pr-${{ github.event.number }} | tee preview.out
+          npx @substrat-run/cli preview create demos/meridian --slug meridian --tag pr-${{ github.event.number }} | tee preview.out
           # Take the URL from the CLI success line (the ✓ marker) only — the push it runs
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
@@ -250,7 +250,7 @@ jobs:
           # A FRESH scope, bound once and never rebound, so this URL is frozen to this build
           # forever. Clean-room (--empty) rather than a fork: a throwaway per build should not
           # copy prod data every push. Short TTL — the sticky preview is the one that lives.
-          npx @substrat-run/cli preview create apps/meridian --slug meridian \
+          npx @substrat-run/cli preview create demos/meridian --slug meridian \
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
