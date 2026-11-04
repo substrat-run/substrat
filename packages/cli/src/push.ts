@@ -1876,6 +1876,14 @@ export async function prepareWorkerBundle(
 
 /** Submit source; the authoritative build runs on the platform (D-66). */
 export async function push(opts: PushOptions): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
+  // The build runs on the platform, which judges the manifest by its own registry (#2813). Judge
+  // the declared scope stores by that registry first, here, so a refusal costs no upload; a tree
+  // declaring none asks the plane nothing.
+  const scopeStores = readRuntimeNeeds(opts.dir)?.scopeStores;
+  if (scopeStores?.length) {
+    const drivers = opts.storeDrivers ?? (await storeDriversOfPlane(opts.controlPlaneUrl, opts.authHeader, opts.slug));
+    assertDeclaredScopeStores({ scopeStores, vertical: opts.slug, ...(drivers ? { drivers } : {}) });
+  }
   const snapshot = collectSourceSnapshot(opts.dir);
   return uploadSource(opts, {
     version: opts.version, name: opts.name, tenant: opts.tenant, snapshot, origin: pushOrigin(),
@@ -1980,7 +1988,7 @@ export async function buildRelease(
     blobStores: stores.blobStores,
     scopeStores: needs?.scopeStores,
     vertical: opts.slug,
-    drivers: opts.storeDrivers ?? (await storeDriversOfPlane(opts.controlPlaneUrl, opts.authHeader, opts.slug)),
+    ...(opts.storeDrivers ? { drivers: opts.storeDrivers } : {}),
   });
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build

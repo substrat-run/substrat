@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { storeDriversOfPlane } from '../src/push.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { push, storeDriversOfPlane } from '../src/push.js';
 
 /** The registry a push reads from the control plane it talks to (#2813). */
 const GRAPH = { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, verticals: ['helpdesk'] };
@@ -34,5 +37,27 @@ describe('storeDriversOfPlane', () => {
   it('refuses a registry that is not one', async () => {
     plane(200, { drivers: [{ driver: 'sqlite' }] });
     await expect(storeDriversOfPlane('https://cp.test', {}, 'helpdesk')).rejects.toThrow();
+  });
+});
+
+describe('push judges scope stores by the plane registry (#2813)', () => {
+  const vertical = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-store-drivers-'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'helpdesk',
+      substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] } },
+    }));
+    return dir;
+  };
+  const opts = (dir: string) => ({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'https://cp.test', authHeader: {} });
+
+  it("refuses before any upload when the plane's registry does not serve the vertical, and uploads when it does", async () => {
+    const seen = plane(200, { drivers: [] });
+    await expect(push(opts(vertical()))).rejects.toThrow("scope store 'GRAPH' declares driver 'graph', which is not registered.");
+    expect(seen).toEqual(['https://cp.test/store-drivers?vertical=helpdesk']);
+    // The built-in `graph` serves no vertical, so only the plane's own answer lets this one through.
+    const served = plane(200, { drivers: [GRAPH], id: 'v1', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'helpdesk', dataLoss: {} });
+    await expect(push(opts(vertical()))).resolves.toMatchObject({ id: 'v1' });
+    expect(served.map((u) => new URL(u).pathname)).toEqual(['/store-drivers', '/verticals/helpdesk/deploy']);
   });
 });
