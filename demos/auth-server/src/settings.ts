@@ -120,6 +120,20 @@ export function machineScopesOf(
   return { scopes: entries };
 }
 
+/**
+ * The value the console writes for a list of scopes, or why it may not — judged by
+ * `machineScopesOf`, so nothing is stored that the reader would then read as `[]`. An entry
+ * holding a comma is refused too: the reader splits on it, so it would be stored as two.
+ * An empty list is allowed and writes blank, which is "no machine scopes".
+ */
+export function machineScopesValue(scopes: readonly string[]): { value: string } | { error: string } {
+  const malformed = scopes.filter((s) => !SCOPE_TOKEN.test(s) || s.includes(','));
+  if (malformed.length) return { error: `${MACHINE_SCOPES} has entries that are not scope tokens: ${malformed.join(', ')}` };
+  const value = [...new Set(scopes)].join(' ');
+  const { error } = machineScopesOf(value);
+  return error ? { error } : { value };
+}
+
 /* ---- the Supabase legacy-secret bridge ---- */
 
 /** The project's legacy (HS256) JWT secret — delivered as a secret, never read back out. */

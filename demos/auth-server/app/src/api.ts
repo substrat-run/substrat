@@ -1020,8 +1020,9 @@ export interface IssuerSettings {
   allowSignup: boolean;
   accountLinking: AccountLinkingMode;
   /**
-   * `MACHINE_SCOPES` — what a machine client may be granted. Read-only: it is set in the
-   * issuer's environment, not here, so the settings PATCH does not take it.
+   * `MACHINE_SCOPES` — what a machine client may be granted. The same key the platform's Env
+   * tab writes; the settings PATCH replaces it whole, and refuses a list the issuer would not
+   * honour (a sign-in scope, a malformed token) rather than storing it.
    */
   machineScopes: string[];
   /** Why `MACHINE_SCOPES` was refused, when it was — `machineScopes` is then empty. */
@@ -1034,7 +1035,7 @@ export async function issuerSettings(): Promise<IssuerSettings> {
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
 export async function setIssuerSettings(
-  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking'>>,
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes'>>,
 ): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }
