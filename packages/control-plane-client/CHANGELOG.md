@@ -1,5 +1,21 @@
 # @substrat-run/control-plane-client
 
+## 0.6.0
+
+### Minor Changes
+
+- dff2043: A push judges its scope stores by the driver registry of the control plane it talks to (#2813): `GET /store-drivers?vertical=` returns the registry as that vertical is judged by it, and `substrat push --store-drivers <file.json>` (also on `--check`) judges by a registry of your own.
+
+### Patch Changes
+
+- Updated dependencies [5c62ade]
+- Updated dependencies [578b967]
+- Updated dependencies [251a62b]
+- Updated dependencies [6984d2a]
+- Updated dependencies [251a62b]
+- Updated dependencies [251a62b]
+  - @substrat-run/contracts@0.178.0
+
 ## 0.5.5
 
 ### Patch Changes
