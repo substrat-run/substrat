@@ -807,6 +807,11 @@ log is itself logged.
 `result_count` is what makes a row worth keeping. *"Called listScopes"* is navigation;
 *"enumerated 4,000 tenants"* is an incident, and only the count tells them apart.
 
+`on_behalf_of` (#2860) is the person a read was made for when the credential carried
+one — the dashboard reads a team's data over the team's own credential, so `actor` is the
+platform service and the person rides beside it, as on the admin log (#977). Null for a
+staff read, where the actor is the person, and for a row written before the column.
+
 **Denials land here too (K-35).** `assertAllowed` throws `PermissionDenied` and, until
 this, nothing recorded it — a refused call left no row in any log, because both
 `recordAdmin` and `recordAccess` run only on the success path. A denial is
