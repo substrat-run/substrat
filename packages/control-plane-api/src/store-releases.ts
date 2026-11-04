@@ -18,16 +18,13 @@
  * converges, a rollback included. A request that stops on a failure ends `failed` or `diverged`.
  */
 import {
-  STORE_CANARY_FIXTURE_FILE,
   STORE_RELEASE_MAX_BYTES,
   scopeStoreCanaryObjectName,
   scopeStoreCanaryScriptName,
   scopeStoreScriptName,
   storeDriverReleaseDigest,
   storeDriverReleaseUpload,
-  storeExportResult,
   type PlatformActorId,
-  type StoreExportResult,
   type ReservedStoreOperation,
   type ScopeStoreNeed,
   type StoreDriverRegistration,
@@ -46,6 +43,7 @@ import {
 import { assertPythonDriverModules } from './store-entry.js';
 import {
   approvalFactsOf,
+  canaryFixtureOf,
   liveApprovalOf,
   type ScopeStoreEnsurerOptions,
   type StoreDriverApprovals,
@@ -385,25 +383,10 @@ export const canaryObjectName = (binding: string): string => scopeStoreCanaryObj
 const tablesOf = (answer: unknown) => (answer as { tables: { name: string; rows: unknown[] }[] }).tables;
 
 /**
- * The release's canary fixture (#2814), parsed: a `substrat.export` that holds rows. A release
- * that ships none, or one that is not that, is refused (422) before the canary calls anything.
+ * A dump as one string to compare: `objects` is optional (#2820), and an absent list and an
+ * empty one are the same table, so a driver that writes one and a fixture that omits it agree.
  */
-function canaryFixtureOf(bytes: Uint8Array | undefined): StoreExportResult {
-  const where = `driver_<package>/${STORE_CANARY_FIXTURE_FILE}`;
-  if (!bytes) throw new ControlPlaneError(422, `canary refused: the release ships no canary fixture (${where})`);
-  let json: unknown;
-  try {
-    json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch {
-    json = undefined;
-  }
-  const parsed = storeExportResult.safeParse(json);
-  if (!parsed.success) throw new ControlPlaneError(422, `canary refused: ${where} is not a substrat.export answer`);
-  if (!parsed.data.tables.some((t) => t.rows.length > 0)) {
-    throw new ControlPlaneError(422, `canary refused: ${where} holds no rows`);
-  }
-  return parsed.data;
-}
+const dumpText = (tables: readonly { objects?: unknown[] }[]) => JSON.stringify(tables.map((t) => ({ ...t, objects: t.objects ?? [] })));
 
 /**
  * Every reserved operation, on a fresh object of the platform's own (D-63): its tenant and scope
@@ -440,7 +423,7 @@ export async function canaryStoreRelease(input: {
   await step('substrat.export', (a) => (tablesOf(a).some((t) => t.rows.length > 0) ? 'exported rows from an object holding none' : null));
   const { tables } = fixture;
   await step('substrat.import', (a) => ((a as { tables: number }).tables === tables.length ? null : `imported ${(a as { tables: number }).tables} of ${tables.length} tables`), { tables });
-  await step('substrat.export', (a) => (JSON.stringify(tablesOf(a)) === JSON.stringify(tables) ? null : 'did not export the fixture it imported'));
+  await step('substrat.export', (a) => (dumpText(tablesOf(a)) === dumpText(tables) ? null : 'did not export the fixture it imported'));
   const approved = [...input.operations].sort();
   await step('substrat.selfcheck', (a) => {
     const served = [...(a as { operations: string[] }).operations].sort();

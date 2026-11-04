@@ -70,7 +70,7 @@ const count = await store.invoke('increment', { by: 1 });
 
 On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it signs the call and addresses the store script. The signature is Ed25519, over the audience, the key, the store script, the object, the operation, the exact body and the time, and the store script holds only the public keys. A Cloudflare host takes this path unless it was given a runner or `scopeStores: { transport: 'binding' }`. A control plane does not change that. On this path the host does not hold the store objects. The control plane sizes, exports, erases and wipes them through the store script itself, alongside the host's part for the scope (an erasure reaches the stores before the key is destroyed), so the host's admin answers for no store. A local size, export or erase asked of the host directly, with no control plane in front, refuses (`unavailable`) rather than answer that there are none.
 
-`invoke` takes an operation and its input, and nothing else. Idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no whitespace and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical. So is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations. The control plane calls the store script for those itself. The vertical is not on that path.
+`invoke` takes an operation and its input, and nothing else. Idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no whitespace and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical. So is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe`, `substrat.erase` and `substrat.selfcheck` are the platform's operations. The control plane calls the store script for those itself. The vertical is not on that path.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `substrat.bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`. On the platform path the router cuts the store's error to that rule before it answers, so a withheld body never reaches the vertical's isolate, and the code is capped at 64 characters. An `{ error }` envelope is the store's answer whatever HTTP status carried it, and a `{ result }` only on a 2xx. A store that answers anything else, such as the store script's own refusal of a signature, arrives as `substrat.bad_envelope` too, and its body is neither passed on nor logged. A `storeCode` starting with `substrat.` is the platform's, never a store's: a call the platform refuses arrives with `storeCode` `substrat.refused` and its 4xx status, and a store the platform cannot reach, or a platform not set up for stores, with `substrat.unavailable` (503). A store that answers a `substrat.` code itself arrives as `substrat.bad_envelope`, so a store's answer is never mistaken for the platform's.
 
@@ -167,7 +167,7 @@ What a runner answers:
 - `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to.
 - `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, counting what it removed. A subject with nothing on the object, a repeat included, answers `{ erased: 0 }`.
 
-`scopeStoreRunnerContractSuite` in [`@substrat-run/contract-tests`](../reference/contract-tests.md) holds a runner to each of these. A driver runs it in its own repository, with one write and one read of its own catalog:
+`scopeStoreRunnerContractSuite` in [`@substrat-run/contract-tests`](../reference/contract-tests.md) holds a runner to each of these. A driver runs it in its own repository, with one write and one read of its own catalog, and the whole catalog:
 
 ```ts
 import { scopeStoreRunnerContractSuite } from '@substrat-run/contract-tests';
@@ -176,6 +176,8 @@ scopeStoreRunnerContractSuite('graph', {
   makeRunner: () => graphRunner({ dir }),
   write: { operation: 'apply', input: change },
   read: { operation: 'inspect' },
+  // Every operation the driver serves: what its substrat.selfcheck must answer.
+  catalog: ['apply', 'inspect'],
 });
 ```
 

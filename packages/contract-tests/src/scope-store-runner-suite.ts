@@ -19,6 +19,8 @@ export interface ScopeStoreRunnerFixture {
   readonly write: StoreRequest;
   /** A driver operation that reads the object back. Equal answers mean equal objects. */
   readonly read: StoreRequest;
+  /** Every catalog operation the driver serves: what its `substrat.selfcheck` must answer (#2814). */
+  readonly catalog: readonly string[];
 }
 
 /** One check of the runner contract. It throws when the runner breaks it. */
@@ -144,12 +146,18 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
       },
     },
     {
-      // The rollout's canary compares this answer with the approved catalog (#2814).
-      name: 'substrat.selfcheck answers the catalog it serves, the read and the write among it',
+      // What the rollout's canary does (#2814): rows imported first, so the runtime is built over
+      // data, and the answer compared exactly with the catalog the release is approved with.
+      name: 'substrat.selfcheck, on an object that imported rows, answers exactly the catalog',
       async run() {
         await withRunner(async (runner) => {
-          const { operations } = await reserved(runner, freshAddress(), 'substrat.selfcheck');
-          expect(operations).toEqual(expect.arrayContaining([fixture.read.operation, fixture.write.operation]));
+          const source = freshAddress();
+          const target = freshAddress();
+          await write(runner, source);
+          const { tables } = await reserved(runner, source, 'substrat.export');
+          await reserved(runner, target, 'substrat.import', { tables });
+          const { operations } = await reserved(runner, target, 'substrat.selfcheck');
+          expect([...operations].sort()).toEqual([...fixture.catalog].sort());
         });
       },
     },

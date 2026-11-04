@@ -1,11 +1,14 @@
 import {
   classifyPythonStoreModule,
   SCOPE_STORE_CANARY,
+  STORE_CANARY_FIXTURE_FILE,
   STORE_DRIVERS,
   scopeStoreCanaryScriptName,
   storeDriverBasisAdmits,
   storeDriverReleaseDigest,
+  storeExportResult,
   type ScopeStoreNeed,
+  type StoreExportResult,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -60,6 +63,32 @@ export function liveApprovalOf(approvals: StoreDriverApprovals, sha256: string):
   return approvals.records.find((a) =>
     a.sha256 === sha256 && a.revokedAt === null && storeDriverBasisAdmits(approvals.registration.isolationBasis, a.sourceReferences));
 }
+
+/**
+ * A release's canary fixture (#2814), parsed: a `substrat.export` that holds rows. A release that
+ * ships none, or one that is not that, is refused (422): by the canary ensurer before it uploads
+ * anything, and by the canary before it calls anything.
+ */
+export function canaryFixtureOf(bytes: Uint8Array | undefined): StoreExportResult {
+  const where = `driver_<package>/${STORE_CANARY_FIXTURE_FILE}`;
+  if (!bytes) throw new ControlPlaneError(422, `canary refused: the release ships no canary fixture (${where})`);
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    json = undefined;
+  }
+  const parsed = storeExportResult.safeParse(json);
+  if (!parsed.success) throw new ControlPlaneError(422, `canary refused: ${where} is not a substrat.export answer`);
+  if (!parsed.data.tables.some((t) => t.rows.length > 0)) {
+    throw new ControlPlaneError(422, `canary refused: ${where} holds no rows`);
+  }
+  return parsed.data;
+}
+
+/** The bytes of a release's canary fixture, if it ships one. */
+const fixtureBytesOf = (release: PythonStoreDriverRelease): Uint8Array | undefined =>
+  release.modules.find((module) => classifyPythonStoreModule(module.name).kind === 'canaryFixture')?.content;
 
 /**
  * The facts of a release a script is LEAVING: any of its approval rows, revoked or not. Its facts
@@ -181,13 +210,16 @@ export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
     const driver = (opts.drivers ?? STORE_DRIVERS).find((k) => k.driver === input.driver);
     if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(driver.driver);
+    const to = 'to' in input ? input.to : undefined;
+    // A rollout's target must carry a usable fixture, judged before the script is put, so a release
+    // that cannot be canaried never reaches the canary script. The rebuild keeps what runs there.
     const ensured = await scriptEnsurer(opts)(
       { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName },
-      'to' in input ? input.to : undefined,
-      { anySchema: true, existingOnly: 'existingOnly' in input },
+      to,
+      { anySchema: true, existingOnly: 'existingOnly' in input, fixture: to !== undefined },
     );
-    const fixture = ensured.release?.modules.find((module) => classifyPythonStoreModule(module.name).kind === 'canaryFixture');
-    return { scriptName, uploaded: ensured.uploaded, ...(fixture ? { fixture: fixture.content } : {}) };
+    const fixture = ensured.release && fixtureBytesOf(ensured.release);
+    return { scriptName, uploaded: ensured.uploaded, ...(fixture ? { fixture } : {}) };
   };
 }
 
@@ -209,7 +241,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
   return async (
     script: EnsuredScript,
     to: string | undefined,
-    rule: { anySchema?: boolean; existingOnly?: boolean } = {},
+    rule: { anySchema?: boolean; existingOnly?: boolean; fixture?: boolean } = {},
   ): Promise<{ uploaded: boolean; release?: PythonStoreDriverRelease }> => {
     if (opts.approvals.registration.driver !== script.driver) {
       throw new ControlPlaneError(500, `store script '${script.scriptName}' was handed the approvals of driver '${opts.approvals.registration.driver}'`);
@@ -252,6 +284,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     if (!approval) {
       throw new ControlPlaneError(422, `driver '${script.driver}' release ${sha256} has no live approval; roll '${script.scriptName}' out to an approved release`);
     }
+    if (rule.fixture) canaryFixtureOf(fixtureBytesOf(loaded));
     if (current.release && current.release !== sha256 && !rule.anySchema) {
       const running = approvalFactsOf(opts.approvals, current.release);
       if (!running) {

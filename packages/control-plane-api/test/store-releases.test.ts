@@ -210,6 +210,12 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     expect(await refusal(canary(sticky.call))).toMatchObject({ message: expect.stringMatching(/still holds rows after its wipe/) });
   });
 
+  it('reads an absent objects list and an empty one as the same table', async () => {
+    // The fixture omits `objects` (#2820); this driver writes `objects: []` on every export.
+    const store = canaryStore({ 'substrat.export': (a) => ({ tables: (a as { tables: object[] }).tables.map((t) => ({ ...t, objects: [] })) }) }, ['increment', 'read']);
+    await canary(store.call);
+  });
+
   it('refuses a release with no fixture, or one that is not an export holding rows, before calling anything', async () => {
     const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
     const cases: [Uint8Array | undefined, RegExp][] = [
@@ -1511,6 +1517,29 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     vi.unstubAllGlobals();
     await host.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses a rollout target with no canary fixture before it puts the canary script (#2814)', async () => {
+    const keys = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: (await generateScopeStoreKeyPair()).publicKey };
+    const ensurerFor = async (release: ReturnType<typeof bundle>) => {
+      const sha256 = await storeDriverReleaseDigest(release);
+      const approval = {
+        approvalId: ulid(), driver: 'graph', sha256, sourceCommit: COMMIT, approvedBy: person, approvedAt: '2026-11-04T00:00:00.000Z',
+        ...reviewed(0), revokedBy: null, revokedAt: null, revokedReason: null, revokedEmergency: null,
+      };
+      const ensure = createStoreCanaryEnsurer({
+        accountId: 'a', namespace: 'n', apiToken: 't', callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform], drivers: [GRAPH],
+        loadRelease: async () => ({ ...release, sha256 }),
+        approvals: { registration: GRAPH, records: [approval] },
+      });
+      return () => ensure({ driver: 'graph', to: sha256 });
+    };
+    const bare = { ...bundle(1), modules: bundle(1).modules.filter((m) => !m.name.endsWith('substrat_canary.json')) };
+    expect(await refusal((await ensurerFor(bare))())).toMatchObject({ status: 422, message: expect.stringMatching(/ships no canary fixture/) });
+    expect(scripts.has('substrat-store-graph--canary')).toBe(false);
+    // The same release with its fixture is put, and the fixture handed back.
+    expect(await (await ensurerFor(bundle(1)))()).toMatchObject({ uploaded: true, fixture: FIXTURE_BYTES });
+    expect(release('substrat-store-graph--canary')).toBe(await storeDriverReleaseDigest(bundle(1)));
   });
 
   it('refuses to undo a diverged schema raise by re-posting the lower release', async () => {

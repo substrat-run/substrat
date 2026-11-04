@@ -18,6 +18,7 @@ const counterFixture = (makeRunner: () => ScopeStoreRunner): ScopeStoreRunnerFix
   makeRunner,
   write: { operation: 'increment', input: { by: 1 } },
   read: { operation: 'read' },
+  catalog: ['increment', 'read'],
 });
 
 scopeStoreRunnerContractSuite('counter', counterFixture(counterScopeStoreRunner));
@@ -46,7 +47,7 @@ const CHECK = {
   address: 'the object is keyed on the whole address: tenant, vertical, scope and binding',
   restart: 'a stop and a start serve the same repositories',
   size: 'substrat.size answers { bytes }',
-  selfcheck: 'substrat.selfcheck answers the catalog it serves, the read and the write among it',
+  selfcheck: 'substrat.selfcheck, on an object that imported rows, answers exactly the catalog',
   export: 'substrat.export answers { tables } in the scope-dump table shape',
   import: 'substrat.import replaces the whole object and answers the tables it wrote',
   wipe: 'substrat.wipe answers {} and leaves an empty object, also where nothing was written',
@@ -124,9 +125,29 @@ const TWINS: { name: string; breaks: readonly string[]; makeRunner: () => ScopeS
     makeRunner: answering('substrat.size', { result: { size: 1 } }),
   },
   {
-    name: 'a selfcheck whose catalog leaves out an operation it serves',
+    name: 'a selfcheck that names an operation the catalog does not',
     breaks: [CHECK.selfcheck],
-    makeRunner: answering('substrat.selfcheck', { result: { operations: ['read'] } }),
+    makeRunner: answering('substrat.selfcheck', { result: { operations: ['increment', 'read', 'drop'] } }),
+  },
+  {
+    // Empty, its runtime builds; once it holds imported rows, it does not.
+    name: 'a runtime that fails to build once the object holds rows',
+    breaks: [CHECK.selfcheck],
+    makeRunner: () => {
+      const inner = counterScopeStoreRunner();
+      const holding = new Set<string>();
+      return {
+        ...inner,
+        invoke(address, request) {
+          const id = JSON.stringify(address);
+          if (request.operation === 'substrat.import') holding.add(id);
+          if (request.operation === 'substrat.selfcheck' && holding.has(id)) {
+            return Promise.resolve({ error: { code: 'runtime_failed', status: 500 } });
+          }
+          return inner.invoke(address, request);
+        },
+      };
+    },
   },
   {
     // An empty export also leaves nothing for an import to restore.

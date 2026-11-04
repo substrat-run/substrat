@@ -870,7 +870,7 @@ export type StoreWipeResult = z.infer<typeof storeWipeResult>;
  * with the catalog operations that runtime serves (#2814). The rollout's canary compares them with
  * the catalog the release's approval records.
  */
-export const storeSelfcheckResult = z.object({ operations: z.array(storeOperationName) });
+export const storeSelfcheckResult = z.object({ operations: z.array(storeCatalogOperation) });
 export type StoreSelfcheckResult = z.infer<typeof storeSelfcheckResult>;
 
 /**
