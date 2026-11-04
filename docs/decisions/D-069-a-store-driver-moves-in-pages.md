@@ -76,8 +76,8 @@ writes it for any driver rather than for one language.
   refuses a `maxBytes`: it may cut a smaller page. The platform asks for
   a page within what the registration declares in `dumpPageMaxBytes` (counted on the serialized
   page), which is at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB), so a page and the call around it stay
-  under `STORE_CALL_MAX_BYTES`. Every host uses the declared size of
-  the driver it reaches. A row the driver could not take back in one `substrat.stage-page` is refused by
+  under `STORE_CALL_MAX_BYTES`. A driver the registry does not hold (a dev host's own) is asked for
+  `STORE_DUMP_PAGE_MAX_BYTES`. Every host uses the size this gives for the driver it reaches. A row the driver could not take back in one `substrat.stage-page` is refused by
   `substrat.export-page`, naming the table, so that a backup fails when it is taken and not when it
   is restored. What a driver measures that against is the smaller of its own limit on a request and
   `STORE_CALL_MAX_BYTES` (4 MiB, [#2811](https://github.com/substrat-run/substrat/issues/2811)),
@@ -85,8 +85,8 @@ writes it for any driver rather than for one language.
   envelope around it, would be over either is refused at export. A store entry refuses a body over the
   limit with a plain 413, and the router and the platform refuse to sign one. The graph driver declares 900 000, under its 1 MB limit on a request with room for the
   envelope around a page. A TypeScript driver may declare large pages and a Python one small ones.
-- **Commit is the one step that changes the object.** A stage is held aside and changes nothing a
-  call can see. Page `seq` 0 starts a stage and drops any other, so the old id can then neither stage
+- **Commit is the one step that changes the object.** A stage is held aside and changes no data a
+  call reads; only `substrat.size`, which counts held stages, sees it. Page `seq` 0 starts a stage and drops any other, so the old id can then neither stage
   nor commit. Pages arrive in order. A `seq` already held answers `staged: false` and changes
   nothing, so a lost answer can be retried, and a gap is refused. `substrat.commit-stage` replaces
   the whole object atomically, and a stage that is abandoned or fails before its commit leaves the

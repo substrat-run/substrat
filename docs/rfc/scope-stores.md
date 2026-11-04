@@ -153,7 +153,7 @@ Reserved names, only the platform may send:
 | operation | input | result | what it does |
 |---|---|---|---|
 | `substrat.export-page` | `{ cursor, maxBytes }` | `{ tables, next, revision }` | one page of the driver's dump: table fragments, an opaque cursor for the next page, and an opaque revision (D-69) |
-| `substrat.stage-page` | `{ stageId, seq, tables }` | `{ staged }` | hold one page of a dump aside, changing nothing a call can see. A `seq` already held answers `staged: false` |
+| `substrat.stage-page` | `{ stageId, seq, tables }` | `{ staged }` | hold one page of a dump aside, changing no data a call reads (only `substrat.size`, which counts held stages). A `seq` already held answers `staged: false` |
 | `substrat.commit-stage` | `{ stageId }` | `{ tables }` | replace the whole object with the stage, atomically. The one step that changes the object |
 | `substrat.discard-stage` | `{ stageId }` | `{ discarded }` | drop a stage, and say whether the object held it |
 | `substrat.size` | none | `{ bytes }` | the object's whole storage. The spike read `databaseSize` |
@@ -597,8 +597,10 @@ in pages of the size the driver's registration declares. It puts the merged page
 export carries no stores. A store that fails to export fails the export: a dump that says
 it is whole while missing a store is not written.
 
-**Restore and import.** The control plane loads the scope's own tables, then stages the dump's `stores` on each of its bindings with
-`substrat.stage-page` and commits each with `substrat.commit-stage`. Only bindings the destination's
+**Restore and import.** In this order: the control plane refuses a dump binding the destination
+does not declare (`refuseUndeclaredDumpStores`), loads the scope's own tables (`host.restoreScope`),
+then stages the dump's `stores` on each of its bindings with `substrat.stage-page` and commits each
+with `substrat.commit-stage`. Only bindings the destination's
 version declares, with the same driver, are imported. A dump binding the destination does
 not declare refuses the restore before any write. The check therefore runs ahead of
 `host.restoreScope`, which loads the scope's own tables first (L8, the recommended answer

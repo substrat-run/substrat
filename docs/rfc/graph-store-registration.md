@@ -10,7 +10,7 @@ description: The graph driver is registered by its id, on D-67, the decision rec
 `STORE_DRIVERS` by its id and its isolation basis, and nothing about a release:
 
 ```ts
-{ driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' } }
+{ driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, dumpPageMaxBytes: 900_000 }
 ```
 
 This is step 5 of [store driver releases are uploaded and approved](./store-driver-release-approval.md#5-2394-and-the-rollout-order).
