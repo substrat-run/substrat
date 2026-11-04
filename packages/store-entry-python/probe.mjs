@@ -282,7 +282,7 @@ async function send(call, query = '') {
  * without the body, so the destroy after the response ends the socket on purpose and its reset is
  * ignored; a reset or silence BEFORE the response rejects, with a bounded wait, rather than hang.
  */
-function declaredLength(length, chunk) {
+function declaredLength(length, chunk, query = '') {
   return new Promise((resolve, reject) => {
     let answered = false;
     const timer = setTimeout(() => fail(new Error(`no response to a declared Content-Length of ${length} within 30s`)), 30_000);
@@ -291,7 +291,7 @@ function declaredLength(length, chunk) {
       req.destroy();
       reject(err);
     };
-    const req = httpRequest({ host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': length } }, (res) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: `/invoke${query}`, method: 'POST', headers: { 'content-length': length } }, (res) => {
       answered = true;
       clearTimeout(timer);
       res.resume();
@@ -440,10 +440,10 @@ try {
   const odd = await declaredLength('\u00b2');
   check(odd.status < 500, 'a Content-Length of a non-ASCII digit is no 500', odd);
   const countBefore = result(await send(await signed(name, 'read')));
-  // Over the limit with a Content-Length (fetch sets it from a buffer), and chunked with none.
+  // Over the limit and chunked, with no Content-Length: read to the limit and refused there. A body
+  // over the limit WITH a Content-Length is the declared-length case above; uploading it whole would
+  // race the server closing after its early 413.
   const over = bodyOfSize(STORE_CALL_MAX_BYTES + 1, 'increment');
-  const withLength = await send(await signed(name, 'increment', { body: over }));
-  check(withLength.status === 413 && withLength.text === tooLarge, 'a body over the limit with a Content-Length is 413', withLength.status);
   const overBytes = Buffer.from(over, 'utf8');
   const chunked = await fetch(`http://127.0.0.1:${port}/invoke`, {
     method: 'POST',
@@ -458,8 +458,8 @@ try {
   });
   const chunkedText = await chunked.text();
   check(chunked.status === 413 && chunkedText === tooLarge, 'a body over the limit with no Content-Length is 413', chunked.status);
-  const objectSide = await send(await signed(name, 'increment', { body: over }), `?object=${encodeURIComponent(name)}`);
-  check(objectSide.status === 413, 'and the object refuses it too', objectSide.status);
+  const objectSide = await declaredLength(String(STORE_CALL_MAX_BYTES + 1), 'x', `?object=${encodeURIComponent(name)}`);
+  check(objectSide.status === 413, 'and the object refuses a declared one too', objectSide);
   check(result(await send(await signed(name, 'read'))) === countBefore, 'the driver was not reached by any of them');
   // At the limit, with characters of two, three and four bytes: the driver gets the bytes that were signed.
   const atLimit = bodyOfSize(STORE_CALL_MAX_BYTES, 'inspect', 'é€\u{1f600}');
