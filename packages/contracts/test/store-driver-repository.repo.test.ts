@@ -12,7 +12,7 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const PRIVATE_WORKSPACE_PACKAGES = [
   'apps/builder', 'apps/builder/web', 'apps/console', 'apps/control-plane', 'apps/dashboard', 'apps/dashboard/web',
   'apps/docs', 'apps/router', 'apps/social-relay', 'apps/vertical-egress',
-  'connectors/mail-in', 'connectors/microsoft365',
+  'connectors/bolagsverket', 'connectors/mail-in', 'connectors/microsoft365',
   'demos/auth-server', 'demos/auth-server/app', 'demos/handlebar', 'demos/handlebar/app', 'demos/manyfold', 'demos/manyfold/app',
   'demos/meridian', 'demos/meridian/app', 'demos/shop', 'demos/shop/admin', 'demos/shop/app', 'demos/ticket0', 'demos/ticket0/app',
   'demos/tock', 'demos/tock/app', 'demos/todo', 'demos/todo/app',
