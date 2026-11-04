@@ -114,8 +114,6 @@ The plan, the log, this map.
 | document | status | |
 |---|---|---|
 | [master-plan.md](master-plan.md) | `canonical` | Strategy, architecture decisions, and the D log. Canonical; everything else derives. |
-| [master-plan.md](master-plan.md) | `canonical` | Strategy, architecture decisions, and the D log. Canonical; everything else derives. |
-| [master-plan.md](master-plan.md) | `canonical` | Strategy, architecture decisions, and the D log. Canonical; everything else derives. |
 
 ### `strategy/`
 
