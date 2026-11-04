@@ -47,6 +47,8 @@ import {
   type DeployManifest,
   type SourceBuildRequest,
   assertDeclaredScopeStores,
+  storeDriverRegistration,
+  type StoreDriverRegistration,
   storeNamesOfBindings,
   manifestStoresOf,
   pushedConnectorProblems,
@@ -61,7 +63,7 @@ import {
   formatViolations,
   maskSource,
 } from '@substrat-run/boundary-lint';
-import { walkPages } from '@substrat-run/control-plane-client';
+import { ControlPlaneError, walkPages } from '@substrat-run/control-plane-client';
 import { checkMigrationDataLoss, type DataLossCheck, type ReplayInputs } from './data-loss-check.js';
 import { parseJsonBody } from './http.js';
 import { readPublishedConcept } from './published-concept.js';
@@ -752,6 +754,8 @@ export async function checkPermissionSurface(
   dataLoss: { readonly require?: boolean; readonly log?: (message: string) => void } = {},
   /** The slug the push would deploy as, so a scope store's driver is judged for it as a push judges it. */
   vertical?: string,
+  /** The registry the scope stores are judged against; the built-in one when absent (#2813). */
+  drivers?: readonly StoreDriverRegistration[],
 ): Promise<PermissionSurface> {
   const { registry, envSpec: derived, schedules, replay, declaresAttachments } = await deriveDeclaredSurface(dir);
   // The data-loss replay (#2321) a push makes, so `--check` is still the whole local gate. Its
@@ -769,6 +773,7 @@ export async function checkPermissionSurface(
     blobStores: stores.blobStores,
     scopeStores: needs?.scopeStores,
     ...(vertical ? { vertical } : {}),
+    ...(drivers ? { drivers } : {}),
   });
   // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses exactly what a
   // push would. The duplicate-copy note is push-time chatter, not part of the check artifact.
@@ -1471,6 +1476,31 @@ export function sweeperClassesOf(dir: string, cfg: Record<string, unknown>): str
   return exportedSweeperNamesOf(entryPath);
 }
 
+/**
+ * The registry the control plane will judge this push's scope stores by (#2813): the drivers
+ * `vertical` may use, read from the plane the push goes to. `undefined` is the built-in registry,
+ * for a plane that predates the route (404) and nothing else: a network failure or any other
+ * refusal propagates, since the push would fail on the same plane a moment later.
+ */
+export async function storeDriversOfPlane(
+  controlPlaneUrl: string,
+  header: Record<string, string>,
+  vertical: string,
+): Promise<StoreDriverRegistration[] | undefined> {
+  try {
+    const { drivers } = await planeFor(controlPlaneUrl, header).storeDriversFor(vertical);
+    return storeDriverRegistration.array().parse(drivers);
+  } catch (e) {
+    if (e instanceof ControlPlaneError && e.status === 404) return undefined;
+    throw e;
+  }
+}
+
+/** A `--store-drivers` file: a JSON array of registrations, held to the schema the plane's are. */
+export function readStoreDriversFile(path: string): StoreDriverRegistration[] {
+  return storeDriverRegistration.array().parse(JSON.parse(readFileSync(path, 'utf8')));
+}
+
 export interface PushOptions {
   dir: string;
   slug: string;
@@ -1562,6 +1592,8 @@ export interface PushOptions {
   linted?: LayerRulesChecked;
   /** A local build and import check already completed by the command before auth. */
   preparedWorker?: PreparedWorkerBundle;
+  /** The scope-store registry to judge by instead of the control plane's (`--store-drivers`, #2813). */
+  storeDrivers?: readonly StoreDriverRegistration[];
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -1948,6 +1980,7 @@ export async function buildRelease(
     blobStores: stores.blobStores,
     scopeStores: needs?.scopeStores,
     vertical: opts.slug,
+    drivers: opts.storeDrivers ?? (await storeDriversOfPlane(opts.controlPlaneUrl, opts.authHeader, opts.slug)),
   });
 
   // Declared schedules need a sweeper to run them on a hosted deploy (#1646). After the build

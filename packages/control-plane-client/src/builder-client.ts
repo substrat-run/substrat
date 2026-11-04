@@ -128,6 +128,15 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
     return this.read(`/verticals/${seg(slug)}/versions${queryOf({}, page)}`);
   }
 
+  /**
+   * The scope-store drivers `vertical` (a bare slug) may use (#2813): what a push judges its
+   * declared stores against. Each registration names no other vertical. Unparsed: the caller holds
+   * the schema (`storeDriverRegistration`).
+   */
+  storeDriversFor(vertical: string): Promise<{ drivers: unknown[] }> {
+    return this.read(`/store-drivers${queryOf({ vertical }, undefined)}`);
+  }
+
   listChannels(slug: string, page?: PageRequest): Promise<Page<ChannelRow>> {
     return this.read(`/verticals/${seg(slug)}/channels${queryOf({}, page)}`);
   }

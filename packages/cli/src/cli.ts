@@ -41,6 +41,7 @@ import {
   assertLayerRules,
   assertSchedulesAreSwept,
   checkPermissionSurface,
+  readStoreDriversFile,
   checkWorkerImports,
   prepareWorkerBundle,
   resolveWranglerConfig,
@@ -202,6 +203,10 @@ Usage:
                                                vertical's CI gates its surface with the CLI
                                                instead of the CLI's internals. --json prints
                                                the registry as data instead of prose
+                                               --store-drivers <file.json> judges scope stores
+                                               by that registry (an array) rather than the
+                                               built-in one; a push uses it instead of the
+                                               control plane's
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
                     [--review <token>]           the review the acks answer, as the refusal printed it
@@ -544,6 +549,11 @@ async function cmdPush(): Promise<void> {
   const meta = readVerticalMeta(dir);
   // The slug the push deploys as; `--check` judges the declared surface for the same one.
   const slug = flag('slug') ?? meta.slug;
+  // The scope-store registry to judge by (#2813): a file, for a fork or a local test over a driver
+  // the platform registry does not hold. Absent, `--check` uses the built-in one and a push the
+  // control plane's own.
+  const storeDriversFile = flag('store-drivers');
+  const storeDrivers = storeDriversFile ? readStoreDriversFile(storeDriversFile) : undefined;
   // Before the network and before `--check` returns, so all three see it; under `--strict`
   // it throws like every other failure of the gate.
   reportOutbound(dir, meta.outbound, jsonCheck ? console.error : console.log);
@@ -560,6 +570,7 @@ async function cmdPush(): Promise<void> {
       dir,
       { require: dataLossCheckRequired(argv), log: jsonCheck ? console.error : console.log },
       slug,
+      storeDrivers,
     );
     // The schedule check (#1646) the push would make — `--check` is the whole local gate, so
     // a vertical whose schedules nothing would run is refused here too. A tree with no deploy
@@ -662,6 +673,7 @@ async function cmdPush(): Promise<void> {
     skipLint: argv.includes('--skip-lint'),
     linted,
     preparedWorker,
+    storeDrivers,
     // A data-loss replay (#2321) that was skipped or incomplete is a loud warning; this makes it a refusal.
     requireDataLossCheck: dataLossCheckRequired(argv),
     envSpec: meta.envSpec,

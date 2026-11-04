@@ -2216,6 +2216,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/concept$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/ },
+    // The scope-store drivers one vertical may use (#2813), so a push judges its stores as the
+    // upload will. `?vertical=` required; the answer names no other vertical.
+    { method: 'GET', re: /\/store-drivers$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
@@ -13181,6 +13184,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
     return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals, options.storeReleases?.settleMs), walk: walk ?? null };
   };
+
+  // The drivers a push may declare scope stores over, for ONE vertical: what `assertSandboxContract`
+  // judges its upload against (#2813). A builder's push is judged by this list before the upload, so
+  // it reads it; `?vertical=` is required and the answer carries only the drivers that vertical may
+  // use, each with `verticals` reduced to that vertical (omitted when the driver serves every one),
+  // so no caller reads another vertical's slug. The staff-only `/store-drivers/:driver` below is
+  // the driver's release state and stays as it was.
+  app.get('/store-drivers', async (c) => {
+    const parsed = verticalSlug.safeParse(c.req.query('vertical'));
+    if (!parsed.success) return refuse(c, 'validation_failed', 'vertical is required: the slug the push deploys as');
+    const vertical = parsed.data;
+    const p = c.get('principal');
+    // A vertical not registered yet is a first push, and is answered; one registered under a
+    // namespace the caller cannot read is a 404 like every slug-addressed read.
+    const id = await resolveVerticalId(c, vertical);
+    if ((await verticalOf(c.get('actor'), id)) && (await notReadable(p, id))) return refuse(c, 'not_found', 'not found');
+    const drivers = (options.storeDrivers ?? STORE_DRIVERS)
+      .filter((d) => storeDriverServesVertical(d, vertical))
+      .map((d) => (d.verticals ? { ...d, verticals: [vertical] } : d));
+    return c.json({ drivers });
+  });
 
   app.get('/store-drivers/:driver', async (c) => {
     await staffPerson(c, statusWords);
