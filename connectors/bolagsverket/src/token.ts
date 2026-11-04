@@ -7,7 +7,8 @@ export type Fetch = ConnectorConnection['fetch'];
 
 const tokenResponse = z.object({
   access_token: z.string().min(1),
-  expires_in: z.number().positive().optional(),
+  // Some gateways send it as a string ("3600").
+  expires_in: z.coerce.number().positive().optional(),
   /** RFC 6749 §5.1: present when the granted scopes differ from those asked for. */
   scope: z.string().optional(),
 });
@@ -107,9 +108,9 @@ export class ClientCredentialsToken {
     try {
       parsed = tokenResponse.parse(JSON.parse(body));
     } catch {
+      // The token error carries no response body.
       throw new BolagsverketError('upstream', 'Bolagsverket token response was not the documented shape', {
         status: 502,
-        body,
       });
     }
     this.scopes = (parsed.scope ?? BOLAGSVERKET_SCOPES).split(' ').filter((x) => x !== '');

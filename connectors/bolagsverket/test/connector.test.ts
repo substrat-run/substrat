@@ -29,6 +29,18 @@ describe('probeBolagsverketSecret', () => {
     });
   });
 
+  it('fails a client granted ping but not read, and says why', async () => {
+    const { options: o } = options([{ status: 200, body: '' }], {
+      status: 200,
+      body: { ...TOKEN, scope: 'vardefulla-datamangder:ping' },
+    });
+    expect(await probeBolagsverketSecret(CREDENTIAL, o)).toMatchObject({
+      ok: false,
+      refused: true,
+      facts: expect.arrayContaining([{ label: 'Lookups', value: expect.stringMatching(/vardefulla-datamangder:read/) }]),
+    });
+  });
+
   it('refuses an incomplete credential without a request', async () => {
     const { fake, options: o } = options([]);
     expect(await probeBolagsverketSecret({ clientId: 'placeholder-client' }, o)).toMatchObject({

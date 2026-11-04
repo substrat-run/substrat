@@ -124,6 +124,22 @@ function procedureStatus(p: CodeText): OrganisationStatus {
   return 'other';
 }
 
+/** The named procedures, most severe first: a bankruptcy outranks a liquidation it ended. */
+const PROCEDURE_RANK: OrganisationStatus[] = ['bankruptcy', 'liquidation', 'reorganisation', 'other'];
+
+/**
+ * The status the whole procedure list says. An entry with neither a code nor a text says
+ * nothing and is skipped; among the rest the most severe named procedure wins, wherever
+ * it sits in the list.
+ */
+function procedureOf(list: CodeText[]): [OrganisationStatus, string | null] | null {
+  const read = list
+    .filter((p) => p.kod || p.klartext)
+    .map((p) => [procedureStatus(p), p.klartext] as [OrganisationStatus, string | null]);
+  read.sort((a, b) => PROCEDURE_RANK.indexOf(a[0]) - PROCEDURE_RANK.indexOf(b[0]));
+  return read[0] ?? null;
+}
+
 export function organisationResult(
   raw: RawOrganisation,
   orgnr: string,
@@ -134,13 +150,18 @@ export function organisationResult(
   const name =
     names.find((n) => n.organisationsnamntyp?.kod === 'FORETAGSNAMN')?.namn ?? names.find((n) => n.namn)?.namn ?? null;
 
-  const procedure = raw.pagandeAvvecklingsEllerOmstruktureringsforfarande
-    ?.pagandeAvvecklingsEllerOmstruktureringsforfarandeLista?.[0];
-  const [status, statusDetail]: [OrganisationStatus, string | null] = raw.avregistreradOrganisation
+  const procedure = procedureOf(
+    raw.pagandeAvvecklingsEllerOmstruktureringsforfarande?.pagandeAvvecklingsEllerOmstruktureringsforfarandeLista ?? [],
+  );
+  // Deregistered only on a date or a reason actually present: an empty block on an active
+  // entry is not a deregistration.
+  const deregistered =
+    !!raw.avregistreradOrganisation?.avregistreringsdatum ||
+    !!raw.avregistreringsorsak?.kod ||
+    !!raw.avregistreringsorsak?.klartext;
+  const [status, statusDetail]: [OrganisationStatus, string | null] = deregistered
     ? ['deregistered', raw.avregistreringsorsak?.klartext ?? null]
-    : procedure
-      ? [procedureStatus(procedure), procedure.klartext]
-      : ['active', null];
+    : (procedure ?? ['active', null]);
 
   const post = raw.postadressOrganisation?.postadress;
   return {

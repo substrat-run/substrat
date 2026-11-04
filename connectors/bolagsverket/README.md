@@ -24,7 +24,8 @@ control plane registers:
   and pinging.
 - `probeBolagsverketConnection`: does the same for a stored pair, and records the use. A
   client credential names no account, so both report the environment and the granted
-  scopes.
+  scopes. A client granted the ping scope but not `vardefulla-datamangder:read` fails the
+  probe, since it would fail every lookup.
 - `sweepBolagsverket`: a no-op. Nothing is bound to a connection in v1.
 
 There is no dispatch yet, so a vertical cannot ask for a validation through the platform.

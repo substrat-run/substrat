@@ -22,12 +22,17 @@ export const BOLAGSVERKET_ENVIRONMENTS = {
 
 export type BolagsverketEnvironment = keyof typeof BOLAGSVERKET_ENVIRONMENTS;
 
+/** The scope every lookup needs. */
+export const BOLAGSVERKET_READ_SCOPE = 'vardefulla-datamangder:read';
+
 /** Both scopes the client is issued: `read` for lookups, `ping` for the health call. */
-export const BOLAGSVERKET_SCOPES = 'vardefulla-datamangder:read vardefulla-datamangder:ping';
+export const BOLAGSVERKET_SCOPES = `${BOLAGSVERKET_READ_SCOPE} vardefulla-datamangder:ping`;
 
 /**
  * The OAuth2 client Bolagsverket issues per environment. A test pair does not work in
- * production and the other way round, so the environment travels with the pair.
+ * production and the other way round. The credential carries no environment field: the
+ * environment is the deployment's (`BOLAGSVERKET_ENV` in the control plane, `environment`
+ * in `BolagsverketConfig`), so a pasted pair must be one issued for that environment.
  */
 export const bolagsverketCredential = z.object({
   clientId: z.string().min(1),
