@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clientSafeStoreError, errorCodeOf, scopeStoreObjectName, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem } from '../src/index.js';
+import { clientSafeStoreError, errorCodeOf, scopeStoreObjectName, STORE_BODY_MAX_BYTES, StoreError, storeAnswerOf, storeResponse, toProblem } from '../src/index.js';
 
 describe('StoreError (#2209)', () => {
   it('derives the taxonomy code from the status and keeps the store’s own code', () => {
@@ -74,5 +74,17 @@ describe('clientSafeStoreError (#2207)', () => {
     const code = clientSafeStoreError({ code: `${'c'.repeat(63)}😀tail`, status: 409 }).code;
     expect(code).toBe('c'.repeat(63));
     expect(clientSafeStoreError({ code: '😀'.repeat(40), status: 409 }).code).toBe('😀'.repeat(32));
+  });
+});
+
+describe('storeAnswerOf (#2810)', () => {
+  it('takes an error at any status, a result only on a 2xx, and nothing else', () => {
+    const error = { error: { code: 'no', status: 409 } };
+    expect(storeAnswerOf(500, error)).toEqual(error);
+    expect(storeAnswerOf(200, error)).toEqual(error);
+    expect(storeAnswerOf(204, { result: 1 })).toEqual({ result: 1 });
+    expect(storeAnswerOf(500, { result: 1 })).toBeUndefined();
+    expect(storeAnswerOf(302, { result: 1 })).toBeUndefined();
+    expect(storeAnswerOf(200, { other: 1 })).toBeUndefined();
   });
 });

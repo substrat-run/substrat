@@ -588,7 +588,7 @@ import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, u
 import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverApprovalRecord,
@@ -3070,7 +3070,8 @@ interface ScopeStoreNamespace {
 
 /**
  * One store call over an object's fetch, for the vertical's door and the platform's reserved
- * calls alike. A body that is not JSON is the store's failure, answered as a bad envelope.
+ * calls alike. A body that is not JSON, or a `{ result }` on a non-2xx, is the store's failure,
+ * answered as a bad envelope.
  */
 function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (request: StoreRequest) => Promise<unknown> {
   return async (request) => {
@@ -3079,11 +3080,10 @@ function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (reque
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     });
-    try {
-      return await response.json();
-    } catch {
-      throw new StoreError({ code: 'bad_envelope', status: 502 });
-    }
+    // The same judgement the router makes on the platform hop (#2810).
+    const answer = storeAnswerOf(response.status, await response.json().catch(() => undefined));
+    if (!answer) throw new StoreError({ code: 'bad_envelope', status: 502 });
+    return answer;
   };
 }
 
