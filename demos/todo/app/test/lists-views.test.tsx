@@ -55,12 +55,12 @@ describe('Lists — active, archived and trash (#119)', () => {
   const draw = (shown?: 'active' | 'archived' | 'trash') =>
     act(async () => root.render(<Lists shown={shown} />));
   const button = (label: string) => {
-    const found = [...container.querySelectorAll('button')].find((b) => b.textContent === label);
+    const found = [...container.querySelectorAll('button, wa-button')].find((b) => b.textContent === label);
     if (!found) throw new Error(`no '${label}' button in: ${container.textContent}`);
     return found;
   };
   const press = (label: string) => act(async () => button(label).click());
-  const labels = () => [...container.querySelectorAll('button')].map((b) => b.textContent);
+  const labels = () => [...container.querySelectorAll('button, wa-button')].map((b) => b.textContent);
 
   it('the active view reads my-lists with no view, and offers archive and trash', async () => {
     client.myLists.mockResolvedValue(page(list('l1', 'Groceries')));
@@ -129,7 +129,7 @@ describe('Lists — active, archived and trash (#119)', () => {
     await act(async () => {
       [...container.querySelectorAll('.card')]
         .find((c) => c.textContent?.includes('Moved elsewhere'))!
-        .querySelector('button')!
+        .querySelector('wa-button')!
         .click();
     });
     expect(client.myLists).toHaveBeenCalledTimes(2);
@@ -155,7 +155,7 @@ describe('Lists — active, archived and trash (#119)', () => {
     expect(container.querySelectorAll('.card')).toHaveLength(0);
   });
 
-  it('the switch links to the three views and marks the one shown', async () => {
+  it('the switch links to the three views (and the table prototype) and marks the one shown', async () => {
     client.trashedLists.mockResolvedValue(page());
     await draw('trash');
     const links = [...container.querySelectorAll('nav.views a')];
@@ -163,6 +163,7 @@ describe('Lists — active, archived and trash (#119)', () => {
       ['#/', 'Active'],
       ['#/archived', 'Archived'],
       ['#/trash', 'Trash'],
+      ['#/table', 'Table'],
     ]);
     expect(links.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Trash']);
     expect(container.textContent).toContain('The trash is empty.');
