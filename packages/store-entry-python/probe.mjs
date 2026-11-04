@@ -282,7 +282,7 @@ async function send(call, query = '') {
  * without the body, so the destroy after the response ends the socket on purpose and its reset is
  * ignored; a reset or silence BEFORE the response rejects, with a bounded wait, rather than hang.
  */
-function declaredLength(length, chunk, query = '') {
+function declaredLength(length, chunk) {
   return new Promise((resolve, reject) => {
     let answered = false;
     const timer = setTimeout(() => fail(new Error(`no response to a declared Content-Length of ${length} within 30s`)), 30_000);
@@ -291,7 +291,7 @@ function declaredLength(length, chunk, query = '') {
       req.destroy();
       reject(err);
     };
-    const req = httpRequest({ host: '127.0.0.1', port, path: `/invoke${query}`, method: 'POST', headers: { 'content-length': length } }, (res) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/invoke', method: 'POST', headers: { 'content-length': length } }, (res) => {
       answered = true;
       clearTimeout(timer);
       res.resume();
@@ -445,21 +445,26 @@ try {
   // race the server closing after its early 413.
   const over = bodyOfSize(STORE_CALL_MAX_BYTES + 1, 'increment');
   const overBytes = Buffer.from(over, 'utf8');
-  const chunked = await fetch(`http://127.0.0.1:${port}/invoke`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...(await signed(name, 'increment', { body: over })).headers },
-    body: new ReadableStream({
-      start(controller) {
-        for (let at = 0; at < overBytes.length; at += 256 * 1024) controller.enqueue(overBytes.subarray(at, at + 256 * 1024));
-        controller.close();
-      },
-    }),
-    duplex: 'half',
-  });
-  const chunkedText = await chunked.text();
-  check(chunked.status === 413 && chunkedText === tooLarge, 'a body over the limit with no Content-Length is 413', chunked.status);
-  const objectSide = await declaredLength(String(STORE_CALL_MAX_BYTES + 1), 'x', `?object=${encodeURIComponent(name)}`);
-  check(objectSide.status === 413, 'and the object refuses a declared one too', objectSide);
+  // Every byte is sent before the entry can decide, so the 413 cannot race the upload. The object is
+  // probed the same way: its route forwards the body as a stream, so a declared length alone would wait.
+  const sendChunked = async (query = '') => {
+    const response = await fetch(`http://127.0.0.1:${port}/invoke${query}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(await signed(name, 'increment', { body: over })).headers },
+      body: new ReadableStream({
+        start(controller) {
+          for (let at = 0; at < overBytes.length; at += 256 * 1024) controller.enqueue(overBytes.subarray(at, at + 256 * 1024));
+          controller.close();
+        },
+      }),
+      duplex: 'half',
+    });
+    return { status: response.status, text: await response.text() };
+  };
+  const chunked = await sendChunked();
+  check(chunked.status === 413 && chunked.text === tooLarge, 'a body over the limit with no Content-Length is 413', chunked.status);
+  const objectSide = await sendChunked(`?object=${encodeURIComponent(name)}`);
+  check(objectSide.status === 413, 'and the object refuses it too', objectSide.status);
   check(result(await send(await signed(name, 'read'))) === countBefore, 'the driver was not reached by any of them');
   // At the limit, with characters of two, three and four bytes: the driver gets the bytes that were signed.
   const atLimit = bodyOfSize(STORE_CALL_MAX_BYTES, 'inspect', 'é€\u{1f600}');
