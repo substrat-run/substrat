@@ -794,10 +794,29 @@ export const storeResponse = z.union([
 export type StoreResponse = z.infer<typeof storeResponse>;
 
 /**
+ * The codes the platform answers a store call with, never a store (#2815). A vertical
+ * reads them as `storeCode`, so `substrat.` is reserved there as it is for operation
+ * names: a store's own answer must not be mistaken for a platform answer, and one
+ * carrying a reserved code is answered as `badEnvelope`. `refused` is the platform
+ * saying no (a 4xx), `unavailable` the platform unable to serve the call (a 5xx), and
+ * `badEnvelope` a store answering outside this envelope.
+ */
+export const PLATFORM_STORE_CODE = {
+  refused: 'substrat.refused',
+  unavailable: 'substrat.unavailable',
+  badEnvelope: 'substrat.bad_envelope',
+} as const;
+
+/** Whether `code` is reserved to the platform. See {@link PLATFORM_STORE_CODE}. */
+export function isPlatformStoreCode(code: string): boolean {
+  return code.startsWith('substrat.');
+}
+
+/**
  * What a store's HTTP answer says, judged the same on every path that has a status (#2810).
  * An `{ error }` envelope is the store's answer at any status, as on the in-process path,
  * which has none. `{ result }` counts only on a 2xx. Anything else is `undefined`, which the
- * caller answers as `bad_envelope` (502).
+ * caller answers as `PLATFORM_STORE_CODE.badEnvelope` (502).
  */
 export function storeAnswerOf(status: number, json: unknown): StoreResponse | undefined {
   const parsed = storeResponse.safeParse(json);

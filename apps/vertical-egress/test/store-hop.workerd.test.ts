@@ -156,7 +156,13 @@ describe('a vertical reaches only its own scope store (#2207)', () => {
     expect(own, own.text).toEqual({ status: 200, text: JSON.stringify({ result: 2 }) });
 
     const other = await call({ scopeId: OTHER, binding: 'GRAPH', operation: 'increment', input: { by: 5 } });
-    expect(other.status).toBe(403);
+    // #2815: the platform's refusal carries a code no store answers with.
+    expect(other).toEqual({
+      status: 403,
+      text: JSON.stringify({
+        error: { code: 'substrat.refused', status: 403, body: 'store call refused: this dispatch reaches only its own scope' },
+      }),
+    });
     // Nothing reached the other scope's object: the router refused before it signed.
     expect(await direct(scopeStoreObjectName(TENANT, 'docs', OTHER, 'GRAPH'), 'read')).toBe('200 {"result":0}');
     expect(await direct(scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH'), 'read')).toBe('200 {"result":2}');
@@ -170,7 +176,7 @@ describe('a vertical reaches only its own scope store (#2207)', () => {
     });
     // A 5xx body is the store's traceback: it never reaches the vertical, not even as raw bytes.
     expect(await ask('fail')).toEqual({ status: 500, text: JSON.stringify({ error: { code: 'host_failed', status: 500 } }) });
-    expect(await ask('garble')).toEqual({ status: 502, text: JSON.stringify({ error: { code: 'bad_envelope', status: 502 } }) });
+    expect(await ask('garble')).toEqual({ status: 502, text: JSON.stringify({ error: { code: 'substrat.bad_envelope', status: 502 } }) });
   }, 20_000);
 
   it("an envelope signed for another driver's script, or out of the window, is refused at this one (#2287)", async () => {

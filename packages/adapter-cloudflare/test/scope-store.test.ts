@@ -119,7 +119,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
       (err: unknown) => err,
     );
     expect(errorCodeOf(refusal)).toBe('unavailable');
-    expect((refusal as { storeCode?: string }).storeCode).toBe('bad_envelope');
+    expect((refusal as { storeCode?: string }).storeCode).toBe('substrat.bad_envelope');
   });
 
   // #2288: on the platform hop the stores exist elsewhere. "No stores" would let the control
@@ -150,14 +150,20 @@ describe('scope store door (cloudflare host, #2209)', () => {
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
       controlPlane: env.CONTROL_PLANE,
-      fetch: async (input) => {
+      fetch: async (input, init) => {
         asked = String(input);
+        if (String(init?.body).includes('"refuse"')) {
+          return Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 403 });
+        }
         return Response.json({ result: 9 });
       },
     });
     const store = await host.getScopeStore(principal, tenantId.parse(ulid()), scopeId.parse(ulid()), 'GRAPH');
     expect(await store.invoke('read')).toBe(9);
     expect(asked).toBe(STORE_CALL_URL);
+    // #2815: the platform's own refusal keeps its reserved code on this hop.
+    const refusal = await store.invoke('refuse').then(() => undefined, (err: unknown) => err);
+    expect(refusal).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
   });
 
   it("refuses transport 'platform' beside runners, which would never be used (#2288)", () => {
@@ -409,7 +415,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
       (err: unknown) => err,
     );
     expect(errorCodeOf(plain)).toBe('unavailable');
-    expect((plain as { storeCode?: string }).storeCode).toBe('bad_envelope');
+    expect((plain as { storeCode?: string }).storeCode).toBe('substrat.bad_envelope');
     const failed = await store.invoke('fail').then(
       () => undefined,
       (err: unknown) => err,
@@ -425,6 +431,6 @@ describe('scope store door (cloudflare host, #2209)', () => {
       () => undefined,
       (err: unknown) => err,
     );
-    expect((refusal as { storeCode?: string }).storeCode).toBe('bad_envelope');
+    expect((refusal as { storeCode?: string }).storeCode).toBe('substrat.bad_envelope');
   });
 });
