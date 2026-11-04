@@ -55,7 +55,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, parseReviewToken, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { isReleaseSha, packedFilesOf, packStoreDriverDir, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
+import { isReleaseSha, packedFilesOf, packStoreDriverDir, parseWaitMs, publishStoreDriver, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { approvalFromFiles, approvalLines, approvalStatusLines, revokeStoreDriverUntilComplete, storeDriverReviewText, uploadApprovalLine } from './store-driver-approval.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
@@ -208,6 +208,8 @@ Usage:
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
                                               store a release of a scope-store driver (staff, signed in)
+  substrat store-driver publish --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>] [--wait <90s|30m|2h>]
+                                              upload, wait for approval, and roll out in one command
   substrat store-driver approve --driver <driver> --sha256 <sha256> --reason <text>
                     --source-references <json-file> --isolation-review <json-file>
                     --schema <n> --class-name <Class> [--operation <name> ...]
@@ -540,6 +542,8 @@ async function cmdPush(): Promise<void> {
   const linted = assertLayerRules(dir, argv.includes('--skip-lint'), jsonCheck ? console.error : console.log);
 
   const meta = readVerticalMeta(dir);
+  // The slug the push deploys as; `--check` judges the declared surface for the same one.
+  const slug = flag('slug') ?? meta.slug;
   // Before the network and before `--check` returns, so all three see it; under `--strict`
   // it throws like every other failure of the gate.
   reportOutbound(dir, meta.outbound, jsonCheck ? console.error : console.log);
@@ -552,10 +556,11 @@ async function cmdPush(): Promise<void> {
   // rules above have already run, which makes `substrat push --check` the whole local gate.
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
-    const surface = await checkPermissionSurface(dir, {
-      require: dataLossCheckRequired(argv),
-      log: jsonCheck ? console.error : console.log,
-    });
+    const surface = await checkPermissionSurface(
+      dir,
+      { require: dataLossCheckRequired(argv), log: jsonCheck ? console.error : console.log },
+      slug,
+    );
     // The schedule check (#1646) the push would make — `--check` is the whole local gate, so
     // a vertical whose schedules nothing would run is refused here too. A tree with no deploy
     // config has no bindings to judge; the push itself names that refusal.
@@ -600,7 +605,6 @@ async function cmdPush(): Promise<void> {
     return;
   }
 
-  const slug = flag('slug') ?? meta.slug;
   const name = flag('name') ?? meta.name;
   if (!slug) {
     console.error('no --slug given and none in package.json — add `"substrat": { "slug": "…" }` or pass --slug');
@@ -800,6 +804,7 @@ function reportStoreBackfill(result: PromoteResult): void {
 
 const STORE_DRIVER_USAGE = [
   'usage: substrat store-driver upload   --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]',
+  '       substrat store-driver publish  --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>] [--wait <90s|30m|2h>]',
   '       substrat store-driver approve  --driver <driver> --sha256 <sha256> --reason <text> --source-references <json-file> --isolation-review <json-file> --schema <n> --class-name <Class> [--operation <name> ...]',
   '       substrat store-driver revoke   --driver <driver> --sha256 <sha256> --reason <text> [--emergency]',
   '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
@@ -817,7 +822,7 @@ async function cmdStoreDriver(): Promise<void> {
     process.exit(1);
   }
   const driver = optionValue('driver');
-  if (!['upload', 'approve', 'revoke', 'rollout', 'rollback', 'status', 'rebuild'].includes(sub ?? '') || !driver) {
+  if (!['upload', 'publish', 'approve', 'revoke', 'rollout', 'rollback', 'status', 'rebuild'].includes(sub ?? '') || !driver) {
     for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
@@ -877,7 +882,7 @@ async function cmdStoreDriver(): Promise<void> {
     if (pass.outcome === 'busy') console.log('  another pass is rebuilding the driver: run `store-driver status` to follow it');
     return;
   }
-  if (sub === 'upload') {
+  if (sub === 'upload' || sub === 'publish') {
     const dir = flag('dir');
     const entry = flag('entry');
     if (!dir || !entry) {
@@ -886,6 +891,13 @@ async function cmdStoreDriver(): Promise<void> {
     }
     const files = packedFilesOf(dir);
     const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, files));
+    if (sub === 'publish') {
+      const waitMs = argv.includes('--wait') ? parseWaitMs(optionValue('wait') ?? '') : 0;
+      const { outcome } = await publishStoreDriver({ client: planeFor(controlPlaneUrl, header), driver, body, waitMs, pollMs: 10_000,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => console.log(line) });
+      if (outcome === 'awaiting-approval') process.exit(2);
+      return;
+    }
     const { release } = await uploadStoreDriverRelease({ ...plane, body });
     console.log(`✓ stored ${driver} ${release.sha256} (commit ${release.sourceCommit})`);
     for (const line of storeDriverPackLines({ files, skipped: skippedInstallerMarkersOf(dir), sha256: release.sha256, sourceCommit: release.sourceCommit })) console.log(line);

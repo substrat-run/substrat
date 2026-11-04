@@ -14,6 +14,9 @@
  * clearing. A dump leaves the deployment entirely, and `POST …/restore` already loads one
  * back, so export→store→restore is the round trip that actually closes.
  *
+ * A backup is written a page at a time (#2839), as a paged copy moves a scope (#2450): a scope
+ * past one Durable Object RPC (32 MiB) or one isolate cannot be read, held or stored whole.
+ *
  * Provider-neutral by the same posture as `ObservabilityReader` and `DeployVerticalFn`:
  * the contract lives here, an implementation lives in its own module (`r2-backups.ts` for
  * Cloudflare R2), and the host injects one. A backup is addressed by (tenant, scope,
@@ -27,23 +30,65 @@
  * is why the export route's masking default does not apply here.
  */
 
-import type { DirectoryBackup, DirectoryDump, ScopeBackup, ScopeDump } from '@substrat-run/contracts';
+import type {
+  DirectoryBackup,
+  DirectoryDump,
+  ScopeBackup,
+  ScopeDump,
+  ScopeDumpChange,
+  ScopeDumpPageTable,
+} from '@substrat-run/contracts';
 
 // `ScopeBackup` — the metadata shape a stored copy reports — is a WIRE shape (the reap
 // response, the backups list, the console's table), so it lives in `contracts` beside
 // `scopeDump` rather than here. Re-exported for callers that only import this seam.
 export type { ScopeBackup, DirectoryBackup };
 
-export interface ScopeBackupStore {
+/** A dump without its tables: what a backup holds beside its entries. */
+export type ScopeDumpHeader = Omit<ScopeDump, 'tables'>;
+
+/**
+ * One stored part of a backup (#2839): a page of the scope's export, or a batch of the writes
+ * the scope took while its pages were read. Read in order, the entries are the dump, exactly as
+ * a paged copy stages it (#2450), so no single call or object ever holds the whole scope.
+ */
+export type ScopeBackupEntry =
+  | { kind: 'page'; tables: ScopeDumpPageTable[] }
+  | { kind: 'changes'; tables: ScopeDumpChange[] };
+
+/**
+ * A held backup as a restore reads it: its header, how many entries hold its tables, and each
+ * entry, read in the order it was written.
+ */
+export interface StoredScopeBackup {
+  header: ScopeDumpHeader;
+  entries: number;
+  entry(index: number): Promise<ScopeBackupEntry>;
+}
+
+/**
+ * One backup being written. Entries are written under a stage, the copy's attempt: a copy that
+ * starts again discards its stage and writes the next one. Nothing is a backup until `commit`.
+ */
+export interface ScopeBackupWriter {
+  /** Store entry `seq` of `stageId`. Writing the same one again replaces it. */
+  put(stageId: string, seq: number, entry: ScopeBackupEntry): Promise<void>;
+  /** Drop a stage's entries. Best effort: retention reaches whatever is left. */
+  discard(stageId: string): Promise<void>;
   /**
-   * Store one full-fidelity dump and return its metadata. Must be durable before it
-   * returns: the reap's whole guarantee is that this resolved before any byte was wiped.
+   * Make the stage's first `entries` entries the backup, and return its metadata. Durable before
+   * it returns: the reap's whole guarantee is that this resolved before any byte was wiped.
    */
-  put(input: { vertical: string | null; dump: ScopeDump }): Promise<ScopeBackup>;
+  commit(input: { stageId: string; entries: number; tables: number }): Promise<ScopeBackup>;
+}
+
+export interface ScopeBackupStore {
+  /** Start writing one full-fidelity backup. Nothing is listed or read until its `commit`. */
+  begin(input: { vertical: string | null; header: ScopeDumpHeader }): ScopeBackupWriter;
   /** Every backup held for one scope, newest first. */
   list(input: { tenantId: string; scopeId: string }): Promise<ScopeBackup[]>;
-  /** One backup's dump, by its capture time. Null when no such copy is held. */
-  get(input: { tenantId: string; scopeId: string; capturedAt: string }): Promise<ScopeDump | null>;
+  /** One backup, by its capture time. Null when no such copy is held. */
+  get(input: { tenantId: string; scopeId: string; capturedAt: string }): Promise<StoredScopeBackup | null>;
 }
 
 /**

@@ -1,15 +1,18 @@
 ---
-status: proposed
+status: building
 layer: plan
-description: "A store driver's release runs once a person approves its uploaded bytes in the control plane, instead of once this repo pins its sha256. The maintainer decided the RFC's sixteen questions on 2026-10-19; the D-63 amendment itself is still to be written. Keeps D-63's person, canary, rollback, schema and isolation rules; moves the per-release pin into a revocable, audited approval keyed by (driver, sha256); keeps the driver id and its isolation basis in source."
+description: "A store driver's release runs once a person approves its uploaded bytes in the control plane, instead of once this repo pins its sha256. The maintainer decided the RFC's sixteen questions on 2026-10-19, and D-65 amends D-63. Steps 1 to 4 are on main, and graph is registered at step 5 under D-67; the first-rollout attestation gate is not built. Keeps D-63's person, canary, rollback, schema and isolation rules; moves the per-release pin into a revocable, audited approval keyed by (driver, sha256); keeps the driver id and its isolation basis in source."
 ---
 
 # RFC: store driver releases are uploaded and approved, not pinned in source
 
-**Status: proposed.** The maintainer decided all sixteen questions on 2026-10-19 (§8). The
-amendment to D-63 that this plan needs is not written yet (§7 lists its sentences). This RFC
-changes no code, no `STORE_DRIVERS` entry and no D-NNN file. A surface that does not exist yet is
-marked *(proposed)*. Written against `origin/main` at `3f7cd82f8`, checked again at `71751ace1`.
+**Status: building.** The maintainer decided all sixteen questions on 2026-10-19 (§8), and
+[D-65](../decisions/D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md)
+is the amendment to D-63 (step 1). Steps 2 to 4 of §5 are on `main`, and step 5 registers
+`graph` under [D-67](../decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md).
+The *(proposed)* marks below were written before those steps and now name built surfaces, except
+the first-rollout attestation gate of step 5, which is deferred. Written against `origin/main` at
+`3f7cd82f8`, checked again at `71751ace1`.
 
 ---
 
@@ -350,7 +353,7 @@ upload and one approval, not a permanent pin.
 
 **#2394** (Q8) lands the graph driver id and its isolation basis only, and drops its pin, whose
 bytes the current module rule refuses. It lands at step 5 below, after the lifting record: an
-id-only registration does not parse before step 4 removes `releases` from the schema. `STORE_DRIVERS` is empty on `main`, so no compiled pin is
+id-only registration does not parse before step 4 removes `releases` from the schema. `STORE_DRIVERS` was empty until step 5, so no compiled pin is
 carried over: no import, no compiled floor, no reconciliation. If a pin merged before the switch,
 this plan would be revisited.
 
@@ -377,7 +380,8 @@ this plan would be revisited.
 5. **Register, approve, roll out.** A driver is registered as id plus basis, in a CLI release too,
    because the push check is compiled in; for `graph` this waits for the lifting record (Q5).
    Approvals can be written once that deploy serves. The **first rollout after it** is refused
-   until a person attests that the deploy has finished *(proposed)*: during the overlap the older
+   until a person attests that the deploy has finished *(proposed, deferred: not built with the
+   graph registration, so the first approval and rollout wait by hand)*: during the overlap the older
    version answers 403 "is not registered", which fails closed but fails pushes it serves. Later
    deploys do not re-arm the gate unless they change which releases a version admits.
 

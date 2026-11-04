@@ -70,7 +70,7 @@ function readSealed(cell: unknown): SealedSecret | undefined {
 
 /** Locate the spine table and the three columns that drive both directions. */
 function spineColumns(
-  tables: ScopeDumpTable[],
+  tables: readonly ScopeDumpTable[],
 ): { index: number; subject: number; pii: number; payload: number } | undefined {
   const index = tables.findIndex((t) => t.name === SPINE_TABLE);
   if (index < 0) return undefined;
@@ -108,11 +108,14 @@ function classifiedRows(
  * key for a tombstoned subject, and the copy records the same absence a live redaction
  * leaves. A cell that is ALREADY sealed passes through untouched, so re-sealing a dump
  * (a backup of a backup, a retried capture) is a no-op rather than double encryption.
+ *
+ * A table may be a page's fragment or a batch of captured changes (#2839): each names its
+ * columns, so the spine's rows are found and sealed alike, and everything else on it is kept.
  */
-export async function sealDump(
-  tables: ScopeDumpTable[],
+export async function sealDump<T extends ScopeDumpTable>(
+  tables: T[],
   sealer: SubjectSealer,
-): Promise<ScopeDumpTable[]> {
+): Promise<T[]> {
   const cols = spineColumns(tables);
   if (!cols) return tables;
   const table = tables[cols.index]!;
@@ -149,10 +152,10 @@ export async function sealDump(
  *
  * Unsealed cells pass through, so a dump taken before sealing existed still restores.
  */
-export async function openDump(
-  tables: ScopeDumpTable[],
+export async function openDump<T extends ScopeDumpTable>(
+  tables: T[],
   sealer: SubjectSealer,
-): Promise<ScopeDumpTable[]> {
+): Promise<T[]> {
   const cols = spineColumns(tables);
   if (!cols) return tables;
   const table = tables[cols.index]!;

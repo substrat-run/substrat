@@ -50,7 +50,8 @@ import {
 
 export { PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE };
 
-const PLATFORM_MODULES = new Set([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE]);
+/** The modules the uploader adds to a bundle; an archive script read back carries them too. */
+export const PLATFORM_MODULES: ReadonlySet<string> = new Set([PLATFORM_ENTRY_MODULE, PLATFORM_SWEEPER_MODULE]);
 
 /** The line `invocationLog` writes, as it appears in any build: `substrat:"invocation"`. */
 const WRITES_THE_LINE = /substrat['"]?\s*:\s*["']invocation["']/;
