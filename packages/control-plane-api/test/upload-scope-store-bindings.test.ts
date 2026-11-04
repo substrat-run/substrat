@@ -21,6 +21,7 @@ import {
   deploymentRefFor,
   STORE_RELEASE_VAR,
   DEV_ACTOR_HEADER,
+  runStoreDriverRollout,
   stableDeploymentRefFor,
   UNSAFE_devPlatformActorAuth,
   type ControlPlaneApiOptions,
@@ -375,32 +376,32 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   // The raw publish of a version row (`POST /verticals/:slug/versions`) records its store bindings for
   // the vertical's whole lifecycle, so it puts the store scripts in place first, as a push does.
+  const publish = async (to: typeof app, slug: string) => {
+    await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+    const id = ulid();
+    return to.request(`/verticals/${slug}/versions`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id,
+        verticalSlug: slug,
+        version: '0.1.0',
+        manifestDigest: 'm1',
+        permissionDigest: 'p1',
+        migrationDigest: 'g1',
+        deploymentRef: `${slug}-${id.toLowerCase()}`,
+        manifestJson: JSON.stringify({
+          version: '0.1.0',
+          entry: 'worker.js',
+          compatibilityDate: '2025-01-01',
+          scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
+          digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+        }),
+      }),
+    });
+  };
   it('a raw version publish that declares graph puts its store script first, and with no approved release publishes nothing', async () => {
     stubCloudflare();
-    const publish = async (to: typeof app, slug: string) => {
-      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
-      const id = ulid();
-      return to.request(`/verticals/${slug}/versions`, {
-        method: 'POST',
-        headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id,
-          verticalSlug: slug,
-          version: '0.1.0',
-          manifestDigest: 'm1',
-          permissionDigest: 'p1',
-          migrationDigest: 'g1',
-          deploymentRef: `${slug}-${id.toLowerCase()}`,
-          manifestJson: JSON.stringify({
-            version: '0.1.0',
-            entry: 'worker.js',
-            compatibilityDate: '2025-01-01',
-            scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
-            digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
-          }),
-        }),
-      });
-    };
     const before = puts.length;
     const refused = await publish(hosted, 'raw-unapproved');
     expect(refused.status).toBe(422);
@@ -413,6 +414,43 @@ describe('a vertical upload carries no scope-store binding, and its store script
     expect(published.status, await published.clone().text()).toBe(201);
     expect(putTo(scopeStoreScriptName('raw-approved', 'graph'))?.meta).toBeDefined();
   });
+
+  // #2816: a rollout started after the store script went up and before the version records its
+  // stores would walk a fleet without this vertical and leave its script on the previous release.
+  // The rollout runs for real, against the same directory, at the moment the publish starts.
+  for (const [via, send] of [
+    ['a push', async () => [await push(await tenant('store-gap')), 'store-gap/crm'] as const],
+    ['a raw version publish', async () => [await publish(app, 'raw-gap'), 'raw-gap'] as const],
+  ] as const) {
+    it(`a rollout that starts between ${via}'s store upload and its publish waits (409), and walks the vertical after`, async () => {
+      stubCloudflare();
+      const rollout = () =>
+        runStoreDriverRollout({
+          admin: host.admin, actor: staff, registration: testDriver, sha256: releaseSha, action: 'rollout',
+          ensure: async () => true,
+          ensureCanary: async () => { throw new Error('a refused rollout reaches no canary'); },
+          callCanary: async () => undefined,
+        });
+      const rollouts = (await host.admin.storeDriverState(staff, 'graph')).rollouts.length;
+      const real = host.admin.publishVersion.bind(host.admin);
+      let inGap: unknown;
+      const spy = vi.spyOn(host.admin, 'publishVersion').mockImplementationOnce(async (...args) => {
+        inGap = await rollout().then(() => 'ran', (e: unknown) => e);
+        return real(...args);
+      });
+      try {
+        const [res, slug] = await send();
+        expect(res.status, await res.clone().text()).toBe(201);
+        expect(inGap).toMatchObject({ status: 409, message: expect.stringMatching(/is being rolled out or a vertical declaring it is being pushed/) });
+        expect((await host.admin.storeDriverState(staff, 'graph')).rollouts).toHaveLength(rollouts);
+        // The push let its hold go, and the next rollout's walk names the vertical.
+        const page = await host.admin.storeDriverRolloutPending(staff, { driver: 'graph', sha256: releaseSha, action: 'rollout', limit: 300 });
+        expect(page.verticals.map((v) => v.vertical)).toContain(slug);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  }
 
   // D-67's narrow first use, held by the registration: graph serves only the verticals it names.
   it('with the hosted registry as reviewed, a push of graph from a vertical it does not name is refused (403) before anything is uploaded', async () => {
