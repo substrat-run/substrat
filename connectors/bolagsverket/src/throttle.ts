@@ -26,16 +26,21 @@ export class SlidingWindow {
     while (this.sent.length > 0 && this.sent[0]! <= cutoff) this.sent.shift();
   }
 
-  /** Wait until one more request fits, then count it. */
+  /**
+   * Wait until one more request fits, then count it. The window is checked again after
+   * every wait: concurrent callers wake together, and only as many as there are free
+   * slots may take one. The check and the push are one synchronous step.
+   */
   async acquire(): Promise<void> {
-    this.prune();
-    if (this.sent.length >= RATE_LIMIT_REQUESTS) {
-      // The oldest request leaving the window is the earliest moment a new one fits.
-      const waitMs = this.sent[0]! + RATE_LIMIT_WINDOW_MS - this.now();
-      if (waitMs > 0) await this.sleep(waitMs);
+    for (;;) {
       this.prune();
+      if (this.sent.length < RATE_LIMIT_REQUESTS) {
+        this.sent.push(this.now());
+        return;
+      }
+      // The oldest request leaving the window is the earliest moment a new one fits.
+      await this.sleep(Math.max(this.sent[0]! + RATE_LIMIT_WINDOW_MS - this.now(), 1));
     }
-    this.sent.push(this.now());
   }
 }
 
