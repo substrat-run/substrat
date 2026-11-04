@@ -58,8 +58,10 @@ the object name, and addresses `substrat-store-<driver>-<vertical>` in the dispa
 namespace. The key is bound on the router and on the store script. This is the same shape
 as a call between verticals. The router hands the store's envelope back as the store answered it, a
 refusal included, cut by `clientSafeStoreError` to what a client may read, so the store's
-`code` reaches the vertical as `storeCode`. An answer outside the envelope is `bad_envelope`
-(502), as on the in-process path. A store it cannot reach is the platform's `unavailable` (503).
+`code` reaches the vertical as `storeCode`. An answer outside the envelope is `substrat.bad_envelope`
+(502), as on the in-process path. A store it cannot reach is `substrat.unavailable` (503), and a call
+the platform refuses `substrat.refused`. The `substrat.` prefix is the platform's alone (#2815): a store
+that answers with it is a bad envelope, so its answer is never mistaken for the platform's.
 
 A direct `durable_object_namespace` binding remains for local development and for tests.
 It is not an isolation boundary: code in that worker can address any name the binding
@@ -607,7 +609,7 @@ no route to the store scripts, refuses the delete with 503 and keeps the scope (
 tell. The key is destroyed only after every store that may hold the subject has answered.
 "Cannot tell" and "cannot ask" are `unavailable`, which is 503
 (`packages/contracts/src/errors.ts`). 502 stays what it already means: a downstream that
-answered badly (`bad_envelope`). There are two arms. They are written in the #2242 review
+answered badly (`substrat.bad_envelope`). There are two arms. They are written in the #2242 review
 fix, which was not pushed when this amendment was written (local head `a070e7f46`; the
 pushed #2242 is `6349900b3`, where a host with no control plane and no configured vertical
 reads as "no store" and fails open):

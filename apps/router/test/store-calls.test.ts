@@ -95,7 +95,7 @@ describe("handleStoreCall hands on the store's own answer", () => {
   const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
   const request = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' };
   const answering = (answer: () => Response) => ({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => ({ fetch: async () => answer() }) } });
-  const BAD_ENVELOPE = { ok: true, status: 502, body: { error: { code: 'bad_envelope', status: 502 } } };
+  const BAD_ENVELOPE = { ok: true, status: 502, body: { error: { code: 'substrat.bad_envelope', status: 502 } } };
   const warnings: string[] = [];
   beforeEach(() => {
     warnings.length = 0;
@@ -137,6 +137,12 @@ describe("handleStoreCall hands on the store's own answer", () => {
     }
     expect(warnings).toHaveLength(4);
     expect(warnings.join('\n')).not.toContain('secret');
+  });
+
+  it("answers a store's code reserved to the platform as bad_envelope (#2815)", async () => {
+    const reserved = () => Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 403 });
+    expect(await handleStoreCall(answering(reserved), caller, request)).toEqual(BAD_ENVELOPE);
+    expect(warnings).toEqual(['scope store substrat-store-graph-docs answered with a code reserved to the platform']);
   });
 
   it('answers 503 for a store it cannot reach, and logs no word of the error message', async () => {
