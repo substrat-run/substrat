@@ -1230,6 +1230,13 @@ export interface DashboardClient {
   listTeamIntegrations(): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string; vertical: string; apps: { scopeId: string; name: string }[]; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[] })[]; connectTargets: { scopeId: string; name: string; vertical: string; connected: boolean }[] })[] }>;
 
   /**
+   * One page of this team's events across all its apps from the event lake, newest first; `since` is required and spans at most 31 days
+   *
+   * `GET /lake/events` — `dashboard/list-team-lake-events`
+   */
+  listTeamLakeEvents(input: { scopeId?: string; type?: string; entityType?: string; entityId?: string; actor?: string; operation?: string; version?: string; impersonated?: "true"; since?: string; until?: string; cursor?: string; limit?: number }): Promise<{ available: boolean; events: ({ id: string; type: string; schemaVersion: number; occurredAt: string; scopeId: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; entityType: string; entityId: string; piiClass: string; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null; impersonated: boolean })[]; nextCursor: string | null }>;
+
+  /**
    * Mint a single-use consent link for one app's redirect-flow provider
    *
    * `POST /apps/{scopeId}/integrations/{provider}/connect-links` — `dashboard/mint-app-connect-link`
@@ -1812,6 +1819,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/audit", "GET", undefined, input),
     listTeamIntegrations: () =>
       send("/integrations", "GET", undefined, undefined),
+    listTeamLakeEvents: (input: Args) =>
+      send("/lake/events", "GET", undefined, input),
     mintAppConnectLink: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connect-links`, "POST", omit(input, ["scopeId","provider"]), undefined),
     moveAppEdge: (input: Args) =>
