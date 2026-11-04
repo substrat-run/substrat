@@ -37,6 +37,8 @@ import {
   eventDelivery,
   eventFacetResult,
   historyEntry,
+  lakeEvent,
+  lakeEventsInput,
   LIST_PAGE_MAX,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
@@ -1059,6 +1061,13 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().optional(), ...pageInput }),
     output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/audit' },
+  },
+  'dashboard/list-team-lake-events': {
+    summary: "One page of this team's events across all its apps from the event lake, newest first; `since` is required and spans at most 31 days",
+    // No tenant field: the team is the one the URL names. `available: false` while the lake is off.
+    input: lakeEventsInput,
+    output: z.object({ available: z.boolean(), events: z.array(lakeEvent), nextCursor: z.string().nullable() }),
+    http: { method: 'GET', path: '/lake/events' },
   },
   'dashboard/fleet-health': {
     summary: "Every app of this team with its health verdict, worst first",

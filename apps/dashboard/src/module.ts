@@ -76,6 +76,12 @@ export const DASHBOARD_PERM = {
    * its permission state, so it is an admin power, not one of managing the app.
    */
   restoreAppData: dashboardKey('dashboard:restore-app-data'),
+  /**
+   * Read the team's events from the Tier-2 lake (#1334): every app's, including apps since
+   * removed, in one read. Owner and admin only, since the per-app history a member already
+   * browses does not reach across apps or outlive them.
+   */
+  readEventLake: dashboardKey('dashboard:read-event-lake'),
 };
 
 /**
@@ -91,8 +97,8 @@ export const DASHBOARD_PERM = {
  * but cannot manage the team or replace an app's data; `viewer` is read-only.
  */
 export const MEMBER_ROLES: Record<string, PermissionKey[]> = {
-  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
-  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, DASHBOARD_PERM.readEventLake, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, DASHBOARD_PERM.readEventLake, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
   // A member runs the apps, so triaging what they do wrong is theirs too; a viewer only reads.
   member: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings],
   viewer: [DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings],
@@ -127,6 +133,10 @@ export const dashboardManifest = moduleManifest.parse({
     {
       key: 'dashboard:restore-app-data',
       description: 'Replace an app’s data, and its permission state, with an uploaded dump',
+    },
+    {
+      key: 'dashboard:read-event-lake',
+      description: 'Read the team’s events across all its apps from the event lake',
     },
   ],
   // #1184: a removal is asked of the kernel's membership executor, as an add is by the invites engine.
@@ -796,6 +806,9 @@ const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
  * after the fork, naming the copy, and asks the same key again.
  */
 const authorizeRestoreOp = checkOnly(DASHBOARD_PERM.restoreAppData);
+
+/** Whether the caller may read the team's lake events (#1334). The read is the plane's. */
+const authorizeEventLakeReadOp = checkOnly(DASHBOARD_PERM.readEventLake);
 const authorizeRewindOp = checkOnly(DASHBOARD_PERM.provisionApp);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
@@ -1865,6 +1878,7 @@ export const DASHBOARD_PERMISSIONS = [
   DASHBOARD_PERM.readFindings,
   DASHBOARD_PERM.manageFindings,
   DASHBOARD_PERM.restoreAppData,
+  DASHBOARD_PERM.readEventLake,
 ] as const;
 
 export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
@@ -1941,6 +1955,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/authorize-findings-change': {
     summary: 'Answer whether the caller may act on the team’s findings',
     permission: DASHBOARD_PERM.manageFindings,
+    output: ok,
+  },
+  'dashboard/authorize-event-lake-read': {
+    summary: 'Answer whether the caller may read the team’s lake events',
+    permission: DASHBOARD_PERM.readEventLake,
     output: ok,
   },
   'dashboard/authorize-restore': {
@@ -2206,6 +2225,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/authorize-scope-change': authorizeScopeChangeOp,
     'dashboard/authorize-findings-read': authorizeFindingsReadOp,
     'dashboard/authorize-findings-change': authorizeFindingsChangeOp,
+    'dashboard/authorize-event-lake-read': authorizeEventLakeReadOp,
     'dashboard/authorize-restore': authorizeRestoreOp,
     'dashboard/authorize-rewind': authorizeRewindOp,
     'dashboard/mark-app-failed': markAppFailedOp,

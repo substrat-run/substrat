@@ -10,6 +10,7 @@ import {
   createControlPlaneApi,
   firstBuilderAuth,
   mintPushToken,
+  mintTenantToken,
   pushActorFor,
   pushTokenBuilderAuth,
   tenantTokenAuth,
@@ -21,6 +22,7 @@ import {
   LakeTenantMismatchError,
   compileLakeEvents,
   queryLakeEvents,
+  teamWindowRefusal,
   type LakeQueryEngine,
 } from '../src/lake-gateway.js';
 import { LakeQueryError, createR2SqlEngine } from '../src/r2-sql-engine.js';
@@ -409,22 +411,59 @@ describe('GET /tenants/:tenantId/lake/events (#1334)', () => {
     expect(await res.text()).not.toContain(ids[8]);
   });
 
-  it("is staff only: a tenant's own credential and a builder's push token are refused, even for their own tenant", async () => {
-    const minted = await app.request('/tenant-tokens', {
-      method: 'POST',
-      headers: { ...asStaff, 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: A }),
+  describe("a team's own credential", () => {
+    // The seed's events sit on 2026-10-01; a 31-day window around them.
+    const window = `since=${encodeURIComponent('2026-09-20T00:00:00.000Z')}&until=${encodeURIComponent('2026-10-21T00:00:00.000Z')}`;
+    let asTenant: Record<string, string>;
+    beforeAll(async () => {
+      asTenant = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(TENANT_SECRET, { tenantId: A }) };
     });
-    expect(minted.status).toBe(201);
-    const asTenant = { [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token };
-    const push = await mintPushToken(PUSH_SECRET, { actor: await pushActorFor(A), tenantId: A, tenantSlug: 'acme' });
-    const asBuilder = { [SERVICE_TOKEN_HEADER]: push };
-    const asked = lake.asked.length;
-    for (const headers of [asTenant, asBuilder]) {
-      const res = await app.request(`/tenants/${A}/lake/events`, { headers });
+
+    it("reads its own tenant's events in a window, and leaves one K-24 row", async () => {
+      const before = (await lakeRows()).filter((r) => r.tenantId === A).length;
+      const res = await app.request(`/tenants/${A}/lake/events?${window}`, { headers: asTenant });
+      expect(res.status).toBe(200);
+      expect(idsOf((await res.json()) as LakeEventsPage)).toEqual([7, 6, 5, 4, 3, 2, 1, 0].map((i) => ids[i]));
+      const rows = (await lakeRows()).filter((r) => r.tenantId === A);
+      expect(rows.length).toBe(before + 1);
+      expect(rows.at(-1)).toMatchObject({ actor: serviceActor, resultCount: 8 });
+    });
+
+    it("is refused another tenant's path before the engine is asked", async () => {
+      const asked = lake.asked.length;
+      const res = await app.request(`/tenants/${B}/lake/events?${window}`, { headers: asTenant });
       expect(res.status).toBe(403);
-    }
+      expect(lake.asked.length).toBe(asked);
+    });
+
+    it('is refused a read with no since, or one wider than 31 days, before the engine is asked', async () => {
+      const asked = lake.asked.length;
+      const wide = `since=${encodeURIComponent('2026-09-01T00:00:00.000Z')}&until=${encodeURIComponent('2026-10-02T00:00:00.001Z')}`;
+      for (const q of ['', `until=${encodeURIComponent('2026-10-21T00:00:00.000Z')}`, wide]) {
+        const res = await app.request(`/tenants/${A}/lake/events?${q}`, { headers: asTenant });
+        expect(res.status, q).toBe(400);
+      }
+      expect(lake.asked.length).toBe(asked);
+    });
+  });
+
+  it("refuses a builder's push token, even for its own tenant", async () => {
+    const push = await mintPushToken(PUSH_SECRET, { actor: await pushActorFor(A), tenantId: A, tenantSlug: 'acme' });
+    const asked = lake.asked.length;
+    const res = await app.request(`/tenants/${A}/lake/events`, { headers: { [SERVICE_TOKEN_HEADER]: push } });
+    expect(res.status).toBe(403);
     expect(lake.asked.length).toBe(asked);
+  });
+});
+
+describe('teamWindowRefusal (#1334)', () => {
+  const now = Date.parse('2026-10-31T00:00:00.000Z');
+  it.each([
+    [{}, 'a team lake read needs since'],
+    [{ since: '2026-09-30T00:00:00.000Z' }, null],
+    [{ since: '2026-09-29T23:59:59.999Z' }, 'a team lake read spans at most 31 days'],
+  ])('%o → %s (an absent until is now)', (raw, expected) => {
+    expect(teamWindowRefusal(input(raw), now)).toBe(expected);
   });
 });
 

@@ -39,6 +39,27 @@ export interface LakeQueryEngine {
   query(sql: string): Promise<readonly Record<string, unknown>[]>;
 }
 
+/**
+ * The widest window a team's own credential may read in one query. The lake is one table
+ * the sink cannot partition by tenant, so a tenant predicate prunes no file: what bounds
+ * the bytes a query scans is its `occurred_at` window. Staff reads stay unwindowed, because
+ * an audit question must not quietly lose history older than a window nobody asked for.
+ */
+export const LAKE_TEAM_WINDOW_DAYS = 31;
+
+/**
+ * Why a team's read is refused, or `null`: `since` is required, and the span to `until`
+ * (now, when absent) is at most `LAKE_TEAM_WINDOW_DAYS`.
+ */
+export function teamWindowRefusal(input: LakeEventsInput, nowMs: number): string | null {
+  if (input.since === undefined) return 'a team lake read needs since';
+  const end = input.until === undefined ? nowMs : Date.parse(input.until);
+  if (end - Date.parse(input.since) > LAKE_TEAM_WINDOW_DAYS * 86_400_000) {
+    return `a team lake read spans at most ${LAKE_TEAM_WINDOW_DAYS} days`;
+  }
+  return null;
+}
+
 /** The lake's one table — `LAKE.namespace`.`LAKE.table` in `scripts/lake-provision.mjs`. */
 const LAKE_TABLE = 'kernel.events';
 
