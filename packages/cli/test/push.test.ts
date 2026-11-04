@@ -1045,6 +1045,27 @@ export const permissions = {
     expect(r.stdout).not.toMatch(/digest:/);
   });
 
+  // The registry a fork or a local test brings (#2813): `--check` judges by the file, not the built-in list.
+  it.runIf(built)('judges a scope store by the registry --store-drivers names', () => {
+    const dir = verticalWith(SURFACE, {
+      substrat: {
+        permissions: 'perms.mjs',
+        runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] },
+      },
+    });
+    const file = join(dir, 'drivers.json');
+    writeFileSync(file, '[]');
+    const r = runCheck(dir, '--store-drivers', file);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("scope store 'GRAPH' declares driver 'graph', which is not registered.");
+  });
+
+  it.runIf(built)('refuses --store-drivers given no path, naming the flag', () => {
+    const r = runCheck(verticalWith(SURFACE), '--store-drivers');
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('--store-drivers needs a path');
+  });
+
   it.runIf(built)('refuses an entry that stops exporting `permissions`', () => {
     const r = runCheck(verticalWith(`export const roles = [];\n`));
     expect(r.status).not.toBe(0);

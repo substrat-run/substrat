@@ -2219,6 +2219,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/concept$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/ },
+    // The scope-store drivers one vertical may use (#2813), so a push judges its stores as the
+    // upload will. `?vertical=` required; the answer names no other vertical.
+    { method: 'GET', re: /\/store-drivers$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
@@ -13207,6 +13210,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
     return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals, options.storeReleases?.settleMs), walk: walk ?? null };
   };
+
+  // The scope-store registry a push is judged by, for ONE vertical (#2813): `?vertical=` is the slug the
+  // push deploys as, required (bare, or already prefixed with the caller's own workspace). Every registration comes back, with `verticals` reduced to
+  // `[vertical]` when it serves that vertical and `[]` when it does not (omitted when it serves
+  // every one), so the CLI's own check can say "does not serve" and no other vertical's slug is
+  // read. "Serves" is judged for the registry id the deploy forms (`<tenant>/<name>` for a builder
+  // or a pinned staff push), the same one `ensureScopeStoresOf` judges. The staff-only
+  // `/store-drivers/:driver` below is the driver's release state and stays as it was.
+  app.get('/store-drivers', async (c) => {
+    const parsed = verticalSlug.safeParse(c.req.query('vertical'));
+    if (!parsed.success) return refuse(c, 'validation_failed', 'vertical is required: the slug the push deploys as');
+    const vertical = parsed.data;
+    const p = c.get('principal');
+    const pin = c.req.header(TENANT_HEADER)?.trim();
+    let id = effectiveSlug(p, vertical);
+    if (p.kind !== 'builder' && pin) {
+      // The pinned-staff branch of the deploy's own slug derivation (`POST /verticals/:slug/deploy`).
+      const workspace = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.slug === pin || t.id === pin);
+      if (!workspace) return refuse(c, 'not_found', `unknown workspace '${pin}'`);
+      const bareOwner = await ownerOf(c.get('actor'), vertical);
+      id = vertical.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? vertical : `${workspace.slug}/${vertical}`;
+    }
+    const drivers = (options.storeDrivers ?? STORE_DRIVERS).map((d) =>
+      d.verticals ? { ...d, verticals: storeDriverServesVertical(d, id) ? [vertical] : [] } : d,
+    );
+    return c.json({ drivers });
+  });
 
   app.get('/store-drivers/:driver', async (c) => {
     await staffPerson(c, statusWords);
