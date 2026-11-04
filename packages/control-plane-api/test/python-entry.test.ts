@@ -67,6 +67,11 @@ describe('the Python entry, as shipped', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).not.toContain('\r');
   });
 
+  it('finds the storage whether or not the SDK wrapped ctx: an upload ships no SDK, so a deployed ctx has no _ctx', () => {
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('return getattr(ctx, "_ctx", ctx).storage');
+    expect(STORE_ENTRY_PYTHON_SOURCE).not.toContain('ctx._ctx');
+  });
+
   it('parses no envelope of its own', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).not.toMatch(/split\("\\n"\)|b64decode|hashlib|importKey/);
   });

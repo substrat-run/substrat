@@ -54,8 +54,12 @@ def _raw_env(env):
 
 
 def _raw_storage(ctx):
-    """The object's JavaScript storage. The SDK wraps ctx and its storage, and has no public unwrap."""
-    return ctx._ctx.storage
+    """The object's JavaScript storage.
+
+    The SDK pywrangler installs wraps ctx, with no public unwrap. An upload does not ship that SDK,
+    and the runtime's own hands ctx over unwrapped, so `_ctx` is absent on a deployed object.
+    """
+    return getattr(ctx, "_ctx", ctx).storage
 
 
 def _driver_env(env):
