@@ -166,9 +166,8 @@ export function splitEntityTypes(value: string | null | undefined): string[] {
  */
 function processStateOf(move: { entity: string; to: string }): string | null {
   const i = move.entity.indexOf(':');
-  if (i <= 0 || move.to === '') return null;
-  const value = `${move.entity.slice(0, i)}:${move.to}`;
-  return value.length <= INVOCATION_RECORD_FIELD_MAX ? value : null;
+  const v = `${move.entity.slice(0, i)}:${move.to}`;
+  return i > 0 && move.to && v.length <= INVOCATION_RECORD_FIELD_MAX ? v : null;
 }
 
 /**
