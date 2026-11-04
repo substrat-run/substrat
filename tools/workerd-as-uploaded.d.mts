@@ -4,6 +4,9 @@ export function asUploaded(
   derived: Record<string, unknown>,
 ): Promise<Record<string, unknown> & { vars: Record<string, string> }>;
 
+/** A vertical's entry, bundled the way `substrat push` bundles it — memoized per entry. */
+export function bundledEntry(main: string): Promise<Uint8Array>;
+
 /** What a push of `dir` declares about its sweeper — memoized per directory. */
 export function declaredSweeper(
   dir: string,

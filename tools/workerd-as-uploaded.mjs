@@ -55,7 +55,7 @@ const memo = new Map();
  * @param {string} main  the entry's absolute path
  * @returns {Promise<Uint8Array>}
  */
-function bundledEntry(main) {
+export function bundledEntry(main) {
   let found = bundles.get(main);
   if (!found) {
     found = build({

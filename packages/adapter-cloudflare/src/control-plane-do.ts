@@ -160,6 +160,8 @@ import {
   type VerticalScopeStore,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
+  versionMigrationsExtractedOf,
+  recordVersionMigrationsExtracted,
   versionsAwaitSplit,
   versionsAwaitDigest,
   deriveMigrationDigestsBatch,
@@ -1067,6 +1069,8 @@ const DIRECTORY_DDL = `
     -- 1 once migration_digest is the one derived from the stored migrations (#2339).
     -- NULL = stored before, still the pushed digest; backfilled, and derived on read until then.
     migration_digest_derived INTEGER,
+    -- #2351: the digest of the migrations read from the version's bundle. NULL = never read.
+    migrations_extracted TEXT,
     created_at        TEXT NOT NULL,
     UNIQUE (vertical_slug, version)
   );
@@ -2019,6 +2023,8 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('vertical_versions', 'migrations_split INTEGER');
     // #2339: whether the migration digest is the derived one; NULL rows are backfilled.
     this.addColumn('vertical_versions', 'migration_digest_derived INTEGER');
+    // #2351: the digest of the migrations read from the bundle; NULL = never read.
+    this.addColumn('vertical_versions', 'migrations_extracted TEXT');
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     this.addColumn('_substrat_entitlements', 'expires_at TEXT');
@@ -3949,6 +3955,19 @@ export class ControlPlaneDO extends DurableObject {
       return true;
     }, audit && (() => ({ ...audit, before })));
     return !raced;
+  }
+
+  /** #2351: the digest of the migrations read from a version's bundle, or `undefined` for no such version. */
+  readMigrationsExtracted(id: string): { verticalSlug: string; digest: string | null } | undefined {
+    return versionMigrationsExtractedOf(this.kernelSql, id);
+  }
+
+  /** #2351: record it, with its audit row. */
+  recordMigrationsExtracted(id: string, digest: string, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => {
+      recordVersionMigrationsExtracted(this.kernelSql, id, digest);
+      return true;
+    }, audit);
   }
 
   /**

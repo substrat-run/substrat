@@ -2639,6 +2639,22 @@ export interface HostAdmin {
     versionId: string,
   ): Promise<DeclaredMigration[] | null>;
   /**
+   * #2351: the digest of the migrations the control plane read from one version's bundle
+   * (`extractedMigrationsDigest` in control-plane-api), or null when it never read them: pushed
+   * before the read, by a bundle that exposes no registrations, or one that could not be
+   * evaluated. A version that stores migrations and has one was gated on it: the two are the same
+   * set. Refuses a version of another vertical, like `versionMigrations`. Access-logged.
+   *
+   * Optional, with its writer: a host without them records nothing, and every version reads as
+   * never read.
+   */
+  versionMigrationsExtracted?(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
+  /**
+   * #2351: record that digest. A version's bundle never changes, so every read of it records the
+   * same one. Audited.
+   */
+  recordMigrationsExtracted?(actor: PlatformActorId, verticalSlug: string, versionId: string, digest: string): Promise<void>;
+  /**
    * Record what one upload gave the script it went to (RFC wire-signing §7, Q8): the capability
    * record, written by the uploader from what it built and injected, never declared by the
    * vertical. It replaces that script's earlier record, so it is always the last upload's. Audited.

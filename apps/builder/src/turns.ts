@@ -277,3 +277,8 @@ export const listTurnsQuery = builderTurnsQuery.extend({
 	limit: z.number().int().min(1).max(LIST_PAGE_MAX).optional(),
 	cursor: z.string().min(1).max(64).optional(),
 });
+
+/** What a refused list query says: the fields it got wrong, never their values. */
+export function turnQueryRefusal(error: z.ZodError): string {
+	return `invalid turn query: ${error.issues.map((i) => i.path.join('.') || i.message).join(', ')}`;
+}

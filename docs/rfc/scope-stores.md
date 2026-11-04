@@ -56,7 +56,10 @@ the worker started and which the worker cannot write. The router checks that the
 the one in that policy and that the binding is declared on the version being served, signs
 the object name, and addresses `substrat-store-<driver>-<vertical>` in the dispatch
 namespace. The key is bound on the router and on the store script. This is the same shape
-as a call between verticals.
+as a call between verticals. The router hands the store's envelope back as the store answered it, a
+refusal included, cut by `clientSafeStoreError` to what a client may read, so the store's
+`code` reaches the vertical as `storeCode`. An answer outside the envelope is `bad_envelope`
+(502), as on the in-process path. A store it cannot reach is the platform's `unavailable` (503).
 
 A direct `durable_object_namespace` binding remains for local development and for tests.
 It is not an isolation boundary: code in that worker can address any name the binding
@@ -197,7 +200,8 @@ modules and may also carry `python_modules/<path>` for its dependencies (#2390).
 not ship the workers runtime SDK: the script imports that from the runtime the upload
 selects. No driver written outside this repo is registered until a driver
 cannot affect data outside the object it serves by construction: a script per tenant, no
-outbound access, envelope verification outside the driver.
+outbound access, envelope verification outside the driver, unless a decision record lifts
+that rule for it (D-65, D-67).
 
 The platform enforces the sha256; the source commit is what a reviewer checks, and the
 link between them holds only as far as the build is reproducible. Every upload of the
@@ -319,9 +323,9 @@ platform does not make that claim when it cannot tell (#2242). Erasure fails clo
   vertical, or a scope on a vertical the host is not pinned to.
 
 The control plane's rule is gated on the store-driver registry. A push that declares an
-unregistered driver is refused, so while `STORE_DRIVERS` is empty no deployment can hold a
-store, and erasure proceeds as it did before stores existed. The fail-closed arm is
-dormant until the first driver is registered.
+unregistered driver is refused, so against an empty registry no deployment can hold a store,
+and erasure proceeds as it did before stores existed. `STORE_DRIVERS` registers `graph`
+(D-67), so on a hosted control plane the fail-closed arm is live.
 
 `erased` counts what that attempt removed. A retry after a partial failure lists every
 binding it asked, with zero for one an earlier attempt already erased. The count is not
@@ -616,7 +620,8 @@ reads as "no store" and fails open):
   an object for it.
 - **Control-plane arm** (`mayHoldScopeStores` in `control-plane-api/src/api.ts`). It is
   gated on the registered drivers. With none registered, no deployment can hold a store,
-  because a push of one is refused, so this arm is dormant until the first driver.
+  because a push of one is refused, so the arm answers "no store". `graph` is registered,
+  so it is live on a hosted control plane.
   - No vertical means no store.
   - Otherwise the version the scope's deployment runs decides (§10.6), with unknown for the
     by-slug rung.
@@ -803,8 +808,8 @@ direct binding, and is fixed before a driver runs anywhere outside the platform 
 
 ### 10.9 The migration path
 
-In order. Steps 1–7 come before the first driver is registered (#2210). Step 9 does not
-block it.
+In order. Steps 1–7 came before the first driver was registered (#2210): `graph`, under D-67.
+Step 9 does not block it.
 
 1. Land the stack through #2254, with the #2242 and #2254 review fixes. #2243 says "Closes
    #2211". It should say "Part of #2211", and #2211 stays open for (j) and L6/L7.
@@ -867,7 +872,9 @@ block it.
    until a control plane that pins it again is deployed (`control-plane.md` §4.4).
    *(Amended by step 4b of `store-driver-release-approval.md`, #2297: the pins above are now live
    approvals recorded by a person, D-65. The upload runs only a release with one, and a target whose
-   approval was revoked holds the driver until a person approves it again, with no deploy.)*
+   approval was revoked holds the driver until a person approves it again, with no deploy. The
+   first registration is `graph`, by its id and isolation basis under D-67, with no release in
+   source.)*
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 

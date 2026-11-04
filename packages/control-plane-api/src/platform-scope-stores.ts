@@ -163,16 +163,13 @@ export async function unrouteScope(
  * ordinary install whose store the router serves. A pin that names another script than the
  * pointer's is unknown, as #2242's erasure gate has it.
  *
- * The gate is `mayHoldScopeStores`: with no driver registered nothing can hold a store, and the
- * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
- * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
- * wipe, a replay or an erasure skip a store that may hold data — where a store can exist (#2394).
- * One can exist only under a binding some version of the scope's vertical declared: the router
- * reaches a store only through a version row's manifest (`READ_ROUTE_SQL`), and `publishVersion`
- * records that row's bindings in the same transaction (`HostAdmin.verticalScopeStores`). So when
- * that record says the vertical has declared none, the answer is none; when it cannot be read, the
- * refusal stands. A bind or promote that lands after the read is the erasure fence's to refuse,
- * as it is for a version that declares none.
+ * The vertical's record of declared bindings is read first (`declaredRecordOf`): with no driver
+ * registered, or a record that says the vertical has declared none, the answer is none; a record
+ * that cannot be read refuses. Only then is the running version read, and a version that cannot be
+ * named, a manifest that cannot be read, or one the gate (`mayHoldScopeStores`) says may hold a
+ * store without naming it refuses (503), rather than let a backup, a wipe, a replay or an erasure
+ * skip a store that may hold data (#2394). A bind or promote that lands after the read is the
+ * erasure fence's to refuse, as it is for a version that declares none.
  *
  * `running` is a resolution the caller already holds (`runningVersionOf`), so a caller that fences
  * on the version reads it once and judges the stores against the same read.
@@ -184,15 +181,46 @@ export async function runningVersionStoresOf(
   drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
+  const record = await declaredRecordOf(admin, actor, scope, drivers);
+  return record.length === 0 ? [] : runningStoresOfDeclaring(admin, actor, scope, drivers, running);
+}
+
+/**
+ * The vertical's record of every binding any version declared, read first and once: a vertical
+ * that never declared a store answers none with this one read, which is what the sweep pays for
+ * almost every scope it meters or reaps. Sound because a store exists only under a binding some
+ * version declared: the router reaches a store only through a version row's manifest
+ * (`READ_ROUTE_SQL`), every insert of a version row records its bindings in the same transaction,
+ * and the read itself first indexes any stored version not yet indexed, so the record covers every
+ * version the vertical holds (#2292). A record that cannot be read refuses (503). None, with no
+ * read, where nothing can hold a store: no vertical, or no driver registered.
+ */
+async function declaredRecordOf(
+  admin: Pick<HostAdmin, 'verticalScopeStores'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'vertical'>,
+  drivers: readonly StoreDriverRegistration[],
+): Promise<readonly DeclaredScopeStore[]> {
   if (!scope.vertical || !mayHoldScopeStores(undefined, drivers)) return [];
+  return storesDeclaredBy(admin, actor, scope.vertical);
+}
+
+/** The running version's stores, for a scope whose vertical has declared at least one (the record says so). */
+async function runningStoresOfDeclaring(
+  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
+  drivers: readonly StoreDriverRegistration[],
+  running?: RunningVersion,
+): Promise<DeclaredScopeStore[]> {
+  const vertical = scope.vertical!;
   const { versionId } = running ?? await runningVersionOf(admin, actor, scope);
   const manifestJson = versionId
-    ? await admin.versionManifest(actor, scope.vertical, versionId).catch(() => undefined)
+    ? await admin.versionManifest(actor, vertical, versionId).catch(() => undefined)
     : undefined;
   if (!mayHoldScopeStores(manifestJson, drivers)) return [];
   const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
   if (declared.length > 0) return declared;
-  if ((await storesDeclaredBy(admin, actor, scope.vertical)).length === 0) return [];
   throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
 }
 
@@ -214,7 +242,8 @@ async function storesDeclaredBy(
  * (`runningVersionStoresOf`, which still fails closed first), and every binding any version of its
  * vertical has declared (`HostAdmin.verticalScopeStores`, read by its keys). Export, wipe, erasure
  * and the meter reach `all`, so an object under a binding a later version dropped is still
- * reached. A restore imports only into `running` (L8).
+ * reached. A restore imports only into `running` (L8). The record is read once, first, and judges
+ * both.
  *
  * A binding keeps its driver for the life of the vertical, since publish refuses a driver change; a
  * running version whose driver disagrees with the record, or a record that cannot be read,
@@ -227,10 +256,10 @@ export async function scopeStoreReachOf(
   drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<{ running: DeclaredScopeStore[]; all: DeclaredScopeStore[] }> {
-  const current = await runningVersionStoresOf(admin, actor, scope, drivers, running);
-  if (!scope.vertical || !mayHoldScopeStores(undefined, drivers)) return { running: current, all: current };
-  const declared = await storesDeclaredBy(admin, actor, scope.vertical);
-  const all = new Map(declared.map((store) => [store.binding, store.driver]));
+  const record = await declaredRecordOf(admin, actor, scope, drivers);
+  if (record.length === 0) return { running: [], all: [] };
+  const current = await runningStoresOfDeclaring(admin, actor, scope, drivers, running);
+  const all = new Map(record.map((store) => [store.binding, store.driver]));
   for (const store of current) {
     const driver = all.get(store.binding);
     if (driver !== undefined && driver !== store.driver) {

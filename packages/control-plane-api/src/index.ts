@@ -181,6 +181,16 @@ export type {
   DeclaredBinding,
   DeployManifest,
 } from './deploy.js';
+export {
+  extractedMigrationsDigest,
+  extractedMigrationsProblem,
+  loaderMigrationExtractor,
+  MigrationExtractionError,
+  MigrationLoaderUnavailable,
+  readExtraction,
+  type ExtractMigrationsFn,
+  type MigrationLoader,
+} from './migration-extract.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
 export { createWfpWireSettingsApi, type WireSettingsApi } from './wire-settings.js';
 export {
@@ -355,7 +365,11 @@ export type { SqlExecLike } from './cube-store-sql.js';
 export type { CfObservabilityOptions } from './cf-observability.js';
 export type {
   ScopeBackup,
+  ScopeBackupEntry,
   ScopeBackupStore,
+  ScopeBackupWriter,
+  ScopeDumpHeader,
+  StoredScopeBackup,
   DirectoryBackup,
   DirectoryBackupStore,
 } from './backups.js';

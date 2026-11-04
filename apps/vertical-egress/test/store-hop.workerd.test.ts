@@ -162,6 +162,17 @@ describe('a vertical reaches only its own scope store (#2207)', () => {
     expect(await direct(scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH'), 'read')).toBe('200 {"result":2}');
   }, 20_000);
 
+  it("the store's refusal reaches the vertical in its envelope, and an answer outside it is bad_envelope", async () => {
+    const ask = (operation: string) => call({ scopeId: SCOPE, binding: 'GRAPH', operation });
+    expect(await ask('refuse')).toEqual({
+      status: 404,
+      text: JSON.stringify({ error: { code: 'session.unknown', status: 404, body: { message: 'no session s1' } } }),
+    });
+    // A 5xx body is the store's traceback: it never reaches the vertical, not even as raw bytes.
+    expect(await ask('fail')).toEqual({ status: 500, text: JSON.stringify({ error: { code: 'host_failed', status: 500 } }) });
+    expect(await ask('garble')).toEqual({ status: 502, text: JSON.stringify({ error: { code: 'bad_envelope', status: 502 } }) });
+  }, 20_000);
+
   it("an envelope signed for another driver's script, or out of the window, is refused at this one (#2287)", async () => {
     const name = scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH');
     expect(await direct(name, 'read')).toMatch(/^200 /);
