@@ -65,6 +65,7 @@ const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, 
   ],
   setListing: [(c) => c.setListing('v', false), 'POST', '/verticals/v/listing', '{"listed":false}'],
   getStoreDriver: [(c) => c.getStoreDriver('graph'), undefined, '/store-drivers/graph', undefined],
+  storeDriversFor: [(c) => c.storeDriversFor('helpdesk'), undefined, '/store-drivers?vertical=helpdesk', undefined],
   uploadStoreDriverRelease: [(c) => c.uploadStoreDriverRelease('graph', { entry: 'x' }), 'PUT', '/store-drivers/graph/releases', '{"entry":"x"}'],
   approveStoreDriverRelease: [
     (c) => c.approveStoreDriverRelease('graph', 'a/b', {

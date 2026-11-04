@@ -5,6 +5,7 @@ import {
   callScopeStore,
   readStoreDump,
   ulid,
+  writeStoreDump,
   type ScopeStoreAddress,
   type ScopeStoreRunner,
 } from '@substrat-run/kernel';
@@ -38,6 +39,8 @@ export interface ScopeStoreRunnerFixture {
    * the revision. Without it that check is skipped, and its name says so.
    */
   writeSubject?(subjectId: string): StoreRequest;
+  /** Every catalog operation the driver serves: what its `substrat.selfcheck` must answer (#2814). */
+  readonly catalog: readonly string[];
 }
 
 /** One check of the runner contract. It throws when the runner breaks it. */
@@ -218,6 +221,22 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
           await write(runner, address);
           const { bytes } = await reserved(runner, address, 'substrat.size');
           expect(Number.isInteger(bytes)).toBe(true);
+        });
+      },
+    },
+    {
+      // What the rollout's canary does (#2814): rows loaded first, so the runtime is built over
+      // data, and the answer compared exactly with the catalog the release is approved with.
+      name: 'substrat.selfcheck, on an object that loaded rows, answers exactly the catalog',
+      async run() {
+        await withRunner(async (runner) => {
+          const source = freshAddress();
+          const target = freshAddress();
+          await write(runner, source);
+          const dump = await readStoreDump((operation, input) => reserved(runner, source, operation, input), 1);
+          await writeStoreDump((operation, input) => reserved(runner, target, operation, input), dump, 1);
+          const { operations } = await reserved(runner, target, 'substrat.selfcheck');
+          expect([...operations].sort()).toEqual([...fixture.catalog].sort());
         });
       },
     },

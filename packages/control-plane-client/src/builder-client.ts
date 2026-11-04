@@ -35,6 +35,7 @@ import type {
   VersionRow,
   Whoami,
 } from './builder-types.js';
+import { TENANT_HEADER } from './headers.js';
 import { ControlPlaneTransport } from './transport.js';
 
 /** One page of a list route: how many, and where after. */
@@ -126,6 +127,16 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
 
   listVersions(slug: string, page?: PageRequest): Promise<Page<VersionRow>> {
     return this.read(`/verticals/${seg(slug)}/versions${queryOf({}, page)}`);
+  }
+
+  /**
+   * The scope-store registry a push of `vertical` (a bare slug) is judged by (#2813): every
+   * registration, its `verticals` reduced to `[vertical]` or `[]`. `tenant` is the workspace the
+   * push is pinned to, so the plane forms the registry id as the deploy does. Unparsed: the caller
+   * holds the schema (`storeDriverRegistration`).
+   */
+  storeDriversFor(vertical: string, tenant?: string): Promise<{ drivers: unknown[] }> {
+    return this.read(`/store-drivers${queryOf({ vertical }, undefined)}`, tenant ? { headers: { [TENANT_HEADER]: tenant } } : undefined);
   }
 
   listChannels(slug: string, page?: PageRequest): Promise<Page<ChannelRow>> {

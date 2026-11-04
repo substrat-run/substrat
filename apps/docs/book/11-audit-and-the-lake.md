@@ -192,10 +192,15 @@ Here is what **is not built**, stated where you would otherwise assume it was:
   itself from a closed list of columns, and an answer that holds any row of another tenant is
   refused whole. It returns the envelope only: no payload, subject, authorization chain or
   impersonation record, because of the next point. Every read writes an access-log row before
-  anything is returned. It is staff only, and it answers 501 until an operator configures it:
-  its R2 SQL client has not yet been run against the real lake. The console and the dashboard
-  do not call it yet, so a tenant still cannot query its own lake rows. Until it is switched on, the lake is
-  queried, as before, by whoever holds read credentials for the bucket, which means operators.
+  anything is returned. Staff can read any tenant. A team can read its own, through the
+  dashboard's `GET /api/teams/:team/lake/events`, if the person asking holds
+  `dashboard:read-event-lake` (owners and admins). A team's read must name a `since`, and its
+  window may span at most 31 days, because the lake is one table for every tenant and only a
+  time window narrows what a query scans. It answers 501 (the dashboard says
+  `available: false`) until an operator configures it: its R2 SQL client has not yet been run
+  against the real lake, and the dashboard has no screen for it yet. Until it is switched on,
+  the lake is queried, as before, by whoever holds read credentials for the bucket, which
+  means operators.
 - **No erasure in the lake.** Payloads ship as they are in the outbox, with `subject_id`
   alongside. That column exists so "delete every row for this subject" can be expressed as a
   query, but nothing runs it yet. Erasure is handled in Tier 1. **Until lake erasure is built,

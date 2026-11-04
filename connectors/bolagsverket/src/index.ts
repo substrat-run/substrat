@@ -18,6 +18,7 @@ export {
 export { BolagsverketApi, type BolagsverketApiOptions } from './api.js';
 export {
   BOLAGSVERKET_ENVIRONMENTS,
+  BOLAGSVERKET_READ_SCOPE,
   BOLAGSVERKET_SCOPES,
   bolagsverketCredential,
   resolveEndpoints,

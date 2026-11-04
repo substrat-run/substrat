@@ -22,6 +22,7 @@ const counterFixture = (makeRunner: () => ScopeStoreRunner): ScopeStoreRunnerFix
   // Two rows of one subject: staged, they pass, and the commit refuses them.
   refusedStage: [{ name: 'counter', ddl: 'CREATE TABLE counter (subject TEXT, n INTEGER NOT NULL)', columns: ['subject', 'n'], rows: [['a', 1], ['a', 2]] }],
   read: { operation: 'read' },
+  catalog: ['increment', 'read'],
 });
 
 scopeStoreRunnerContractSuite('counter', counterFixture(counterScopeStoreRunner));
@@ -50,6 +51,7 @@ const CHECK = {
   address: 'the object is keyed on the whole address: tenant, vertical, scope and binding',
   restart: 'a stop and a start serve the same repositories',
   size: 'substrat.size answers { bytes }',
+  selfcheck: 'substrat.selfcheck, on an object that loaded rows, answers exactly the catalog',
   exportPage: 'substrat.export-page answers a chain that ends, one revision, and the same dump at any page size',
   pages: 'substrat.export-page cuts many rows into pages within maxBytes, and loses none between them',
   oneMoment: 'a chain is one moment: a wipe between two of its pages cannot tear it',
@@ -139,6 +141,31 @@ const TWINS: { name: string; breaks: readonly string[]; makeRunner: () => ScopeS
     makeRunner: answering('substrat.size', { result: { size: 1 } }),
   },
   {
+    name: 'a selfcheck that names an operation the catalog does not',
+    breaks: [CHECK.selfcheck],
+    makeRunner: answering('substrat.selfcheck', { result: { operations: ['increment', 'read', 'drop'] } }),
+  },
+  {
+    // Empty, its runtime builds; once it holds loaded rows, it does not.
+    name: 'a runtime that fails to build once the object holds rows',
+    breaks: [CHECK.selfcheck],
+    makeRunner: () => {
+      const inner = counterScopeStoreRunner();
+      const holding = new Set<string>();
+      return {
+        ...inner,
+        invoke(address, request) {
+          const id = JSON.stringify(address);
+          if (request.operation === 'substrat.commit-stage') holding.add(id);
+          if (request.operation === 'substrat.selfcheck' && holding.has(id)) {
+            return Promise.resolve({ error: { code: 'runtime_failed', status: 500 } });
+          }
+          return inner.invoke(address, request);
+        },
+      };
+    },
+  },
+  {
     // An empty dump also leaves nothing for a commit to restore, and a staged dump of itself empties the object.
     name: 'an export with no tables',
     breaks: [CHECK.exportPage, CHECK.pages, CHECK.commit, CHECK.fragments, CHECK.staged, CHECK.newStage, CHECK.revision, CHECK.stagedSize, CHECK.erasedRevision],
@@ -171,7 +198,8 @@ const TWINS: { name: string; breaks: readonly string[]; makeRunner: () => ScopeS
   },
   {
     name: 'a commit that miscounts the tables it wrote',
-    breaks: [CHECK.commit, CHECK.fragments],
+    // The selfcheck check loads its rows through writeStoreDump, which holds the count too.
+    breaks: [CHECK.commit, CHECK.fragments, CHECK.selfcheck],
     makeRunner: overriding((address, request, inner) => {
       if (request.operation !== 'substrat.commit-stage') return undefined;
       return (async () => {

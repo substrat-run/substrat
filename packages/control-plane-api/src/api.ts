@@ -359,7 +359,7 @@ import {
 } from './wire-walk.js';
 import { wireKeyDropSince, wireReadinessReport, WIRE_READINESS_LIMIT_DEFAULT, WIRE_READINESS_LIMIT_MAX } from './wire-readiness.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
-import { queryLakeEvents, type LakeQueryEngine } from './lake-gateway.js';
+import { queryLakeEvents, teamWindowRefusal, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
 import {
   isCustomHostname,
@@ -584,7 +584,7 @@ export interface ControlPlaneApiOptions {
    */
   storeReleases?: {
     bytes: StoreReleaseBytes;
-    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }): Promise<{ scriptName: string; uploaded: boolean }>;
+    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }): Promise<{ scriptName: string; uploaded: boolean; fixture?: Uint8Array }>;
     callCanary: CanaryCall;
     /** The same script settings release read the ensurer uses; required for a guarded revoke. */
     readScriptRelease?: (scriptName: string) => Promise<{ exists: boolean; release?: string }>;
@@ -1673,6 +1673,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // grant (`tenantGrantableEntitlement`): the pin alone would let it grant itself any.
   { method: 'PUT', re: /\/tenants\/[^/]+\/entitlements\/[^/]+$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/cross-vertical\/edges$/, pin: 'path' },
+  // #1334: the team's own lake events. The handler adds the window rule for this credential.
+  { method: 'GET', re: /\/tenants\/[^/]+\/lake\/events$/, pin: 'path' },
   // Findings (#1748): the tenant's inbox, its verdicts and its suppress rules. The dashboard
   // checks WHO inside the tenant may read or act (its findings permissions) before calling.
   { method: 'PUT', re: /\/tenants\/[^/]+\/findings\/[^/]+\/status$/, pin: 'path' },
@@ -2219,6 +2221,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/concept$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/ },
+    // The scope-store drivers one vertical may use (#2813), so a push judges its stores as the
+    // upload will. `?vertical=` required; the answer names no other vertical.
+    { method: 'GET', re: /\/store-drivers$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
@@ -7418,9 +7423,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // closed `.strict()` list with no tenant in it, and a row of any other tenant fails the
   // read whole. Envelope only — no payload until erasure reaches the lake.
   //
-  // Staff only, by default-deny: on neither BUILDER_ROUTES nor TENANT_ROUTES. A tenant's
-  // own credential reaching this is a separate decision, with a dashboard call site and a
-  // member permission in front of it.
+  // Staff, and a team's own credential (TENANT_ROUTES, path-pinned). The dashboard checks
+  // `dashboard:read-event-lake` before it calls. A team's read must name a window of at most
+  // `LAKE_TEAM_WINDOW_DAYS` (`teamWindowRefusal`): nothing below the gateway prunes by tenant,
+  // so the window is what bounds the scan. Builders stay refused (not in BUILDER_ROUTES).
   //
   // K-24: the access row is written AFTER the engine answers and BEFORE anything is
   // returned, and a failed write fails the request — rows whose disclosure went unrecorded
@@ -7440,6 +7446,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         errors: validationIssuesFrom(parsed.error),
         issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })),
       });
+    }
+    if (c.get('principal').kind === 'tenant') {
+      const refusal = teamWindowRefusal(parsed.data, Date.now());
+      if (refusal) return refuse(c, 'validation_failed', refusal);
     }
     let page;
     try {
@@ -9102,9 +9112,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // #2210: publishing records the version's store bindings for the whole vertical's lifecycle
     // (backup, wipe, erasure, the meter), so its store scripts are put in place first, as a push
-    // does: a driver with no approved release refuses here, and nothing is published.
-    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, scopeStores, async () => (await ownerOf(c.get('actor'), slug)) ?? null);
-    await c.var.admin.publishVersion(c.get('actor'), input);
+    // does: a driver with no approved release refuses here, and nothing is published. The publish is
+    // made under the push's shared hold (#2816), so a rollout walks this vertical or waits for it.
+    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, scopeStores, async () => (await ownerOf(c.get('actor'), slug)) ?? null, async (renew) => {
+      await renew();
+      await c.var.admin.publishVersion(c.get('actor'), input);
+    });
     const version = await c.var.admin.getVersion(c.get('actor'), input.id, slug);
     return c.json(version, 201);
   });
@@ -9416,15 +9429,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * (#559), then rethrown, so the push or serve answers it and the vertical upload never runs.
    * The row carries the vertical's owner, so it shows in that tenant's failure view; the serve
    * path reads the owner only once something has failed.
+   *
+   * `then` runs after the uploads, still under the shared holds (#2816): a push or a publish passes
+   * the step that records the version's store declarations, so a rollout either finds the vertical
+   * in what it walks or is refused until that step is done. `renew` renews every hold, and refuses
+   * (409) once one has lapsed; `then` calls it right before it records. A failure in `then` is not
+   * recorded here: it is the caller's to answer.
    */
-  const ensureScopeStoresOf = async (
+  const ensureScopeStoresOf = async <T = void>(
     actor: PlatformActorId,
     operation: 'deploy' | 'serve',
     slug: string,
     stores: readonly ScopeStoreNeed[],
     owner: () => Promise<TenantId | null>,
-  ): Promise<void> => {
-    if (stores.length === 0) return;
+    then: (renew: () => Promise<void>) => Promise<T> = async () => undefined as T,
+  ): Promise<T> => {
+    if (stores.length === 0) return then(async () => undefined);
     // D-67: a driver whose registration names its verticals serves those only, refused before any
     // hold is taken or anything is uploaded.
     for (const store of stores) {
@@ -9436,54 +9456,61 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const holder = ulid();
     const drivers = [...new Set(stores.map((store) => store.driver))].sort();
     const held: string[] = [];
+    const renewHolds = async (when: string) => {
+      for (const each of held) {
+        if (!(await host.admin.holdStoreDriver(actor, { driver: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
+          throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed ${when}; try again`);
+        }
+      }
+    };
+    const renew = () => renewHolds('during the upload');
     try {
-      if (!options.ensureScopeStores) {
-        throw new ControlPlaneError(
-          501,
-          `${operation} refused: '${slug}' declares a scope store and this control plane uploads no store script`,
-        );
-      }
-      // A shared hold on each driver (#2300): a rollout holds it exclusively, and a rebuild that read
-      // a script's release before a rollout moved it would upload the old release back over it.
-      // Neither the refusal nor anything else here names another vertical: a push answers its own.
-      for (const driver of drivers) {
-        if (!(await host.admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
-          throw new ControlPlaneError(409, `${operation} refused: scope store driver '${driver}' is being rolled out; try again in a few minutes`);
+      try {
+        if (!options.ensureScopeStores) {
+          throw new ControlPlaneError(
+            501,
+            `${operation} refused: '${slug}' declares a scope store and this control plane uploads no store script`,
+          );
         }
-        held.push(driver);
-      }
-      const loadRelease = options.storeReleases
-        ? storedReleaseLoader({ admin: host.admin, actor, bytes: options.storeReleases.bytes })
-        : async () => undefined;
-      // One driver at a time, each renewing every hold first: a push whose uploads outlast a hold
-      // stops (409) rather than upload after a rollout could have taken the driver.
-      for (const driver of drivers) {
-        for (const each of held) {
-          if (!(await host.admin.holdStoreDriver(actor, { driver: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
-            throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed during the upload; try again`);
+        // A shared hold on each driver (#2300): a rollout holds it exclusively, and a rebuild that read
+        // a script's release before a rollout moved it would upload the old release back over it.
+        // Neither the refusal nor anything else here names another vertical: a push answers its own.
+        for (const driver of drivers) {
+          if (!(await host.admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
+            throw new ControlPlaneError(409, `${operation} refused: scope store driver '${driver}' is being rolled out; try again in a few minutes`);
           }
+          held.push(driver);
         }
-        const registration = (options.storeDrivers ?? STORE_DRIVERS).find((k) => k.driver === driver);
-        if (!registration) throw new ControlPlaneError(403, `scope store driver '${driver}' is not registered`);
-        // Read under the shared hold (D-65): a revoke takes the driver exclusively, so one written
-        // before this read is seen, and none is written until this upload is done.
-        const approvals = await readStoreDriverApprovals(host.admin, actor, registration);
-        await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.driver === driver), loadRelease, approvals });
+        const loadRelease = options.storeReleases
+          ? storedReleaseLoader({ admin: host.admin, actor, bytes: options.storeReleases.bytes })
+          : async () => undefined;
+        // One driver at a time, each renewing every hold first: a push whose uploads outlast a hold
+        // stops (409) rather than upload after a rollout could have taken the driver.
+        for (const driver of drivers) {
+          await renew();
+          const registration = (options.storeDrivers ?? STORE_DRIVERS).find((k) => k.driver === driver);
+          if (!registration) throw new ControlPlaneError(403, `scope store driver '${driver}' is not registered`);
+          // Read under the shared hold (D-65): a revoke takes the driver exclusively, so one written
+          // before this read is seen, and none is written until this upload is done.
+          const approvals = await readStoreDriverApprovals(host.admin, actor, registration);
+          await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.driver === driver), loadRelease, approvals });
+        }
+      } catch (e) {
+        recordFailure(
+          {
+            actor,
+            operation: `${operation}.store-upload`,
+            stage: 'store-upload',
+            vertical: slug,
+            tenantId: await owner().catch(() => null),
+            status: e instanceof ControlPlaneError ? e.status : 502,
+            message: e instanceof Error ? e.message : String(e),
+          },
+          e,
+        );
+        throw e;
       }
-    } catch (e) {
-      recordFailure(
-        {
-          actor,
-          operation: `${operation}.store-upload`,
-          stage: 'store-upload',
-          vertical: slug,
-          tenantId: await owner().catch(() => null),
-          status: e instanceof ControlPlaneError ? e.status : 502,
-          message: e instanceof Error ? e.message : String(e),
-        },
-        e,
-      );
-      throw e;
+      return await then(() => renewHolds('before the version was recorded'));
     } finally {
       for (const driver of held) await host.admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
     }
@@ -10498,117 +10525,127 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const id = ulid();
     const deploymentRef = deploymentRefFor(slug, id);
     // #2210: the store scripts first, outside the vertical upload's try, so a store failure
-    // answers as itself and the vertical is not uploaded at all.
-    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null);
-    let wire: WireUpload;
-    try {
-      wire = await deployVerticalScript(options.deployVertical, c.get('actor'), slug, deploymentRef, {
-        entry: manifest.entry,
-        compatibilityDate: manifest.compatibilityDate,
-        compatibilityFlags: manifest.compatibilityFlags,
-        modules,
-        doClasses: manifest.doClasses,
-        bindings: verticalUploadBindings({
+    // answers as itself and the vertical is not uploaded at all. The upload, the registration and
+    // the publish run under the store push's shared hold (#2816): a rollout that starts before the
+    // version records its stores is refused, and one after walks this vertical.
+    const deployVertical = options.deployVertical;
+    const pushed = await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null, async (renew) => {
+      let wire: WireUpload;
+      try {
+        wire = await deployVerticalScript(deployVertical, c.get('actor'), slug, deploymentRef, {
+          entry: manifest.entry,
+          compatibilityDate: manifest.compatibilityDate,
+          compatibilityFlags: manifest.compatibilityFlags,
+          modules,
+          doClasses: manifest.doClasses,
+          bindings: verticalUploadBindings({
+            vertical: slug,
+            manifest,
+            drivers: options.storeDrivers,
+            // #2349: the migrations this push declares, which are the ones the version stores.
+            platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
+          }),
+          // #1242: the freshly minted version id — this archive script IS that version,
+          // and a preview routed at it stamps the signals `version` dimension honestly.
+          versionId: id,
+          // #1902: the platform's scope sweeper, as decided above and recorded with the version.
+          ...(sweeper.supply ? { supplySweeper: true } : {}),
+          // #340: the verified bytes go up with the bundle. The manifest's routing config
+          // rides along untouched — it decides what the RUNTIME does with paths, and carries
+          // no reach, so there is nothing in it for the sandbox contract to refuse.
+          ...(manifest.assets ? { assets: { ...manifest.assets, files: assets } } : {}),
+        });
+      } catch (e) {
+        // The upload to the runtime failed. Surface the detail (the builder is
+        // authenticated) rather than the anonymous 500 the generic handler would give, so a
+        // push failure is diagnosable without reading worker logs. The version label is NOT
+        // consumed here: registration/publish happen only AFTER a successful upload (below),
+        // so a failed push leaves the same --version reusable (#307).
+        //
+        // Answer the upstream status honestly: a runtime 4xx is a bad-bundle rejection — the
+        // builder's own script (e.g. a module-top-level throw → CF 10021), well-formed HTTP
+        // but refused — so a 422, not a 502 that reads as a platform outage. A 5xx (or any
+        // throw with no upstream status) is a platform failure and stays a 502.
+        const detail = e instanceof Error ? e.message : String(e);
+        const upstream = upstreamStatusOf(e);
+        console.error('deploy.upload.failed', { slug, deploymentRef, detail, upstream });
+        const rejected = upstream !== undefined && upstream >= 400 && upstream < 500;
+        // Both outcomes land an ops-failure row (#559): the 502 is the platform's to
+        // explain, and the 422 is what the builder-facing failure view (step 5) will
+        // list — a red push should be explainable from a durable record either way.
+        recordFailure({
+          actor: c.get('actor'),
+          operation: 'deploy.upload',
+          stage: 'wfp-upload',
           vertical: slug,
-          manifest,
-          drivers: options.storeDrivers,
-          // #2349: the migrations this push declares, which are the ones the version stores.
-          platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
-        }),
-        // #1242: the freshly minted version id — this archive script IS that version,
-        // and a preview routed at it stamps the signals `version` dimension honestly.
-        versionId: id,
-        // #1902: the platform's scope sweeper, as decided above and recorded with the version.
-        ...(sweeper.supply ? { supplySweeper: true } : {}),
-        // #340: the verified bytes go up with the bundle. The manifest's routing config
-        // rides along untouched — it decides what the RUNTIME does with paths, and carries
-        // no reach, so there is nothing in it for the sandbox contract to refuse.
-        ...(manifest.assets ? { assets: { ...manifest.assets, files: assets } } : {}),
-      });
-    } catch (e) {
-      // The upload to the runtime failed. Surface the detail (the builder is
-      // authenticated) rather than the anonymous 500 the generic handler would give, so a
-      // push failure is diagnosable without reading worker logs. The version label is NOT
-      // consumed here: registration/publish happen only AFTER a successful upload (below),
-      // so a failed push leaves the same --version reusable (#307).
-      //
-      // Answer the upstream status honestly: a runtime 4xx is a bad-bundle rejection — the
-      // builder's own script (e.g. a module-top-level throw → CF 10021), well-formed HTTP
-      // but refused — so a 422, not a 502 that reads as a platform outage. A 5xx (or any
-      // throw with no upstream status) is a platform failure and stays a 502.
-      const detail = e instanceof Error ? e.message : String(e);
-      const upstream = upstreamStatusOf(e);
-      console.error('deploy.upload.failed', { slug, deploymentRef, detail, upstream });
-      const rejected = upstream !== undefined && upstream >= 400 && upstream < 500;
-      // Both outcomes land an ops-failure row (#559): the 502 is the platform's to
-      // explain, and the 422 is what the builder-facing failure view (step 5) will
-      // list — a red push should be explainable from a durable record either way.
-      recordFailure({
-        actor: c.get('actor'),
-        operation: 'deploy.upload',
-        stage: 'wfp-upload',
-        vertical: slug,
-        tenantId: ownerTenant ?? null,
-        status: rejected ? 422 : 502,
-        message: detail,
-      }, e);
-      c.set('failureRecorded', true);
-      return rejected
-        ? refuseStatus(c, 422, 'deploy rejected', { detail })
-        : refuseStatus(c, 502, 'deploy upload failed', { detail });
-    }
+          tenantId: ownerTenant ?? null,
+          status: rejected ? 422 : 502,
+          message: detail,
+        }, e);
+        c.set('failureRecorded', true);
+        return rejected
+          ? refuseStatus(c, 422, 'deploy rejected', { detail })
+          : refuseStatus(c, 502, 'deploy upload failed', { detail });
+      }
 
-    // Register-then-publish, both idempotent-ish below the seam: a first push of a
-    // slug registers it; publishVersion lands the version pending with deploymentRef
-    // (or admitted, for a PRIVATE vertical — the registry's self-admit rule). The owner
-    // was resolved with the slug above: the builder's tenant, the pinned workspace, or
-    // the preserved existing owner for an unpinned staff push.
-    await c.var.admin.registerVertical(c.get('actor'), {
-      slug,
-      name: manifest.name ?? slug,
-      source: 'cli',
-      ownerTenant,
-      // The vertical's declared config surface rides to the registry, so the dashboard
-      // renders a settings form for a pushed vertical exactly like a builtin.
-      ...(manifest.envSpec ? { envSpec: manifest.envSpec } : {}),
-      // Registry-driven install metadata (marketplace-publish.md §3) — so the dashboard
-      // installs a pushed vertical without a hardcoded catalog entry.
-      ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
-      ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
-      ...(manifest.provides ? { provides: manifest.provides } : {}),
-      ...(manifest.requires ? { requires: manifest.requires } : {}),
-      // The declared vertical-defined connectors (vertical-connectors.md §7.2): what the dashboard's
-      // door renders. The proxy never reads this copy; it reads the running version's manifest.
-      ...(manifest.connectors ? { connectors: manifest.connectors } : {}),
-      // The declared provisioner intent (#455) — a REQUEST the console reviews; the
-      // tenant-provisioner grant itself is never touched by a push. Refreshes on every
-      // re-push like the rest of the install spec, exactly because it grants nothing.
-      ...(manifest.provisions ? { provisions: manifest.provisions } : {}),
-      // The declared email-sender intent (#303) — a REQUEST the console reviews; the
-      // `emailSender` grant itself is never touched by a push. Refreshes on every re-push
-      // like the rest of the install spec, exactly because it grants nothing.
-      ...(manifest.sendsEmail ? { sendsEmail: true } : {}),
-      // Where the scope lifecycle is held (#1713): `'router'` keeps the vertical's scopes out of
-      // the lifecycle delivery. Refreshes on every re-push like the rest of the install spec.
-      ...(manifest.lifecycle ? { lifecycle: manifest.lifecycle } : {}),
-      // The declared surfaces (K-26) ride like envSpec: registry metadata for the
-      // hostname-binding picker, never behavior. Not part of any admission digest.
-      ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),
+      // Register-then-publish, both idempotent-ish below the seam: a first push of a
+      // slug registers it; publishVersion lands the version pending with deploymentRef
+      // (or admitted, for a PRIVATE vertical — the registry's self-admit rule). The owner
+      // was resolved with the slug above: the builder's tenant, the pinned workspace, or
+      // the preserved existing owner for an unpinned staff push. An upload that outlasted the
+      // store hold refuses here (409) before the vertical or its version is registered, so the
+      // label stays reusable; unlike a failed upload, it lands no ops-failure row.
+      await renew();
+      await c.var.admin.registerVertical(c.get('actor'), {
+        slug,
+        name: manifest.name ?? slug,
+        source: 'cli',
+        ownerTenant,
+        // The vertical's declared config surface rides to the registry, so the dashboard
+        // renders a settings form for a pushed vertical exactly like a builtin.
+        ...(manifest.envSpec ? { envSpec: manifest.envSpec } : {}),
+        // Registry-driven install metadata (marketplace-publish.md §3) — so the dashboard
+        // installs a pushed vertical without a hardcoded catalog entry.
+        ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+        ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
+        ...(manifest.provides ? { provides: manifest.provides } : {}),
+        ...(manifest.requires ? { requires: manifest.requires } : {}),
+        // The declared vertical-defined connectors (vertical-connectors.md §7.2): what the dashboard's
+        // door renders. The proxy never reads this copy; it reads the running version's manifest.
+        ...(manifest.connectors ? { connectors: manifest.connectors } : {}),
+        // The declared provisioner intent (#455) — a REQUEST the console reviews; the
+        // tenant-provisioner grant itself is never touched by a push. Refreshes on every
+        // re-push like the rest of the install spec, exactly because it grants nothing.
+        ...(manifest.provisions ? { provisions: manifest.provisions } : {}),
+        // The declared email-sender intent (#303) — a REQUEST the console reviews; the
+        // `emailSender` grant itself is never touched by a push. Refreshes on every re-push
+        // like the rest of the install spec, exactly because it grants nothing.
+        ...(manifest.sendsEmail ? { sendsEmail: true } : {}),
+        // Where the scope lifecycle is held (#1713): `'router'` keeps the vertical's scopes out of
+        // the lifecycle delivery. Refreshes on every re-push like the rest of the install spec.
+        ...(manifest.lifecycle ? { lifecycle: manifest.lifecycle } : {}),
+        // The declared surfaces (K-26) ride like envSpec: registry metadata for the
+        // hostname-binding picker, never behavior. Not part of any admission digest.
+        ...(manifest.surfaces ? { surfaces: manifest.surfaces } : {}),
+      });
+      await c.var.admin.publishVersion(c.get('actor'), {
+        id,
+        verticalSlug: slug,
+        version: manifest.version,
+        manifestDigest: manifest.digests.manifest,
+        permissionDigest: manifest.digests.permission,
+        migrationDigest: manifest.digests.migration,
+        deploymentRef,
+        ...(origin ? { origin } : {}),
+        // Retained for the serving upload (#286): the archive script keeps the module
+        // bytes, this keeps their shape (entry, compat, doClasses, bindings).
+        // #1902: with the sweeper decision the push made, which no later upload re-makes.
+        manifestJson: JSON.stringify({ ...manifest, platformSweeper: sweeper.supply }),
+      });
+      return { wire };
     });
-    await c.var.admin.publishVersion(c.get('actor'), {
-      id,
-      verticalSlug: slug,
-      version: manifest.version,
-      manifestDigest: manifest.digests.manifest,
-      permissionDigest: manifest.digests.permission,
-      migrationDigest: manifest.digests.migration,
-      deploymentRef,
-      ...(origin ? { origin } : {}),
-      // Retained for the serving upload (#286): the archive script keeps the module
-      // bytes, this keeps their shape (entry, compat, doClasses, bindings).
-      // #1902: with the sweeper decision the push made, which no later upload re-makes.
-      manifestJson: JSON.stringify({ ...manifest, platformSweeper: sweeper.supply }),
-    });
+    if (pushed instanceof Response) return pushed;
+    const { wire } = pushed;
     await recordWireUpload(c.var.admin, c.get('actor'), id, wire);
     if (migrationsExtracted) await c.var.admin.recordMigrationsExtracted?.(c.get('actor'), slug, id, migrationsExtracted);
     // Same spirit as the permission-surface gate, advisory tier: when the push DECLARES
@@ -13207,6 +13244,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
     return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals, options.storeReleases?.settleMs), walk: walk ?? null };
   };
+
+  // The scope-store registry a push is judged by, for ONE vertical (#2813): `?vertical=` is the slug the
+  // push deploys as, required (bare, or already prefixed with the caller's own workspace). Every registration comes back, with `verticals` reduced to
+  // `[vertical]` when it serves that vertical and `[]` when it does not (omitted when it serves
+  // every one), so the CLI's own check can say "does not serve" and no other vertical's slug is
+  // read. "Serves" is judged for the registry id the deploy forms (`<tenant>/<name>` for a builder
+  // or a pinned staff push), the same one `ensureScopeStoresOf` judges. The staff-only
+  // `/store-drivers/:driver` below is the driver's release state and stays as it was.
+  app.get('/store-drivers', async (c) => {
+    const parsed = verticalSlug.safeParse(c.req.query('vertical'));
+    if (!parsed.success) return refuse(c, 'validation_failed', 'vertical is required: the slug the push deploys as');
+    const vertical = parsed.data;
+    const p = c.get('principal');
+    const pin = c.req.header(TENANT_HEADER)?.trim();
+    let id = effectiveSlug(p, vertical);
+    if (p.kind !== 'builder' && pin) {
+      // The pinned-staff branch of the deploy's own slug derivation (`POST /verticals/:slug/deploy`).
+      const workspace = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.slug === pin || t.id === pin);
+      if (!workspace) return refuse(c, 'not_found', `unknown workspace '${pin}'`);
+      const bareOwner = await ownerOf(c.get('actor'), vertical);
+      id = vertical.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? vertical : `${workspace.slug}/${vertical}`;
+    }
+    const drivers = (options.storeDrivers ?? STORE_DRIVERS).map((d) =>
+      d.verticals ? { ...d, verticals: storeDriverServesVertical(d, id) ? [vertical] : [] } : d,
+    );
+    return c.json({ drivers });
+  });
 
   app.get('/store-drivers/:driver', async (c) => {
     await staffPerson(c, statusWords);

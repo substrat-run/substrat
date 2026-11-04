@@ -6,10 +6,12 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { manualClock, ulid, type ManualClock } from '@substrat-run/kernel';
 import {
+  mergeDumpPages,
   platformActorId,
   STORE_DRIVER_PLATFORM_REPOSITORY,
   storeDriverReleaseDigest,
   type ReservedStoreOperation,
+  type ScopeDumpTable,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
@@ -45,7 +47,11 @@ const text = (s: string) => new TextEncoder().encode(s);
 const bundle = (n: number) => ({
   sourceCommit: COMMIT,
   entry: 'driver_graph/store.py',
-  modules: [{ name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
+  modules: [
+    { name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) },
+    // The canary's fixture (#2814): one row, imported and exported back.
+    { name: 'driver_graph/substrat_canary.json', content: text(JSON.stringify({ tables: [{ name: 'n', ddl: 'CREATE TABLE n (id)', columns: ['id'], rows: [[1]] }] })) },
+  ],
 });
 const wire = (b: ReturnType<typeof bundle>) => ({
   sourceCommit: b.sourceCommit,
@@ -55,23 +61,32 @@ const wire = (b: ReturnType<typeof bundle>) => ({
 const scriptOf = (vertical: string) => `substrat-store-graph-${vertical}`;
 const CANARY = 'substrat-store-graph--canary';
 
-/** Every reserved call answers as an empty object does, so a canary passes. */
-const staged = new Set<string>();
-const canaryCall: CanaryCall = async (target, operation: ReservedStoreOperation, input) => {
+/** Every reserved call answers as a working store does, keeping what each object committed, so a canary passes. */
+const held = new Map<string, ScopeDumpTable[]>();
+const stages = new Map<string, ScopeDumpTable[][]>();
+const canaryCall: CanaryCall = async ({ objectName }, operation: ReservedStoreOperation, input) => {
+  const { stageId, seq, tables } = (input ?? {}) as { stageId: string; seq: number; tables: ScopeDumpTable[] };
   switch (operation) {
     case 'substrat.export-page':
-      return { tables: [], next: null, revision: '1' };
+      return { tables: held.get(objectName) ?? [], next: null, revision: JSON.stringify(held.get(objectName) ?? []) };
     case 'substrat.stage-page': {
-      const { stageId, seq } = input as { stageId: string; seq: number };
-      const key = `${target.objectName}/${stageId}/${seq}`;
-      const first = !staged.has(key);
-      staged.add(key);
-      return { staged: first };
+      const pages = stages.get(`${objectName}/${stageId}`) ?? [];
+      if (seq < pages.length) return { staged: false };
+      stages.set(`${objectName}/${stageId}`, [...pages, tables]);
+      return { staged: true };
     }
-    case 'substrat.commit-stage':
-      return { tables: 0 };
+    case 'substrat.commit-stage': {
+      const merged = mergeDumpPages(stages.get(`${objectName}/${stageId}`) ?? []);
+      held.set(objectName, merged);
+      return { tables: merged.length };
+    }
     case 'substrat.discard-stage':
-      return { discarded: true };
+      return { discarded: stages.delete(`${objectName}/${stageId}`) };
+    case 'substrat.wipe':
+      held.delete(objectName);
+      return {};
+    case 'substrat.selfcheck':
+      return { operations: [] };
     case 'substrat.erase':
       return { erased: 0 };
     default:

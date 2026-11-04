@@ -97,18 +97,24 @@ const reviewed = (schema: number) => ({
   operations: [],
 });
 
+/** A release's canary fixture (#2814): one table, one row, keys in the dump schema's order. */
+const FIXTURE = { tables: [{ name: 'nodes', ddl: 'CREATE TABLE nodes (id INTEGER)', columns: ['id'], rows: [[1]] }] };
+const FIXTURE_BYTES = new TextEncoder().encode(JSON.stringify(FIXTURE));
+/** A canary ensurer that puts nothing anywhere and hands back the fixture. */
+const canaryAt = (scriptName: string) => async () => ({ scriptName, fixture: FIXTURE_BYTES });
+
 /**
- * An object store the canary can drive (D-69): one table, kept per object name, served one table a
- * page, with a stage held aside until it commits.
+ * An object store the canary can drive (D-69): tables kept per object name, served one table a
+ * page, with a stage held aside until it commits, serving the `catalog`.
  */
-function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unknown) => unknown>> = {}) {
+function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unknown) => unknown>> = {}, catalog: string[] = []) {
   type Table = { name: string; rows: unknown[] };
   const calls: { scriptName: string; objectName: string; operation: ReservedStoreOperation; input?: unknown }[] = [];
   const tables = new Map<string, Table[]>();
   const stages = new Map<string, { stageId: string; pages: Table[][] }>();
   const call: CanaryCall = async (target, operation, input) => {
     calls.push({ ...target, operation, input });
-    const held = tables.get(target.objectName) ?? [{ name: 'nodes', rows: [] }];
+    const held = tables.get(target.objectName) ?? [{ ...FIXTURE.tables[0]!, rows: [] }];
     let answer: unknown;
     switch (operation) {
       case 'substrat.size':
@@ -139,6 +145,9 @@ function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unkno
         answer = { discarded: stages.get(target.objectName)?.stageId === (input as { stageId: string }).stageId };
         stages.delete(target.objectName);
         break;
+      case 'substrat.selfcheck':
+        answer = { operations: catalog };
+        break;
       case 'substrat.erase':
         answer = { erased: 0 };
         break;
@@ -154,23 +163,25 @@ function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unkno
 }
 
 const emptyPage = { tables: [{ name: 'nodes', rows: [] }], next: null, revision: 'r' };
-const rowsPage = { tables: [{ name: 'nodes', rows: [{ id: 1 }] }], next: null, revision: 'r' };
+const rowsPage = { tables: [{ ...FIXTURE.tables[0]!, rows: [[2]] }], next: null, revision: 'r' };
 
 describe('the canary runs every reserved operation on a fresh platform object (D-63, D-69)', () => {
-  it('calls all of them, in order, at the canary script, on an object no tenant route names', async () => {
-    const store = canaryStore();
-    await canaryStoreRelease({ call: store.call, scriptName: 'substrat-store-graph--canary' });
+  const canary = (call: CanaryCall, over: Partial<Parameters<typeof canaryStoreRelease>[0]> = {}) =>
+    canaryStoreRelease({ call, scriptName: 's', fixture: FIXTURE_BYTES, operations: ['read', 'increment'], ...over });
+
+  it('calls every one, in order, at the canary script, on an object no tenant route names', async () => {
+    const store = canaryStore({}, ['increment', 'read']);
+    await canary(store.call, { scriptName: 'substrat-store-graph--canary' });
     expect(store.calls.map((c) => c.operation)).toEqual([
       'substrat.size',
       'substrat.export-page',
       'substrat.stage-page',
-      'substrat.stage-page',
-      'substrat.stage-page',
-      'substrat.stage-page',
       'substrat.commit-stage',
       'substrat.export-page',
       'substrat.stage-page',
+      'substrat.stage-page',
       'substrat.discard-stage',
+      'substrat.selfcheck',
       'substrat.erase',
       'substrat.wipe',
       'substrat.export-page',
@@ -189,82 +200,70 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     const common = [...tenant!.slice(10)].findIndex((ch, i) => ch !== scope![10 + i]);
     expect(common).toBeLessThan(12);
     // A fresh object every canary.
-    const again = canaryStore();
-    await canaryStoreRelease({ call: again.call, scriptName: 'substrat-store-graph--canary' });
+    const again = canaryStore({}, ['increment', 'read']);
+    await canary(again.call, { scriptName: 'substrat-store-graph--canary' });
     expect(again.calls[0]!.objectName).not.toBe(name);
   });
 
-  it('asks for the smallest page, stages the chain it read, and commits and discards that stage by id', async () => {
-    const store = canaryStore();
-    await canaryStoreRelease({ call: store.call, scriptName: 's' });
+  it('asks for the smallest page, loads the fixture as one stage, and discards a second stage by id', async () => {
+    const store = canaryStore({}, ['increment', 'read']);
+    await canary(store.call);
     const exports = store.calls.filter((c) => c.operation === 'substrat.export-page');
     expect(exports.map((c) => c.input)).toEqual([
       { cursor: null, maxBytes: 1 },
       { cursor: null, maxBytes: 1 },
       { cursor: null, maxBytes: 1 },
     ]);
-    const stages = store.calls.filter((c) => c.operation === 'substrat.stage-page').map((c) => c.input as { stageId: string; seq: number });
-    // Pages 0, 1 and 2 of one stage with the first sent again, then a second stage to discard.
-    expect(stages.map((s) => s.seq)).toEqual([0, 0, 1, 2, 0]);
-    expect(new Set(stages.slice(0, 4).map((s) => s.stageId)).size).toBe(1);
-    expect(stages[4]!.stageId).not.toBe(stages[0]!.stageId);
-    const committed = store.calls.find((c) => c.operation === 'substrat.commit-stage')!.input;
-    expect(committed).toEqual({ stageId: stages[0]!.stageId });
-    const discarded = store.calls.find((c) => c.operation === 'substrat.discard-stage')!.input;
-    expect(discarded).toEqual({ stageId: stages[4]!.stageId });
+    const stages = store.calls.filter((c) => c.operation === 'substrat.stage-page').map((c) => c.input as { stageId: string; seq: number; tables: unknown });
+    // The fixture as page 0 of one stage, then a second stage whose first page is sent again.
+    expect(stages.map((s) => s.seq)).toEqual([0, 0, 0]);
+    expect(stages[0]!.tables).toEqual(FIXTURE.tables);
+    expect(stages[1]!.stageId).toBe(stages[2]!.stageId);
+    expect(stages[1]!.stageId).not.toBe(stages[0]!.stageId);
+    expect(store.calls.find((c) => c.operation === 'substrat.commit-stage')!.input).toEqual({ stageId: stages[0]!.stageId });
+    expect(store.calls.find((c) => c.operation === 'substrat.discard-stage')!.input).toEqual({ stageId: stages[1]!.stageId });
   });
 
-  it('counts tables once and compares dumps as they merge, so a driver that cuts its pages differently is not refused', async () => {
-    const store = canaryStore();
-    // Every table is served as two fragments of itself, over two pages, and the commit joins them.
-    const cutDifferently = canaryStore({
-      'substrat.export-page': (answer) => {
-        const page = answer as { tables: { name: string; rows: unknown[] }[]; next: string | null; revision: string };
-        return { ...page, tables: page.tables.flatMap((table) => [table, table]) };
+  it('compares dumps as they merge, so a driver that cuts its pages differently is not refused', async () => {
+    // Every table is served as an empty fragment of itself and then the table: another cut, the same dump.
+    const cutDifferently = canaryStore(
+      {
+        'substrat.export-page': (answer) => {
+          const page = answer as { tables: { name: string; rows: unknown[] }[]; next: string | null; revision: string };
+          return { ...page, tables: page.tables.flatMap((table) => [{ ...table, rows: [] }, table]) };
+        },
       },
-    });
-    await canaryStoreRelease({ call: cutDifferently.call, scriptName: 's' });
-    await canaryStoreRelease({ call: store.call, scriptName: 's' });
-    const commits = (s: typeof store) => s.calls.filter((c) => c.operation === 'substrat.commit-stage').length;
-    expect(commits(cutDifferently)).toBe(commits(store));
+      ['increment', 'read'],
+    );
+    await canary(cutDifferently.call);
   });
 
-  it('refuses a chain whose next is a cursor it already gave', async () => {
-    const repeating = canaryStore({
-      'substrat.export-page': (answer) => ({ ...(answer as object), next: 'again' }),
-    });
-    expect(await refusal(canaryStoreRelease({ call: repeating.call, scriptName: 's' }))).toMatchObject({
-      status: 502,
-      message: expect.stringMatching(/does not move/),
-    });
+  it('refuses a chain whose next is a cursor it was already asked with', async () => {
+    const repeating = canaryStore({ 'substrat.export-page': (answer) => ({ ...(answer as object), next: 'again' }) }, ['increment', 'read']);
+    expect(await refusal(canary(repeating.call))).toMatchObject({ status: 502, message: expect.stringMatching(/already asked with/) });
     // The second page asked 'again' and answered it; the chain is not read on.
     expect(repeating.calls.filter((c) => c.operation === 'substrat.export-page')).toHaveLength(2);
   });
 
-  it('refuses a commit that kept only the first page, or counted its fragments', async () => {
-    const fragments = canaryStore({ 'substrat.commit-stage': (answer) => ({ tables: (answer as { tables: number }).tables * 3 }) });
-    expect(await refusal(canaryStoreRelease({ call: fragments.call, scriptName: 's' }))).toMatchObject({
-      message: expect.stringMatching(/imported 3 of 1 tables/),
-    });
+  it('refuses a commit that counts other than the distinct tables it was sent', async () => {
+    const fragments = canaryStore({ 'substrat.commit-stage': (answer) => ({ tables: (answer as { tables: number }).tables * 3 }) }, ['increment', 'read']);
+    expect(await refusal(canary(fragments.call))).toMatchObject({ status: 502, message: expect.stringMatching(/wrote 3 tables of the 1/) });
   });
 
-  it('reads a chain of several pages whole, and stages what it read', async () => {
-    const store = canaryStore();
+  it('reads a chain of several pages whole', async () => {
+    const store = canaryStore({}, ['increment', 'read']);
     const first = store.call;
-    // An object that already holds two tables: the chain is two pages, and the stage carries both.
+    // An object that starts out holding two empty tables: its first chain is two pages.
     const call: CanaryCall = async (target, operation, input) => {
-      if (!store.tables.has(target.objectName)) store.tables.set(target.objectName, [{ name: 'nodes', rows: [] }, { name: 'edges', rows: [] }]);
+      if (!store.calls.length) store.tables.set(target.objectName, [{ name: 'nodes', rows: [] }, { name: 'edges', rows: [] }]);
       return first(target, operation, input);
     };
-    await canaryStoreRelease({ call, scriptName: 's' });
-    expect(store.calls.filter((c) => c.operation === 'substrat.export-page').map((c) => (c.input as { cursor: string | null }).cursor)).toEqual([
-      null, '1', null, '1', null, '1',
-    ]);
-    const staged = store.calls.find((c) => c.operation === 'substrat.stage-page')!.input as { tables: { name: string }[] };
-    expect(staged.tables.map((t) => t.name)).toEqual(['nodes', 'edges']);
+    await canary(call);
+    const cursors = store.calls.filter((c) => c.operation === 'substrat.export-page').map((c) => (c.input as { cursor: string | null }).cursor);
+    expect(cursors).toEqual([null, '1', null, null]);
   });
 
-  it('refuses at the first operation that fails or answers what an empty object would not', async () => {
+  it('refuses at the first operation that fails or answers what it should not', async () => {
     const boom = () => {
       throw new Error('boom');
     };
@@ -272,44 +271,73 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       [{ 'substrat.size': boom }, /size failed/],
       [{ 'substrat.export-page': () => rowsPage }, /exported rows/],
       [{ 'substrat.export-page': boom }, /export-page failed/],
-      [{ 'substrat.stage-page': () => ({ staged: false }) }, /did not stage a first page/],
-      [{ 'substrat.commit-stage': () => ({ tables: 7 }) }, /imported 7 of 1/],
+      [{ 'substrat.stage-page': () => ({ staged: false }) }, /loading the fixture .* failed .*stage it was only just given/],
+      [{ 'substrat.commit-stage': () => ({ tables: 7 }) }, /wrote 7 tables of the 1/],
       [{ 'substrat.discard-stage': () => ({ discarded: false }) }, /did not discard a stage it held/],
+      // The runtime does not build over the fixture's data.
+      [{ 'substrat.selfcheck': boom }, /selfcheck failed/],
       [{ 'substrat.erase': () => ({ erased: 2 }) }, /erased rows/],
       [{ 'substrat.erase': boom }, /erase failed/],
       [{ 'substrat.wipe': boom }, /wipe failed/],
     ];
     for (const [fail, pattern] of cases) {
-      const store = canaryStore(fail);
-      expect(await refusal(canaryStoreRelease({ call: store.call, scriptName: 's' })), String(pattern)).toMatchObject({
+      const store = canaryStore(fail, ['increment', 'read']);
+      expect(await refusal(canary(store.call)), String(pattern)).toMatchObject({ status: 502, message: expect.stringMatching(pattern) });
+    }
+    // A served catalog other than the approved one, either way round.
+    for (const served of [['read'], ['increment', 'read', 'drop']]) {
+      expect(await refusal(canary(canaryStore({}, served).call))).toMatchObject({
         status: 502,
-        message: expect.stringMatching(pattern),
+        message: expect.stringMatching(/selfcheck serves .*, and the approval records \[increment, read\]/),
       });
     }
     // A page sent again that is staged a second time: the resend must answer it already held.
-    const twice = canaryStore({ 'substrat.stage-page': () => ({ staged: true }) });
-    expect(await refusal(canaryStoreRelease({ call: twice.call, scriptName: 's' }))).toMatchObject({
-      message: expect.stringMatching(/staged a page it already held/),
-    });
-    // A commit the object does not keep: the second chain differs.
+    let stagings = 0;
+    const twice = canaryStore({ 'substrat.stage-page': (a) => (++stagings === 3 ? { staged: true } : a) }, ['increment', 'read']);
+    expect(await refusal(canary(twice.call))).toMatchObject({ message: expect.stringMatching(/staged a page it already held/) });
+    // A commit the object does not keep, or keeps changed: the chain after it differs.
     let exports = 0;
-    const forgetful = canaryStore({ 'substrat.export-page': (a) => (++exports === 2 ? { ...(a as object), tables: [] } : a) });
-    expect(await refusal(canaryStoreRelease({ call: forgetful.call, scriptName: 's' }))).toMatchObject({ message: expect.stringMatching(/did not export what it imported/) });
+    const forgetful = canaryStore({ 'substrat.export-page': (a) => (++exports === 2 ? rowsPage : a) }, ['increment', 'read']);
+    expect(await refusal(canary(forgetful.call))).toMatchObject({ message: expect.stringMatching(/did not export the fixture it imported/) });
     // A wipe that leaves rows behind: the chain after it says so.
     let seen = 0;
-    const sticky = canaryStore({ 'substrat.export-page': (x) => (++seen === 3 ? rowsPage : x) });
-    expect(await refusal(canaryStoreRelease({ call: sticky.call, scriptName: 's' }))).toMatchObject({ message: expect.stringMatching(/still holds rows after its wipe/) });
+    const sticky = canaryStore({ 'substrat.export-page': (x) => (++seen === 3 ? rowsPage : x) }, ['increment', 'read']);
+    expect(await refusal(canary(sticky.call))).toMatchObject({ message: expect.stringMatching(/still holds rows after its wipe/) });
+  });
+
+  it('reads an absent objects list and an empty one as the same table', async () => {
+    // The fixture omits `objects` (#2820); this driver writes `objects: []` on every page.
+    const store = canaryStore(
+      {
+        'substrat.export-page': (a) => {
+          const page = a as { tables: object[] };
+          return { ...page, tables: page.tables.map((t) => ({ ...t, objects: [] })) };
+        },
+      },
+      ['increment', 'read'],
+    );
+    await canary(store.call);
+  });
+
+  it('refuses a release with no fixture, or one that is not a dump holding rows, before calling anything', async () => {
+    const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    const cases: [Uint8Array | undefined, RegExp][] = [
+      [undefined, /ships no canary fixture/],
+      [new Uint8Array([0xff]), /is not a store dump/],
+      [encode({ tables: [{ name: 'nodes' }] }), /is not a store dump/],
+      [encode({ tables: [{ ...FIXTURE.tables[0]!, rows: [] }] }), /holds no rows/],
+    ];
+    for (const [fixture, pattern] of cases) {
+      const store = canaryStore();
+      expect(await refusal(canary(store.call, { fixture })), String(pattern)).toMatchObject({ status: 422, message: expect.stringMatching(pattern) });
+      expect(store.calls).toEqual([]);
+    }
   });
 
   it('refuses a chain that does not end, rather than read it for ever', async () => {
     let asked = 0;
-    const endless = canaryStore({
-      'substrat.export-page': () => ({ ...emptyPage, next: String(++asked) }),
-    });
-    expect(await refusal(canaryStoreRelease({ call: endless.call, scriptName: 's' }))).toMatchObject({
-      status: 502,
-      message: expect.stringMatching(/did not end in 1000 pages/),
-    });
+    const endless = canaryStore({ 'substrat.export-page': () => ({ ...emptyPage, next: String(++asked) }) }, ['increment', 'read']);
+    expect(await refusal(canary(endless.call))).toMatchObject({ status: 502, message: expect.stringMatching(/did not end in 1000 pages/) });
     expect(asked).toBe(1000);
   });
 });
@@ -408,7 +436,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
       ensureCanary: async (to) => {
         f.events.push(`canary:${to.slice(0, 1)}`);
         if (extra.canaryFails) throw new Error('canary upload refused');
-        return { scriptName: 'substrat-store-graph--canary' };
+        return { scriptName: 'substrat-store-graph--canary', fixture: FIXTURE_BYTES };
       },
       callCanary: canaryStore().call,
       ...(extra.perRequest ? { perRequest: extra.perRequest } : {}),
@@ -446,7 +474,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
         sha256: sha('2'),
         action: 'rollout',
         ensure: f.ensure,
-        ensureCanary: async () => ({ scriptName: 'c' }),
+        ensureCanary: canaryAt('c'),
         callCanary: canaryStore({ 'substrat.erase': () => ({ erased: 1 }) }).call,
       }),
     )).toMatchObject({ status: 502, message: expect.stringMatching(/canary refused/) });
@@ -594,7 +622,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
       const target = (await host.admin.storeDriverState(staff, 'graph')).rollbackTarget!;
       return runStoreDriverRollout({
         admin: host.admin, actor: staff, registration, sha256: target, action: 'rollback', ensure: f.ensure,
-        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
+        ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequest: 2,
       });
     };
     expect(await rollback()).toMatchObject({ complete: false, moved: ['va', 'vb'], rollout: { sha256: sha('1'), state: 'paused' } });
@@ -615,7 +643,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     const rollback = async () =>
       runStoreDriverRollout({
         admin: host.admin, actor: staff, registration, sha256: (await host.admin.storeDriverState(staff, 'graph')).rollbackTarget!,
-        action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
+        action: 'rollback', ensure: f.ensure, ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequest: 2,
       });
     expect((await rollback()).rollout.state).toBe('paused');
     // The reviewer's sequence: a rollout of 3 now. It is refused before its canary, and moves nothing.
@@ -640,7 +668,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     const rollback = async () =>
       runStoreDriverRollout({
         admin: host.admin, actor: staff, registration, sha256: (await host.admin.storeDriverState(staff, 'graph')).rollbackTarget!,
-        action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
+        action: 'rollback', ensure: f.ensure, ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequest: 2,
       });
     expect((await rollback()).rollout.state).toBe('paused');
     // The next post loses its lease while moving vc: another holder takes the driver and lets it go.
@@ -715,7 +743,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     const rollback = async () =>
       runStoreDriverRollout({
         admin: host.admin, actor: staff, registration, sha256: (await host.admin.storeDriverState(staff, 'graph')).rollbackTarget!,
-        action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+        action: 'rollback', ensure: f.ensure, ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequestWalks: 2,
       });
     expect(await rollback()).toMatchObject({ complete: false, remaining: 3, rollout: { sha256: sha('1'), state: 'paused' } });
     expect(await rollback()).toMatchObject({ complete: false, remaining: 1, rollout: { sha256: sha('1'), state: 'paused' } });
@@ -738,7 +766,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     const rollback = () =>
       runStoreDriverRollout({
         admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
-        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+        ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequestWalks: 2,
       });
     expect(await rollback()).toMatchObject({ complete: false, moved: ['va', 'vb'] });
     expect(await rollback()).toMatchObject({ complete: true, moved: ['vc'], rollout: { state: 'good' } });
@@ -777,7 +805,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     // Undoing it part way moves va and vb back to 1.
     const back = await runStoreDriverRollout({
       admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
-      ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+      ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequestWalks: 2,
     });
     expect(back).toMatchObject({ moved: ['va', 'vb'], rollout: { state: 'paused' } });
     // Rolling 2 out again starts afresh: va and vb are on 1, and are moved again.
@@ -804,7 +832,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     const rollback = () =>
       runStoreDriverRollout({
         admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
-        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+        ensureCanary: canaryAt('c'), callCanary: canaryStore().call, perRequestWalks: 2,
       });
     expect(await rollback()).toMatchObject({ complete: false });
     expect(await rollback()).toMatchObject({ complete: true, rollout: { state: 'good' } });
@@ -859,7 +887,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     f.events.length = 0;
     const back = runStoreDriverRollout({
       admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
-      ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call,
+      ensureCanary: canaryAt('c'), callCanary: canaryStore().call,
     });
     expect(await refusal(back)).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
     expect(f.events).toEqual([]);
@@ -932,7 +960,7 @@ describe('the release routes: a person stores, approves and rolls out a release 
         bytes: storedBytes(bytes),
         ensureCanary: async ({ to }) => {
           scripts.set('substrat-store-graph--canary', to);
-          return { scriptName: 'substrat-store-graph--canary' };
+          return { scriptName: 'substrat-store-graph--canary', uploaded: true, fixture: FIXTURE_BYTES };
         },
         readScriptRelease: async (scriptName) => {
           if (unreadableScripts.has(scriptName)) throw new Error('settings unavailable');
@@ -1341,7 +1369,7 @@ describe('the release routes: a person stores, approves and rolls out a release 
       },
       storeReleases: {
         bytes: storedBytes(bytes),
-        ensureCanary: async () => ({ scriptName: 'substrat-store-graph--canary' }),
+        ensureCanary: canaryAt('substrat-store-graph--canary'),
         callCanary: canaryStore().call,
       },
     });
@@ -1561,7 +1589,10 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
   const bundle = (n: number) => ({
     sourceCommit: COMMIT,
     entry: 'driver_graph/store.py',
-    modules: [{ name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
+    modules: [
+      { name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) },
+      { name: 'driver_graph/substrat_canary.json', content: FIXTURE_BYTES },
+    ],
   });
   const wire = (b: ReturnType<typeof bundle>) => ({
     sourceCommit: b.sourceCommit,
@@ -1596,6 +1627,29 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     vi.unstubAllGlobals();
     await host.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses a rollout target with no canary fixture before it puts the canary script (#2814)', async () => {
+    const keys = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: (await generateScopeStoreKeyPair()).publicKey };
+    const ensurerFor = async (release: ReturnType<typeof bundle>) => {
+      const sha256 = await storeDriverReleaseDigest(release);
+      const approval = {
+        approvalId: ulid(), driver: 'graph', sha256, sourceCommit: COMMIT, approvedBy: person, approvedAt: '2026-11-04T00:00:00.000Z',
+        ...reviewed(0), revokedBy: null, revokedAt: null, revokedReason: null, revokedEmergency: null,
+      };
+      const ensure = createStoreCanaryEnsurer({
+        accountId: 'a', namespace: 'n', apiToken: 't', callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform], drivers: [GRAPH],
+        loadRelease: async () => ({ ...release, sha256 }),
+        approvals: { registration: GRAPH, records: [approval] },
+      });
+      return () => ensure({ driver: 'graph', to: sha256 });
+    };
+    const bare = { ...bundle(1), modules: bundle(1).modules.filter((m) => !m.name.endsWith('substrat_canary.json')) };
+    expect(await refusal((await ensurerFor(bare))())).toMatchObject({ status: 422, message: expect.stringMatching(/ships no canary fixture/) });
+    expect(scripts.has('substrat-store-graph--canary')).toBe(false);
+    // The same release with its fixture is put, and the fixture handed back.
+    expect(await (await ensurerFor(bundle(1)))()).toMatchObject({ uploaded: true, fixture: FIXTURE_BYTES });
+    expect(release('substrat-store-graph--canary')).toBe(await storeDriverReleaseDigest(bundle(1)));
   });
 
   it('refuses to undo a diverged schema raise by re-posting the lower release', async () => {

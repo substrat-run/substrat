@@ -49,8 +49,9 @@ writes it for any driver rather than for one language.
 | `substrat.stage-page` | `{ stageId, seq, tables }` | `{ staged }`, false for a `seq` already held |
 | `substrat.commit-stage` | `{ stageId }` | `{ tables }`, the count of distinct tables it wrote |
 | `substrat.discard-stage` | `{ stageId }` | `{ discarded }`, whether the object held the stage |
+| `substrat.selfcheck` | none | `{ operations }`, the catalog the built runtime serves (defined by [#2814](https://github.com/substrat-run/substrat/issues/2814)) |
 
-`substrat.size`, `substrat.wipe` and `substrat.erase` stay as they were.
+`substrat.size`, `substrat.wipe` and `substrat.erase` stay as they were. `substrat.selfcheck` is #2814's, listed here because the canary runs it over data loaded in pages.
 
 - **Fragments.** `tables` holds fragments in the shape #2450 gives a scope's pages: a table's rows
   may spread over pages, each fragment names its table again, and every table appears at least
@@ -111,12 +112,14 @@ writes it for any driver rather than for one language.
   release adds these operations. No driver release is approved, so nothing depends on
   `substrat.export` and `substrat.import`. They are removed, not kept beside the new operations, and
   a driver that answers them gains nothing.
-- **The canary proves it.** It reads a chain of the smallest page the contract
-  allows, stages the dump of its empty object as fragments over three pages (sending the first again,
-  which answers `staged: false`), commits, reads it back, stages and discards a second stage, erases,
-  wipes, and reads once more to see nothing is left. It compares dumps as their pages merge and counts
-  tables once each, so a driver that cuts its pages differently is not refused. It calls every
-  reserved operation, and a chain that never ends, or repeats a cursor, is refused.
+- **The canary proves it.** It reads its empty object as a chain of the smallest page the contract
+  allows, loads the release's own fixture (#2814) a row a page through the kernel's `writeStoreDump`,
+  and reads it back through `readStoreDump`: the writer and the reader the platform's own paths use.
+  It then stages a second stage, sends its first page again (which answers `staged: false`), discards
+  it, runs `substrat.selfcheck` over the loaded data, erases, wipes, and reads once more to see nothing
+  is left. It compares dumps as their pages merge, so a driver that cuts its pages differently is not
+  refused. It calls every reserved operation, and a chain that never ends, or repeats a cursor, is
+  refused.
 
 ## Any driver, one reference
 

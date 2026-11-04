@@ -159,6 +159,7 @@ Reserved names, only the platform may send:
 | `substrat.size` | none | `{ bytes }` | the object's whole storage. The spike read `databaseSize` |
 | `substrat.wipe` | none | `{}` | remove all of it |
 | `substrat.erase` | `{ subjectId }` | `{ erased }` | the driver's answer to subject erasure (#2068, D-45) |
+| `substrat.selfcheck` | none | `{ operations }` | build the driver's whole runtime, then name the catalog it serves (#2814) |
 
 The store accepts a reserved name only when the envelope's audience is `platform`. The spike
 had no audience. Its MAC covered the name alone, and the control plane made it with the same
@@ -230,8 +231,13 @@ service token. That rule keys on the actor: the service token resolves to the st
 principal kind too, so publishing refuses a service actor rather than admitting "staff".
 The rollout's canary runs on a platform-owned canary object that holds no tenant data and
 is never a tenant's scope. It calls every reserved operation (`substrat.size`, `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage`,
-`substrat.discard-stage`, `substrat.erase`, `substrat.wipe`) and asserts each
-answer before the rollout continues. A rollback goes to the immediately previous good
+`substrat.discard-stage`, `substrat.selfcheck`, `substrat.erase`, `substrat.wipe`) and asserts each
+answer before the rollout continues. Since #2814 the object does not stay
+empty: it loads the release's own canary fixture, `driver_<package>/substrat_canary.json`
+(a small store dump, `{ tables }`, holding rows, covered by the release digest and never uploaded into
+a script), a page at a time through the kernel's `writeStoreDump`, must read it back unchanged through
+`readStoreDump`, and must then build its runtime over it and serve
+exactly the catalog the release's approval records. A release with no fixture is refused. A rollback goes to the immediately previous good
 release. The module names in a release are validated, and the names the platform's entry
 module imports are reserved. A Python release is one `driver_<package>` package of `.py`
 modules and may also carry `python_modules/<path>` for its dependencies (#2390). It does

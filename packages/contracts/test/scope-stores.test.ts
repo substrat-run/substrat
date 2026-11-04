@@ -32,6 +32,7 @@ import {
   storeDiscardStageResult,
   storeDriverDumpPageBytes,
   storeExportPageResult,
+  storeSelfcheckResult,
   storeStagePageResult,
   storeSizeResult,
   storeWipeResult,
@@ -361,6 +362,7 @@ describe('a store driver declares the page of its dump it takes (D-69)', () => {
       'substrat.size',
       'substrat.wipe',
       'substrat.erase',
+      'substrat.selfcheck',
     ]);
   });
 
@@ -369,9 +371,9 @@ describe('a store driver declares the page of its dump it takes (D-69)', () => {
     expect(storeDriverDumpPageBytes('unregistered')).toBe(STORE_DUMP_PAGE_MAX_BYTES);
   });
 
-  it('refuses a registration with no page size, one over the store page cap, or one that is not a positive integer', () => {
+  it('admits a registration with no page size, as a plane that predates it serves; refuses one over the cap or not a positive integer', () => {
     const registration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
-    expect(storeDriverRegistration.safeParse(registration).success).toBe(false);
+    expect(storeDriverRegistration.safeParse(registration).success).toBe(true);
     for (const bad of [0, -1, 1.5, '900000', STORE_DUMP_PAGE_MAX_BYTES + 1]) {
       expect(storeDriverRegistration.safeParse({ ...registration, dumpPageMaxBytes: bad }).success, String(bad)).toBe(false);
     }
@@ -387,7 +389,13 @@ describe('reserved store results are additive (#2239)', () => {
     expect(storeCommitStageResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
     expect(storeExportPageResult.safeParse({ tables: [], next: null, revision: '1', at: 'now' }).success).toBe(true);
     expect(storeStagePageResult.safeParse({ staged: true, took: 3 }).success).toBe(true);
-    expect(storeDiscardStageResult.safeParse({ discarded: false, took: 3 }).success).toBe(true);  });
+    expect(storeDiscardStageResult.safeParse({ discarded: false, took: 3 }).success).toBe(true);
+    expect(storeSelfcheckResult.safeParse({ operations: ['read'], took: 3 }).success).toBe(true);
+  });
+
+  it('a selfcheck names its catalog by the rule an approved catalog is held to (#2814)', () => {
+    expect(storeSelfcheckResult.safeParse({ operations: ['substrat.wipe'] }).success).toBe(false);
+  });
 });
 
 // K-53's rename, on what a store's old spelling may already have reached: a dump and the admin log.

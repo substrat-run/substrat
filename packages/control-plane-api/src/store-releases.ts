@@ -19,7 +19,6 @@
  */
 import {
   STORE_RELEASE_MAX_BYTES,
-  mergeDumpPages,
   scopeStoreCanaryObjectName,
   scopeStoreCanaryScriptName,
   scopeStoreScriptName,
@@ -34,8 +33,11 @@ import {
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
   createUlid,
+  readStoreDump,
   runtimeSha256,
   ulid,
+  writeStoreDump,
+  type ReservedStoreCall,
   type HostAdmin,
   type StoreDriverApprovalRecord,
   type StoreDriverRolloutAction,
@@ -45,6 +47,7 @@ import {
 import { assertPythonDriverModules } from './store-entry.js';
 import {
   approvalFactsOf,
+  canaryFixtureOf,
   liveApprovalOf,
   type ScopeStoreEnsurerOptions,
   type StoreDriverApprovals,
@@ -371,7 +374,7 @@ export async function approveStoredDriverRelease(input: {
   return admin.approveStoreDriverRelease(actor, { driver, sha256, ...input.approval });
 }
 
-/** The most pages the canary reads from an object holding no data. */
+/** The most pages one canary read takes: the object holds at most a small fixture, a row a page. */
 const CANARY_MAX_PAGES = 1000;
 
 /** One reserved call at the canary script, on the canary's object. */
@@ -385,67 +388,94 @@ export type CanaryCall = (target: { scriptName: string; objectName: string }, op
 export const canaryObjectName = (binding: string): string => scopeStoreCanaryObjectName(createUlid()(), createUlid()(), binding);
 
 /**
+ * A dump as one string to compare: `objects` is optional (#2820), and an absent list and an
+ * empty one are the same table, so a driver that writes one and a fixture that omits it agree.
+ */
+const dumpText = (tables: readonly object[]) =>
+  JSON.stringify(tables.map((t) => ({ ...t, objects: (t as { objects?: unknown[] }).objects ?? [] })));
+
+/**
  * Every reserved operation, on a fresh object of the platform's own (D-63): its tenant and scope
  * ids are new ulids, from the runtime's CSPRNG, never in the directory, and its vertical segment
- * is no vertical's. Each answer is parsed by the call and asserted here; the first that is not
- * what an object holding no data answers fails the canary. The object is wiped at the end.
+ * is no vertical's. Each answer is parsed by the call and asserted here; the first that is wrong
+ * fails the canary. The object starts empty, takes the release's own fixture (#2814) and must
+ * export it back unchanged, then builds its runtime over that data (`substrat.selfcheck`) and
+ * must serve exactly the catalog the release's approval records. The object is wiped at the end.
  *
- * A dump is compared as its pages merge (D-69), and its tables are counted once each, so a driver
- * that cuts its pages differently is not refused. The stage is a round trip over several pages.
+ * The dump moves in pages (D-69) through the kernel's own `readStoreDump` and `writeStoreDump`,
+ * the reader and the writer a backup and a restore use, at the smallest page the contract allows,
+ * so the fixture is staged a row a page and read back as many pages. A dump is compared as its
+ * pages merge, so a driver that cuts its pages differently is not refused.
  */
-export async function canaryStoreRelease(input: { call: CanaryCall; scriptName: string; binding?: string }): Promise<void> {
+export async function canaryStoreRelease(input: {
+  call: CanaryCall;
+  scriptName: string;
+  /** The bytes of the release's `driver_<package>/substrat_canary.json`, if it ships one. */
+  fixture: Uint8Array | undefined;
+  /** The catalog the release's approval records. */
+  operations: readonly string[];
+  binding?: string;
+}): Promise<void> {
+  const fixture = canaryFixtureOf(input.fixture);
   const target = { scriptName: input.scriptName, objectName: canaryObjectName(input.binding ?? 'CANARY') };
+  const refused = (what: string, e: unknown) =>
+    e instanceof ControlPlaneError ? e : new ControlPlaneError(502, `canary refused: ${what} failed (${e instanceof Error ? e.message : String(e)})`);
   const step = async (operation: ReservedStoreOperation, check: (answer: unknown) => string | null, body?: unknown) => {
     let answer: unknown;
     try {
       answer = await input.call(target, operation, body);
     } catch (e) {
-      throw new ControlPlaneError(502, `canary refused: ${operation} failed (${e instanceof Error ? e.message : String(e)})`);
+      throw refused(operation, e);
     }
     const wrong = check(answer);
     if (wrong) throw new ControlPlaneError(502, `canary refused: ${operation} ${wrong}`);
     return answer;
   };
   const ok = () => null;
-  const staged = (expected: boolean, otherwise: string) => (a: unknown) => ((a as { staged: boolean }).staged === expected ? null : otherwise);
-  // The smallest page the contract allows, so a driver's chain and its stage run as they do on a large store.
-  const readChain = async (check: (tables: readonly ScopeDumpTable[]) => string | null): Promise<ScopeDumpTable[]> => {
-    const pages: ScopeDumpTable[][] = [];
-    const asked = new Set<string>();
-    let cursor: string | null = null;
-    do {
-      const page = (await step('substrat.export-page', ok, { cursor, maxBytes: 1 })) as { tables: ScopeDumpTable[]; next: string | null };
-      pages.push(page.tables);
-      if (page.next !== null && asked.has(page.next)) {
-        throw new ControlPlaneError(502, 'canary refused: substrat.export-page answered a cursor it had already given, so its chain does not move');
-      }
-      if (page.next !== null) asked.add(page.next);
-      cursor = page.next;
-    } while (cursor !== null && pages.length < CANARY_MAX_PAGES);
-    if (cursor !== null) throw new ControlPlaneError(502, `canary refused: substrat.export-page did not end in ${CANARY_MAX_PAGES} pages of an object holding no data`);
-    const merged = mergeDumpPages(pages);
-    const wrong = check(merged);
+  // The kernel's reader, bounded tighter than a store's chain: the canary's object holds a fixture.
+  let pagesRead = 0;
+  const call = ((operation: ReservedStoreOperation, body?: unknown) => {
+    if (operation === 'substrat.export-page' && ++pagesRead > CANARY_MAX_PAGES) {
+      throw new ControlPlaneError(502, `canary refused: substrat.export-page did not end in ${CANARY_MAX_PAGES} pages`);
+    }
+    return input.call(target, operation, body);
+  }) as ReservedStoreCall;
+  const read = async (check: (tables: readonly ScopeDumpTable[]) => string | null): Promise<void> => {
+    pagesRead = 0;
+    let tables: ScopeDumpTable[];
+    try {
+      tables = await readStoreDump(call, 1);
+    } catch (e) {
+      throw refused('substrat.export-page', e);
+    }
+    const wrong = check(tables);
     if (wrong) throw new ControlPlaneError(502, `canary refused: substrat.export-page ${wrong}`);
-    return merged;
   };
   const holdsNone = (message: string) => (tables: readonly ScopeDumpTable[]) => (tables.some((t) => t.rows.length > 0) ? message : null);
   await step('substrat.size', ok);
-  const exported = await readChain(holdsNone('exported rows from an object holding none'));
-  // The dump of an empty object, as fragments over three pages: its tables are named on each, so the
-  // commit must join them (and count each table once), not keep the first page or count fragments.
-  const stageId = ulid();
-  await step('substrat.stage-page', staged(true, 'did not stage a first page'), { stageId, seq: 0, tables: exported });
-  await step('substrat.stage-page', staged(false, 'staged a page it already held'), { stageId, seq: 0, tables: exported });
-  await step('substrat.stage-page', staged(true, 'did not stage a second page'), { stageId, seq: 1, tables: exported });
-  await step('substrat.stage-page', staged(true, 'did not stage a third page'), { stageId, seq: 2, tables: exported });
-  await step('substrat.commit-stage', (a) => ((a as { tables: number }).tables === exported.length ? null : `imported ${(a as { tables: number }).tables} of ${exported.length} tables`), { stageId });
-  await readChain((tables) => (JSON.stringify(tables) === JSON.stringify(exported) ? null : 'did not export what it imported'));
+  await read(holdsNone('exported rows from an object holding none'));
+  try {
+    await writeStoreDump(call, fixture.tables, 1);
+  } catch (e) {
+    throw refused('loading the fixture (substrat.stage-page, substrat.commit-stage)', e);
+  }
+  await read((tables) => (dumpText(tables) === dumpText(fixture.tables) ? null : 'did not export the fixture it imported'));
+  // A page sent again is held once, and a stage that is discarded is dropped, never committed.
   const dropped = ulid();
-  await step('substrat.stage-page', ok, { stageId: dropped, seq: 0, tables: exported });
+  const staged = (expected: boolean, otherwise: string) => (a: unknown) => ((a as { staged: boolean }).staged === expected ? null : otherwise);
+  await step('substrat.stage-page', staged(true, 'did not stage a first page'), { stageId: dropped, seq: 0, tables: fixture.tables });
+  await step('substrat.stage-page', staged(false, 'staged a page it already held'), { stageId: dropped, seq: 0, tables: fixture.tables });
   await step('substrat.discard-stage', (a) => ((a as { discarded: boolean }).discarded ? null : 'did not discard a stage it held'), { stageId: dropped });
+  const approved = [...input.operations].sort();
+  await step('substrat.selfcheck', (a) => {
+    const served = [...(a as { operations: string[] }).operations].sort();
+    return JSON.stringify(served) === JSON.stringify(approved)
+      ? null
+      : `serves [${served.join(', ')}], and the approval records [${approved.join(', ')}]`;
+  });
   await step('substrat.erase', (a) => ((a as { erased: number }).erased === 0 ? null : 'erased rows of a subject the object never held'), { subjectId: ulid() });
   await step('substrat.wipe', ok);
-  await readChain(holdsNone('still holds rows after its wipe'));
+  await read(holdsNone('still holds rows after its wipe'));
 }
 
 export interface StoreDriverRolloutDeps {
@@ -460,8 +490,8 @@ export interface StoreDriverRolloutDeps {
    * uploaded: false for a script already there, built the same way.
    */
   ensure: (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to: string; approvals: StoreDriverApprovals }) => Promise<boolean>;
-  /** Put `to` in the driver's canary script; answers its name. */
-  ensureCanary: (to: string, approvals: StoreDriverApprovals) => Promise<{ scriptName: string }>;
+  /** Put `to` in the driver's canary script; answers its name and the release's canary fixture. */
+  ensureCanary: (to: string, approvals: StoreDriverApprovals) => Promise<{ scriptName: string; fixture?: Uint8Array }>;
   callCanary: CanaryCall;
   /** For a test: a smaller batch than {@link ROLLOUT_VERTICALS_PER_REQUEST}. */
   perRequest?: number;
@@ -553,7 +583,8 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     };
 
     try {
-      await deps.ensureCanary(sha256, approvals).then(({ scriptName }) => canaryStoreRelease({ call: deps.callCanary, scriptName }));
+      const { scriptName, fixture } = await deps.ensureCanary(sha256, approvals);
+      await canaryStoreRelease({ call: deps.callCanary, scriptName, fixture, operations: approved.operations });
     } catch (e) {
       // No vertical's script moved in this request; the current release stays. A row the end
       // cannot write (the hold lapsed) reads as diverged, which is what it then is.

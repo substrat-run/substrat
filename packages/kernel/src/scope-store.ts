@@ -17,6 +17,7 @@ import {
   storeOperationName,
   storeRequest,
   storeResponse,
+  storeSelfcheckResult,
   storeSizeResult,
   storeStagePageInput,
   storeStagePageResult,
@@ -279,6 +280,7 @@ const RESERVED_RESULT = {
   'substrat.size': storeSizeResult,
   'substrat.wipe': storeWipeResult,
   'substrat.erase': storeEraseResult,
+  'substrat.selfcheck': storeSelfcheckResult,
 } as const satisfies { [O in ReservedStoreOperation]: { parse(value: unknown): ReservedStoreResults[O] } };
 
 /** What a reserved operation answers, parsed (#2239). */

@@ -37,6 +37,7 @@ import {
   eventDelivery,
   eventFacetResult,
   historyEntry,
+  lakeEventsPage,
   LIST_PAGE_MAX,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
@@ -58,6 +59,7 @@ import {
   permissionDenial,
   peerGrantsStatusEntry,
   peerSwitchResult,
+  teamLakeEventsInput,
   previewAuth,
   REBIND_REVIEW_REASONS,
   scopeDump,
@@ -1059,6 +1061,15 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().optional(), ...pageInput }),
     output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/audit' },
+  },
+  'dashboard/list-team-lake-events': {
+    summary:
+      "One page of this team's events across all its apps from the event lake, newest first. `since` is required, and the window from it may span at most 31 days, ending at `until` or the platform's clock, whichever is earlier: a read without `until` should ask for a little under 31 days, or pin `until` while paging",
+    // No tenant field: the team is the one the URL names. `available: false` while the lake is off.
+    input: teamLakeEventsInput,
+    // `consistency` is the plane's marker (`eventual` today), relayed open (#2401's rule).
+    output: lakeEventsPage.extend({ available: z.boolean(), consistency: z.string() }),
+    http: { method: 'GET', path: '/lake/events' },
   },
   'dashboard/fleet-health': {
     summary: "Every app of this team with its health verdict, worst first",

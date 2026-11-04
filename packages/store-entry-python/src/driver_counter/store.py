@@ -36,6 +36,9 @@ class CounterStore(DurableObject):
         operation = payload.get("operation")
         if operation in ("read", "substrat.size"):
             return _json(self._row().n)
+        if operation == "substrat.selfcheck":
+            # Nothing to build beyond the table the constructor made: the catalog it serves.
+            return _json({"operations": ["increment", "read"]})
         if operation == "increment":
             self.sql.exec("UPDATE counter SET n = n + 1 WHERE id = 1")
             return _json(self._row().n)

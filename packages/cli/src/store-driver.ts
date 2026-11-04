@@ -11,7 +11,9 @@
  *   fleet takes more than one request: the command says so, and running it again continues.
  * - `rollback` returns the driver to the immediately previous good release.
  *
- * What is packed is the driver's own package, every `driver_<name>/…/*.py` under `--dir`, and a
+ * What is packed is the driver's own package, every `driver_<name>/…/*.py` under `--dir`, its
+ * canary fixture `driver_<name>/substrat_canary.json` (#2814: a small `substrat.export` holding
+ * rows, which a rollout's canary imports; a release without one is not rolled out), and a
  * `python_modules/` directory next to it (#2390). Paths are relative to `--dir`. `__pycache__`
  * is skipped, and so are the two markers `pywrangler sync` writes into `python_modules/`
  * (`.synced` and `pyvenv.cfg`), which the output names. Anything else is refused by the same
@@ -129,7 +131,8 @@ export function packStoreDriverDir(dir: string, entry: string, sourceCommit: str
   const files = packedFilesOf(dir);
   const packages = new Set<string>();
   const classes = new Map(files.map((path) => [path, classifyPythonStoreModule(path)] as const));
-  for (const classified of classes.values()) if (classified.kind === 'driver') packages.add(classified.packageName);
+  // The fixture names its package too, as the server's module rule counts it.
+  for (const classified of classes.values()) if (classified.kind !== 'vendored') packages.add(classified.packageName);
   if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one driver_ package, not ${[...packages].join(', ') || 'none'}`);
   const entryClass = classes.get(entry);
   if (!entryClass) throw new Error(`'${dir}' has no ${entry}`);

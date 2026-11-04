@@ -1,7 +1,7 @@
 import { tenantId as tenantIdSchema, type ConnectionCredential, type ConnectionProbe } from '@substrat-run/contracts';
 import { deadlineFetch, settleConnectionUse, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
 import { BolagsverketApi } from './api.js';
-import { bolagsverketCredential, type BolagsverketConfig, type BolagsverketCredential } from './config.js';
+import { BOLAGSVERKET_READ_SCOPE, bolagsverketCredential, type BolagsverketConfig, type BolagsverketCredential } from './config.js';
 import { BolagsverketError } from './errors.js';
 import type { Fetch } from './token.js';
 
@@ -82,17 +82,23 @@ async function probeWith(
   const api = new BolagsverketApi(credential, fetch, { ...options, maxRateLimitRetries: 0 });
   try {
     const { environment, scopes } = await api.ping();
-    return {
-      ok: true,
-      refused: false,
-      accountRef: null,
-      accountLabel: null,
-      facts: [
-        { label: 'Environment', value: environment },
-        { label: 'Scopes', value: scopes.length > 0 ? scopes.join(' ') : '—' },
-      ],
-      error: null,
-    };
+    const facts = [
+      { label: 'Environment', value: environment },
+      { label: 'Scopes', value: scopes.length > 0 ? scopes.join(' ') : '—' },
+    ];
+    // A ping-only client tests green on the ping and then fails every lookup, so a client
+    // without the read scope is not a working connection.
+    if (!scopes.includes(BOLAGSVERKET_READ_SCOPE)) {
+      return {
+        ok: false,
+        refused: true,
+        accountRef: null,
+        accountLabel: null,
+        facts: [...facts, { label: 'Lookups', value: `not granted: the client lacks ${BOLAGSVERKET_READ_SCOPE}` }],
+        error: `the Bolagsverket client was not granted ${BOLAGSVERKET_READ_SCOPE}, so it cannot look organisations up`,
+      };
+    }
+    return { ok: true, refused: false, accountRef: null, accountLabel: null, facts, error: null };
   } catch (err) {
     return {
       ok: false,

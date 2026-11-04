@@ -111,6 +111,8 @@ export function counterScopeStoreRunner(options: CounterRunnerOptions = {}): Sco
         }
         case 'substrat.size':
           return { result: { bytes: totalOf(object) + stagedTotalOf(stages.get(id)?.pages ?? []) } };
+        case 'substrat.selfcheck':
+          return { result: { operations: ['increment', 'read'] } };
         case 'substrat.wipe':
           objects.delete(id);
           stages.delete(id);
