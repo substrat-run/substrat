@@ -20,10 +20,9 @@
  * ```
  *
  * The signature is base64url over those exact UTF-8 bytes. An envelope is fresh for
- * {@link SCOPE_STORE_ENVELOPE_WINDOW_SECONDS} on either side of the verifier's clock. A
- * store does not remember nonces (RFC Q2): an envelope replayed inside the window, at the
- * same script and object with the same body, is accepted again. The reserved operations are
- * idempotent, and a driver operation's retry safety is the vertical's.
+ * {@link SCOPE_STORE_ENVELOPE_WINDOW_SECONDS} on either side of the verifier's clock. This
+ * function keeps no state: the store object spends each verified envelope's nonce in its own
+ * storage (K-59), so the same envelope is admitted once.
  *
  * The script line is an opaque string compared for equality: the signer builds it, the
  * verifier is told its own. Nothing here parses it.

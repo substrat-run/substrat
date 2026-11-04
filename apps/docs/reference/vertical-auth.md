@@ -293,7 +293,7 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   There is no admin gate, because the kernel's bound is the key on the record. An erasure of
   the record, or of its person, unbinds too.
 - `mountBindLinkRoutes(app, deps)`, from the same subpath, binds someone who is **already a
-  member** to a record (#2817, K-59). A binding invite cannot name them: its principal is minted
+  member** to a record (#2817, K-60). A binding invite cannot name them: its principal is minted
   for the invite, and a member's own seat is never offered as a link again. A bind link names one
   member and one record, and binds that member when their own session presents it. No principal
   changes hands.

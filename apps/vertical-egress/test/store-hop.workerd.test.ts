@@ -111,7 +111,7 @@ beforeAll(async () => {
         compatibilityDate,
         compatibilityFlags: store.compatibilityFlags,
         bindings: store.text,
-        durableObjects: { [store.binding]: store.className },
+        durableObjects: { [store.binding]: { className: store.className, useSQLite: true } },
       },
     ],
   });

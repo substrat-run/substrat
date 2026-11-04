@@ -1,5 +1,5 @@
 ---
-id: K-59
+id: K-60
 date: 2026-11-04
 layer: kernel
 title: "A bind link binds the existing member it names, when their own session presents it"
@@ -9,7 +9,7 @@ amends: []
 tracking: ["#2817", "#1686"]
 ---
 
-# K-59 — A bind link binds the existing member it names, when their own session presents it
+# K-60 — A bind link binds the existing member it names, when their own session presents it
 
 **A third capability mode, `bind`, binds a member who already exists to a record.** A binding invite (#1686) is a `become` link that also binds its claimant. Its principal is minted fresh for the invite, and a principal-minted `become` is refused for a principal some `become` has already yielded (`target-already-claimed`). So nobody who is already a member could be bound to a record later. That includes an owner who also does the work, and a colleague who starts holding a record after they joined.
 

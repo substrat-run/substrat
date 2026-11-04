@@ -37,6 +37,11 @@ export interface RequestRecord extends AuthRecording {
   logLines?: number | null;
   eventTypes: string[];
   entities: string[];
+  /**
+   * #2762: the lifecycle moves the request caused, each entity as `<entityType>:<entityId>`.
+   * Optional: a plane older than #2762 sends none, which reads as not recorded.
+   */
+  transitions?: Array<{ entity: string; from: string | null; to: string }> | null;
   versionId: string | null;
   /**
    * #1901: `request`, or the kind of async work the scope host logged (`consumer`,

@@ -24,6 +24,8 @@ function initialTheme(): ConsoleTheme {
 export function useConsoleTheme(): [ConsoleTheme, () => void] {
   const [theme, setTheme] = useState<ConsoleTheme>(initialTheme);
   useEffect(() => {
+    // The page behind the console follows it (console.css); App clears this on a hand-off screen.
+    document.documentElement.setAttribute('data-console-theme', theme);
     try {
       localStorage.setItem(KEY, theme);
     } catch {

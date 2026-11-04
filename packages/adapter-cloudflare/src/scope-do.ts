@@ -1261,7 +1261,7 @@ function dumpRowFilter(name: string): { where: string; bindings: unknown[] } {
 }
 
 /** An estimate of a row's size on the wire, for sizing a dump page (#2450). Over, never under. */
-function rowBytes(row: readonly unknown[]): number {
+export function rowBytes(row: readonly unknown[]): number {
   let n = 0;
   for (const cell of row) {
     if (typeof cell === 'string') n += cell.length * 3 + 2;

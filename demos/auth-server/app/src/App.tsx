@@ -207,6 +207,14 @@ export default function App() {
     run();
   }, [run]);
 
+  // A hand-off screen is the relying party's to theme, so the console's page colour (set before
+  // the first paint by index.html, kept by `useConsoleTheme`) comes off as soon as one renders.
+  useEffect(() => {
+    if (phase.t !== 'loading' && phase.t !== 'dashboard' && phase.t !== 'not-admin') {
+      document.documentElement.removeAttribute('data-console-theme');
+    }
+  }, [phase.t]);
+
   /**
    * Sign-in finished without an OIDC request to resume — hand the URL to the console.
    *

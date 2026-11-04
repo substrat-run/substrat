@@ -140,12 +140,21 @@ is shown on a driver written in TypeScript as well as on one in Python.
 
 ## The open part
 
-This step moves the contract and the drivers. It does not yet bound what the hosts and the platform
-hold. Backup, restore, pull and snapshot still read a store's whole dump into memory, page by page
-into one list, and write it from one list. A store that fits the isolate's memory now crosses the
-store entry's limits, but a store that does not still cannot be backed up. A later change makes those
-paths bounded, with a store's pages written as objects of their own and read back as jobs. Until
-then this record fixes the contract, not the end of the work.
+The first step moved the contract and the drivers. The second bounds what the platform holds on a
+backup, a restore and a snapshot: one page of a store at a time. A backup writes each store's pages as
+`store-page` entries of the backup (#2839's format), named in its manifest's `storeEntries`
+(`{ binding, driver, stageId, entries, revision }`, none for an older manifest, whose stores are inline
+and still restore). A restore stages every store, loads the scope, commits the stores and replays
+erasures, in that order: nothing of a store changes before its commit, and once a commit was attempted
+the replay runs whatever follows. A commit that fails part-way leaves some stores restored and others
+not, and the answer names them; the same restore again converges, since every commit is a whole
+replace. A snapshot stages the fork's stores straight from the source's.
+
+These moves run in the request, within one budget of 300 pages or 20 s, and past it refuse (409) with
+nothing changed, so a restore that reaches its commits has room to finish them and its replay. Still
+open: a store past that budget cannot be backed up, restored or snapshotted (no job runs the rest), a
+reaped scope's backup cannot be restored into another scope, and a pull or a tenant export still reads
+a store whole into one body (question 1).
 
 ## Revisit
 

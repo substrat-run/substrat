@@ -74,6 +74,18 @@
   font-size: var(--text-base);
   line-height: var(--lh-base);
 }
+/*
+ * The page behind the console, before it mounts and around it after (`data-console-theme`, set
+ * by index.html's pre-paint script and kept by `useConsoleTheme`). Without it the first paint
+ * is tokens.css's dark `--bg`, the hand-off screens' default, and a light console flashed
+ * black on every reload. The two values are `--surface-page` in each theme, written as the
+ * primitives because the `[data-theme]` that flips it lives on the console root, not <html>.
+ */
+html[data-console-theme='light'] { color-scheme: light; }
+html[data-console-theme='light'] body { background: var(--gray-25); }
+html[data-console-theme='dark'] { color-scheme: dark; }
+html[data-console-theme='dark'] body { background: var(--gray-950); }
+
 /* tokens.css gives `code` a fixed light grey that only reads on its dark panels. */
 .console-root code { color: var(--text-primary); }
 

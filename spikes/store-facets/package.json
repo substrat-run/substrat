@@ -1,0 +1,16 @@
+{
+  "name": "store-facets-spike",
+  "private": true,
+  "type": "module",
+  "description": "Evidence for D-70: a store driver's code in a loaded isolate per object, as a facet, with no network. Not a workspace member.",
+  "scripts": {
+    "local": "node run-local.mjs"
+  },
+  "dependencies": {
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.153.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["workerd", "esbuild"]
+  }
+}

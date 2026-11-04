@@ -87,9 +87,14 @@ later read could return it even deliberately. `skip_consent` is a column now rat
   create anybody. Someone a relying party sent here can sign **up** and resume that authorize
   request, landing back at the application rather than on this dashboard.
 - **What a machine client may be granted.** `MACHINE_SCOPES` (scopes separated by spaces or
-  commas) is declared the same way and read on the same per-request rebuild, but the dashboard
-  only reads it: it is the operator's ceiling on unattended credentials, set where the issuer's
-  environment is. A **machine** application
+  commas) is declared the same way and read on the same per-request rebuild, and the
+  dashboard writes it the same way too (APIs → Machine access, or in place on a machine
+  application's form while it is empty), so a var, the Env tab and the dashboard all set one
+  answer and the last write wins. Only a dashboard administrator can write it. The write is
+  judged before it is stored: a malformed token or a sign-in scope is refused with the reason,
+  never stored to be read as none. Removing a scope lists the machine clients that hold it
+  before saving; it stops being minted on the next token request, and tokens already issued
+  stay valid until they expire. A **machine** application
   (`client_credentials`, #2267) has no redirect URIs, consent or sign-in policy; it is stored as
   the plugin's `web` type with `client_credentials` as its only grant, and its kind is fixed once
   registered. Unset, no machine client can be registered or get a token. A sign-in scope

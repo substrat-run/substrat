@@ -12,6 +12,7 @@ import {
 } from '../../api';
 import { Field } from '../../primitives';
 import { SignInPolicyEditor } from '../SignInPolicyEditor';
+import { MachineScopesEditor } from '../MachineScopesEditor';
 import { draftFromStored, draftProblems, draftToStored, resolveAny, type PolicyDraft } from '../sign-in-draft';
 
 /**
@@ -185,7 +186,7 @@ export function useCoreForm(client: RegisteredClient | null, onError: (message: 
               {client && ' Fixed once registered: register another application to change it.'}
             </em>
           </label>
-          {machine && <MachineScopes ceiling={ceiling} chosen={scopes} onChange={setScopes} />}
+          {machine && <MachineScopes ceiling={ceiling} chosen={scopes} onChange={setScopes} onCeiling={setCeiling} />}
           <Field
             label="Logo URL"
             value={icon}
@@ -255,22 +256,30 @@ export function useCoreForm(client: RegisteredClient | null, onError: (message: 
  * rather than free text: the list is the operator's ceiling, and a box can only offer what is
  * on it. A scope the client holds that has since left the list gets no box, but is named, so a
  * save that drops it is not a surprise — the token endpoint stopped granting it already.
+ *
+ * With no ceiling yet, the ceiling's own editor is offered in place, so a first machine client
+ * is registered without leaving the form.
  */
 function MachineScopes({
-  ceiling, chosen, onChange,
+  ceiling, chosen, onChange, onCeiling,
 }: {
   ceiling: IssuerSettings | null;
   chosen: string[];
   onChange: (scopes: string[]) => void;
+  onCeiling: (settings: IssuerSettings) => void;
 }) {
   if (!ceiling) return <p className="muted small">Loading this issuer&apos;s machine scopes…</p>;
   const offered = ceiling.machineScopes;
   if (!offered.length) {
     return (
-      <p className="error">
-        {ceiling.machineScopesError ??
-          'This issuer grants no machine scopes: set MACHINE_SCOPES in its environment before registering a machine client.'}
-      </p>
+      <fieldset className="field">
+        <span>Scopes</span>
+        <em className="hint">
+          This issuer grants no machine scopes yet. Define the ones a machine application may be granted — they
+          apply issuer-wide, and are also editable under APIs → Machine access.
+        </em>
+        <MachineScopesEditor settings={ceiling} onChanged={onCeiling} />
+      </fieldset>
     );
   }
   const stale = chosen.filter((s) => !offered.includes(s));

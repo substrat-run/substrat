@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-128 decisions · 69 plan · 59 kernel
+129 decisions · 69 plan · 60 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -126,7 +126,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-49](decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) | 2026-10-12 | kernel | A scope store is a platform-run object per scope, reached by its own door <br>*amended by D-69* <br>*amended by K-50* <br>*amended by K-52* <br>*amended by K-53* | #2207 |
 | [K-50](decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md) | 2026-10-13 | kernel | A hosted scope store's lifecycle is driven by the platform, from its own record <br>*amends K-49* <br>*amended by K-52* | #2207, #2210, #2211 |
 | [K-51](decisions/K-051-the-assistant-s-record-is-an-engine-composed-by-call-the-run-is-host-code.md) | 2026-10-15 | kernel | The assistant's record is an engine composed by call; the run is host code, written by a key no person holds <br>*awaiting ratification* | #2283 |
-| [K-52](decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) | 2026-10-15 | kernel | The scope-store envelope is Ed25519 per audience, a store script holds public keys only, and an object is bound to its name by its id <br>*amends K-49, K-50* | #2287, #2289, #2290 |
+| [K-52](decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) | 2026-10-15 | kernel | The scope-store envelope is Ed25519 per audience, a store script holds public keys only, and an object is bound to its name by its id <br>*amends K-49, K-50* <br>*amended by K-59* | #2287, #2289, #2290 |
 | [K-53](decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md) | 2026-10-15 | kernel | A tenant-level store is a named instance that a tenant's verticals connect to explicitly <br>*amends K-49* | #2207, #2303 |
 | [K-54](decisions/K-054-a-mutation-can-mint-a-single-use-upload-link-that-takes-a-file-with-no-session.md) | 2026-10-16 | kernel | A mutation can mint a single-use upload link that takes a file with no session | #2311, #2323, #2314, #2315 |
 | [K-55](decisions/K-055-a-platform-host-s-standing-principal-holds-a-system-only-key-through-a-role-declared-holder-system.md) | 2026-10-18 | kernel | A platform host's standing principal holds a system-only key through a role declared holder: system <br>*awaiting ratification* | #2283 |
@@ -139,4 +139,5 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-67](decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md) | 2026-10-31 | plan | The graph driver is admitted under a reviewed-release isolation lift <br>*awaiting ratification* <br>*amends D-63* | #2210, #2394, #2830 |
 | [D-68](decisions/D-068-a-store-driver-release-may-carry-a-dependency-s-data-files.md) | 2026-11-01 | plan | A store-driver release may carry a dependency's data files beside its modules <br>*awaiting ratification* <br>*amends D-63* | #2300, #2390 |
 | [D-69](decisions/D-069-a-store-driver-moves-in-pages.md) | 2026-11-03 | plan | A store driver moves in pages, not in one call <br>*awaiting ratification* <br>*amends D-63, K-49* | #2854, #2811, #2450 |
-| [K-59](decisions/K-059-a-bind-link-binds-the-existing-member-it-names-when-their-own-session-presents-it.md) | 2026-11-04 | kernel | A bind link binds the existing member it names, when their own session presents it | #2817, #1686 |
+| [K-59](decisions/K-059-a-store-object-admits-each-envelope-once.md) | 2026-11-04 | kernel | A store object admits each envelope once <br>*awaiting ratification* <br>*amends K-52* | #2830 |
+| [K-60](decisions/K-060-a-bind-link-binds-the-existing-member-it-names-when-their-own-session-presents-it.md) | 2026-11-04 | kernel | A bind link binds the existing member it names, when their own session presents it | #2817, #1686 |

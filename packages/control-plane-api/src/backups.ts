@@ -37,6 +37,7 @@ import type {
   ScopeDump,
   ScopeDumpChange,
   ScopeDumpPageTable,
+  ScopeDumpTable,
 } from '@substrat-run/contracts';
 
 // `ScopeBackup` — the metadata shape a stored copy reports — is a WIRE shape (the reap
@@ -52,18 +53,38 @@ export type ScopeDumpHeader = Omit<ScopeDump, 'tables'>;
  * the scope took while its pages were read. Read in order, the entries are the dump, exactly as
  * a paged copy stages it (#2450), so no single call or object ever holds the whole scope.
  */
-export type ScopeBackupEntry =
+export type ScopeBackupScopeEntry =
   | { kind: 'page'; tables: ScopeDumpPageTable[] }
   | { kind: 'changes'; tables: ScopeDumpChange[] };
 
+/** Any stored part: a scope's, or a page of one of its stores' chains (D-69). */
+export type ScopeBackupEntry = ScopeBackupScopeEntry | { kind: 'store-page'; tables: ScopeDumpPageTable[] };
+
+/**
+ * One scope store as a backup holds it (D-69): its chain's pages as `store-page` entries under a
+ * stage of their own, in chain order, read at `revision`. The manifest lists these in place of the
+ * header's inline `stores`, so neither the manifest nor any call holds a store whole.
+ */
+export interface ScopeBackupStoreEntries {
+  binding: string;
+  driver: string;
+  stageId: string;
+  entries: number;
+  revision: string;
+}
+
 /**
  * A held backup as a restore reads it: its header, how many entries hold its tables, and each
- * entry, read in the order it was written.
+ * entry, read in the order it was written. `storeEntries` names its stores held in pages; a backup
+ * written before them carries its stores inline in `header.stores`, and lists none here.
  */
 export interface StoredScopeBackup {
   header: ScopeDumpHeader;
   entries: number;
-  entry(index: number): Promise<ScopeBackupEntry>;
+  entry(index: number): Promise<ScopeBackupScopeEntry>;
+  storeEntries: ScopeBackupStoreEntries[];
+  /** Page `seq` of a store's chain, as `storeEntries` names it. */
+  storePage(store: Pick<ScopeBackupStoreEntries, 'stageId'>, seq: number): Promise<ScopeDumpPageTable[]>;
 }
 
 /**
@@ -76,10 +97,11 @@ export interface ScopeBackupWriter {
   /** Drop a stage's entries. Best effort: retention reaches whatever is left. */
   discard(stageId: string): Promise<void>;
   /**
-   * Make the stage's first `entries` entries the backup, and return its metadata. Durable before
-   * it returns: the reap's whole guarantee is that this resolved before any byte was wiped.
+   * Make the stage's first `entries` entries the backup, with each store's entries beside them, and
+   * return its metadata. Durable before it returns: the reap's whole guarantee is that this resolved
+   * before any byte was wiped.
    */
-  commit(input: { stageId: string; entries: number; tables: number }): Promise<ScopeBackup>;
+  commit(input: { stageId: string; entries: number; tables: number; storeEntries: readonly ScopeBackupStoreEntries[] }): Promise<ScopeBackup>;
 }
 
 export interface ScopeBackupStore {
@@ -115,14 +137,32 @@ export interface ScopeBackupStore {
  */
 export interface DirectoryBackupStore {
   /**
-   * Store one full-fidelity directory dump and return its metadata. Durable before it
-   * returns, like the scope store's `put`.
+   * Start writing one copy a page at a time (#2868): the directory outgrew being held as one
+   * value. Pages go in order from 0, and `commit` makes the copy listed and readable, durable
+   * before it returns. A copy that is never committed is never listed; `discard` drops its pages.
    */
-  put(input: { dump: DirectoryDump }): Promise<DirectoryBackup>;
+  begin(input: { capturedAt: string }): DirectoryBackupWriter;
   /** Every directory copy held, newest first. */
   list(): Promise<DirectoryBackup[]>;
-  /** One copy's dump, by its capture time. Null when no such copy is held. */
+  /** One copy's dump, by its capture time, its pages joined. Null when no such copy is held. */
   get(input: { capturedAt: string }): Promise<DirectoryDump | null>;
-  /** Drop one copy — how the retention window is enforced. Missing is not an error. */
+  /** Drop one copy, its pages included — how the retention window is enforced. Missing is not an error. */
   delete(input: { capturedAt: string }): Promise<void>;
+  /**
+   * Note that a copy was started (#2868), before its first page is read. A copy that fails leaves
+   * no listed copy, so this is what the schedule waits out instead of trying again every pass.
+   */
+  markAttempt(input: { attemptedAt: string }): Promise<void>;
+  /** The newest `markAttempt`, or null when none was noted. */
+  lastAttempt(): Promise<string | null>;
+}
+
+/** One directory copy being written (#2868). */
+export interface DirectoryBackupWriter {
+  /** Store page `seq` of the copy. */
+  put(seq: number, tables: ScopeDumpTable[]): Promise<void>;
+  /** Drop every page written; the copy was not finished. */
+  discard(): Promise<void>;
+  /** Finish the copy of `entries` pages and `tables` tables, and return its metadata. */
+  commit(input: { entries: number; tables: number }): Promise<DirectoryBackup>;
 }
