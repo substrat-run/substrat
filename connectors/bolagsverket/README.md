@@ -143,7 +143,7 @@ data. To run the live suite against the test environment, put the pair in
 BOLAGSVERKET_CLIENT_ID=…
 BOLAGSVERKET_CLIENT_SECRET=…
 # BOLAGSVERKET_ENV=prod              # default: test
-# BOLAGSVERKET_TEST_ORGNR=…          # the entry to look up
+# BOLAGSVERKET_TEST_ORGNR=…          # an entry that exists in that environment
 ```
 
 When the live suite disagrees with the fixtures, correct `test/fixture.ts` and

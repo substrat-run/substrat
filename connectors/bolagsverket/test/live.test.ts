@@ -49,10 +49,14 @@ const credential: BolagsverketCredential | null =
     : null;
 
 const environment: BolagsverketEnvironment = env.BOLAGSVERKET_ENV === 'prod' ? 'prod' : 'test';
-/** A register entry to look up; the acceptance environment's data may differ from production's. */
+/**
+ * A register entry that EXISTS in the selected environment. The acceptance environment's
+ * data may differ from production's, so set `BOLAGSVERKET_TEST_ORGNR` to one it holds.
+ */
 const orgnr = env.BOLAGSVERKET_TEST_ORGNR ?? '5560125790';
 
-describe.skipIf(credential === null)('bolagsverket connector — live', () => {
+// Each request may take 30 s and a lookup may sit out a 429, so the default 5 s is too short.
+describe.skipIf(credential === null)('bolagsverket connector — live', { timeout: 120_000 }, () => {
   const api = () =>
     new BolagsverketApi(
       credential!,
@@ -74,6 +78,8 @@ describe.skipIf(credential === null)('bolagsverket connector — live', () => {
     const result = await api().validateOrganisation(orgnr);
     console.log(`bolagsverket (${environment}): ${JSON.stringify(result, null, 2)}`);
     expect(organisationValidation.parse(result)).toEqual(result);
+    // A wrong endpoint or body can come back "not found"; only a found entry checks the shape.
+    expect(result.exists).toBe(true);
     if (result.exists) expect(result.name).not.toBeNull();
   });
 });
