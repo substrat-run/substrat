@@ -48,7 +48,11 @@ import {
   boundedBecomeRevoke,
   becomeLinkState,
   boundedUnbind,
+  boundedBindLinkMint,
+  capabilityExchange,
   capabilityId,
+  capabilityLabel,
+  instant,
   entityRef,
   coverage,
   coverageRefusal,
@@ -58,6 +62,8 @@ import {
   type BoundedBecomeRevoke,
   type BecomeLinkState,
   type BoundedUnbind,
+  type BoundedBindLinkMint,
+  type PrincipalBindLinkInput,
   type EntityRef,
   type CapabilityExchange,
   type CapabilityId,
@@ -603,5 +609,109 @@ export function mountUnbindRoute<E extends object, N extends { scopeId: string }
     // A host older than #2818 answers no `revokedLinks` (it revoked none): passed on as absent, never as [].
     const { unbound, revokedLinks } = answer.data;
     return c.json(revokedLinks === undefined ? { unbound } : { unbound, revokedLinks });
+  });
+}
+
+/** What the bind link routes (#2817) need: the unbind route's node and caller gate, and the host's two verbs. */
+export interface BindLinkRouteDeps<E extends object, N extends { scopeId: string }> {
+  nodeFor: (req: Request, env: E) => N | Promise<N>;
+  /**
+   * Who is asking: throw 401 for nobody. On the mint it is the minter, bounded by the binding's
+   * key on the record in the kernel; on the accept it is the PRESENTER — the session's own
+   * principal, the only one the link may bind.
+   */
+  callerOf: (c: Context<{ Bindings: E }>) => Promise<InviteCaller>;
+  /** The host's `mintBindLinkBounded`: bound and write in one scope task. */
+  mintBindLinkBounded: (env: E, node: N, caller: PrincipalId, input: PrincipalBindLinkInput) => Promise<BoundedBindLinkMint>;
+  /** The host's `exchangeCapability`, asked for a `bind` link by its presenter. */
+  exchangeBindLink: (env: E, node: N, secret: string, presenter: PrincipalId) => Promise<CapabilityExchange | null>;
+}
+
+/**
+ * SQLite's words for a UNIQUE constraint refusing a write — the same in both scope hosts, which are
+ * both SQLite (better-sqlite3 and a Durable Object's storage), and carried across the DO's RPC.
+ */
+const UNIQUE_REFUSAL = /\bUNIQUE constraint failed\b/;
+
+/** The body the bind link mint takes: the member to bind, and optionally an expiry and a label. */
+export const bindLinkBody = z.object({ principal: principalId, expiresAt: instant.optional(), label: capabilityLabel.optional() });
+
+/**
+ * Mount the BIND LINK routes (#2817) — how a member who already belongs to the scope comes to hold
+ * a record, for every vertical that declares a binding shape. A binding invite binds a principal
+ * minted for it; an existing member — an owner who also does the work, a colleague who starts
+ * holding a record later — is bound by a link addressed to them, presented from their own session:
+ *
+ *   POST /api/bindings/:entityType/:entityId/links  { principal, expiresAt?, label? } → 201 { id, token, expiresAt }
+ *   POST /api/bindings/accept                        { token } → { principal, bound }
+ *
+ * A MEMBER is a principal holding at least one permission at the scope's node — through a role or a
+ * grant at the scope or tenant level; entity-narrowed grants alone do not make one. The mint is
+ * refused 403 for a caller without the binding's key on the record, naming it; 404 for a type the
+ * scope does not bind or a record that is not there; 409 for a record already bound or held, or one
+ * whose id more than one row carries; 400 for a principal who is no member here. The accept answers
+ * 400 for every refusal — an unknown, used, revoked or expired link, one addressed to someone else,
+ * a presenter no longer a member, a record bound meanwhile, or the vertical's own UNIQUE constraint
+ * on its binding column refusing a second record for that person — so a probe learns nothing. The owner binding themselves mints to their own principal and accepts.
+ * A pending link is withdrawn by the unbind route on its record, which revokes it.
+ */
+export function mountBindLinkRoutes<E extends object, N extends { scopeId: string }>(
+  app: Hono<{ Bindings: E }>,
+  deps: BindLinkRouteDeps<E, N>,
+): void {
+  const callerOf = async (c: Context<{ Bindings: E }>, act: string): Promise<PrincipalId> => {
+    const caller = inviteCaller.safeParse(await deps.callerOf(c));
+    if (!caller.success) throw new HTTPException(500, { message: `the caller gate named no principal — refusing to ${act} for nobody` });
+    return caller.data.principal;
+  };
+
+  app.post('/api/bindings/:entityType/:entityId/links', async (c) => {
+    const node = await deps.nodeFor(c.req.raw, c.env);
+    const caller = await callerOf(c, 'mint a bind link');
+    const entity = entityRef.safeParse({ entityType: c.req.param('entityType'), entityId: c.req.param('entityId') });
+    if (!entity.success) throw new HTTPException(400, { message: 'not an entity reference' });
+    const { principal, expiresAt, label } = await bodyOf(c, bindLinkBody);
+    const answer = boundedBindLinkMint.safeParse(
+      await deps.mintBindLinkBounded(c.env, node, caller, {
+        principal,
+        entity: entity.data,
+        ...(expiresAt === undefined ? {} : { expiresAt }),
+        ...(label === undefined ? {} : { label }),
+      }),
+    );
+    if (!answer.success) throw new HTTPException(500, { message: 'the mint did not answer as a bounded bind link mint — refusing' });
+    const ref = `${entity.data.entityType}:${entity.data.entityId}`;
+    if (!answer.data.ok) {
+      if ('coverage' in answer.data) throw uncovered(answer.data.coverage.missing, ref, 'bind a member to');
+      const refused = answer.data.refused;
+      if (refused === 'target-holds-nothing') throw new HTTPException(400, { message: `${principal} is not a member here` });
+      if (refused === 'bind-not-declared') throw new HTTPException(404, { message: `'${entity.data.entityType}' is not bound to a person here` });
+      if (refused === 'bind-record-missing') throw new HTTPException(404, { message: `no ${ref} here` });
+      if (refused === 'bind-record-ambiguous') {
+        throw new HTTPException(409, { message: `more than one row carries ${ref}'s id — the record must be one row before anyone can be bound to it` });
+      }
+      throw new HTTPException(409, { message: `${ref} is already bound to someone — unbind it first` });
+    }
+    const { id, secret, expiresAt: expires } = answer.data.minted;
+    return c.json({ id, token: secret, expiresAt: expires }, 201);
+  });
+
+  app.post('/api/bindings/accept', async (c) => {
+    const node = await deps.nodeFor(c.req.raw, c.env);
+    const presenter = await callerOf(c, 'accept a bind link');
+    const { token } = await bodyOf(c, acceptInviteBody);
+    const refused = () => new HTTPException(400, { message: 'this link is invalid or already used' });
+    let answer: unknown;
+    try {
+      answer = await deps.exchangeBindLink(c.env, node, token, presenter);
+    } catch (err) {
+      // The vertical's own UNIQUE constraint on its binding column (one record per person) refused
+      // the bind: the exchange rolled back with its use untaken. A refusal like any other, not a fault.
+      if (err instanceof Error && UNIQUE_REFUSAL.test(err.message)) throw refused();
+      throw err;
+    }
+    const exchanged = capabilityExchange.nullable().parse(answer);
+    if (exchanged?.kind !== 'principal' || !exchanged.bound) throw refused();
+    return c.json({ principal: exchanged.principal, bound: exchanged.bound });
   });
 }

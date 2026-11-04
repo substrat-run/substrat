@@ -13,8 +13,9 @@
  *
  * Operations are thin pass-throughs and check nothing themselves, except `bind/read`, which is
  * the portal read a bound person makes: `bind:read-own` on that one record; `bind/allowed`,
- * which answers the caller's own check of a key on an entity; and `bind/granted`, the caller's
- * own grant-scoped listing.
+ * which answers the caller's own check of a key on an entity; `bind/granted`, the caller's
+ * own grant-scoped listing; and `bind/share`, an `act` link on a record, bounded by the mint's
+ * own delegation check (#2817).
  */
 import { z } from 'zod';
 import {
@@ -140,6 +141,9 @@ export const bindMod: ModuleRegistration = {
       } while (cursor !== undefined);
       return [...new Set(ids)].sort();
     }) as Handler,
+    /** An `act` link share on a record (#2817): what a `bind` exchange must refuse unspent. */
+    'bind/share': ((ctx, input: { id: string }) =>
+      ctx.capabilities.mint({ entity: { entityType: 'brecord', entityId: input.id }, permissions: [BIND_MEMBER] })) as Handler,
     /** The bound person's portal read: their own record, and nobody else's. */
     'bind/read': (async (ctx, input: { id: string }) => {
       assertAllowed(await ctx.check(BIND_READ_OWN, { entityType: 'brecord', entityId: input.id }));

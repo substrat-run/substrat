@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-129 decisions · 70 plan · 59 kernel
+130 decisions · 70 plan · 60 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -141,3 +141,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-69](decisions/D-069-a-store-driver-moves-in-pages.md) | 2026-11-03 | plan | A store driver moves in pages, not in one call <br>*awaiting ratification* <br>*amends D-63, K-49* | #2854, #2811, #2450 |
 | [D-70](decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md) | 2026-11-04 | plan | A store driver's code runs in its own loaded isolate, outside the verifier, with no network <br>*awaiting ratification* <br>*amends D-63, D-67* | #2830 |
 | [K-59](decisions/K-059-a-store-object-admits-each-envelope-once.md) | 2026-11-04 | kernel | A store object admits each envelope once <br>*awaiting ratification* <br>*amends K-52* | #2830 |
+| [K-60](decisions/K-060-a-bind-link-binds-the-existing-member-it-names-when-their-own-session-presents-it.md) | 2026-11-04 | kernel | A bind link binds the existing member it names, when their own session presents it | #2817, #1686 |

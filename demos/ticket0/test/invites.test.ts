@@ -25,7 +25,7 @@ import type { Page } from '@substrat-run/contracts';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { sha256Hex } from '@substrat-run/vertical-auth/tokens';
-import { mountUnbindRoute } from '@substrat-run/vertical-auth/invite-routes';
+import { mountBindLinkRoutes, mountUnbindRoute } from '@substrat-run/vertical-auth/invite-routes';
 import { T0_PERM } from '../src/manifest.js';
 import { CONTACT_BOUND_ROLE, CONTACT_PORTAL, HUMAN_ROLES, ROLES, STAFF_ROLES } from '../src/provision.js';
 import { buildHost, linkDevPersonas, seed, type World } from '../src/seed.js';
@@ -126,6 +126,16 @@ beforeAll(async () => {
       return desk;
     },
     unbindEntityHolderBounded: (_env, n, caller, entity) => host.unbindEntityHolderBounded(n.tenantId, n.scopeId, caller, entity),
+  });
+  mountBindLinkRoutes(app as unknown as Hono<{ Bindings: object }>, {
+    nodeFor: () => ({ tenantId: world.substrat.tenant, scopeId: world.substrat.scope }),
+    callerOf: async () => {
+      const desk = callerDesk();
+      if (!desk) throw new HTTPException(401, { message: 'unauthorized' });
+      return desk;
+    },
+    mintBindLinkBounded: (_env, n, caller, input) => host.mintBindLinkBounded(n.tenantId, n.scopeId, caller, input),
+    exchangeBindLink: (_env, n, secret, presenter) => host.exchangeCapability(n.tenantId, n.scopeId, secret, { mode: 'bind', presenter }),
   });
 });
 
@@ -416,5 +426,24 @@ describe('the invite gate covers every invitable role', () => {
     for (const gate of gateRoles) {
       expect(perms(invitable).filter((p) => !gate.permissions.includes(p)), `${gate.key} → ${invitable}`).toEqual([]);
     }
+  });
+});
+
+describe('someone already on the desk is bound to a contact by a link they present themselves (#2817)', () => {
+  it('the owner binds themselves; nobody else can present the link, and it binds once', async () => {
+    asAdmin();
+    const contactId = await freeContact();
+    const admin = world.substrat.admin.principal;
+    const minted = await post(`/api/bindings/contact/${contactId}/links`, { principal: admin });
+    expect(minted.status).toBe(201);
+    const { token } = (await minted.json()) as { token: string };
+    asAgent();
+    expect((await post('/api/bindings/accept', { token })).status).toBe(400);
+    asAdmin();
+    expect(await (await post('/api/bindings/accept', { token })).json()).toEqual({ principal: admin, bound: { entityType: 'contact', entityId: contactId } });
+    expect(await contactPrincipal(contactId)).toBe(admin);
+    expect((await post('/api/bindings/accept', { token })).status).toBe(400);
+    // Free again, for whatever runs after.
+    expect(await (await post(`/api/bindings/contact/${contactId}/unbind`)).json()).toMatchObject({ unbound: [admin] });
   });
 });
