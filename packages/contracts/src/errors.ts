@@ -468,16 +468,20 @@ export function clientSafeStoreError(error: StoreErrorAnswer): StoreErrorAnswer 
  * traceback, and any other status, or a body too large or not JSON, stays in the store.
  * That holds in this isolate too: `storeBody` below is the same filtered value, so the
  * vertical's own code never sees a withheld body, and nothing logs it on the way.
+ *
+ * `platformDetail` is text the platform wrote about the answer, never the store's (a driver that
+ * broke the page contract, D-69), so it rides in the message whatever the status.
  */
 export class StoreError extends SubstratError {
   readonly storeCode: string;
   readonly storeStatus: number;
   readonly storeBody: unknown;
 
-  constructor(error: StoreErrorAnswer) {
+  constructor(error: StoreErrorAnswer, platformDetail?: string) {
     const { code: storeCode, body: storeBody } = clientSafeStoreError(error);
     const code = CODE_FOR_STORE_STATUS[error.status] ?? 'unavailable';
-    super(code, `scope store answered ${error.status} (${storeCode})`, {
+    const detail = platformDetail ? `: ${platformDetail}` : '';
+    super(code, `scope store answered ${error.status} (${storeCode})${detail}`, {
       storeCode,
       ...(storeBody !== undefined ? { storeBody } : {}),
     });

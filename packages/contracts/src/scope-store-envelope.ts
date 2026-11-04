@@ -61,7 +61,8 @@ export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
  * How long a stage (`substrat.stage-page`, D-69) may sit unused before the driver drops it: six hours
  * of copying plus three 30-minute copy leases, the backstop for a stage whose writer is gone. A stage
  * unused for longer is dropped no later than the next call to the object, so a driver needs no timer.
- * The scope's own staged load (`scope-do.ts`) holds the same age, and a test holds the two equal.
+ * It is the formula the scope's own staged load (`scope-do.ts`) uses; a kernel test holds this value to
+ * that formula over `SCOPE_COPY_LEASE_MS`, not to the scope's constant itself, which is private.
  */
 export const STORE_STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * 30 * 60_000;
 

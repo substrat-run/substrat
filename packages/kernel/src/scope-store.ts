@@ -340,7 +340,7 @@ export type ReservedStoreCall = <O extends ReservedStoreOperation>(
 ) => Promise<ReservedStoreResult<O>>;
 
 /** A driver that broke the contract: a 502 `badEnvelope`, as an answer of the wrong shape is. */
-const driverFault = (message: string): StoreError => new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502, body: { message } });
+const driverFault = (message: string): StoreError => new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 }, message);
 
 /** How many times a store's dump is read from the start when writes keep landing along a chain. */
 const STORE_READ_ATTEMPTS = 3;
@@ -352,13 +352,14 @@ const STORE_READ_MAX_PAGES = 100_000;
  * A store's whole dump, read page by page (D-69). The pages are one read only while their `revision`
  * stays the same, so a change along the chain starts it again. A store written to on every attempt
  * refuses as a conflict rather than answer with a dump of no one moment: under steady writes a
- * multi-page read can fail this way. A page whose `next` is the cursor it was asked with, or a chain
- * of more than 100 000 pages, is a driver that does not move or does not end. Such a fault is the
- * driver's, and reaches the caller as a 502 `bad_envelope`, not a 500 with no detail.
+ * multi-page read can fail this way. A page whose `next` is a cursor the chain was already asked
+ * with, or a chain of more than 100 000 pages, is a driver that does not move or does not end. Such a
+ * fault is the driver's, and reaches the caller as a 502 `badEnvelope`, not a 500 with no detail.
  */
 export async function readStoreDump(call: ReservedStoreCall, maxBytes: number): Promise<ScopeDumpTable[]> {
   for (let attempt = 0; attempt < STORE_READ_ATTEMPTS; attempt += 1) {
     const pages: ScopeDumpTable[][] = [];
+    const asked = new Set<string>();
     let cursor: string | null = null;
     let revision: string | null = null;
     let moved = false;
@@ -370,8 +371,9 @@ export async function readStoreDump(call: ReservedStoreCall, maxBytes: number): 
       }
       revision = page.revision;
       pages.push(page.tables);
-      if (page.next !== null && page.next === cursor) {
-        throw driverFault('substrat.export-page answered the cursor it was asked with, so the chain does not move');
+      if (cursor !== null) asked.add(cursor);
+      if (page.next !== null && asked.has(page.next)) {
+        throw driverFault('substrat.export-page answered a cursor the chain was already asked with, so the chain does not end');
       }
       if (page.next !== null && pages.length >= STORE_READ_MAX_PAGES) {
         throw driverFault(`substrat.export-page did not end in ${STORE_READ_MAX_PAGES} pages`);
@@ -448,7 +450,9 @@ export async function writeStoreDump(
     }
     const committed = await call('substrat.commit-stage', { stageId });
     if (committed.tables !== distinct) {
-      throw driverFault(`substrat.commit-stage wrote ${committed.tables} tables of the ${distinct} it was sent`);
+      throw driverFault(
+        `substrat.commit-stage wrote ${committed.tables} tables of the ${distinct} it was sent; the commit ran, so the store may already have been replaced`,
+      );
     }
     return committed;
   } catch (error) {

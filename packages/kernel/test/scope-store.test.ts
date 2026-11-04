@@ -445,18 +445,21 @@ describe('readStoreDump (D-69)', () => {
     await expect(readStoreDump((async () => Promise.reject(failure)) as ReservedStoreCall, 50)).rejects.toBe(failure);
   });
 
-  it('refuses a page whose next is the cursor it was asked with', async () => {
-    let asked = 0;
-    const refusal = await readStoreDump((async () => {
-      asked += 1;
-      return page([['a']], 'stuck');
-    }) as ReservedStoreCall, 50).then(
-      () => undefined,
-      (err: unknown) => err,
-    );
-    // The first page asks from the start and moves to 'stuck'; the second is asked 'stuck' and answers it.
-    expect(refusal).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
-    expect(asked).toBe(2);
+  it('refuses a chain that answers a cursor it was already asked with: stuck, or in a cycle', async () => {
+    // Each chain lists the `next` its pages answer in turn; the read must stop at the first repeat.
+    const cases: [string, string[], number][] = [
+      ['stuck', ['A', 'A'], 2],
+      ['A -> B -> A', ['A', 'B', 'A'], 3],
+    ];
+    for (const [name, nexts, pages] of cases) {
+      let asked = 0;
+      const refusal = await readStoreDump((async () => page([['a']], nexts[asked++] ?? null)) as ReservedStoreCall, 50).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(refusal, name).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
+      expect(asked, name).toBe(pages);
+    }
   });
 
   it('refuses a chain of more than 100 000 pages, and reads one of exactly that many', async () => {
@@ -538,7 +541,11 @@ describe('writeStoreDump (D-69)', () => {
         () => undefined,
         (err: unknown) => err,
       );
-      expect(refusal, String(wrote)).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
+      expect(refusal, String(wrote)).toMatchObject({
+        storeCode: PLATFORM_STORE_CODE.badEnvelope,
+        storeStatus: 502,
+        message: expect.stringContaining('may already have been replaced'),
+      });
       expect(calls.at(-1)!.operation).toBe('substrat.discard-stage');
     }
   });
