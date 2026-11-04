@@ -45,6 +45,8 @@ export const TURNS_PERM = {
 
 export const TURN_RECORDED = 'studio.turn-recorded';
 
+const turnId = builderTurnInput.shape.turnId;
+
 const entities = defineEntities({});
 const PERMISSIONS = ['studio:record-turns', 'studio:read-turns'] as const;
 
@@ -69,7 +71,7 @@ export const turnOperations = defineOperations(entities, PERMISSIONS)({
 	'studio/get-turn': {
 		summary: "One turn's summary, by the turn's id",
 		permission: 'studio:read-turns',
-		input: z.object({ turnId: z.string().min(1).max(64) }),
+		input: z.object({ turnId }),
 		output: builderTurn.nullable(),
 	},
 });
@@ -281,4 +283,20 @@ export const listTurnsQuery = builderTurnsQuery.extend({
 /** What a refused list query says: the fields it got wrong, never their values. */
 export function turnQueryRefusal(error: z.ZodError): string {
 	return `invalid turn query: ${error.issues.map((i) => i.path.join('.') || i.message).join(', ')}`;
+}
+
+/**
+ * The turn id in `/internal/turns/:id`, as `studio/get-turn` takes it. `'malformed'` is a
+ * segment that is not valid percent-encoding (the caller's 400); `null` is an id the
+ * operation could never hold, so it is an unknown turn without asking the scope.
+ */
+export function turnIdOfSegment(segment: string): string | null | 'malformed' {
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(segment);
+	} catch {
+		return 'malformed';
+	}
+	const id = turnId.safeParse(decoded);
+	return id.success ? id.data : null;
 }
