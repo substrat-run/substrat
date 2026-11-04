@@ -6,6 +6,24 @@
     <meta name="theme-color" content="#0f1115" />
     <link rel="icon" type="image/svg+xml" href="/strata-glyph.svg" />
     <title>Substrat Auth</title>
+    <script>
+      // Before the first paint, so a console URL does not flash the hand-off screens' dark
+      // page before React mounts the console (`data-console-theme`, console/theme.ts). The
+      // same three answers as `initialTheme`, in its order. The hand-off paths are left
+      // alone: they belong to the relying party's theme, never to this one.
+      (function () {
+        var handOff = ['/login', '/consent', '/signup', '/reset-password', '/github-email', '/accept-invitation'];
+        if (handOff.indexOf(location.pathname) !== -1) return;
+        var theme = new URLSearchParams(location.search).get('theme');
+        if (theme !== 'dark' && theme !== 'light') {
+          try { theme = localStorage.getItem('substrat.auth.theme'); } catch (e) { theme = null; }
+        }
+        if (theme !== 'dark' && theme !== 'light') {
+          theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-console-theme', theme);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
