@@ -5651,7 +5651,9 @@ const routeHandlers = {
   'dashboard/list-team-lake-events': async (ctx, input) => {
     await assertMay(ctx.host, ctx.node, 'dashboard/authorize-event-lake-read');
     const page = await teamPlane(ctx).lakeEvents(input);
-    return page === null ? { available: false, events: [], nextCursor: null } : { available: true, ...page };
+    return page === null
+      ? { available: false, events: [], nextCursor: null, consistency: 'eventual' as const }
+      : { available: true, ...page };
   },
   'dashboard/fleet-health': async (ctx) => fleetHealthIn(ctx),
   'dashboard/identity-mirror': async (ctx) => identityMirrorIn(ctx),

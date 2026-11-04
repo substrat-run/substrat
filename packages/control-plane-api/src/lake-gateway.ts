@@ -1,5 +1,6 @@
 import {
   LAKE_LITERAL,
+  LAKE_TEAM_WINDOW_DAYS,
   actor as actorSchema,
   lakeEvent,
   type LakeEvent,
@@ -40,20 +41,16 @@ export interface LakeQueryEngine {
 }
 
 /**
- * The widest window a team's own credential may read in one query. The lake is one table
- * the sink cannot partition by tenant, so a tenant predicate prunes no file: what bounds
- * the bytes a query scans is its `occurred_at` window. Staff reads stay unwindowed, because
- * an audit question must not quietly lose history older than a window nobody asked for.
- */
-const LAKE_TEAM_WINDOW_DAYS = 31;
-
-/**
- * Why a team's read is refused, or `null`: `since` is required, and the span to `until`
- * (now, when absent) is at most `LAKE_TEAM_WINDOW_DAYS`.
+ * Why a team's read is refused, or `null`: `since` is required, and the span from it is at
+ * most `LAKE_TEAM_WINDOW_DAYS`. The lake is one table the sink cannot partition by tenant, so
+ * a tenant predicate prunes no file: what bounds the bytes a query scans is its `occurred_at`
+ * window. The span ends at `until` or now, whichever is earlier, since nothing has occurred
+ * after now. Staff reads stay unwindowed, because an audit question must not quietly lose
+ * history older than a window nobody asked for.
  */
 export function teamWindowRefusal(input: LakeEventsInput, nowMs: number): string | null {
   if (input.since === undefined) return 'a team lake read needs since';
-  const end = input.until === undefined ? nowMs : Date.parse(input.until);
+  const end = input.until === undefined ? nowMs : Math.min(Date.parse(input.until), nowMs);
   if (end - Date.parse(input.since) > LAKE_TEAM_WINDOW_DAYS * 86_400_000) {
     return `a team lake read spans at most ${LAKE_TEAM_WINDOW_DAYS} days`;
   }

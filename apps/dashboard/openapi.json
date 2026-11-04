@@ -20253,7 +20253,7 @@
     "/api/teams/{teamId}/lake/events": {
       "get": {
         "operationId": "dashboard-list-team-lake-events",
-        "summary": "One page of this team's events across all its apps from the event lake, newest first; `since` is required and spans at most 31 days",
+        "summary": "One page of this team's events across all its apps from the event lake, newest first. `since` is required, and the window from it may span at most 31 days, ending at `until` or the platform's clock, whichever is earlier: a read without `until` should ask for a little under 31 days, or pin `until` while paging",
         "parameters": [
           {
             "name": "teamId",
@@ -20329,7 +20329,7 @@
           {
             "name": "since",
             "in": "query",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string",
               "format": "date-time",
@@ -20549,6 +20549,10 @@
                         }
                       ]
                     },
+                    "consistency": {
+                      "type": "string",
+                      "const": "eventual"
+                    },
                     "available": {
                       "type": "boolean"
                     }
@@ -20556,6 +20560,7 @@
                   "required": [
                     "events",
                     "nextCursor",
+                    "consistency",
                     "available"
                   ],
                   "additionalProperties": false

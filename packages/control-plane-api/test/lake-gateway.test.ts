@@ -461,7 +461,9 @@ describe('teamWindowRefusal (#1334)', () => {
     [{ since: '2026-09-30T00:00:00.000Z' }, null],
     [{ since: '2026-09-29T23:59:59.999Z' }, 'a team lake read spans at most 31 days'],
     [{ since: '2026-09-01T00:00:00.000Z', until: '2026-10-02T00:00:00.001Z' }, 'a team lake read spans at most 31 days'],
-  ])('%o → %s (an absent until is now)', (raw, expected) => {
+    // A future `until` counts only up to now: nothing has occurred after it.
+    [{ since: '2026-09-30T00:00:00.000Z', until: '2027-01-01T00:00:00.000Z' }, null],
+  ])('%o → %s (the span ends at until or now, whichever is earlier)', (raw, expected) => {
     expect(teamWindowRefusal(input(raw), now)).toBe(expected);
   });
 });

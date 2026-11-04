@@ -63,6 +63,8 @@ describe('GET /api/teams/:team/lake/events (#1334)', () => {
   const subs = { owner: 'sub-owner', admin: 'sub-admin', member: 'sub-member', viewer: 'sub-viewer' } as const;
   /** Every SQL statement the lake was asked. A refused route leaves this empty. */
   let asked: string[];
+  /** Every request that reached the plane, the token mint included. */
+  let planeCalls: number;
   const engine: LakeQueryEngine = {
     async query(sql) {
       asked.push(sql);
@@ -82,6 +84,7 @@ describe('GET /api/teams/:team/lake/events (#1334)', () => {
       CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
+          planeCalls += 1;
           const u = new URL(String(url));
           return plane.request(u.pathname.replace(/^\/api/, '') + u.search, init);
         },
@@ -114,13 +117,19 @@ describe('GET /api/teams/:team/lake/events (#1334)', () => {
   });
   beforeEach(() => {
     asked = [];
+    planeCalls = 0;
   });
 
   it("an owner and an admin read the team's events, asked of the lake for this team only", async () => {
     for (const role of ['owner', 'admin'] as const) {
       const res = await get(role, WINDOW);
       expect(res.status, role).toBe(200);
-      expect(await res.json()).toMatchObject({ available: true, events: [{ id: eventId, scopeId: appScope }], nextCursor: null });
+      expect(await res.json()).toMatchObject({
+        available: true,
+        events: [{ id: eventId, scopeId: appScope }],
+        nextCursor: null,
+        consistency: 'eventual',
+      });
     }
     expect(asked).toHaveLength(2);
     for (const sql of asked) expect(sql).toContain(`WHERE tenant_id = '${tenant}'`);
@@ -136,9 +145,14 @@ describe('GET /api/teams/:team/lake/events (#1334)', () => {
     expect(asked).toEqual([]);
   });
 
+  it("a read with no since is the declaration's 400, before the plane is asked anything", async () => {
+    expect((await get('owner', '')).status).toBe(400);
+    expect(planeCalls).toBe(0);
+  });
+
   it('a plane with no lake answers available: false, not an empty history', async () => {
     const res = await get('owner', WINDOW, envWith());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ available: false, events: [], nextCursor: null });
+    expect(await res.json()).toEqual({ available: false, events: [], nextCursor: null, consistency: 'eventual' });
   });
 });

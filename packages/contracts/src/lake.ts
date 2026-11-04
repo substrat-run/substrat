@@ -36,8 +36,7 @@ export const LAKE_EVENTS_LIMIT_DEFAULT = 50;
  * Arrives as a query string, so the number and the flag are coerced from text, and the
  * flag accepts `true` only: "not impersonated" is not a question this read answers.
  */
-export const lakeEventsInput = z
-  .object({
+const lakeEventsFilters = z.object({
     scopeId: scopeId.optional(),
     type: eventType.optional(),
     entityType: lakeLiteral.optional(),
@@ -53,13 +52,26 @@ export const lakeEventsInput = z
     /** The last event id of the previous page. */
     cursor: eventId.optional(),
     limit: z.coerce.number().int().min(1).max(LAKE_EVENTS_LIMIT_MAX).default(LAKE_EVENTS_LIMIT_DEFAULT),
-  })
-  .strict()
-  .refine((i) => i.entityId === undefined || i.entityType !== undefined, {
-    message: 'entityId needs entityType: an id alone names no record',
-    path: ['entityId'],
   });
+
+const entityIdNeedsType = { message: 'entityId needs entityType: an id alone names no record', path: ['entityId'] };
+const namesARecord = (i: { entityId?: string; entityType?: string }) => i.entityId === undefined || i.entityType !== undefined;
+
+export const lakeEventsInput = lakeEventsFilters.strict().refine(namesARecord, entityIdNeedsType);
 export type LakeEventsInput = z.infer<typeof lakeEventsInput>;
+
+/** The widest window a team's own credential may read in one query (#1334). */
+export const LAKE_TEAM_WINDOW_DAYS = 31;
+
+/**
+ * A team's read of its own lake events: the same filters, with `since` required. The control
+ * plane also holds the span to `LAKE_TEAM_WINDOW_DAYS`, measured from `since` to `until` or to
+ * its own clock, whichever is earlier, so a read without `until` should ask for a little less.
+ */
+export const teamLakeEventsInput = lakeEventsFilters
+  .extend({ since: instant })
+  .strict()
+  .refine(namesARecord, entityIdNeedsType);
 
 /** One event as the lake holds it, envelope only. */
 export const lakeEvent = z.object({
