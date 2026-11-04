@@ -16,7 +16,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, auth, me, type Item, type List, type Paged, type Session, type Share } from './api.js';
-import { ListsTable, ThemePicker } from './elements.js';
+import { ListsTable } from './elements.js';
+import { Settings } from './settings.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
 const denied = (error: unknown) => error instanceof ApiError && error.status === 403;
@@ -54,6 +55,9 @@ const VIEW_HASH: Record<ListsShown, string> = { active: '#/', archived: '#/archi
 
 /** The same active lists, drawn by the `@substrat-run/elements` prototype. */
 const TABLE_HASH = '#/table';
+
+/** Theme and light/dark, from the account menu. */
+const SETTINGS_HASH = '#/settings';
 
 function shownOf(hash: string): ListsShown {
   return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
@@ -96,13 +100,13 @@ export function App() {
         <wa-tag size="s" appearance="outlined">
             on Substrat
           </wa-tag>
-        <ThemePicker />
         <span className="who">
           <wa-dropdown>
             <wa-button slot="trigger" size="s" appearance="outlined" with-caret>
               {session.display}
             </wa-button>
             <wa-dropdown-item onClick={() => auth.switchUser()}>Switch user</wa-dropdown-item>
+            <wa-dropdown-item onClick={() => (window.location.hash = SETTINGS_HASH)}>Settings</wa-dropdown-item>
             <wa-dropdown-item onClick={() => auth.logout()}>Sign out</wa-dropdown-item>
           </wa-dropdown>
         </span>
@@ -110,6 +114,8 @@ export function App() {
       <main>
         {match ? (
           <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
+        ) : hash === SETTINGS_HASH ? (
+          <Settings />
         ) : hash === TABLE_HASH ? (
           <>
             <ViewsNav current="table" />

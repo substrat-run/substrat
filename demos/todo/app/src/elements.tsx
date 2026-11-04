@@ -1,7 +1,7 @@
 /**
  * The `@substrat-run/elements` prototype, dogfooded: the controls every screen uses
- * (`/controls`, Web Awesome's free core), your lists as a `<sub-entity-table>`, and a
- * switcher between Web Awesome's default theme and two Substrat ones.
+ * (`/controls`, Web Awesome's free core), the themes, and your lists as a
+ * `<sub-entity-table>`. Choosing a theme is `src/settings.tsx`.
  *
  * React 18 sets a custom element's props as ATTRIBUTES, so a boolean is written
  * `disabled={x || undefined}` — `false` would become the attribute "false", which is
@@ -13,7 +13,7 @@
  * function properties (`source`, `columns`, `actions`) are set through a ref. React 19
  * sets them as properties, and this file would shrink to the JSX.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Column, RowAction, SubEntityTable } from '@substrat-run/elements';
 import type {} from '@substrat-run/elements/jsx';
 import '@substrat-run/elements';
@@ -23,6 +23,7 @@ import '@substrat-run/elements/themes/native.css';
 import '@substrat-run/elements/themes/ledger.css';
 import '@substrat-run/elements/themes/atelier.css';
 import { api, type List } from './api.js';
+import './appearance.js';
 
 declare module 'react' {
   namespace JSX {
@@ -72,62 +73,5 @@ export function ListsTable() {
         forbidden-text="You may not see these lists."
       />
     </>
-  );
-}
-
-const THEMES = [
-  { id: 'default', label: 'Web Awesome', className: 'wa-theme-default' },
-  { id: 'ledger', label: 'Ledger', className: 'sub-theme-ledger' },
-  { id: 'atelier', label: 'Atelier', className: 'sub-theme-atelier' },
-] as const;
-type ThemeId = (typeof THEMES)[number]['id'];
-
-const stored = (key: string): string | null => {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-};
-
-export function ThemePicker() {
-  const [theme, setTheme] = useState<ThemeId>(() => (THEMES.find((t) => t.id === stored('todo.theme'))?.id ?? 'ledger'));
-  const [dark, setDark] = useState(() => stored('todo.dark') === '1');
-
-  useEffect(() => {
-    const root = document.documentElement.classList;
-    for (const t of THEMES) root.toggle(t.className, t.id === theme);
-    root.toggle('wa-dark', dark);
-    root.toggle('wa-light', !dark);
-    try {
-      localStorage.setItem('todo.theme', theme);
-      localStorage.setItem('todo.dark', dark ? '1' : '0');
-    } catch {
-      // A private window: the choice lasts for this page only.
-    }
-  }, [theme, dark]);
-
-  return (
-    <span className="themes">
-      <wa-select
-        size="s"
-        aria-label="Theme"
-        value={theme}
-        onInput={(e) => setTheme((e.target as HTMLSelectElement).value as ThemeId)}
-      >
-        {THEMES.map((t) => (
-          <wa-option key={t.id} value={t.id}>
-            {t.label}
-          </wa-option>
-        ))}
-      </wa-select>
-      <wa-switch
-        size="s"
-        checked={dark || undefined}
-        onInput={(e) => setDark((e.target as HTMLInputElement).checked)}
-      >
-        Dark
-      </wa-switch>
-    </span>
   );
 }
