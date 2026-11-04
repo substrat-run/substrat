@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/control-plane",
-  "version": "0.18.12",
+  "version": "0.18.13",
   "private": true,
   "description": "The shared control-plane deployment — ControlPlaneDO + the audited HTTP surface (first-flow.md §4, slice 1)",
   "type": "module",
@@ -16,6 +16,7 @@
   "dependencies": {
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-email": "workspace:^",
+    "@substrat-run/connector-bolagsverket": "workspace:^",
     "@substrat-run/connector-fortnox": "workspace:^",
     "@substrat-run/connector-mail-in": "workspace:^",
     "@substrat-run/connector-microsoft365": "workspace:^",

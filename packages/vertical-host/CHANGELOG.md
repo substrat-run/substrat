@@ -1,5 +1,29 @@
 # @substrat-run/vertical-host
 
+## 0.177.0
+
+### Minor Changes
+
+- e3f681a: A deployment can ask for an immediate poll of its scope's bindings of one provider (`/internal/connections/sync`, `syncConnections` in vertical-host) and reads what each poll did; Fortnox answers it through `pollFortnoxScope`, and `sweepFortnoxLedger` takes an optional `scopeId`.
+- fafa51e: The event drain now prunes a scope's outbox: a row drained to the lake more than 90 days ago is deleted once every local consumer of its type has taken it, unless its type is exported to another vertical or it is its entity's newest event. History reads cover that window and older history is in the lake; a scope walk resumed below the pruned range refuses with `WatermarkPruned`, so a mirror resyncs. A consumer added later backfills only the retained window. Scopes that never drain are never pruned.
+
+### Patch Changes
+
+- Updated dependencies [8ccf734]
+- Updated dependencies [1b2892a]
+- Updated dependencies [e3f681a]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [3c97959]
+- Updated dependencies [fafa51e]
+- Updated dependencies [0afb860]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [de5ea61]
+  - @substrat-run/contracts@0.177.0
+  - @substrat-run/kernel@0.177.0
+  - @substrat-run/model-providers@0.5.67
+
 ## 0.176.0
 
 ### Patch Changes
