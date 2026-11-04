@@ -131,6 +131,7 @@ rather than hours. Access is free and needs no agreement.
 ## Development
 
 ```sh
+pnpm build   # once, so the workspace packages it imports have their dist
 pnpm --filter @substrat-run/connector-bolagsverket test
 ```
 
