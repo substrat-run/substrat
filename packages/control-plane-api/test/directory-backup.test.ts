@@ -235,6 +235,24 @@ describe('scheduled directory backup (#40)', () => {
     expect([...objects.keys()].filter((k) => k.startsWith('directory/'))).toEqual([]);
   });
 
+  it('keeps a committed copy when the sweep after its manifest fails', async () => {
+    const { bucket } = fakeBucket(100);
+    // The sweep is the one list with no delimiter; the store's own listing passes one.
+    const flaky = {
+      ...bucket,
+      list: async (opts?: Parameters<typeof bucket.list>[0]) => {
+        if (!opts?.delimiter) throw new Error('bucket unavailable');
+        return bucket.list(opts);
+      },
+    };
+    const store = createR2DirectoryBackupStore(flaky);
+    const now = new Date('2026-08-06T00:00:00.000Z');
+    const result = await backupDirectoryIfDue({ admin: pagedAdmin(() => now), store, actor: ACTOR, now: () => now });
+
+    expect(result.taken).toMatchObject({ capturedAt: '2026-08-06T00:00:00.000Z' });
+    expect((await store.get({ capturedAt: '2026-08-06T00:00:00.000Z' }))?.tables).toHaveLength(2);
+  });
+
   it('leaves no listed copy and no pages when a page cannot be stored', async () => {
     const { store, objects, held } = fakeStore({ failOn: (key) => key.endsWith('/1.json') });
     const now = new Date('2026-08-06T00:00:00.000Z');

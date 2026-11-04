@@ -320,7 +320,13 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
             // `size` too: the manifest is the smallest part of the copy.
             customMetadata: { capturedAt, tables: String(tables), size: String(size) },
           });
-          await sweepAbandonedPages(r2, new Date(Date.parse(capturedAt) - ABANDONED_PAGES_MS).toISOString());
+          // Best-effort, and after the manifest: the copy is committed now, and a failed sweep
+          // must not reject the commit, or the caller's `discard` would delete a listed copy's pages.
+          try {
+            await sweepAbandonedPages(r2, new Date(Date.parse(capturedAt) - ABANDONED_PAGES_MS).toISOString());
+          } catch (err) {
+            console.error('directory-backup: sweeping abandoned pages failed; the next commit tries again', err instanceof Error ? err.message : String(err));
+          }
           return { capturedAt, size, tables };
         },
       };
