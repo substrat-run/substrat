@@ -131,6 +131,17 @@ function redirectError(c: Context, redirectUri: string, state: string | undefine
   return c.redirect(u.toString());
 }
 
+/** A non-OAuth refusal, as the RFC 9457 problem document every Substrat surface answers with. */
+function problem(
+  c: Context,
+  code: 'unauthenticated' | 'validation_failed',
+  detail: string,
+  headers: Record<string, string> = {},
+) {
+  const body = toProblem(substratError(code, detail), c.req.path);
+  return c.body(JSON.stringify(body), body.status as 400 | 401, { ...headers, 'content-type': PROBLEM_CONTENT_TYPE });
+}
+
 export function createDevIssuer(opts: DevIssuerOptions): Hono {
   const personas = opts.personas;
   const ttl = opts.tokenTtlSec ?? 3600;
@@ -288,14 +299,19 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
   app.get('/userinfo', async (c) => {
     const auth = c.req.header('authorization') ?? '';
     const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : '';
-    if (!token) return c.json({ error: 'invalid_token' }, 401);
+    // RFC 6750 §3: the refusal is announced in WWW-Authenticate; the body is a problem document.
+    // §3.1: a request that carried no bearer gets the bare challenge, with no error code.
+    const refuse = (challenge: string, detail: string) =>
+      problem(c, 'unauthenticated', detail, { 'www-authenticate': challenge });
+    const invalid = () => refuse('Bearer error="invalid_token"', 'the bearer token is invalid or has expired');
+    if (!token) return refuse('Bearer', 'no bearer token was presented');
     try {
       const { payload } = await jwtVerify(token, await verificationKey(), { issuer: issuerOf(c) });
       const persona = personaOf(String(payload.sub));
-      if (!persona) return c.json({ error: 'invalid_token' }, 401);
+      if (!persona) return invalid();
       return c.json(claimsFor(persona));
     } catch {
-      return c.json({ error: 'invalid_token' }, 401);
+      return invalid();
     }
   });
 
@@ -330,8 +346,7 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
     const persona = personaOf(sub);
     if (!persona) {
       const known = personas.map((p) => p.sub).join(', ');
-      const refusal = toProblem(substratError('validation_failed', `unknown sub '${sub}' — known: ${known}`), c.req.path);
-      return c.body(JSON.stringify(refusal), 400, { 'content-type': PROBLEM_CONTENT_TYPE });
+      return problem(c, 'validation_failed', `unknown sub '${sub}' — known: ${known}`);
     }
     const base = { iss: issuerOf(c), aud: audience, ...claimsFor(persona) };
     const [idToken, accessToken] = await Promise.all([sign(base, ttl), sign({ ...base, typ: 'access' }, ttl)]);
