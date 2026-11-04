@@ -32,6 +32,8 @@ export const INDEX_VALUE_EXPORTS = [
   'BIND_EXPORT_BREAK_REFUSAL',
   'CANCELLED_JOB_NOTE',
   'CAPABILITY_BECOME_MINT_OPERATION',
+  // #2817: a principal's bind link mint — the pseudo-operation, the bound, and the write.
+  'CAPABILITY_BIND_MINT_OPERATION',
   'CAPABILITY_DDL',
   'CAPABILITY_EXCHANGE_OPERATION',
   'CAPABILITY_SESSION_PRUNE_BATCH',
@@ -310,6 +312,7 @@ export const INDEX_VALUE_EXPORTS = [
   'beginStoreDriverRolloutIn',
   'bindExportBreakRefusal',
   'bindExportBreaksOf',
+  'bindLinkMintCheck',
   // #2732: a scope binding its own connection, held to the landing pass's reading of a version.
   'binderOf',
   'blankSqlComments',
@@ -544,6 +547,7 @@ export const INDEX_VALUE_EXPORTS = [
   'migrationSteps',
   'mintBecomeCapability',
   'mintBecomeCapabilityAsPrincipal',
+  'mintBindLinkAsPrincipal',
   'mintCapabilitySecret',
   'missingAttachmentStore',
   'moduleErasurePlan',

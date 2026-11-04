@@ -1106,11 +1106,13 @@ export function revokeBindLinksIn(sql: ScopedSql, entity: EntityRef, by: Princip
  * afterwards. Only `bind` rows: a `become` link's principal is the seat it yields, not a person.
  */
 export function revokeBindLinksFor(sql: ScopedSql, principal: string, now: string): void {
-  sql.exec(
-    `UPDATE _substrat_capabilities SET revoked_at = ?, revoked_by = NULL, revoked_reason = NULL
-      WHERE mode = 'bind' AND principal = ? AND revoked_at IS NULL`,
-    [now, principal],
-  );
+  // Read first: an erasure that holds nothing for its subject writes nothing.
+  for (const { id } of sql.query<{ id: string }>(
+    `SELECT id FROM _substrat_capabilities WHERE mode = 'bind' AND principal = ? AND revoked_at IS NULL`,
+    [principal],
+  )) {
+    markRevoked(sql, capabilityIdSchema.parse(id), null, now);
+  }
 }
 
 /** A stored action, or null when it does not decode. */
