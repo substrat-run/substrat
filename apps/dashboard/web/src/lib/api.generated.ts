@@ -1234,7 +1234,7 @@ export interface DashboardClient {
    *
    * `GET /lake/events` — `dashboard/list-team-lake-events`
    */
-  listTeamLakeEvents(input: { scopeId?: string; type?: string; entityType?: string; entityId?: string; actor?: string; operation?: string; version?: string; impersonated?: "true"; since: string; until?: string; cursor?: string; limit?: number }): Promise<{ events: ({ id: string; type: string; schemaVersion: number; occurredAt: string; scopeId: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; entityType: string; entityId: string; piiClass: string; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null; impersonated: boolean })[]; nextCursor: string | null; consistency: "eventual"; available: boolean }>;
+  listTeamLakeEvents(input: { scopeId?: string; type?: string; entityType?: string; entityId?: string; actor?: string; operation?: string; version?: string; impersonated?: "true"; since: string; until?: string; cursor?: string; limit?: number }): Promise<{ events: ({ id: string; type: string; schemaVersion: number; occurredAt: string; scopeId: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; entityType: string; entityId: string; piiClass: string; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null; impersonated: boolean })[]; nextCursor: string | null; consistency: string; available: boolean }>;
 
   /**
    * Mint a single-use consent link for one app's redirect-flow provider

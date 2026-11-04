@@ -5652,7 +5652,7 @@ const routeHandlers = {
     await assertMay(ctx.host, ctx.node, 'dashboard/authorize-event-lake-read');
     const page = await teamPlane(ctx).lakeEvents(input);
     return page === null
-      ? { available: false, events: [], nextCursor: null, consistency: 'eventual' as const }
+      ? { available: false, events: [], nextCursor: null, consistency: 'eventual' }
       : { available: true, ...page };
   },
   'dashboard/fleet-health': async (ctx) => fleetHealthIn(ctx),

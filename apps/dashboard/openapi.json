@@ -20550,8 +20550,7 @@
                       ]
                     },
                     "consistency": {
-                      "type": "string",
-                      "const": "eventual"
+                      "type": "string"
                     },
                     "available": {
                       "type": "boolean"
