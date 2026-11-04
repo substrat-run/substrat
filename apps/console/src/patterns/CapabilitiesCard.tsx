@@ -258,7 +258,7 @@ export function CapabilitiesCard({
         open={confirming !== null}
         title={confirming ? `Revoke ${confirming.label ?? confirming.id}?` : ''}
         description={
-          confirming?.mode === 'become'
+          confirming?.mode === 'become' || confirming?.mode === 'bind'
             ? 'Its secret stops working at once: nobody can claim the seat with it. Anyone it has already bound keeps that binding. This cannot be undone; a new link has to be minted.'
             : 'Its secret stops working at once, and every session it handed out is refused from its next call. This cannot be undone; a new link has to be shared.'
         }

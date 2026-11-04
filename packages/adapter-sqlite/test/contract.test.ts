@@ -30,6 +30,7 @@ import {
   capabilityContractSuite,
   becomeMintContractSuite,
   bindingInviteContractSuite,
+  bindLinkContractSuite,
   capabilityExpiryContractSuite,
   connectorTestFetch,
   permissionContractSuite,
@@ -1120,6 +1121,20 @@ subjectErasureContractSuite(
     return internals.runtime(tenant, scope).db.prepare(sql).all(...params);
   },
 );
+
+// #2817: bind links — an existing member bound to a record by a link their own session presents.
+bindLinkContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-bind-link-'));
+  const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  return {
+    host,
+    verbs: host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // #1686: binding invites — the DEFAULT tuple checker, since the bound under test is the checker's.
 let bindingHost: SqliteScopeHost | undefined;

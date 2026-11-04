@@ -32,6 +32,8 @@ export function grantLine(r: CapabilityRecord): string {
     const bind = r.action?.kind === 'bind' ? `, bound to ${r.action.entity.entityType}:${r.action.entity.entityId}` : '';
     return `becomes ${r.principal}${bind}`;
   }
+  // #2817: a bind link becomes nobody — it binds the one member it names, when they present it.
+  if (r.mode === 'bind') return `binds ${r.principal} to ${r.action.entity.entityType}:${r.action.entity.entityId}`;
   return `${r.permissions.join(', ')} on ${r.entity.entityType}:${r.entity.entityId}`;
 }
 
@@ -41,7 +43,7 @@ export function grantLine(r: CapabilityRecord): string {
  * a link that can open no file. An un-narrowed link reads attachments anyway.
  */
 export function operationsLine(r: CapabilityRecord): string {
-  if (r.mode === 'become') return '—';
+  if (r.mode !== 'act') return '—';
   if (r.operations === null) return 'any the keys allow';
   const ops = r.operations.join(', ');
   return r.attachments === 'read' ? `${ops} + attachments: read` : ops;

@@ -64,6 +64,10 @@ describe('the console Capabilities card (#1686)', () => {
     expect(operationsLine(act())).toBe('any the keys allow');
     expect(operationsLine(act({ operations: ['doc/read', 'doc/list'] } as Partial<CapabilityRecord>))).toBe('doc/read, doc/list');
     expect(operationsLine(become())).toBe('—');
+    // #2817: a bind link becomes nobody; it binds the member it names.
+    const bind = { ...become(), mode: 'bind', action: { kind: 'bind', entity: { entityType: 'contact', entityId: 'C1' } } } as CapabilityRecord;
+    expect(grantLine(bind)).toBe('binds 01J0000000000000000000SEAT to contact:C1');
+    expect(operationsLine(bind)).toBe('—');
   });
 
   it('shows a narrowed link’s attachment opt-in beside its operations', () => {
