@@ -205,7 +205,7 @@ import {
   type AuditedOperationSqlRow,
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
-import { DUMP_READ_BATCH, rowBytes, switchSqlOver } from './scope-do.js';
+import { rowBytes, switchSqlOver } from './scope-do.js';
 import {
   blankSqlComments,
   boundShapesColumn,
@@ -1646,17 +1646,29 @@ export type RepliedMethod = (typeof REPLIED_METHODS)[number];
  */
 const directoryDumpWhere = (table: string): string => (table === 'lifecycle_revisions' ? `subject <> 'directory:epoch'` : '1');
 
-/** Below every rowid a directory table holds: where a table's read starts, and an empty table's horizon. */
-const NO_ROWID = Number.MIN_SAFE_INTEGER;
-const ROWID_NAMES = new Set(['rowid', 'oid', '_rowid_']);
+/**
+ * A paged copy's snapshot (#2868): `_directory_copy` names the copy, `_directory_copy_tables` lists
+ * its tables (their DDL and columns as the copy found them), and `_directory_copy_rows_<ord>` holds
+ * each table's rows, under neutral column names so every one pages by its own rowid. Written in one synchronous turn
+ * by a copy's first page, so the copy is of one instant whatever is written while its pages are
+ * read, and dropped by its last page, or by the next copy's first. Never in a dump.
+ */
+const COPY_GLOB = '_directory_copy*';
+const COPY_TABLE = '_directory_copy';
+const COPY_TABLES_TABLE = '_directory_copy_tables';
+const copyRowsTable = (ord: number): string => `_directory_copy_rows_${ord}`;
+/**
+ * How many rows a dump page reads at a time. Small, because a batch is held whole before the byte
+ * cap is asked: `vertical_versions` keeps every pushed manifest, and a few hundred of them would
+ * be the isolate.
+ */
+const DIRECTORY_READ_BATCH = 32;
 
-/** Where a directory dump page resumes (#2868), and what the first page fixed. */
+/** Where a directory dump page resumes (#2868). */
 interface DirectoryDumpCursor {
-  capturedAt: string;
-  /** Each table's highest rowid when the first page was read. */
-  horizon: Record<string, number>;
-  table: string;
-  /** The last rowid (or offset) read from `table`. */
+  copyId: string;
+  ord: number;
+  /** The last snapshot rowid read from table `ord`. */
   after: number;
 }
 
@@ -1668,10 +1680,7 @@ function decodeDirectoryDumpCursor(cursor: string): DirectoryDumpCursor {
     parsed = null;
   }
   const c = parsed as Partial<DirectoryDumpCursor> | null;
-  if (
-    !c || typeof c.capturedAt !== 'string' || typeof c.table !== 'string' || !Number.isSafeInteger(c.after) ||
-    !c.horizon || typeof c.horizon !== 'object' || !Object.values(c.horizon).every((v) => Number.isSafeInteger(v))
-  ) {
+  if (!c || typeof c.copyId !== 'string' || !Number.isSafeInteger(c.ord) || !Number.isSafeInteger(c.after)) {
     throw substratError('validation_failed', 'not a directory dump page cursor');
   }
   return c as DirectoryDumpCursor;
@@ -2115,62 +2124,104 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * One page of `exportDump` (#2868): the tables in the same order, each table's rows in rowid
-   * order, until about `maxBytes` of cells are read (a single larger row rides alone). The whole
-   * dump outgrew this object's isolate, mostly through `vertical_versions`, which keeps every
-   * pushed manifest. The first page (`cursor` null) fixes each table's highest rowid, and no later
-   * page reads past it, so a row written while the copy is read is in none of its pages.
+   * One page of `exportDump` (#2868): the tables in the same order, each table's rows in order,
+   * until about `maxBytes` of cells are read (a single larger row rides alone). The whole dump
+   * outgrew this object's isolate, mostly through `vertical_versions`, which keeps every pushed
+   * manifest. The first page (`cursor` null) copies every table into a snapshot in one turn, in
+   * SQLite rather than in this isolate, and every page reads that snapshot: a row written, replaced
+   * or removed while the pages are read, or a column added by a deploy in between, is not seen by
+   * any of them. The last page drops the snapshot. `copiedTables` (first page only) is how many
+   * tables the copy holds, for the access log.
    */
-  exportDumpPage(cursor: string | null, opts: { maxBytes?: number } = {}): DirectoryDumpPage {
+  exportDumpPage(cursor: string | null, opts: { maxBytes?: number } = {}): DirectoryDumpPage & { copiedTables?: number } {
     const maxBytes = opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES;
-    const defs = this.dumpTableDefs();
-    const at = cursor === null ? null : decodeDirectoryDumpCursor(cursor);
-    const capturedAt = at?.capturedAt ?? new Date().toISOString();
-    const horizon = at?.horizon ?? Object.fromEntries(defs.map(({ name }) => [name, this.highestRowid(name)]));
+    const taken = cursor === null ? this.snapshotDirectory() : null;
+    const at = taken?.cursor ?? decodeDirectoryDumpCursor(cursor!);
+    const copy = this.hasCopyTable()
+      ? (this.sql.exec(`SELECT copy_id AS copyId, captured_at AS capturedAt FROM ${COPY_TABLE}`).toArray()[0] as
+          | { copyId: string; capturedAt: string }
+          | undefined)
+      : undefined;
+    if (!copy || copy.copyId !== at.copyId) {
+      throw substratError('conflict', 'this directory copy is gone: a later copy replaced it, or a restore cleared it; start again');
+    }
+    const defs = this.sql
+      .exec(`SELECT ord, name, ddl, columns FROM ${COPY_TABLES_TABLE} WHERE ord >= ? ORDER BY ord`, at.ord)
+      .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string }[];
     const tables: ScopeDumpTable[] = [];
     let bytes = 0;
     let next: string | null = null;
-    for (const { name, sql } of defs) {
-      // Tables are read in name order: those before the cursor's are done.
-      if (at && name < at.table) continue;
-      const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
-      probe.toArray();
-      const columns = probe.columnNames;
-      // A table without a rowid, or with a column that takes the name, is read by offset, unfenced.
-      const byRowid = !/\bWITHOUT\s+ROWID\b/i.test(sql) && !columns.some((c) => ROWID_NAMES.has(c.toLowerCase()));
-      const where = directoryDumpWhere(name);
-      let last = at && name === at.table ? at.after : byRowid ? NO_ROWID : 0;
+    for (const { ord, name, ddl, columns } of defs) {
+      let last = ord === at.ord ? at.after : 0;
       const rows: unknown[][] = [];
       let full = false;
       for (;;) {
         // In batches, each read to its end: a part-read cursor keeps its table locked.
         const read = Array.from(
-          byRowid
-            ? this.sql
-                .exec(`SELECT rowid, * FROM "${name}" WHERE (${where}) AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`, last, horizon[name] ?? NO_ROWID, DUMP_READ_BATCH)
-                .raw()
-            : this.sql.exec(`SELECT * FROM "${name}" WHERE ${where} LIMIT ? OFFSET ?`, DUMP_READ_BATCH, last).raw(),
+          this.sql.exec(`SELECT rowid, * FROM "${copyRowsTable(ord)}" WHERE rowid > ? ORDER BY rowid LIMIT ?`, last, DIRECTORY_READ_BATCH).raw(),
           (raw) => raw as unknown[],
         );
         for (const cells of read) {
-          const row = byRowid ? cells.slice(1) : cells;
+          const row = cells.slice(1);
           rows.push(row);
-          last = byRowid ? Number(cells[0]) : last + 1;
+          last = Number(cells[0]);
           bytes += rowBytes(row);
           if (bytes >= maxBytes) {
             full = true;
             break;
           }
         }
-        if (full || read.length < DUMP_READ_BATCH) break;
+        if (full || read.length < DIRECTORY_READ_BATCH) break;
       }
-      tables.push({ name, ddl: sql, columns, rows });
+      tables.push({ name, ddl, columns: JSON.parse(columns) as string[], rows });
       if (full) {
-        next = JSON.stringify({ capturedAt, horizon, table: name, after: last });
+        next = JSON.stringify({ copyId: at.copyId, ord, after: last } satisfies DirectoryDumpCursor);
         break;
       }
     }
-    return { capturedAt, tables, next };
+    // A full page that ended on the last row of the last table still says `next`; the page after
+    // it is empty, and is the one that drops the snapshot.
+    if (next === null) this.dropDirectorySnapshot();
+    return { capturedAt: copy.capturedAt, tables, next, ...(taken ? { copiedTables: taken.tables } : {}) };
+  }
+
+  private hasCopyTable(): boolean {
+    return this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, COPY_TABLE).toArray().length > 0;
+  }
+
+  /**
+   * Copy every dumped table into a fresh snapshot (#2868), replacing any a copy left unfinished,
+   * and return the cursor of its first page and how many tables it holds. One synchronous
+   * transaction, so no write lands between two tables' reads.
+   */
+  private snapshotDirectory(): { cursor: DirectoryDumpCursor; tables: number } {
+    const copyId = crypto.randomUUID();
+    const capturedAt = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      this.dropDirectorySnapshot();
+      this.sql.exec(`CREATE TABLE ${COPY_TABLE} (copy_id TEXT NOT NULL, captured_at TEXT NOT NULL)`);
+      this.sql.exec(`INSERT INTO ${COPY_TABLE} (copy_id, captured_at) VALUES (?, ?)`, copyId, capturedAt);
+      this.sql.exec(`CREATE TABLE ${COPY_TABLES_TABLE} (ord INTEGER PRIMARY KEY, name TEXT NOT NULL, ddl TEXT NOT NULL, columns TEXT NOT NULL)`);
+      const defs = this.dumpTableDefs();
+      defs.forEach(({ name, sql }, ord) => {
+        const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
+        probe.toArray();
+        const columns = probe.columnNames;
+        // Untyped columns: no affinity, so every value is copied exactly as the table holds it.
+        const neutral = columns.map((_, i) => `c${i}`).join(', ');
+        this.sql.exec(`CREATE TABLE "${copyRowsTable(ord)}" (${neutral})`);
+        this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" SELECT * FROM "${name}" WHERE ${directoryDumpWhere(name)}`);
+        this.sql.exec(`INSERT INTO ${COPY_TABLES_TABLE} (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`, ord, name, sql, JSON.stringify(columns));
+      });
+      return { cursor: { copyId, ord: 0, after: 0 }, tables: defs.length };
+    });
+  }
+
+  private dropDirectorySnapshot(): void {
+    const tables = this.sql
+      .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB ?`, COPY_GLOB)
+      .toArray() as unknown as { name: string }[];
+    for (const { name } of tables) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
   }
 
   /**
@@ -2183,21 +2234,13 @@ export class ControlPlaneDO extends DurableObject {
       .exec(
         `SELECT name, sql FROM sqlite_master
           WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
-            AND sql IS NOT NULL
+            AND name NOT GLOB ? AND sql IS NOT NULL
           ORDER BY name`,
+        COPY_GLOB,
       )
       .toArray() as unknown as { name: string; sql: string }[];
   }
 
-  /** A table's highest rowid, `NO_ROWID` when it is empty or has none to read. */
-  private highestRowid(name: string): number {
-    try {
-      const [row] = this.sql.exec(`SELECT max(rowid) AS m FROM "${name}"`).toArray() as { m: number | null }[];
-      return row?.m ?? NO_ROWID;
-    } catch {
-      return NO_ROWID;
-    }
-  }
 
   /**
    * Replace the directory with a dump — the break-glass write half (#40).

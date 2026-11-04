@@ -106,7 +106,9 @@ export async function backupDirectoryIfDue(
   // Noted before the first read: a copy that runs the directory out of memory leaves nothing else.
   await store.markAttempt({ attemptedAt: now.toISOString() });
 
-  // A page at a time where the host offers it (#2868): only one page is ever held here.
+  // A page at a time where the host offers it (#2868): only one page is ever held here. A copy
+  // that stops part-way is discarded here; one whose invocation is cut off leaves pages that a
+  // later commit sweeps (the store's `commit`).
   let taken: DirectoryBackup;
   if (admin.exportDirectoryPage) {
     let page = await admin.exportDirectoryPage(actor, null);
@@ -128,8 +130,13 @@ export async function backupDirectoryIfDue(
   } else {
     const dump = await admin.exportDirectory(actor);
     const copy = store.begin({ capturedAt: dump.capturedAt });
-    await copy.put(0, dump.tables);
-    taken = await copy.commit({ entries: 1, tables: dump.tables.length });
+    try {
+      await copy.put(0, dump.tables);
+      taken = await copy.commit({ entries: 1, tables: dump.tables.length });
+    } catch (e) {
+      await copy.discard().catch(() => undefined);
+      throw e;
+    }
   }
 
   // Prune from a re-read list, not from `existing`: the copy just written has to be in

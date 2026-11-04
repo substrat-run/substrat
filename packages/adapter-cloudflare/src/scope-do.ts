@@ -1149,7 +1149,7 @@ const stageRowsTable = (ord: number): string => `_substrat_stage_rows_${ord}`;
 /** How many staged rows a commit reads at a time. */
 const STAGE_READ_BATCH = 500;
 /** How many rows a dump page reads from a table at a time; each batch is read to its end. */
-export const DUMP_READ_BATCH = 500;
+const DUMP_READ_BATCH = 500;
 
 /**
  * A capture's own tables and triggers (#2450): what lets a copy page a scope that never stops

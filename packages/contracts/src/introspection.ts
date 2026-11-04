@@ -524,9 +524,8 @@ export type DirectoryDump = z.infer<typeof directoryDump>;
  * `mergeDumpPages` joins them. `capturedAt` is the first page's, on every page. `next` is opaque:
  * hand it back for the following page, `null` after the last.
  *
- * The pages are read in separate turns, so a row changed or removed while the pages are read is
- * read as its page found it. A row written after the first page is in none: that page fixes each
- * table's horizon. The directory's only foreign key is `tenants` naming itself, so such a copy loads.
+ * The pages are read in separate turns, from a snapshot the first page takes in one: every page
+ * reads the directory as it stood then, whatever is written while they are read.
  */
 export const directoryDumpPage = z.object({
   capturedAt: z.string().min(1),

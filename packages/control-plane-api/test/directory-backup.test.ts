@@ -208,10 +208,17 @@ describe('scheduled directory backup (#40)', () => {
 
   it('stores a paged copy as pages under a manifest and reads it back whole', async () => {
     const { store, objects } = fakeStore();
+    // Pages no commit reached: one copy cut off two days ago, one still being written an hour ago.
+    const abandoned = 'directory/2026-08-04T00:00:00.000Z/stage/0.json';
+    const inFlight = 'directory/2026-08-05T23:00:00.000Z/stage/0.json';
+    for (const key of [abandoned, inFlight]) objects.set(key, { key, body: '{"tables":[]}' });
     const now = new Date('2026-08-06T00:00:00.000Z');
     const result = await backupDirectoryIfDue({ admin: pagedAdmin(() => now), store, actor: ACTOR, now: () => now });
 
     expect(result.taken).toMatchObject({ capturedAt: '2026-08-06T00:00:00.000Z', tables: 2 });
+    // The commit swept the abandoned copy's pages, and left the one a day has not passed on.
+    expect(objects.has(abandoned)).toBe(false);
+    expect(objects.delete(inFlight)).toBe(true);
     // Three pages and the manifest, all under the store's own prefix; only the manifest is listed.
     const keys = [...objects.keys()].filter((k) => k.startsWith('directory/'));
     expect(keys.filter((k) => k.startsWith('directory/2026-08-06T00:00:00.000Z/'))).toHaveLength(3);

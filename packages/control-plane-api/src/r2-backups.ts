@@ -234,6 +234,14 @@ function directoryPageKey(capturedAt: string, stageId: string, seq: number): str
 
 const DIRECTORY_PREFIX = 'directory/';
 
+/**
+ * How old a copy's pages must be, with no manifest, before a commit sweeps them (#2868). A copy cut
+ * off mid-write (its invocation's limits, an eviction) never reaches `discard`, and a pageful
+ * of the directory each time would otherwise stay forever. A day, so a copy still being written
+ * beside this one, the manual "back up now" racing the cron, is never one of them.
+ */
+const ABANDONED_PAGES_MS = 24 * 3_600_000;
+
 /** Outside `directory/`, so it is never listed as a copy: the newest started copy (#2868). */
 const DIRECTORY_ATTEMPT_KEY = 'directory-attempt.json';
 
@@ -246,6 +254,29 @@ const directoryManifest = z.object({
 });
 
 const directoryPage = z.object({ tables: z.array(scopeDumpTable) });
+
+/**
+ * Delete the pages of every copy captured before `before` that has no manifest: copies cut off
+ * before their commit (#2868). Read with no delimiter, so every key under `directory/` is seen:
+ * thirty copies of a few dozen pages each is a list call or two, once a day.
+ */
+async function sweepAbandonedPages(r2: R2BucketLike, before: string): Promise<void> {
+  const manifests = new Set<string>();
+  const pages: { key: string; capturedAt: string }[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await r2.list({ prefix: DIRECTORY_PREFIX, ...(cursor ? { cursor } : {}) });
+    for (const { key } of page.objects) {
+      const rest = key.slice(DIRECTORY_PREFIX.length);
+      const slash = rest.indexOf('/');
+      if (slash < 0) manifests.add(rest.replace(/\.json$/, ''));
+      else pages.push({ key, capturedAt: rest.slice(0, slash) });
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  const abandoned = pages.filter((p) => p.capturedAt < before && !manifests.has(p.capturedAt));
+  await Promise.all(abandoned.map((p) => r2.delete(p.key).catch(() => undefined)));
+}
 
 /**
  * The Cloudflare R2 implementation of `DirectoryBackupStore` (#40).
@@ -289,6 +320,7 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
             // `size` too: the manifest is the smallest part of the copy.
             customMetadata: { capturedAt, tables: String(tables), size: String(size) },
           });
+          await sweepAbandonedPages(r2, new Date(Date.parse(capturedAt) - ABANDONED_PAGES_MS).toISOString());
           return { capturedAt, size, tables };
         },
       };

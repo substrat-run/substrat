@@ -1232,9 +1232,11 @@ mutate the directory, so a copy is of a settled directory rather than one mid-sw
   `vertical_versions`), and from 2026-09-09 every attempt reset the directory instead of
   storing a copy. `exportDirectoryPage` answers about 4 MiB of cells at a time, and the store
   writes each page as its own object under a manifest written last, so an unfinished copy is
-  never listed. The first page fixes each table's highest rowid, so no row written during the
-  copy is in it; a row changed or removed during it is read as its page found it. The
-  directory's only foreign key is `tenants` naming itself, so such a copy still loads.
+  never listed. The first page copies every table into a snapshot inside the directory's own
+  SQLite, in one turn, and every page reads that: the copy is of one instant, whatever is
+  written, replaced or migrated while its pages are read. The last page drops the snapshot; one
+  a copy left behind is dropped by the next copy's first page, and pages a cut-off copy left in
+  R2 are swept by a later commit once they are a day old.
 - **Cadence: one copy a day.** Enforced by reading the newest stored copy, not by a second
   trigger — so the quarter-hourly cron takes one per day, a missed tick is caught up on the
   next pass (late, never never), and the schedule needs no durable state of its own. A copy

@@ -1376,7 +1376,7 @@ interface ControlPlaneStub {
   listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
-  exportDumpPage(cursor: string | null, opts?: { maxBytes?: number }): Promise<DirectoryDumpPage>;
+  exportDumpPage(cursor: string | null, opts?: { maxBytes?: number }): Promise<DirectoryDumpPage & { copiedTables?: number }>;
   importDump(tables: ScopeDumpTable[], audit?: AdminEntry): Promise<void>;
   // New replied names: an old DO does not recognize these, so it cannot ignore the audit row.
   putTenantStoreAndAudit: AuditRequired<ControlPlaneStub['putTenantStore']>;
@@ -10074,10 +10074,10 @@ export class CloudflareScopeHost implements ScopeHost {
         return { capturedAt: new Date().toISOString(), tables };
       },
       exportDirectoryPage: async (actor, cursor, opts): Promise<DirectoryDumpPage> => {
-        const page = await this.cp.exportDumpPage(cursor, opts);
-        // One access-log row per copy, as a whole export writes: its first page starts the read, so
-        // the count is that page's tables, and the params say the copy was paged.
-        if (cursor === null) await this.recordAccess(actor, 'exportDirectory', {}, { paged: true }, page.tables.length);
+        const { copiedTables, ...page } = await this.cp.exportDumpPage(cursor, opts);
+        // One access-log row per copy, as a whole export writes: its first page takes the copy, so
+        // the count is every table the copy holds, and the params say it was paged.
+        if (cursor === null) await this.recordAccess(actor, 'exportDirectory', {}, { paged: true }, copiedTables ?? page.tables.length);
         return page;
       },
       restoreDirectory: async (actor, dump: DirectoryDump): Promise<void> => {
