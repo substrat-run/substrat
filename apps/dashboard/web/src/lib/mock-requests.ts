@@ -112,6 +112,15 @@ function fixture(now = Date.now()): RequestRecord[] {
       logLines: t >= deploy ? (failed ? 2 : operation === 'ticket0/assistant-answer' ? 3 : 0) : null,
       eventTypes: eventCount > 0 ? [operation === 'ticket0/reply' ? 'ticket.replied' : 'ticket.updated'] : [],
       entities: eventCount > 0 ? [`ticket:${id}`] : [],
+      // #2762: an assignment opens a ticket; mail opens a new one. Recorded from the later version.
+      transitions:
+        t < deploy || eventCount === 0
+          ? null
+          : operation === 'ticket0/assign'
+            ? [{ entity: `ticket:${id}`, from: 'new', to: 'open' }]
+            : operation === 'ticket0/ingest-mail'
+              ? [{ entity: `ticket:${id}`, from: null, to: 'new' }]
+              : [],
       versionId: t >= deploy ? 'ticket0@2.15.0' : 'ticket0@2.14.3',
       kind: 'request',
       // #2192: the assistant calls its model provider; a failed call is one whose upstream
@@ -169,14 +178,16 @@ function fixture(now = Date.now()): RequestRecord[] {
 
 type Where = Partial<Record<RequestFacetKey, string[]>>;
 
-/** The row's values for a facet, as the plane would group it — `entity` one per type (#2762). */
+/** The row's values for a facet, as the plane would group it — `entity` and `state` one per member (#2762). */
 function valuesOf(r: RequestRecord, key: RequestFacetKey): string[] {
   if (key === 'kind') return [r.kind ?? 'request'];
   if (key === 'entity') return [...new Set(r.entities.flatMap((e) => (e.indexOf(':') > 0 ? [e.slice(0, e.indexOf(':'))] : [])))];
   // #2762: the fixture's paths stand in for route patterns; the plane groups the line's `route`.
   if (key === 'path') return r.method && r.path ? [`${r.method} ${r.path}`] : [];
-  // #2762: the fixture records no lifecycle moves yet, so no row has a process state.
-  if (key === 'state') return [];
+  // #2762: one `<entityType>:<state reached>` per move, never the id, as `joinProcessStates` keys it.
+  if (key === 'state') {
+    return [...new Set((r.transitions ?? []).flatMap((m) => (m.entity.indexOf(':') > 0 ? [`${m.entity.slice(0, m.entity.indexOf(':'))}:${m.to}`] : [])))];
+  }
   const v = r[key];
   return v === null || v === undefined ? [] : [String(v)];
 }

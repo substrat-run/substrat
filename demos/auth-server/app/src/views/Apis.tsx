@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Badge, EmptyState, GridTable, PageHeader, Row } from '@substrat-run/ui';
 import { issuerSettings, listApiResources, type ApiResource, type IssuerSettings } from '../api';
+import { MachineScopesEditor } from './MachineScopesEditor';
 
 const COLUMNS = 'minmax(0, 2.4fr) minmax(0, 1.2fr) 110px minmax(0, 1.6fr)';
 
@@ -78,9 +79,8 @@ export function ApisView() {
 }
 
 /**
- * The issuer-wide ceiling on what a machine client (`client_credentials`) may be granted.
- * Shown, never edited: `MACHINE_SCOPES` lives in the issuer's environment, so the settings
- * PATCH does not take it, and a console control for it would be one that silently did nothing.
+ * The issuer-wide ceiling on what a machine client (`client_credentials`) may be granted —
+ * edited here (`MachineScopesEditor`); each machine application holds a subset of it.
  */
 function MachineAccess() {
   const [settings, setSettings] = useState<IssuerSettings | null>(null);
@@ -94,24 +94,11 @@ function MachineAccess() {
     <section className="panel">
       <div className="panel-head"><h2>Machine access</h2></div>
       <p className="muted">
-        The scopes a machine application may be granted. They are set by <code>MACHINE_SCOPES</code> in this
-        issuer&apos;s environment, not here; each machine application holds a subset, chosen on its own screen.
+        The scopes a machine application may be granted (<code>MACHINE_SCOPES</code>, the same key the platform&apos;s
+        Env tab sets). Each machine application holds a subset, chosen on its own screen.
       </p>
       {err && <p className="error">{err}</p>}
-      {!settings && !err ? (
-        <p className="muted">Loading…</p>
-      ) : settings && settings.machineScopes.length === 0 ? (
-        <p className="error">
-          {settings.machineScopesError ??
-            'This issuer grants no machine scopes: set MACHINE_SCOPES in its environment before registering a machine application.'}
-        </p>
-      ) : settings ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {settings.machineScopes.map((s) => (
-            <code key={s}>{s}</code>
-          ))}
-        </div>
-      ) : null}
+      {!settings && !err ? <p className="muted">Loading…</p> : settings ? <MachineScopesEditor settings={settings} onChanged={setSettings} /> : null}
     </section>
   );
 }

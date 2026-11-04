@@ -11,6 +11,7 @@ import {
   boolValue,
   isTruthy,
   machineScopesOf,
+  machineScopesValue,
   putDeliveredConfig,
 } from './settings.js';
 import { assertSignInPolicy, isReservedMethodId, sanitizeSignInPolicy } from './sign-in-policy.js';
@@ -531,9 +532,10 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       allowSignup: isTruthy(cfg[ALLOW_SIGNUP]),
       accountLinking: accountLinkingMode(cfg[ACCOUNT_LINKING]),
       /**
-       * What a machine client may be granted — read-only here: `MACHINE_SCOPES` is set where
-       * the issuer's environment is, and the console only offers a choice from it. A refused
-       * value is `[]` plus the reason, so the form can say why it has nothing to offer.
+       * What a machine client may be granted — `MACHINE_SCOPES`, however it was set (a var, the
+       * platform's Env tab, or the PATCH below). A refused value is `[]` plus the reason, so the
+       * console can say why it has nothing to offer; only a value set outside the console can be
+       * refused, since the PATCH will not store one.
        */
       machineScopes: machine.scopes,
       machineScopesError: machine.error,
@@ -547,11 +549,21 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    * changes the linking mode does not have to restate the sign-up decision it did not touch —
    * and cannot revert it by echoing a stale copy. An empty body is refused rather than
    * answered 200, which would report success for a request that set nothing.
+   *
+   * `machineScopes` replaces the whole `MACHINE_SCOPES` ceiling, and is judged here, before
+   * anything is written: a list the reader would refuse is a 400 naming why, never a stored
+   * value that every machine client then reads as none. Dropping a scope stops the token
+   * endpoint minting it on the next request; a token already issued is not revoked and stays
+   * valid until it expires.
    */
   app.patch('/settings', async (c) => {
     const parsed = z
-      .object({ allowSignup: z.boolean().optional(), accountLinking: z.enum(['link', 'block']).optional() })
-      .refine((v) => v.allowSignup !== undefined || v.accountLinking !== undefined, {
+      .object({
+        allowSignup: z.boolean().optional(),
+        accountLinking: z.enum(['link', 'block']).optional(),
+        machineScopes: z.array(z.string()).optional(),
+      })
+      .refine((v) => Object.values(v).some((field) => field !== undefined), {
         message: 'name at least one setting to change',
       })
       .safeParse(await c.req.json().catch(() => null));
@@ -560,7 +572,10 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         message: parsed.error.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '),
       });
     }
+    const machine = parsed.data.machineScopes && machineScopesValue(parsed.data.machineScopes);
+    if (machine && 'error' in machine) throw new HTTPException(400, { message: machine.error });
     putDeliveredConfig(deps.sql, [
+      ...(machine ? [{ key: MACHINE_SCOPES, value: machine.value }] : []),
       ...(parsed.data.allowSignup !== undefined
         ? [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]
         : []),

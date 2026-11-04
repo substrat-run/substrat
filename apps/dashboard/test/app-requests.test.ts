@@ -71,6 +71,13 @@ describe('the app request reads (#1746)', () => {
   let failureSourcesUnavailable: boolean;
   let owner: ReturnType<typeof principalId.parse>;
   let env: Record<string, unknown>;
+  /** The one record the plane lists, as its request read answers it. */
+  const listedRecord = {
+    timestamp: 1, invocationId: 'inv-1', scopeId: appScope, vertical: 'acme', surface: 'app', method: 'POST',
+    path: '/api/widgets', status: 200, threw: false, durationMs: 12, level: 'info', operation: 'acme/close',
+    problemCode: null, principalKind: 'principal', eventCount: 1, eventTypes: ['widget.closed'],
+    entities: ['widget:w1'], transitions: [{ entity: 'widget:w1', from: 'open', to: 'closed' }], versionId: null,
+  };
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-app-requests-'));
@@ -120,7 +127,8 @@ describe('the app request reads (#1746)', () => {
             }
             if (u.searchParams.get('hours') === '501') return Response.json({ error: 'not configured' }, { status: 501 });
             // The log read answers a page of events; the aggregate reads an object.
-            if (path === '/observability/tenant-logs' || path === '/observability/tenant-requests') return Response.json([]);
+            if (path === '/observability/tenant-logs') return Response.json([]);
+            if (path === '/observability/tenant-requests') return Response.json([listedRecord]);
             if (path === '/observability/tenant-request-volume') return Response.json({ bucketMs: 60000, buckets: [], estimated: false });
             if (path === '/observability/tenant-request-facets' || path === '/observability/tenant-log-facets') return Response.json({ total: 0, facets: {}, estimated: false });
             if (path === '/observability/tenant-log-volume') return Response.json({ bucketMs: 60000, buckets: [], estimated: false });
@@ -163,6 +171,11 @@ describe('the app request reads (#1746)', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ reason: 'search_not_counted' });
     }
+  });
+
+  it('#2762: a listed request keeps the lifecycle moves it caused through the route’s output', async () => {
+    const [row] = (await (await read(appScope, 'list')).json()) as Array<Record<string, unknown>>;
+    expect(row!['transitions']).toEqual(listedRecord.transitions);
   });
 
   it('mints the credential for the signed-in member, so the plane can name them (#977)', async () => {

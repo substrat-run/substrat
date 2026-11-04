@@ -242,13 +242,14 @@ export const LEVEL_COLORS: Record<'debug' | 'info' | 'warn' | 'error' | 'unrecor
   unrecorded: 'var(--border-strong)',
 };
 
-/**
- * A request's result, as its row says it: the status and the problem code when there is
- * one (`409 conflict`), `threw` for an escaped crash. `tone` picks the colour.
- */
 /** #1901: the async outcomes that mean the work was done. Anything else is never green. */
 const ASYNC_SUCCESS = new Set(['delivered', 'ok', 'routed']);
 
+/**
+ * A request's result, as its row says it: the status and the problem code when there is
+ * one (`409 conflict`), `threw` for an escaped crash, the lifecycle move a success made.
+ * `tone` picks the colour.
+ */
 export function resultLabel(r: {
   status: number | null;
   threw: boolean;
@@ -257,6 +258,7 @@ export function resultLabel(r: {
   outcome?: string | null;
   level?: string | null;
   attempt?: number | null;
+  transitions?: ReadonlyArray<{ entity: string; from: string | null; to: string }> | null;
 }): {
   text: string;
   tone: 'ok' | 'warn' | 'error';
@@ -277,6 +279,13 @@ export function resultLabel(r: {
   const text = r.problemCode ? `${r.status} ${r.problemCode}` : r.status < 400 ? `${r.status} ok` : String(r.status);
   if (r.status >= 500) return { text, tone: 'error' };
   if (r.status >= 400 || r.problemCode) return { text, tone: 'warn' };
+  // #2762: a success that moved a lifecycle says the move (`ticket: open → resolved`), by the
+  // entity's type alone; the first move, and how many more there were.
+  const [move, ...more] = r.transitions ?? [];
+  if (move) {
+    const moved = `${move.entity.split(':')[0]}: ${move.from === null ? '' : `${move.from} `}→ ${move.to}`;
+    return { text: more.length > 0 ? `${moved} +${more.length}` : moved, tone: 'ok' };
+  }
   return { text, tone: 'ok' };
 }
 

@@ -46,7 +46,7 @@ identity provider already has (`console-redesign.md` §3 has the reasoning).
 |---|---|---|
 | — | Overview | Counts, federated sign-ins over seven days, recent failures, and a "get started" card while only the seeded clients exist |
 | Applications | Applications | The relying-party registry: client ids, redirect URIs, secrets |
-| Applications | APIs | The RFC 8707 resources this issuer mints tokens for, and the `MACHINE_SCOPES` ceiling. Read-only |
+| Applications | APIs | The RFC 8707 resources this issuer mints tokens for, and the `MACHINE_SCOPES` ceiling. The resources are read-only; the ceiling is edited here |
 | Authentication | Connections | One list over three stores: the password database, the upstream providers, BankID |
 | Authentication | Security | How an upstream sign-in links to an existing account |
 | User management | Users | The people this issuer knows; create, invite, import, promote, ban, remove |

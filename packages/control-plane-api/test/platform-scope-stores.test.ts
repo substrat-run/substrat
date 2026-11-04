@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { STORE_CALL_MAX_BYTES, STORE_DUMP_PAGE_MAX_BYTES, scopeStoreBodyBytes, scopeStoreScriptName } from '@substrat-run/contracts';
 import { verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
-import { callPlatformScopeStore, callPlatformScopeStoreAt, platformScopeStoresFor } from '../src/platform-scope-stores.js';
+import { callPlatformScopeStore, callPlatformScopeStoreAt, exportStoreDumps, platformScopeStoresFor } from '../src/platform-scope-stores.js';
 
 const vector = JSON.parse(
   readFileSync(new URL('../../contracts/test/vectors/scope-store-envelope.json', import.meta.url), 'utf8'),
@@ -50,7 +50,7 @@ describe('callPlatformScopeStore', () => {
   });
 });
 
-describe('platformScopeStoresFor moves a store in pages the driver declared (D-69)', () => {
+describe('a store read whole, for a pull, moves in pages the driver declared (D-69)', () => {
   const target = { tenantId: 'T', scopeId: 'S', vertical: 'acme/crm' };
   const table = (rows: unknown[][]) => ({ name: 'nodes', ddl: 'CREATE TABLE nodes (a TEXT)', columns: ['a'], rows });
 
@@ -70,7 +70,7 @@ describe('platformScopeStoresFor moves a store in pages the driver declared (D-6
 
   it('asks for pages of the size the registration declares: 900 000 bytes for graph', async () => {
     const { calls, stores } = recording(() => ({ tables: [table([['a']])], next: null, revision: '1' }));
-    const exported = await stores.exportStores({ ...target, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
+    const exported = await exportStoreDumps(stores, target, [{ binding: 'GRAPH', driver: 'graph' }]);
     expect(exported).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [table([['a']])] }]);
     expect(calls.map((c) => [c.operation, c.input])).toEqual([['substrat.export-page', { cursor: null, maxBytes: 900_000 }]]);
   });
@@ -82,13 +82,10 @@ describe('platformScopeStoresFor moves a store in pages the driver declared (D-6
     ];
     let served = 0;
     const { calls, stores } = recording(() => pages[served++ % 2]);
-    const exported = await stores.exportStores({
-      ...target,
-      stores: [
-        { binding: 'ONE', driver: 'graph' },
-        { binding: 'TWO', driver: 'graph' },
-      ],
-    });
+    const exported = await exportStoreDumps(stores, target, [
+      { binding: 'ONE', driver: 'graph' },
+      { binding: 'TWO', driver: 'graph' },
+    ]);
     expect(exported.map((s) => [s.binding, s.tables[0]!.rows])).toEqual([
       ['ONE', [['a'], ['b']]],
       ['TWO', [['a'], ['b']]],
@@ -97,27 +94,9 @@ describe('platformScopeStoresFor moves a store in pages the driver declared (D-6
     expect(calls.map((c) => c.objectName)).toEqual(['T/acme/crm/S/ONE', 'T/acme/crm/S/ONE', 'T/acme/crm/S/TWO', 'T/acme/crm/S/TWO']);
   });
 
-  it('imports as a stage of pages within the declared size, then one commit', async () => {
-    const big = 'x'.repeat(400_000);
-    const { calls, stores } = recording((operation) => (operation === 'substrat.commit-stage' ? { tables: 1 } : { staged: true }));
-    await stores.importStores({
-      ...target,
-      stores: [{ binding: 'GRAPH', driver: 'graph', tables: [table([[big], [big], [big], [big]])] }],
-    });
-    expect(calls.map((c) => c.operation)).toEqual([
-      ...calls.slice(0, -1).map(() => 'substrat.stage-page'),
-      'substrat.commit-stage',
-    ]);
-    const staged = calls.slice(0, -1);
-    expect(staged.length).toBeGreaterThan(1);
-    expect(staged.map((c) => c.input.seq)).toEqual(staged.map((_, i) => i));
-    for (const call of staged) expect(JSON.stringify(call.input.tables).length).toBeLessThanOrEqual(900_000);
-    expect(staged.flatMap((c) => c.input.tables.flatMap((t: { rows: unknown[] }) => t.rows))).toHaveLength(4);
-  });
-
   it('asks a driver the registry does not hold for no more than the store page cap', async () => {
     const { calls, stores } = recording(() => ({ tables: [table([])], next: null, revision: '1' }));
-    await stores.exportStores({ ...target, stores: [{ binding: 'X', driver: 'unregistered' }] });
+    await exportStoreDumps(stores, target, [{ binding: 'X', driver: 'unregistered' }]);
     expect(calls[0]!.input.maxBytes).toBe(STORE_DUMP_PAGE_MAX_BYTES);
   });
 });

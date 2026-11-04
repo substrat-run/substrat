@@ -25,7 +25,7 @@ import {
   type ScopeDumpTable,
 } from '@substrat-run/contracts';
 import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
-import type { DirectoryBackupStore, ScopeBackupEntry, ScopeBackupStore } from './backups.js';
+import type { DirectoryBackupStore, ScopeBackupEntry, ScopeBackupScopeEntry, ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
 interface R2BucketLike {
@@ -77,17 +77,33 @@ function scopePrefix(tenantId: string, scopeId: string): string {
   return `scopes/${tenantId}/${scopeId}/`;
 }
 
-/** A backup's manifest: the dump without its tables, and where its entries are. */
+/**
+ * A backup's manifest: the dump without its tables, where its entries are, and where each store's
+ * pages are (D-69). `storeEntries` defaults to none, so a manifest written before it (#2839) reads as
+ * before, its stores inline in `stores`.
+ */
 const backupManifest = scopeDump.omit({ tables: true }).extend({
   format: z.literal('paged'),
   stageId: z.string().min(1),
   entries: z.number().int().positive(),
   tables: z.number().int().nonnegative(),
+  storeEntries: z
+    .array(
+      z.object({
+        binding: z.string().min(1),
+        driver: z.string().min(1),
+        stageId: z.string().min(1),
+        entries: z.number().int().positive(),
+        revision: z.string().min(1),
+      }),
+    )
+    .default([]),
 });
 
 const backupEntry = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('page'), tables: z.array(scopeDumpPageTable) }),
   z.object({ kind: z.literal('changes'), tables: z.array(scopeDumpChange) }),
+  z.object({ kind: z.literal('store-page'), tables: z.array(scopeDumpPageTable) }),
 ]);
 
 /** Byte length, not string length: a size is the stored object's, and non-ASCII would under-report. */
@@ -121,13 +137,17 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
           );
         },
 
-        async commit({ stageId, entries, tables }) {
-          const sizes = written.get(stageId) ?? [];
-          for (let seq = 0; seq < entries; seq++) {
-            if (sizes[seq] === undefined) throw new Error(`backup entry ${seq} of ${entries} was never written`);
+        async commit({ stageId, entries, tables, storeEntries }) {
+          let size = 0;
+          for (const part of [{ stageId, entries }, ...storeEntries]) {
+            const sizes = written.get(part.stageId) ?? [];
+            for (let seq = 0; seq < part.entries; seq++) {
+              if (sizes[seq] === undefined) throw new Error(`backup entry ${seq} of ${part.entries} under ${part.stageId} was never written`);
+              size += sizes[seq]!;
+            }
           }
-          const body = JSON.stringify({ ...header, format: 'paged', stageId, entries, tables });
-          const size = byteLength(body) + sizes.slice(0, entries).reduce((a, b) => a + b, 0);
+          const body = JSON.stringify({ ...header, format: 'paged', stageId, entries, tables, storeEntries });
+          size += byteLength(body);
           const backup: ScopeBackup = { tenantId, scopeId, vertical, capturedAt, size, tables };
           await r2.put(backupKey(tenantId, scopeId, capturedAt), body, {
             httpMetadata: { contentType: 'application/json' },
@@ -196,16 +216,32 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
             if (index !== 0) throw new Error(`backup ${capturedAt} of scope ${scopeId} has one entry`);
             return { kind: 'page', tables };
           },
+          storeEntries: [],
+          storePage: async () => {
+            throw new Error(`backup ${capturedAt} of scope ${scopeId} holds its stores inline`);
+          },
         };
       }
-      const { format: _, stageId, entries, tables: __, ...header } = backupManifest.parse(raw);
+      const { format: _, stageId, entries, tables: __, storeEntries, ...header } = backupManifest.parse(raw);
+      const read = async (at: string, index: number): Promise<ScopeBackupEntry> => {
+        const part = await r2.get(entryKey(tenantId, scopeId, capturedAt, at, index));
+        if (!part) throw new Error(`backup ${capturedAt} of scope ${scopeId} is missing entry ${index} of ${at}`);
+        return backupEntry.parse(JSON.parse(await part.text()));
+      };
       return {
         header,
         entries,
-        entry: async (index): Promise<ScopeBackupEntry> => {
-          const part = await r2.get(entryKey(tenantId, scopeId, capturedAt, stageId, index));
-          if (!part) throw new Error(`backup ${capturedAt} of scope ${scopeId} is missing entry ${index}`);
-          return backupEntry.parse(JSON.parse(await part.text()));
+        // A store's page and a scope's share a shape, so the kind is what says which this is.
+        entry: async (index): Promise<ScopeBackupScopeEntry> => {
+          const entry = await read(stageId, index);
+          if (entry.kind === 'store-page') throw new Error(`backup ${capturedAt} of scope ${scopeId} holds a store page where its entry ${index} belongs`);
+          return entry;
+        },
+        storeEntries,
+        storePage: async (store, seq) => {
+          const entry = await read(store.stageId, seq);
+          if (entry.kind !== 'store-page') throw new Error(`backup ${capturedAt} of scope ${scopeId} holds a '${entry.kind}' entry where a store page belongs`);
+          return entry.tables;
         },
       };
     },
