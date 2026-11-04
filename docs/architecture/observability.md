@@ -571,7 +571,10 @@ something to this state". Written on an async line too, where the moves themselv
 type and a state are declared names. It rides the header as `processStates`, capped at 128
 characters between two moves, and becomes blob 12; the read refuses a value that is not one
 `<type>:<state>`. A line or datapoint from before a vertical's re-push carries none and is counted
-under no state. It bumped `REQUEST_CUBE_SHAPE` to 4.
+under no state. It bumped `REQUEST_CUBE_SHAPE` to 4. As with `entity`, the line's value is not
+capped while the header and blob 12 are, so past 128 characters the Analytics Engine facet and
+histogram drop the trailing moves while the request list still matches them; a single move longer
+than 128 characters is left out of the line's value too, since no read could take it.
 
 **The Lines counts (#2762).** The Lines mode has a level histogram and `operation`, `principalKind`
 ("Who") and `level` facets, from `/observability/tenant-log-volume` and `/observability/tenant-log-facets`.

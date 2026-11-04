@@ -64,6 +64,9 @@ describe('invocation record header (#1904)', () => {
       ]),
     ).toBe('assignment:active,ticket:resolved');
     expect(joinProcessStates([])).toBeNull();
+    // A move that alone exceeds the cap could ride no header and pass no parser: it is left out.
+    const long = { entity: `${'t'.repeat(64)}:1`, to: 's'.repeat(64) };
+    expect(joinProcessStates([long, { entity: 'ticket:1', to: 'open' }])).toBe('ticket:open');
     const moves = Array.from({ length: 12 }, (_, i) => ({ entity: `type${String(i).padStart(2, '0')}:1`, to: 'state' }));
     const states = joinProcessStates(moves)!;
     const cut = decodeInvocationRecord(new URLSearchParams({ processStates: states }).toString()).processStates!;

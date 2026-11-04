@@ -160,11 +160,15 @@ export function splitEntityTypes(value: string | null | undefined): string[] {
 /**
  * #2762: one `state` facet value — the entity TYPE and the declared state a request moved it
  * to, `<entityType>:<state>`, never the entity's id. The type is a ref's text before its FIRST
- * `:` (an id may hold more); a ref with none names no type, and gives no value.
+ * `:` (an id may hold more); a ref with none names no type, and gives no value. Neither does a
+ * pair longer than {@link INVOCATION_RECORD_FIELD_MAX}: the record header could not carry it,
+ * and the `state` parser refuses it, so a line showing it would offer a value no read takes.
  */
 function processStateOf(move: { entity: string; to: string }): string | null {
   const i = move.entity.indexOf(':');
-  return i > 0 && move.to !== '' ? `${move.entity.slice(0, i)}:${move.to}` : null;
+  if (i <= 0 || move.to === '') return null;
+  const value = `${move.entity.slice(0, i)}:${move.to}`;
+  return value.length <= INVOCATION_RECORD_FIELD_MAX ? value : null;
 }
 
 /**
