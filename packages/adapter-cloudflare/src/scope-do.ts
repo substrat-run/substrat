@@ -1149,7 +1149,7 @@ const stageRowsTable = (ord: number): string => `_substrat_stage_rows_${ord}`;
 /** How many staged rows a commit reads at a time. */
 const STAGE_READ_BATCH = 500;
 /** How many rows a dump page reads from a table at a time; each batch is read to its end. */
-const DUMP_READ_BATCH = 500;
+export const DUMP_READ_BATCH = 500;
 
 /**
  * A capture's own tables and triggers (#2450): what lets a copy page a scope that never stops
@@ -1255,7 +1255,7 @@ function dumpRowFilter(name: string): { where: string; bindings: unknown[] } {
 }
 
 /** An estimate of a row's size on the wire, for sizing a dump page (#2450). Over, never under. */
-function rowBytes(row: readonly unknown[]): number {
+export function rowBytes(row: readonly unknown[]): number {
   let n = 0;
   for (const cell of row) {
     if (typeof cell === 'string') n += cell.length * 3 + 2;

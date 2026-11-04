@@ -517,6 +517,25 @@ export const directoryDump = z.object({
 export type DirectoryDump = z.infer<typeof directoryDump>;
 
 /**
+ * One page of the directory's dump (#2868). A whole dump is every row of every table in one
+ * value, which outgrew the directory's 128 MB isolate: a page holds about
+ * `SCOPE_DUMP_PAGE_MAX_BYTES` of cells, in the same fragment shape as `scopeDumpPage` (a table's
+ * rows may be spread over several pages, and every table appears in at least one), so
+ * `mergeDumpPages` joins them. `capturedAt` is the first page's, on every page. `next` is opaque:
+ * hand it back for the following page, `null` after the last.
+ *
+ * The pages are read in separate turns, so a row changed or removed while the pages are read is
+ * read as its page found it. A row written after the first page is in none: that page fixes each
+ * table's horizon. The directory's only foreign key is `tenants` naming itself, so such a copy loads.
+ */
+export const directoryDumpPage = z.object({
+  capturedAt: z.string().min(1),
+  tables: z.array(scopeDumpTable),
+  next: z.string().min(1).nullable(),
+});
+export type DirectoryDumpPage = z.infer<typeof directoryDumpPage>;
+
+/**
  * One stored DIRECTORY backup, as the list surface reports it (#40) — metadata about a
  * `directoryDump` the platform holds, never the dump itself. The scope-level analogue is
  * `scopeBackup`; this one carries no tenant or scope because the directory is the thing

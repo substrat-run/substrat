@@ -13,13 +13,16 @@ import type { DrainedEvent } from '@substrat-run/contracts';
 
 import {
   directoryDump,
+  mergeDumpPages,
   scopeDump,
   scopeDumpChange,
   scopeDumpPageTable,
+  scopeDumpTable,
   z,
   type DirectoryBackup,
   type DirectoryDump,
   type ScopeBackup,
+  type ScopeDumpTable,
 } from '@substrat-run/contracts';
 import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
 import type { DirectoryBackupStore, ScopeBackupEntry, ScopeBackupStore } from './backups.js';
@@ -214,12 +217,35 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
  * directory per deployment and `capturedAt` is a copy's whole address. Sharing a bucket
  * with the scope backups above is safe by construction: `scopes/` and `directory/` cannot
  * collide, and neither prefix is ever built by a caller.
+ *
+ * That object is the copy's MANIFEST (#2868), as a scope backup's is (#2839): its capture time
+ * and how many pages hold its tables, each page its own object at
+ * `directory/<capturedAt>/<stageId>/<seq>.json`. The manifest is written last, so a copy that did
+ * not finish has none and is never listed or read. A copy written before #2868 is one whole dump
+ * at the manifest's key, and still reads.
  */
 function directoryKey(capturedAt: string): string {
   return `directory/${capturedAt}.json`;
 }
 
+function directoryPageKey(capturedAt: string, stageId: string, seq: number): string {
+  return `directory/${capturedAt}/${stageId}/${seq}.json`;
+}
+
 const DIRECTORY_PREFIX = 'directory/';
+
+/** Outside `directory/`, so it is never listed as a copy: the newest started copy (#2868). */
+const DIRECTORY_ATTEMPT_KEY = 'directory-attempt.json';
+
+const directoryManifest = z.object({
+  capturedAt: z.string().min(1),
+  format: z.literal('paged'),
+  stageId: z.string().min(1),
+  entries: z.number().int().positive(),
+  tables: z.number().int().nonnegative(),
+});
+
+const directoryPage = z.object({ tables: z.array(scopeDumpTable) });
 
 /**
  * The Cloudflare R2 implementation of `DirectoryBackupStore` (#40).
@@ -233,33 +259,49 @@ const DIRECTORY_PREFIX = 'directory/';
 export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupStore {
   const r2 = bucket as R2BucketLike;
   return {
-    async put({ dump }) {
-      const body = JSON.stringify(dump);
-      // Byte length, not string length — the size is the stored object's.
-      const size = new TextEncoder().encode(body).length;
-      const backup: DirectoryBackup = {
-        capturedAt: dump.capturedAt,
-        size,
-        tables: dump.tables.length,
-      };
-      await r2.put(directoryKey(dump.capturedAt), body, {
-        httpMetadata: { contentType: 'application/json' },
-        // Mirrored into custom metadata so `list` answers without fetching every dump —
-        // a directory copy is megabytes, its listing is a table row.
-        customMetadata: {
-          capturedAt: backup.capturedAt,
-          tables: String(backup.tables),
+    begin({ capturedAt }) {
+      const stageId = crypto.randomUUID();
+      const sizes: number[] = [];
+      return {
+        async put(seq, tables) {
+          const body = JSON.stringify({ tables });
+          await r2.put(directoryPageKey(capturedAt, stageId, seq), body, {
+            httpMetadata: { contentType: 'application/json' },
+          });
+          sizes[seq] = byteLength(body);
         },
-      });
-      return backup;
+
+        async discard() {
+          await Promise.all(
+            sizes.map((_, seq) => r2.delete(directoryPageKey(capturedAt, stageId, seq)).catch(() => undefined)),
+          );
+        },
+
+        async commit({ entries, tables }) {
+          for (let seq = 0; seq < entries; seq++) {
+            if (sizes[seq] === undefined) throw new Error(`directory backup page ${seq} of ${entries} was never written`);
+          }
+          const body = JSON.stringify({ capturedAt, format: 'paged', stageId, entries, tables });
+          const size = byteLength(body) + sizes.slice(0, entries).reduce((a, b) => a + b, 0);
+          await r2.put(directoryKey(capturedAt), body, {
+            httpMetadata: { contentType: 'application/json' },
+            // Mirrored into custom metadata so `list` answers without fetching every manifest.
+            // `size` too: the manifest is the smallest part of the copy.
+            customMetadata: { capturedAt, tables: String(tables), size: String(size) },
+          });
+          return { capturedAt, size, tables };
+        },
+      };
     },
 
     async list() {
       const out: DirectoryBackup[] = [];
       let cursor: string | undefined;
       do {
+        // One level: a copy's pages sit under a directory of their own, and are not copies.
         const page = await r2.list({
           prefix: DIRECTORY_PREFIX,
+          delimiter: '/',
           include: ['customMetadata'],
           ...(cursor ? { cursor } : {}),
         });
@@ -271,7 +313,7 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
             meta.capturedAt ?? o.key.slice(DIRECTORY_PREFIX.length).replace(/\.json$/, '');
           out.push({
             capturedAt,
-            size: o.size,
+            size: meta.size ? Number(meta.size) : o.size,
             tables: meta.tables ? Number(meta.tables) : 0,
           });
         }
@@ -287,11 +329,42 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
       if (!obj) return null;
       // Parsed through the contract on the way out, so a corrupted object fails HERE
       // rather than half-way through the restore that trusted it.
-      return directoryDump.parse(JSON.parse(await obj.text())) as DirectoryDump;
+      const raw: unknown = JSON.parse(await obj.text());
+      if ((raw as { format?: unknown } | null)?.format !== 'paged') return directoryDump.parse(raw) as DirectoryDump;
+      const manifest = directoryManifest.parse(raw);
+      const pages: ScopeDumpTable[][] = [];
+      for (let seq = 0; seq < manifest.entries; seq++) {
+        const part = await r2.get(directoryPageKey(capturedAt, manifest.stageId, seq));
+        if (!part) throw new Error(`directory backup ${capturedAt} is missing page ${seq}`);
+        pages.push(directoryPage.parse(JSON.parse(await part.text())).tables);
+      }
+      // `restoreDirectory` takes one dump, so the pages are joined here (a paged restore is #2868's follow-up).
+      return { capturedAt, tables: mergeDumpPages(pages) };
     },
 
     async delete({ capturedAt }) {
+      // The manifest first: once it is gone the copy is no longer listed, whatever of its pages remain.
       await r2.delete(directoryKey(capturedAt));
+      const prefix = `${DIRECTORY_PREFIX}${capturedAt}/`;
+      let cursor: string | undefined;
+      do {
+        const page = await r2.list({ prefix, ...(cursor ? { cursor } : {}) });
+        await Promise.all(page.objects.map((o) => r2.delete(o.key)));
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+    },
+
+    async markAttempt({ attemptedAt }) {
+      await r2.put(DIRECTORY_ATTEMPT_KEY, JSON.stringify({ attemptedAt }), {
+        httpMetadata: { contentType: 'application/json' },
+      });
+    },
+
+    async lastAttempt() {
+      const obj = await r2.get(DIRECTORY_ATTEMPT_KEY);
+      if (!obj) return null;
+      const parsed = z.object({ attemptedAt: z.string().min(1) }).safeParse(JSON.parse(await obj.text()));
+      return parsed.success ? parsed.data.attemptedAt : null;
     },
   };
 }

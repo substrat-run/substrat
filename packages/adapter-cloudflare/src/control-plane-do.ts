@@ -205,7 +205,7 @@ import {
   type AuditedOperationSqlRow,
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
-import { switchSqlOver } from './scope-do.js';
+import { DUMP_READ_BATCH, rowBytes, switchSqlOver } from './scope-do.js';
 import {
   blankSqlComments,
   boundShapesColumn,
@@ -233,6 +233,7 @@ import type {
   OpsFailureEntry,
   SweepRunEntry,
   RoleDefinition,
+  DirectoryDumpPage,
   ScopeDumpTable,
   ScopeId,
   ScopeStatus,
@@ -249,7 +250,7 @@ import type {
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, AUTO_ADMISSION_NOTE, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, AUTO_ADMISSION_NOTE, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_DUMP_PAGE_MAX_BYTES, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { DeploymentWireAuth, FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
@@ -1639,6 +1640,43 @@ export const REPLIED_METHODS = [
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
+/**
+ * #1713: the directory's epoch describes THIS store's history, not its data, so it never leaves in
+ * a dump. A restore mints its own from the store it lands in (`importDump`).
+ */
+const directoryDumpWhere = (table: string): string => (table === 'lifecycle_revisions' ? `subject <> 'directory:epoch'` : '1');
+
+/** Below every rowid a directory table holds: where a table's read starts, and an empty table's horizon. */
+const NO_ROWID = Number.MIN_SAFE_INTEGER;
+const ROWID_NAMES = new Set(['rowid', 'oid', '_rowid_']);
+
+/** Where a directory dump page resumes (#2868), and what the first page fixed. */
+interface DirectoryDumpCursor {
+  capturedAt: string;
+  /** Each table's highest rowid when the first page was read. */
+  horizon: Record<string, number>;
+  table: string;
+  /** The last rowid (or offset) read from `table`. */
+  after: number;
+}
+
+function decodeDirectoryDumpCursor(cursor: string): DirectoryDumpCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cursor);
+  } catch {
+    parsed = null;
+  }
+  const c = parsed as Partial<DirectoryDumpCursor> | null;
+  if (
+    !c || typeof c.capturedAt !== 'string' || typeof c.table !== 'string' || !Number.isSafeInteger(c.after) ||
+    !c.horizon || typeof c.horizon !== 'object' || !Object.values(c.horizon).every((v) => Number.isSafeInteger(v))
+  ) {
+    throw substratError('validation_failed', 'not a directory dump page cursor');
+  }
+  return c as DirectoryDumpCursor;
+}
+
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
@@ -2068,9 +2106,80 @@ export class ControlPlaneDO extends DurableObject {
    * did before the restore, which is the opposite of what a recovery is for.
    */
   exportDump(): ScopeDumpTable[] {
-    // Not `_cf_*` either: workerd's own tables (the #1764 backfill's alarm creates
-    // `_cf_METADATA`), which are not the directory's and which it refuses to drop on restore.
-    const defs = this.sql
+    return this.dumpTableDefs().map(({ name, sql }) => {
+      const cursor = this.sql.exec(`SELECT * FROM "${name}" WHERE ${directoryDumpWhere(name)}`);
+      const columns = cursor.columnNames;
+      const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
+      return { name, ddl: sql, columns, rows };
+    });
+  }
+
+  /**
+   * One page of `exportDump` (#2868): the tables in the same order, each table's rows in rowid
+   * order, until about `maxBytes` of cells are read (a single larger row rides alone). The whole
+   * dump outgrew this object's isolate, mostly through `vertical_versions`, which keeps every
+   * pushed manifest. The first page (`cursor` null) fixes each table's highest rowid, and no later
+   * page reads past it, so a row written while the copy is read is in none of its pages.
+   */
+  exportDumpPage(cursor: string | null, opts: { maxBytes?: number } = {}): DirectoryDumpPage {
+    const maxBytes = opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES;
+    const defs = this.dumpTableDefs();
+    const at = cursor === null ? null : decodeDirectoryDumpCursor(cursor);
+    const capturedAt = at?.capturedAt ?? new Date().toISOString();
+    const horizon = at?.horizon ?? Object.fromEntries(defs.map(({ name }) => [name, this.highestRowid(name)]));
+    const tables: ScopeDumpTable[] = [];
+    let bytes = 0;
+    let next: string | null = null;
+    for (const { name, sql } of defs) {
+      // Tables are read in name order: those before the cursor's are done.
+      if (at && name < at.table) continue;
+      const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
+      probe.toArray();
+      const columns = probe.columnNames;
+      // A table without a rowid, or with a column that takes the name, is read by offset, unfenced.
+      const byRowid = !/\bWITHOUT\s+ROWID\b/i.test(sql) && !columns.some((c) => ROWID_NAMES.has(c.toLowerCase()));
+      const where = directoryDumpWhere(name);
+      let last = at && name === at.table ? at.after : byRowid ? NO_ROWID : 0;
+      const rows: unknown[][] = [];
+      let full = false;
+      for (;;) {
+        // In batches, each read to its end: a part-read cursor keeps its table locked.
+        const read = Array.from(
+          byRowid
+            ? this.sql
+                .exec(`SELECT rowid, * FROM "${name}" WHERE (${where}) AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`, last, horizon[name] ?? NO_ROWID, DUMP_READ_BATCH)
+                .raw()
+            : this.sql.exec(`SELECT * FROM "${name}" WHERE ${where} LIMIT ? OFFSET ?`, DUMP_READ_BATCH, last).raw(),
+          (raw) => raw as unknown[],
+        );
+        for (const cells of read) {
+          const row = byRowid ? cells.slice(1) : cells;
+          rows.push(row);
+          last = byRowid ? Number(cells[0]) : last + 1;
+          bytes += rowBytes(row);
+          if (bytes >= maxBytes) {
+            full = true;
+            break;
+          }
+        }
+        if (full || read.length < DUMP_READ_BATCH) break;
+      }
+      tables.push({ name, ddl: sql, columns, rows });
+      if (full) {
+        next = JSON.stringify({ capturedAt, horizon, table: name, after: last });
+        break;
+      }
+    }
+    return { capturedAt, tables, next };
+  }
+
+  /**
+   * The tables a dump carries, by name. Not `_cf_*` either: workerd's own tables (the #1764
+   * backfill's alarm creates `_cf_METADATA`), which are not the directory's and which it refuses
+   * to drop on restore.
+   */
+  private dumpTableDefs(): { name: string; sql: string }[] {
+    return this.sql
       .exec(
         `SELECT name, sql FROM sqlite_master
           WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
@@ -2078,17 +2187,16 @@ export class ControlPlaneDO extends DurableObject {
           ORDER BY name`,
       )
       .toArray() as unknown as { name: string; sql: string }[];
-    return defs.map(({ name, sql }) => {
-      // #1713: the directory's epoch describes THIS store's history, not its data, so it never
-      // leaves in a dump. A restore mints its own from the store it lands in (`importDump`).
-      const cursor =
-        name === 'lifecycle_revisions'
-          ? this.sql.exec(`SELECT * FROM "${name}" WHERE subject <> 'directory:epoch'`)
-          : this.sql.exec(`SELECT * FROM "${name}"`);
-      const columns = cursor.columnNames;
-      const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
-      return { name, ddl: sql, columns, rows };
-    });
+  }
+
+  /** A table's highest rowid, `NO_ROWID` when it is empty or has none to read. */
+  private highestRowid(name: string): number {
+    try {
+      const [row] = this.sql.exec(`SELECT max(rowid) AS m FROM "${name}"`).toArray() as { m: number | null }[];
+      return row?.m ?? NO_ROWID;
+    } catch {
+      return NO_ROWID;
+    }
   }
 
   /**

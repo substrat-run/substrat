@@ -1227,9 +1227,19 @@ restored without its history cannot say what the platform did before the restore
 platform-sweep cron calls `backupDirectoryIfDue` last in each pass, after the phases that
 mutate the directory, so a copy is of a settled directory rather than one mid-sweep.
 
+- **Read and stored a page at a time** ([#2868](https://github.com/substrat-run/substrat/issues/2868)).
+  The whole dump outgrew the directory's 128 MB isolate (every push keeps its manifest in
+  `vertical_versions`), and from 2026-09-09 every attempt reset the directory instead of
+  storing a copy. `exportDirectoryPage` answers about 4 MiB of cells at a time, and the store
+  writes each page as its own object under a manifest written last, so an unfinished copy is
+  never listed. The first page fixes each table's highest rowid, so no row written during the
+  copy is in it; a row changed or removed during it is read as its page found it. The
+  directory's only foreign key is `tenants` naming itself, so such a copy still loads.
 - **Cadence: one copy a day.** Enforced by reading the newest stored copy, not by a second
   trigger — so the quarter-hourly cron takes one per day, a missed tick is caught up on the
-  next pass (late, never never), and the schedule needs no durable state of its own.
+  next pass (late, never never), and the schedule needs no durable state of its own. A copy
+  that fails is waited out for six hours before the next is tried: each attempt is noted
+  before its first read, so even one that resets the directory leaves the note behind.
 - **Retention: 30 copies**, matching the DO PITR horizon so the two defences expire together
   instead of leaving a window covered by neither. Pruned only *after* a successful capture: a
   failed backup must never be the thing that deletes the last good copy.
