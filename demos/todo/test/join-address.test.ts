@@ -40,7 +40,7 @@ function appWith(env: EmailIdentityEnv = {}): Hono {
 function signIn(sub: string, principal: PrincipalId, email: string | null, verified: boolean | undefined): string {
   sessions.set(sub, {
     subject: { sub, email, name: null, ...(verified === undefined ? {} : { emailVerified: verified }) },
-    caller: { principal, tenantId: world.tenant, scopeId: world.scope, sub, display: sub },
+    caller: { principal, tenantId: world.tenant, scopeId: world.scope, sub, display: sub, email },
   });
   return sub;
 }

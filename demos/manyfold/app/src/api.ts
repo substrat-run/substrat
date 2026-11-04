@@ -132,10 +132,10 @@ export const api = {
     const res = await fetch('/api/me', { headers: headers(), credentials: 'same-origin' });
     if (res.status === 401) return { mode: 'anon' };
     const b = (await res.json().catch(() => ({}))) as {
-      status?: string; firstSignInOpen?: boolean; can?: Caps; key?: string; display?: string; site?: string;
+      status?: string; firstSignInOpen?: boolean; can?: Caps; principal?: string; display?: string; site?: string;
     };
     if (b.status === 'needs-setup') return { mode: 'needs-setup', firstSignInOpen: b.firstSignInOpen === true };
-    if (b.can) return { mode: 'authed', principal: b.key ?? '', display: b.display ?? 'You', site: b.site ?? null, can: b.can, role: roleLabel(b.can) };
+    if (b.can) return { mode: 'authed', principal: b.principal ?? '', display: b.display ?? 'You', site: b.site ?? null, can: b.can, role: roleLabel(b.can) };
     return { mode: 'anon' };
   },
   /** `me` resolved against a specific site — powers the "roles are per site" rail (K-22):
