@@ -43,6 +43,7 @@ describe('the conversation record', () => {
 		threadId,
 		title: 'Todo',
 		projectId: 'P1',
+		tenantId: 'TEAM1',
 		turnId,
 		message,
 		actor: 'auth0|anna',

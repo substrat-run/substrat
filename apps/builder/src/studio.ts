@@ -8,7 +8,10 @@
  *
  *   - **metering** — the usage ledger, one entry per turn and model (metering.ts);
  *   - **assistant** — the record of each project's conversation, one thread per
- *     project, every turn's events appended as they happen (record.ts).
+ *     project, every turn's events appended as they happen (record.ts);
+ *
+ * and one module of the studio's own: **turns**, a summary row per turn across
+ * every team, which is what the console filters on (turns.ts).
  *
  * One fixed node, Meridian-DEV_NODE-style constants. Team boundaries are held by
  * the per-team BuilderAgent, which only ever names its own projects' threads;
@@ -18,9 +21,10 @@ import { permissionKey, principalId, scopeId, tenantId } from '@substrat-run/con
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
 import { ASSISTANT_PERM, assistantModule } from '@substrat-run/engine-assistant';
+import { TURNS_PERM, turnsModule } from './turns.js';
 
 /** The modules the studio's ScopeDO bundles — worker.ts builds the DO class from this list. */
-export const STUDIO_MODULES = [meteringModule, assistantModule];
+export const STUDIO_MODULES = [meteringModule, assistantModule, turnsModule];
 
 /** The studio's fixed node — valid ULIDs, same shape as Meridian's DEV_NODE. */
 export const STUDIO_NODE = {
@@ -88,6 +92,8 @@ export async function ensureStudio(env: StudioEnv): Promise<void> {
 					METERING_PERM.configure,
 					METERING_PERM.close,
 					ASSISTANT_PERM.use,
+					TURNS_PERM.record,
+					TURNS_PERM.read,
 				].map((p) => permissionKey.parse(p)),
 				source: 'vertical',
 			},
