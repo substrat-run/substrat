@@ -590,7 +590,10 @@ describe('subject erasure (#37)', () => {
       expect(calls.exported).toEqual([scoped]);
       const [backup] = await store.list({ tenantId: t, scopeId: scoped });
       const taken = await store.get({ tenantId: t, scopeId: scoped, capturedAt: backup!.capturedAt });
-      expect(taken!.header.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
+      // Held as store pages beside the scope's entries (D-69), not inline.
+      expect(taken!.header.stores).toEqual([]);
+      expect(taken!.storeEntries.map((e) => [e.binding, e.driver, e.entries])).toEqual([['GRAPH', 'graph', 1]]);
+      expect(await taken!.storePage(taken!.storeEntries[0]!, 0)).toEqual([graphTable]);
     });
 
     it('is carried WITH its store in a full tenant export (Art. 20)', async () => {
