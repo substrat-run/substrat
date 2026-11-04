@@ -225,7 +225,7 @@ import {
   type CopyJobRecord, type CopyJobs,
 } from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
-import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
+import { exportStoreDumps, runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import { liveApprovalOf, type ScopeStoreEnsurerOptions, type StoreCanaryTarget, type StoreDriverApprovals } from './store-script.js';
 import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
 import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, readStoreDriverApprovals, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
@@ -334,9 +334,29 @@ import type {
   DirectoryBackupStore,
   ScopeBackup,
   ScopeBackupStore,
+  ScopeBackupStoreEntries,
   ScopeBackupWriter,
   ScopeDumpHeader,
 } from './backups.js';
+import { discardMoves, moveStores, type MovedStore, type StoreRequestBudget } from './store-move.js';
+import {
+  backupEnds,
+  commitStages,
+  inlineStoreSource,
+  restoreEnds,
+  snapshotEnds,
+  StoreLandFailure,
+  storeHoldsRows,
+  type StorePlace,
+  type StoreSource,
+} from './store-move-ends.js';
+
+/** One store a restore loads: its binding, its driver, and where its pages come from. */
+interface RestoreStore {
+  binding: string;
+  driver: string;
+  source: StoreSource;
+}
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import {
@@ -518,6 +538,8 @@ export interface ControlPlaneApiOptions {
    * stores. Present on the hosted control plane, which is the only caller.
    */
   platformScopeStores?: PlatformScopeStores;
+  /** How much of a store move one request does (D-69). Default `STORE_REQUEST_BUDGET`; a test passes a small one. */
+  storeMoveBudget?: StoreRequestBudget;
   /**
    * The registered scope-store drivers (#2207) this control plane judges a scope's stores against
    * (`mayHoldScopeStores`, #2242), and a push's declared drivers and both uploads' plans
@@ -1923,7 +1945,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => (await platformStoresWipe(c, scope))();
 
   /**
-   * A dump in pages (`substrat.export-page`) of each store the lifecycle reaches, for a backup, a full pull or a fork.
+   * The stores a backup, a full pull or a fork copies: those the scope's running version declares.
    *
    * A dump is only worth taking if it restores, and a restore imports only what the destination's
    * version declares (L8). So a binding only an earlier version declared (#2286) is left out of the
@@ -1932,25 +1954,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * way out, rather than produce a dump its own scope could not restore. Wipe, reap and erasure
    * never export, so they reach such a store regardless.
    */
-  const exportPlatformStores = async (c: ReqCtx, scope: Scope): Promise<ScopeDump['stores'] | undefined> => {
+  const platformStoreReach = async (
+    c: ReqCtx,
+    scope: Scope,
+  ): Promise<{ caller: PlatformScopeStores; place: StorePlace; stores: DeclaredScopeStore[] } | undefined> => {
     const caller = options.platformScopeStores;
     if (!caller || !scope.vertical) return undefined;
     const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeDrivers);
     if (all.length === 0) return undefined;
-    const exported = await caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores: all });
+    const place = { tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical };
     const current = new Set(running.map((store) => store.binding));
-    const dropped = exported.filter((store) => !current.has(store.binding));
-    const held = dropped.find((store) => store.tables.some((table) => table.rows.length > 0));
-    if (held) {
+    for (const dropped of all.filter((store) => !current.has(store.binding))) {
+      if (!(await storeHoldsRows(caller, place, dropped))) continue;
       throw new ControlPlaneError(
         409,
-        `scope ${scope.id}'s store '${held.binding}' was declared by an earlier version of '${scope.vertical}' and ` +
+        `scope ${scope.id}'s store '${dropped.binding}' was declared by an earlier version of '${scope.vertical}' and ` +
           `still holds data, and the version the scope runs does not declare it, so a dump of it could not be ` +
-          `restored. Declare '${held.binding}' as a '${held.driver}' again in a version the scope runs, then export; ` +
+          `restored. Declare '${dropped.binding}' as a '${dropped.driver}' again in a version the scope runs, then export; ` +
           `or reap the scope without a backup, which wipes it`,
       );
     }
-    return exported.filter((store) => current.has(store.binding));
+    return { caller, place, stores: running };
+  };
+
+  /** The stores a pull or a tenant export answers inline, each read whole (`exportStoreDumps`). */
+  const exportPlatformStores = async (c: ReqCtx, scope: Scope): Promise<ScopeDump['stores'] | undefined> => {
+    const reach = await platformStoreReach(c, scope);
+    return reach && exportStoreDumps(reach.caller, reach.place, reach.stores);
   };
 
   /**
@@ -6592,12 +6622,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       await retryTransient(() => copier.snapshotScope({ sourceScopeId: scope.id, newScopeId: snapId, tenantId }));
       // The scope file was copied inside the script. The store objects are per scope, so the
-      // fork gets its own copy through the reserved export and import, signed by the
-      // control plane. A version that declares no stores has nothing to copy.
+      // fork gets its own copy, page by page from the source's store into a stage at the fork's,
+      // signed by the control plane (D-69); every store is staged before any is committed. A
+      // version that declares no stores has nothing to copy.
       if (reach) {
-        const stores = await reach.caller.exportStores({ tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
-        if (stores.length > 0) {
-          await reach.caller.importStores({ tenantId, scopeId: snapId, vertical: reach.vertical, stores });
+        const from = { tenantId, scopeId: scope.id, vertical: reach.vertical };
+        const to = { ...from, scopeId: snapId };
+        const moved = await moveStores(snapshotEnds(reach.caller, from, to), reach.stores, `scope ${scope.id}'s stores`, options.storeMoveBudget);
+        try {
+          await commitStages(reach.caller, to, moved, retryTransient);
+        } finally {
           replay = await replayPlatformStoreErasures(c, { ...scope, id: snapId }, scope.id);
         }
       }
@@ -6792,9 +6826,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { tables: hostTables, ...header } = await c.var.admin.exportScope(c.get('actor'), tenantId, scope.id);
     const vertical = await verticalForScope(c, scope);
     // Store tables are opaque and stay unsealed. The platform reads them from the store script
-    // (#2207); a store it cannot name or reach refuses the backup rather than omitting it.
-    const stores = (await exportPlatformStores(c, scope)) ?? header.stores;
-    const backup = backupStage(store.begin({ vertical: scope.vertical, header: { ...header, stores } }), sealerFor(c, tenantId, scope.id));
+    // (#2207), a page at a time into entries of their own (D-69); a store it cannot name or reach
+    // refuses the backup rather than omitting it. Resolved before anything is written.
+    const reach = await platformStoreReach(c, scope);
+    const writer = store.begin({ vertical: scope.vertical, header: { ...header, stores: reach ? [] : header.stores } });
+    const backup = backupStage(writer, sealerFor(c, tenantId, scope.id));
     // #2839: from a vertical, the data moves into the store a page at a time, as a paged copy
     // moves it into another scope (#2450): captured, so a scope taking writes meanwhile is still
     // copied as it was at one moment, and never held whole here. A deployment that predates
@@ -6803,10 +6839,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ? (await transferScope(vertical, backup.dest, { from: scope.id }, { retry: retryTransient, stamp: false, alwaysStage: true })).dump
       : hostTables;
     if (Array.isArray(moved)) await backup.dest.stageScopePage(scope.id, ulid(), 0, moved);
+    // The scope, then its stores: two objects, so not one moment (D-69, question 3).
+    let stores: MovedStore[] = [];
     try {
-      return await backup.commit();
+      if (reach) {
+        stores = await moveStores(backupEnds(reach.caller, reach.place, writer), reach.stores, `scope ${scope.id}'s stores`, options.storeMoveBudget);
+      }
+      return await backup.commit(stores.map((s) => ({ binding: s.binding, driver: s.driver, stageId: s.moveId, entries: s.pages, revision: s.revision })));
     } catch (e) {
       await backup.discard();
+      for (const s of stores) await writer.discard(s.moveId).catch(() => undefined);
       throw e;
     }
   };
@@ -6844,7 +6886,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         },
         discardStagedScope: (_: ScopeId, stageId: string) => writer.discard(stageId),
       },
-      commit: () => writer.commit({ stageId: last.stageId, entries: last.entries, tables: last.tables.size }),
+      commit: (storeEntries: readonly ScopeBackupStoreEntries[]) =>
+        writer.commit({ stageId: last.stageId, entries: last.entries, tables: last.tables.size, storeEntries }),
       discard: () => writer.discard(last.stageId),
     };
   };
@@ -6881,6 +6924,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (held.entries > 1) {
       return refuseStatus(c, 413, `backup ${capturedAt} of scope ${scopeId} is stored in ${held.entries} entries (its pages, and any writes caught while it was taken), which only a restore applies; restore it with POST /tenants/${tenantId}/scopes/${scopeId}/backups/${capturedAt}/restore`);
     }
+    // A store held in one page is served inline, as `stores` always was; one held in more is a
+    // restore's to apply (D-69), so the backup is refused whole rather than handed back in part.
+    const paged = held.storeEntries.find((store) => store.entries > 1);
+    if (paged) {
+      return refuseStatus(c, 413, `backup ${capturedAt} of scope ${scopeId} holds scope store '${paged.binding}' in ${paged.entries} pages, which only a restore applies; restore it with POST /tenants/${tenantId}/scopes/${scopeId}/backups/${capturedAt}/restore`);
+    }
+    const pagedStores = [];
+    for (const store of held.storeEntries) {
+      pagedStores.push({ binding: store.binding, driver: store.driver, tables: mergeDumpPages([await held.storePage(store, 0)]) });
+    }
     const { tables } = await held.entry(0);
     // Unseal on the way out (#37). The bytes in the store stay sealed — this is the
     // authorized read opening them with the keys the platform holds. A subject shredded
@@ -6888,7 +6941,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // working: the ciphertext never left the object, and nothing turns it back into a
     // person. A dump taken before sealing existed passes through untouched.
     const opened = await openDump(mergeDumpPages([tables]), sealerFor(c, tenantId, scopeId));
-    return c.json({ ...held.header, tables: opened });
+    return c.json({ ...held.header, stores: [...held.header.stores, ...pagedStores], tables: opened });
   });
 
   // Take a backup WITHOUT reaping — the standalone copy (a pre-migration checkpoint, an
@@ -7804,9 +7857,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const held = await store.get({ tenantId, scopeId, capturedAt });
     if (!held) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
     const { header } = held;
+    // A backup taken since D-69 holds its stores as store pages; one taken before, inline in its header.
+    const pagedStores: RestoreStore[] = held.storeEntries.map((entry) => ({
+      binding: entry.binding,
+      driver: entry.driver,
+      source: { pages: entry.entries, revision: entry.revision, page: (seq: number) => held.storePage(entry, seq) },
+    }));
     if (options.platformScopeStores) {
       try {
-        await refuseUndeclaredDumpStores(c, scope, header.stores);
+        await refuseUndeclaredDumpStores(c, scope, [...header.stores, ...pagedStores]);
       } catch (e) {
         if (e instanceof ControlPlaneError) return relayRefusal(c, e);
         throw e;
@@ -7819,7 +7878,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (tables.length === 0) {
           return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
         }
-        return c.json(await loadIntoScope(c, scope, { header, tables: await openDump(mergeDumpPages([tables]), sealer) }));
+        return c.json(await loadIntoScope(c, scope, { header, tables: await openDump(mergeDumpPages([tables]), sealer), pagedStores }));
       }
       // The host judges the roles the backup seats or defines before anything is replaced (#2555), and
       // records the tables it restores. So it is handed every table's schema and the role tables' rows,
@@ -7851,7 +7910,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         return { dump: { stageId }, tables: judged.tables() };
       };
-      return c.json(await loadIntoScope(c, scope, { header, tables: [], stage }));
+      return c.json(await loadIntoScope(c, scope, { header, tables: [], stage, pagedStores }));
     } catch (e) {
       return restoreFailed(c, scope, e);
     }
@@ -7875,6 +7934,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       tables: ScopeDumpTable[];
       stage?: (vertical: VerticalClient) => Promise<{ dump: StagedDump; tables: ScopeDumpTable[] }>;
       sourceHint?: ScopeId;
+      /** A backup's stores held as store pages (D-69). Inline ones are the header's `stores`. */
+      pagedStores?: readonly RestoreStore[];
     },
   ) => {
     const actor = c.get('actor');
@@ -7889,24 +7950,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2185: cleared before the load as well as after it (below): a step after the load can still
     // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
     await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
-    const staged = input.stage && vertical ? await input.stage(vertical) : undefined;
-    const tables = staged?.tables ?? input.tables;
+    // D-69: every store is staged first, then the scope is loaded, then the stores are committed,
+    // then erasures are replayed. Until the first commit nothing of a store has changed, so a page
+    // that cannot be read, a refused stage or a refused load leaves every store as it was. Once a
+    // commit was attempted the replay runs whatever follows, and a restore run again converges.
+    const storesCaller = options.platformScopeStores;
+    const platform = storesCaller && vertical && scope.vertical
+      ? { caller: storesCaller, place: { tenantId, scopeId, vertical: scope.vertical } }
+      : undefined;
+    const pagedStores = input.pagedStores ?? [];
+    if (!platform && pagedStores.length > 0) {
+      throw new ControlPlaneError(409, `the backup holds scope stores in pages, and scope ${scopeId} has no deployment and no route to its stores to load them into`);
+    }
+    // With a route to the stores, an inline store moves as a paged one does; without one the host carries it.
+    const stores = platform ? [...inlineStoreSources(header.stores), ...pagedStores] : [];
+    const sources = new Map(stores.map((store) => [store.binding, store.source]));
+    const storeEnds = platform && restoreEnds(platform.caller, platform.place, (binding) => sources.get(binding)!);
+    const movedStores = storeEnds && stores.length > 0
+      ? await moveStores(storeEnds, stores.map(({ binding, driver }) => ({ binding, driver })), `the backup's stores for scope ${scopeId}`, options.storeMoveBudget)
+      : [];
+    let staged: Awaited<ReturnType<NonNullable<typeof input.stage>>> | undefined;
+    let committing = false;
     try {
-      const storesCaller = options.platformScopeStores;
-      const landing = { ...header, tables, stores: storesCaller && vertical ? [] : header.stores };
+      staged = input.stage && vertical ? await input.stage(vertical) : undefined;
+      const tables = staged?.tables ?? input.tables;
+      const landing = { ...header, tables, stores: platform ? [] : header.stores };
       const hostReplay = await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
-      if (storesCaller && vertical && scope.vertical && header.stores.length > 0) {
-        await storesCaller.importStores({
-          tenantId,
-          scopeId,
-          vertical: scope.vertical,
-          stores: header.stores,
-        });
-      }
-      const platformReplay = storesCaller && scope.vertical
-        ? await replayPlatformStoreErasures(c, scope, sourceHint ?? origin)
-        : undefined;
-      const replays = [hostReplay, platformReplay].filter((r): r is StoreErasureReplay => !!r);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical
@@ -7915,6 +7984,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             exact: false,
           })
         : undefined;
+      let landFailure: StoreLandFailure | undefined;
+      if (platform && movedStores.length > 0) {
+        committing = true;
+        await commitStages(platform.caller, platform.place, movedStores, retryTransient).catch((e: unknown) => {
+          if (!(e instanceof StoreLandFailure)) throw e;
+          landFailure = e;
+        });
+      }
+      const platformReplay = storesCaller && scope.vertical
+        ? await replayPlatformStoreErasures(c, scope, sourceHint ?? origin)
+        : undefined;
+      if (landFailure) throw landFailure;
+      const replays = [hostReplay, platformReplay].filter((r): r is StoreErasureReplay => !!r);
       // #1674: a backup from before a module was switched off brings it back on; the
       // directory's record puts it back off now, not at the next reconcile. Where the
       // deployment already did (#1742), this finds it done and audits what it reported.
@@ -7933,11 +8015,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ...storeReplayFields(replays),
       };
     } catch (e) {
-      // A stage the refused load left at the deployment goes now rather than waiting for a wipe.
+      // A stage the refused load left at the deployment goes now rather than waiting for a wipe,
+      // and so do the stores' stages, none of which was committed.
       if (staged && vertical) await abandonCopy({ dest: vertical }, { from: scopeId, into: scopeId, stageId: staged.dump.stageId });
+      if (storeEnds && !committing) await discardMoves(storeEnds, movedStores);
       throw e;
     }
   };
+
+  /** A dump's inline stores as restore sources, each cut at its driver's page size (D-69). */
+  const inlineStoreSources = (stores: ScopeDumpHeader['stores']): RestoreStore[] =>
+    stores.map((store) => ({ binding: store.binding, driver: store.driver, source: inlineStoreSource(store) }));
 
   /** How a refused or failed restore answers, on either route. */
   const restoreFailed = async (c: Context<{ Variables: Vars }>, scope: Scope, e: unknown) => {

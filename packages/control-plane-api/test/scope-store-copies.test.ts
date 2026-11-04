@@ -112,8 +112,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     const asked: string[] = [];
     const refuse = unreachablePlatformScopeStores();
     const caller: PlatformScopeStores = {
-      exportStores: async (input) => (asked.push('export'), refuse.exportStores(input)),
-      importStores: async (input) => (asked.push('import'), refuse.importStores(input)),
+      callStore: (target) => (async (operation: string) => (asked.push(operation), refuse.callStore(target)('substrat.size'))) as never,
       eraseSubject: async (input) => (asked.push('erase'), refuse.eraseSubject(input)),
       wipeStores: async (input) => (asked.push('wipe'), refuse.wipeStores(input)),
       sizeStores: async (input) => (asked.push('size'), refuse.sizeStores(input)),
@@ -202,7 +201,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
       const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
       const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
       expect(backup.status).toBe(503);
-      expect(asked).toEqual(['export']);
+      expect(asked).toEqual(['substrat.export-page']);
     });
   }
 

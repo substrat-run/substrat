@@ -6,15 +6,6 @@ const vector = JSON.parse(
   readFileSync(new URL('../../../contracts/test/vectors/scope-store-envelope.json', import.meta.url), 'utf8'),
 ) as { privateKeyPkcs8: string };
 
-/**
- * How many rows the control plane has been handed and not yet passed on, and the most it ever held:
- * a store's page answer adds, a stage or a page object written takes away.
- */
-export interface HeldRows {
-  now: number;
-  peak: number;
-}
-
 type Stage = { id: string; pages: ScopeDumpTable[][] };
 type StoreObject = {
   tables: ScopeDumpTable[];
@@ -51,7 +42,6 @@ export interface StoreCallSeen {
 export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
   const pageRows = opts.pageRows ?? 10;
   const objects = new Map<string, StoreObject>();
-  const held: HeldRows = { now: 0, peak: 0 };
   const calls: StoreCallSeen[] = [];
   /** Run before a call is answered. A `Response` answers it; `'lost'` applies the call and loses the answer. */
   let intercept: ((call: StoreCallSeen) => Response | 'lost' | undefined) | undefined;
@@ -81,8 +71,6 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
       taken += rows.length;
       at += table.rows.length;
     }
-    held.now += taken;
-    held.peak = Math.max(held.peak, held.now);
     return Response.json({ result: { tables: page, next: start + taken < at ? String(start + taken) : null, revision: `r${object.revision}` } });
   };
 
@@ -100,7 +88,6 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
         if (seq < object.stage.pages.length) return Response.json({ result: { staged: false } });
         if (seq > object.stage.pages.length) return storeError(409, 'stage_refused');
         object.stage.pages.push(tables);
-        held.now -= tables.reduce((n, t) => n + t.rows.length, 0);
         return Response.json({ result: { staged: true } });
       }
       case 'substrat.commit-stage': {
@@ -162,7 +149,6 @@ export function fakeStoreDriver(opts: { pageRows?: number } = {}) {
 
   return {
     fetch,
-    held,
     calls,
     objects,
     intercept(run: typeof intercept): void {
@@ -197,76 +183,9 @@ export type FakeStoreDriver = ReturnType<typeof fakeStoreDriver>;
 
 export const storeObject = scopeStoreObjectName;
 
-/** The real caller, signing and all, over a fake driver, with no real wait between retries. */
-export function platformOver(
-  driver: Pick<FakeStoreDriver, 'fetch'>,
-  opts: { retryDelaysMs?: readonly number[]; deadlineMs?: number } = {},
-): PlatformScopeStores {
-  return platformScopeStoresFor({
-    platformKey: vector.privateKeyPkcs8,
-    fetch: driver.fetch,
-    retryDelaysMs: opts.retryDelaysMs ?? [0, 0],
-    ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}),
-  });
-}
-
-/**
- * A bucket with R2's list and batch delete: pages of `pageSize`, in key order, a `delimiter` that
- * rolls up what lies below it, and metadata only when asked. `held`, when given, takes away the rows
- * of each store page written.
- */
-export function fakeBucket(opts: { pageSize?: number; held?: HeldRows } = {}) {
-  const pageSize = opts.pageSize ?? 1000;
-  const objects = new Map<string, { body: string; customMetadata?: Record<string, string> }>();
-  let failPut: ((key: string) => boolean) | undefined;
-  const bucket = {
-    async put(key: string, value: string, options?: { customMetadata?: Record<string, string> }) {
-      if (failPut?.(key)) throw new Error('bucket: put failed');
-      objects.set(key, { body: value, ...(options?.customMetadata ? { customMetadata: options.customMetadata } : {}) });
-      if (opts.held && key.includes('/stores/')) {
-        const page = JSON.parse(value) as { tables: { rows: unknown[] }[] };
-        opts.held.now -= page.tables.reduce((n, t) => n + t.rows.length, 0);
-      }
-    },
-    async get(key: string) {
-      const held = objects.get(key);
-      return held ? { text: async () => held.body } : null;
-    },
-    async delete(keys: string | string[]) {
-      for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
-    },
-    async list(options: { prefix?: string; cursor?: string; include?: string[]; delimiter?: string } = {}) {
-      const prefix = options.prefix ?? '';
-      const under = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
-      const visible = options.delimiter ? under.filter((key) => !key.slice(prefix.length).includes(options.delimiter!)) : under;
-      const rolled = options.delimiter
-        ? [...new Set(under.filter((key) => key.slice(prefix.length).includes(options.delimiter!))
-          .map((key) => prefix + key.slice(prefix.length).split(options.delimiter!)[0] + options.delimiter!))]
-        : [];
-      const start = options.cursor ? Number(options.cursor) : 0;
-      const next = start + pageSize;
-      return {
-        delimitedPrefixes: rolled,
-        objects: visible.slice(start, next).map((key) => {
-          const held = objects.get(key)!;
-          return {
-            key,
-            size: new TextEncoder().encode(held.body).length,
-            ...(options.include && held.customMetadata ? { customMetadata: held.customMetadata } : {}),
-          };
-        }),
-        truncated: next < visible.length,
-        ...(next < visible.length ? { cursor: String(next) } : {}),
-      };
-    },
-  };
-  return {
-    bucket,
-    objects,
-    failPutWhen(run: typeof failPut): void {
-      failPut = run;
-    },
-  };
+/** The real caller, signing and all, over a fake driver. */
+export function platformOver(driver: Pick<FakeStoreDriver, 'fetch'>): PlatformScopeStores {
+  return platformScopeStoresFor({ platformKey: vector.privateKeyPkcs8, fetch: driver.fetch });
 }
 
 /**

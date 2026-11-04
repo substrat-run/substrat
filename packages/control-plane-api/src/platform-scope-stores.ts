@@ -21,7 +21,7 @@ import {
   type ScopeDumpTable,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
-import { callReservedStoreOperation, readStoreDump, writeStoreDump, type HostAdmin, type ReservedStoreCall } from '@substrat-run/kernel';
+import { callReservedStoreOperation, readStoreDump, type HostAdmin, type ReservedStoreCall } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { storedDeployManifest } from './deploy.js';
 
@@ -52,18 +52,11 @@ export interface DeclaredScopeStore {
 }
 
 export interface PlatformScopeStores {
-  exportStores(input: {
-    tenantId: string;
-    scopeId: string;
-    vertical: string;
-    stores: readonly DeclaredScopeStore[];
-  }): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]>;
-  importStores(input: {
-    tenantId: string;
-    scopeId: string;
-    vertical: string;
-    stores: readonly { binding: string; driver: string; tables: ScopeDumpTable[] }[];
-  }): Promise<void>;
+  /**
+   * The reserved operations of one store, called one at a time (D-69): a backup, a restore and a
+   * snapshot move a store's pages through this, holding one page.
+   */
+  callStore(target: PlatformScopeStoreTarget): ReservedStoreCall;
   eraseSubject(input: {
     tenantId: string;
     scopeId: string;
@@ -372,28 +365,12 @@ export async function callPlatformScopeStoreAt(
   }
 }
 
-/** The reserved operations a platform call makes, a dump in pages (D-69), one chain per declared binding. */
+/** The reserved operations a platform call makes (D-69). */
 export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): PlatformScopeStores {
   const call = (target: PlatformScopeStoreTarget, operation: ReservedStoreOperation, input?: unknown) =>
     callPlatformScopeStore(dispatch, target, operation, input);
-  const reservedAt = (target: PlatformScopeStoreTarget) =>
-    ((operation, input) => call(target, operation, input)) as ReservedStoreCall;
   return {
-    async exportStores({ tenantId, scopeId, vertical, stores }) {
-      const exported = [];
-      for (const store of stores) {
-        const target = { ...store, tenantId, scopeId, vertical };
-        const tables = await readStoreDump(reservedAt(target), storeDriverDumpPageBytes(store.driver));
-        exported.push({ binding: store.binding, driver: store.driver, tables });
-      }
-      return exported;
-    },
-    async importStores({ tenantId, scopeId, vertical, stores }) {
-      for (const store of stores) {
-        const target = { ...store, tenantId, scopeId, vertical };
-        await writeStoreDump(reservedAt(target), store.tables, storeDriverDumpPageBytes(store.driver));
-      }
-    },
+    callStore: (target) => ((operation, input) => call(target, operation, input)) as ReservedStoreCall,
     async eraseSubject({ tenantId, scopeId, vertical, subjectId, stores }) {
       const erased = [];
       for (const store of stores) {
@@ -431,5 +408,22 @@ export function unreachablePlatformScopeStores(): PlatformScopeStores {
   const refuse = async (): Promise<never> => {
     throw new ControlPlaneError(503, 'this control plane cannot reach scope stores');
   };
-  return { exportStores: refuse, importStores: refuse, eraseSubject: refuse, wipeStores: refuse, sizeStores: refuse };
+  return { callStore: () => refuse, eraseSubject: refuse, wipeStores: refuse, sizeStores: refuse };
+}
+
+/**
+ * Each store's whole dump, read a page at a time and joined (D-69): for a pull or a tenant export,
+ * which answer one body. A backup, a restore and a snapshot never hold a store whole: they move pages.
+ */
+export async function exportStoreDumps(
+  caller: PlatformScopeStores,
+  place: { tenantId: string; scopeId: string; vertical: string },
+  stores: readonly DeclaredScopeStore[],
+): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
+  const exported = [];
+  for (const store of stores) {
+    const tables = await readStoreDump(caller.callStore({ ...place, ...store }), storeDriverDumpPageBytes(store.driver));
+    exported.push({ binding: store.binding, driver: store.driver, tables });
+  }
+  return exported;
 }
