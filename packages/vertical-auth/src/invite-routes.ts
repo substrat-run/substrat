@@ -627,6 +627,12 @@ export interface BindLinkRouteDeps<E extends object, N extends { scopeId: string
   exchangeBindLink: (env: E, node: N, secret: string, presenter: PrincipalId) => Promise<CapabilityExchange | null>;
 }
 
+/**
+ * SQLite's words for a UNIQUE constraint refusing a write — the same in both scope hosts, which are
+ * both SQLite (better-sqlite3 and a Durable Object's storage), and carried across the DO's RPC.
+ */
+const UNIQUE_REFUSAL = /\bUNIQUE constraint failed\b/;
+
 /** The body the bind link mint takes: the member to bind, and optionally an expiry and a label. */
 export const bindLinkBody = z.object({ principal: principalId, expiresAt: instant.optional(), label: capabilityLabel.optional() });
 
@@ -639,11 +645,14 @@ export const bindLinkBody = z.object({ principal: principalId, expiresAt: instan
  *   POST /api/bindings/:entityType/:entityId/links  { principal, expiresAt?, label? } → 201 { id, token, expiresAt }
  *   POST /api/bindings/accept                        { token } → { principal, bound }
  *
- * The mint is refused 403 for a caller without the binding's key on the record, naming it; 404 for
- * a type the scope does not bind or a record that is not there; 409 for a record already bound or
- * held; 400 for a principal who is no member here. The accept answers 400 for every refusal — an
- * unknown, used, revoked or expired link, one addressed to someone else, a record bound meanwhile —
- * so a probe learns nothing. The owner binding themselves mints to their own principal and accepts.
+ * A MEMBER is a principal holding at least one permission at the scope's node — through a role or a
+ * grant at the scope or tenant level; entity-narrowed grants alone do not make one. The mint is
+ * refused 403 for a caller without the binding's key on the record, naming it; 404 for a type the
+ * scope does not bind or a record that is not there; 409 for a record already bound or held, or one
+ * whose id more than one row carries; 400 for a principal who is no member here. The accept answers
+ * 400 for every refusal — an unknown, used, revoked or expired link, one addressed to someone else,
+ * a presenter no longer a member, a record bound meanwhile, or the vertical's own UNIQUE constraint
+ * on its binding column refusing a second record for that person — so a probe learns nothing. The owner binding themselves mints to their own principal and accepts.
  * A pending link is withdrawn by the unbind route on its record, which revokes it.
  */
 export function mountBindLinkRoutes<E extends object, N extends { scopeId: string }>(
@@ -678,6 +687,9 @@ export function mountBindLinkRoutes<E extends object, N extends { scopeId: strin
       if (refused === 'target-holds-nothing') throw new HTTPException(400, { message: `${principal} is not a member here` });
       if (refused === 'bind-not-declared') throw new HTTPException(404, { message: `'${entity.data.entityType}' is not bound to a person here` });
       if (refused === 'bind-record-missing') throw new HTTPException(404, { message: `no ${ref} here` });
+      if (refused === 'bind-record-ambiguous') {
+        throw new HTTPException(409, { message: `more than one row carries ${ref}'s id — the record must be one row before anyone can be bound to it` });
+      }
       throw new HTTPException(409, { message: `${ref} is already bound to someone — unbind it first` });
     }
     const { id, secret, expiresAt: expires } = answer.data.minted;
@@ -688,8 +700,18 @@ export function mountBindLinkRoutes<E extends object, N extends { scopeId: strin
     const node = await deps.nodeFor(c.req.raw, c.env);
     const presenter = await callerOf(c, 'accept a bind link');
     const { token } = await bodyOf(c, acceptInviteBody);
-    const exchanged = capabilityExchange.nullable().parse(await deps.exchangeBindLink(c.env, node, token, presenter));
-    if (exchanged?.kind !== 'principal' || !exchanged.bound) throw new HTTPException(400, { message: 'this link is invalid or already used' });
+    const refused = () => new HTTPException(400, { message: 'this link is invalid or already used' });
+    let answer: unknown;
+    try {
+      answer = await deps.exchangeBindLink(c.env, node, token, presenter);
+    } catch (err) {
+      // The vertical's own UNIQUE constraint on its binding column (one record per person) refused
+      // the bind: the exchange rolled back with its use untaken. A refusal like any other, not a fault.
+      if (err instanceof Error && UNIQUE_REFUSAL.test(err.message)) throw refused();
+      throw err;
+    }
+    const exchanged = capabilityExchange.nullable().parse(answer);
+    if (exchanged?.kind !== 'principal' || !exchanged.bound) throw refused();
     return c.json({ principal: exchanged.principal, bound: exchanged.bound });
   });
 }

@@ -1855,14 +1855,22 @@ becomeMintContractSuite('adapter-cloudflare', async () => {
 
 // #2817: bind links, on the DO path — the presenter judged and the record bound inside the
 // ScopeDO's exchange transaction.
-bindLinkContractSuite('adapter-cloudflare', async () => {
-  const host = new CloudflareScopeHost({
-    scope: env.SCOPE,
-    controlPlane: env.CONTROL_PLANE,
-    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-  });
-  return { host, verbs: host, cleanup: async () => host.close() };
-});
+bindLinkContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    return { host, verbs: host, cleanup: async () => host.close() };
+  },
+  // The scope DO's own storage, past `ctx.sql`.
+  async (_tenant, scope, sql, params = []) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) =>
+      state.storage.sql.exec(sql, ...(params as SqlStorageValue[])).toArray(),
+    ),
+);
 
 // #1686: binding invites, on the DO path — the claim's bind and shape grant inside the ScopeDO's
 // exchange transaction, the DEFAULT tuple checker judging the minter there.

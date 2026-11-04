@@ -302,16 +302,21 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   - 403 naming the bind key the caller lacks on the record;
   - 404 for a type the scope does not bind, or a record that is not there;
   - 409 for a record already bound or held;
-  - 400 for a principal who is no member here.
+  - 400 for a principal who is no member here. A member is a principal holding at least one
+    permission at the scope's node, through a role or a grant at the scope or tenant level;
+    entity-narrowed grants alone do not make one.
 
   `POST /api/bindings/accept` with `{ token }` exchanges the link for the caller, who is its
   presenter (`exchangeCapability` with `{ mode: 'bind', presenter }`), and answers
   `{ principal, bound }`. It answers 400 for every refusal: a link addressed to someone else, used,
-  revoked or expired, a record bound meanwhile, or a minter who has lost the key.
+  revoked or expired, a presenter who is no longer a member, a record bound meanwhile, a minter who
+  has lost the key, or the vertical's own UNIQUE index on its binding column refusing a second
+  record for that person. That last one rolls back with the use untaken.
   An owner binding themselves mints to their own principal and accepts. A link is single use. The
   unbind route on its record withdraws a pending one, and the erasure of the member it names
-  revokes it. The kernel does not limit how many records of one type a member holds; a vertical
-  that wants one per person says so in its own schema. A vertical supplies `nodeFor`, `callerOf`
+  revokes it (a used or expired link is left as it reads). The kernel does not limit how many
+  records of one type a member holds. A vertical that wants one per person refuses the mint itself
+  and can add a UNIQUE index on the binding column, which this route answers as a refusal. A vertical supplies `nodeFor`, `callerOf`
   and the two host verbs.
 - `membersHook({ roles, directory })`, from the same subpath, is what a vertical hands
   [`vertical-host`](/reference/vertical-host)'s `members` to let the dashboard manage its

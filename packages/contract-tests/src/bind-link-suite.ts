@@ -28,6 +28,7 @@ import {
   type BoundedUnbind,
   type CapabilityRecord,
   type EntityRef,
+  type Instant,
   type MintedCapability,
   type PrincipalBecomeCapabilityInput,
   type PrincipalBindLinkInput,
@@ -38,6 +39,7 @@ import {
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { BIND_INVITE, BIND_MEMBER, BIND_READ_OWN, BIND_SHAPE, bindMod } from './bind-module.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
+import type { RawScopeQuery } from './subject-erasure-suite.js';
 
 /** The host verbs under test — on each adapter's host class, not on `ScopeHost`. */
 export interface BindLinkVerbs {
@@ -48,7 +50,12 @@ export interface BindLinkVerbs {
 
 type Row = Record<string, unknown>;
 
-export function bindLinkContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture & { verbs: BindLinkVerbs }>): void {
+export function bindLinkContractSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture & { verbs: BindLinkVerbs }>,
+  /** The scope's own storage, past `ctx.sql` — to move a link's expiry behind the wall clock, as the DO host's expiry cases do. */
+  raw: RawScopeQuery,
+): void {
   describe(`bind links (#2817): ${adapterName}`, () => {
     let fixture: ScopeHostFixture & { verbs: BindLinkVerbs };
     let host: ScopeHost;
@@ -224,17 +231,40 @@ export function bindLinkContractSuite(adapterName: string, makeFixture: () => Pr
 
     it('is spent by no other exchange, and spends no other link', async () => {
       const named = await member();
-      const link = await minted(clerk, named, rec(await record()));
+      const id = await record();
+      const link = await minted(clerk, named, rec(id));
       for (const options of [undefined, { mode: 'become' as const }, { mode: 'act' as const }]) {
         expect(await host.exchangeCapability(t1, s1, link.secret, options)).toBeNull();
       }
       expect((await capOf(link.id))?.uses).toBe(0);
-      // And a `become` link presented as a bind link is refused unspent: it still yields its seat.
+      // And a `become` link, or an `act` share, presented as a bind link is refused unspent: each
+      // still does what it was minted for.
       const seat = await member();
       const invite = await fixture.verbs.mintBecomeCapabilityBounded(t1, s1, clerk, { principal: seat, maxUses: 1 });
       if (!invite.ok) throw new Error('expected the member invite to mint');
+      const share = await (await host.getScope(clerk, t1, s1)).invoke<MintedCapability>('bind/share', { id });
       expect(await present(invite.minted.secret, seat)).toBeNull();
+      expect(await present(share.secret, named)).toBeNull();
       expect(await host.exchangeCapability(t1, s1, invite.minted.secret, { mode: 'become' })).toMatchObject({ principal: seat });
+      expect(await host.exchangeCapability(t1, s1, share.secret, { mode: 'act' })).toMatchObject({ kind: 'session' });
+    });
+
+    it('carries its expiry, refuses one in the past at mint, and is refused, unspent, once it has expired', async () => {
+      const named = await member();
+      const id = await record();
+      await expect(() =>
+        fixture.verbs.mintBindLinkBounded(t1, s1, clerk, { principal: named, entity: rec(id), expiresAt: new Date(Date.now() - 60_000).toISOString() as Instant }),
+      ).rejects.toThrow(/not in the future/);
+      const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString() as Instant;
+      const out = await fixture.verbs.mintBindLinkBounded(t1, s1, clerk, { principal: named, entity: rec(id), expiresAt });
+      if (!out.ok) throw new Error(`expected a mint, refused: ${JSON.stringify(out)}`);
+      expect(out.minted.expiresAt).toBe(expiresAt);
+      expect(await capOf(out.minted.id)).toMatchObject({ expiresAt });
+      // The wall clock past it: the stored instant moved behind it, as the DO host's expiry cases do.
+      await raw(t1, s1, 'UPDATE _substrat_capabilities SET expires_at = ? WHERE id = ?', [new Date(Date.now() - 1_000).toISOString(), out.minted.id]);
+      expect(await present(out.minted.secret, named)).toBeNull();
+      expect((await capOf(out.minted.id))?.uses).toBe(0);
+      expect(await holderOf(id)).toBeNull();
     });
 
     it('is revoked by an unbind of its record, and by the erasure of the member it names', async () => {
@@ -243,10 +273,18 @@ export function bindLinkContractSuite(adapterName: string, makeFixture: () => Pr
       expect(await fixture.verbs.unbindEntityHolderBounded(t1, s1, clerk, rec(id))).toEqual({ ok: true, unbound: [], revokedLinks: [unbound.id] });
       expect(await capOf(unbound.id)).toMatchObject({ revokedBy: clerk, uses: 0 });
 
+      // The erased member: a link they used stays as it reads; the open one is revoked. Another
+      // member's open link stays open.
       const erased = await member();
+      const other = await member();
+      const spent = await minted(clerk, erased, rec(await record()));
+      expect(await present(spent.secret, erased)).toMatchObject({ principal: erased });
       const link = await minted(clerk, erased, rec(id));
+      const kept = await minted(clerk, other, rec(await record()));
       await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(erased));
       expect(await capOf(link.id)).toMatchObject({ revokedBy: null, uses: 0 });
+      expect(await capOf(spent.id)).toMatchObject({ revokedAt: null, uses: 1 });
+      expect(await capOf(kept.id)).toMatchObject({ revokedAt: null, uses: 0 });
       expect(await present(link.secret, erased)).toBeNull();
       expect(await holderOf(id)).toBeNull();
     });

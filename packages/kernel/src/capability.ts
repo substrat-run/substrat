@@ -685,10 +685,11 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
       const grant = capabilityGrantOf(row);
       if (!grant) {
         // A `become` row: the platform's (HostAdmin) or a member invite's (the host's
-        // principal revoke, #1686) — never module code's.
+        // principal revoke, #1686) — or a `bind` link (#2817, withdrawn by an unbind) — never
+        // module code's.
         throw substratError(
           'forbidden',
-          `capability ${id} is a become capability and is revoked by the host that minted it, not ctx.capabilities`,
+          `capability ${id} is a ${row.mode} capability and is revoked by the host that minted it, not ctx.capabilities`,
           // The reason predates principal-minted `become` rows and is kept: a caller may match on it.
           { reason: 'capability_platform_minted' },
         );
@@ -1102,15 +1103,19 @@ export function revokeBindLinksIn(sql: ScopedSql, entity: EntityRef, by: Princip
 }
 
 /**
- * Revoke every `bind` link (#2817) still open for `principal` — what a person's erasure runs, by
- * the kernel itself (no revoker): a link naming someone who is being erased must not bind them
- * afterwards. Only `bind` rows: a `become` link's principal is the seat it yields, not a person.
+ * Revoke every `bind` link (#2817) still exchangeable for `principal` — unrevoked, unexpired, under
+ * its use limit — what a person's erasure runs, by the kernel itself (no revoker): a link naming
+ * someone who is being erased must not bind them afterwards. A used or expired link is left as it
+ * reads, as `revokeBindLinksIn` leaves one: it is evidence of what happened, and binds nobody. Only
+ * `bind` rows: a `become` link's principal is the seat it yields, not a person.
  */
 export function revokeBindLinksFor(sql: ScopedSql, principal: string, now: string): void {
   // Read first: an erasure that holds nothing for its subject writes nothing.
   for (const { id } of sql.query<{ id: string }>(
-    `SELECT id FROM _substrat_capabilities WHERE mode = 'bind' AND principal = ? AND revoked_at IS NULL`,
-    [principal],
+    `SELECT id FROM _substrat_capabilities
+      WHERE mode = 'bind' AND principal = ? AND revoked_at IS NULL
+        AND (expires_at IS NULL OR expires_at > ?) AND (max_uses IS NULL OR uses < max_uses)`,
+    [principal, now],
   )) {
     markRevoked(sql, capabilityIdSchema.parse(id), null, now);
   }

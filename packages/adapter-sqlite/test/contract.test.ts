@@ -1123,18 +1123,29 @@ subjectErasureContractSuite(
 );
 
 // #2817: bind links — an existing member bound to a record by a link their own session presents.
-bindLinkContractSuite('adapter-sqlite', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'substrat-bind-link-'));
-  const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
-  return {
-    host,
-    verbs: host,
-    cleanup: async () => {
-      await host.close();
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-});
+let bindLinkHost: SqliteScopeHost | undefined;
+bindLinkContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-bind-link-'));
+    const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+    bindLinkHost = host;
+    return {
+      host,
+      verbs: host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (tenant, scope, sql, params = []) => {
+    const statement = scopeRuntimeOf(bindLinkHost, tenant, scope).db.prepare(sql);
+    if (statement.reader) return statement.all(...params);
+    statement.run(...params);
+    return [];
+  },
+);
 
 // #1686: binding invites — the DEFAULT tuple checker, since the bound under test is the checker's.
 let bindingHost: SqliteScopeHost | undefined;

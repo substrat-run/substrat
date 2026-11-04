@@ -32,7 +32,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { mintCapabilitySecret, ulid, unknownRoleError } from '@substrat-run/kernel';
-import { LEGACY_INVITES_LIST_REPORT_MS, legacyInviteListReporter, legacyInvitesLine, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
+import { LEGACY_INVITES_LIST_REPORT_MS, legacyInviteListReporter, legacyInvitesLine, mountBindLinkRoutes, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
 
@@ -1050,5 +1050,29 @@ describe('legacy invite measurement (#2175)', () => {
     expect(report.tracked()).toBe(0);
     await report('scope-a', async () => 1);
     expect(lines).toHaveLength(1);
+  });
+});
+
+describe('mountBindLinkRoutes — the accept (#2817)', () => {
+  /** The accept over a host whose exchange throws `fault`, as a vertical's own UNIQUE index makes the bind do. */
+  const acceptOver = (fault: Error) => {
+    const app = new Hono<{ Bindings: object }>();
+    app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.text('internal', 500)));
+    mountBindLinkRoutes(app, {
+      nodeFor: () => ({ scopeId: 's' }),
+      callerOf: async () => ({ principal: principalId.parse(ulid()) }),
+      mintBindLinkBounded: () => Promise.reject(new Error('not under test')),
+      exchangeBindLink: () => Promise.reject(fault),
+    });
+    return app.request('/api/bindings/accept', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: mintCapabilitySecret() }),
+    });
+  };
+
+  it("answers the one refusal when the vertical's own unique binding column refuses a second record — and a fault stays a fault", async () => {
+    expect((await acceptOver(new Error('UNIQUE constraint failed: records.holder: SQLITE_CONSTRAINT'))).status).toBe(400);
+    expect((await acceptOver(new Error('disk I/O error'))).status).toBe(500);
   });
 });
