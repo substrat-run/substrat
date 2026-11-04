@@ -13219,8 +13219,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // or a pinned staff push), the same one `ensureScopeStoresOf` judges. The staff-only
   // `/store-drivers/:driver` below is the driver's release state and stays as it was.
   app.get('/store-drivers', async (c) => {
-    const parsed = verticalSlug.safeParse(c.req.query('vertical'));
-    if (!parsed.success) return refuse(c, 'validation_failed', 'vertical is required: the slug the push deploys as');
+    // The BARE slug: the id is formed here, so a prefixed value is not this route's input.
+    const parsed = verticalSlug.refine((slug) => !slug.includes('/')).safeParse(c.req.query('vertical'));
+    if (!parsed.success) return refuse(c, 'validation_failed', 'vertical is required: the bare slug the push deploys as');
     const vertical = parsed.data;
     const p = c.get('principal');
     const pin = c.req.header(TENANT_HEADER)?.trim();
@@ -13230,7 +13231,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const workspace = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.slug === pin || t.id === pin);
       if (!workspace) return refuse(c, 'not_found', `unknown workspace '${pin}'`);
       const bareOwner = await ownerOf(c.get('actor'), vertical);
-      id = vertical.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? vertical : `${workspace.slug}/${vertical}`;
+      id = bareOwner === workspace.id ? vertical : `${workspace.slug}/${vertical}`;
     }
     const drivers = (options.storeDrivers ?? STORE_DRIVERS).map((d) =>
       d.verticals ? { ...d, verticals: storeDriverServesVertical(d, id) ? [vertical] : [] } : d,

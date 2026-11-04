@@ -62,6 +62,8 @@ describe('control-plane API — the store drivers one vertical may use (#2813)',
   it('needs the vertical, and leaves the staff-only per-driver read closed to a builder', async () => {
     const app = appWith([graphFor('acme/helpdesk')]);
     expect((await app.request('/store-drivers', { headers: asBuilder })).status).toBe(400);
+    // The id is formed from the bare slug; a tenant-prefixed value is not accepted.
+    expect((await app.request('/store-drivers?vertical=acme/helpdesk', { headers: asBuilder })).status).toBe(400);
     expect((await app.request('/store-drivers/graph', { headers: asBuilder })).status).toBe(403);
   });
 });

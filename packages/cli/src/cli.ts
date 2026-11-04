@@ -553,6 +553,9 @@ async function cmdPush(): Promise<void> {
   // the platform registry does not hold. Absent, `--check` uses the built-in one and a push the
   // control plane's own.
   const storeDriversFile = flag('store-drivers');
+  if (argv.includes('--store-drivers') && (!storeDriversFile || storeDriversFile.startsWith('--'))) {
+    throw new Error('--store-drivers needs a path to a JSON file holding an array of registrations');
+  }
   const storeDrivers = storeDriversFile ? readStoreDriversFile(storeDriversFile) : undefined;
   // Before the network and before `--check` returns, so all three see it; under `--strict`
   // it throws like every other failure of the gate.
