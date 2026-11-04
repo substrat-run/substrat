@@ -36,7 +36,7 @@ import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { studioUsage } from './metering.js';
 import { listTurns, readTurn } from './record.js';
-import { listTurnsQuery, turnQueryRefusal } from './turns.js';
+import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
 import { refuse, unhandledResponse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
@@ -165,7 +165,9 @@ app.all('/internal/*', async (c) => {
 	}
 	const turnPath = /^\/internal\/turns\/([^/]+)$/.exec(path);
 	if (c.req.method === 'GET' && turnPath) {
-		const turn = await readTurn(c.env, decodeURIComponent(turnPath[1]!));
+		const id = turnIdOfSegment(turnPath[1]!);
+		if (id === 'malformed') return refuse(400, 'invalid turn id');
+		const turn = id === null ? null : await readTurn(c.env, id);
 		return turn ? c.json(turn) : refuse(404, 'no such turn');
 	}
 	const tenant = c.req.header('x-substrat-tenant');

@@ -54,9 +54,11 @@ export type RedGate = z.infer<typeof redGate>;
 const instant = z.string().min(1).max(40);
 const count = z.number().int().nonnegative();
 
+const turnId = z.string().min(1).max(64);
+
 /** What the studio knows about a turn when it closes it. */
 export const turnSummaryInput = z.object({
-	turnId: z.string().min(1).max(64),
+	turnId,
 	tenantId: z.string().min(1).max(64),
 	projectId: z.string().min(1).max(64),
 	projectName: z.string().max(200),
@@ -122,7 +124,7 @@ export const turnOperations = defineOperations(entities, PERMISSIONS)({
 	'studio/get-turn': {
 		summary: "One turn's summary, by the turn's id",
 		permission: 'studio:read-turns',
-		input: z.object({ turnId: z.string().min(1).max(64) }),
+		input: z.object({ turnId }),
 		output: turnSummary.nullable(),
 	},
 });
@@ -334,4 +336,20 @@ export const listTurnsQuery = listTurnsInput.extend({
 /** What a refused list query says: the fields it got wrong, never their values. */
 export function turnQueryRefusal(error: z.ZodError): string {
 	return `invalid turn query: ${error.issues.map((i) => i.path.join('.') || i.message).join(', ')}`;
+}
+
+/**
+ * The turn id in `/internal/turns/:id`, as `studio/get-turn` takes it. `'malformed'` is a
+ * segment that is not valid percent-encoding (the caller's 400); `null` is an id the
+ * operation could never hold, so it is an unknown turn without asking the scope.
+ */
+export function turnIdOfSegment(segment: string): string | null | 'malformed' {
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(segment);
+	} catch {
+		return 'malformed';
+	}
+	const id = turnId.safeParse(decoded);
+	return id.success ? id.data : null;
 }

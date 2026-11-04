@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GateRun } from '@substrat-run/builder-workspace';
+import { turnIdOfSegment } from '../src/turns.js';
 import { startStudio, stopStudio } from './studio-shim.js';
 
 type RecordModule = typeof import('../src/record.js');
@@ -133,4 +134,10 @@ describe('turn summaries', () => {
 		expect(lost.events.filter((e) => e.t === 'user-message')).toHaveLength(1);
 		expect((await rec.listTurns(env, { outcome: 'interrupted' })).entries.map((t) => t.turnId)).toEqual(['T1']);
 	});
+});
+
+it('reads a turn id off the path: malformed encoding and an over-long id never reach the scope', () => {
+	expect(turnIdOfSegment('T%2F1')).toBe('T/1');
+	expect(turnIdOfSegment('%E0%A4%A')).toBe('malformed');
+	expect(turnIdOfSegment('x'.repeat(65))).toBeNull();
 });
