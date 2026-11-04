@@ -2,6 +2,9 @@ import { capabilityQuery, denialQuery } from '@substrat-run/contracts';
 import type {
   AdminAction,
   AdminLogEntry,
+  BuilderTurnDetail,
+  BuilderTurnsPage,
+  BuilderTurnsQuery,
   ChannelName,
   ConnectionHealthPage,
   ConnectionHealthState,
@@ -316,6 +319,9 @@ export interface BindHostnameInput {
 
 /** Repeatable params (status, action) are appended once per value — the API reads them
  *  with `c.req.queries()`. `undefined` is dropped. */
+/** The list read's filters, plus the page. */
+export type BuilderTurnsListQuery = BuilderTurnsQuery & { limit?: number; cursor?: string };
+
 function query(params: Record<string, string | string[] | number | undefined>): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -630,6 +636,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // skipped, freshness verdicts. Newest first; 14-day retention.
   listSweepRuns = (q: SweepRunsQuery = {}): Promise<Page<SweepRunEntry>> =>
     this.call(`/sweep-runs${query({ ...q })}`);
+  // The builder studio's turns, every team, newest first — how a turn ended, the gates
+  // its last run left red, and (one turn opened) every event it recorded.
+  listBuilderTurns = (q: BuilderTurnsListQuery = {}): Promise<BuilderTurnsPage> =>
+    this.call(`/builder-turns${query({ ...q, troubled: q.troubled ? 'true' : undefined })}`);
+  getBuilderTurn = (turnId: string): Promise<BuilderTurnDetail> => this.call(`/builder-turns/${seg(turnId)}`);
   // The schedule kill-switch fleet read (#1674) — every (tenant, scope, module) the
   // directory records a switch position for. `position` defaults to `off` server-side:
   // "what is switched off across the fleet" is the question this read exists to answer.
