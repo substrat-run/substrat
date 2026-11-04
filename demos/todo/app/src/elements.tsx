@@ -13,8 +13,8 @@
  * function properties (`source`, `columns`, `actions`) are set through a ref. React 19
  * sets them as properties, and this file would shrink to the JSX.
  */
-import { useEffect, useRef } from 'react';
-import type { Column, RowAction, SubEntityTable } from '@substrat-run/elements';
+import { useEffect, useRef, useState } from 'react';
+import { sessionAt, type Column, type RowAction, type SessionState, type SubEntityTable, type SubUserMenu } from '@substrat-run/elements';
 import type {} from '@substrat-run/elements/jsx';
 import '@substrat-run/elements';
 import '@substrat-run/elements/controls';
@@ -32,6 +32,9 @@ declare module 'react' {
         label?: string;
         empty?: string;
         'forbidden-text'?: string;
+      };
+      'sub-user-menu': React.DetailedHTMLProps<React.HTMLAttributes<SubUserMenu>, SubUserMenu> & {
+        show?: 'avatar' | 'name' | 'email';
       };
     }
   }
@@ -75,3 +78,28 @@ export function ListsTable() {
     </>
   );
 }
+
+/**
+ * The session `<sub-user-menu>` reads, for the screens that also need it — the same
+ * shared read, so the page asks `/api/me` once.
+ */
+export function useSession(): SessionState {
+  const store = sessionAt('/api/me');
+  const [state, setState] = useState(store.state);
+  useEffect(() => store.subscribe(setState), [store]);
+  return state;
+}
+
+/**
+ * The account menu, with Settings as this vertical's one item of its own. Switching
+ * user and signing out are the element's: it knows the auth endpoints.
+ */
+export function AccountMenu() {
+  return (
+    <sub-user-menu show="name">
+      <wa-dropdown-item href={SETTINGS_HREF}>Settings</wa-dropdown-item>
+    </sub-user-menu>
+  );
+}
+
+const SETTINGS_HREF = '#/settings';
