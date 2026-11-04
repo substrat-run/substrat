@@ -9,11 +9,19 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { listMod } from '@substrat-run/contract-tests';
-import { isDerivedMigrationVersion, migrationSetDigest, moduleMigrations, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
+import {
+  isDerivedMigrationVersion,
+  migrationDigest,
+  migrationSetDigest,
+  moduleMigrations,
+  REGISTERED_MIGRATIONS,
+  ulid,
+  UNSAFE_allowAllChecker,
+} from '@substrat-run/kernel';
 import { migrationSetDigestComputations } from '@substrat-run/kernel/testing';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
-import { SET_CHECK_DIGEST } from './worker.js';
+import { SET_CHECK_DIGEST, SetCheckScopeDO } from './worker.js';
 
 const MODULE = listMod.manifest.id;
 const steps = moduleMigrations(listMod);
@@ -83,6 +91,22 @@ describe('the migration set check at apply time, on DO SQLite (#2349)', () => {
       state.storage.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table'`).toArray().map((r) => r.name as string),
     );
     expect(tables.filter((n) => !n.startsWith('_'))).toEqual([]);
+  });
+
+  it("the class's registered-migrations static is what its scope applies (#2351)", async () => {
+    const { t, s, provisioned } = await provision();
+    await provisioned;
+    await host.admin.activateScope(staff, t, s);
+    const applied = await runInDurableObject(ns().get(ns().idFromName(s)), async (_i, state) =>
+      state.storage.sql
+        .exec('SELECT module_id, version, sql_digest FROM _substrat_migrations ORDER BY rowid')
+        .toArray()
+        .map((r) => [r.module_id, r.version, r.sql_digest]),
+    );
+    const registered = (SetCheckScopeDO as unknown as Record<symbol, () => { moduleId: string; version: string; sql: string }[]>)[
+      REGISTERED_MIGRATIONS
+    ]!();
+    expect(applied).toEqual(await Promise.all(registered.map(async (m) => [m.moduleId, m.version, await migrationDigest(m.sql)])));
   });
 
   for (const [what, stored] of [

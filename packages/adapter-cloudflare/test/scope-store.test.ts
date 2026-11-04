@@ -423,4 +423,14 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect((failed as { storeCode?: string }).storeCode).toHaveLength(64);
     expect((failed as { storeBody?: unknown }).storeBody).toBeUndefined();
   });
+
+  it('a result on a non-2xx is a bad envelope, as on the platform hop (#2810)', async () => {
+    const { host, t, a } = await world();
+    const store = await host.getScopeStore(principal, t, a, 'GRAPH');
+    const refusal = await store.invoke('result-on-500').then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    expect((refusal as { storeCode?: string }).storeCode).toBe('substrat.bad_envelope');
+  });
 });

@@ -813,6 +813,18 @@ export function isPlatformStoreCode(code: string): boolean {
 }
 
 /**
+ * What a store's HTTP answer says, judged the same on every path that has a status (#2810).
+ * An `{ error }` envelope is the store's answer at any status, as on the in-process path,
+ * which has none. `{ result }` counts only on a 2xx. Anything else is `undefined`, which the
+ * caller answers as `PLATFORM_STORE_CODE.badEnvelope` (502).
+ */
+export function storeAnswerOf(status: number, json: unknown): StoreResponse | undefined {
+  const parsed = storeResponse.safeParse(json);
+  if (!parsed.success) return undefined;
+  return 'error' in parsed.data || (status >= 200 && status < 300) ? parsed.data : undefined;
+}
+
+/**
  * What each reserved operation takes and answers (#2207). The result schemas are
  * objects so a later field is additive. `import` replaces the whole object and
  * answers how many tables it wrote.

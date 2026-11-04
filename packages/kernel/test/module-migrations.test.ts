@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { moduleManifest } from '@substrat-run/contracts';
-import { listIndexMigrations, moduleMigrations, searchIndexMigrations } from '../src/index.js';
+import { listIndexMigrations, moduleMigrations, registeredMigrationsOf, searchIndexMigrations } from '../src/index.js';
 
 /**
  * `moduleMigrations` (#1677) is the one place a module's migration order is written: authored,
@@ -37,6 +37,16 @@ describe('moduleMigrations', () => {
   it('a module that declares neither has exactly its authored set, and one with none has none', () => {
     expect(moduleMigrations({ manifest: { id: 'helpdesk' }, migrations: authored })).toEqual(authored);
     expect(moduleMigrations({ manifest: { id: 'helpdesk' } })).toEqual([]);
+  });
+
+  it('registeredMigrationsOf: every module in order, owned, with an empty declaration left off as a push leaves it off (#2351)', () => {
+    const moves = { 'ticket.title': 'ticket.subject' };
+    const declared = [{ ...authored[0]!, moves, discards: {} }];
+    expect(registeredMigrationsOf([{ manifest, migrations: declared }, { manifest: { id: 'notes' }, migrations: authored }])).toEqual([
+      { moduleId: 'helpdesk', version: '0001-init', sql: authored[0]!.sql, moves },
+      ...moduleMigrations({ manifest }).map((m) => ({ moduleId: 'helpdesk', version: m.version, sql: m.sql })),
+      { moduleId: 'notes', ...authored[0]! },
+    ]);
   });
 
   it('changing only `lists` changes the set', () => {

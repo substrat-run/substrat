@@ -9,7 +9,7 @@ import {
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeCallRequest,
-  storeResponse,
+  storeAnswerOf,
   type StoreCallRequest,
   type StoreResponse,
 } from '@substrat-run/contracts';
@@ -138,18 +138,16 @@ function dispatchFailure(error: unknown): string {
  * code is reserved to the platform (#2815): a store's answer must not read as the platform's.
  */
 async function storeAnswer(scriptName: string, response: Response): Promise<StoreCallOutcome> {
-  const parsed = storeResponse.safeParse(await response.json().catch(() => undefined));
-  if (parsed.success && 'error' in parsed.data) {
-    if (isPlatformStoreCode(parsed.data.error.code)) {
+  const answer = storeAnswerOf(response.status, await response.json().catch(() => undefined));
+  if (answer && 'error' in answer) {
+    if (isPlatformStoreCode(answer.error.code)) {
       console.warn(`scope store ${scriptName} answered with a code reserved to the platform`);
       return BAD_ENVELOPE;
     }
-    const error = clientSafeStoreError(parsed.data.error);
+    const error = clientSafeStoreError(answer.error);
     return { ok: true, status: error.status, body: { error } };
   }
-  if (parsed.success && response.ok) {
-    return { ok: true, status: response.status, body: parsed.data };
-  }
+  if (answer) return { ok: true, status: response.status, body: answer };
   console.warn(`scope store ${scriptName} answered ${response.status} outside the store envelope`);
   return BAD_ENVELOPE;
 }

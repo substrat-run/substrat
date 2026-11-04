@@ -24,8 +24,11 @@ import {
   reviewedEntityGrants,
   stableDeploymentRefFor,
   type RecentLogEvent,
+  type ScopeBackupStore,
   ControlPlaneStaffClient,
+  createR2BackupStore,
 } from '../src/index.js';
+import { fakeBucket } from './fake-r2-bucket.js';
 
 /**
  * The transport contract (control-plane.md §4.5). These drive the HTTP surface
@@ -3628,33 +3631,27 @@ describe('control-plane API', () => {
    * honest: an asked-for backup with nowhere to go must stop the reap, not skip the copy.
    */
   describe('backup before reap (#493)', () => {
-    /** An in-memory `ScopeBackupStore`, recording into a shared ordering log. */
+    /** The R2 store over a fake bucket, recording each committed backup into a shared ordering log. */
     function fakeStore(order: string[], opts: { fail?: boolean } = {}) {
-      const held = new Map<string, { backup: ScopeBackup; dump: ScopeDump }>();
-      const key = (t: string, s: string, at: string) => `${t}/${s}/${at}`;
-      return {
-        held,
-        store: {
-          put: async ({ vertical, dump }: { vertical: string | null; dump: ScopeDump }) => {
-            if (opts.fail) throw new Error('bucket unavailable');
-            const backup: ScopeBackup = {
-              tenantId: dump.tenantId,
-              scopeId: dump.scopeId,
-              vertical,
-              capturedAt: dump.capturedAt,
-              size: JSON.stringify(dump).length,
-              tables: dump.tables.length,
-            };
-            held.set(key(dump.tenantId, dump.scopeId, dump.capturedAt), { backup, dump });
-            order.push(`backup:${dump.scopeId}`);
-            return backup;
-          },
-          list: async ({ tenantId: t, scopeId: s }: { tenantId: string; scopeId: string }) =>
-            [...held.values()].filter((v) => v.backup.tenantId === t && v.backup.scopeId === s).map((v) => v.backup),
-          get: async (i: { tenantId: string; scopeId: string; capturedAt: string }) =>
-            held.get(key(i.tenantId, i.scopeId, i.capturedAt))?.dump ?? null,
+      const { bucket } = fakeBucket(100, opts.fail ? { failOn: () => true } : {});
+      const r2 = createR2BackupStore(bucket);
+      const committed: ScopeBackup[] = [];
+      const store: ScopeBackupStore = {
+        ...r2,
+        begin: (input) => {
+          const writer = r2.begin(input);
+          return {
+            ...writer,
+            commit: async (at) => {
+              const backup = await writer.commit(at);
+              committed.push(backup);
+              order.push(`backup:${backup.scopeId}`);
+              return backup;
+            },
+          };
         },
       };
+      return { store, committed };
     }
 
     /** A vertical holding one table of real rows, recording its wipe into the same log. */
@@ -3687,7 +3684,7 @@ describe('control-plane API', () => {
 
     it('stores a full dump BEFORE the wipe, names it in the response and on the admin log, and serves it back', async () => {
       const order: string[] = [];
-      const { store, held } = fakeStore(order);
+      const { store, committed } = fakeStore(order);
       const { t, s } = await archivedScope('backup-co');
       const api = createControlPlaneApi({
         host,
@@ -3712,14 +3709,14 @@ describe('control-plane API', () => {
       // Full fidelity, not the export route's masked default: a masked copy restores a
       // structurally-valid but factually wrong scope, which is not a backup.
       expect(body.backup).toMatchObject({ tenantId: t, scopeId: s, vertical: 'demo-vert', tables: 1 });
-      const stored = [...held.values()][0]!.dump;
+      const stored = await (await store.get({ tenantId: t, scopeId: s, capturedAt: body.backup.capturedAt }))!.entry(0);
       expect(stored.tables.find((x) => x.name === 'customers')!.rows[0]).toEqual(['c1', 'anna@example.com']);
 
       // The admin log answers "was there a copy, and where" from the reap entry itself.
       const log = await host.admin.auditLog(staff, { tenantId: t, limit: 50 });
       const entry = log.find((e) => e.action === 'reapScope')!;
       expect((entry.after as { backupRef?: string }).backupRef).toBe(
-        `/tenants/${t}/scopes/${s}/backups/${body.backup.capturedAt}`,
+        `/tenants/${t}/scopes/${s}/backups/${body.backup.capturedAt}/restore`,
       );
 
       // Readable AFTER the reap — the directory row survives as a tombstone, and the
@@ -3784,7 +3781,7 @@ describe('control-plane API', () => {
 
     it('backup:false is the explicit unrecoverable wipe; omitting it reaps unbacked only where no store exists', async () => {
       const order: string[] = [];
-      const { store, held } = fakeStore(order);
+      const { store, committed } = fakeStore(order);
       const { t, s } = await archivedScope('opt-out-co');
       const api = createControlPlaneApi({
         host,
@@ -3801,7 +3798,7 @@ describe('control-plane API', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ status: 'reaped', backup: null });
       expect(order).toEqual([`wipe:${s}`]);
-      expect(held.size).toBe(0);
+      expect(committed).toHaveLength(0);
 
       // And the pre-#493 caller — a bare POST with no body — still works where the
       // platform has no store at all (self-host, embedded), rather than 501ing.
@@ -3849,7 +3846,7 @@ describe('control-plane API', () => {
 
     it('tenant reap takes NO backup by default (§4.8 is an erasure path), and one per scope when asked', async () => {
       const order: string[] = [];
-      const { store, held } = fakeStore(order);
+      const { store, committed } = fakeStore(order);
 
       // Default: erasure. Writing the customer's data to a bucket the reap does not
       // clear would defeat the Art. 17 request the teardown may exist to satisfy.
@@ -3868,7 +3865,7 @@ describe('control-plane API', () => {
       const erased = await api.request(`/tenants/${erase}/reap`, { method: 'POST', headers: auth });
       expect(erased.status).toBe(200);
       expect(order).toEqual([`wipe:${sE}`]);
-      expect(held.size).toBe(0);
+      expect(committed).toHaveLength(0);
 
       // Opt in: retiring a tenant, not erasing one.
       const keep = tenantId.parse(ulid());
@@ -3884,7 +3881,7 @@ describe('control-plane API', () => {
       });
       expect(retired.status).toBe(200);
       expect(order.slice(1)).toEqual([`backup:${sK}`, `wipe:${sK}`]);
-      expect(held.size).toBe(1);
+      expect(committed).toHaveLength(1);
     });
   });
 

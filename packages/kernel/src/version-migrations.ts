@@ -281,6 +281,25 @@ export function versionMigrationsOf(
 }
 
 /**
+ * #2351: the digest of the migrations read from one version's bundle (`migrations_extracted`),
+ * null when never read; `undefined` when there is no such version. Both adapters read it here.
+ */
+export function versionMigrationsExtractedOf(
+  db: SwitchSql,
+  versionId: string,
+): { verticalSlug: string; digest: string | null } | undefined {
+  const row = db.all('SELECT vertical_slug, migrations_extracted FROM vertical_versions WHERE id = ?', versionId)[0] as
+    | { vertical_slug: string; migrations_extracted: string | null }
+    | undefined;
+  return row && { verticalSlug: row.vertical_slug, digest: row.migrations_extracted };
+}
+
+/** #2351: record it. A version's bundle never changes, so every read of it records the same digest. */
+export function recordVersionMigrationsExtracted(db: SwitchSql, versionId: string, digest: string): void {
+  db.run('UPDATE vertical_versions SET migrations_extracted = ? WHERE id = ?', digest, versionId);
+}
+
+/**
  * The `reason` on a push refused because its `digests.migration` is not the one the control plane
  * derives from the migrations it carries (#2339).
  */
