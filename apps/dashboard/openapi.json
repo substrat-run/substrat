@@ -20375,9 +20375,6 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "available": {
-                      "type": "boolean"
-                    },
                     "events": {
                       "type": "array",
                       "items": {
@@ -20544,18 +20541,22 @@
                     "nextCursor": {
                       "anyOf": [
                         {
-                          "type": "string"
+                          "type": "string",
+                          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
                         },
                         {
                           "type": "null"
                         }
                       ]
+                    },
+                    "available": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
-                    "available",
                     "events",
-                    "nextCursor"
+                    "nextCursor",
+                    "available"
                   ],
                   "additionalProperties": false
                 }

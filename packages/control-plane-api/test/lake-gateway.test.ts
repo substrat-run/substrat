@@ -436,13 +436,11 @@ describe('GET /tenants/:tenantId/lake/events (#1334)', () => {
       expect(lake.asked.length).toBe(asked);
     });
 
-    it('is refused a read with no since, or one wider than 31 days, before the engine is asked', async () => {
+    // The rule's edges are `teamWindowRefusal`'s table below; this holds that the route applies it.
+    it('is refused a read outside the window rule, before the engine is asked', async () => {
       const asked = lake.asked.length;
-      const wide = `since=${encodeURIComponent('2026-09-01T00:00:00.000Z')}&until=${encodeURIComponent('2026-10-02T00:00:00.001Z')}`;
-      for (const q of ['', `until=${encodeURIComponent('2026-10-21T00:00:00.000Z')}`, wide]) {
-        const res = await app.request(`/tenants/${A}/lake/events?${q}`, { headers: asTenant });
-        expect(res.status, q).toBe(400);
-      }
+      const res = await app.request(`/tenants/${A}/lake/events?until=${encodeURIComponent('2026-10-21T00:00:00.000Z')}`, { headers: asTenant });
+      expect(res.status).toBe(400);
       expect(lake.asked.length).toBe(asked);
     });
   });
@@ -462,6 +460,7 @@ describe('teamWindowRefusal (#1334)', () => {
     [{}, 'a team lake read needs since'],
     [{ since: '2026-09-30T00:00:00.000Z' }, null],
     [{ since: '2026-09-29T23:59:59.999Z' }, 'a team lake read spans at most 31 days'],
+    [{ since: '2026-09-01T00:00:00.000Z', until: '2026-10-02T00:00:00.001Z' }, 'a team lake read spans at most 31 days'],
   ])('%o → %s (an absent until is now)', (raw, expected) => {
     expect(teamWindowRefusal(input(raw), now)).toBe(expected);
   });

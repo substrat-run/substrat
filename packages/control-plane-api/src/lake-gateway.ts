@@ -45,7 +45,7 @@ export interface LakeQueryEngine {
  * the bytes a query scans is its `occurred_at` window. Staff reads stay unwindowed, because
  * an audit question must not quietly lose history older than a window nobody asked for.
  */
-export const LAKE_TEAM_WINDOW_DAYS = 31;
+const LAKE_TEAM_WINDOW_DAYS = 31;
 
 /**
  * Why a team's read is refused, or `null`: `since` is required, and the span to `until`

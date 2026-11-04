@@ -37,8 +37,8 @@ import {
   eventDelivery,
   eventFacetResult,
   historyEntry,
-  lakeEvent,
   lakeEventsInput,
+  lakeEventsPage,
   LIST_PAGE_MAX,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
@@ -1066,7 +1066,7 @@ export const dashboardRoutes = defineRoutes({
     summary: "One page of this team's events across all its apps from the event lake, newest first; `since` is required and spans at most 31 days",
     // No tenant field: the team is the one the URL names. `available: false` while the lake is off.
     input: lakeEventsInput,
-    output: z.object({ available: z.boolean(), events: z.array(lakeEvent), nextCursor: z.string().nullable() }),
+    output: lakeEventsPage.omit({ consistency: true }).extend({ available: z.boolean() }),
     http: { method: 'GET', path: '/lake/events' },
   },
   'dashboard/fleet-health': {

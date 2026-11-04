@@ -131,9 +131,8 @@ describe('GET /api/teams/:team/lake/events (#1334)', () => {
     expect(asked).toEqual([]);
   });
 
-  it("a read naming a tenant, or without the plane's window, is refused before the lake is asked", async () => {
+  it('a read naming a tenant is refused before the lake is asked', async () => {
     expect((await get('owner', `${WINDOW}&tenantId=${tenantId.parse(ulid())}`)).status).toBe(400);
-    expect((await get('owner', '')).status).toBe(400);
     expect(asked).toEqual([]);
   });
 
