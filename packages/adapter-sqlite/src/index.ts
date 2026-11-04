@@ -117,11 +117,15 @@ import {
   type CheckSubject,
   type BecomeCapabilityInput,
   type BoundedBecomeMint,
+  type BoundedBindLinkMint,
+  type CapabilityExchangeOptions,
+  type PrincipalBindLinkInput,
   type BoundedBecomeRevoke,
   type BoundedUnbind,
   type BecomeLinkState,
   type PrincipalBecomeCapabilityInput,
   principalBecomeCapabilityInput,
+  principalBindLinkInput,
   type Instant,
   type CapabilityExchange,
   type CapabilityFilter,
@@ -286,6 +290,9 @@ import {
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
   CAPABILITY_BECOME_MINT_OPERATION,
+  CAPABILITY_BIND_MINT_OPERATION,
+  bindLinkMintCheck,
+  mintBindLinkAsPrincipal,
   becomeMintCheck,
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
@@ -5836,7 +5843,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
-    options?: { mode?: 'act' | 'become' },
+    options?: CapabilityExchangeOptions,
   ): Promise<CapabilityExchange | null> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(async () => {
@@ -5869,6 +5876,7 @@ export class SqliteScopeHost implements ScopeHost {
           },
           secret,
           options?.mode,
+          options?.mode === 'bind' ? principalId.parse(options.presenter) : undefined,
         );
         rt.db.exec('COMMIT');
       } catch (err) {
@@ -6082,6 +6090,52 @@ export class SqliteScopeHost implements ScopeHost {
           minter,
           parsed,
           checked.targetDigest,
+        );
+        rt.db.exec('COMMIT');
+        return { ok: true, minted };
+      } catch (err) {
+        rt.db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+    if (outcome.ok) {
+      await this.dispatch(rt, null);
+      await this.dispatchExecutors(rt, null);
+    }
+    return outcome;
+  }
+
+  /**
+   * A principal's `bind` link mint (#2817) — binding an existing member to a record. The kernel's
+   * `bindLinkMintCheck` and the write in ONE scope turn and one transaction; a refusal writes
+   * nothing. On the spine as `capability.bind-minted` on the record, the caller its actor.
+   */
+  async mintBindLinkBounded(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBindLinkInput,
+  ): Promise<BoundedBindLinkMint> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const minter = principalId.parse(caller);
+    const parsed = principalBindLinkInput.parse(input);
+    const outcome = await rt.actor.turn(async (): Promise<BoundedBindLinkMint> => {
+      const checked = await bindLinkMintCheck({ sql: spineSql(rt.db), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId }, parsed.entity);
+      if (!checked.ok) return checked;
+      const now = this.clock();
+      rt.db.exec('BEGIN IMMEDIATE');
+      try {
+        const minted = await mintBindLinkAsPrincipal(
+          {
+            sql: spineSql(rt.db),
+            now,
+            emit: (event) =>
+              kernelEmit(this.operationContext(
+                rt, asPrincipal(minter), undefined, undefined, undefined, CAPABILITY_BIND_MINT_OPERATION, [], now,
+              ), event),
+          },
+          minter,
+          parsed,
         );
         rt.db.exec('COMMIT');
         return { ok: true, minted };

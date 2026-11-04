@@ -1,7 +1,7 @@
 # @substrat-run/elements
 
 Web components for a vertical's screens, built so a project gets a table that is good and
-looks like *its* theme without writing either. **A prototype**: private, one component, and
+looks like *its* theme without writing either. **A prototype**: private, three components, and
 dogfooded in `demos/todo/app` (`#/table`).
 
 ## What's in it
@@ -11,6 +11,17 @@ dogfooded in `demos/todo/app` (`#/table`).
   `actions`. It tells a 403 wall from an empty list, keeps the rows when one action is
   refused, re-reads when an action finds the view stale (409/404), follows `next` on
   "Load more", and drops `priority` 3, then 2 columns while the table is wider than its frame.
+- **`<sub-user-menu>`** — the account menu: who is signed in, your own items (slotted
+  `<wa-dropdown-item>`s), then "Switch user" and "Sign out", which it owns because it knows
+  the auth endpoints (`/api/auth/*`). Every built-in part is a slot with a default, and
+  `sub-sign-out` / `sub-switch-user` are cancelable. Signed out it draws "Sign in"; before
+  the first session read it draws an empty circle, never "Sign in". `show="avatar|name|email"`.
+- **`<sub-avatar>`** — the same identity without a menu: picture or initials (by grapheme,
+  coloured by principal), optionally the name or email beside it. Reads the session itself,
+  or draws the `session` property you hand it.
+- **`SessionStore` / `sessionAt(url)`** — the session read both share: once per URL per
+  page, re-read when the tab comes back into view, and a failed refresh never signs
+  anybody out on screen.
 - **`EntityTableModel`** — everything above that is not drawing, with no DOM in it, so a
   second renderer (React Native, later) gets the same answers from the same code.
 - **Themes** — `themes/base.css` is Web Awesome's default theme (the `--wa-*` tokens);

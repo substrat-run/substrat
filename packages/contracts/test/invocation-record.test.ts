@@ -5,13 +5,14 @@ import {
   INVOCATION_RECORD_FIELD_MAX,
   invocationLevelOf,
   joinEntityTypes,
+  joinProcessStates,
   parentRequestIdOf,
   splitEntityTypes,
 } from '../src/invocation-record.js';
 
 describe('invocation record header (#1904)', () => {
   it('round-trips the fields, including names a raw header could not carry', () => {
-    const record = { operation: 'bokning/avboka – återbetala', problemCode: 'conflict', principalKind: 'user', entityTypes: 'bokning,kund', route: 'POST /api/bokningar/:id' };
+    const record = { operation: 'bokning/avboka – återbetala', problemCode: 'conflict', principalKind: 'user', entityTypes: 'bokning,kund', route: 'POST /api/bokningar/:id', processStates: 'bokning:avbokad' };
     const value = encodeInvocationRecord(record)!;
     expect(value).toMatch(/^[\x20-\x7e]+$/);
     expect(decodeInvocationRecord(value)).toEqual(record);
@@ -23,7 +24,7 @@ describe('invocation record header (#1904)', () => {
   });
 
   it('reads a missing, malformed or oversized value without throwing, and ignores unknown keys', () => {
-    const empty = { operation: null, problemCode: null, principalKind: null, entityTypes: null, route: null };
+    const empty = { operation: null, problemCode: null, principalKind: null, entityTypes: null, route: null, processStates: null };
     expect(decodeInvocationRecord(null)).toEqual(empty);
     expect(decodeInvocationRecord('%%%')).toEqual(empty);
     expect(decodeInvocationRecord('tenantId=someone-else')).toEqual(empty);
@@ -50,6 +51,27 @@ describe('invocation record header (#1904)', () => {
     expect(splitEntityTypes('repair,visit')).toEqual(['repair', 'visit']);
     expect(splitEntityTypes(null)).toEqual([]);
     expect(splitEntityTypes('')).toEqual([]);
+  });
+
+  it('#2762: a process state is a type and the state reached, never an id; a set of them is cut between two', () => {
+    expect(
+      joinProcessStates([
+        { entity: 'ticket:01J:a', to: 'resolved' },
+        { entity: 'assignment:01K', to: 'active' },
+        { entity: 'ticket:01M', to: 'resolved' },
+        { entity: 'noref', to: 'open' },
+        { entity: 'a,b:1', to: 'open' },
+      ]),
+    ).toBe('assignment:active,ticket:resolved');
+    expect(joinProcessStates([])).toBeNull();
+    // A move that alone exceeds the cap could ride no header and pass no parser: it is left out.
+    const long = { entity: `${'t'.repeat(64)}:1`, to: 's'.repeat(64) };
+    expect(joinProcessStates([long, { entity: 'ticket:1', to: 'open' }])).toBe('ticket:open');
+    const moves = Array.from({ length: 12 }, (_, i) => ({ entity: `type${String(i).padStart(2, '0')}:1`, to: 'state' }));
+    const states = joinProcessStates(moves)!;
+    const cut = decodeInvocationRecord(new URLSearchParams({ processStates: states }).toString()).processStates!;
+    expect(cut.length).toBeLessThanOrEqual(INVOCATION_RECORD_FIELD_MAX);
+    expect(states.startsWith(`${cut},`)).toBe(true);
   });
 
   it('files a level from status, throw and problem code', () => {

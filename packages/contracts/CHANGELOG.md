@@ -1,5 +1,16 @@
 # @substrat-run/contracts
 
+## 0.179.0
+
+### Minor Changes
+
+- f45974b: The access log names the person a read was made for (`onBehalfOf`) when a team credential carried one; rows written before the column read it as null.
+- 1784e1c: Requests can be counted and filtered by the process state they moved an entity to. The invocation line carries `processStates` (each lifecycle move as `<entityType>:<state>`, never an id), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.processStates`, blob 12) carry it too, and the tenant request reads take a `state` facet. A request that made several moves is counted under each one.
+
+### Patch Changes
+
+- 994a35f: A scope store object admits each signed envelope once: the store entry spends its nonce and refuses the same envelope again (K-59).
+
 ## 0.178.0
 
 ### Minor Changes
@@ -7353,7 +7364,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

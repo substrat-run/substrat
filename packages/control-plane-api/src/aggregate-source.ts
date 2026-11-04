@@ -60,6 +60,12 @@ export interface RequestCubeRow {
    * pattern of the route that answered, the `path` facet. Optional for `kind`'s reason.
    */
   path?: string | null;
+  /**
+   * #2762: the line's `processStates` (the router's `processStates` blob) — every
+   * `<entityType>:<state>` the request moved an entity to, as contracts' `joinProcessStates`
+   * wrote them; read as a set, like `entity`. Optional for `kind`'s reason.
+   */
+  state?: string | null;
   count: number;
 }
 
@@ -182,8 +188,9 @@ export function memoryCubeStore(): CubeStore & { size(): number } {
  * - 1: #1877/#1901 — level, operation, problemCode, principalKind, surface, status, kind.
  * - 2: #2762 — entity.
  * - 3: #2762 — path.
+ * - 4: #2762 — state.
  */
-export const REQUEST_CUBE_SHAPE = 3;
+export const REQUEST_CUBE_SHAPE = 4;
 
 /**
  * The same for the pattern cube's row (#1747). Shape 1 was keyed with no suffix.

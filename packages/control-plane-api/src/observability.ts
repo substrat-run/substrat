@@ -282,8 +282,15 @@ export interface ConnectorCallsBucket {
  * #2762: `path` is the line's `route` — the method and registered pattern of the route that
  * answered (`GET /.well-known/*`), never the called path, so its values are the app's route
  * table. It is what selects a request that reached no operation.
+ *
+ * #2762: `state` is the process state a request moved an entity to — `<entityType>:<state>`
+ * (`ticket:resolved`), never an id, from the line's `processStates`. A set, like `entity`: a
+ * request moving two entities counts under each move. Its values are bounded by the model,
+ * declared entity types × their declared lifecycle states.
  */
-export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity', 'path'] as const;
+export const REQUEST_FACET_KEYS = [
+  'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity', 'path', 'state',
+] as const;
 
 /**
  * #1901: the values of the `kind` facet. A line with no `kind` is a request's — every line

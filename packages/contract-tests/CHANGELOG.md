@@ -1,5 +1,17 @@
 # @substrat-run/contract-tests
 
+## 0.179.0
+
+### Patch Changes
+
+- 372d13d: The control plane's routes record their registry and scope reads through the request's view, so those access rows name the person a team credential carried too.
+- f45974b: The access log names the person a read was made for (`onBehalfOf`) when a team credential carried one; rows written before the column read it as null.
+- Updated dependencies [f45974b]
+- Updated dependencies [1784e1c]
+- Updated dependencies [994a35f]
+  - @substrat-run/contracts@0.179.0
+  - @substrat-run/kernel@0.179.0
+
 ## 0.178.0
 
 ### Minor Changes
@@ -6838,7 +6850,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

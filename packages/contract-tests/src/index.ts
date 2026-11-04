@@ -10,6 +10,7 @@ export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
 export { becomeMintContractSuite, type BecomeMintVerbs } from './become-mint-suite.js';
 export { bindingInviteContractSuite, type BindingVerbs } from './binding-invite-suite.js';
+export { bindLinkContractSuite, type BindLinkVerbs } from './bind-link-suite.js';
 export { UPL_CONTENT_TYPES, UPL_MAX_BYTES, UPL_READ, UPL_WRITE, uploadLinkMod } from './upload-link-module.js';
 export { uploadLinkContractSuite } from './upload-link-suite.js';
 export { uploadLinkReplayContractSuite } from './upload-link-replay-suite.js';

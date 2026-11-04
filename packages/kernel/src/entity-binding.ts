@@ -17,7 +17,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 // A cycle with capability.ts (which imports `judgeBind`/`bindIn`), of functions only — none runs at load.
-import { revokeBindLinksIn } from './capability.js';
+import { revokeBindLinksFor, revokeBindLinksIn } from './capability.js';
 import { BIND_HOLDER_RELATION, BIND_KEY_RELATION, BIND_PERMISSION_RELATION, BOUND_EVER_RELATION, grantEntityShapeIn } from './entity-grant-shape.js';
 import { SHAPE_PROTECTED_KEY_RELATION } from './entity-grant.js';
 import type { ScopedSql } from './scope-host.js';
@@ -302,6 +302,8 @@ export async function unbindEntityHolderBounded(
 
 /** What an erasure releases, read before any of it runs. */
 export interface ErasureBindings {
+  /** The erased subject — whose open `bind` links (#2817) the release revokes. */
+  subject: string;
   /** Shape holders to release: on a record that IS the subject (any holder), or the subject's own markers. */
   holders: { object: string; only?: string }[];
   /** Rows whose column names someone the erasure reaches, to clear where they survive. */
@@ -318,7 +320,7 @@ export interface ErasureBindings {
  * deletes is still known. A scope that binds nothing pays the one read of its shape records.
  */
 export function captureBoundOf(sql: ScopedSql, subjectId: string): ErasureBindings {
-  const out: ErasureBindings = { holders: [], columns: [] };
+  const out: ErasureBindings = { subject: subjectId, holders: [], columns: [] };
   const bindings = new Map(entityBindingsOf(sql).map((b) => [b.entityType, b]));
   // Every type that binds now, and every type that ever bound here (`shape-bound`, sticky).
   const types = new Set([
@@ -359,7 +361,7 @@ export function captureBoundOf(sql: ScopedSql, subjectId: string): ErasureBindin
  * and still names that person, and each captured holder released from the spine whether or not
  * its row survived. Each such record's pending links are revoked as an unbind revokes them (#2818),
  * by the kernel itself: a record the erasure frees must not be claimable by a link minted for its
- * earlier binding. No event: an event naming the erased subject would be a new copy of what is
+ * earlier binding — and so is every open `bind` link naming the erased subject (#2817). No event: an event naming the erased subject would be a new copy of what is
  * being erased.
  */
 export function releaseBound(sql: ScopedSql, captured: ErasureBindings, now: string): void {
@@ -368,4 +370,5 @@ export function releaseBound(sql: ScopedSql, captured: ErasureBindings, now: str
     revokeBindLinksIn(sql, { entityType: binding.entityType, entityId }, null, now);
   }
   for (const { object, only } of captured.holders) releaseHolders(sql, object, now, only);
+  revokeBindLinksFor(sql, captured.subject, now);
 }

@@ -23,6 +23,7 @@ import {
   grantRefFromProof,
   principalId,
   principalBecomeCapabilityInput,
+  principalBindLinkInput,
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
   platformRequestInput,
@@ -311,10 +312,12 @@ import type {
   VerticalCaller,
   BecomeCapabilityInput,
   BoundedBecomeMint,
+  BoundedBindLinkMint,
   BoundedBecomeRevoke,
   BoundedUnbind,
   BecomeLinkState,
   PrincipalBecomeCapabilityInput,
+  PrincipalBindLinkInput,
   CapabilityExchange,
   CapabilityId,
   CapabilityFilter,
@@ -391,6 +394,9 @@ import {
   CAPABILITY_BECOME_MINT_OPERATION,
   becomeMintCheck,
   mintBecomeCapabilityAsPrincipal,
+  CAPABILITY_BIND_MINT_OPERATION,
+  bindLinkMintCheck,
+  mintBindLinkAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   readBecomeLinkStates,
   ENTITY_UNBIND_OPERATION,
@@ -5932,7 +5938,9 @@ export function defineScopeDO(
       secret: string,
       tenantId: TenantId,
       scopeId: ScopeId,
-      mode?: 'act' | 'become',
+      mode?: 'act' | 'become' | 'bind',
+      /** #2817: a `bind` link's presenter, as the caller's own authentication resolved it. */
+      presenter?: PrincipalId,
     ): Promise<CapabilityExchange | null> {
       await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
@@ -5971,6 +5979,7 @@ export function defineScopeDO(
             },
             secret,
             mode,
+            presenter === undefined ? undefined : principalId.parse(presenter),
           );
         });
         if (outcome) await this.settleCommitted(tenantId, scopeId, liveSince, null);
@@ -6023,6 +6032,56 @@ export function defineScopeDO(
             minter,
             parsed,
             checked.targetDigest,
+          );
+        });
+        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        return { ok: true, minted: minted! };
+      });
+    }
+
+    /**
+     * A principal's `bind` link mint (#2817) — binding an existing member to a record. The kernel's
+     * `bindLinkMintCheck` and the write in ONE queued body and one storage transaction; a refusal
+     * writes nothing. On the spine as `capability.bind-minted` on the record, the caller its actor.
+     */
+    async mintBindLinkBoundedFor(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      caller: PrincipalId,
+      input: PrincipalBindLinkInput,
+    ): Promise<BoundedBindLinkMint> {
+      await this.ensureMigrations();
+      const minter = principalId.parse(caller);
+      const parsed = principalBindLinkInput.parse(input);
+      return await this.queue.enqueue(async (): Promise<BoundedBindLinkMint> => {
+        const checked = await bindLinkMintCheck({ sql: doSpineSql(this.sql), checker: this.checker }, minter, parsed.principal, { tenantId, scopeId }, parsed.entity);
+        if (!checked.ok) return checked;
+        const liveSince = this.liveHighWaterMark();
+        const now = instant.parse(new Date().toISOString());
+        let minted: MintedCapability | undefined;
+        await this.revision.transaction(async () => {
+          minted = await mintBindLinkAsPrincipal(
+            {
+              sql: doSpineSql(this.sql),
+              now,
+              emit: (event) =>
+                kernelEmit(this.operationContext(
+                  minter,
+                  tenantId,
+                  scopeId,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  CAPABILITY_BIND_MINT_OPERATION,
+                  undefined,
+                  [],
+                  now,
+                ), event),
+            },
+            minter,
+            parsed,
           );
         });
         await this.settleCommitted(tenantId, scopeId, liveSince, null);

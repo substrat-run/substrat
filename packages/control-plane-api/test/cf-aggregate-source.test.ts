@@ -62,7 +62,7 @@ describe('the telemetry source (#1877)', () => {
               {
                 time: '2026-09-27T10:05:00Z',
                 data: [
-                  point({ tenantId: T, scopeId: 'A', level: 'warn', operation: 'acme/assign', problemCode: 'conflict', principalKind: 'principal', surface: 'app', status: 409, entityTypes: 'assignment,ticket', route: 'POST /api/assign' }, 3),
+                  point({ tenantId: T, scopeId: 'A', level: 'warn', operation: 'acme/assign', problemCode: 'conflict', principalKind: 'principal', surface: 'app', status: 409, entityTypes: 'assignment,ticket', route: 'POST /api/assign', processStates: 'assignment:active' }, 3),
                   point({ tenantId: 'OTHER', scopeId: 'B', level: 'info', operation: 'acme/reply', status: 200 }, 50),
                 ],
               },
@@ -80,7 +80,7 @@ describe('the telemetry source (#1877)', () => {
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
     ]);
     expect(q.parameters.groupBys!.map((g) => g.value)).toEqual([
-      'tenantId', 'scopeId', 'level', 'operation', 'problemCode', 'principalKind', 'surface', 'status', 'kind', 'entityTypes', 'route',
+      'tenantId', 'scopeId', 'level', 'operation', 'problemCode', 'principalKind', 'surface', 'status', 'kind', 'entityTypes', 'route', 'processStates',
     ]);
     // An hour at the one-minute grain.
     expect(q.granularity).toBe(60);
@@ -94,6 +94,8 @@ describe('the telemetry source (#1877)', () => {
     ]);
     // …and its `route` is the `path` facet.
     expect(facets.path).toEqual([{ value: 'POST /api/assign', count: 3 }]);
+    // …and its `processStates` is the `state` facet.
+    expect(facets.state).toEqual([{ value: 'assignment:active', count: 3 }]);
   });
 
   it('#1901: counts async work under its kind, and a line with none as a request', async () => {

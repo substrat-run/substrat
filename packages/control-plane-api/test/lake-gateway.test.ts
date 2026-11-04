@@ -414,21 +414,28 @@ describe('GET /tenants/:tenantId/lake/events (#1334)', () => {
   describe("a team's own credential", () => {
     // The seed's events sit on 2026-10-01; a 31-day window around them.
     const window = `since=${encodeURIComponent('2026-09-20T00:00:00.000Z')}&until=${encodeURIComponent('2026-10-21T00:00:00.000Z')}`;
-    // Minted for a person, as the dashboard mints it: the K-24 row names them (#2860).
+    // Minted for a person, as the dashboard mints it: the K-24 row names them (#2860). A token
+    // minted for nobody (a CI or service credential) still reads, and its row names no one.
     const person = principalId.parse(ulid());
     let asTenant: Record<string, string>;
+    let asNobody: Record<string, string>;
     beforeAll(async () => {
       asTenant = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(TENANT_SECRET, { tenantId: A, principal: person }) };
+      asNobody = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(TENANT_SECRET, { tenantId: A }) };
     });
 
-    it("reads its own tenant's events in a window, and leaves one K-24 row", async () => {
+    it.each([
+      ['minted for a person', () => asTenant, { principal: person, tenantId: A }],
+      ['minted for nobody', () => asNobody, null],
+    ] as const)("reads its own tenant's events in a window, and leaves one K-24 row (%s)", async (_, headers, onBehalfOf) => {
       const before = (await lakeRows()).filter((r) => r.tenantId === A).length;
-      const res = await app.request(`/tenants/${A}/lake/events?${window}`, { headers: asTenant });
+      const res = await app.request(`/tenants/${A}/lake/events?${window}`, { headers: headers() });
       expect(res.status).toBe(200);
       expect(idsOf((await res.json()) as LakeEventsPage)).toEqual([7, 6, 5, 4, 3, 2, 1, 0].map((i) => ids[i]));
       const rows = (await lakeRows()).filter((r) => r.tenantId === A);
       expect(rows.length).toBe(before + 1);
-      expect(rows.at(-1)).toMatchObject({ actor: serviceActor, resultCount: 8, onBehalfOf: { principal: person, tenantId: A } });
+      expect(rows.at(-1)).toMatchObject({ actor: serviceActor, resultCount: 8 });
+      expect(rows.at(-1)?.onBehalfOf ?? null).toEqual(onBehalfOf);
     });
 
     it("is refused another tenant's path before the engine is asked", async () => {

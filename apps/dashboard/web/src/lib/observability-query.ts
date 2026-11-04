@@ -24,6 +24,8 @@ export interface ObsQuery {
   ent?: string;
   /** #2762: the Requests mode's `path` facet — routes as `<METHOD> <pattern>`. */
   path?: string;
+  /** #2762: the Requests mode's `state` facet — the process states moved to, `<entityType>:<state>`. */
+  state?: string;
   /** #1747: one log pattern — a `ctx.log` template, verbatim. Narrows the Lines mode. */
   tpl?: string;
   /** #1744: the process map's lifecycle (an entity name), period, selection and compare switch. */
@@ -64,6 +66,7 @@ export const OBS_KEYS = [
   'kind',
   'ent',
   'path',
+  'state',
   'tpl',
   'entity',
   'period',

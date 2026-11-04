@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { entityRef } from './events.js';
-import { capabilityId, instant, permissionKey, platformActorId, principalId, scopeId } from './ids.js';
+import { capabilityId, instant, permissionKey, platformActorId, principalId, scopeId, type PrincipalId } from './ids.js';
 import { coverage } from './permission.js';
 
 /**
@@ -131,6 +131,28 @@ export const principalBecomeCapabilityInput = z.object({
 export type PrincipalBecomeCapabilityInput = z.infer<typeof principalBecomeCapabilityInput>;
 
 /**
+ * What a PRINCIPAL may mint through a host's bounded verb (#2817) — a `bind` link: it binds ONE
+ * existing member of the scope, named here, to a record, when that member presents it from their
+ * own session. The binding invite (`principalBecomeCapabilityInput` with `bind`) binds a principal
+ * minted fresh for the invite; this is how someone who is already a member — whose seat a `become`
+ * may never be minted for again (`target-already-claimed`) — comes to hold a record later.
+ *
+ * No principal changes hands: the exchange yields nobody new, so nothing of the member's is
+ * bounded against the minter. The bound is the binding's own (`judgeBind`): the minter holds the
+ * binding's key on the record, and the record is there and names nobody — at mint and again at
+ * the exchange. Single use, always. `expiresAt` absent means no expiry, as a binding invite has.
+ */
+export const principalBindLinkInput = z.object({
+  /** The member the link binds — the only principal whose session may present it. */
+  principal: principalId,
+  /** The record they are bound to. */
+  entity: entityRef,
+  expiresAt: instant.optional(),
+  label: capabilityLabel.optional(),
+});
+export type PrincipalBindLinkInput = z.infer<typeof principalBindLinkInput>;
+
+/**
  * The one pre-authorised action a `become` capability may carry (#1686), done in the exchange's
  * own transaction — so the link is spent, and the action done, together or not at all.
  *
@@ -207,6 +229,14 @@ export const capabilityRecord = z.discriminatedUnion('mode', [
      */
     action: capabilityAction.nullable().optional(),
   }),
+  z.object({
+    mode: z.literal('bind'),
+    ...capabilityRecordCommon,
+    /** #2817: the member the link binds — the one principal whose session may present it. */
+    principal: principalId,
+    /** The record it binds them to. */
+    action: capabilityAction,
+  }),
 ]);
 export type CapabilityRecord = z.infer<typeof capabilityRecord>;
 
@@ -267,6 +297,29 @@ export const boundedBecomeMint = z.union([z.object({ ok: z.literal(true), minted
 export type BoundedBecomeMint = z.infer<typeof boundedBecomeMint>;
 
 /**
+ * What a host's bounded `bind` link mint answers (#2817), with nothing written on a refusal: the
+ * minted link; or `coverage` naming the binding's key the minter lacks on the record; or
+ * `target-holds-nothing` — the named principal holds nothing at the node, so is no member to bind;
+ * or the record's own refusals, as `becomeMintRefusal` describes them.
+ */
+export const boundedBindLinkMint = z.union([
+  z.object({ ok: z.literal(true), minted: mintedCapability }),
+  z.object({ ok: z.literal(false), coverage }),
+  z.object({
+    ok: z.literal(false),
+    refused: z.enum([
+      'target-holds-nothing',
+      'bind-not-declared',
+      'bind-record-missing',
+      'bind-record-ambiguous',
+      'bind-record-bound',
+      'bind-record-held',
+    ]),
+  }),
+]);
+export type BoundedBindLinkMint = z.infer<typeof boundedBindLinkMint>;
+
+/**
  * What a host's bounded `become` revoke answers (#1686): whether this call revoked it, or the
  * coverage that refused the revoker — who must be the link's minter, or hold everything its
  * principal holds now (whoever could have minted it). A refusal writes nothing.
@@ -317,8 +370,9 @@ export const BECOME_LINK_STATES_MAX_IDS = 100;
 
 /**
  * What an exchange yields: a session to act as the capability (`act`), or the principal
- * the holder becomes (`become`). A refused exchange — an unknown, expired, revoked or
- * used-up secret — is `null`, one answer for all four, so a probe learns nothing.
+ * the holder becomes (`become`) — or, for a `bind` link (#2817), the member who presented it,
+ * now bound to `bound`. A refused exchange — an unknown, expired, revoked or used-up secret —
+ * is `null`, one answer for all four, so a probe learns nothing.
  */
 export const capabilityExchange = z.discriminatedUnion('kind', [
   z.object({
@@ -332,11 +386,18 @@ export const capabilityExchange = z.discriminatedUnion('kind', [
     kind: z.literal('principal'),
     capabilityId,
     principal: principalId,
-    /** #1686: the record the exchange bound the principal to, for a binding invite. */
+    /** #1686: the record the exchange bound the principal to, for a binding invite or a `bind` link. */
     bound: entityRef.optional(),
   }),
 ]);
 export type CapabilityExchange = z.infer<typeof capabilityExchange>;
+
+/**
+ * What a host's exchange is asked for: the only mode the caller can handle (a secret of another
+ * mode answers `null` without taking a use), or — for a `bind` link (#2817), which no other mode
+ * spends — `bind` with its presenter, the principal the caller's own authentication resolved.
+ */
+export type CapabilityExchangeOptions = { mode?: 'act' | 'become' } | { mode: 'bind'; presenter: PrincipalId };
 
 /**
  * What narrows `ctx.capabilities.list` and `HostAdmin.listCapabilities`. Live capabilities
@@ -488,6 +549,13 @@ export const CAPABILITY_EXERCISED = 'capability.exercised';
  * whose payload is an `act` capability's (an entity and its keys) and is frozen.
  */
 export const CAPABILITY_BECOME_MINTED = 'capability.become-minted';
+/**
+ * A principal minted a `bind` link through a host's bounded verb (#2817). Entity: the record the
+ * link binds; actor: the minter. Its exchange is on the spine as that record's
+ * `entity.holder-bound`, which names the link — never as `capability.exercised`, whose `mode` is
+ * `act` or `become` and is frozen.
+ */
+export const CAPABILITY_BIND_MINTED = 'capability.bind-minted';
 
 export const capabilityMintedPayload = z.object({
   capabilityId,
@@ -517,6 +585,18 @@ export const capabilityBecomeMintedPayload = z.object({
   action: capabilityAction.optional(),
 });
 export type CapabilityBecomeMintedPayload = z.infer<typeof capabilityBecomeMintedPayload>;
+
+export const capabilityBindMintedPayload = z.object({
+  capabilityId,
+  /** The member whose session may present it, and whom it binds. */
+  principal: principalId,
+  /** The record it binds them to. */
+  entity: entityRef,
+  expiresAt: instant.nullable(),
+  label: capabilityLabel.nullable(),
+  mintedBy: principalId,
+});
+export type CapabilityBindMintedPayload = z.infer<typeof capabilityBindMintedPayload>;
 
 export const capabilityRevokedPayload = z.object({
   capabilityId,

@@ -178,8 +178,11 @@ describe('assertWithinErasureReach (#2068)', () => {
 });
 
 describe('the hook capability and the temp schema (#2068)', () => {
-  /** The one read #1686's binding release makes: the scope's recorded binding shapes, of which these fakes hold none. */
-  const bindingRead = (q: string) => q.includes("subject >= 'shape:'");
+  /**
+   * The reads #1686's binding release makes: the scope's recorded binding shapes, and (#2817) the
+   * subject's open bind links — of which these fakes hold none.
+   */
+  const bindingRead = (q: string) => q.includes("subject >= 'shape:'") || q.includes('FROM _substrat_capabilities');
 
   /** A handle over nothing: no rows, and an optional temp schema. */
   const bare = (temp: string[] = []) => {
@@ -256,7 +259,9 @@ describe('the SQLite floor for FTS5 secure-delete (#2068)', () => {
     const writes: string[] = [];
     const sql: ScopedSql = {
       query: <T>(q: string) =>
-        (q.includes('temp.sqlite_master') || q.includes("subject >= 'shape:'") ? [] : q.startsWith('SELECT 1') ? [{ one: 1 }] : [{ n: 1 }]) as T[],
+        (q.includes('temp.sqlite_master') || q.includes("subject >= 'shape:'") || q.includes('FROM _substrat_capabilities')
+          ? []
+          : q.startsWith('SELECT 1') ? [{ one: 1 }] : [{ n: 1 }]) as T[],
       exec: (q: string) => {
         if (!secureDelete && q.includes('secure-delete')) throw new Error('SQL logic error');
         writes.push(q);

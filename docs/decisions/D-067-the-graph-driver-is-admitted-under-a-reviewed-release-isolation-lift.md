@@ -16,6 +16,12 @@ tracking: ["#2210", "#2394", "#2830"]
 > [graph store registration](../rfc/graph-store-registration.md) wait for. Ratifying it is a
 > policy choice about tenant isolation; it is written so that the choice can be made, not to
 > make it.
+>
+> **Amended 2026-11-04 ([#2830](https://github.com/substrat-run/substrat/issues/2830)).** The revisit
+> clause named either route as enough to withdraw the lift. It now names all three of D-63's
+> conditions, held by construction, since D-63 names them together and one of them alone leaves
+> the other two to review. [D-70](./D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md)
+> (proposed) is the route that would meet them.
 
 **The graph driver may be registered with `isolationBasis: {kind: 'decisionRecord',
 decisionRecord: 'D-67'}`, although D-63's three isolation conditions are not met by
@@ -109,11 +115,20 @@ outside this repo starts from D-63's rule, needs its own decision record, and ca
 one. The evidence and controls above were weighed for this driver alone.
 
 The lift does not replace isolation by construction. That stays open work, owned by
-[#2830](https://github.com/substrat-run/substrat/issues/2830): verification of the envelope outside
-the driver's script, or a script per tenant.
+[#2830](https://github.com/substrat-run/substrat/issues/2830): all three of D-63's conditions, held
+by construction. [D-70](./D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md)
+(proposed) names the route.
 
 ## Revisit
 
-This record is revisited, and the lift withdrawn, when any of these holds: a script per tenant
-becomes possible for drivers, envelope verification moves outside the driver's script, or the
-graph driver's erasure answer is still a no-op when real personal data is to be stored.
+The lift is withdrawn when all three of D-63's conditions hold by construction for the graph
+driver:
+
+- its code never runs where another tenant's objects are;
+- it has no outbound access;
+- the envelope is verified where its code cannot reach.
+
+One or two of them is not enough: each one left out is still held by the review of a release, so
+the lift stays and this record says which conditions remain. The lift is also withdrawn, whatever
+else holds, if the graph driver's erasure answer is still a no-op when real personal data is to be
+stored.

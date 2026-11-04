@@ -22,6 +22,7 @@ import type {
   AdminAction,
   BecomeCapabilityInput,
   CapabilityExchange,
+  CapabilityExchangeOptions,
   CapabilityFilter,
   CapabilityId,
   CapabilityPage,
@@ -5795,12 +5796,17 @@ export interface ScopeHost {
    * `options.mode` names the only kind the caller can handle; a secret of the other kind
    * answers `null` WITHOUT taking a use — so a claim link pasted into a share-link route is
    * refused rather than spent.
+   *
+   * `bind` (#2817): a `bind` link, exchanged only under this mode and only when `presenter` — the
+   * principal the caller's own authentication resolved — is the member the link names. It binds
+   * them to the link's record and answers `{ kind: 'principal', principal: presenter, bound }`;
+   * no principal changes hands. No other mode spends one.
    */
   exchangeCapability(
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
-    options?: { mode?: 'act' | 'become' },
+    options?: CapabilityExchangeOptions,
   ): Promise<CapabilityExchange | null>;
 
   /**

@@ -1,0 +1,32 @@
+---
+id: K-60
+date: 2026-11-04
+layer: kernel
+title: "A bind link binds the existing member it names, when their own session presents it"
+status: accepted
+aliases: []
+amends: []
+tracking: ["#2817", "#1686"]
+---
+
+# K-60 — A bind link binds the existing member it names, when their own session presents it
+
+**A third capability mode, `bind`, binds a member who already exists to a record.** A binding invite (#1686) is a `become` link that also binds its claimant. Its principal is minted fresh for the invite, and a principal-minted `become` is refused for a principal some `become` has already yielded (`target-already-claimed`). So nobody who is already a member could be bound to a record later. That includes an owner who also does the work, and a colleague who starts holding a record after they joined.
+
+A `bind` link names one existing member and one record. A holder of the binding's key on that record mints it through a host's bounded verb (`mintBindLinkBounded`). It is exchanged only under the `bind` exchange mode, and only when the presenter is the member it names. The presenter is the principal the caller's own authentication resolved. The exchange binds that member exactly as a binding invite's claim does (`bindIn`), and no principal changes hands. `become` and `target-already-claimed` are unchanged.
+
+**What is judged.** At mint, the binding's own judgement (`judgeBind`): the binding is declared, the minter holds its key on the record (asked first, so a minter without it learns nothing about the record), and the record is there, one row, naming nobody, with nobody holding its shape. Then the target must be a member, or the mint is refused `target-holds-nothing`. A member here means a principal holding at least one permission at the scope's node, through a role or a grant at the scope or tenant level; entity-narrowed grants alone do not make one. At the exchange, the presenter must be the named member and still be a member in that sense, and `judgeBind` runs again with the minter. Every refusal comes before the use is taken and writes nothing. The link is always single use, and its expiry is optional, as a binding invite's is. There is no holdings bound and no digest: nobody acquires anything the target holds.
+
+**On the spine.** The mint is `capability.bind-minted`, a new type, on the record, with the minter as actor. The exchange is the record's `entity.holder-bound` v1, unchanged: its `capabilityId` names the link, and its actor is the capability, as on a binding invite's claim. No `capability.exercised` is emitted for a `bind` link, because that payload's `mode` is `act` or `become` and widening a shipped enum breaks a consumer's strict parse of v1.
+
+**Revoked by what closes the binding.** An unbind of the record revokes its pending `bind` links along with its other binding links (#2818), which makes the unbind route the way to withdraw a pending link. The erasure of the named member revokes every `bind` link naming them that could still be exchanged. A used or expired one is left as it reads, as the unbind leaves one, because it is evidence of what happened and binds nobody.
+
+**The kernel does not stop one member being bound to two records of the same type.** A binding is a fact about the record (its column names a person), and how many records one person may hold is the vertical's vocabulary. A vertical that wants one record per person says so itself. It can refuse to mint a link for someone who already holds a record of the type, and it can put a UNIQUE index on the binding column. With such an index, an exchange that would bind a second record fails inside its transaction: the use is not taken, nothing is written, and `vertical-auth`'s accept route answers it with its one 400 refusal. A vertical exchanging links through its own route must map that constraint error itself, or it reads as a server error.
+
+## Why
+
+**A person is bound only by their own act.** A binding gives the shape's keys without a coverage bound: the minter vouches for the record and hands over none of their own authority. That is acceptable because the person bound is the one who acts. A direct verb that bound any member on a key holder's say-so was the other shape considered. It would turn the bind key into "give the protected keys on any unbound record to anyone here", with nothing of the person's in it. It would also have no capability for `entity.holder-bound`'s required `capabilityId` to name, so the event's payload would need a version bump, which is a replace for every consumer (K-39).
+
+**A self-minted `become` was the smallest change, and it is refused.** A `become` link to someone who already exists is a second key to their whole identity for whoever holds the secret. That is exactly what `target-already-claimed` prevents. The `bind` link carries no identity: presented by anyone but the member it names, it is refused.
+
+**Addressed, not "whoever opens it".** An unaddressed link would bind whoever it was forwarded to, or whoever it leaked to, to a record whose shape carries keys that only that record protects (K-48). Naming the member keeps a misdelivered link inert.

@@ -1,5 +1,28 @@
 # @substrat-run/builder
 
+## 0.8.0
+
+### Minor Changes
+
+- ec79800: A project can be removed from the project menu. Its source repository (when the platform created it), chat history and sandbox are deleted, and its vertical can be given a new project; a connected GitHub repository and a deployed vertical are never touched.
+
+### Patch Changes
+
+- Updated dependencies [372d13d]
+- Updated dependencies [f45974b]
+- Updated dependencies [4d7817b]
+- Updated dependencies [1784e1c]
+- Updated dependencies [994a35f]
+  - @substrat-run/control-plane-api@0.179.0
+  - @substrat-run/contracts@0.179.0
+  - @substrat-run/adapter-cloudflare@0.179.0
+  - @substrat-run/kernel@0.179.0
+  - @substrat-run/engine-assistant@0.1.31
+  - @substrat-run/engine-metering@0.6.63
+  - @substrat-run/builder-workspace@0.8.2
+  - @substrat-run/cli@0.57.1
+  - @substrat-run/model-providers@0.5.69
+
 ## 0.7.35
 
 ### Patch Changes

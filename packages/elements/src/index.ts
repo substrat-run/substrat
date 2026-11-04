@@ -9,3 +9,19 @@ export {
   type TableSource,
   type TableState,
 } from './entity-table-model.js';
+export { SubAvatar, type AvatarShow } from './avatar.js';
+export { SubUserMenu } from './user-menu.js';
+export {
+  HUES,
+  SessionStore,
+  hueOf,
+  initialsOf,
+  parseSession,
+  sessionAt,
+  signInHref,
+  switchUserHref,
+  type AuthUrls,
+  type Hue,
+  type Session,
+  type SessionState,
+} from './session.js';

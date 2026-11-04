@@ -349,6 +349,9 @@ export {
   mintBecomeCapabilityAsPrincipal,
   revokeBecomeCapabilityAsPrincipal,
   allowedFor,
+  CAPABILITY_BIND_MINT_OPERATION,
+  bindLinkMintCheck,
+  mintBindLinkAsPrincipal,
 } from './capability.js';
 export type {
   CapabilityGrantView,
