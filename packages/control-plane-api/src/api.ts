@@ -106,6 +106,7 @@ import {
   sweepRunKind,
   sweepRunOutcome,
   scopeDump,
+  mergeDumpPages,
   dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
   scopeStatus,
@@ -143,6 +144,8 @@ import {
 } from '@substrat-run/contracts';
 import type {
   ScopeDumpTable,
+  ScopeDumpChange,
+  ScopeDumpPageTable,
   BindAcknowledgement,
   RebindAcknowledgement,
   ChannelName,
@@ -329,6 +332,8 @@ import type {
   DirectoryBackupStore,
   ScopeBackup,
   ScopeBackupStore,
+  ScopeBackupWriter,
+  ScopeDumpHeader,
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
@@ -1259,13 +1264,59 @@ const restoreDirectoryBody = z.object({
 });
 
 /**
- * How a stored backup is named in the admin log and to callers: the route that fetches
- * it. Store-neutral by construction — the R2 key scheme stays private to the store — and
- * an operator reading a reap entry gets an address they can actually GET, rather than a
- * bucket path they would have to know the platform's internals to use.
+ * How a stored backup is named in the admin log and to callers: the route that restores
+ * it (#2839), which every backup can take, whereas only one stored in a single entry can be
+ * read whole. Store-neutral by construction — the R2 key scheme stays private to the store —
+ * so an operator reading a reap entry gets an address they can use, rather than a bucket
+ * path they would have to know the platform's internals to use.
  */
 function backupRefOf(b: ScopeBackup): string {
-  return `/tenants/${b.tenantId}/scopes/${b.scopeId}/backups/${b.capturedAt}`;
+  return `/tenants/${b.tenantId}/scopes/${b.scopeId}/backups/${b.capturedAt}/restore`;
+}
+
+/** The tables whose rows a host judges a load's roles by (#2555): the role definitions and their seats. */
+const ROLES_TABLE = '_substrat_roles';
+const TUPLES_TABLE = '_substrat_tuples';
+
+/**
+ * What a host judges a backup restored from its entries by (#2839): every table's schema, with the
+ * rows of the role definitions and of the role seats only, as the entries leave them in order (a
+ * change batch replaces a row by its rowid, deletes by rowid, or replaces a table read whole). The
+ * scope's data stays at the deployment; this holds no more than the roles a load would apply.
+ */
+function rolesJudgedOf() {
+  const schemas = new Map<string, ScopeDumpTable>();
+  const rows = new Map<string, Map<number | string, unknown[]>>();
+  let unkeyed = 0;
+  const judged = (t: ScopeDumpTable, row: readonly unknown[]): boolean =>
+    t.name === ROLES_TABLE || (t.name === TUPLES_TABLE && String(row[t.columns.indexOf('relation')]).startsWith('role:'));
+  const take = (t: ScopeDumpPageTable, replace: boolean) => {
+    if (t.name !== ROLES_TABLE && t.name !== TUPLES_TABLE) return;
+    const held = replace ? new Map<number | string, unknown[]>() : (rows.get(t.name) ?? new Map<number | string, unknown[]>());
+    t.rows.forEach((row, i) => {
+      const key = t.rowids?.[i] ?? `u${unkeyed++}`;
+      if (judged(t, row)) held.set(key, row);
+      else held.delete(key);
+    });
+    rows.set(t.name, held);
+  };
+  return {
+    page(tables: readonly ScopeDumpPageTable[]) {
+      for (const { rows: _, rowids: __, ...schema } of tables) {
+        if (!schemas.has(schema.name)) schemas.set(schema.name, { ...schema, rows: [] });
+      }
+      for (const t of tables) take(t, false);
+    },
+    changes(tables: readonly ScopeDumpChange[]) {
+      for (const { deleted, ...t } of tables) {
+        for (const id of deleted) rows.get(t.name)?.delete(id);
+        take(t, !t.rowids);
+      }
+    },
+    tables(): ScopeDumpTable[] {
+      return [...schemas.values()].map((t) => ({ ...t, rows: [...(rows.get(t.name)?.values() ?? [])] }));
+    },
+  };
 }
 
 // A per-PR preview request (preview-and-snapshots.md §2/§9 — the "run a new version
@@ -6714,20 +6765,64 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `(K-32); refused until a per-jurisdiction store exists`,
       );
     }
-    const dump = await c.var.admin.exportScope(c.get('actor'), tenantId, scope.id);
+    const { tables: hostTables, ...header } = await c.var.admin.exportScope(c.get('actor'), tenantId, scope.id);
     const vertical = await verticalForScope(c, scope);
-    const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
     // Store tables are opaque and stay unsealed. The platform reads them from the store script
     // (#2207); a store it cannot name or reach refuses the backup rather than omitting it.
-    const stores = (await exportPlatformStores(c, scope)) ?? dump.stores;
-    // Seal classified payloads per subject on the way in (#37). This copy is full-fidelity
-    // and the platform keeps it, which is precisely why an erasure could never reach it: a
-    // redaction fixes the live scope and does nothing to the object already in R2. Sealed
-    // here, destroying one subject's key reaches backwards into every copy already taken.
-    // Restores open it again (`restoreFromBackup`) — except for subjects shredded in the
-    // meantime, which is the mechanism working rather than the copy being damaged.
-    const sealed = await sealDump(tables, sealerFor(c, tenantId, scope.id));
-    return store.put({ vertical: scope.vertical, dump: { ...dump, tables: sealed, stores } });
+    const stores = (await exportPlatformStores(c, scope)) ?? header.stores;
+    const backup = backupStage(store.begin({ vertical: scope.vertical, header: { ...header, stores } }), sealerFor(c, tenantId, scope.id));
+    // #2839: from a vertical, the data moves into the store a page at a time, as a paged copy
+    // moves it into another scope (#2450): captured, so a scope taking writes meanwhile is still
+    // copied as it was at one moment, and never held whole here. A deployment that predates
+    // paging answers whole, and that is stored as one entry, as the co-located host's tables are.
+    const moved = vertical
+      ? (await transferScope(vertical, backup.dest, { from: scope.id }, { retry: retryTransient, stamp: false, alwaysStage: true })).dump
+      : hostTables;
+    if (Array.isArray(moved)) await backup.dest.stageScopePage(scope.id, ulid(), 0, moved);
+    try {
+      return await backup.commit();
+    } catch (e) {
+      await backup.discard();
+      throw e;
+    }
+  };
+
+  /**
+   * A backup being written, as the destination of a paged copy (#2839): each page and each batch of
+   * captured changes the copy stages becomes one entry, sealed per subject on the way in (#37).
+   * This copy is full-fidelity and the platform keeps it, which is precisely why an erasure could
+   * never reach it: a redaction fixes the live scope and does nothing to the object already in R2.
+   * Sealed here, destroying one subject's key reaches backwards into every copy already taken.
+   * Restores open it again, except for subjects shredded in the meantime, which is the mechanism
+   * working rather than the copy being damaged.
+   *
+   * A copy that starts again discards its stage and stages anew, so the backup is the stage written
+   * last.
+   */
+  const backupStage = (writer: ScopeBackupWriter, sealer: SubjectSealer) => {
+    let last = { stageId: '', entries: 0, tables: new Set<string>() };
+    const took = (stageId: string, seq: number, tables: readonly { name: string }[]) => {
+      if (stageId !== last.stageId) last = { stageId, entries: 0, tables: new Set() };
+      last.entries = Math.max(last.entries, seq + 1);
+      for (const t of tables) last.tables.add(t.name);
+    };
+    return {
+      dest: {
+        stageScopePage: async (_: ScopeId, stageId: string, seq: number, tables: ScopeDumpPageTable[]) => {
+          await writer.put(stageId, seq, { kind: 'page', tables: await sealDump(tables, sealer) });
+          took(stageId, seq, tables);
+          return { staged: true };
+        },
+        stageScopeChanges: async (_: ScopeId, stageId: string, seq: number, tables: ScopeDumpChange[]) => {
+          await writer.put(stageId, seq, { kind: 'changes', tables: await sealDump(tables, sealer) });
+          took(stageId, seq, tables);
+          return { staged: true };
+        },
+        discardStagedScope: (_: ScopeId, stageId: string) => writer.discard(stageId),
+      },
+      commit: () => writer.commit({ stageId: last.stageId, entries: last.entries, tables: last.tables.size }),
+      discard: () => writer.discard(last.stageId),
+    };
   };
 
   // The copies held for one scope — metadata only, so listing a reaped scope's backups
@@ -6745,9 +6840,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(await options.scopeBackups.list({ tenantId, scopeId }));
   });
 
-  // One backup's DUMP — the restore source. Staff-only like the export it came from
-  // (not in BUILDER_ROUTES), and full-fidelity, so it is the same governed-pull posture:
-  // K-3 cross-checked above, and `POST …/restore` is where it goes back.
+  // One backup's DUMP. Staff-only like the export it came from (not in BUILDER_ROUTES), and
+  // full-fidelity, so it is the same governed-pull posture: K-3 cross-checked above. Only a
+  // backup stored in one entry is served whole (#2839). One stored in several (more pages, or
+  // writes caught while it was taken) is not a dump until a deployment applies them in order,
+  // so it is answered 413 and `POST …/backups/:capturedAt/restore` loads it back.
   app.get('/tenants/:tenantId/scopes/:scopeId/backups/:capturedAt', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -6755,15 +6852,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.scopeBackups) return refuseStatus(c, 501, 'no backup target configured');
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-    const dump = await options.scopeBackups.get({ tenantId, scopeId, capturedAt });
-    if (!dump) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
+    const held = await options.scopeBackups.get({ tenantId, scopeId, capturedAt });
+    if (!held) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
+    if (held.entries > 1) {
+      return refuseStatus(c, 413, `backup ${capturedAt} of scope ${scopeId} is stored in ${held.entries} entries (its pages, and any writes caught while it was taken), which only a restore applies; restore it with POST /tenants/${tenantId}/scopes/${scopeId}/backups/${capturedAt}/restore`);
+    }
+    const { tables } = await held.entry(0);
     // Unseal on the way out (#37). The bytes in the store stay sealed — this is the
     // authorized read opening them with the keys the platform holds. A subject shredded
     // since the copy was taken opens to a null payload, which is exactly the erasure
     // working: the ciphertext never left the object, and nothing turns it back into a
     // person. A dump taken before sealing existed passes through untouched.
-    const opened = await openDump(dump.tables, sealerFor(c, tenantId, scopeId));
-    return c.json({ ...dump, tables: opened });
+    const opened = await openDump(mergeDumpPages([tables]), sealerFor(c, tenantId, scopeId));
+    return c.json({ ...held.header, tables: opened });
   });
 
   // Take a backup WITHOUT reaping — the standalone copy (a pre-migration checkpoint, an
@@ -7651,32 +7752,137 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // keyed by (scope, subject), so a copy of scope A landing in scope B — a backout onto
       // a different scope, a world loaded sideways — must be opened with A's keys. Using
       // the destination's would find no key, null every payload, and call it a restore.
-      const origin = { tenantId: tenantIdSchema.parse(dump.tenantId), scopeId: scopeIdSchema.parse(dump.scopeId) };
-      const tables = await openDump(dump.tables, sealerFor(c, origin.tenantId, origin.scopeId));
-      const vertical = await verticalForScope(c, scope);
+      const tables = await openDump(dump.tables, sealerFor(c, tenantIdSchema.parse(dump.tenantId), scopeIdSchema.parse(dump.scopeId)));
+      return c.json(await loadIntoScope(c, scope, { header: dump, tables, sourceHint }));
+    } catch (e) {
+      return restoreFailed(c, scope, e);
+    }
+  });
+
+  // Restore a held backup into its scope, read from the store here rather than handed in (#2839):
+  // a backup stored in parts is staged at the deployment one entry at a time, opened with the
+  // backup's own provenance, and loaded from the stage, so no call holds the whole backup. One
+  // stored whole loads as `POST …/restore` loads a dump, through the same path. Staff-only, as the
+  // backup routes are (not in TENANT_ROUTES or BUILDER_ROUTES).
+  app.post('/tenants/:tenantId/scopes/:scopeId/backups/:capturedAt/restore', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const capturedAt = c.req.param('capturedAt');
+    const store = options.scopeBackups;
+    if (!store) return refuseStatus(c, 501, 'no backup target configured');
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const held = await store.get({ tenantId, scopeId, capturedAt });
+    if (!held) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
+    const { header } = held;
+    if (options.platformScopeStores) {
+      try {
+        await refuseUndeclaredDumpStores(c, scope, header.stores);
+      } catch (e) {
+        if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+        throw e;
+      }
+    }
+    const sealer = sealerFor(c, tenantIdSchema.parse(header.tenantId), scopeIdSchema.parse(header.scopeId));
+    try {
+      if (held.entries === 1) {
+        const { tables } = await held.entry(0);
+        if (tables.length === 0) {
+          return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
+        }
+        return c.json(await loadIntoScope(c, scope, { header, tables: await openDump(mergeDumpPages([tables]), sealer) }));
+      }
+      // The host judges the roles the backup seats or defines before anything is replaced (#2555), and
+      // records the tables it restores. So it is handed every table's schema and the role tables' rows,
+      // gathered while the entries are staged: its whole part of a load into a deployment, whose
+      // placeholder is not the scope's store.
+      const stage = async (vertical: VerticalClient) => {
+        const stageId = ulid();
+        const judged = rolesJudgedOf();
+        try {
+          for (let index = 0; index < held.entries; index++) {
+            const entry = await held.entry(index);
+            let staged: { staged: boolean } | 'predates';
+            if (entry.kind === 'page') {
+              const tables = await openDump(entry.tables, sealer);
+              judged.page(tables);
+              staged = await retryTransient(() => vertical.stageScopePage(scopeId, stageId, index, tables));
+            } else {
+              const tables = await openDump(entry.tables, sealer);
+              judged.changes(tables);
+              staged = await retryTransient(() => vertical.stageScopeChanges(scopeId, stageId, index, tables));
+            }
+            if (staged === 'predates') {
+              throw new ControlPlaneError(409, `backup ${capturedAt} is stored in ${held.entries} parts, and the deployment scope ${scopeId} runs cannot load one in parts; push a newer version of the vertical and restore again`);
+            }
+          }
+        } catch (e) {
+          await abandonCopy({ dest: vertical }, { from: scopeId, into: scopeId, stageId });
+          throw e;
+        }
+        return { dump: { stageId }, tables: judged.tables() };
+      };
+      return c.json(await loadIntoScope(c, scope, { header, tables: [], stage }));
+    } catch (e) {
+      return restoreFailed(c, scope, e);
+    }
+  });
+
+  /**
+   * Load a dump into an existing scope: the one path `POST …/restore` and a backup's restore share,
+   * so both write the same audit row, judge the same roles and stores, replay the same erasures and
+   * clear the same receipt. `tables` are opened (#37). `stage`, for a backup stored in several
+   * entries (#2839), stages it at the scope's deployment, which then loads the stage, and answers
+   * the tables the host's audited restore judges and records in place of `tables`. Those are every
+   * table's schema with the role rows only, so after a staged restore the host's placeholder holds
+   * no data, and its `_substrat_migrations` and `_substrat_meta` journals are empty, where a whole
+   * dump's restore leaves them full. The scope's own journals are the deployment's.
+   */
+  const loadIntoScope = async (
+    c: ReqCtx,
+    scope: Scope,
+    input: {
+      header: ScopeDumpHeader;
+      tables: ScopeDumpTable[];
+      stage?: (vertical: VerticalClient) => Promise<{ dump: StagedDump; tables: ScopeDumpTable[] }>;
+      sourceHint?: ScopeId;
+    },
+  ) => {
+    const actor = c.get('actor');
+    const tenantId = tenantIdSchema.parse(scope.tenantId);
+    const scopeId = scopeIdSchema.parse(scope.id);
+    const { header, sourceHint } = input;
+    const origin = scopeIdSchema.parse(header.scopeId);
+    const vertical = await verticalForScope(c, scope);
+    if (input.stage && !vertical) {
+      throw new ControlPlaneError(409, `scope ${scopeId} has no deployment to load a backup stored in parts into`);
+    }
+    // #2185: cleared before the load as well as after it (below): a step after the load can still
+    // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
+    await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
+    const staged = input.stage && vertical ? await input.stage(vertical) : undefined;
+    const tables = staged?.tables ?? input.tables;
+    try {
       const storesCaller = options.platformScopeStores;
-      const landing = { ...dump, tables, stores: storesCaller && vertical ? [] : dump.stores };
-      // #2185: cleared before the load as well as after it (below): a step after the load can still
-      // throw (the deployment's half, the re-assert), and the data that landed may predate a reconcile.
-      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
+      const landing = { ...header, tables, stores: storesCaller && vertical ? [] : header.stores };
       const hostReplay = await c.var.host.restoreScope(actor, tenantId, scopeId, landing, sourceHint ? { sourceScopeId: sourceHint } : undefined);
-      if (storesCaller && vertical && scope.vertical && dump.stores.length > 0) {
+      if (storesCaller && vertical && scope.vertical && header.stores.length > 0) {
         await storesCaller.importStores({
           tenantId,
           scopeId,
           vertical: scope.vertical,
-          stores: dump.stores,
+          stores: header.stores,
         });
       }
       const platformReplay = storesCaller && scope.vertical
-        ? await replayPlatformStoreErasures(c, scope, sourceHint ?? origin.scopeId)
+        ? await replayPlatformStoreErasures(c, scope, sourceHint ?? origin)
         : undefined;
       const replays = [hostReplay, platformReplay].filter((r): r is StoreErasureReplay => !!r);
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical
-        ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, tables, {
-            scopeId: sourceHint ?? origin.scopeId,
+        ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, staged?.dump ?? tables, {
+            scopeId: sourceHint ?? origin,
             exact: false,
           })
         : undefined;
@@ -7690,30 +7896,36 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // finished: the install reads as not reconciled, and the sweep's next pass reconciles it.
       // Again here, after the load, for a sweep reconcile that wrote the receipt while it ran.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
-      return c.json({
+      return {
         restored: scopeId,
         tables: tables.length,
         // #2820: what the deployment serving the scope did with the dump's own indexes and triggers.
         ...(restored ? { moduleObjects: restored.moduleObjects } : {}),
         ...storeReplayFields(replays),
-      });
+      };
     } catch (e) {
-      // #2185: and once more on the way out of a failure, for a sweep reconcile that wrote the
-      // receipt between the clear above and the throw. Clearing is always safe (at worst one more
-      // reconcile); a clear that fails here must not hide the restore's own error.
-      await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
-      if (e instanceof ControlPlaneError) {
-        return relayRefusal(c, e);
-      }
-      // A restore throw is driven by the caller-supplied dump (a shape the target cannot
-      // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
-      // collapsing to the generic 500 `internal error` mapError would produce (#321,
-      // secondary obs #2). The route is staff- or own-tenant-gated and the detail is about the
-      // dump the caller sent, not another tenant's state.
-      const detail = e instanceof Error ? e.message : String(e);
-      return refuseStatus(c, 422, 'restore failed — the backup could not be loaded', { detail });
+      // A stage the refused load left at the deployment goes now rather than waiting for a wipe.
+      if (staged && vertical) await abandonCopy({ dest: vertical }, { from: scopeId, into: scopeId, stageId: staged.dump.stageId });
+      throw e;
     }
-  });
+  };
+
+  /** How a refused or failed restore answers, on either route. */
+  const restoreFailed = async (c: Context<{ Variables: Vars }>, scope: Scope, e: unknown) => {
+    // #2185: and once more on the way out of a failure, for a sweep reconcile that wrote the
+    // receipt between the clear before the load and the throw. Clearing is always safe (at worst
+    // one more reconcile); a clear that fails here must not hide the restore's own error.
+    await c.var.admin.markScopeProvisioned(c.get('actor'), tenantIdSchema.parse(scope.tenantId), scopeIdSchema.parse(scope.id), null).catch(() => undefined);
+    if (e instanceof ControlPlaneError) {
+      return relayRefusal(c, e);
+    }
+    // A restore throw is driven by the dump (a shape the target cannot load, a DDL the engine
+    // rejects), so DISCLOSE it as an actionable 422 rather than collapsing to the generic 500
+    // `internal error` mapError would produce (#321, secondary obs #2). The routes are staff- or
+    // own-tenant-gated and the detail is about the dump, not another tenant's state.
+    const detail = e instanceof Error ? e.message : String(e);
+    return refuseStatus(c, 422, 'restore failed — the backup could not be loaded', { detail });
+  };
 
   // #1236: when this scope's migrations actually ran — the schema-change history
   // whose instants `_substrat_migrations.applied_at` has held all along with no

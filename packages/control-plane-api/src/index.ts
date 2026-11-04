@@ -355,7 +355,11 @@ export type { SqlExecLike } from './cube-store-sql.js';
 export type { CfObservabilityOptions } from './cf-observability.js';
 export type {
   ScopeBackup,
+  ScopeBackupEntry,
   ScopeBackupStore,
+  ScopeBackupWriter,
+  ScopeDumpHeader,
+  StoredScopeBackup,
   DirectoryBackup,
   DirectoryBackupStore,
 } from './backups.js';

@@ -152,7 +152,11 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   provider* when it is connected rather than merely stored, `/credential` says which one is
   loaded without revealing it, and `/activity` reads what the connection actually did.
 - **Copies and erasure** — `/directory/backups` and `/directory/restore` for the directory
-  itself, `/scopes/:s/backups` and `/snapshots` for a scope, and
+  itself, `/scopes/:s/backups` and `/snapshots` for a scope. A scope backup is stored as
+  entries: its pages, and the writes caught while it was taken. `POST
+  /scopes/:s/backups/:capturedAt/restore` loads one back into the scope, entry by entry, and
+  is what a reap's `backupRef` names. `GET /scopes/:s/backups/:capturedAt` returns the whole
+  dump only for a backup stored in one entry, and answers `413` for one stored in several. Then there is
   `/scopes/:s/subjects/:id/shred`, which redacts the spine payloads and destroys the sealing
   key in one audited, idempotent call — returning **a receipt the DSAR response is written
   from**. Deliberately staff-only: a builder forwards the request, the platform executes it.
