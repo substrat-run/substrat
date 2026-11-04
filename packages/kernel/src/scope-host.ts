@@ -126,6 +126,7 @@ import type {
   DeploymentWireAuth,
   RouteTarget,
   DirectoryDump,
+  DirectoryDumpPage,
   IdentityMembership,
   PrincipalId,
   ResolvedIdentity,
@@ -3733,6 +3734,13 @@ export interface HostAdmin {
    * is nothing to point PITR at. See `restoreDirectory` for the write half.
    */
   exportDirectory(actor: PlatformActorId): Promise<DirectoryDump>;
+
+  /**
+   * `exportDirectory` a page at a time (#2868), for a directory too large to hold as one value:
+   * hand `next` back for the following page, `null` starts a copy. Audited once per copy, on its
+   * first page. A host without it is read whole; the scheduled backup takes whichever it has.
+   */
+  exportDirectoryPage?(actor: PlatformActorId, cursor: string | null, opts?: { maxBytes?: number }): Promise<DirectoryDumpPage>;
 
   /**
    * Replace the directory with a dump — break-glass, and the only write in `HostAdmin`

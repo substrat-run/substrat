@@ -1,5 +1,24 @@
 # @substrat-run/kernel
 
+## 0.178.0
+
+### Minor Changes
+
+- 5c62ade: The scheduled directory backup reads and stores the directory a page at a time, so a directory larger than its Durable Object's memory is backed up again, and a failed copy is retried after six hours rather than on every sweep. Contracts adds `directoryDumpPage`; `HostAdmin` gains an optional `exportDirectoryPage`; `DirectoryBackupStore` replaces `put` with `begin` (a breaking change for a store implemented outside this repo) and notes attempts. Copies stored whole before this still read.
+- 6984d2a: A store driver answers the reserved `substrat.selfcheck` with the catalog its built runtime serves, and a release carries a canary fixture at `driver_<package>/substrat_canary.json`. The rollout canary imports that fixture, expects it exported back unchanged, and refuses a release whose runtime does not build over it or serves another catalog than its approval records. `scopeStoreRunnerContractSuite` takes the driver's whole `catalog` and holds `substrat.selfcheck` to it. `substrat store-driver upload` counts the fixture's package as the control plane does.
+- 251a62b: A store driver's dump moves in pages (D-69). The reserved operations `substrat.export` and `substrat.import` are removed, and `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage` and `substrat.discard-stage` take their place. A chain of pages is one moment, told by an opaque `revision`, and the commit is the only step that changes the object. A registration declares `dumpPageMaxBytes`, the largest page its driver takes, at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB); one served by a plane that predates it parses, and `servedStoreDriverRegistration` reads a plane's registry dropping keys it does not know. The canary loads the release's fixture (`storeCanaryFixture`, a store dump of at most `STORE_CANARY_FIXTURE_MAX_ROWS` rows) as a stage of several pages through `writeStoreDumpPages` and reads it back through `readStoreDump`. The kernel exports `readStoreDump`, `writeStoreDump`, `writeStoreDumpPages` and `storeDumpPages`; the canary and the runner suite check the new operations, and `counterScopeStoreRunner` is a paged driver.
+
+### Patch Changes
+
+- 251a62b: `StoreError` takes an optional platform-written detail that rides in its message whatever the status, so a driver that breaks the page contract (a chain that repeats a cursor, a commit that miscounts its tables) says why. A read now refuses a chain that returns to any cursor it already asked with, not only the last one.
+- Updated dependencies [5c62ade]
+- Updated dependencies [578b967]
+- Updated dependencies [251a62b]
+- Updated dependencies [6984d2a]
+- Updated dependencies [251a62b]
+- Updated dependencies [251a62b]
+  - @substrat-run/contracts@0.178.0
+
 ## 0.177.0
 
 ### Minor Changes
@@ -7314,7 +7333,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

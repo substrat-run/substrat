@@ -1,5 +1,30 @@
 # @substrat-run/control-plane-api
 
+## 0.178.0
+
+### Minor Changes
+
+- 5c62ade: The scheduled directory backup reads and stores the directory a page at a time, so a directory larger than its Durable Object's memory is backed up again, and a failed copy is retried after six hours rather than on every sweep. Contracts adds `directoryDumpPage`; `HostAdmin` gains an optional `exportDirectoryPage`; `DirectoryBackupStore` replaces `put` with `begin` (a breaking change for a store implemented outside this repo) and notes attempts. Copies stored whole before this still read.
+- 578b967: A team's own credential can read its lake events (`GET /tenants/:tenantId/lake/events`), with a required `since` and a window of at most 31 days ending at `until` or now, whichever is earlier; contracts adds `teamLakeEventsInput` and `LAKE_TEAM_WINDOW_DAYS`.
+- dff2043: A push judges its scope stores by the driver registry of the control plane it talks to (#2813): `GET /store-drivers?vertical=` returns the registry as that vertical is judged by it, and `substrat push --store-drivers <file.json>` (also on `--check`) judges by a registry of your own.
+- 251a62b: A store call body is bounded by `STORE_CALL_MAX_BYTES` (4 MiB) in the verifier both store entries share. A larger one is refused with 413 before it is read when its `Content-Length` says so, and at the limit when it does not, so a body with no `Content-Length` is no longer refused with 411. The Python entry keeps the body in JavaScript instead of copying it to Python. The router and the control plane refuse to sign a call over the limit.
+- 6984d2a: A store driver answers the reserved `substrat.selfcheck` with the catalog its built runtime serves, and a release carries a canary fixture at `driver_<package>/substrat_canary.json`. The rollout canary imports that fixture, expects it exported back unchanged, and refuses a release whose runtime does not build over it or serves another catalog than its approval records. `scopeStoreRunnerContractSuite` takes the driver's whole `catalog` and holds `substrat.selfcheck` to it. `substrat store-driver upload` counts the fixture's package as the control plane does.
+- 251a62b: A store driver's dump moves in pages (D-69). The reserved operations `substrat.export` and `substrat.import` are removed, and `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage` and `substrat.discard-stage` take their place. A chain of pages is one moment, told by an opaque `revision`, and the commit is the only step that changes the object. A registration declares `dumpPageMaxBytes`, the largest page its driver takes, at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB); one served by a plane that predates it parses, and `servedStoreDriverRegistration` reads a plane's registry dropping keys it does not know. The canary loads the release's fixture (`storeCanaryFixture`, a store dump of at most `STORE_CANARY_FIXTURE_MAX_ROWS` rows) as a stage of several pages through `writeStoreDumpPages` and reads it back through `readStoreDump`. The kernel exports `readStoreDump`, `writeStoreDump`, `writeStoreDumpPages` and `storeDumpPages`; the canary and the runner suite check the new operations, and `counterScopeStoreRunner` is a paged driver.
+
+### Patch Changes
+
+- a2549b7: A push or a raw version publish that declares a scope store keeps its shared hold on the store driver until the version is published, so a rollout that starts meanwhile waits (409) instead of missing that vertical (#2816).
+- Updated dependencies [5c62ade]
+- Updated dependencies [578b967]
+- Updated dependencies [dff2043]
+- Updated dependencies [251a62b]
+- Updated dependencies [6984d2a]
+- Updated dependencies [251a62b]
+- Updated dependencies [251a62b]
+  - @substrat-run/contracts@0.178.0
+  - @substrat-run/kernel@0.178.0
+  - @substrat-run/control-plane-client@0.6.0
+
 ## 0.177.0
 
 ### Minor Changes

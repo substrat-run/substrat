@@ -96,6 +96,8 @@ export const COMPUTED_TARGETS = {
   'packages/kernel/src/system-switch-record.ts': { sites: 2, reason: "the kill switch's own record tables" },
   'packages/kernel/src/module-erasure.ts': { sites: 2, reason: "an FTS5 'secure-delete' control row on a search index" },
   'packages/kernel/src/search-index.ts': { sites: 5, reason: 'FTS5 index control rows and the triggers that keep a search index in step' },
+  'packages/adapter-cloudflare/src/control-plane-do.ts':
+    { sites: 1, reason: "a directory copy's snapshot (#2868): its own numbered row tables, in the control plane, which holds no scope's attachments" },
   'scripts/lake-provision.mjs': { sites: 1, reason: 'an R2 SQL pipeline statement for the lake, not SQLite' },
   'packages/contract-tests/src/entity-state-module.ts': { sites: 2, reason: "a test fixture module writing its own tables" },
   'packages/contract-tests/src/entity-state-suite.ts': { sites: 1, reason: 'a test suite writing a fixture table through an operation' },

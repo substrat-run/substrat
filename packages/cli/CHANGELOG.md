@@ -1,5 +1,26 @@
 # @substrat-run/cli
 
+## 0.57.0
+
+### Minor Changes
+
+- dff2043: A push judges its scope stores by the driver registry of the control plane it talks to (#2813): `GET /store-drivers?vertical=` returns the registry as that vertical is judged by it, and `substrat push --store-drivers <file.json>` (also on `--check`) judges by a registry of your own.
+
+### Patch Changes
+
+- 251a62b: `substrat push` reads the control plane's store-driver registry dropping keys it does not know, so a newer plane does not fail the push; a `--store-drivers` file stays strict.
+- 6984d2a: A store driver answers the reserved `substrat.selfcheck` with the catalog its built runtime serves, and a release carries a canary fixture at `driver_<package>/substrat_canary.json`. The rollout canary imports that fixture, expects it exported back unchanged, and refuses a release whose runtime does not build over it or serves another catalog than its approval records. `scopeStoreRunnerContractSuite` takes the driver's whole `catalog` and holds `substrat.selfcheck` to it. `substrat store-driver upload` counts the fixture's package as the control plane does.
+- Updated dependencies [5c62ade]
+- Updated dependencies [578b967]
+- Updated dependencies [dff2043]
+- Updated dependencies [251a62b]
+- Updated dependencies [6984d2a]
+- Updated dependencies [251a62b]
+- Updated dependencies [251a62b]
+  - @substrat-run/contracts@0.178.0
+  - @substrat-run/control-plane-client@0.6.0
+  - @substrat-run/model-view@0.6.26
+
 ## 0.56.0
 
 ### Minor Changes
