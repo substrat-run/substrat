@@ -531,6 +531,16 @@ describe('tenant tokens', () => {
       ).toEqual([[serviceActor, { name: 'Acme, by nobody' }]]);
     });
 
+    it('names the person on the access rows a route reads through its helpers too (#2860)', async () => {
+      const cy = principalId.parse(ulid());
+      // The route reads the registry row through its readability check before it lists versions.
+      const res = await app.request(`/verticals/${encodeURIComponent('acme/app')}/versions`, { headers: await mintPerson(tA, cy) });
+      expect(res.status).toBe(200);
+      const rows = (await host.admin.accessLog(staff, { method: 'listVerticals' }))
+        .filter((r) => r.method === 'listVerticals' && r.onBehalfOf?.principal === cy);
+      expect(rows.map((r) => [r.actor, r.onBehalfOf])).toEqual([[serviceActor, { principal: cy, tenantId: tA }]]);
+    });
+
     it('refuses a mint whose impersonation names nobody', async () => {
       const res = await app.request('/tenant-tokens', {
         method: 'POST',

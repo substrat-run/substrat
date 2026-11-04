@@ -2206,13 +2206,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #977: a tenant credential minted for a person writes through a view that names
     // them on every admin row. Only the credential's own claim can supply the person —
     // never a header or a body — and only the staff mint writes that claim.
-    const view = principal.kind === 'tenant' && principal.onBehalfOf && host.attributed
-      ? host.attributed(principal.onBehalfOf)
-      : host;
+    const view = viewOf(principal);
     c.set('host', view);
     c.set('admin', view.admin);
     await next();
   });
+
+  /**
+   * #977: the host a principal's request writes through — the attributed view for a tenant
+   * credential minted for a person, the configured host otherwise. The middleware sets it on
+   * the request; a helper handed only the principal derives the same view here (#2860), so its
+   * access rows name the person too.
+   */
+  function viewOf(principal: Principal): ScopeHost {
+    return principal.kind === 'tenant' && principal.onBehalfOf && host.attributed
+      ? host.attributed(principal.onBehalfOf)
+      : host;
+  }
+  const adminFor = (principal: Principal): HostAdmin => viewOf(principal).admin;
 
   // Confine a BUILDER to the vertical-management surface, fail-CLOSED (builder-plane.md
   // §4). Default-deny by design: a builder reaches only the routes on this allowlist,
@@ -2513,7 +2524,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const vertical = await resolveVerticalId(c, raw);
       const owner = (pathTenant ?? confined)
         ? null
-        : ((await verticalOf(c.get('actor'), vertical))?.ownerTenant ?? null);
+        : ((await verticalOf(c.var.admin, c.get('actor'), vertical))?.ownerTenant ?? null);
       return { vertical, tenantId: pathTenant ?? confined ?? owner };
     } catch {
       return { vertical: raw, tenantId: pathTenant ?? confined };
@@ -3981,7 +3992,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         resolveVertical: options.resolveVertical,
         resolveVerticalVersion: options.resolveVerticalVersion,
         resolveVerticalRef: options.resolveVerticalRef,
-        ownerOf,
+        ownerOf: (actor, slug) => ownerOf(c.var.admin, actor, slug),
         tenantSlugOf: async (actor, tenantId) =>
           (await c.var.admin.getTenant(actor, tenantId).catch(() => null))?.slug ?? null,
       },
@@ -4002,12 +4013,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * directory reads only when a call has already failed to resolve.
    */
   const diagnoseUnboundScope = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     scope: { vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
   ): Promise<string> => {
     const slug = scope.vertical;
     if (!slug) return 'scope has no vertical bound — nothing to deliver to';
-    const versions = await host.admin.listVersions(actor, slug).catch(() => []);
+    const versions = await admin.listVersions(actor, slug).catch(() => []);
     const boundId = scope.verticalVersionId;
     if (boundId && !versions.some((v) => v.id === boundId)) {
       return (
@@ -4024,7 +4035,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         `or rebind the install to the slug the versions live under.`
       );
     }
-    const serving = await host.admin.verticalServing(actor, slug).catch(() => null);
+    const serving = await admin.verticalServing(actor, slug).catch(() => null);
     if (!serving) {
       return `vertical '${slug}' has ${versions.length} version(s) but none is promoted to a serving channel — promote one to prod.`;
     }
@@ -4042,7 +4053,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * refuses, whatever is acknowledged, a move that strands people a link bound (#2178).
    */
   const refuseOnBreaks = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     versionId: string,
@@ -4050,7 +4061,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<void> => {
     // Asked even when acknowledged: the read also refuses a move that strands people a link
     // bound (#2178), which no acknowledgement passes.
-    const breaks = await host.admin.bindingImpact(
+    const breaks = await admin.bindingImpact(
       actor, tenantId, scopeId, versionId,
       opts.servingRef !== undefined ? { servingRef: opts.servingRef } : undefined,
     );
@@ -4084,7 +4095,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * fallback), passing what this reports.
    */
   const restoreCarryingSwitches = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     dest: Pick<VerticalClient, 'restoreScope'>,
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -4099,11 +4110,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the destination is not primary, the vertical marks it a copy in its own storage — a carry
     // of a copy made before every copy carried the marker brings none, and a CP-less host reads
     // the marker for primacy. Idempotent there; an install is never marked.
-    const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+    const rec = await admin.getScopeRecord(actor, tenantId, scopeId);
     const markCopy = rec ? copyLineageOf(rec) : undefined;
     return retryTransient(async () =>
       dest.restoreScope(tenantId, scopeId, tables, {
-        ...(await switchCarryFor(host.admin, actor, { tenantId, scopeId })),
+        ...(await switchCarryFor(admin, actor, { tenantId, scopeId })),
         sourceScopeId: source.scopeId,
         exact: source.exact,
         loadStamp: source.loadStamp,
@@ -4147,7 +4158,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // #1756: onto the serving script, the scope runs the served version from the moment routing
     // flips — whatever its own version exported. Asked before the export below moves anything.
-    await refuseOnBreaks(actor, tenantId, scopeId, serving.versionId, {
+    await refuseOnBreaks(c.var.admin, actor, tenantId, scopeId, serving.versionId, {
       servingRef: serving.ref,
       acknowledge: opts.acknowledge,
     });
@@ -4194,7 +4205,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const none = { refused: [] };
     const serving = await c.var.admin.verticalServing(actor, slug);
     if (!serving) return none; // embedded / not dispatch-backed — the host cascade handled rebinds
-    const v = await verticalOf(actor, slug);
+    const v = await verticalOf(c.var.admin, actor, slug);
     if (!v || v.ownerTenant === null || v.listed) return none; // private only, like the host cascade
     const owned = (
       await c.var.admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
@@ -4306,7 +4317,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { review, ...bindAck } = opts.acknowledge ?? {};
     // #1756: within one lineage this is an adopt, and judged as one before anything moves. A
     // crossing is not judged (`bindExportBreaksOf`): the producer's slug itself changes.
-    await refuseOnBreaks(actor, tenantId, scopeId, serving.versionId, {
+    await refuseOnBreaks(c.var.admin, actor, tenantId, scopeId, serving.versionId, {
       servingRef: serving.ref,
       acknowledge: bindAck,
     });
@@ -4424,7 +4435,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const { dump, loadStamp: sourceStamp, revision: sourceRevision } = await transferScope(
         source, dest, { from: scopeId }, { retry: retryTransient },
       );
-      const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, {
+      const restored = await restoreCarryingSwitches(c.var.admin, actor, dest, tenantId, scopeId, dump, {
         scopeId, exact: true, loadStamp: restoredStamp,
         ...(moveId ? { fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) } : {}),
       });
@@ -4951,7 +4962,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             `was moved or bound (#1722). Reload the scope and retry.`,
         );
       }
-      const restored = await restoreCarryingSwitches(actor, dest, scope.tenantId, scope.id, dump, {
+      const restored = await restoreCarryingSwitches(c.var.admin, actor, dest, scope.tenantId, scope.id, dump, {
         scopeId: scope.id,
         exact: true,
         loadStamp: restoredStamp,
@@ -5359,7 +5370,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
         try {
           const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
-          await restoreCarryingSwitches(actor, carried.dest, scope.tenantId, scope.id, dump, {
+          await restoreCarryingSwitches(c.var.admin, actor, carried.dest, scope.tenantId, scope.id, dump, {
             scopeId: scope.id,
             exact: true,
             loadStamp: restoredStamp,
@@ -5536,11 +5547,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const scopePin = confinedTenant(p);
     if (scopePin) {
-      const v = scope.vertical ? await verticalOf(actor, scope.vertical) : undefined;
+      const v = scope.vertical ? await verticalOf(c.var.admin, actor, scope.vertical) : undefined;
       if (!v || v.ownerTenant !== scopePin) return refuse(c, 'forbidden', 'forbidden');
     }
     const reached = await deploymentForScope(c, scope);
-    if (!reached) return refuseStatus(c, 501, await diagnoseUnboundScope(c.get('actor'), scope));
+    if (!reached) return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, c.get('actor'), scope));
     const vertical = reached.client;
     const entitlements = await c.var.admin.listEntitlements(actor, tenantId);
     // #406: re-gathered and re-delivered like entitlements, so a reconcile also repairs a
@@ -6199,7 +6210,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(c.get('actor'), scope));
+    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, c.get('actor'), scope));
     try {
       return c.json(await vertical.ownerSeat(tenantId, scopeId));
     } catch (e) {
@@ -6234,7 +6245,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(actor, scope));
+    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, actor, scope));
     const origin = await instanceOrigin(c.var.admin, actor, scopeId);
     if (!origin) {
       return refuse(c, 'conflict', `scope ${scopeId} has no hostname bound — a claim link needs an address to open on`);
@@ -6274,7 +6285,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = outsideTenant(principal, tenantId) ? null : await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return { refusal: refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`) } as const;
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return { refusal: refuseStatus(c, 501, await diagnoseUnboundScope(actor, scope)) } as const;
+    if (!vertical) return { refusal: refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, actor, scope)) } as const;
     return { tenantId, scopeId, actor, vertical, person: memberPerson(principal) } as const;
   };
 
@@ -6417,7 +6428,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(actor, scope));
+    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, actor, scope));
     const operationId = ulid();
     // An abandon (`abandon: true`) is audited the same way, every row marked, so the log tells
     // a hand-over closed without finishing from one that finished.
@@ -6457,7 +6468,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
     if (!vertical) {
-      return refuseStatus(c, 501, await diagnoseUnboundScope(c.get('actor'), scope));
+      return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, c.get('actor'), scope));
     }
     try {
       await vertical.configureInstance({ tenantId, scopeId, entries: input.entries });
@@ -7360,7 +7371,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuse(c, 'conflict', 'clear-copy-mark refused: the directory says this scope is a copy (a preview or a fork)');
     }
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(actor, scope));
+    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(c.var.admin, actor, scope));
     const { cleared } = await vertical.clearCopyMark(scopeId, { kind: scope.kind, forkedFrom: scope.forkedFrom });
     await c.var.admin.recordCopyMark(actor, { action: 'clear', tenantId, scopeId, outcome: cleared ? 'cleared' : 'absent' });
     return c.json({ cleared });
@@ -7972,7 +7983,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #1742: the recorded OFF positions ride the restore, so the deployment switches them
       // off in the replay's own event — its own sweeper cannot land in between.
       const restored = vertical
-        ? await restoreCarryingSwitches(actor, vertical, tenantId, scopeId, staged?.dump ?? tables, {
+        ? await restoreCarryingSwitches(c.var.admin, actor, vertical, tenantId, scopeId, staged?.dump ?? tables, {
             scopeId: sourceHint ?? origin,
             exact: false,
           })
@@ -8145,10 +8156,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const adoptPin = confinedTenant(p);
     if (adoptPin) {
-      const v = await verticalOf(actor, slug);
+      const v = await verticalOf(c.var.admin, actor, slug);
       if (!v || v.ownerTenant !== adoptPin) return refuse(c, 'forbidden', 'forbidden');
     }
-    const v = await verticalOf(actor, slug);
+    const v = await verticalOf(c.var.admin, actor, slug);
     if (!v) return refuse(c, 'not_found', `unknown vertical '${slug}'`);
     if (v.ownerTenant === null) {
       return refuse(c, 'conflict', 'adopt-serving is a private-vertical operation');
@@ -8475,7 +8486,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
       // re-assert) cannot leave the receipt set over older data.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null);
-      const restored = await restoreCarryingSwitches(actor, live, tenantId, scopeId, dump, {
+      const restored = await restoreCarryingSwitches(c.var.admin, actor, live, tenantId, scopeId, dump, {
         scopeId,
         exact: true,
         loadStamp: ulid(),
@@ -8543,7 +8554,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // refusal would land after the bytes had moved. It refuses what the bind would refuse
     // first (a version not admitted) the same way. An unknown scope has no impact to read, and
     // the bind below refuses it as it always has.
-    if (scope) await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
+    if (scope) await refuseOnBreaks(c.var.admin, actor, tenantId, scopeId, versionId, { acknowledge });
     // A refusal throws a ControlPlaneError, which the app's error boundary relays with its
     // status and records as an ops failure. An unknown scope carries nothing, and the bind
     // below refuses it as it always has.
@@ -8590,7 +8601,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           try {
             // Asked again after the carry: a promote landing since the first question would
             // otherwise leave an archive behind for a bind the host then refuses.
-            await refuseOnBreaks(actor, tenantId, scopeId, versionId, { acknowledge });
+            await refuseOnBreaks(c.var.admin, actor, tenantId, scopeId, versionId, { acknowledge });
             await orchestratedSnapshot(c, tenantId, scope, {});
           } catch (e) {
             // #1722: no bind follows, so the copy the carry restored is reached by nothing.
@@ -8814,18 +8825,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // `listVerticals` returns every row (the adapter does not narrow); the transport is
   // where per-principal filtering happens — here and on GET /verticals.
   const ownerOf = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     slug: string,
   ): Promise<TenantId | null | undefined> => {
-    const v = (await host.admin.listVerticals(actor)).find((x) => x.slug === slug);
+    const v = (await admin.listVerticals(actor)).find((x) => x.slug === slug);
     return v ? v.ownerTenant : undefined;
   };
 
   // The full registry row, for the checks that need more than the owner — whether the
   // vertical is PRIVATE (owned + not listed), which is what scopes a builder's prod
   // self-serve below.
-  const verticalOf = async (actor: PlatformActorId, slug: string) =>
-    (await host.admin.listVerticals(actor)).find((x) => x.slug === slug);
+  const verticalOf = async (admin: HostAdmin, actor: PlatformActorId, slug: string) =>
+    (await admin.listVerticals(actor)).find((x) => x.slug === slug);
 
   /**
    * "This principal is confined, and this vertical is not its tenant's." The one
@@ -8838,7 +8849,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const notOwned = async (p: Principal, slug: string): Promise<boolean> => {
     const pin = confinedTenant(p);
-    return pin !== null && (await ownerOf(p.actor, slug)) !== pin;
+    return pin !== null && (await ownerOf(adminFor(p), p.actor, slug)) !== pin;
   };
 
   /**
@@ -8852,8 +8863,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * the prod history).
    */
   /** The bare slug of every registered vertical: what a manager's SKU may not be (#2388). */
-  const verticalSlugsOf = async (actor: PlatformActorId): Promise<string[]> =>
-    (await host.admin.listVerticals(actor)).map((v) => bareSlug(v.slug));
+  const verticalSlugsOf = async (admin: HostAdmin, actor: PlatformActorId): Promise<string[]> =>
+    (await admin.listVerticals(actor)).map((v) => bareSlug(v.slug));
 
   /**
    * Whether a CONFINED principal may grant its own tenant `key` (#977): some vertical it
@@ -8869,8 +8880,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * the first push). Its own slug and the engine keys are always declarable, so they reserve nothing.
    * Only a new slug is judged; the sentence names no other vertical.
    */
-  const slugClaimsSku = async (actor: PlatformActorId, slug: string): Promise<string | undefined> => {
-    const all = await host.admin.listVerticals(actor);
+  const slugClaimsSku = async (admin: HostAdmin, actor: PlatformActorId, slug: string): Promise<string | undefined> => {
+    const all = await admin.listVerticals(actor);
     if (all.some((v) => v.slug === slug)) return undefined;
     const name = bareSlug(slug);
     return all.some(
@@ -8891,7 +8902,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const tenantGrantable = async (p: Principal, key: string): Promise<boolean> => {
     const pin = confinedTenant(p);
     if (pin === null) return true;
-    const all = await host.admin.listVerticals(p.actor);
+    const all = await adminFor(p).listVerticals(p.actor);
     const slugs = all.map((v) => bareSlug(v.slug));
     const visible = all.filter((v) => v.ownerTenant === pin || v.listed);
     return visible.some((v) => {
@@ -8905,7 +8916,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const notReadable = async (p: Principal, slug: string): Promise<boolean> => {
     const pin = confinedTenant(p);
     if (pin === null) return false;
-    const v = await verticalOf(p.actor, slug);
+    const v = await verticalOf(adminFor(p), p.actor, slug);
     return !v || (v.ownerTenant !== pin && !v.listed);
   };
 
@@ -8954,9 +8965,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const workspace = (await c.var.admin.listTenants(actor)).find((t) => t.slug === pin || t.id === pin);
     if (!workspace || raw.startsWith(`${workspace.slug}/`)) return raw;
-    if ((await ownerOf(actor, raw)) === workspace.id) return raw;
+    if ((await ownerOf(c.var.admin, actor, raw)) === workspace.id) return raw;
     const prefixed = `${workspace.slug}/${raw}`;
-    return (await ownerOf(actor, prefixed)) !== undefined ? prefixed : raw;
+    return (await ownerOf(c.var.admin, actor, prefixed)) !== undefined ? prefixed : raw;
   };
 
   app.get('/verticals', async (c) => {
@@ -9013,16 +9024,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * it that can drift when a third ref scheme appears.
    */
   const tenantServiceRefs = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     tenantId: TenantId,
     slug?: string,
   ): Promise<{ entries: ServiceDimensions[]; verticalsTruncated: boolean; matched: number }> => {
-    const all = (await host.admin.listVerticals(actor)).filter((v) => v.ownerTenant === tenantId);
+    const all = (await admin.listVerticals(actor)).filter((v) => v.ownerTenant === tenantId);
     const considered = slug === undefined ? all : all.filter((v) => v.slug === slug);
     const verticalsTruncated = considered.length > MAX_SERVICE_REF_VERTICALS;
     const entries: ServiceDimensions[] = [];
     for (const v of considered.slice(0, MAX_SERVICE_REF_VERTICALS)) {
-      const versions = await host.admin.listVersions(actor, v.slug);
+      const versions = await admin.listVersions(actor, v.slug);
       const labelOf = new Map(versions.map((ver) => [ver.id, ver.version]));
       // The stable serving script — where real traffic lands. Its version is the
       // registry row's own servingVersionId: authoritative, not the scope-derived
@@ -9061,7 +9072,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const ownedServices = async (p: Principal, actor: PlatformActorId): Promise<Set<string> | null> => {
     const pin = confinedTenant(p);
     if (pin === null) return null;
-    const refs = await tenantServiceRefs(actor, pin);
+    const refs = await tenantServiceRefs(adminFor(p), actor, pin);
     if (refs.verticalsTruncated) {
       throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
     }
@@ -9081,7 +9092,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     const actor = c.get('actor');
     const slug = query.vertical === undefined ? undefined : await resolveVerticalId(c, query.vertical);
-    const { entries, verticalsTruncated, matched } = await tenantServiceRefs(actor, query.tenantId, slug);
+    const { entries, verticalsTruncated, matched } = await tenantServiceRefs(c.var.admin, actor, query.tenantId, slug);
     // Non-ownership reads as absence (K-3), exactly like the per-slug registry reads.
     if (slug !== undefined && matched === 0) throw new ControlPlaneError(404, 'not found');
     return c.json({ entries, verticalsTruncated });
@@ -9096,18 +9107,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // the prefix, backstopped by the ownership check). Owner + prefix come from the
       // principal, never trusted from the body.
       input.slug = effectiveSlug(p, input.slug);
-      const owner = await ownerOf(p.actor, input.slug);
+      const owner = await ownerOf(adminFor(p), p.actor, input.slug);
       if (owner !== undefined && owner !== p.tenantId) return refuse(c, 'forbidden', 'forbidden');
       input.ownerTenant = p.tenantId;
     }
-    const claimed = await slugClaimsSku(c.get('actor'), input.slug);
+    const claimed = await slugClaimsSku(c.var.admin, c.get('actor'), input.slug);
     if (claimed) return refuseStatus(c, 422, claimed);
     // #2388: the same declaration rule as a push, for any principal that is not staff.
     if (p.kind !== 'staff') {
       const foreignKey = entitlementNamespaceRefusal(
         input.slug,
         input.entitlements ?? [],
-        input.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
+        input.provisions?.length ? await verticalSlugsOf(c.var.admin, c.get('actor')) : undefined,
       );
       if (foreignKey) return refuseStatus(c, 422, foreignKey);
     }
@@ -9195,7 +9206,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // (backup, wipe, erasure, the meter), so its store scripts are put in place first, as a push
     // does: a driver with no approved release refuses here, and nothing is published. The publish is
     // made under the push's shared hold (#2816), so a rollout walks this vertical or waits for it.
-    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, scopeStores, async () => (await ownerOf(c.get('actor'), slug)) ?? null, async (renew) => {
+    await ensureScopeStoresOf(c.var.admin, c.get('actor'), 'deploy', slug, scopeStores, async () => (await ownerOf(c.var.admin, c.get('actor'), slug)) ?? null, async (renew) => {
       await renew();
       await c.var.admin.publishVersion(c.get('actor'), input);
     });
@@ -9430,7 +9441,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/verticals/:slug/email-sender', async (c) => {
     const slug = c.req.param('slug');
     if (await notOwned(c.get('principal'), slug)) return refuse(c, 'forbidden', 'forbidden');
-    const vertical = await verticalOf(c.get('actor'), slug);
+    const vertical = await verticalOf(c.var.admin, c.get('actor'), slug);
     if (!vertical) return refuse(c, 'not_found', 'vertical not found');
     return c.json({ slug, emailSender: !!vertical.emailSender });
   });
@@ -9518,7 +9529,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * recorded here: it is the caller's to answer.
    */
   const ensureScopeStoresOf = async <T = void>(
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     operation: 'deploy' | 'serve',
     slug: string,
     stores: readonly ScopeStoreNeed[],
@@ -9539,7 +9550,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const held: string[] = [];
     const renewHolds = async (when: string) => {
       for (const each of held) {
-        if (!(await host.admin.holdStoreDriver(actor, { driver: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
+        if (!(await admin.holdStoreDriver(actor, { driver: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
           throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed ${when}; try again`);
         }
       }
@@ -9557,13 +9568,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // a script's release before a rollout moved it would upload the old release back over it.
         // Neither the refusal nor anything else here names another vertical: a push answers its own.
         for (const driver of drivers) {
-          if (!(await host.admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
+          if (!(await admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
             throw new ControlPlaneError(409, `${operation} refused: scope store driver '${driver}' is being rolled out; try again in a few minutes`);
           }
           held.push(driver);
         }
         const loadRelease = options.storeReleases
-          ? storedReleaseLoader({ admin: host.admin, actor, bytes: options.storeReleases.bytes })
+          ? storedReleaseLoader({ admin, actor, bytes: options.storeReleases.bytes })
           : async () => undefined;
         // One driver at a time, each renewing every hold first: a push whose uploads outlast a hold
         // stops (409) rather than upload after a rollout could have taken the driver.
@@ -9573,7 +9584,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           if (!registration) throw new ControlPlaneError(403, `scope store driver '${driver}' is not registered`);
           // Read under the shared hold (D-65): a revoke takes the driver exclusively, so one written
           // before this read is seen, and none is written until this upload is done.
-          const approvals = await readStoreDriverApprovals(host.admin, actor, registration);
+          const approvals = await readStoreDriverApprovals(admin, actor, registration);
           await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.driver === driver), loadRelease, approvals });
         }
       } catch (e) {
@@ -9593,7 +9604,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       return await then(() => renewHolds('before the version was recorded'));
     } finally {
-      for (const driver of held) await host.admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
+      for (const driver of held) await admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
     }
   };
 
@@ -9719,12 +9730,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     versionId: string,
   ): Promise<void> => {
     if (!options.deployVertical || !options.fetchVerticalModules) return; // not configured: pre-#286 behavior
-    const version = await host.admin.getVersion(actor, versionId, slug);
+    const version = await admin.getVersion(actor, versionId, slug);
     if (!version?.deploymentRef) {
       throw new ControlPlaneError(502, `version ${versionId} has no archive script to serve from`);
     }
     const archiveRef = version.deploymentRef;
-    const manifestJson = await host.admin.versionManifest(actor, slug, versionId);
+    const manifestJson = await admin.versionManifest(actor, slug, versionId);
     if (!manifestJson) {
       throw new ControlPlaneError(
         502,
@@ -9737,7 +9748,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // serving record below all read this one set; the manifest's own `doClasses` would leave
     // the record a class short of the script, and the next serve re-declaring a live class.
     const doClasses = deployedDoClasses(manifest.doClasses, manifest.platformSweeper);
-    const serving = await host.admin.verticalServing(actor, slug);
+    const serving = await admin.verticalServing(actor, slug);
     const ref = serving?.ref ?? stableDeploymentRefFor(slug);
     // #1923: the serving upload is the other door a script name is minted through.
     const collision = platformScriptCollision(slug) ?? (PLATFORM_SCRIPT_NAMES.has(ref) ? ref : null);
@@ -9750,18 +9761,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // tenant's store. Platform-granted after the §4 sandbox check, like injectSecrets:
     // the builder never declared these and never named the ids.
     const storeBindings = [
-      ...tenantStoreBindings(await host.admin.listTenantStores(actor, { vertical: slug })),
+      ...tenantStoreBindings(await admin.listTenantStores(actor, { vertical: slug })),
       // #473: the per-tenant blob-store r2_bucket bindings, re-derived from the ledger on
       // every serving upload for the same reason — an upload replaces the script's binding
       // set, so a re-deploy must never drop a tenant's attachment bucket.
-      ...blobStoreBindings(await host.admin.listBlobStores(actor, { vertical: slug })),
+      ...blobStoreBindings(await admin.listBlobStores(actor, { vertical: slug })),
     ].map((b) =>
       b.type === 'd1'
         ? { type: 'd1', name: b.name, id: b.id }
         : { type: 'r2_bucket', name: b.name, bucket_name: b.bucketName },
     );
     // #2210: the store scripts first, so the vertical is never served before what it reaches.
-    await ensureScopeStoresOf(actor, 'serve', slug, manifest.scopeStores, async () => (await ownerOf(actor, slug)) ?? null);
+    await ensureScopeStoresOf(admin, actor, 'serve', slug, manifest.scopeStores, async () => (await ownerOf(admin, actor, slug)) ?? null);
     const wire = await deployVerticalScript(
       options.deployVertical,
       actor,
@@ -9937,12 +9948,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const none: RoleStateJudgement = { refused: [], failed: [], unread: 0 };
     if (!options.deployVertical || !options.fetchVerticalModules) return none; // no in-place serve moves anything
     const actor = c.get('actor');
-    const incoming = await host.admin.getVersion(actor, versionId, slug);
+    const incoming = await c.var.admin.getVersion(actor, versionId, slug);
     if (!incoming?.deploymentRef) return none;
-    const manifestJson = await host.admin.versionManifest(actor, slug, versionId);
+    const manifestJson = await c.var.admin.versionManifest(actor, slug, versionId);
     const registry = manifestJson ? storedDeployManifest.parse(JSON.parse(manifestJson)).registry : undefined;
     if (!registry || !releaseRolesAskScopes(registry)) return none;
-    const v = await verticalOf(actor, slug);
+    const v = await verticalOf(c.var.admin, actor, slug);
     const owner = v && v.ownerTenant !== null && !v.listed ? v.ownerTenant : null;
     const moved = (await c.var.admin.listScopes(actor, { vertical: slug, status: ['active', 'suspended'] }))
       .filter((s) => !s.forkedFrom && s.kind !== 'preview' && (!!s.servingRef || (s.tenantId === owner && s.status === 'active')))
@@ -9998,26 +10009,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * costs a read, a missing one a silent stall.
    */
   const promoteImpactOf = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     slug: string,
     channel: ChannelName,
     versionId: string,
   ): Promise<ExportBreak[]> => {
-    const gate = await host.admin.promotionImpact(actor, slug, channel, versionId);
+    const gate = await admin.promotionImpact(actor, slug, channel, versionId);
     if (channel !== 'prod') return gate;
-    const v = await verticalOf(actor, slug);
+    const v = await verticalOf(admin, actor, slug);
     if (!v || v.ownerTenant === null || v.listed) return gate;
-    const incoming = await host.admin.getVersion(actor, versionId, slug);
+    const incoming = await admin.getVersion(actor, versionId, slug);
     if (!incoming?.deploymentRef || incoming.admission !== 'admitted') return gate;
     const lagging = (
-      await host.admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
+      await admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug, status: ['active'] })
     ).filter((s) => !s.forkedFrom && s.kind !== 'preview' && !s.servingRef && s.verticalVersionId !== versionId);
     const seen = new Set(gate.map((b) => `${b.scopeId}|${b.type}`));
     const out = [...gate];
     for (const s of lagging) {
       // After the adopt it runs the promoted version, served in place: that pointer move, from
       // what it runs now, is the move to judge.
-      for (const b of await host.admin.bindingImpact(actor, s.tenantId, s.id, versionId)) {
+      for (const b of await admin.bindingImpact(actor, s.tenantId, s.id, versionId)) {
         const key = `${b.scopeId}|${b.type}`;
         if (!seen.has(key)) (seen.add(key), out.push(b));
       }
@@ -10036,10 +10047,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const versionId = z.string().min(1).parse(c.req.query('versionId'));
     const pin = confinedTenant(p);
     if (pin) {
-      const v = await verticalOf(p.actor, slug);
+      const v = await verticalOf(adminFor(p), p.actor, slug);
       if (!v || v.ownerTenant !== pin) return refuse(c, 'forbidden', 'forbidden');
     }
-    const breaks = await promoteImpactOf(c.get('actor'), slug, channel, versionId);
+    const breaks = await promoteImpactOf(c.var.admin, c.get('actor'), slug, channel, versionId);
     const { visible, otherTenants } = narrowToCaller(breaks, pin);
     return c.json({ affected: visible, ...(otherTenants ? { otherTenants } : {}) });
   });
@@ -10062,7 +10073,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const promotePin = confinedTenant(p);
     if (promotePin) {
       // A confined principal promotes only verticals its tenant owns.
-      const v = await verticalOf(p.actor, slug);
+      const v = await verticalOf(adminFor(p), p.actor, slug);
       if (!v || v.ownerTenant !== promotePin) return refuse(c, 'forbidden', 'forbidden');
       // …and a BUILDER promotes prod only while the vertical is PRIVATE (not listed).
       // A private vertical's blast radius is the owning tenant itself, and dev/staging
@@ -10095,7 +10106,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // counts only the gate's half of them.
     let counted: ExportBreak[] = [];
     const breaksOf = async () => {
-      const breaks = await promoteImpactOf(c.get('actor'), slug, channel, versionId);
+      const breaks = await promoteImpactOf(c.var.admin, c.get('actor'), slug, channel, versionId);
       counted = breaks;
       if (breaks.length === 0) return null;
       const { visible, otherTenants } = narrowToCaller(breaks, confinedTenant(p));
@@ -10278,9 +10289,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (c.req.method === 'POST') {
       const input = z.object({ slug: z.string().min(1), name: z.string().min(1), repository: z.unknown().optional() }).parse(await c.req.json());
       const team = tenants.find((t) => t.id === tenant)!;
-      const slug = await ownerOf(c.get('actor'), input.slug) === tenant || input.slug.startsWith(`${team.slug}/`) ? input.slug : `${team.slug}/${input.slug}`;
+      const slug = await ownerOf(c.var.admin, c.get('actor'), input.slug) === tenant || input.slug.startsWith(`${team.slug}/`) ? input.slug : `${team.slug}/${input.slug}`;
       verticalSlug.parse(slug);
-      const owner = await ownerOf(c.get('actor'), slug);
+      const owner = await ownerOf(c.var.admin, c.get('actor'), slug);
       if (owner !== undefined && owner !== tenant) return refuse(c, 'forbidden', 'forbidden');
       body = JSON.stringify({ ...input, slug });
     } else if (c.req.method !== 'GET') return refuseStatus(c, 405, 'method not allowed');
@@ -10329,9 +10340,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const tenant = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.id === pin || t.slug === pin);
         if (!tenant) return refuse(c, 'not_found', 'unknown workspace');
         sourceTenant = tenant.id;
-        sourceSlug = bare.startsWith(`${tenant.slug}/`) || await ownerOf(c.get('actor'), bare) === tenant.id ? bare : `${tenant.slug}/${bare}`;
+        sourceSlug = bare.startsWith(`${tenant.slug}/`) || await ownerOf(c.var.admin, c.get('actor'), bare) === tenant.id ? bare : `${tenant.slug}/${bare}`;
       }
-      const owner = await ownerOf(c.get('actor'), sourceSlug);
+      const owner = await ownerOf(c.var.admin, c.get('actor'), sourceSlug);
       if (sourceTenant && owner !== undefined && owner !== sourceTenant) return refuse(c, 'forbidden', 'forbidden');
       sourceTenant ??= owner ?? null;
       verticalSlug.parse(sourceSlug);
@@ -10414,7 +10425,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       slug = effectiveSlug(p, bare);
       // A builder pushes to a slug it owns, or claims an unregistered one (§3).
-      const existingOwner = await ownerOf(c.get('actor'), slug);
+      const existingOwner = await ownerOf(c.var.admin, c.get('actor'), slug);
       if (existingOwner !== undefined && existingOwner !== p.tenantId) {
         return refuse(c, 'forbidden', 'forbidden');
       }
@@ -10428,9 +10439,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // hand-registration predating prefixed claims) stays addressable as itself.
       // Otherwise the claim lands under the tenant prefix, exactly like a builder push —
       // same namespace, no claim race with other workspaces' bare names.
-      const bareOwner = await ownerOf(c.get('actor'), bare);
+      const bareOwner = await ownerOf(c.var.admin, c.get('actor'), bare);
       slug = bare.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? bare : `${workspace.slug}/${bare}`;
-      const existingOwner = slug === bare ? bareOwner : await ownerOf(c.get('actor'), slug);
+      const existingOwner = slug === bare ? bareOwner : await ownerOf(c.var.admin, c.get('actor'), slug);
       if (existingOwner !== undefined && existingOwner !== workspace.id) {
         return refuse(c, 'forbidden', `vertical '${slug}' is not owned by workspace '${pin}'`);
       }
@@ -10439,7 +10450,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // No pin: the raw slug is the identity and an existing owner is preserved
       // (null ⇒ platform-owned for a first-party vertical) — unchanged staff behavior.
       slug = bare;
-      ownerTenant = (await ownerOf(c.get('actor'), slug)) ?? null;
+      ownerTenant = (await ownerOf(c.var.admin, c.get('actor'), slug)) ?? null;
     }
 
     // #1923: a slug that would deploy under one of the platform's own script names is refused
@@ -10529,10 +10540,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const foreignKey = entitlementNamespaceRefusal(
       slug,
       manifest.entitlements ?? [],
-      manifest.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
+      manifest.provisions?.length ? await verticalSlugsOf(c.var.admin, c.get('actor')) : undefined,
     );
     if (foreignKey) return refuseStatus(c, 422, foreignKey);
-    const claimed = await slugClaimsSku(c.get('actor'), slug);
+    const claimed = await slugClaimsSku(c.var.admin, c.get('actor'), slug);
     if (claimed) return refuseStatus(c, 422, claimed);
 
     // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The
@@ -10610,7 +10621,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the publish run under the store push's shared hold (#2816): a rollout that starts before the
     // version records its stores is refused, and one after walks this vertical.
     const deployVertical = options.deployVertical;
-    const pushed = await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null, async (renew) => {
+    const pushed = await ensureScopeStoresOf(c.var.admin, c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null, async (renew) => {
       let wire: WireUpload;
       try {
         wire = await deployVerticalScript(deployVertical, c.get('actor'), slug, deploymentRef, {
@@ -11007,7 +11018,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         limit: c.req.query('limit'),
       });
     // #1877: scoped to the app's own scripts — the scan and trust boundary.
-    const services = await appServices(c.get('actor'), input.tenantId, input.scopeId, input.vertical);
+    const services = await appServices(c.var.admin, c.get('actor'), input.tenantId, input.scopeId, input.vertical);
     const { operation, principalKind, ...rest } = input;
     const { events, incomplete } = await options.observability.tenantLogs({
       ...rest,
@@ -11038,7 +11049,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }).parse({ tenantId, scopeId: c.req.query('scopeId'), versionId: c.req.query('versionId'),
       hours: c.req.query('hours'), since: c.req.query('since') || undefined, until: c.req.query('until') || undefined });
     try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }
-    const scopes = await host.admin.listScopes(c.get('actor'), { tenantId: input.tenantId });
+    const scopes = await c.var.admin.listScopes(c.get('actor'), { tenantId: input.tenantId });
     const installed = scopes.find((s) => s.id === input.scopeId);
     if (!installed?.vertical) return refuse(c, 'not_found', 'app not found');
     const services = scriptFamiliesOfScopes(scopes, { scopeId: input.scopeId });
@@ -11078,12 +11089,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * row per page view.
    */
   const appServices = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     tenantId: string,
     scopeId?: string,
     vertical?: string,
   ): Promise<string[]> =>
-    scriptFamiliesOfScopes(await host.admin.listScopes(actor, { tenantId: tenantIdSchema.parse(tenantId) }), { scopeId, vertical });
+    scriptFamiliesOfScopes(await admin.listScopes(actor, { tenantId: tenantIdSchema.parse(tenantId) }), { scopeId, vertical });
 
   app.get('/observability/tenant-request-volume', async (c) => {
     if (!options.observability?.tenantRequestVolume) {
@@ -11094,7 +11105,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A bucket COUNT: zooming in keeps it and narrows the window, so the bucket shrinks.
     // 90 is the design's histogram; the bounds keep a chart drawable and a query cheap.
     const buckets = z.coerce.number().int().min(10).max(240).default(90).parse(c.req.query('buckets'));
-    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    const services = await appServices(c.var.admin, c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
     return c.json(await options.observability.tenantRequestVolume({ ...scope, services, buckets }));
   });
 
@@ -11108,7 +11119,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // that shows three asks for three.
     const asked = (c.req.queries('facet') ?? []).filter((k) => k.length > 0);
     const keys = asked.length === 0 ? undefined : z.array(z.enum(REQUEST_FACET_KEYS)).parse([...new Set(asked)]);
-    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    const services = await appServices(c.var.admin, c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
     return c.json(await options.observability.tenantRequestFacets({ ...scope, services, ...(keys ? { keys } : {}) }));
   });
 
@@ -11139,7 +11150,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         buckets: narrow.buckets,
         ...(narrow.level.length ? { level: narrow.level } : {}),
         ...(narrow.operation.length ? { operation: narrow.operation } : {}),
-        services: await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical),
+        services: await appServices(c.var.admin, c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical),
       }),
     );
   });
@@ -11152,7 +11163,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const scope = parseTenantLineQuery(requestTenantOf(c), requestQueryOf(c));
     const buckets = z.coerce.number().int().min(10).max(240).default(90).parse(c.req.query('buckets'));
-    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    const services = await appServices(c.var.admin, c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
     return c.json(await options.observability.tenantLogVolume({ ...scope, services, buckets }));
   });
 
@@ -11161,7 +11172,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 501, 'line aggregation is not configured on this control plane');
     }
     const scope = parseTenantLineQuery(requestTenantOf(c), requestQueryOf(c));
-    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    const services = await appServices(c.var.admin, c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
     return c.json(await options.observability.tenantLogFacets({ ...scope, services }));
   });
 
@@ -11171,7 +11182,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
     const limit = z.coerce.number().int().min(1).max(200).default(50).parse(c.req.query('limit'));
-    const services = await appServices(c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
+    const services = await appServices(c.var.admin, c.get('actor'), scope.tenantId, scope.scopeId, scope.vertical);
     return c.json(await options.observability.tenantRequests({ ...scope, services, limit }));
   });
 
@@ -11665,7 +11676,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const parsed = parseHostname(baseHostname);
     if (!parsed) throw new ControlPlaneError(400, `'${baseHostname}' is not a hostname a preview can be minted beside`);
     const hostname = withLabel(parsed, `${parsed.label}${RESERVED_LABEL_SEPARATOR}${tag}`);
-    const existing = (await host.admin.listHostnames(actor, { scopeId: previewId })).find(
+    const existing = (await admin.listHostnames(actor, { scopeId: previewId })).find(
       (h) => h.hostname === hostname,
     );
     if (!existing) {
@@ -11678,7 +11689,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         canonical: false,
       });
     }
-    const bound = (await host.admin.listHostnames(actor, { scopeId: previewId })).find(
+    const bound = (await admin.listHostnames(actor, { scopeId: previewId })).find(
       (h) => h.hostname === hostname,
     );
     if (bound) await runIssuance(admin, actor, bound); // platform mint rides the wildcard cert → active
@@ -11690,14 +11701,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *  so it is built from the platform tenant-app convention `<vertical>-<tenant>.<base>` —
    *  the same scheme provisioning mints (`callout-sesamy.global.substrat.run`). */
   const previewBaseHostname = async (
-    actor: PlatformActorId,
+    admin: HostAdmin, actor: PlatformActorId,
     source: Scope | null,
     tenantId: TenantId,
     slug: string,
     surface: string,
   ): Promise<string> => {
     if (source) {
-      const own = await host.admin.listHostnames(actor, { scopeId: source.id });
+      const own = await admin.listHostnames(actor, { scopeId: source.id });
       const src =
         own.find((h) => h.canonical && h.surface === surface) ??
         own.find((h) => h.canonical) ??
@@ -11726,7 +11737,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // bare apex and stranded clean-room previews on a hostname that never resolves.
     const baseDomain = [...platformBaseDomains].sort((a, b) => a.length - b.length)[0]!;
     const jurisdiction = 'global';
-    const tenant = await host.admin.getTenant(actor, tenantId);
+    const tenant = await admin.getTenant(actor, tenantId);
     const handle = tenant?.slug ?? tenantId;
     return `${slug.split('/').at(-1)}-${handle}.${jurisdiction}.${baseDomain}`;
   };
@@ -11992,7 +12003,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // The `--<tag>` URL's base — the source's canonical hostname (fork) or the tenant-app
     // convention (clean-room). Computed once so reuse and fresh mint the same URL.
-    const baseHostname = await previewBaseHostname(actor, source, tenantId, slug, surface);
+    const baseHostname = await previewBaseHostname(c.var.admin, actor, source, tenantId, slug, surface);
 
     // The founding #559 case lands its durable row HERE, not in onError: the previews
     // route answers a ControlPlaneError directly (its own catch, never the app-level
@@ -12546,7 +12557,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<{ tenantId: TenantId; slug: string } | { refused: ErrorCode; error: string }> => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug')!);
-    const v = await verticalOf(c.get('actor'), slug);
+    const v = await verticalOf(c.var.admin, c.get('actor'), slug);
     if (!v) return { refused: 'not_found', error: `unknown vertical '${slug}'` };
     if (confinedTenant(p) !== null && v.ownerTenant !== confinedTenant(p)) {
       return { refused: 'forbidden', error: 'forbidden' };
@@ -13344,7 +13355,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // The pinned-staff branch of the deploy's own slug derivation (`POST /verticals/:slug/deploy`).
       const workspace = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.slug === pin || t.id === pin);
       if (!workspace) return refuse(c, 'not_found', `unknown workspace '${pin}'`);
-      const bareOwner = await ownerOf(c.get('actor'), vertical);
+      const bareOwner = await ownerOf(c.var.admin, c.get('actor'), vertical);
       id = vertical.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? vertical : `${workspace.slug}/${vertical}`;
     }
     const drivers = (options.storeDrivers ?? STORE_DRIVERS).map((d) =>
