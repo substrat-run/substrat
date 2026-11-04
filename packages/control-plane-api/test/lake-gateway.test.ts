@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { lakeEventsInput, platformActorId, scopeId, tenantId, type LakeEventsPage } from '@substrat-run/contracts';
+import { lakeEventsInput, platformActorId, principalId, scopeId, tenantId, type LakeEventsPage } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   firstBuilderAuth,
@@ -414,9 +414,11 @@ describe('GET /tenants/:tenantId/lake/events (#1334)', () => {
   describe("a team's own credential", () => {
     // The seed's events sit on 2026-10-01; a 31-day window around them.
     const window = `since=${encodeURIComponent('2026-09-20T00:00:00.000Z')}&until=${encodeURIComponent('2026-10-21T00:00:00.000Z')}`;
+    // Minted for a person, as the dashboard mints it: the K-24 row names them (#2860).
+    const person = principalId.parse(ulid());
     let asTenant: Record<string, string>;
     beforeAll(async () => {
-      asTenant = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(TENANT_SECRET, { tenantId: A }) };
+      asTenant = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(TENANT_SECRET, { tenantId: A, principal: person }) };
     });
 
     it("reads its own tenant's events in a window, and leaves one K-24 row", async () => {
@@ -426,7 +428,7 @@ describe('GET /tenants/:tenantId/lake/events (#1334)', () => {
       expect(idsOf((await res.json()) as LakeEventsPage)).toEqual([7, 6, 5, 4, 3, 2, 1, 0].map((i) => ids[i]));
       const rows = (await lakeRows()).filter((r) => r.tenantId === A);
       expect(rows.length).toBe(before + 1);
-      expect(rows.at(-1)).toMatchObject({ actor: serviceActor, resultCount: 8 });
+      expect(rows.at(-1)).toMatchObject({ actor: serviceActor, resultCount: 8, onBehalfOf: { principal: person, tenantId: A } });
     });
 
     it("is refused another tenant's path before the engine is asked", async () => {

@@ -1879,6 +1879,7 @@ interface AccessLogRow {
   scope_id: string | null;
   params: string | null;
   result_count: number;
+  on_behalf_of: string | null;
   drained_at: string | null;
   at: string;
 }
@@ -3012,6 +3013,9 @@ export class SqliteScopeHost implements ScopeHost {
         -- "enumerated 4,000 tenants". A log that cannot tell them apart is a log
         -- nobody reads.
         result_count INTEGER NOT NULL,
+        -- #2860: the person a delegated read was made for (JSON OnBehalfOf), NULL when no
+        -- customer session carried it.
+        on_behalf_of TEXT,
         drained_at   TEXT,
         at           TEXT NOT NULL
       );
@@ -8345,8 +8349,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.directory
       .prepare(
         `INSERT INTO _substrat_access_log
-           (id, actor, method, tenant_id, scope_id, params, result_count, drained_at, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+           (id, actor, method, tenant_id, scope_id, params, result_count, on_behalf_of, drained_at, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         ulid(),
@@ -8356,6 +8360,8 @@ export class SqliteScopeHost implements ScopeHost {
         target.scopeId ?? null,
         summary,
         resultCount,
+        // #2860: set only on an attributed VIEW, as on the admin log's rows.
+        this.onBehalfOf === null ? null : JSON.stringify(this.onBehalfOf),
         new Date().toISOString(),
       );
   }
@@ -13478,6 +13484,7 @@ export class SqliteScopeHost implements ScopeHost {
             scopeId: r.scope_id,
             params: r.params,
             resultCount: r.result_count,
+            onBehalfOf: r.on_behalf_of ? JSON.parse(r.on_behalf_of) : null,
             drainedAt: r.drained_at,
             at: r.at,
           }),
@@ -14343,6 +14350,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
     // #977: after the rebuild above, like `caused_by`.
     this.ensureColumn(this.directory, '_substrat_admin_log', 'on_behalf_of', 'on_behalf_of TEXT');
+    // #2860: the same person, on the access log's rows.
+    this.ensureColumn(this.directory, '_substrat_access_log', 'on_behalf_of', 'on_behalf_of TEXT');
     // #1172: which version this scope's provision hook last ran against. Null on every
     // existing row, which reads as "unknown, reconcile once" rather than "up to date".
     this.ensureColumn(this.directory, 'scopes', 'provisioned_version_id', 'provisioned_version_id TEXT');

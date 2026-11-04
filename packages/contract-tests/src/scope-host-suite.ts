@@ -1900,6 +1900,27 @@ export function scopeHostContractSuite(
       expect(provisioned?.onBehalfOf).toEqual({ principal: person, tenantId: t });
     });
 
+    it('an attributed host names the person on its access rows too, co-located and delegated (#2860)', async () => {
+      const t = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: 'access-attribution', name: 'Access attribution' });
+      const person = principalId.parse(ulid());
+      const sc = scopeId.parse(ulid());
+      const delegated = { method: 'readScopeTable', tenantId: t, scopeId: sc, params: null, resultCount: 0 } as const;
+      const viewed = host.attributed!({ principal: person, tenantId: t }).admin;
+      await viewed.getTenant(staff, t);
+      await viewed.recordDelegatedRead(staff, delegated);
+      await host.admin.getTenant(staff, t);
+      await host.admin.recordDelegatedRead(staff, delegated);
+      const rows = (await host.admin.accessLog(staff, { tenantId: t }))
+        .filter((r) => r.method === 'getTenant' || r.method === 'readScopeTable');
+      expect(rows.map((r) => [r.method, r.onBehalfOf ?? null])).toEqual([
+        ['getTenant', { principal: person, tenantId: t }],
+        ['readScopeTable', { principal: person, tenantId: t }],
+        ['getTenant', null],
+        ['readScopeTable', null],
+      ]);
+    });
+
     it('isolates scope storage: a write in one scope is invisible in another', async () => {
       const stub1 = await host.getScope(alice, t1, s1);
       const stub2 = await host.getScope(alice, t2, s2);
