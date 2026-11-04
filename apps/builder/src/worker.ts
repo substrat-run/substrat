@@ -36,7 +36,7 @@ import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { studioUsage } from './metering.js';
 import { listTurns, readTurn } from './record.js';
-import { listTurnsQuery } from './turns.js';
+import { listTurnsQuery, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
 import { refuse, unhandledResponse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
@@ -160,7 +160,7 @@ app.all('/internal/*', async (c) => {
 	if (c.req.method === 'GET' && path === '/internal/turns') {
 		// Judged here so a malformed filter is the caller's 400, not the scope's 500.
 		const query = listTurnsQuery.safeParse(turnQuery(new URL(c.req.url).searchParams));
-		if (!query.success) return refuse(400, `invalid turn query: ${query.error.issues.map((i) => i.path.join('.') || i.message).join(', ')}`);
+		if (!query.success) return refuse(400, turnQueryRefusal(query.error));
 		return c.json(await listTurns(c.env, query.data));
 	}
 	const turnPath = /^\/internal\/turns\/([^/]+)$/.exec(path);
