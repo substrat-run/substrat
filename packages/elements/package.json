@@ -1,0 +1,26 @@
+{
+  "name": "@substrat-run/elements",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Substrat's web components: Lit elements on Web Awesome's free core, themed through its --wa-* tokens, with the model-bound pieces (an entity table first) a vertical drops in",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./controls": "./src/controls.ts",
+    "./jsx": "./src/jsx.ts",
+    "./themes/*": "./src/themes/*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@awesome.me/webawesome": "3.14.0",
+    "lit": "^3.3.0"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

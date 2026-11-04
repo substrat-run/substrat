@@ -1,0 +1,7 @@
+/*
+ * Web Awesome's default theme: every --wa-* token the elements read, in light and dark
+ * (`wa-dark` on <html>). A Substrat theme (ledger.css, atelier.css) is a class layered
+ * over this, so import this first and a theme after it. Only the theme — not Web
+ * Awesome's native-element styles — so an app's own <button> and <input> keep its look.
+ */
+@import '@awesome.me/webawesome/dist/styles/themes/default.css';

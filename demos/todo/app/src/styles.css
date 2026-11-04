@@ -1,18 +1,23 @@
+/* Read from the theme's --wa-* tokens (@substrat-run/elements), so the whole app follows
+   the theme and dark mode, not only the table. The fallbacks are the old fixed palette. */
 :root {
-  --bg: #fbfbfa; --panel: #fff; --ink: #1d1d1b; --muted: #6b6b66;
-  --line: #e6e4df; --accent: #2f6f4e; --warn: #a4462f;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --bg: var(--wa-color-surface-lowered, #fbfbfa); --panel: var(--wa-color-surface-default, #fff);
+  --ink: var(--wa-color-text-normal, #1d1d1b); --muted: var(--wa-color-text-quiet, #6b6b66);
+  --line: var(--wa-color-surface-border, #e6e4df); --accent: var(--wa-color-brand-fill-loud, #2f6f4e);
+  --warn: var(--wa-color-danger-on-quiet, #a4462f);
+  font-family: var(--wa-font-family-body, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); }
 header {
-  display: flex; align-items: center; gap: 1rem; padding: .75rem 1.25rem;
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .75rem 1.25rem;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 header h1 { font-size: 1rem; margin: 0; font-weight: 600; letter-spacing: -.01em; }
 header .who { margin-left: auto; display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
+h1, h2, h3 { font-family: var(--wa-font-family-heading); }
 main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
-h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; font-family: var(--wa-font-family-heading, inherit); }
 .sub { color: var(--muted); font-size: .85rem; margin: 0 0 1.25rem; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
 .card + .card { margin-top: .5rem; }
@@ -20,30 +25,11 @@ h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
 .row + .row { border-top: 1px solid var(--line); }
 .row a { color: inherit; text-decoration: none; font-weight: 500; }
 .row a:hover { text-decoration: underline; }
-.tag {
-  font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
-  padding: .12rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
-}
-.tag.shared { color: var(--accent); border-color: #cfe3d7; background: #f2f8f4; }
 .spacer { margin-left: auto; }
 form.inline { display: flex; gap: .5rem; margin-top: .9rem; }
-input[type=text], input[type=email] {
-  flex: 1; padding: .55rem .7rem; border: 1px solid var(--line);
-  border-radius: 8px; background: var(--panel); font: inherit;
-}
-button {
-  padding: .55rem .85rem; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--panel); font: inherit; cursor: pointer;
-}
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.link { border: 0; background: none; color: var(--warn); padding: .2rem .3rem; }
-button:disabled { opacity: .5; cursor: default; }
+form.inline wa-input { flex: 1; }
+.error { display: block; margin: 0 0 1rem; }
 .done { text-decoration: line-through; color: var(--muted); }
-.error {
-  margin: 0 0 1rem; padding: .7rem .9rem; border-radius: 8px;
-  background: #fdf2ef; border: 1px solid #f0d5cd; color: var(--warn); font-size: .88rem;
-}
-.error strong { font-weight: 600; }
 .empty { color: var(--muted); font-size: .9rem; padding: 1.1rem .9rem; }
 .back { font-size: .85rem; color: var(--muted); text-decoration: none; }
 .back:hover { text-decoration: underline; }
@@ -54,3 +40,38 @@ section.share h3 { font-size: .95rem; margin: 0 0 .6rem; }
 nav.views { display: flex; gap: .9rem; margin-bottom: .6rem; font-size: .9rem; }
 nav.views a { color: var(--muted); text-decoration: none; padding-bottom: .15rem; }
 nav.views a[aria-current='page'] { color: inherit; border-bottom: 2px solid var(--accent); font-weight: 600; }
+
+/* Settings (src/settings.tsx): each theme a card with a live preview in that theme. */
+section.settings { display: grid; gap: 2rem; }
+section.settings wa-radio-group::part(form-control-input) {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: .75rem;
+}
+section.settings wa-radio-group[orientation='horizontal']::part(form-control-input) { display: flex; gap: 0; }
+wa-radio.theme-card {
+  align-items: flex-start; padding: .75rem; border: 1px solid var(--line); border-radius: var(--wa-border-radius-l);
+  background: var(--panel); transition: border-color var(--wa-transition-fast), box-shadow var(--wa-transition-fast);
+}
+wa-radio.theme-card:hover { border-color: var(--wa-color-neutral-border-loud); }
+wa-radio.theme-card:state(checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+wa-radio.theme-card::part(label) { display: grid; gap: .2rem; width: 100%; }
+.theme-name { font-weight: 600; margin-top: .5rem; }
+.theme-blurb { color: var(--muted); font-size: .8rem; }
+
+.preview {
+  display: grid; gap: calc(var(--wa-space-2xs) * 1.5); padding: var(--wa-space-xs);
+  background: var(--wa-color-surface-lowered); color: var(--wa-color-text-normal);
+  border-radius: var(--wa-panel-border-radius); border: 1px solid var(--wa-color-surface-border);
+}
+.preview-bar, .preview-row {
+  display: flex; align-items: center; justify-content: space-between; gap: .4rem;
+  padding: calc(var(--wa-space-2xs) * 1.5) var(--wa-space-xs);
+  background: var(--wa-color-surface-default); border: 1px solid var(--wa-color-surface-border);
+  border-radius: var(--wa-border-radius-s);
+}
+.preview-title { font-family: var(--wa-font-family-heading); font-weight: 700; font-size: 1rem; line-height: 1; }
+.preview-button { width: 2.2rem; height: .9rem; border-radius: var(--wa-border-radius-s); background: var(--wa-color-brand-fill-loud); }
+.preview-line { height: .4rem; flex: 1; border-radius: 99px; background: var(--wa-color-text-quiet); opacity: .45; }
+.preview-line.short { flex: .6; }
+.preview-chip { width: 1.6rem; height: .7rem; border-radius: 99px; background: var(--wa-color-brand-fill-normal); }
+.preview-chip.quiet { background: var(--wa-color-neutral-fill-normal); }
+h2 wa-tag { margin-left: .5rem; vertical-align: middle; }

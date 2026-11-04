@@ -1,0 +1,59 @@
+/*
+ * Atelier — the warm one. Paper-toned neutrals, a serif for headings, roomier rows and a
+ * terracotta accent. For a vertical whose users are not at a desk all day.
+ *
+ * A Substrat theme is values for Web Awesome's own tokens and nothing else: no selectors
+ * into components, no raw CSS. Put the class on <html> beside Web Awesome's default
+ * theme (and `wa-dark` for dark mode). The layer is Web Awesome's last, so these win over
+ * its theme without `!important` and still lose to an app's unlayered styles.
+ */
+@layer wa-theme-overrides {
+  .sub-theme-atelier {
+    --wa-color-brand-95: oklch(96.8% 0.026 38);
+    --wa-color-brand-90: oklch(93.0% 0.037 38);
+    --wa-color-brand-80: oklch(86.0% 0.059 38);
+    --wa-color-brand-70: oklch(77.5% 0.086 38);
+    --wa-color-brand-60: oklch(66.5% 0.112 38);
+    --wa-color-brand-50: oklch(53.0% 0.140 38);
+    --wa-color-brand-40: oklch(45.0% 0.109 38);
+    --wa-color-brand-30: oklch(38.0% 0.081 38);
+    --wa-color-brand-20: oklch(32.0% 0.053 38);
+    --wa-color-brand-10: oklch(23.5% 0.026 38);
+    --wa-color-brand-05: oklch(17.0% 0.017 38);
+    --wa-color-brand: var(--wa-color-brand-50);
+    --wa-color-brand-on: white;
+    --wa-color-neutral-95: oklch(96.8% 0.006 70);
+    --wa-color-neutral-90: oklch(93.0% 0.006 70);
+    --wa-color-neutral-80: oklch(86.0% 0.007 70);
+    --wa-color-neutral-70: oklch(77.5% 0.010 70);
+    --wa-color-neutral-60: oklch(66.5% 0.013 70);
+    --wa-color-neutral-50: oklch(53.0% 0.016 70);
+    --wa-color-neutral-40: oklch(45.0% 0.012 70);
+    --wa-color-neutral-30: oklch(38.0% 0.009 70);
+    --wa-color-neutral-20: oklch(32.0% 0.006 70);
+    --wa-color-neutral-10: oklch(23.5% 0.006 70);
+    --wa-color-neutral-05: oklch(17.0% 0.006 70);
+    --wa-color-neutral: var(--wa-color-neutral-50);
+    --wa-font-family-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --wa-font-family-heading: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, ui-serif, serif;
+    --wa-font-size-scale: 1.02;
+    --wa-space-scale: 1.12;
+    --wa-border-radius-scale: 1.6;
+    --wa-shadow-blur-scale: 0.6;
+    --wa-panel-border-radius: var(--wa-border-radius-l);
+  }
+
+  .sub-theme-atelier:not(.wa-dark) {
+    --wa-color-surface-default: oklch(99.2% 0.006 80);
+    --wa-color-surface-raised: oklch(99.6% 0.004 80);
+    --wa-color-surface-lowered: oklch(96.4% 0.012 75);
+    --wa-color-surface-border: oklch(90.5% 0.016 70);
+  }
+
+  .sub-theme-atelier.wa-dark {
+    --wa-color-surface-default: oklch(20% 0.012 60);
+    --wa-color-surface-raised: oklch(23% 0.013 60);
+    --wa-color-surface-lowered: oklch(17% 0.011 60);
+    --wa-color-surface-border: oklch(31% 0.014 60);
+  }
+}

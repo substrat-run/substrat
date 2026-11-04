@@ -372,6 +372,7 @@ export type {
   StoredScopeBackup,
   DirectoryBackup,
   DirectoryBackupStore,
+  DirectoryBackupWriter,
 } from './backups.js';
 export {
   createR2AccessLogSink,
