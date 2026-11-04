@@ -111,9 +111,6 @@ function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unkno
     const held = tables.get(target.objectName) ?? [{ name: 'nodes', rows: [] }];
     let answer: unknown;
     switch (operation) {
-      case 'substrat.selfcheck':
-        answer = {};
-        break;
       case 'substrat.size':
         answer = { bytes: 0 };
         break;
@@ -164,7 +161,6 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     const store = canaryStore();
     await canaryStoreRelease({ call: store.call, scriptName: 'substrat-store-graph--canary' });
     expect(store.calls.map((c) => c.operation)).toEqual([
-      'substrat.selfcheck',
       'substrat.size',
       'substrat.export-page',
       'substrat.stage-page',
@@ -273,7 +269,6 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       throw new Error('boom');
     };
     const cases: [Partial<Record<ReservedStoreOperation, (answer: unknown) => unknown>>, RegExp][] = [
-      [{ 'substrat.selfcheck': boom }, /selfcheck failed/],
       [{ 'substrat.size': boom }, /size failed/],
       [{ 'substrat.export-page': () => rowsPage }, /exported rows/],
       [{ 'substrat.export-page': boom }, /export-page failed/],

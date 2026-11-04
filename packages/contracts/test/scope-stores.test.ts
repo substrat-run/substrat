@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   HISTORIC_ADMIN_ACTIONS,
   RESERVED_STORE_OPERATIONS,
-  SCOPE_DUMP_PAGE_MAX_BYTES,
+  STORE_DUMP_PAGE_MAX_BYTES,
   SCOPE_STORE_DUMP_KIND_RENAMED,
   adminAction,
   scopeDump,
@@ -32,7 +32,6 @@ import {
   storeDiscardStageResult,
   storeDriverDumpPageBytes,
   storeExportPageResult,
-  storeSelfcheckResult,
   storeStagePageResult,
   storeSizeResult,
   storeWipeResult,
@@ -355,7 +354,6 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
 describe('a store driver declares the page of its dump it takes (D-69)', () => {
   it('names the reserved operations a store moves in pages, and none of the whole-dump pair', () => {
     expect([...RESERVED_STORE_OPERATIONS]).toEqual([
-      'substrat.selfcheck',
       'substrat.export-page',
       'substrat.stage-page',
       'substrat.commit-stage',
@@ -366,16 +364,15 @@ describe('a store driver declares the page of its dump it takes (D-69)', () => {
     ]);
   });
 
-  it('asks the platform for the page the registration declares, within what a scope page may be', () => {
+  it('asks the platform for the page the registration declares, and the store page cap for a driver it does not hold', () => {
     expect(storeDriverDumpPageBytes('graph')).toBe(900_000);
-    // A driver the registry does not hold gets the scope's own page size, never more.
-    expect(storeDriverDumpPageBytes('unregistered')).toBe(SCOPE_DUMP_PAGE_MAX_BYTES);
+    expect(storeDriverDumpPageBytes('unregistered')).toBe(STORE_DUMP_PAGE_MAX_BYTES);
   });
 
-  it('refuses a registration with no page size, or one that is not a positive integer', () => {
+  it('refuses a registration with no page size, one over the store page cap, or one that is not a positive integer', () => {
     const registration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
     expect(storeDriverRegistration.safeParse(registration).success).toBe(false);
-    for (const bad of [0, -1, 1.5, '900000']) {
+    for (const bad of [0, -1, 1.5, '900000', STORE_DUMP_PAGE_MAX_BYTES + 1]) {
       expect(storeDriverRegistration.safeParse({ ...registration, dumpPageMaxBytes: bad }).success, String(bad)).toBe(false);
     }
     expect(storeDriverRegistration.safeParse({ ...registration, dumpPageMaxBytes: 1 }).success).toBe(true);
@@ -390,9 +387,7 @@ describe('reserved store results are additive (#2239)', () => {
     expect(storeCommitStageResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
     expect(storeExportPageResult.safeParse({ tables: [], next: null, revision: '1', at: 'now' }).success).toBe(true);
     expect(storeStagePageResult.safeParse({ staged: true, took: 3 }).success).toBe(true);
-    expect(storeDiscardStageResult.safeParse({ discarded: false, took: 3 }).success).toBe(true);
-    expect(storeSelfcheckResult.safeParse({ ok: true }).success).toBe(true);
-  });
+    expect(storeDiscardStageResult.safeParse({ discarded: false, took: 3 }).success).toBe(true);  });
 });
 
 // K-53's rename, on what a store's old spelling may already have reached: a dump and the admin log.

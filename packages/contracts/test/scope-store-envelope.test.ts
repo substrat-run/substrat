@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { SCOPE_DUMP_PAGE_MAX_BYTES } from '../src/introspection.js';
 import {
+  STORE_DUMP_PAGE_MAX_BYTES,
   base64UrlToBytes,
   bytesToBase64Url,
   canonicalScopeStoreEnvelope,
@@ -387,8 +387,9 @@ describe('scope store envelope (#2287)', () => {
 });
 
 describe('the limit on a store call body (#2811)', () => {
-  it('holds a whole dump page with room for the call around it', () => {
-    expect(STORE_CALL_MAX_BYTES - SCOPE_DUMP_PAGE_MAX_BYTES).toBeGreaterThanOrEqual(512 * 1024);
+  it('is the 4 MiB #2832 shipped, and holds the largest store page with room for the call around it', () => {
+    expect(STORE_CALL_MAX_BYTES).toBe(4 * 1024 * 1024);
+    expect(STORE_CALL_MAX_BYTES - STORE_DUMP_PAGE_MAX_BYTES).toBeGreaterThanOrEqual(512 * 1024);
   });
 
   it('counts UTF-8 bytes, the unit the digest is over', () => {

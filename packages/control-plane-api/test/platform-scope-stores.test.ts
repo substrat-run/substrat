@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { SCOPE_DUMP_PAGE_MAX_BYTES, STORE_CALL_MAX_BYTES, scopeStoreBodyBytes, scopeStoreScriptName } from '@substrat-run/contracts';
+import { STORE_CALL_MAX_BYTES, STORE_DUMP_PAGE_MAX_BYTES, scopeStoreBodyBytes, scopeStoreScriptName } from '@substrat-run/contracts';
 import { verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
 import { callPlatformScopeStore, callPlatformScopeStoreAt, platformScopeStoresFor } from '../src/platform-scope-stores.js';
 
@@ -115,10 +115,10 @@ describe('platformScopeStoresFor moves a store in pages the driver declared (D-6
     expect(staged.flatMap((c) => c.input.tables.flatMap((t: { rows: unknown[] }) => t.rows))).toHaveLength(4);
   });
 
-  it('asks a driver the registry does not hold for no more than a scope page', async () => {
+  it('asks a driver the registry does not hold for no more than the store page cap', async () => {
     const { calls, stores } = recording(() => ({ tables: [table([])], next: null, revision: '1' }));
     await stores.exportStores({ ...target, stores: [{ binding: 'X', driver: 'unregistered' }] });
-    expect(calls[0]!.input.maxBytes).toBe(SCOPE_DUMP_PAGE_MAX_BYTES);
+    expect(calls[0]!.input.maxBytes).toBe(STORE_DUMP_PAGE_MAX_BYTES);
   });
 });
 
@@ -168,18 +168,12 @@ describe('the platform refuses a call body over the limit before it signs (#2811
     expect(verdict.ok).toBe(true);
   });
 
-  it('counts bytes, not characters: a body of 4 000 000 two-byte characters is over', async () => {
+  it('counts bytes, not characters: a body of 3 000 000 two-byte characters is over', async () => {
     const sent: Request[] = [];
     const pad = 'é'.repeat(3_000_000);
     await expect(
       callPlatformScopeStoreAt(dispatchOf(sent), target, 'substrat.stage-page', { stageId: 's', seq: 0, tables: [{ name: 't', ddl: 'd', columns: ['a'], rows: [[pad]] }] }),
     ).rejects.toMatchObject({ status: 413 });
     expect(sent).toHaveLength(0);
-  });
-
-  it("reads a store entry's own 413 as a 413, not a 5xx", async () => {
-    const entry = { code: 'payload_too_large', status: 413, body: { limit: STORE_CALL_MAX_BYTES } };
-    const dispatch = { platformKey: vector.privateKeyPkcs8, fetch: async () => Response.json({ error: entry }, { status: 413 }) };
-    await expect(callPlatformScopeStoreAt(dispatch, target, 'substrat.size')).rejects.toMatchObject({ status: 413 });
   });
 });

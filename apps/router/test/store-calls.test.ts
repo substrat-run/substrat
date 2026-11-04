@@ -189,10 +189,4 @@ describe('handleStoreCall and the limit on a store call body (#2811)', () => {
     expect(await handleStoreCall(recording(sent), caller, requestOf(STORE_CALL_MAX_BYTES))).toMatchObject({ ok: true, status: 200 });
     expect(scopeStoreBodyBytes(await sent[0]!.text())).toBe(STORE_CALL_MAX_BYTES);
   });
-
-  it("passes a store entry's own 413 on as a 413 in its envelope", async () => {
-    const refusal = { code: 'payload_too_large', status: 413, body: { limit: STORE_CALL_MAX_BYTES } };
-    const outcome = await handleStoreCall(recording([], () => Response.json({ error: refusal }, { status: 413 })), caller, requestOf(1000));
-    expect(outcome).toEqual({ ok: true, status: 413, body: { error: refusal } });
-  });
 });

@@ -17,7 +17,6 @@ import {
   storeOperationName,
   storeRequest,
   storeResponse,
-  storeSelfcheckResult,
   storeSizeResult,
   storeStagePageInput,
   storeStagePageResult,
@@ -273,7 +272,6 @@ export async function callScopeStore(
 }
 
 const RESERVED_RESULT = {
-  'substrat.selfcheck': storeSelfcheckResult,
   'substrat.export-page': storeExportPageResult,
   'substrat.stage-page': storeStagePageResult,
   'substrat.commit-stage': storeCommitStageResult,
@@ -341,8 +339,8 @@ export type ReservedStoreCall = <O extends ReservedStoreOperation>(
   input?: unknown,
 ) => Promise<ReservedStoreResult<O>>;
 
-/** A driver that broke the contract: a 502 `bad_envelope`, as an answer of the wrong shape is. */
-const driverFault = (message: string): StoreError => new StoreError({ code: 'bad_envelope', status: 502, body: { message } });
+/** A driver that broke the contract: a 502 `badEnvelope`, as an answer of the wrong shape is. */
+const driverFault = (message: string): StoreError => new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502, body: { message } });
 
 /** How many times a store's dump is read from the start when writes keep landing along a chain. */
 const STORE_READ_ATTEMPTS = 3;

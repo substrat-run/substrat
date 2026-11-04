@@ -47,7 +47,6 @@ export const SCOPE_STORE_SIGNATURE_HEADER = 'x-substrat-store-signature';
  * `substrat.erase` included, before a hosted deploy may store tenant data.
  */
 export const RESERVED_STORE_OPERATIONS = [
-  'substrat.selfcheck',
   'substrat.export-page',
   'substrat.stage-page',
   'substrat.commit-stage',
@@ -69,18 +68,19 @@ export const STORE_STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * 30 * 60_000;
 /**
  * The most bytes one store call's body may have (#2811): the number a caller checks before it signs,
  * and both store entries check before they verify. The envelope's digest is over the exact body, so
- * an entry must hold the whole of it to verify it, and a Python entry fails with `exceededMemory` on
- * a body of about 6 MB while one of 5 MB went through. A body is counted in UTF-8 bytes, as the
- * digest is.
- *
- * It is the largest size measured to pass, 5 000 000, not 5 MiB: it holds the 4 MiB of a dump page
- * (`SCOPE_DUMP_PAGE_MAX_BYTES`, 4 194 304) with room for the call around it. A driver measures the
- * page it declares against this, not against its own request limit alone (D-69).
+ * an entry must hold the whole of it to verify it, and a Python entry that copied the body into
+ * Python failed with `exceededMemory` at about 6 MB. A body is counted in UTF-8 bytes, as the digest is.
+ * 4 MiB, the limit #2832 shipped: a page needs far less, and a larger limit can come later where a
+ * smaller one could not.
  */
-export const STORE_CALL_MAX_BYTES = 5_000_000;
+export const STORE_CALL_MAX_BYTES = 4 * 1024 * 1024;
 
-/** The `code` of the store envelope's error a store entry answers a body over {@link STORE_CALL_MAX_BYTES} with, status 413. */
-export const STORE_CALL_TOO_LARGE_CODE = 'payload_too_large';
+/**
+ * The largest page of a store's dump the platform asks any driver for (D-69): 3 MiB, so a page and
+ * the call around it stay under {@link STORE_CALL_MAX_BYTES}. A driver declares its own page size at
+ * or under this (`dumpPageMaxBytes`).
+ */
+export const STORE_DUMP_PAGE_MAX_BYTES = 3 * 1024 * 1024;
 
 /** The number of bytes a store call's body has, in UTF-8: the unit {@link STORE_CALL_MAX_BYTES} and the digest count in. */
 export function scopeStoreBodyBytes(body: string): number {

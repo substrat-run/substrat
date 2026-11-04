@@ -222,14 +222,6 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
       },
     },
     {
-      name: 'substrat.selfcheck answers {} on an object that holds nothing',
-      async run() {
-        await withRunner(async (runner) => {
-          expect(await reserved(runner, freshAddress(), 'substrat.selfcheck')).toEqual({});
-        });
-      },
-    },
-    {
       name: 'substrat.export-page answers a chain that ends, one revision, and the same dump at any page size',
       async run() {
         await withRunner(async (runner) => {

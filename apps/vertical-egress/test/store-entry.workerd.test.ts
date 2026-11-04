@@ -335,11 +335,7 @@ describe('the counter behind the store entry (#2289)', () => {
   });
 
   describe('the limit on a call body (#2811)', () => {
-    const TOO_LARGE = {
-      code: 'payload_too_large',
-      status: 413,
-      body: { message: `a store call body is at most ${STORE_CALL_MAX_BYTES} bytes`, limit: STORE_CALL_MAX_BYTES },
-    };
+    const TOO_LARGE = `payload too large: at most ${STORE_CALL_MAX_BYTES} bytes`;
 
     /** A body of exactly `bytes` UTF-8 bytes naming the operation and the object, padded with `fill`. */
     const bodyOf = (bytes: number, operation: string, fill = 'x', objectName = NAME): string => {
@@ -403,7 +399,7 @@ describe('the counter behind the store entry (#2289)', () => {
       const before = (await counter()).result;
       const answer = await declared(STORE_CALL_MAX_BYTES + 1, '{"operation":"put"');
       expect(answer.status).toBe(413);
-      expect(JSON.parse(answer.text)).toEqual({ error: TOO_LARGE });
+      expect(answer.text).toBe(TOO_LARGE);
       expect((await counter()).result).toBe(before);
     });
 
@@ -429,7 +425,7 @@ describe('the counter behind the store entry (#2289)', () => {
           duplex: 'half',
         });
         expect(res.status).toBe(413);
-        expect(await res.json()).toEqual({ error: TOO_LARGE });
+        expect(await res.text()).toBe(TOO_LARGE);
       }
       expect((await counter()).result).toBe(before);
     }, 30_000);
@@ -482,7 +478,7 @@ describe('the counter behind the store entry (#2289)', () => {
         body,
       });
       expect(res.status).toBe(413);
-      expect(await res.json()).toEqual({ error: TOO_LARGE });
+      expect(await res.text()).toBe(TOO_LARGE);
       expect((await counter()).result).toBe(before);
     }, 30_000);
   });

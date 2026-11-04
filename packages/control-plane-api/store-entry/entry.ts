@@ -36,8 +36,7 @@ interface DriverObject {
 
 const Driver = driverModule['__SUBSTRAT_STORE_CLASS__'] as new (ctx: DurableObjectState, env: Record<string, unknown>) => DriverObject;
 
-const refusal = ({ status, message, contentType }: StoreCallRefusal) =>
-  new Response(message, { status, ...(contentType ? { headers: { 'content-type': contentType } } : {}) });
+const refusal = ({ status, message }: StoreCallRefusal) => new Response(message, { status });
 
 /** The env the driver is constructed with: everything but the entry's own bindings. */
 function driverEnvOf(env: StoreEntryEnv): Record<string, unknown> {

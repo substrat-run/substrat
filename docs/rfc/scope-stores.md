@@ -152,7 +152,6 @@ Reserved names, only the platform may send:
 
 | operation | input | result | what it does |
 |---|---|---|---|
-| `substrat.selfcheck` | none | `{}` | build the driver's whole runtime and answer once it can serve a call (#2814) |
 | `substrat.export-page` | `{ cursor, maxBytes }` | `{ tables, next, revision }` | one page of the driver's dump: table fragments, an opaque cursor for the next page, and an opaque revision (D-69) |
 | `substrat.stage-page` | `{ stageId, seq, tables }` | `{ staged }` | hold one page of a dump aside, changing nothing a call can see. A `seq` already held answers `staged: false` |
 | `substrat.commit-stage` | `{ stageId }` | `{ tables }` | replace the whole object with the stage, atomically. The one step that changes the object |
@@ -230,8 +229,7 @@ A release is published by a person with a staff credential, never by the CI or a
 service token. That rule keys on the actor: the service token resolves to the staff
 principal kind too, so publishing refuses a service actor rather than admitting "staff".
 The rollout's canary runs on a platform-owned canary object that holds no tenant data and
-is never a tenant's scope. It calls every reserved operation (`substrat.selfcheck`,
-`substrat.size`, `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage`,
+is never a tenant's scope. It calls every reserved operation (`substrat.size`, `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage`,
 `substrat.discard-stage`, `substrat.erase`, `substrat.wipe`) and asserts each
 answer before the rollout continues. A rollback goes to the immediately previous good
 release. The module names in a release are validated, and the names the platform's entry
@@ -487,17 +485,17 @@ needs the object's id and is the entry's own (#2295). The entry reads the body o
 verifies it, and hands the driver those same bytes.
 
 **The size of a call.** The digest is over the exact body, so an entry must hold the whole body
-to verify it, and the body is bounded: `STORE_CALL_MAX_BYTES` (contracts, beside the envelope), 5 000 000
-bytes in UTF-8, the unit the digest counts in. The entry refuses a larger one with 413 in the store
-envelope, `{ error: { code: 'payload_too_large', status: 413, body: { limit } } }`, which the router
-and the platform read as the store's own refusal at its status. It checks a declared `Content-Length`
+to verify it, and the body is bounded: `STORE_CALL_MAX_BYTES` (contracts, beside the envelope), 4 MiB
+in UTF-8 bytes, the unit the digest counts in. The entry refuses a larger one with a plain-text 413,
+outside the store envelope like its other refusals, since an answer of the entry's own is never a
+store's (#2815). It checks a declared `Content-Length`
 first, and refuses before it reads any of the body. A body with no `Content-Length`, or a false one, is
 counted as it is read and refused at the limit, the rest unread. Both callers check the same number
 before they sign: the platform's `callPlatformScopeStoreAt` throws a 413 `ControlPlaneError`, and the
 router's `handleStoreCall` answers 413 to the vertical, in each case with nothing sent. The limit is
-the largest size measured to pass the Python entry (5 MB passed, 6 MB failed with `exceededMemory`,
-#2811), not a size chosen from a budget, and it holds a dump page of `SCOPE_DUMP_PAGE_MAX_BYTES`
-(4 MiB) with room for the call around it. A driver measures the page it declares against it (D-69).
+the one #2832 shipped; a Python entry that copied the body into Python failed with `exceededMemory`
+at about 6 MB (#2811). A store page is at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB), so a page and the
+call around it stay under it (D-69).
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a driver operation's retry safety is the vertical's (§9). Per-object nonce memory is

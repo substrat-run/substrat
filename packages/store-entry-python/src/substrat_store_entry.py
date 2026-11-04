@@ -58,10 +58,8 @@ def _driver_env(env):
 
 
 def _refusal(verified):
-    """The response for a refused call. A 413 is the store envelope's error, which names its content type."""
-    content_type = getattr(verified, "contentType", None)
-    headers = {"content-type": content_type} if content_type else None
-    return Response(verified.message, status=verified.status, headers=headers)
+    """The response for a refused call: its status and its plain-text message."""
+    return Response(verified.message, status=verified.status)
 
 
 async def _verified(request, env):

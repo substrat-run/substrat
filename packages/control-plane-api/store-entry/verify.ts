@@ -11,7 +11,6 @@ import {
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
   STORE_CALL_MAX_BYTES,
-  STORE_CALL_TOO_LARGE_CODE,
   scopeStorePublicKeysFrom,
   verifyScopeStoreCall,
   type ScopeStoreEnvelope,
@@ -19,33 +18,22 @@ import {
 import { STORE_CALLER_KEYS_VAR, STORE_PLATFORM_KEYS_VAR, STORE_SCRIPT_VAR } from './names.js';
 
 /**
- * A call the entry refuses: answer `status` with `message`. A 413 is the store envelope's error
- * (`{ error: { code, status } }`, JSON, named by `contentType`), so the router and the platform read
- * it as a store's own refusal at its status; the others are plain text.
+ * A call the entry refuses: answer `status` with `message`, as plain text. It is the entry's own
+ * answer, never a store's, so it stays outside the store envelope (#2815): a caller reads it as a bad
+ * envelope. The router and the control plane refuse an oversize body before they sign it, so the 413
+ * here is the entry holding its own limit, not the refusal a vertical sees.
  */
 export interface StoreCallRefusal {
   readonly ok: false;
   readonly status: 401 | 413 | 503;
   readonly message: string;
-  readonly contentType?: string;
 }
 
 /** What the entry does with a call: hand it on, or answer `status` with `message`. */
 export type StoreCallVerdict = { readonly ok: true; readonly envelope: ScopeStoreEnvelope } | StoreCallRefusal;
 
-/** A call whose body is over `STORE_CALL_MAX_BYTES`, in the store envelope's error. */
-const tooLarge: StoreCallRefusal = {
-  ok: false,
-  status: 413,
-  message: JSON.stringify({
-    error: {
-      code: STORE_CALL_TOO_LARGE_CODE,
-      status: 413,
-      body: { message: `a store call body is at most ${STORE_CALL_MAX_BYTES} bytes`, limit: STORE_CALL_MAX_BYTES },
-    },
-  }),
-  contentType: 'application/json',
-};
+/** A call whose body is over `STORE_CALL_MAX_BYTES`. */
+const tooLarge: StoreCallRefusal = { ok: false, status: 413, message: `payload too large: at most ${STORE_CALL_MAX_BYTES} bytes` };
 
 /** The refusal for a declared `Content-Length` over the limit, or undefined. Reads no body. */
 export function storeCallDeclaredRefusal(headers: { get(name: string): string | null }): StoreCallRefusal | undefined {

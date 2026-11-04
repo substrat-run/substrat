@@ -1,17 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import {
-  STORE_CALL_MAX_BYTES,
-  STORE_CALL_TOO_LARGE_CODE,
-  SCOPE_DUMP_PAGE_MAX_BYTES,
-  scopeStoreBodyBytes,
-} from '@substrat-run/contracts';
+import { STORE_CALL_MAX_BYTES, scopeStoreBodyBytes } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair, issueScopeStoreEnvelope } from '@substrat-run/contracts/scope-store-envelope';
 import { STORE_CALLER_KEYS_VAR, STORE_ENTRY_PYTHON_VERIFIER_SOURCE, STORE_PLATFORM_KEYS_VAR, STORE_SCRIPT_VAR } from '../src/store-entry.generated.js';
 
 /**
  * How a store entry bounds a call's body (#2811), run on the verifier both entries ship: the
  * TypeScript entry bundles it and the Python entry imports it. A body over `STORE_CALL_MAX_BYTES` is
- * refused with 413 in the store envelope, and a `Content-Length` over it is refused before a byte of
+ * refused with a plain-text 413, and a `Content-Length` over it is refused before a byte of
  * the body is read. The entries running under workerd are in apps/vertical-egress/test/store-entry.workerd.test.ts
  * and packages/store-entry-python/probe.mjs.
  */
@@ -19,7 +14,6 @@ interface Refusal {
   ok: false;
   status: number;
   message: string;
-  contentType?: string;
 }
 type Verified = { ok: true; envelope: { name: string; op: string }; body: ArrayBuffer } | Refusal;
 const entry = (await import(`data:text/javascript;base64,${Buffer.from(STORE_ENTRY_PYTHON_VERIFIER_SOURCE).toString('base64')}`)) as {
@@ -70,30 +64,14 @@ function stream(bytes: Uint8Array, chunk = 64 * 1024) {
   return { body, seen };
 }
 
-const TOO_LARGE = {
-  ok: false,
-  status: 413,
-  contentType: 'application/json',
-};
-const envelopeOf = (refusal: Refusal) => JSON.parse(refusal.message) as { error: { code: string; status: number; body: { limit: number } } };
-
-describe('the limit on a store call', () => {
-  it('holds a dump page and the call around it, and is the largest size measured to pass', () => {
-    expect(STORE_CALL_MAX_BYTES).toBeGreaterThan(SCOPE_DUMP_PAGE_MAX_BYTES);
-    expect(STORE_CALL_MAX_BYTES - SCOPE_DUMP_PAGE_MAX_BYTES).toBeGreaterThanOrEqual(512 * 1024);
-    expect(STORE_CALL_MAX_BYTES).toBeLessThanOrEqual(5_000_000);
-  });
-});
+const TOO_LARGE = { ok: false, status: 413, message: `payload too large: at most ${STORE_CALL_MAX_BYTES} bytes` };
 
 describe('verifiedStoreCall', () => {
   it('refuses a Content-Length over the limit before it reads any of the body', async () => {
     const bytes = new TextEncoder().encode(bodyOf(STORE_CALL_MAX_BYTES + 1));
     const { body, seen } = stream(bytes);
     const answer = await entry.verifiedStoreCall({ headers: await headersFor('{}', { 'content-length': String(bytes.length) }), body }, env);
-    expect(answer).toMatchObject(TOO_LARGE);
-    expect(envelopeOf(answer as Refusal)).toEqual({
-      error: { code: STORE_CALL_TOO_LARGE_CODE, status: 413, body: { message: expect.stringContaining('5000000'), limit: STORE_CALL_MAX_BYTES } },
-    });
+    expect(answer).toEqual(TOO_LARGE);
     expect(seen).toEqual({ pulls: 0, cancelled: false });
   });
 

@@ -50,7 +50,6 @@ const CHECK = {
   address: 'the object is keyed on the whole address: tenant, vertical, scope and binding',
   restart: 'a stop and a start serve the same repositories',
   size: 'substrat.size answers { bytes }',
-  selfcheck: 'substrat.selfcheck answers {} on an object that holds nothing',
   exportPage: 'substrat.export-page answers a chain that ends, one revision, and the same dump at any page size',
   pages: 'substrat.export-page cuts many rows into pages within maxBytes, and loses none between them',
   oneMoment: 'a chain is one moment: a wipe between two of its pages cannot tear it',
@@ -138,11 +137,6 @@ const TWINS: { name: string; breaks: readonly string[]; makeRunner: () => ScopeS
     name: 'a size that is not { bytes }',
     breaks: [CHECK.size, CHECK.stagedSize],
     makeRunner: answering('substrat.size', { result: { size: 1 } }),
-  },
-  {
-    name: 'a selfcheck that fails on an empty object',
-    breaks: [CHECK.selfcheck],
-    makeRunner: answering('substrat.selfcheck', { error: { code: 'internal', status: 500 } }),
   },
   {
     // An empty dump also leaves nothing for a commit to restore, and a staged dump of itself empties the object.

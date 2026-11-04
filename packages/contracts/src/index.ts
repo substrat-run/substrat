@@ -40,7 +40,7 @@ export {
   scopeStoreEnvelopeFresh,
   STORE_STAGE_MAX_AGE_MS,
   STORE_CALL_MAX_BYTES,
-  STORE_CALL_TOO_LARGE_CODE,
+  STORE_DUMP_PAGE_MAX_BYTES,
   scopeStoreBodyBytes,
   scopeStoreKeyId,
   verifyScopeStoreCall,

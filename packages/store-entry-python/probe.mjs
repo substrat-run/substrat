@@ -431,13 +431,7 @@ try {
     if (size(body) !== bytes) throw new Error(`built ${size(body)} bytes, not ${bytes}`);
     return body;
   };
-  const tooLarge = {
-    error: {
-      code: 'payload_too_large',
-      status: 413,
-      body: { message: `a store call body is at most ${STORE_CALL_MAX_BYTES} bytes`, limit: STORE_CALL_MAX_BYTES },
-    },
-  };
+  const tooLarge = `payload too large: at most ${STORE_CALL_MAX_BYTES} bytes`;
   // Refused on its declared length, before it is read. Only a few bytes are written against the
   // declared length, so the answer cannot depend on a race with the server closing mid-upload.
   const declaredOver = await declaredLength(String(STORE_CALL_MAX_BYTES + 1), 'x');
@@ -449,7 +443,7 @@ try {
   // Over the limit with a Content-Length (fetch sets it from a buffer), and chunked with none.
   const over = bodyOfSize(STORE_CALL_MAX_BYTES + 1, 'increment');
   const withLength = await send(await signed(name, 'increment', { body: over }));
-  check(withLength.status === 413 && JSON.stringify(JSON.parse(withLength.text)) === JSON.stringify(tooLarge), 'a body over the limit with a Content-Length is 413 in the store envelope', withLength.status);
+  check(withLength.status === 413 && withLength.text === tooLarge, 'a body over the limit with a Content-Length is 413', withLength.status);
   const overBytes = Buffer.from(over, 'utf8');
   const chunked = await fetch(`http://127.0.0.1:${port}/invoke`, {
     method: 'POST',
@@ -463,7 +457,7 @@ try {
     duplex: 'half',
   });
   const chunkedText = await chunked.text();
-  check(chunked.status === 413 && JSON.stringify(JSON.parse(chunkedText)) === JSON.stringify(tooLarge), 'a body over the limit with no Content-Length is 413 in the store envelope', chunked.status);
+  check(chunked.status === 413 && chunkedText === tooLarge, 'a body over the limit with no Content-Length is 413', chunked.status);
   const objectSide = await send(await signed(name, 'increment', { body: over }), `?object=${encodeURIComponent(name)}`);
   check(objectSide.status === 413, 'and the object refuses it too', objectSide.status);
   check(result(await send(await signed(name, 'read'))) === countBefore, 'the driver was not reached by any of them');

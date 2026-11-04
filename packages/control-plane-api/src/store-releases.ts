@@ -429,7 +429,6 @@ export async function canaryStoreRelease(input: { call: CanaryCall; scriptName: 
     return merged;
   };
   const holdsNone = (message: string) => (tables: readonly ScopeDumpTable[]) => (tables.some((t) => t.rows.length > 0) ? message : null);
-  await step('substrat.selfcheck', ok);
   await step('substrat.size', ok);
   const exported = await readChain(holdsNone('exported rows from an object holding none'));
   // The dump of an empty object, as fragments over three pages: its tables are named on each, so the

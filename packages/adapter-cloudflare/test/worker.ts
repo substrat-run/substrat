@@ -635,7 +635,6 @@ export class ScopeStoreCounterDO extends DurableObject {
       this.ctx.storage.sql.exec('DROP TABLE IF EXISTS stage_pages');
       return Response.json({ result: { erased: 0 } });
     }
-    if (operation === 'substrat.selfcheck') return Response.json({ result: {} });
     if (operation === 'substrat.export-page') {
       // One page: the counter is one row. Its revision is its value, so a write moves it.
       return Response.json({

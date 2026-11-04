@@ -6,7 +6,7 @@ title: "A store driver moves in pages, not in one call"
 status: proposed
 aliases: []
 amends: ["D-63", "K-49"]
-tracking: ["#2811", "#2814", "#2450"]
+tracking: ["#2854", "#2811", "#2450"]
 ---
 
 # D-69 — A store driver moves in pages, not in one call
@@ -16,8 +16,8 @@ tracking: ["#2811", "#2814", "#2450"]
 > be made, and the code in this change follows it.
 
 **A store's dump crosses the platform in pages. The reserved operations `substrat.export` and
-`substrat.import` are removed, with no compatibility form, and five take their place:
-`substrat.selfcheck`, `substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage` and
+`substrat.import` are removed, with no compatibility form, and four take their place:
+`substrat.export-page`, `substrat.stage-page`, `substrat.commit-stage` and
 `substrat.discard-stage`. A chain of pages is one moment of the store, the commit is the only step
 that changes the object, and each registration declares the largest page its driver takes
 (`dumpPageMaxBytes`).**
@@ -28,8 +28,8 @@ Until now a store's data crossed in one call each way: `substrat.export` answere
 `{ tables }` and `substrat.import` took it. So a store was bounded by the smallest limit on that
 path, whatever the driver:
 
-- the store entry reads the whole request body, bounded since by `STORE_CALL_MAX_BYTES` (5 000 000
-  bytes), where the Python entry used to fail at about 5 to 6 MB
+- the store entry reads the whole request body, bounded since by `STORE_CALL_MAX_BYTES` (4 MiB),
+  where the Python entry used to fail at about 6 MB
   ([#2811](https://github.com/substrat-run/substrat/issues/2811));
 - the control plane holds the string, the parsed JSON and the schema-checked copy of the answer in
   one isolate;
@@ -45,7 +45,6 @@ writes it for any driver rather than for one language.
 
 | Operation | Input | Answer |
 | --- | --- | --- |
-| `substrat.selfcheck` | none | `{}`, once the driver's runtime has been built ([#2814](https://github.com/substrat-run/substrat/issues/2814)) |
 | `substrat.export-page` | `{ cursor, maxBytes }` | `{ tables, next, revision }` |
 | `substrat.stage-page` | `{ stageId, seq, tables }` | `{ staged }`, false for a `seq` already held |
 | `substrat.commit-stage` | `{ stageId }` | `{ tables }`, the count of distinct tables it wrote |
@@ -76,14 +75,15 @@ writes it for any driver rather than for one language.
   and means the smallest page, and one row larger than `maxBytes` rides alone. A driver never
   refuses a `maxBytes`: it may cut a smaller page. The platform asks for
   a page within what the registration declares in `dumpPageMaxBytes` (counted on the serialized
-  page), and never above a page of a scope's own dump (4 MiB). Every host uses the declared size of
+  page), which is at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB), so a page and the call around it stay
+  under `STORE_CALL_MAX_BYTES`. Every host uses the declared size of
   the driver it reaches. A row the driver could not take back in one `substrat.stage-page` is refused by
   `substrat.export-page`, naming the table, so that a backup fails when it is taken and not when it
   is restored. What a driver measures that against is the smaller of its own limit on a request and
-  `STORE_CALL_MAX_BYTES` (5 000 000 bytes, [#2811](https://github.com/substrat-run/substrat/issues/2811)),
+  `STORE_CALL_MAX_BYTES` (4 MiB, [#2811](https://github.com/substrat-run/substrat/issues/2811)),
   the most a store entry takes in one call body: a row whose `stage-page` call, the page with its
   envelope around it, would be over either is refused at export. A store entry refuses a body over the
-  limit with 413, and the platform refuses to send one. The graph driver declares 900 000, under its 1 MB limit on a request with room for the
+  limit with a plain 413, and the router and the platform refuse to sign one. The graph driver declares 900 000, under its 1 MB limit on a request with room for the
   envelope around a page. A TypeScript driver may declare large pages and a Python one small ones.
 - **Commit is the one step that changes the object.** A stage is held aside and changes nothing a
   call can see. Page `seq` 0 starts a stage and drops any other, so the old id can then neither stage
@@ -111,7 +111,7 @@ writes it for any driver rather than for one language.
   release adds these operations. No driver release is approved, so nothing depends on
   `substrat.export` and `substrat.import`. They are removed, not kept beside the new operations, and
   a driver that answers them gains nothing.
-- **The canary proves it.** It runs `selfcheck`, reads a chain of the smallest page the contract
+- **The canary proves it.** It reads a chain of the smallest page the contract
   allows, stages the dump of its empty object as fragments over three pages (sending the first again,
   which answers `staged: false`), commits, reads it back, stages and discards a second stage, erases,
   wipes, and reads once more to see nothing is left. It compares dumps as their pages merge and counts

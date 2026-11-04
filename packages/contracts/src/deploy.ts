@@ -5,7 +5,8 @@ import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
-import { SCOPE_DUMP_PAGE_MAX_BYTES, scopeDumpTable } from './introspection.js';
+import { scopeDumpTable } from './introspection.js';
+import { STORE_DUMP_PAGE_MAX_BYTES } from './scope-store-envelope.js';
 import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
@@ -426,7 +427,7 @@ export const storeDriverRegistration = z
     erasure: z.literal('pending').optional(),
     // The largest serialized page of its dump the driver takes or gives in one call (D-69). The
     // platform asks for pages within it, so a driver declares what its own runtime can hold.
-    dumpPageMaxBytes: z.number().int().positive(),
+    dumpPageMaxBytes: z.number().int().positive().max(STORE_DUMP_PAGE_MAX_BYTES),
   })
   .strict()
   .refine((registration) => registration.isolationBasis.kind !== 'decisionRecord' || registration.verticals !== undefined, {
@@ -436,12 +437,11 @@ export const storeDriverRegistration = z
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
 /**
- * How large a page of `driver`'s dump the platform asks for: what its registration declares, within
- * what a page of a scope's own dump may be.
+ * How large a page of `driver`'s dump the platform asks for: what its registration declares, and
+ * `STORE_DUMP_PAGE_MAX_BYTES` for a driver the registry does not hold (a dev host's own).
  */
 export function storeDriverDumpPageBytes(driver: string): number {
-  const declared = STORE_DRIVERS.find((registration) => registration.driver === driver)?.dumpPageMaxBytes;
-  return Math.min(declared ?? SCOPE_DUMP_PAGE_MAX_BYTES, SCOPE_DUMP_PAGE_MAX_BYTES);
+  return STORE_DRIVERS.find((registration) => registration.driver === driver)?.dumpPageMaxBytes ?? STORE_DUMP_PAGE_MAX_BYTES;
 }
 
 /** Whether a registered driver may serve `vertical`: every vertical, unless its registration names them. */
@@ -850,10 +850,6 @@ export const storeEraseInput = z.object({ subjectId: z.string().min(1) });
 export const storeEraseResult = z.object({ erased: z.number().int().nonnegative() });
 export type StoreEraseResult = z.infer<typeof storeEraseResult>;
 
-/** Builds the driver's whole runtime and answers once it can serve a call (#2814). */
-export const storeSelfcheckResult = z.object({});
-export type StoreSelfcheckResult = z.infer<typeof storeSelfcheckResult>;
-
 /**
  * One page of a store's dump (D-69). `tables` holds fragments in the shape #2450 gives a scope's
  * pages: a table's rows may spread over pages, each fragment names its table again, and every table
@@ -934,7 +930,6 @@ export type StoreWipeResult = z.infer<typeof storeWipeResult>;
  * publishes no zod type of its own.
  */
 export interface ReservedStoreResults {
-  'substrat.selfcheck': StoreSelfcheckResult;
   'substrat.export-page': StoreExportPageResult;
   'substrat.stage-page': StoreStagePageResult;
   'substrat.commit-stage': StoreCommitStageResult;

@@ -85,13 +85,6 @@ describe('counterScopeStoreRunner (#2213)', () => {
     expect(await store.importTables(table([['a', 1], ['b', 2], [null, 3]]))).toEqual({ tables: 1 });
     expect(await store.call('read')).toBe(6);
   });
-
-  it('answers selfcheck with {} and leaves the object as it was', async () => {
-    const store = counter();
-    await store.call('increment', { by: 2 });
-    expect(await store.reserved('substrat.selfcheck')).toEqual({});
-    expect(await store.call('read')).toBe(2);
-  });
 });
 
 describe('counterScopeStoreRunner moves its dump in pages (D-69)', () => {

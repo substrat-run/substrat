@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { errorCodeOf, mergeDumpPages, platformActorId, scopeId, StoreError, STORE_STAGE_MAX_AGE_MS, substratError, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { errorCodeOf, mergeDumpPages, PLATFORM_STORE_CODE, platformActorId, scopeId, StoreError, STORE_STAGE_MAX_AGE_MS, substratError, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import {
   callReservedStoreOperation,
   callScopeStore,
@@ -275,7 +275,6 @@ describe('callReservedStoreOperation (#2207)', () => {
     expect(committed).toEqual({ tables: 1 });
     const discarded = await callReservedStoreOperation(async () => ({ result: { discarded: false } }), 'substrat.discard-stage', { stageId: 's' });
     expect(discarded).toEqual({ discarded: false });
-    expect(await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.selfcheck')).toEqual({});
     const wiped = await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.wipe');
     expect(wiped).toEqual({});
   });
@@ -315,7 +314,7 @@ describe('callReservedStoreOperation (#2207)', () => {
       () => undefined,
       (err: unknown) => err,
     );
-    expect((refusal as StoreError).storeCode).toBe('bad_envelope');
+    expect((refusal as StoreError).storeCode).toBe(PLATFORM_STORE_CODE.badEnvelope);
     // The names are still on the reserved prefix, so a call that names them is refused before any store is asked.
     for (const removed of ['substrat.export', 'substrat.import']) {
       const gone = await callScopeStore(async () => ({ result: 1 }), removed).then(
@@ -456,7 +455,7 @@ describe('readStoreDump (D-69)', () => {
       (err: unknown) => err,
     );
     // The first page asks from the start and moves to 'stuck'; the second is asked 'stuck' and answers it.
-    expect(refusal).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+    expect(refusal).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
     expect(asked).toBe(2);
   });
 
@@ -473,7 +472,7 @@ describe('readStoreDump (D-69)', () => {
       () => undefined,
       (err: unknown) => err,
     );
-    expect(refusal).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+    expect(refusal).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
   });
 });
 
@@ -525,7 +524,7 @@ describe('writeStoreDump (D-69)', () => {
       () => undefined,
       (err: unknown) => err,
     );
-    expect(refusal).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+    expect(refusal).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
     expect(calls.map((c) => c.operation)).not.toContain('substrat.commit-stage');
     expect(calls.at(-1)!.operation).toBe('substrat.discard-stage');
   });
@@ -539,7 +538,7 @@ describe('writeStoreDump (D-69)', () => {
         () => undefined,
         (err: unknown) => err,
       );
-      expect(refusal, String(wrote)).toMatchObject({ storeCode: 'bad_envelope', storeStatus: 502 });
+      expect(refusal, String(wrote)).toMatchObject({ storeCode: PLATFORM_STORE_CODE.badEnvelope, storeStatus: 502 });
       expect(calls.at(-1)!.operation).toBe('substrat.discard-stage');
     }
   });
@@ -739,7 +738,7 @@ describe('the age of an abandoned store stage (D-69)', () => {
   });
 });
 
-describe('a store entry refusing a call body as too large (#2811)', () => {
+describe('a store refusing a page as too large', () => {
   const refusing = (seen: string[]): ReservedStoreCall =>
     ((operation, input) =>
       callReservedStoreOperation(
@@ -747,13 +746,13 @@ describe('a store entry refusing a call body as too large (#2811)', () => {
           seen.push(request.operation);
           return request.operation === 'substrat.discard-stage'
             ? { result: { discarded: false } }
-            : { error: { code: 'payload_too_large', status: 413, body: { limit: 5_000_000 } } };
+            : { error: { code: 'payload_too_large', status: 413 } };
         },
         operation,
         input,
       )) as ReservedStoreCall;
 
-  it('is a StoreError at status 413 with the entry\'s code, and nothing is retried on it', async () => {
+  it('is a StoreError at status 413 with the store\'s code', async () => {
     const error = await callReservedStoreOperation(async () => ({ error: { code: 'payload_too_large', status: 413 } }), 'substrat.size').then(
       () => undefined,
       (err: unknown) => err,
