@@ -1,4 +1,5 @@
 import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
+import type { BuilderTurnsService } from './builder-turns.js';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
@@ -555,6 +556,8 @@ export interface ControlPlaneApiOptions {
   deployVertical?: DeployVerticalFn;
   /** Hosted deployments accept source only. The private build service returns release parts. */
   sourceBuilds?: SourceBuildService;
+  /** The builder studio's turn summaries, read for the console. Absent ⇒ its routes 501. */
+  builderTurns?: BuilderTurnsService;
   githubRepositoryAccess?: (tenantId: string, owner: string, repo: string, installationId: string, scope: 'read' | 'write') => Promise<{ remote: string; token: string }>;
 
   /**
@@ -12866,6 +12869,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...(staffCaller(c) ? { referenceInText: true } : {}),
     });
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // -- builder turns: one summary per builder-studio turn, every team -------------
+  // Staff only, and stated here rather than left to the allowlists' default-deny: a
+  // summary names a team and a project, and the turn behind it carries what someone
+  // typed into the studio. The builder answers both; this relays and re-parses.
+  app.get('/builder-turns', async (c) => {
+    if (!staffCaller(c)) return refuse(c, 'forbidden', 'forbidden');
+    if (!options.builderTurns) return refuseStatus(c, 501, 'the builder studio is not configured');
+    const url = new URL(c.req.url);
+    const forwarded = new URLSearchParams();
+    for (const key of ['tenantId', 'projectId', 'outcome', 'redGate', 'troubled', 'since', 'limit', 'cursor']) {
+      const value = url.searchParams.get(key);
+      if (value) forwarded.set(key, value);
+    }
+    return c.json(await options.builderTurns.list(forwarded));
+  });
+
+  app.get('/builder-turns/:turnId', async (c) => {
+    if (!staffCaller(c)) return refuse(c, 'forbidden', 'forbidden');
+    if (!options.builderTurns) return refuseStatus(c, 501, 'the builder studio is not configured');
+    const turn = await options.builderTurns.get(c.req.param('turnId'));
+    return turn ? c.json(turn) : refuse(c, 'not_found', 'no such turn');
   });
 
   // -- sweep runs (#1232): the durable record of what a sweep pass touched -------

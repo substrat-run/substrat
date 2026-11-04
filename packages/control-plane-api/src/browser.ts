@@ -11,6 +11,7 @@ export type {
   AdminLogPage,
   AuditLogQuery,
   BindHostnameInput,
+  BuilderTurnsListQuery,
   ConnectionHealthQuery,
   ConnectorCallsBucket,
   DoNamespace,
