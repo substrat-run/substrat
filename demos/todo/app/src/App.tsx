@@ -15,8 +15,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
-import { api, ApiError, auth, me, type Item, type List, type Paged, type Session, type Share } from './api.js';
-import { ListsTable } from './elements.js';
+import { api, ApiError, type Item, type List, type Paged, type Share } from './api.js';
+import { AccountMenu, ListsTable, useSession } from './elements.js';
 import { Settings } from './settings.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
@@ -65,15 +65,11 @@ function shownOf(hash: string): ListsShown {
 
 export function App() {
   const hash = useHash();
-  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const state = useSession();
   const match = /^#\/list\/(.+)$/.exec(hash);
 
-  useEffect(() => {
-    void me().then(setSession);
-  }, []);
-
-  if (session === undefined) return <main><p>Loading…</p></main>;
-  if (session === null) {
+  if (state.phase === 'loading') return <main><p>Loading…</p></main>;
+  if (state.phase === 'signed-out') {
     return (
       <>
         <header>
@@ -84,15 +80,13 @@ export function App() {
         </header>
         <main>
           <p>Sign in to see your lists.</p>
-          <wa-button variant="brand" onClick={() => auth.login('/')}>
-            Sign in
-          </wa-button>
+          <AccountMenu />
         </main>
       </>
     );
   }
 
-  const who = session.principal;
+  const who = state.session.principal;
   return (
     <>
       <header>
@@ -101,14 +95,7 @@ export function App() {
             on Substrat
           </wa-tag>
         <span className="who">
-          <wa-dropdown>
-            <wa-button slot="trigger" size="s" appearance="outlined" with-caret>
-              {session.display}
-            </wa-button>
-            <wa-dropdown-item onClick={() => auth.switchUser()}>Switch user</wa-dropdown-item>
-            <wa-dropdown-item onClick={() => (window.location.hash = SETTINGS_HASH)}>Settings</wa-dropdown-item>
-            <wa-dropdown-item onClick={() => auth.logout()}>Sign out</wa-dropdown-item>
-          </wa-dropdown>
+          <AccountMenu />
         </span>
       </header>
       <main>
