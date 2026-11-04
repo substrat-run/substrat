@@ -783,11 +783,12 @@ export async function exchangeCapability(
     [tokenHash],
   )[0];
   if (!row || !capabilityExchangeable(row, deps.now)) return null;
-  if (row.mode === 'bind' ? mode !== 'bind' : mode !== undefined && row.mode !== mode) return null;
+  if (mode !== undefined && row.mode !== mode) return null;
   const author = capabilityAuthor.parse(JSON.parse(row.minted_by));
   const minter = typeof author === 'string' ? author : null;
   // A `bind` link (#2817) is presented by the member it names, who must still be one: the
-  // exchange yields nobody new, it binds someone who already is somebody here.
+  // exchange yields nobody new, it binds someone who already is somebody here. Without a
+  // presenter — any exchange but `bind`'s — it is refused here, its use untaken.
   if (row.mode === 'bind') {
     if (presenter === undefined || presenter !== row.principal || !deps.holdings) return null;
     if ((await deps.holdings(presenter)).permissions.length === 0) return null;
