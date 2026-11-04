@@ -68,9 +68,9 @@ type TelemetryFilter =
  *
  * The tenant predicate comes first and is not optional: it is the whole isolation boundary,
  * exactly as in `queryTenantLogs`. Several values under one key are one OR group, so the
- * values are compared one by one and never split on a separator. #2762: `entity` is the one key
- * whose LINE value is a set (`entityTypes`), so each selected type is matched as a whole member
- * of it; the list re-checks that on every record (`facetsMatch`).
+ * values are compared one by one and never split on a separator. #2762: `entity` and `state` are
+ * the two keys whose LINE value is a set (`entityTypes`, `processStates`), so each selected value
+ * is matched as a whole member of it; the list re-checks that on every record (`facetsMatch`).
  */
 function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): TelemetryFilter[] {
   const filters: TelemetryFilter[] = [
@@ -94,14 +94,15 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
       filters.push(kinds.length === 1 ? kinds[0]! : { kind: 'group', filterCombination: 'or', filters: kinds });
       continue;
     }
-    // #2762: a type is one member of the line's `entityTypes` set, so it is matched between
-    // separators, with the type escaped: no type can widen the match past itself.
-    if (key === 'entity') {
+    // #2762: a type is one member of the line's `entityTypes` set (a move one of its
+    // `processStates`), so it is matched between separators, with the value escaped: no value
+    // can widen the match past itself.
+    if (key === 'entity' || key === 'state') {
       const types: TelemetryFilter[] = values.map((v) => ({
-        key: 'entityTypes',
+        key: SET_FIELD[key],
         operation: 'regex',
         type: 'string',
-        value: entityTypeRegex(v),
+        value: setMemberRegex(v),
       }));
       filters.push(types.length === 1 ? types[0]! : { kind: 'group', filterCombination: 'or', filters: types });
       continue;
@@ -119,10 +120,13 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   return filters;
 }
 
+/** #2762: the line field each set-valued facet reads — one value per member, joined with `,`. */
+const SET_FIELD = { entity: 'entityTypes', state: 'processStates' } as const;
+
 const REGEX_SPECIAL = /[\\^$.|?*+()[\]{}]/g;
-/** #2762: a pattern matching `entityTypes` values that hold `type` as a whole member. */
-function entityTypeRegex(type: string): string {
-  const escaped = type.replace(REGEX_SPECIAL, '\\$&');
+/** #2762: a pattern matching a set field's values that hold `member` whole. */
+function setMemberRegex(member: string): string {
+  const escaped = member.replace(REGEX_SPECIAL, '\\$&');
   return `(^|${ENTITY_TYPES_SEPARATOR})${escaped}(${ENTITY_TYPES_SEPARATOR}|$)`;
 }
 
@@ -231,15 +235,18 @@ function sampled(p: CalculationPoint): boolean {
 
 /**
  * Does a raw line pass the scope's `kind` selection (#1901: a missing `kind` read as
- * `request`) and its `entity` selection (#2762: a type is a whole member of the set)?
+ * `request`) and its `entity` and `state` selections (#2762: a value is a whole member of the set)?
  */
 function facetsMatch(e: Record<string, unknown>, scope: TenantRequestScope): boolean {
   const source = (e['source'] ?? {}) as Record<string, unknown>;
   const kinds = scope.where?.kind ?? [];
   if (kinds.length > 0 && !kinds.includes(invocationKindOf(source['kind']))) return false;
-  const types = scope.where?.entity ?? [];
-  const entityTypes = typeof source['entityTypes'] === 'string' ? splitEntityTypes(source['entityTypes']) : [];
-  return types.length === 0 || types.some((t) => entityTypes.includes(t));
+  return (['entity', 'state'] as const).every((key) => {
+    const wanted = scope.where?.[key] ?? [];
+    const field = source[SET_FIELD[key]];
+    const members = typeof field === 'string' ? splitEntityTypes(field) : [];
+    return wanted.length === 0 || wanted.some((v) => members.includes(v));
+  });
 }
 
 /**
@@ -878,6 +885,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { type: 'string', value: 'kind' },
         { type: 'string', value: 'entityTypes' },
         { type: 'string', value: 'route' },
+        { type: 'string', value: 'processStates' },
       ],
       extra,
     );
@@ -901,6 +909,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           kind: str(groups.get('kind')),
           entity: str(groups.get('entityTypes')),
           path: str(groups.get('route')),
+          state: str(groups.get('processStates')),
           count,
         }];
       }),
@@ -969,6 +978,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           status: status > 0 ? status : null,
           entity: blank(r['entityTypes']),
           path: blank(r['route']),
+          state: blank(r['processStates']),
           count: Math.round(aeNum(r['requests'])),
         },
       ];
@@ -1001,6 +1011,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         ${p.level} AS level,
         ${p.entityTypes} AS entityTypes,
         ${p.route} AS route,
+        ${p.processStates} AS processStates,
         toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
         sum(_sample_interval) AS requests,
         max(_sample_interval) AS maxInterval
@@ -1008,7 +1019,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       WHERE ${p.tenantId} = ${aeLiteral(tenantId)}
         AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
         AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
-      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, entityTypes, route, bucket
+      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, entityTypes, route, processStates, bucket
       ORDER BY bucket ASC
       LIMIT ${REQUEST_CUBE_ROW_LIMIT}
       FORMAT JSON`;

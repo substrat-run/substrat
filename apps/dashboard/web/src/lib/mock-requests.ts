@@ -1,3 +1,4 @@
+import { joinProcessStates, splitEntityTypes } from '@substrat-run/contracts/invocation-record';
 import type { RequestFacets, RequestRecord, RequestVolume } from './api';
 import { REQUEST_FACETS, type RequestFacetKey } from './requests';
 
@@ -178,12 +179,14 @@ function fixture(now = Date.now()): RequestRecord[] {
 
 type Where = Partial<Record<RequestFacetKey, string[]>>;
 
-/** The row's values for a facet, as the plane would group it — `entity` one per type (#2762). */
+/** The row's values for a facet, as the plane would group it — `entity` and `state` one per member (#2762). */
 function valuesOf(r: RequestRecord, key: RequestFacetKey): string[] {
   if (key === 'kind') return [r.kind ?? 'request'];
   if (key === 'entity') return [...new Set(r.entities.flatMap((e) => (e.indexOf(':') > 0 ? [e.slice(0, e.indexOf(':'))] : [])))];
   // #2762: the fixture's paths stand in for route patterns; the plane groups the line's `route`.
   if (key === 'path') return r.method && r.path ? [`${r.method} ${r.path}`] : [];
+  // #2762: one `<entityType>:<state reached>` per move, never the id, by the line's own grammar.
+  if (key === 'state') return splitEntityTypes(joinProcessStates(r.transitions ?? []));
   const v = r[key];
   return v === null || v === undefined ? [] : [String(v)];
 }

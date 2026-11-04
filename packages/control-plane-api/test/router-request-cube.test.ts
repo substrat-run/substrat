@@ -58,7 +58,7 @@ const aeRow = (r: Partial<Record<string, unknown>>) => ({
 describe('the router request cube (#1904)', () => {
   it('reads one tenant from Analytics Engine, weighted by the sample interval, for one family', async () => {
     const { sqls, telemetry } = stub(() => [
-      aeRow({ requests: '3', status: 409, problemCode: 'conflict', level: 'warn', entityTypes: 'assignment,ticket' }),
+      aeRow({ requests: '3', status: 409, problemCode: 'conflict', level: 'warn', entityTypes: 'assignment,ticket', processStates: 'assignment:active,ticket:assigned' }),
       aeRow({ requests: '40', maxInterval: 10, operation: 'acme/reply', entityTypes: 'ticket' }),
       // Another vertical of the same tenant — a different family, not this read's.
       aeRow({ vertical: 'other-app', requests: '99' }),
@@ -100,6 +100,13 @@ describe('the router request cube (#1904)', () => {
     // Grouped by it too: selected but not grouped, Analytics Engine would merge the routes.
     expect(sqls[0]).toMatch(/GROUP BY [^\n]*\broute\b/);
     expect(f.facets.path).toEqual([{ value: 'GET /.well-known/*', count: 2 }]);
+    // #2762: blob 12 is the `state` facet, a set read like the entity's, and grouped by too.
+    expect(sqls[0]).toContain('blob12 AS processStates');
+    expect(sqls[0]).toMatch(/GROUP BY [^\n]*\bprocessStates\b/);
+    expect(f.facets.state).toEqual([
+      { value: 'assignment:active', count: 3 },
+      { value: 'ticket:assigned', count: 3 },
+    ]);
   });
 
   it('#1901: past the cut, adds the async lines the router never sees', async () => {

@@ -360,14 +360,15 @@ function withHeaders(response: Response, change: { set?: Record<string, string>;
  * takes them from there, and this worker's test holds what is written here to it — so
  * it only ever grows, never reorders:
  * index [tenantId]; blobs [vertical, scope, surface, statusClass, rayId,
- * operation, problemCode, principalKind, level, entityTypes, route]; doubles [durationMs, status].
+ * operation, problemCode, principalKind, level, entityTypes, route, processStates]; doubles [durationMs, status].
  *
  * Blobs 6–9 are #1904's, and are what the request histogram and facets read. The first three
  * are the vertical's own record, handed back on `INVOCATION_RECORD_HEADER` (empty when the
  * request reached no operation, or the vertical predates the header); the level is the
  * router's, from the status and that problem code, so a request is filed under one even when
  * the vertical said nothing. The index stays the tenant the router resolved. Blob 10 is #2762's
- * `entity` facet and blob 11 its `path` facet (the route that answered), both from the same header.
+ * `entity` facet, blob 11 its `path` facet (the route that answered) and blob 12 its `state` facet
+ * (the lifecycle moves the request made, by type and state), all from the same header.
  */
 function record(
   env: Env,
@@ -388,7 +389,7 @@ function record(
   },
 ): void {
   const statusClass = `${Math.floor(m.status / 100)}xx`;
-  const { operation, problemCode, principalKind, entityTypes, route } = m.invocation;
+  const { operation, problemCode, principalKind, entityTypes, route, processStates } = m.invocation;
   try {
     env.ANALYTICS?.writeDataPoint({
       indexes: [target.tenantId],
@@ -404,6 +405,7 @@ function record(
         invocationLevelOf(m.status, m.threw, problemCode),
         entityTypes ?? '',
         route ?? '',
+        processStates ?? '',
       ],
       doubles: [m.durationMs, m.status],
     });

@@ -89,6 +89,11 @@ const facetValue: Record<RequestFacetKey, z.ZodType<string>> = {
     .string()
     .max(INVOCATION_RECORD_FIELD_MAX)
     .regex(/^(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|OTHER) \S/, 'path is a route: a method and the pattern it was registered under'),
+  // #2762: ONE move as `<entityType>:<state>` — a type and a state, never a set of them.
+  state: z
+    .string()
+    .max(INVOCATION_RECORD_FIELD_MAX)
+    .regex(/^[^:,]+:[^,]+$/, 'state is one entity type and the state it reached: `<entityType>:<state>`'),
 };
 
 /** A query-string reader — Hono's `c.req.query` / `c.req.queries`, taken structurally. */

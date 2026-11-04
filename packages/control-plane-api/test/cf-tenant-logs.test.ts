@@ -1274,6 +1274,20 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(listed.map((r) => r.invocationId)).toEqual(['both', 'dotted']);
   });
 
+  it('#2762: a state selection matches a whole move of the line’s set, in the query and in the re-check', async () => {
+    const lines = [
+      { ...invocation({ invocationId: 'two-moves', processStates: 'ticket:open,visit:done' }, '01RA'), timestamp: 3 },
+      { ...invocation({ invocationId: 'longer', processStates: 'ticket:opened' }, '01RB'), timestamp: 2 },
+      { ...invocation({ invocationId: 'none' }, '01RC'), timestamp: 1 },
+    ];
+    const list = (keep: (f: unknown) => boolean) =>
+      readerOver((filters, limit) => lines.filter((e) => filters.every((f) => keep(f) || matches(e.source as Record<string, unknown>, f))).slice(0, limit))
+        .reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { state: ['ticket:open'] } });
+    expect((await list(() => false)).map((r) => r.invocationId)).toEqual(['two-moves']);
+    // The twin: a backend that ignored the pattern answers every line; the re-check still holds.
+    expect((await list((f) => JSON.stringify(f).includes('processStates'))).map((r) => r.invocationId)).toEqual(['two-moves']);
+  });
+
   it('#2762: a path selection matches the line’s route, never the path it was called with', async () => {
     const lines = [
       { ...invocation({ invocationId: 'probe', path: '/.well-known/openid-configuration', route: 'GET /*' }, '01RA'), timestamp: 2 },

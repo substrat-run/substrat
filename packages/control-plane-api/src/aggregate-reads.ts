@@ -51,12 +51,13 @@ function own<R extends { tenantId: string; scopeId: string | null }>(rows: reado
 
 /**
  * A request row's values for a facet, as a filter compares them (status as text). One value
- * or none for every key but `entity`, whose row stands for each type the request touched.
+ * or none for every key but the two sets: `entity`, whose row stands for each type the request
+ * touched, and `state`, for each state it moved one to.
  */
 function facetValues(r: RequestCubeRow, key: RequestFacetKey): string[] {
   // #1901: a row with no kind is a request's.
   if (key === 'kind') return [invocationKindOf(r.kind)];
-  if (key === 'entity') return splitEntityTypes(r.entity);
+  if (key === 'entity' || key === 'state') return splitEntityTypes(r[key]);
   const v = r[key];
   return v === null || v === undefined || v === '' ? [] : [String(v)];
 }
