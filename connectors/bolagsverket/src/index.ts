@@ -3,9 +3,18 @@
  * Bolagsverket's free value-datasets API (EU high-value datasets).
  *
  * Host code, never module code: module code reaches a connector as a capability and never
- * calls `fetch`. This package is the provider client; the platform registration (probe,
- * dispatch, sweep) follows once the credential model is settled (#2855).
+ * calls `fetch`. The credential is the tenant's own, pasted and sealed in a per-tenant
+ * connection; `connector.ts` is what the control plane's registration calls.
  */
+export {
+  BOLAGSVERKET_CONNECTION_GRANTS,
+  BOLAGSVERKET_PROVIDER,
+  bolagsverketCredentialSummary,
+  probeBolagsverketConnection,
+  probeBolagsverketSecret,
+  sweepBolagsverket,
+  type BolagsverketConnectorOptions,
+} from './connector.js';
 export { BolagsverketApi, type BolagsverketApiOptions } from './api.js';
 export {
   BOLAGSVERKET_ENVIRONMENTS,

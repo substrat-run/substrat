@@ -103,10 +103,15 @@ export class BolagsverketApi {
     return new BolagsverketError('upstream', `${what} failed: ${errorMessage(body, status)}`, { status, body });
   }
 
-  /** The health call (scope `…:ping`): proves the client mints a token and the gateway answers. */
-  async ping(): Promise<void> {
+  /**
+   * The health call (scope `…:ping`): proves the client mints a token and the gateway
+   * answers. Answers the environment and the scopes the mint granted, which is all a client
+   * credential says about itself: the token names no account.
+   */
+  async ping(): Promise<{ environment: BolagsverketEndpoints['environment']; scopes: string[] }> {
     const { status, body } = await this.request('GET', '/isalive');
     if (status < 200 || status >= 300) throw this.upstream('Bolagsverket ping', status, body);
+    return { environment: this.endpoints.environment, scopes: this.token.scopes ?? [] };
   }
 
   /**

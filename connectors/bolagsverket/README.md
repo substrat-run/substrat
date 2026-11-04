@@ -12,8 +12,24 @@ and whether it is active, deregistered, in liquidation, bankrupt or in reorganis
 > recording or from Bolagsverket's own OpenAPI document. The fixture suite holds the
 > client to that reading. `test/live.test.ts` is written and skips until the credential
 > keys below are present, and it is what checks the reading against the real API.
-> The platform registration (probe, dispatch, sweep) is not part of this package yet. It
-> waits on the credential-model decision in #2855.
+
+## In the platform
+
+The credential is the **tenant's own**. A tenant applies to Bolagsverket, then pastes the
+client id and secret into the dashboard's Bolagsverket door. The pair is sealed in a
+per-tenant connection, so the provider's 60-a-minute limit is metered per tenant. The
+control plane registers:
+
+- `probeBolagsverketSecret`: checks a pasted pair before it is stored, by minting a token
+  and pinging.
+- `probeBolagsverketConnection`: does the same for a stored pair, and records the use. A
+  client credential names no account, so both report the environment and the granted
+  scopes.
+- `sweepBolagsverket`: a no-op. Nothing is bound to a connection in v1.
+
+There is no dispatch yet, so a vertical cannot ask for a validation through the platform.
+That is the next step. The control plane uses production unless `BOLAGSVERKET_ENV=test`;
+`BOLAGSVERKET_TOKEN_URL` and `BOLAGSVERKET_API_BASE` override the hosts.
 
 ## What it is
 

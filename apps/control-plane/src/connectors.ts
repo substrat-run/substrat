@@ -59,6 +59,14 @@ import {
   probeMicrosoft365Secret,
 } from '@substrat-run/connector-microsoft365';
 import {
+  BOLAGSVERKET_CONNECTION_GRANTS,
+  bolagsverketCredentialSummary,
+  probeBolagsverketConnection,
+  probeBolagsverketSecret,
+  sweepBolagsverket,
+  type BolagsverketConnectorOptions,
+} from '@substrat-run/connector-bolagsverket';
+import {
   MAIL_IN_CONNECTION_GRANTS,
   probeMailInConnection,
   probeMailInSecret,
@@ -111,6 +119,15 @@ export interface ConnectorEnv extends MailInEnv {
    */
   MICROSOFT365_LOGIN_BASE?: string;
   MICROSOFT365_GRAPH_BASE?: string;
+  /**
+   * Bolagsverket environment (#2855): `test` for the acceptance environment, anything else
+   * or unset for production. Bolagsverket issues a separate pair per environment, so a
+   * deployment whose tenants paste test pairs sets this; the host overrides point either
+   * one at a stub.
+   */
+  BOLAGSVERKET_ENV?: string;
+  BOLAGSVERKET_TOKEN_URL?: string;
+  BOLAGSVERKET_API_BASE?: string;
 }
 
 /** One uniform answer for every callback rejection; the WHY stays server-side. */
@@ -459,6 +476,33 @@ const PLANIMA: ConnectorRegistration = {
 };
 
 /**
+ * Bolagsverket (#2855): organisation-number validation over the free value-datasets API. The
+ * credential is the tenant's own client id and secret, pasted into the dashboard's door, so
+ * the provider's 60-a-minute limit is metered per tenant. No consent round, no callback, and
+ * no dispatch yet: v1 is the connection and its probes, which mint a token and ping. The
+ * token names no account, so a probe reports the environment and the granted scopes.
+ */
+function bolagsverketOptions(env: ConnectorEnv): BolagsverketConnectorOptions {
+  return {
+    fetch: globalFetch,
+    environment: env.BOLAGSVERKET_ENV === 'test' ? 'test' : 'prod',
+    ...(env.BOLAGSVERKET_TOKEN_URL ? { tokenUrl: env.BOLAGSVERKET_TOKEN_URL } : {}),
+    ...(env.BOLAGSVERKET_API_BASE ? { apiBase: env.BOLAGSVERKET_API_BASE } : {}),
+  };
+}
+
+const BOLAGSVERKET: ConnectorRegistration = {
+  provider: 'bolagsverket',
+  grants: BOLAGSVERKET_CONNECTION_GRANTS,
+  inspector: (env) => ({
+    probe: async (h, row) => probeBolagsverketConnection(h, row, bolagsverketOptions(env)),
+    credential: (h, row) => bolagsverketCredentialSummary(h, row),
+    probeCandidate: async (secret) => probeBolagsverketSecret(secret, bolagsverketOptions(env)),
+  }),
+  sweep: () => sweepBolagsverket,
+};
+
+/**
  * Microsoft 365 (#2100) — a tenant's own mailbox, as a `MailSender` behind the email relay
  * (#2098), and one Teams channel's folder of its SharePoint site (#2101). App-only Graph in the
  * tenant's directory; no callback, no consent round (the app registration is the tenant's, so the
@@ -534,7 +578,7 @@ function microsoft365Options(env: ConnectorEnv) {
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, MICROSOFT365, MAIL_IN];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {

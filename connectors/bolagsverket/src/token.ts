@@ -8,6 +8,8 @@ export type Fetch = ConnectorConnection['fetch'];
 const tokenResponse = z.object({
   access_token: z.string().min(1),
   expires_in: z.number().positive().optional(),
+  /** RFC 6749 §5.1: present when the granted scopes differ from those asked for. */
+  scope: z.string().optional(),
 });
 
 /** Re-mint this long before the provider's expiry, so a token never dies mid-request. */
@@ -33,6 +35,9 @@ function form(fields: Record<string, string>): string {
  */
 export class ClientCredentialsToken {
   private cached: { value: string; expiresAtMs: number } | null = null;
+
+  /** The scopes the last mint granted, or `null` before a mint. */
+  scopes: string[] | null = null;
 
   constructor(
     private readonly credential: BolagsverketCredential,
@@ -77,6 +82,7 @@ export class ClientCredentialsToken {
         body,
       });
     }
+    this.scopes = (parsed.scope ?? BOLAGSVERKET_SCOPES).split(' ').filter((x) => x !== '');
     this.cached = {
       value: parsed.access_token,
       expiresAtMs: this.now() + (parsed.expires_in ?? DEFAULT_LIFETIME_S) * 1000,

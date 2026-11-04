@@ -264,6 +264,9 @@ importers:
       '@substrat-run/adapter-email':
         specifier: workspace:^
         version: link:../../packages/adapter-email
+      '@substrat-run/connector-bolagsverket':
+        specifier: workspace:^
+        version: link:../../connectors/bolagsverket
       '@substrat-run/connector-fortnox':
         specifier: workspace:^
         version: link:../../connectors/fortnox
@@ -576,6 +579,9 @@ importers:
 
   connectors/bolagsverket:
     dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel

@@ -27,6 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
