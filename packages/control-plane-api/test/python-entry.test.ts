@@ -28,7 +28,25 @@ const vector = JSON.parse(
 type Verdict = { ok: true; envelope: { name: string } } | { ok: false; status: number; message: string };
 const verifier = (await import(
   `data:text/javascript;base64,${Buffer.from(STORE_ENTRY_PYTHON_VERIFIER_SOURCE).toString('base64')}`
-)) as { storeCallVerdict(headers: Headers, body: string, env: Record<string, unknown>): Promise<Verdict> };
+)) as {
+  storeCallVerdict(headers: Headers, body: string, env: Record<string, unknown>): Promise<Verdict>;
+  spendStoreNonce(storage: { kv: MapKv }, envelope: { iat: number; nonce: string }, nowSeconds: number): boolean;
+};
+
+/** The synchronous KV slice of an object's storage, over a sorted Map: what `spendStoreNonce` uses. */
+class MapKv {
+  readonly map = new Map<string, unknown>();
+  get = (key: string) => this.map.get(key);
+  put = (key: string, value: unknown) => void this.map.set(key, value);
+  delete = (key: string) => this.map.delete(key);
+  *list({ prefix = '', end, limit = Infinity }: { prefix?: string; end?: string; limit?: number }): Iterable<[string, unknown]> {
+    let n = 0;
+    for (const key of [...this.map.keys()].sort()) {
+      if (!key.startsWith(prefix) || (end !== undefined && key >= end) || n++ >= limit) continue;
+      yield [key, this.map.get(key)];
+    }
+  }
+}
 
 describe('the Python entry, as shipped', () => {
   it('names what store-entry/names.ts names', () => {
@@ -99,6 +117,18 @@ describe('the verifier the Python entry imports', async () => {
     });
     vi.setSystemTime((iat + Number(vector.windowSeconds) + 1) * 1000);
     expect(await verifier.storeCallVerdict(headers(), vector.body!, env)).toEqual({ ok: false, status: 401, message: 'unauthorized: stale' });
+  });
+
+  it('spends a nonce once, keeps it while its envelope is fresh, and forgets it after (K-59)', () => {
+    const kv = new MapKv();
+    const spend = (iat: number, now: number) => verifier.spendStoreNonce({ kv }, { iat, nonce: 'AAAAAAAAAAAAAAAAAAAAAA' }, now);
+    const window = Number(vector.windowSeconds);
+    expect(spend(1000, 1000)).toBe(true);
+    expect(spend(1000, 1000 + window)).toBe(false);
+    expect(kv.map.size).toBe(1);
+    // A second later the envelope is stale here, so it is refused, and its key is forgotten.
+    expect(spend(1000, 1000 + window + 1)).toBe(false);
+    expect(kv.map.size).toBe(0);
   });
 
   it('answers 503 to a store this upload did not configure, one key for both audiences included', async () => {

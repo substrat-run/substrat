@@ -8,7 +8,8 @@
  * given. The Python entry imports the same function. The default export addresses
  * `SubstratStoreObject` by `idFromName` of the signed name. The object checks the call again,
  * and refuses unless its own id is the id of that name (check 5): an object is bound to one
- * name by construction, with nothing stored that the driver could rewrite.
+ * name by construction, with nothing stored that the driver could rewrite. It then spends the
+ * envelope's nonce (`spendStoreNonce`, K-59), so one envelope is admitted once.
  *
  * The body is read once (`verifiedStoreCall`, bounded by `STORE_CALL_MAX_BYTES`: a larger one is
  * refused with 413 before it is read when its `Content-Length` says so, and at the limit when it
@@ -23,7 +24,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import * as driverModule from '__SUBSTRAT_STORE_DRIVER__';
 import { STORE_OBJECT_BINDING, STORE_RESERVED_BINDING_PREFIX } from './names.js';
-import { verifiedStoreCall, type StoreCallRefusal, type VerifiedStoreCall } from './verify.js';
+import { spendStoreNonce, spentNonce, verifiedStoreCall, type StoreCallRefusal, type VerifiedStoreCall } from './verify.js';
 
 type StoreEntryEnv = Record<string, unknown> & {
   [STORE_OBJECT_BINDING]: DurableObjectNamespace;
@@ -63,6 +64,7 @@ export class SubstratStoreObject extends DurableObject<StoreEntryEnv> {
     if (call instanceof Response) return call;
     const ns = this.env[STORE_OBJECT_BINDING];
     if (!this.ctx.id.equals(ns.idFromName(call.envelope.name))) return new Response('unauthorized: object', { status: 401 });
+    if (!spendStoreNonce(this.ctx.storage, call.envelope, Math.floor(Date.now() / 1000))) return refusal(spentNonce);
     return this.#driverObject().fetch(
       new Request(request.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: call.body }),
     );
