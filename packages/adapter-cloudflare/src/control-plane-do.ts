@@ -2200,7 +2200,7 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => {
       this.dropDirectorySnapshot();
       this.sql.exec(`CREATE TABLE ${COPY_TABLE} (copy_id TEXT NOT NULL, captured_at TEXT NOT NULL)`);
-      this.sql.exec(`INSERT INTO ${COPY_TABLE} (copy_id, captured_at) VALUES (?, ?)`, copyId, capturedAt);
+      this.sql.exec(`INSERT INTO _directory_copy (copy_id, captured_at) VALUES (?, ?)`, copyId, capturedAt);
       this.sql.exec(`CREATE TABLE ${COPY_TABLES_TABLE} (ord INTEGER PRIMARY KEY, name TEXT NOT NULL, ddl TEXT NOT NULL, columns TEXT NOT NULL)`);
       const defs = this.dumpTableDefs();
       defs.forEach(({ name, sql }, ord) => {
@@ -2211,7 +2211,7 @@ export class ControlPlaneDO extends DurableObject {
         const neutral = columns.map((_, i) => `c${i}`).join(', ');
         this.sql.exec(`CREATE TABLE "${copyRowsTable(ord)}" (${neutral})`);
         this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" SELECT * FROM "${name}" WHERE ${directoryDumpWhere(name)}`);
-        this.sql.exec(`INSERT INTO ${COPY_TABLES_TABLE} (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`, ord, name, sql, JSON.stringify(columns));
+        this.sql.exec(`INSERT INTO _directory_copy_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`, ord, name, sql, JSON.stringify(columns));
       });
       return { cursor: { copyId, ord: 0, after: 0 }, tables: defs.length };
     });
