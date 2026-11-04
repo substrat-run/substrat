@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-127 decisions · 69 plan · 58 kernel
+128 decisions · 69 plan · 59 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -139,3 +139,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-67](decisions/D-067-the-graph-driver-is-admitted-under-a-reviewed-release-isolation-lift.md) | 2026-10-31 | plan | The graph driver is admitted under a reviewed-release isolation lift <br>*awaiting ratification* <br>*amends D-63* | #2210, #2394, #2830 |
 | [D-68](decisions/D-068-a-store-driver-release-may-carry-a-dependency-s-data-files.md) | 2026-11-01 | plan | A store-driver release may carry a dependency's data files beside its modules <br>*awaiting ratification* <br>*amends D-63* | #2300, #2390 |
 | [D-69](decisions/D-069-a-store-driver-moves-in-pages.md) | 2026-11-03 | plan | A store driver moves in pages, not in one call <br>*awaiting ratification* <br>*amends D-63, K-49* | #2854, #2811, #2450 |
+| [K-59](decisions/K-059-a-bind-link-binds-the-existing-member-it-names-when-their-own-session-presents-it.md) | 2026-11-04 | kernel | A bind link binds the existing member it names, when their own session presents it | #2817, #1686 |
