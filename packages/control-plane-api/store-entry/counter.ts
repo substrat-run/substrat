@@ -5,8 +5,10 @@ import { DurableObject, env as ambient } from 'cloudflare:workers';
  * `env` answers the binding names the driver was constructed with, `ambient` the ones its module
  * reads from `cloudflare:workers`, `exports` what `ctx.exports` reaches, `echo` the exact body it
  * received, `arm` sets an alarm and `alarmed` counts the alarms the entry forwarded, `seen`
- * counts the calls this instance has had (in memory, so a driver built per call answers 1). The
- * reserved operations answer the way a driver's must, from the counter.
+ * counts the calls this instance has had (in memory, so a driver built per call answers 1).
+ * `refuse` answers a 404 refusal in the envelope, `fail` a 500 one carrying a traceback, and
+ * `garble` a 500 that is not the envelope. The reserved operations answer the way a driver's
+ * must, from the counter.
  */
 export class CounterStore extends DurableObject<Record<string, unknown>> {
   #seen = 0;
@@ -40,6 +42,12 @@ export class CounterStore extends DurableObject<Record<string, unknown>> {
         return Response.json({ result: null });
       case 'alarmed':
         return Response.json({ result: (await this.ctx.storage.get<number>('alarms')) ?? 0 });
+      case 'refuse':
+        return Response.json({ error: { code: 'session.unknown', status: 404, body: { message: 'no session s1' } } }, { status: 404 });
+      case 'fail':
+        return Response.json({ error: { code: 'host_failed', status: 500, body: 'Traceback: storage path /data/s1' } }, { status: 500 });
+      case 'garble':
+        return new Response('Traceback: storage path /data/s1', { status: 500 });
       case 'substrat.size':
         return Response.json({ result: { bytes: current } });
       default: {

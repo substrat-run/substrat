@@ -14,13 +14,15 @@ import type { DrainedEvent } from '@substrat-run/contracts';
 import {
   directoryDump,
   scopeDump,
+  scopeDumpChange,
+  scopeDumpPageTable,
+  z,
   type DirectoryBackup,
   type DirectoryDump,
   type ScopeBackup,
-  type ScopeDump,
 } from '@substrat-run/contracts';
 import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
-import type { DirectoryBackupStore, ScopeBackupStore } from './backups.js';
+import type { DirectoryBackupStore, ScopeBackupEntry, ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
 interface R2BucketLike {
@@ -38,6 +40,7 @@ interface R2BucketLike {
     prefix?: string;
     cursor?: string;
     include?: ('customMetadata' | 'httpMetadata')[];
+    delimiter?: string;
   }): Promise<{
     objects: { key: string; size: number; customMetadata?: Record<string, string> }[];
     truncated: boolean;
@@ -46,47 +49,99 @@ interface R2BucketLike {
 }
 
 /**
- * Keys are `scopes/<tenantId>/<scopeId>/<capturedAt>.json`, so a scope's copies are one
+ * A backup is `scopes/<tenantId>/<scopeId>/<capturedAt>.json`, so a scope's copies are one
  * prefix list and a tenant's are one level up. The scheme is private to this module —
  * callers address a backup by (tenant, scope, capturedAt) and never build a path.
+ *
+ * That object is the backup's MANIFEST (#2839): the dump's header and how many entries hold its
+ * tables, each entry its own object at `scopes/<tenantId>/<scopeId>/<capturedAt>/<stageId>/<seq>.json`.
+ * One object per page rather than one multipart object, because a restore reads it back a page at
+ * a time: a single JSON document cannot be read in parts. The manifest is written last, so a
+ * backup that did not finish has none and is never listed or read.
+ *
+ * A backup written before #2839 is one whole dump at the manifest's key. It is read as a backup
+ * of one entry, which is its tables.
  */
 function backupKey(tenantId: string, scopeId: string, capturedAt: string): string {
   return `scopes/${tenantId}/${scopeId}/${capturedAt}.json`;
+}
+
+function entryKey(tenantId: string, scopeId: string, capturedAt: string, stageId: string, seq: number): string {
+  return `scopes/${tenantId}/${scopeId}/${capturedAt}/${stageId}/${seq}.json`;
 }
 
 function scopePrefix(tenantId: string, scopeId: string): string {
   return `scopes/${tenantId}/${scopeId}/`;
 }
 
+/** A backup's manifest: the dump without its tables, and where its entries are. */
+const backupManifest = scopeDump.omit({ tables: true }).extend({
+  format: z.literal('paged'),
+  stageId: z.string().min(1),
+  entries: z.number().int().positive(),
+  tables: z.number().int().nonnegative(),
+});
+
+const backupEntry = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('page'), tables: z.array(scopeDumpPageTable) }),
+  z.object({ kind: z.literal('changes'), tables: z.array(scopeDumpChange) }),
+]);
+
+/** Byte length, not string length: a size is the stored object's, and non-ASCII would under-report. */
+const byteLength = (body: string): number => new TextEncoder().encode(body).length;
+
 export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
   const r2 = bucket as R2BucketLike;
+
   return {
-    async put({ vertical, dump }) {
-      const body = JSON.stringify(dump);
-      // Byte length, not string length: the size is meant to be the stored object's,
-      // and a dump full of non-ASCII would otherwise under-report.
-      const size = new TextEncoder().encode(body).length;
-      const backup: ScopeBackup = {
-        tenantId: dump.tenantId,
-        scopeId: dump.scopeId,
-        vertical,
-        capturedAt: dump.capturedAt,
-        size,
-        tables: dump.tables.length,
-      };
-      await r2.put(backupKey(dump.tenantId, dump.scopeId, dump.capturedAt), body, {
-        httpMetadata: { contentType: 'application/json' },
-        // Mirrored into custom metadata so `list` can answer without fetching every
-        // dump — a scope's backups are megabytes, its listing is a table row.
-        customMetadata: {
-          tenantId: backup.tenantId,
-          scopeId: backup.scopeId,
-          capturedAt: backup.capturedAt,
-          tables: String(backup.tables),
-          ...(vertical ? { vertical } : {}),
+    begin({ vertical, header }) {
+      const { tenantId, scopeId, capturedAt } = header;
+      const written = new Map<string, number[]>();
+      return {
+        async put(stageId, seq, entry) {
+          const body = JSON.stringify(entry);
+          await r2.put(entryKey(tenantId, scopeId, capturedAt, stageId, seq), body, {
+            httpMetadata: { contentType: 'application/json' },
+            // Retention dates every object of a backup by this, entries included.
+            customMetadata: { capturedAt },
+          });
+          const sizes = written.get(stageId) ?? [];
+          sizes[seq] = byteLength(body);
+          written.set(stageId, sizes);
         },
-      });
-      return backup;
+
+        async discard(stageId) {
+          const sizes = written.get(stageId) ?? [];
+          written.delete(stageId);
+          await Promise.all(
+            sizes.map((_, seq) => r2.delete(entryKey(tenantId, scopeId, capturedAt, stageId, seq)).catch(() => undefined)),
+          );
+        },
+
+        async commit({ stageId, entries, tables }) {
+          const sizes = written.get(stageId) ?? [];
+          for (let seq = 0; seq < entries; seq++) {
+            if (sizes[seq] === undefined) throw new Error(`backup entry ${seq} of ${entries} was never written`);
+          }
+          const body = JSON.stringify({ ...header, format: 'paged', stageId, entries, tables });
+          const size = byteLength(body) + sizes.slice(0, entries).reduce((a, b) => a + b, 0);
+          const backup: ScopeBackup = { tenantId, scopeId, vertical, capturedAt, size, tables };
+          await r2.put(backupKey(tenantId, scopeId, capturedAt), body, {
+            httpMetadata: { contentType: 'application/json' },
+            // Mirrored into custom metadata so `list` can answer without fetching every
+            // manifest. `size` too: the manifest is the smallest part of the copy.
+            customMetadata: {
+              tenantId,
+              scopeId,
+              capturedAt,
+              tables: String(tables),
+              size: String(size),
+              ...(vertical ? { vertical } : {}),
+            },
+          });
+          return backup;
+        },
+      };
     },
 
     async list({ tenantId, scopeId }) {
@@ -94,8 +149,10 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       const out: ScopeBackup[] = [];
       let cursor: string | undefined;
       do {
+        // One level: a backup's entries sit under a directory of their own, and are not backups.
         const page = await r2.list({
           prefix,
+          delimiter: '/',
           include: ['customMetadata'],
           ...(cursor ? { cursor } : {}),
         });
@@ -109,7 +166,7 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
             scopeId,
             vertical: meta.vertical ?? null,
             capturedAt,
-            size: o.size,
+            size: meta.size ? Number(meta.size) : o.size,
             tables: meta.tables ? Number(meta.tables) : 0,
           });
         }
@@ -124,8 +181,30 @@ export function createR2BackupStore(bucket: unknown): ScopeBackupStore {
       const obj = await r2.get(backupKey(tenantId, scopeId, capturedAt));
       if (!obj) return null;
       // Parsed through the contract on the way out: a corrupted or hand-edited object
-      // fails HERE, loudly, rather than at the restore that trusted it.
-      return scopeDump.parse(JSON.parse(await obj.text())) as ScopeDump;
+      // fails HERE, loudly, rather than at the restore that trusted it. A manifest says so,
+      // so a damaged one is refused as a manifest rather than as a whole dump.
+      const raw: unknown = JSON.parse(await obj.text());
+      if ((raw as { format?: unknown } | null)?.format !== 'paged') {
+        const { tables, ...header } = scopeDump.parse(raw);
+        return {
+          header,
+          entries: 1,
+          entry: async (index) => {
+            if (index !== 0) throw new Error(`backup ${capturedAt} of scope ${scopeId} has one entry`);
+            return { kind: 'page', tables };
+          },
+        };
+      }
+      const { format: _, stageId, entries, tables: __, ...header } = backupManifest.parse(raw);
+      return {
+        header,
+        entries,
+        entry: async (index): Promise<ScopeBackupEntry> => {
+          const part = await r2.get(entryKey(tenantId, scopeId, capturedAt, stageId, index));
+          if (!part) throw new Error(`backup ${capturedAt} of scope ${scopeId} is missing entry ${index}`);
+          return backupEntry.parse(JSON.parse(await part.text()));
+        },
+      };
     },
   };
 }
@@ -418,10 +497,13 @@ const DAY_MS = 86_400_000;
 
 /**
  * Drop `scopes/…` reap copies (#493) older than the window. A copy's age is its
- * `capturedAt` — the key's last segment, same as the store's own fallback address — so a
- * hand-uploaded object without metadata still ages out rather than living forever by
- * omission. An unparsable timestamp keeps the copy: deleting what cannot be dated is not
- * retention.
+ * `capturedAt`: the object's metadata, else the key's segment after the scope, which is the
+ * manifest's name and the directory a paged copy's entries sit in (#2839). So a hand-uploaded
+ * object without metadata still ages out rather than living forever by omission. An
+ * unparsable timestamp keeps the copy: deleting what cannot be dated is not retention.
+ *
+ * A copy's manifest sorts before its entries (`.` before `/`), so it goes first: a pass cut
+ * short leaves entries no backup names, for the next pass, never a backup missing its entries.
  *
  * Note the interaction with #37 (erasure): per-subject payloads inside these dumps are
  * sealed under per-subject DEKs, so an old copy's PII exposure is bounded by key
@@ -433,7 +515,7 @@ export async function pruneScopeBackups(bucket: unknown, options: PruneOptions):
   let pruned = 0;
   for (const o of await listAll(r2, 'scopes/')) {
     const capturedAt =
-      o.customMetadata?.capturedAt ?? o.key.slice(o.key.lastIndexOf('/') + 1).replace(/\.json$/, '');
+      o.customMetadata?.capturedAt ?? (o.key.split('/')[3] ?? '').replace(/\.json$/, '');
     const at = new Date(capturedAt).getTime();
     if (Number.isNaN(at) || at >= cutoff) continue;
     await r2.delete(o.key);
