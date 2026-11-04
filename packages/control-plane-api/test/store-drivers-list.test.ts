@@ -52,6 +52,16 @@ describe('control-plane API — the store drivers one vertical may use (#2813)',
     expect(await read(appWith([graphFor('helpdesk')]), 'helpdesk')).toEqual({ drivers: [graphFor()] });
   });
 
+  it("forms the id as the deploy does when the slug is typed already prefixed", async () => {
+    const app = appWith([graphFor('acme/helpdesk', 'rival/crm')]);
+    const pinned = { [DEV_ACTOR_HEADER]: staff, 'x-substrat-tenant': 'acme' };
+    // Its own prefix stays itself (not `acme/acme/helpdesk`), for a builder and for pinned staff.
+    expect(await read(app, 'acme/helpdesk')).toEqual({ drivers: [graphFor('acme/helpdesk')] });
+    expect(await read(app, 'acme/helpdesk', pinned)).toEqual({ drivers: [graphFor('acme/helpdesk')] });
+    // Another tenant's prefix is just a name inside the builder's own namespace.
+    expect(await read(app, 'rival/crm')).toEqual({ drivers: [graphFor()] });
+  });
+
   it("judges a staff push pinned to a workspace as the deploy forms the id", async () => {
     const app = appWith([graphFor('acme/helpdesk')]);
     const pinned = { [DEV_ACTOR_HEADER]: staff, 'x-substrat-tenant': 'acme' };
@@ -62,8 +72,6 @@ describe('control-plane API — the store drivers one vertical may use (#2813)',
   it('needs the vertical, and leaves the staff-only per-driver read closed to a builder', async () => {
     const app = appWith([graphFor('acme/helpdesk')]);
     expect((await app.request('/store-drivers', { headers: asBuilder })).status).toBe(400);
-    // The id is formed from the bare slug; a tenant-prefixed value is not accepted.
-    expect((await app.request('/store-drivers?vertical=acme/helpdesk', { headers: asBuilder })).status).toBe(400);
     expect((await app.request('/store-drivers/graph', { headers: asBuilder })).status).toBe(403);
   });
 });
