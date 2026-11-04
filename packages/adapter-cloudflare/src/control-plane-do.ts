@@ -584,6 +584,7 @@ export interface AccessLogRow {
   scope_id: string | null;
   params: string | null;
   result_count: number;
+  on_behalf_of: string | null;
   drained_at: string | null;
   at: string;
 }
@@ -1242,6 +1243,7 @@ const DIRECTORY_DDL = `
     scope_id     TEXT,
     params       TEXT,
     result_count INTEGER NOT NULL,
+    on_behalf_of TEXT,
     drained_at   TEXT,
     at           TEXT NOT NULL
   );
@@ -1960,6 +1962,8 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
     // #977: who a service credential acted for.
     this.addColumn('_substrat_admin_log', 'on_behalf_of TEXT');
+    // #2860: the same person, on the access log's rows.
+    this.addColumn('_substrat_access_log', 'on_behalf_of TEXT');
     // The signals `version` stamp (#1231): a DO that predates the column ALTERs it in.
     this.addColumn('_substrat_ops_failures', 'version TEXT');
     // The error shape (#1233): who refused + the taxonomy code, on a DO that predates them.
@@ -5039,7 +5043,7 @@ export class ControlPlaneDO extends DurableObject {
   identityMemberships(
     provider: string,
     externalId: string,
-    access: { id: string; actor: string; at: string },
+    access: { id: string; actor: string; onBehalfOf: OnBehalfOf | null; at: string },
   ): {
     topology: string | null;
     memberships: {
@@ -5090,6 +5094,7 @@ export class ControlPlaneDO extends DurableObject {
       scopeId: null,
       params: JSON.stringify({ provider }),
       resultCount: memberships.length,
+      onBehalfOf: access.onBehalfOf,
       at: access.at,
     });
     return { topology, memberships };
@@ -5816,12 +5821,14 @@ export class ControlPlaneDO extends DurableObject {
     scopeId: string | null;
     params: string | null;
     resultCount: number;
+    /** #2860: who the read was made for, when an attributed view recorded it. */
+    onBehalfOf?: OnBehalfOf | null;
     at: string;
   }): void {
     this.sql.exec(
       `INSERT INTO _substrat_access_log
-         (id, actor, method, tenant_id, scope_id, params, result_count, drained_at, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+         (id, actor, method, tenant_id, scope_id, params, result_count, on_behalf_of, drained_at, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       entry.id,
       entry.actor,
       entry.method,
@@ -5829,6 +5836,7 @@ export class ControlPlaneDO extends DurableObject {
       entry.scopeId,
       entry.params,
       entry.resultCount,
+      entry.onBehalfOf == null ? null : JSON.stringify(entry.onBehalfOf),
       entry.at,
     );
   }

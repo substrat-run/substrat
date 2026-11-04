@@ -873,6 +873,30 @@ export const identityMembership = z.object({
 export type IdentityMembership = z.infer<typeof identityMembership>;
 
 /**
+ * On whose behalf a control-plane action was taken (#977) — the person, where the executing
+ * `actor` is the client that carried it out.
+ *
+ * "Who did this" is a chain of up to three parties, and the audit row keeps all of them:
+ * the platform identity that EXECUTED it (`actor`: the dashboard's service, a CI token, the
+ * sweep, a staff member in the console), the customer principal whose session and authority
+ * it ran under (`principal` + `tenantId`), and — when the two differ — the staff member who
+ * was really at the keyboard (`impersonation`, the K-42 stamp the outbox and the denial log
+ * already carry). Collapsing the chain into one actor would drop which client acted, and
+ * leave impersonation nowhere to go.
+ *
+ * Never supplied by a caller: it is read off a credential the control plane verified — the
+ * dashboard's tenant token carries it, signed at mint — exactly as `actor` is stamped
+ * platform-side.
+ */
+export const onBehalfOf = z.object({
+  principal: principalId,
+  tenantId,
+  /** K-42: a staff member acting as `principal`. Absent the ordinary case. */
+  impersonation: impersonationStamp.optional(),
+});
+export type OnBehalfOf = z.infer<typeof onBehalfOf>;
+
+/**
  * One staff READ of the directory (K-24). Separate from `adminLogEntry` because a
  * mutation is permanent evidence and a read is operational history — one table would
  * force one retention policy on both.
@@ -882,6 +906,15 @@ export type IdentityMembership = z.infer<typeof identityMembership>;
  *
  * `drainedAt` marks a row shipped to Tier 2. Only drained rows may be pruned —
  * expiring on age alone would destroy evidence while calling itself retention.
+ *
+ * `onBehalfOf` (#2860) is the person a delegated read was made for — the dashboard reads a
+ * team's data over the team's credential, so `actor` is the platform's service actor and
+ * the person rides beside it, exactly as on `adminLogEntry`. Null when no customer session
+ * carried the read (a staff read, where the actor IS the person; a sweep). OPTIONAL on the
+ * wire: a row written before the column reads as "not recorded". Like the admin log's, it
+ * is a pseudonymous key (principal and tenant ids, and K-42's stamp when staff acted as the
+ * person), and subject erasure does not reach it; the row's own lifetime is the drain and
+ * the shipped batches' retention.
  */
 export const accessLogEntry = z.object({
   id: z.string().min(1),
@@ -891,6 +924,7 @@ export const accessLogEntry = z.object({
   scopeId: scopeId.nullable(),
   params: z.string().nullable(),
   resultCount: z.number().int().nonnegative(),
+  onBehalfOf: onBehalfOf.nullable().optional(),
   drainedAt: instant.nullable(),
   at: instant,
 });
@@ -1422,30 +1456,6 @@ export const sweepRunsPayload = z.object({
     .max(64),
 });
 export type SweepRunsPayload = z.infer<typeof sweepRunsPayload>;
-
-/**
- * On whose behalf a control-plane action was taken (#977) — the person, where the executing
- * `actor` is the client that carried it out.
- *
- * "Who did this" is a chain of up to three parties, and the audit row keeps all of them:
- * the platform identity that EXECUTED it (`actor`: the dashboard's service, a CI token, the
- * sweep, a staff member in the console), the customer principal whose session and authority
- * it ran under (`principal` + `tenantId`), and — when the two differ — the staff member who
- * was really at the keyboard (`impersonation`, the K-42 stamp the outbox and the denial log
- * already carry). Collapsing the chain into one actor would drop which client acted, and
- * leave impersonation nowhere to go.
- *
- * Never supplied by a caller: it is read off a credential the control plane verified — the
- * dashboard's tenant token carries it, signed at mint — exactly as `actor` is stamped
- * platform-side.
- */
-export const onBehalfOf = z.object({
-  principal: principalId,
-  tenantId,
-  /** K-42: a staff member acting as `principal`. Absent the ordinary case. */
-  impersonation: impersonationStamp.optional(),
-});
-export type OnBehalfOf = z.infer<typeof onBehalfOf>;
 
 /**
  * An append-only admin audit row (control-plane.md §4.4). Every field except

@@ -1271,7 +1271,7 @@ interface ControlPlaneStub {
   identityMemberships(
     provider: string,
     externalId: string,
-    access: { id: string; actor: string; at: string },
+    access: { id: string; actor: string; onBehalfOf: OnBehalfOf | null; at: string },
   ): Promise<{ topology: string | null; memberships: unknown[] }>;
   resolveIdentity(
     tenantId: string,
@@ -1293,6 +1293,7 @@ interface ControlPlaneStub {
     scopeId: string | null;
     params: string | null;
     resultCount: number;
+    onBehalfOf: OnBehalfOf | null;
     at: string;
   }): Promise<void>;
   accessLog(query: {
@@ -10527,6 +10528,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const { topology, memberships } = await this.cp.identityMemberships(provider, externalId, {
           id: ulid(),
           actor,
+          onBehalfOf: this.onBehalfOf,
           at: new Date().toISOString(),
         });
         if (topology === null) throw substratError('not_found', `identity pool '${provider}' is not registered`);
@@ -10914,6 +10916,7 @@ export class CloudflareScopeHost implements ScopeHost {
             scopeId: r.scope_id,
             params: r.params,
             resultCount: r.result_count,
+            onBehalfOf: r.on_behalf_of ? JSON.parse(r.on_behalf_of) : null,
             drainedAt: r.drained_at,
             at: r.at,
           }),
@@ -11539,6 +11542,8 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId: target.scopeId ?? null,
       params: params == null ? null : JSON.stringify(params).slice(0, 500),
       resultCount,
+      // #2860: set only on an attributed VIEW, as on the admin log's rows.
+      onBehalfOf: this.onBehalfOf,
       at: new Date().toISOString(),
     });
   }
