@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { entityRef } from './events.js';
-import { capabilityId, instant, permissionKey, platformActorId, principalId, scopeId } from './ids.js';
+import { capabilityId, instant, permissionKey, platformActorId, principalId, scopeId, type PrincipalId } from './ids.js';
 import { coverage } from './permission.js';
 
 /**
@@ -391,6 +391,13 @@ export const capabilityExchange = z.discriminatedUnion('kind', [
   }),
 ]);
 export type CapabilityExchange = z.infer<typeof capabilityExchange>;
+
+/**
+ * What a host's exchange is asked for: the only mode the caller can handle (a secret of another
+ * mode answers `null` without taking a use), or — for a `bind` link (#2817), which no other mode
+ * spends — `bind` with its presenter, the principal the caller's own authentication resolved.
+ */
+export type CapabilityExchangeOptions = { mode?: 'act' | 'become' } | { mode: 'bind'; presenter: PrincipalId };
 
 /**
  * What narrows `ctx.capabilities.list` and `HostAdmin.listCapabilities`. Live capabilities

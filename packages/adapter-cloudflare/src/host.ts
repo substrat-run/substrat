@@ -76,11 +76,13 @@ import {
   capabilityExchange,
   mintedCapability,
   boundedBecomeMint,
+  boundedBindLinkMint,
   boundedBecomeRevoke,
   boundedUnbind,
   entityRef,
   becomeLinkState,
   principalBecomeCapabilityInput,
+  principalBindLinkInput,
   capabilityGrant,
   principalId,
   connectionGrant,
@@ -215,6 +217,9 @@ import {
   type BoundedUnbind,
   type BecomeLinkState,
   type PrincipalBecomeCapabilityInput,
+  type PrincipalBindLinkInput,
+  type BoundedBindLinkMint,
+  type CapabilityExchangeOptions,
   type CapabilityExchange,
   type CapabilityId,
   type CapabilityFilter,
@@ -1623,7 +1628,8 @@ interface ScopeStubRpc {
     secret: string,
     tenantId: TenantId,
     scopeId: ScopeId,
-    mode?: 'act' | 'become',
+    mode?: 'act' | 'become' | 'bind',
+    presenter?: PrincipalId,
   ): Promise<CapabilityExchange | null>;
   /** The platform's `become` mint (#1672), serialized in this scope's own storage. */
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
@@ -1637,6 +1643,13 @@ interface ScopeStubRpc {
     caller: PrincipalId,
     input: PrincipalBecomeCapabilityInput,
   ): Promise<BoundedBecomeMint>;
+  /** A principal's bounded `bind` link mint (#2817) — binding an existing member to a record. */
+  mintBindLinkBoundedFor(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    caller: PrincipalId,
+    input: PrincipalBindLinkInput,
+  ): Promise<BoundedBindLinkMint>;
   /** Revoke a `become` a principal minted (#1686); false for any other capability. */
   revokeBecomeCapabilityFor(tenantId: TenantId, scopeId: ScopeId, id: string, by: PrincipalId): Promise<BoundedBecomeRevoke>;
   /** A principal's bounded unbind of a binding shape's record (#1686). */
@@ -6500,7 +6513,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
-    options?: { mode?: 'act' | 'become' },
+    options?: CapabilityExchangeOptions,
   ): Promise<CapabilityExchange | null> {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
@@ -6509,6 +6522,7 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId,
       scopeId,
       options?.mode,
+      options?.mode === 'bind' ? principalId.parse(options.presenter) : undefined,
     );
     return capabilityExchange.nullable().parse(outcome);
   }
@@ -6661,6 +6675,22 @@ export class CloudflareScopeHost implements ScopeHost {
     return boundedBecomeMint.parse(
       await this.scopeStub(scopeId).mintBecomeCapabilityBoundedFor(
         tenantId, scopeId, principalId.parse(caller), principalBecomeCapabilityInput.parse(input),
+      ),
+    );
+  }
+
+  /**
+   * A principal's `bind` link mint (#2817) — binding an existing member to a record, minted by
+   * someone holding the binding's key on it. The bound (`bindLinkMintCheck`) and the write are one
+   * ScopeDO task; a refusal writes nothing. Same gate as the scope-role verbs.
+   */
+  async mintBindLinkBounded(
+    tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBindLinkInput,
+  ): Promise<BoundedBindLinkMint> {
+    await this.scopeRoleGate(tenantId, scopeId, 'mintBindLinkBounded');
+    return boundedBindLinkMint.parse(
+      await this.scopeStub(scopeId).mintBindLinkBoundedFor(
+        tenantId, scopeId, principalId.parse(caller), principalBindLinkInput.parse(input),
       ),
     );
   }
