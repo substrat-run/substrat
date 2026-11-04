@@ -1,5 +1,30 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.177.0
+
+### Minor Changes
+
+- 1b2892a: The control plane can read the migrations a pushed bundle registers (#2351): a `defineScopeDO` class exposes them under `REGISTERED_MIGRATIONS`, `loaderMigrationExtractor` evaluates a bundle in a Worker Loader isolate with no bindings and no network, and with the `extractMigrations` option a push whose declared migrations differ, or whose worker entry cannot be evaluated, is refused before upload. A version pushed earlier is read at its first promote. Both directories record the digest of what was read (`versionMigrationsExtracted`), and the promote review says whether its migrations were read from the bundle.
+- fafa51e: The event drain now prunes a scope's outbox: a row drained to the lake more than 90 days ago is deleted once every local consumer of its type has taken it, unless its type is exported to another vertical or it is its entity's newest event. History reads cover that window and older history is in the lake; a scope walk resumed below the pruned range refuses with `WatermarkPruned`, so a mirror resyncs. A consumer added later backfills only the retained window. Scopes that never drain are never pruned.
+
+### Patch Changes
+
+- 0afb860: A scope-store `storeCode` starting with `substrat.` is now the platform's alone: a call the platform refuses arrives as `substrat.refused`, one it cannot serve as `substrat.unavailable`, and an answer outside the envelope as `substrat.bad_envelope` (was `bad_envelope`). A store that answers a `substrat.` code itself arrives as `substrat.bad_envelope`, so a store's answer is never mistaken for the platform's. The contracts package adds `PLATFORM_STORE_CODE` and `isPlatformStoreCode`, and the kernel's `callScopeStore` takes `{ send, through: 'platform' }` for a transport whose answer comes back through the platform's hop.
+- de5ea61: `storeAnswerOf` judges a scope store's HTTP answer once: an error envelope at any status, a result only on a 2xx. The direct-binding store path now refuses a result on a non-2xx as `bad_envelope`, as the platform hop already did.
+- Updated dependencies [8ccf734]
+- Updated dependencies [1b2892a]
+- Updated dependencies [e3f681a]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [3c97959]
+- Updated dependencies [fafa51e]
+- Updated dependencies [0afb860]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [de5ea61]
+  - @substrat-run/contracts@0.177.0
+  - @substrat-run/kernel@0.177.0
+
 ## 0.176.0
 
 ### Minor Changes
@@ -7835,7 +7860,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
