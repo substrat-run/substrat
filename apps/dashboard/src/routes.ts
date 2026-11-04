@@ -686,7 +686,10 @@ const requestRecordView = z.object({
   principalKind: z.string().nullable(), eventCount: z.number().nullable(),
   // #2762: optional, so a source that predates it reads as not recorded.
   logLines: z.number().nullable().optional(), eventTypes: z.array(z.string()),
-  entities: z.array(z.string()), versionId: z.string().nullable(), kind: z.string().optional(),
+  entities: z.array(z.string()),
+  // #2762: the lifecycle moves the request caused; optional, so an older plane reads as not recorded.
+  transitions: z.array(z.object({ entity: z.string(), from: z.string().nullable(), to: z.string() })).nullable().optional(),
+  versionId: z.string().nullable(), kind: z.string().optional(),
   outcome: z.string().nullable().optional(), eventType: z.string().nullable().optional(),
   eventId: z.string().nullable().optional(), attempt: z.number().nullable().optional(),
   latenessMs: z.number().nullable().optional(),
