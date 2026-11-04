@@ -1027,6 +1027,8 @@ interface ControlPlaneStub {
     audit: AdminEntry,
     expected?: ServedFrom,
   ): Promise<boolean>;
+  readMigrationsExtracted(id: string): Promise<{ verticalSlug: string; digest: string | null } | undefined>;
+  recordMigrationsExtracted(id: string, digest: string, audit: AdminEntry): Promise<void>;
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
@@ -9252,6 +9254,27 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         await this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
+      },
+      versionMigrationsExtracted: async (actor, verticalSlug: string, versionId: string) => {
+        const v = await this.cp.readMigrationsExtracted(versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.recordAccess(actor, 'versionMigrationsExtracted', {}, { verticalSlug, versionId }, v.digest ? 1 : 0);
+        return v.digest;
+      },
+      recordMigrationsExtracted: async (actor, verticalSlug: string, versionId: string, digest: string) => {
+        const v = await this.cp.readMigrationsExtracted(versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.cp.recordMigrationsExtracted(versionId, digest, this.adminEntry(
+          actor,
+          'recordMigrationsExtracted',
+          { tenantId: null, vertical: verticalSlug },
+          null,
+          { vertical: verticalSlug, versionId, digest },
+        ));
       },
       recordWireAuth: async (actor, input) => {
         const row = deploymentWireAuth.parse(input);

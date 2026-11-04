@@ -112,6 +112,7 @@ import {
   type StoreDriverApprovals,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
+  loaderMigrationExtractor,
   createWfpWireSettingsApi,
   createCfObservabilityReader,
   createRouterRequestDayReader,
@@ -340,6 +341,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   GITHUB_APP_PRIVATE_KEY?: string;
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
+  /**
+   * #2351: the Worker Loader a push evaluates a bundle's migrations in (`worker_loaders`). Not in
+   * wrangler.jsonc yet, until the platform account has Worker Loader. Absent ⇒ no bundle is read,
+   * and every version reads as never read.
+   */
+  MIGRATION_LOADER?: WorkerLoader;
   /** The staff roster's D1 store (#42). Absent in the workerd test (dev-actor path only). */
   AUTH_DB?: D1Database;
   /** The console SPA. Absent in the workerd test. */
@@ -3601,6 +3608,7 @@ export default {
         storeReleases: storeReleasesFor(env),
         humanStaffActor: humanStaffActorFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
+        ...(env.MIGRATION_LOADER ? { extractMigrations: loaderMigrationExtractor(env.MIGRATION_LOADER) } : {}),
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
