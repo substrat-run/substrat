@@ -159,7 +159,9 @@ anything — none of these matches a shape, so its handler is authored already a
 there is nothing to say. `authored` on one of them is refused at load:
 
 ```
-model: 'acme/close-case' declares `authored`, but nothing about it is derivable
+model: 'acme/close-case' declares `authored`, but nothing about it is derivable — it matches none of
+get, list, update, delete, create, archive, unarchive, trash, restore, trashed, so every handler for it
+is authored already.
 ```
 
 `defineOperations` checks all of this at load: a derivable operation declaring
@@ -194,7 +196,11 @@ gate goes red, and the Model tab keeps the picture from before the turn.
   },
   ```
 
-  When a PATCH really cannot be a field bag, `patchException: '<reason>'` says why.
+  The check has to be able to read that, so the input object and each body field are
+  plain Zod schemas: one it cannot inspect (a `z.custom`, a `z.preprocess`, a
+  transform) is refused even when it is optional without a default, and so is a
+  default or hook on the input object itself. The remedies are the same: `PUT`, or,
+  when a PATCH really cannot be a field bag, `patchException: '<reason>'` saying why.
 - **A partial update declares `concurrency`.** An operation taking a row's id plus two
   or more optional fields that are that entity's own columns is read-modify-write: two
   people editing different fields of the same row would each save over the other.
