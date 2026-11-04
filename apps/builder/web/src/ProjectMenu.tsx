@@ -5,7 +5,8 @@
  * the AI's set_project_name proposal can never overwrite afterwards. The
  * dropdown lists projects by recency (each is its own repo under
  * .builder/projects/, §4.6) and offers "New project" — switching swaps the
- * whole session: repo, history, gates.
+ * whole session: repo, history, gates. "Remove project…" deletes the current
+ * one after a confirmation (project-removal.ts says what goes and what stays).
  */
 import { useEffect, useRef, useState } from 'react';
 import { api, type ProjectInfo } from './api.js';
@@ -35,6 +36,7 @@ export function ProjectMenu(props: {
 	const [releasing, setReleasing] = useState(false);
 	const [version, setVersion] = useState('1.0.0');
 	const [releaseResult, setReleaseResult] = useState('');
+	const [removing, setRemoving] = useState<ProjectInfo | null>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const newNameRef = useRef<HTMLInputElement>(null);
 	const menuRef = useRef<HTMLSpanElement>(null);
@@ -97,6 +99,18 @@ export function ProjectMenu(props: {
 				...(github.trim() ? { repository: { kind: 'github', owner: parts[0]!, repo: parts[1]!, branch, directory } } : {}),
 			});
 			setCreating(false);
+			props.onChanged();
+		} catch (e) { setError((e as Error).message); }
+		finally { setSaving(false); }
+	}
+
+	async function remove(): Promise<void> {
+		if (saving || !removing) return;
+		setSaving(true);
+		setError('');
+		try {
+			await api.removeProject(removing.id);
+			setRemoving(null);
 			props.onChanged();
 		} catch (e) { setError((e as Error).message); }
 		finally { setSaving(false); }
@@ -174,8 +188,25 @@ export function ProjectMenu(props: {
 						＋ New project
 					</button>
 					{props.sourceProjects && <button className="pd-row" onClick={() => { setOpen(false); setError(''); setReleaseResult(''); setReleasing(true); }}>Build release…</button>}
+					{projects?.some((p) => p.id === current) && <button className="pd-row" onClick={() => { setOpen(false); setError(''); setRemoving(projects.find((p) => p.id === current)!); }}>Remove project…</button>}
 				</div>
 			)}
+			{removing && <div className="picker-backdrop" onClick={() => !saving && setRemoving(null)}>
+				<div className="picker prompt-dialog" onClick={(e) => e.stopPropagation()}>
+					<h2>Remove “{removing.name}”?</h2>
+					<p>
+						{removing.repository?.kind === 'github'
+							? 'Its chat history is deleted. The GitHub repository is not touched.'
+							: 'Its source and chat history are deleted. This cannot be undone.'}
+						{removing.slug && ' A version already deployed keeps running.'}
+					</p>
+					{error && <p role="alert">{error}</p>}
+					<div className="prompt-actions">
+						<button className="pill" disabled={saving} onClick={() => setRemoving(null)}>Cancel</button>
+						<button className="primary" disabled={saving} onClick={() => void remove()}>{saving ? 'Removing…' : 'Remove'}</button>
+					</div>
+				</div>
+			</div>}
 			{creating && (
 				<div className="picker-backdrop" onClick={() => setCreating(false)}>
 					<div className="picker prompt-dialog" onClick={(e) => e.stopPropagation()}>

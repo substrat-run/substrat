@@ -73,6 +73,7 @@ import {
 import { reportTurnUsage } from './metering.js';
 import { readRecord, TurnRecord, type TurnOutcome } from './record.js';
 import { underProject, withinProject } from './project-path.js';
+import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
 
@@ -953,6 +954,26 @@ export class BuilderAgent extends DurableObject<Env> {
 				reg.currentId = entry.id;
 				await this.#save(reg);
 				return json(200, entry);
+			}
+			case 'POST /api/projects/remove': {
+				if (this.#busy) return refuse(409, 'project operation already in progress');
+				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
+				const entry = (await this.#registry()).projects.find((p) => p.id === id);
+				if (!entry) return refuse(404, `no project ${id}`);
+				if (this.#builds.building(entry.slug)) return refuse(409, 'a build of this project is running');
+				this.#busy = true;
+				try {
+					// The repository first: a refused delete leaves the project listed and the
+					// removal retryable, never a repository no entry points at any more. A GitHub
+					// repository is the team's own and is never deleted.
+					if (entry.repository.kind === 'artifacts') await this.env.ARTIFACTS.delete(entry.repository.name);
+					await this.#sandboxPair(entry.id).raw.destroy().catch(() => undefined);
+					await this.ctx.storage.delete(projectStorageKeys(entry.id));
+					// Read again: a build of another vertical may have written its entry meanwhile.
+					const next = withoutProject(await this.#registry(), entry.id);
+					if (next) await this.#save(next.registry);
+					return json(200, { removed: entry.id, current: next?.registry.currentId ?? null });
+				} finally { this.#busy = false; }
 			}
 			case 'PUT /api/project': {
 				if (this.#busy) return refuse(409, 'project operation already in progress');

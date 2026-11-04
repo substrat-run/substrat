@@ -53,18 +53,38 @@ export type ScopeDumpHeader = Omit<ScopeDump, 'tables'>;
  * the scope took while its pages were read. Read in order, the entries are the dump, exactly as
  * a paged copy stages it (#2450), so no single call or object ever holds the whole scope.
  */
-export type ScopeBackupEntry =
+export type ScopeBackupScopeEntry =
   | { kind: 'page'; tables: ScopeDumpPageTable[] }
   | { kind: 'changes'; tables: ScopeDumpChange[] };
 
+/** Any stored part: a scope's, or a page of one of its stores' chains (D-69). */
+export type ScopeBackupEntry = ScopeBackupScopeEntry | { kind: 'store-page'; tables: ScopeDumpPageTable[] };
+
+/**
+ * One scope store as a backup holds it (D-69): its chain's pages as `store-page` entries under a
+ * stage of their own, in chain order, read at `revision`. The manifest lists these in place of the
+ * header's inline `stores`, so neither the manifest nor any call holds a store whole.
+ */
+export interface ScopeBackupStoreEntries {
+  binding: string;
+  driver: string;
+  stageId: string;
+  entries: number;
+  revision: string;
+}
+
 /**
  * A held backup as a restore reads it: its header, how many entries hold its tables, and each
- * entry, read in the order it was written.
+ * entry, read in the order it was written. `storeEntries` names its stores held in pages; a backup
+ * written before them carries its stores inline in `header.stores`, and lists none here.
  */
 export interface StoredScopeBackup {
   header: ScopeDumpHeader;
   entries: number;
-  entry(index: number): Promise<ScopeBackupEntry>;
+  entry(index: number): Promise<ScopeBackupScopeEntry>;
+  storeEntries: ScopeBackupStoreEntries[];
+  /** Page `seq` of a store's chain, as `storeEntries` names it. */
+  storePage(store: Pick<ScopeBackupStoreEntries, 'stageId'>, seq: number): Promise<ScopeDumpPageTable[]>;
 }
 
 /**
@@ -77,10 +97,11 @@ export interface ScopeBackupWriter {
   /** Drop a stage's entries. Best effort: retention reaches whatever is left. */
   discard(stageId: string): Promise<void>;
   /**
-   * Make the stage's first `entries` entries the backup, and return its metadata. Durable before
-   * it returns: the reap's whole guarantee is that this resolved before any byte was wiped.
+   * Make the stage's first `entries` entries the backup, with each store's entries beside them, and
+   * return its metadata. Durable before it returns: the reap's whole guarantee is that this resolved
+   * before any byte was wiped.
    */
-  commit(input: { stageId: string; entries: number; tables: number }): Promise<ScopeBackup>;
+  commit(input: { stageId: string; entries: number; tables: number; storeEntries: readonly ScopeBackupStoreEntries[] }): Promise<ScopeBackup>;
 }
 
 export interface ScopeBackupStore {

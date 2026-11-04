@@ -405,6 +405,11 @@ try {
   check(result(await send(await signed(name, 'read'))) === count, 'and its count did not move for any of them');
   const admittedDirect = await send(await signed(name, 'read'), direct);
   check(admittedDirect.status === 200, 'while a valid call sent straight to it is admitted', admittedDirect);
+  const once = await signed(name, 'increment');
+  const first = await send(once);
+  const again = await send(once);
+  check(first.status === 200 && again.status === 401 && again.text === 'unauthorized: nonce', 'the same envelope is admitted once (K-59)', { first, again });
+  check(result(await send(await signed(name, 'read'))) === count + 1, 'and the driver ran for it once');
 
   // An upload that bound no keys answers 503, not the caller's 401.
   const unconfigured = await send(await signed(name, 'read'), '?unconfigured=1');

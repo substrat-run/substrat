@@ -85,6 +85,16 @@ describe('request facets in the URL', () => {
     expect(resultLabel({ status: 200, threw: false, problemCode: null })).toEqual({ text: '200 ok', tone: 'ok' });
     expect(resultLabel({ status: 200, threw: false, problemCode: 'permission_denied' })).toMatchObject({ tone: 'warn' });
     expect(resultLabel({ status: null, threw: true, problemCode: null })).toEqual({ text: 'threw', tone: 'error' });
+    // #2762: a success says the move it made, by type alone (an id may hold a colon); a created
+    // entity has no state it left; a refusal keeps its code whatever the line names.
+    const moves = [
+      { entity: 'ticket:01J:a', from: 'open', to: 'resolved' },
+      { entity: 'assignment:01K', from: null, to: 'active' },
+    ];
+    expect(resultLabel({ status: 200, threw: false, problemCode: null, transitions: moves })).toEqual({ text: 'ticket: open → resolved +1', tone: 'ok' });
+    expect(resultLabel({ status: 201, threw: false, problemCode: null, transitions: moves.slice(1) })).toEqual({ text: 'assignment: → active', tone: 'ok' });
+    expect(resultLabel({ status: 409, threw: false, problemCode: 'conflict', transitions: moves })).toEqual({ text: '409 conflict', tone: 'warn' });
+    expect(resultLabel({ status: 200, threw: false, problemCode: null, transitions: [] })).toEqual({ text: '200 ok', tone: 'ok' });
     expect(durationLabel(842)).toBe('842 ms');
     expect(durationLabel(2100)).toBe('2.1 s');
     expect(bucketWidthLabel(120_000)).toBe('2 min');

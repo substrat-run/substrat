@@ -112,6 +112,15 @@ function fixture(now = Date.now()): RequestRecord[] {
       logLines: t >= deploy ? (failed ? 2 : operation === 'ticket0/assistant-answer' ? 3 : 0) : null,
       eventTypes: eventCount > 0 ? [operation === 'ticket0/reply' ? 'ticket.replied' : 'ticket.updated'] : [],
       entities: eventCount > 0 ? [`ticket:${id}`] : [],
+      // #2762: an assignment opens a ticket; mail opens a new one. Recorded from the later version.
+      transitions:
+        t < deploy || eventCount === 0
+          ? null
+          : operation === 'ticket0/assign'
+            ? [{ entity: `ticket:${id}`, from: 'new', to: 'open' }]
+            : operation === 'ticket0/ingest-mail'
+              ? [{ entity: `ticket:${id}`, from: null, to: 'new' }]
+              : [],
       versionId: t >= deploy ? 'ticket0@2.15.0' : 'ticket0@2.14.3',
       kind: 'request',
       // #2192: the assistant calls its model provider; a failed call is one whose upstream

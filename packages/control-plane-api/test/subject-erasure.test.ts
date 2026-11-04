@@ -26,6 +26,7 @@ import {
   type ScopeBackupStore,
   createR2BackupStore,
 } from '../src/index.js';
+import { pagedFromWhole } from './helpers/store-fakes.js';
 import { fakeBucket } from './fake-r2-bucket.js';
 
 /**
@@ -437,19 +438,17 @@ describe('subject erasure (#37)', () => {
           snapshotScope: async () => ({}),
         },
       } as never,
-      platformScopeStores: {
-        exportStores: async () => [{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }],
+      platformScopeStores: pagedFromWhole({
+        exportTables: () => [graphTable],
         eraseSubject: async ({ subjectId }) => {
           if (calls.failErase) throw new Error('store unavailable');
           calls.erased.push(subjectId);
           return [{ binding: 'GRAPH', erased: 1 }];
         },
-        wipeStores: async () => undefined,
-        sizeStores: async () => [],
-        importStores: async (input) => {
-          calls.imported.push(input.stores);
+        imported: ({ binding, tables }) => {
+          calls.imported.push([{ binding, driver: 'graph', tables }]);
         },
-      },
+      }),
     });
 
   it('a hosted restore imports the dump stores through the platform, not the vertical', async () => {
@@ -519,12 +518,12 @@ describe('subject erasure (#37)', () => {
       vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] },
     };
     type Calls = { exported: string[]; imported: string[]; erased: string[]; wiped: string[] };
-    const recording = (calls: Calls): PlatformScopeStores => ({
-      exportStores: async ({ scopeId: s2, stores }) => {
+    const recording = (calls: Calls): PlatformScopeStores => pagedFromWhole({
+      exportTables: ({ scopeId: s2 }) => {
         calls.exported.push(s2);
-        return stores.map((store) => ({ ...store, tables: [graphTable] }));
+        return [graphTable];
       },
-      importStores: async ({ scopeId: s2 }) => {
+      imported: ({ scopeId: s2 }) => {
         calls.imported.push(s2);
       },
       eraseSubject: async ({ subjectId, stores }) => {
@@ -591,7 +590,10 @@ describe('subject erasure (#37)', () => {
       expect(calls.exported).toEqual([scoped]);
       const [backup] = await store.list({ tenantId: t, scopeId: scoped });
       const taken = await store.get({ tenantId: t, scopeId: scoped, capturedAt: backup!.capturedAt });
-      expect(taken!.header.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
+      // Held as store pages beside the scope's entries (D-69), not inline.
+      expect(taken!.header.stores).toEqual([]);
+      expect(taken!.storeEntries.map((e) => [e.binding, e.driver, e.entries])).toEqual([['GRAPH', 'graph', 1]]);
+      expect(await taken!.storePage(taken!.storeEntries[0]!, 0)).toEqual([graphTable]);
     });
 
     it('is carried WITH its store in a full tenant export (Art. 20)', async () => {

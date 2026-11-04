@@ -63,7 +63,7 @@ beforeAll(async () => {
         compatibilityDate,
         compatibilityFlags: uploaded.compatibilityFlags,
         bindings: uploaded.text,
-        durableObjects: { [uploaded.binding]: uploaded.className },
+        durableObjects: { [uploaded.binding]: { className: uploaded.className, useSQLite: true } },
       },
       {
         // The same upload with one key listed for both audiences: the entry refuses everything.
@@ -72,7 +72,7 @@ beforeAll(async () => {
         compatibilityDate,
         compatibilityFlags: uploaded.compatibilityFlags,
         bindings: { ...uploaded.text, SUBSTRAT_STORE_PLATFORM_KEYS: caller.publicKey },
-        durableObjects: { [uploaded.binding]: uploaded.className },
+        durableObjects: { [uploaded.binding]: { className: uploaded.className, useSQLite: true } },
       },
       {
         // The same upload at a compatibility date where ctx.exports is on by default (2025-11-17).
@@ -81,7 +81,7 @@ beforeAll(async () => {
         compatibilityDate: '2026-03-01',
         compatibilityFlags: uploaded.compatibilityFlags,
         bindings: uploaded.text,
-        durableObjects: { [uploaded.binding]: uploaded.className },
+        durableObjects: { [uploaded.binding]: { className: uploaded.className, useSQLite: true } },
       },
       {
         // The twin: the same, without the upload's disable_ctx_exports, to show the probe sees it.
@@ -90,7 +90,7 @@ beforeAll(async () => {
         compatibilityDate: '2026-03-01',
         compatibilityFlags: uploaded.compatibilityFlags.filter((flag) => flag !== 'disable_ctx_exports'),
         bindings: uploaded.text,
-        durableObjects: { [uploaded.binding]: uploaded.className },
+        durableObjects: { [uploaded.binding]: { className: uploaded.className, useSQLite: true } },
       },
       {
         // The same upload without its script name: the entry cannot compare the script line.
@@ -99,7 +99,7 @@ beforeAll(async () => {
         compatibilityDate,
         compatibilityFlags: uploaded.compatibilityFlags,
         bindings: Object.fromEntries(Object.entries(uploaded.text).filter(([name]) => name !== 'SUBSTRAT_STORE_SCRIPT')),
-        durableObjects: { [uploaded.binding]: uploaded.className },
+        durableObjects: { [uploaded.binding]: { className: uploaded.className, useSQLite: true } },
       },
       {
         // Addresses the store's object class directly, under an id of its own choosing.
@@ -111,7 +111,7 @@ beforeAll(async () => {
           return object.fetch(new Request(request.url, { method: 'POST', headers: request.headers, body: await request.arrayBuffer() }));
         } }`,
         compatibilityDate,
-        durableObjects: { SUBSTRAT_STORE: { className: uploaded.className, scriptName: 'store' } },
+        durableObjects: { SUBSTRAT_STORE: { className: uploaded.className, scriptName: 'store', useSQLite: true } },
       },
     ],
   });
@@ -304,20 +304,22 @@ describe('the counter behind the store entry (#2289)', () => {
     expect((await counter()).result).toBe(before);
   });
 
-  it('accepts the same envelope again inside the window: no nonce memory (RFC Q2)', async () => {
+  it('admits an envelope once: the same envelope again is refused before the driver runs (K-59)', async () => {
     const body = JSON.stringify({ operation: 'increment', input: { by: 1 }, objectName: NAME });
     const issued = await issueScopeStoreEnvelope({ privateKey: callerKey, aud: 'caller', script: SCRIPT, name: NAME, op: 'increment', body });
     const store = await mf.getWorker('store');
-    const send = () =>
-      store.fetch('https://store/invoke', {
+    const send = async () => {
+      const res = await store.fetch('https://store/invoke', {
         method: 'POST',
         headers: { 'x-substrat-store-envelope': issued.header, 'x-substrat-store-signature': issued.signature },
         body,
       });
+      return `${res.status} ${await res.text()}`;
+    };
     const before = (await counter()).result;
-    expect((await send()).status).toBe(200);
-    expect((await send()).status).toBe(200);
-    expect((await counter()).result).toBe(before + 2);
+    expect(await send()).toMatch(/^200 /);
+    expect(await send()).toBe('401 unauthorized: nonce');
+    expect((await counter()).result).toBe(before + 1);
   });
 
   it("forwards the object's alarm to the driver, which keeps one instance across calls", async () => {

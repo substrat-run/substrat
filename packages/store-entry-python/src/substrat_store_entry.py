@@ -12,7 +12,9 @@ name and both audiences' public keys this upload was given. This module parses n
 it cannot disagree with the JavaScript entry about one. The default entrypoint addresses
 SubstratStoreObject by idFromName of the signed name. The object checks the call again, and
 refuses unless its own id is the id of that name (check 5), before the driver is constructed: an
-object is bound to one name by construction, with nothing stored that the driver could rewrite.
+object is bound to one name by construction, with nothing stored that the driver could rewrite. It
+then spends the envelope's nonce through the verifier's spendStoreNonce (K-59), so one envelope is
+admitted once.
 
 The body stays in JavaScript (#2811). The verifier module reads it once, bounded by STORE_CALL_MAX_BYTES
 (a declared Content-Length over the limit is refused with 413 before the body is read, and a stream
@@ -36,7 +38,7 @@ stopped by the review of its release (D-63), not by this module.
 """
 
 from workers import DurableObject, Request, Response, WorkerEntrypoint, import_from_javascript
-from js import Object
+from js import Date, Object
 
 from __SUBSTRAT_STORE_DRIVER__ import __SUBSTRAT_STORE_CLASS__ as StoreDriver
 
@@ -49,6 +51,11 @@ RESERVED_BINDING_PREFIX = "SUBSTRAT_STORE"
 def _raw_env(env):
     """The JavaScript env the runtime handed over. The SDK wraps it, and has no public unwrap."""
     return env._env
+
+
+def _raw_storage(ctx):
+    """The object's JavaScript storage. The SDK wraps ctx and its storage, and has no public unwrap."""
+    return ctx._ctx.storage
 
 
 def _driver_env(env):
@@ -91,6 +98,9 @@ class SubstratStoreObject(DurableObject):
         namespace = getattr(self.env, OBJECT_BINDING)
         if not self.ctx.id.equals(namespace.idFromName(call.envelope.name)):
             return Response("unauthorized: object", status=401)
+        verifier = import_from_javascript(VERIFIER_MODULE)
+        if not verifier.spendStoreNonce(_raw_storage(self.ctx), call.envelope, int(Date.now() // 1000)):
+            return _refusal(verifier.spentNonce)
         return await self._driver_object().fetch(_driver_request(request.url, call.body))
 
     async def alarm(self, alarm_info=None):

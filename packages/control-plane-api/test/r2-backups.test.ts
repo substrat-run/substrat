@@ -22,7 +22,7 @@ async function putDump(store: ScopeBackupStore, vertical: string | null, dump: S
   const { tables, ...header } = dump;
   const writer = store.begin({ vertical, header });
   await writer.put('stage', 0, { kind: 'page', tables });
-  return writer.commit({ stageId: 'stage', entries: 1, tables: tables.length });
+  return writer.commit({ stageId: 'stage', entries: 1, tables: tables.length, storeEntries: [] });
 }
 
 const dumpAt = (capturedAt: string, tenantId = 'ten1', scopeId = 'sc1'): ScopeDump => ({
@@ -54,7 +54,7 @@ describe('r2 scope-backup store (#493)', () => {
     expect(await store.list({ tenantId: 'ten1', scopeId: 'sc1' })).toEqual([]);
     expect(await store.get(at)).toBeNull();
 
-    const meta = await writer.commit({ stageId: 's1', entries: 2, tables: 1 });
+    const meta = await writer.commit({ stageId: 's1', entries: 2, tables: 1, storeEntries: [] });
     expect([...objects.keys()].sort()).toEqual([
       'scopes/ten1/sc1/2026-08-06T10:00:00.000Z.json',
       'scopes/ten1/sc1/2026-08-06T10:00:00.000Z/s1/0.json',

@@ -20,6 +20,7 @@
  * phase.ts `planLanes`). Off by default until the eval sweep (#630) measures it.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
 	AiSdkGenerator,
@@ -86,6 +87,7 @@ import {
 	type LanePlan,
 } from './phase.js';
 import { underProject, withinProject } from './project-path.js';
+import { ownedProjectDir, withoutProject } from './project-removal.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -258,6 +260,25 @@ async function handleSelectProject(req: IncomingMessage, res: ServerResponse): P
 	await saveRegistry(ws, reg);
 	await activate(entry);
 	json(res, 200, entry);
+}
+
+async function handleRemoveProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
+	if (busy) return refuse(res, 409, 'a turn is running');
+	const { id } = parseBody(await readBody(req)) as { id?: string };
+	const next = withoutProject(await loadRegistry(ws), id ?? '');
+	if (!next) return refuse(res, 404, `no project ${id}`);
+	const { registry, removed } = next;
+	if (registry.projects.length === 0) {
+		const entry = newEntry('Untitled', await uniqueDir('untitled'), 'auto');
+		registry.projects.push(entry);
+		registry.currentId = entry.id;
+	}
+	await saveRegistry(ws, registry);
+	// An adopted --vertical directory is the user's own tree: unregistered, never deleted.
+	if (ownedProjectDir(removed.dir)) await rm(join(ROOT, removed.dir), { recursive: true, force: true });
+	await rm(join(ROOT, '.builder/state', `${removed.id}.json`), { force: true });
+	if (cur.entry.id === removed.id) await activate(registry.projects.find((p) => p.id === registry.currentId)!);
+	json(res, 200, { removed: removed.id, current: registry.currentId });
 }
 
 async function handleRenameProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -551,6 +572,8 @@ const server = createServer((req, res) => {
 				return handleCreateProject(req, res);
 			case 'POST /api/projects/select':
 				return handleSelectProject(req, res);
+			case 'POST /api/projects/remove':
+				return handleRemoveProject(req, res);
 			case 'PUT /api/project':
 				return handleRenameProject(req, res);
 			case 'GET /api/providers':

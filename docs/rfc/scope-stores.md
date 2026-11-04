@@ -503,9 +503,8 @@ the one #2832 shipped; a Python entry that copied the body into Python failed wi
 at about 6 MB (#2811). A store page is at most `STORE_DUMP_PAGE_MAX_BYTES` (3 MiB), so a page and the
 call around it stay under it (D-69).
 
-Replay inside the window is bounded by the window. The reserved operations are idempotent,
-and a driver operation's retry safety is the vertical's (§9). Per-object nonce memory is
-open question Q2.
+An object admits one envelope once: after the checks above, it spends the envelope's nonce in its
+own storage and refuses the same envelope again (K-59, which revisited Q2).
 
 **Who runs these checks.** The store script runs the driver's code, and the driver is not the
 platform's code (§1). A wrapper class the driver imports does not hold the checks, because
@@ -940,7 +939,7 @@ Step 9 does not block it.
    first registration is `graph`, by its id and isolation basis under D-67, with no release in
    source.)*
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
-   per-object nonce memory if Q2 says so, and a door for schedules (§9).
+   and a door for schedules (§9). Per-object nonce memory is K-59.
 
 What each open PR keeps:
 
@@ -1013,7 +1012,7 @@ What each open PR keeps:
 | | Question | Recommendation |
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
-| Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a driver call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a driver registers a non-idempotent operation the platform itself calls |
+| Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a driver call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a driver registers a non-idempotent operation the platform itself calls. **Revisited 2026-11-04: yes** ([K-59](../decisions/K-059-a-store-object-admits-each-envelope-once.md)). |
 | Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the driver's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the driver's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the driver's class to rewrite (shown on workerd in #2295). A wrapper class the driver imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a driver in the same isolate could do (§10.3), to be revisited before any driver written outside this repo is registered. The id binding, in place of the first-name memory that K-49 and K-50 still describe, is recorded as [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) (proposed), which amends both |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
 | Q5 | A bind, promote, rollback, re-upload or push would drop or driver change a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, driver) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a driver change there |

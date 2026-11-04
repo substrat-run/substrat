@@ -188,6 +188,12 @@ export const api = {
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ id }),
 		}).then((r) => j<ProjectInfo>(r)),
+	removeProject: (id: string) =>
+		f('/api/projects/remove', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ id }),
+		}).then((r) => j<{ removed: string; current: string | null }>(r)),
 	renameProject: (name: string) =>
 		f('/api/project', {
 			method: 'PUT',
