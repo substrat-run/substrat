@@ -183,7 +183,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
   bolagsverket: {
     provider: 'bolagsverket',
     name: 'Bolagsverket',
-    description: 'Validates Swedish organisation numbers against the Companies Registration Office.',
+    description:
+      "Stores your app's Bolagsverket API client (the Companies Registration Office) as a connection, " +
+      'and Test connection checks that it can sign in and look organisations up.',
     monogram: 'Bv',
     // The OAuth2 client Bolagsverket issues after a kundanmälan, keyed exactly as the
     // connector's `bolagsverketCredential` schema parses it. The connection mints its own

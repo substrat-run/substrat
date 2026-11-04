@@ -3,7 +3,7 @@ import { BolagsverketApi } from '../src/api.js';
 import { BolagsverketError } from '../src/errors.js';
 import { organisationValidation } from '../src/organisation.js';
 import { RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_MS } from '../src/throttle.js';
-import { ACTIVE, API_BASE, BANKRUPT, CREDENTIAL, DEREGISTERED, TOKEN_URL, fakeFetch, manualTime, type Reply } from './fixture.js';
+import { ACTIVE, API_BASE, BANKRUPT, CREDENTIAL, DEREGISTERED, TOKEN, TOKEN_URL, fakeFetch, manualTime, type Reply } from './fixture.js';
 
 function client(api: Reply[], token?: Reply) {
   const time = manualTime();
@@ -60,6 +60,29 @@ describe('validateOrganisation', () => {
   ])('reads a %s entry', async (status, body, statusDetail) => {
     const { api } = client([{ status: 200, body }]);
     expect(await api.validateOrganisation('5560000001')).toMatchObject({ exists: true, status, statusDetail });
+  });
+
+  const procedures = (list: unknown[]) => ({
+    pagandeAvvecklingsEllerOmstruktureringsforfarande: { pagandeAvvecklingsEllerOmstruktureringsforfarandeLista: list },
+  });
+  it.each([
+    ['an empty deregistration block as active', { avregistreradOrganisation: { avregistreringsdatum: null } }, 'active', null],
+    [
+      'a bankruptcy second in the procedure list',
+      procedures([{ kod: 'RE', klartext: 'Företagsrekonstruktion inledd' }, { kod: 'KK', klartext: 'Konkurs inledd' }]),
+      'bankruptcy',
+      'Konkurs inledd',
+    ],
+    ['a procedure entry with no code and no text as no status', procedures([{ kod: null, klartext: null }]), 'active', null],
+  ])('reads %s', async (_, patch, status, statusDetail) => {
+    const body = { organisationer: [{ ...ACTIVE.organisationer[0], ...patch }] };
+    const { api } = client([{ status: 200, body }]);
+    expect(await api.validateOrganisation('5560000001')).toMatchObject({ exists: true, status, statusDetail });
+  });
+
+  it('reads a 403 as refused', async () => {
+    const { api } = client([{ status: 403, body: { message: 'Forbidden' } }]);
+    expect(await failure(api.validateOrganisation('5560000001'))).toMatchObject({ code: 'refused', status: 403 });
   });
 
   it.each([
@@ -132,6 +155,22 @@ describe('token', () => {
     expect(await failure(down.ping())).toMatchObject({ code: 'upstream', message: expect.stringMatching(/ENOTFOUND/) });
   });
 
+  it('reads expires_in sent as a string', async () => {
+    const ok = { status: 200, body: { organisationer: [] } };
+    const { api, calls, advance } = client([ok, ok], { status: 200, body: { ...TOKEN, expires_in: '3600' } });
+    await api.validateOrganisation('5560000001');
+    // Past the 300 s fallback lifetime, inside the stated hour: still the first token.
+    advance(600_000);
+    await api.validateOrganisation('5560000001');
+    expect(calls.filter((c) => c.url === TOKEN_URL)).toHaveLength(1);
+  });
+
+  it('carries no response body on a token answer it cannot parse', async () => {
+    const { api } = client([], { status: 200, body: { access_token: 'placeholder-token', expires_in: 'soon' } });
+    const err = await failure(api.ping());
+    expect(err).toMatchObject({ code: 'upstream', body: '' });
+  });
+
   it('reads an invalid_client mint as refused', async () => {
     const { api, apiCalls } = client([], { status: 400, body: { error: 'invalid_client', error_description: 'Bad client' } });
     const err = await failure(api.ping());
@@ -141,6 +180,10 @@ describe('token', () => {
 });
 
 describe('rate limit', () => {
+  it('defaults to the provider limit of 60 requests a minute', () => {
+    expect([RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW_MS]).toEqual([60, 60_000]);
+  });
+
   it(`holds request ${RATE_LIMIT_REQUESTS + 1} until the first leaves the window`, async () => {
     const replies = Array.from({ length: RATE_LIMIT_REQUESTS + 1 }, () => ({ status: 200, body: '' }));
     const { api, slept, advance } = client(replies);
@@ -163,5 +206,11 @@ describe('rate limit', () => {
     const probe = new BolagsverketApi(CREDENTIAL, fake.fetch, { ...time.options, maxRateLimitRetries: 1 });
     const err = await failure(probe.ping());
     expect(err).toMatchObject({ code: 'rate_limited', retryAfterSeconds: 7 });
+  });
+
+  it('caps a long Retry-After at two windows', async () => {
+    const { api, slept } = client([{ status: 429, body: '', headers: { 'Retry-After': '3600' } }, { status: 200, body: '' }]);
+    await api.ping();
+    expect(slept).toEqual([120_000]);
   });
 });
