@@ -47,7 +47,7 @@ const req = (over: Partial<RequestCubeRow>): RequestCubeRow => ({
 const REQUESTS: RequestCubeRow[] = [
   req({ bucket: T0, entity: 'ticket', count: 40 }),
   // #2762: one request, two entity types.
-  req({ bucket: T0 + 5 * MIN, level: 'warn', operation: 'acme/assign', problemCode: 'conflict', status: 409, entity: 'assignment,ticket', count: 9 }),
+  req({ bucket: T0 + 5 * MIN, level: 'warn', operation: 'acme/assign', problemCode: 'conflict', status: 409, entity: 'assignment,ticket', state: 'assignment:active,ticket:assigned', count: 9 }),
   req({ bucket: T0 + 5 * MIN, level: 'error', operation: 'acme/assign', problemCode: 'unavailable', status: 502, count: 1 }),
   // Written before `level` existed: counted, as unrecorded, and on no facet value.
   req({ bucket: T0 + 10 * MIN, level: null, operation: null, principalKind: null, surface: null, count: 6 }),
@@ -173,6 +173,17 @@ describe.each(SOURCES)('aggregate reads over %s (#1877)', (_name, make) => {
     expect((await reads.tenantRequestFacets({ ...scope, where: { entity: ['assignment', 'ticket'] } })).total).toBe(49);
   });
 
+  it('#2762: counts a request under each process state it moved an entity to, and selects it by any one', async () => {
+    const reads = aggregateReads(make());
+    const f = await reads.tenantRequestFacets({ ...scope });
+    expect(f.facets.state).toEqual([
+      { value: 'assignment:active', count: 9 },
+      { value: 'ticket:assigned', count: 9 },
+    ]);
+    // One move of the two selects the row: the value is a member of the set, never the set.
+    expect((await reads.tenantRequestFacets({ ...scope, where: { state: ['ticket:assigned'] } })).total).toBe(9);
+  });
+
   it('groups patterns by template, with shares of every matching line', async () => {
     const p = await aggregateReads(make()).tenantLogPatterns({ ...scope, buckets: 12 });
     expect(p.total).toBe(50);
@@ -289,16 +300,16 @@ describe('the cube cache (#1877)', () => {
     expect(new Set(inner.asked.map((q) => q.grainMs))).toEqual(new Set([5 * MIN, 60 * MIN]));
   });
 
-  it('#2762: never serves a block cached before the cube had its entity and path dimensions', async () => {
+  it('#2762: never serves a block cached before the cube had its entity, path and state dimensions', async () => {
     const inner = fixedSource();
     const store = memoryCubeStore();
     const grainMs = grainFor(window.to - window.from);
     const blockMs = blockMsFor(grainMs);
-    // Every closed block of the window, as each earlier shape stored it — shape 1 (no entity) and
-    // shape 2 (no path) — a count of 1 each.
+    // Every closed block of the window, as each earlier shape stored it — shape 1 (no entity),
+    // shape 2 (no path) and shape 3 (no state) — a count of 1 each.
     const stale = { rows: [req({ bucket: T0, count: 1 })], estimated: false };
     for (let s = Math.floor(window.from / blockMs) * blockMs; s < window.to; s += blockMs) {
-      for (const kind of ['requests', 'async-requests', 'requests.v2', 'async-requests.v2']) {
+      for (const kind of ['requests', 'async-requests', 'requests.v2', 'async-requests.v2', 'requests.v3', 'async-requests.v3']) {
         await store.put(`${kind}|${SERVICE}|${grainMs}|${s}`, stale, s);
       }
     }
@@ -310,6 +321,7 @@ describe('the cube cache (#1877)', () => {
       { value: 'ticket', count: 49 },
       { value: 'assignment', count: 9 },
     ]);
+    expect(f.facets.state).toHaveLength(2);
     // The async cube is keyed by the same shape: its stale block is recounted, never served.
     const asyncCube = await source.asyncRequests!({ service: SERVICE, ...window, grainMs });
     expect(asyncCube.rows.reduce((n, r) => n + r.count, 0)).toBe(0);

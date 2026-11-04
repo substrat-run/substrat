@@ -77,10 +77,14 @@ describe('asyncInvocationLine', () => {
           { type: 'digest.sent', entity: 'customer:alice@example.com' },
           { type: 'digest.sent', entity: 'customer:bob@example.com' },
         ],
+        transitions: [{ entity: 'customer:alice@example.com', from: 'due', to: 'sent' }],
       } as never,
     });
-    // #2762: the entity TYPE is a declared name, so the run's line carries it for the facet.
-    expect(line).toMatchObject({ eventCount: 2, eventTypes: ['digest.sent'], entities: [], entityTypes: 'customer' });
+    // #2762: the entity TYPE and a STATE are declared names, so the run's line carries them for the
+    // facets; the move itself names the entity, and is not on it.
+    expect(line).toMatchObject({
+      eventCount: 2, eventTypes: ['digest.sent'], entities: [], entityTypes: 'customer', transitions: null, processStates: 'customer:sent',
+    });
     expect(JSON.stringify(line)).not.toContain('@example.com');
     // The twin: a request's line still names its entities, from the same builder — and its
     // types as one sorted set, a type holding the separator left out.
@@ -95,9 +99,14 @@ describe('asyncInvocationLine', () => {
             { type: 'x.z', entity: 'note:3' },
             { type: 'x.y', entity: 'thing:4' },
           ],
+          transitions: [
+            { entity: 'thing:1', from: 'open', to: 'done' },
+            { entity: 'note:3', from: null, to: 'draft' },
+            { entity: 'thing:4', from: 'open', to: 'done' },
+          ],
         } as never,
       }),
-    ).toMatchObject({ entities: ['thing:1', 'a,b:2', 'note:3', 'thing:4'], entityTypes: 'note,thing' });
+    ).toMatchObject({ entities: ['thing:1', 'a,b:2', 'note:3', 'thing:4'], entityTypes: 'note,thing', processStates: 'note:draft,thing:done' });
   });
 
   it('names store calls only when there were some, and the input is not a field (#2245)', () => {

@@ -1903,22 +1903,32 @@ export function scopeHostContractSuite(
     it('an attributed host names the person on its access rows too, co-located and delegated (#2860)', async () => {
       const t = tenantId.parse(ulid());
       await host.admin.createTenant(staff, { id: t, slug: 'access-attribution', name: 'Access attribution' });
+      await host.admin.registerIdentityPool(staff, { provider: 'oidc:access-attribution', topology: 'central', tenantId: null });
       const person = principalId.parse(ulid());
+      const impersonator = platformActorId.parse(ulid());
+      // Impersonated, so the K-42 stamp is held to the round trip too, as the admin log's twin is.
+      const onBehalfOf = { principal: person, tenantId: t, impersonation: { session: 'imp-2860', by: impersonator } };
       const sc = scopeId.parse(ulid());
       const delegated = { method: 'readScopeTable', tenantId: t, scopeId: sc, params: null, resultCount: 0 } as const;
-      const viewed = host.attributed!({ principal: person, tenantId: t }).admin;
+      const viewed = host.attributed!(onBehalfOf as never).admin;
       await viewed.getTenant(staff, t);
       await viewed.recordDelegatedRead(staff, delegated);
+      // The one access row the control plane writes on the host's behalf rather than through
+      // its own `recordAccess` (the hosted directory's identity read).
+      await viewed.listIdentityMemberships(staff, 'oidc:access-attribution', `ext-${t}`);
       await host.admin.getTenant(staff, t);
       await host.admin.recordDelegatedRead(staff, delegated);
       const rows = (await host.admin.accessLog(staff, { tenantId: t }))
         .filter((r) => r.method === 'getTenant' || r.method === 'readScopeTable');
       expect(rows.map((r) => [r.method, r.onBehalfOf ?? null])).toEqual([
-        ['getTenant', { principal: person, tenantId: t }],
-        ['readScopeTable', { principal: person, tenantId: t }],
+        ['getTenant', onBehalfOf],
+        ['readScopeTable', onBehalfOf],
         ['getTenant', null],
         ['readScopeTable', null],
       ]);
+      const memberships = (await host.admin.accessLog(staff, { method: 'listIdentityMemberships' }))
+        .filter((r) => r.method === 'listIdentityMemberships' && r.onBehalfOf?.principal === person);
+      expect(memberships.map((r) => r.onBehalfOf)).toEqual([onBehalfOf]);
     });
 
     it('isolates scope storage: a write in one scope is invisible in another', async () => {

@@ -259,7 +259,7 @@ It carries them as additive top-level fields, which Workers Logs indexes like `t
 | `principalKind` | `ScopeStub.subjectKind`, decided by the door that minted the stub: `principal`, `connection`, `system`, `capability`, `vertical` | the stub is the vertical's own and does not say |
 | `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
 | `logLines` | `InvokeOptions.onLogLines` (#2762): ctx.log lines under the request's id, including the inline consumer tail; not console.log. Reported on a failed or rolled-back call too, and summed across an MCP batch's tool calls. The Requests view's **Lines** column; the line only, not a cube dimension or a router blob | not recorded: a route that is not an operation, an async line, a scope host that predates it. `0` is a fact |
-| `transitions` | `InvokeOptions.onEmitted`'s `transitions` (#2762): the lifecycle moves the operation made, each `{ entity, from, to }`, at most 8 entities, first state left to last state reached. Noted where the move is decided: `assertTransition` handed the operation's `ctx` calls `ctx.noteTransition`, and a module notes a create itself (`from: null`). Dropped with a rolled-back `ctx.atomic`, never reported for a rolled-back call. Names only: a note whose type or states are not shaped like names is dropped. The line and the request read only, not a cube dimension or a router blob | not recorded: nothing was noted (the call moved nothing, or its module does not hand `assertTransition` its context, which cannot be told apart), a route that is not an operation, an async line, a scope host that predates it. `[]` only when every noted entity came back to where it started |
+| `transitions` | `InvokeOptions.onEmitted`'s `transitions` (#2762): the lifecycle moves the operation made, each `{ entity, from, to }`, at most 8 entities, first state left to last state reached. Noted where the move is decided: `assertTransition` handed the operation's `ctx` calls `ctx.noteTransition`, and a module notes a create itself (`from: null`). Dropped with a rolled-back `ctx.atomic`, never reported for a rolled-back call. Names only: a note whose type or states are not shaped like names is dropped. The line and the request read only, not a cube dimension or a router blob; its `processStates` is (the `state` facet) | not recorded: nothing was noted (the call moved nothing, or its module does not hand `assertTransition` its context, which cannot be told apart), a route that is not an operation, an async line, a scope host that predates it. `[]` only when every noted entity came back to where it started |
 | `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
 | `outputFields` | `mountOperations`' field walk (#1331): `{ present, empty, absent }`, the operation's declared output field names split three ways: carried with a value, carried as `null`, or not carried at all | **omitted, not `null`**: the walk runs only on a request the router armed (below), and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields. Set by `mountOperations`' routes and by the MCP mount's tool calls alike |
 | `outboundCalls`, `outboundCallsDropped` | the platform entry's wrapped `fetch` (#2192, below): each call the request made, as host, redacted path, method, status, outcome, `durationMs` and `atMs` | **omitted** when the request made no call the recorder saw; `outboundCallsDropped` only when calls past the cap of 16 were counted instead of named |
@@ -558,6 +558,23 @@ is capped at 128 characters like every record field, rides the header as `route`
 blob 11. The facet is `path`, but the line's own `path` is the called path, so the list read
 filters on `route`. A non-Hono worker and a vertical-host from before it write `null`. It bumped
 `REQUEST_CUBE_SHAPE` to 3.
+
+**The `state` facet (#2762).** The process state a request moved an entity to: the line's
+`transitions` name each entity by id, which no cube may hold, so the line also carries
+`processStates`, each move as `<entityType>:<state reached>` (`ticket:resolved`), distinct, sorted
+and joined with `,` (`joinProcessStates` in contracts). It is a set read exactly like `entityTypes`:
+the reads split it, a request counts under each move, and the list matches one move as a whole
+member and re-checks it. Its values are bounded by the model, the declared entity types times their
+declared lifecycle states, and a request reports at most 8 moves. The `from` state is left out: the
+Result column shows the whole move from the line, and the facet answers "which requests moved
+something to this state". Written on an async line too, where the moves themselves are not, since a
+type and a state are declared names. It rides the header as `processStates`, capped at 128
+characters between two moves, and becomes blob 12; the read refuses a value that is not one
+`<type>:<state>`. A line or datapoint from before a vertical's re-push carries none and is counted
+under no state. It bumped `REQUEST_CUBE_SHAPE` to 4. As with `entity`, the line's value is not
+capped while the header and blob 12 are, so past 128 characters the Analytics Engine facet and
+histogram drop the trailing moves while the request list still matches them; a single move longer
+than 128 characters is left out of the line's value too, since no read could take it.
 
 **The Lines counts (#2762).** The Lines mode has a level histogram and `operation`, `principalKind`
 ("Who") and `level` facets, from `/observability/tenant-log-volume` and `/observability/tenant-log-facets`.

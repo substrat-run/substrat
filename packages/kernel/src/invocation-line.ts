@@ -16,7 +16,7 @@
  */
 import type { AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
 
-import { joinEntityTypes, type InvocationLevel } from '@substrat-run/contracts/invocation-record';
+import { joinEntityTypes, joinProcessStates, type InvocationLevel } from '@substrat-run/contracts/invocation-record';
 import type { EmittedReport, EmittedTransition } from './scope-host.js';
 
 /**
@@ -156,6 +156,12 @@ export interface InvocationLogLine extends AuthRecording {
    * older scope host, a route that is not an operation, an async line.
    */
   transitions: EmittedTransition[] | null;
+  /**
+   * #2762: those moves as the request facet `state` — each `<entityType>:<state reached>`, never an
+   * id, sorted, distinct and joined with `,` (contracts' `joinProcessStates`), as one value a log
+   * query can group by. `null` when no move was noted.
+   */
+  processStates: string | null;
   /**
    * The registry id of the version that served the call — the platform's
    * `SUBSTRAT_VERSION_ID` binding, the same identity the spine stamps on events. `null`
@@ -350,6 +356,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
       emitted?.transitions && f.withEntities !== false
         ? emitted.transitions.map((t) => ({ entity: t.entity, from: t.from, to: t.to }))
         : null,
+    processStates: processStatesOf(emitted),
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
@@ -527,6 +534,15 @@ export function currentInvocationId(): string | undefined {
  */
 export function entityTypesOf(emitted: EmittedReport | undefined): string | null {
   return emitted ? joinEntityTypes(emitted.events.map((e) => e.entity.slice(0, Math.max(0, e.entity.indexOf(':'))))) : null;
+}
+
+/**
+ * #2762: the line's `processStates` for what an invocation moved — contracts' grammar
+ * (`joinProcessStates`). Like `entityTypes`, written whatever `withEntities` says: a type and a
+ * state are declared names, not data. The request writer hands it to the router as well.
+ */
+export function processStatesOf(emitted: EmittedReport | undefined): string | null {
+  return emitted?.transitions ? joinProcessStates(emitted.transitions) : null;
 }
 
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */

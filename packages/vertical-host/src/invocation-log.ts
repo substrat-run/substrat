@@ -73,6 +73,7 @@ import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel'
 import {
   entityTypesOf,
   invocationLine,
+  processStatesOf,
   STORE_CALL_LOG_CAP,
   STORE_CALL_SINK_KEY,
   tallyStoreCall,
@@ -955,7 +956,11 @@ function handRecordToRouter<Env>(
   const r = response as { status?: unknown; webSocket?: unknown };
   if (r.status === 101 || r.webSocket) return;
   try {
-    const value = encodeInvocationRecord({ ...record, entityTypes: entityTypesOf(record.emitted) });
+    const value = encodeInvocationRecord({
+      ...record,
+      entityTypes: entityTypesOf(record.emitted),
+      processStates: processStatesOf(record.emitted),
+    });
     if (value === null || !routedNodeOrNull(request.headers, env, options)) return;
     (response as { headers?: { set?: (name: string, value: string) => void } }).headers?.set?.(
       INVOCATION_RECORD_HEADER,
