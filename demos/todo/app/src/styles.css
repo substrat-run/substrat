@@ -1,18 +1,22 @@
+/* Read from the theme's --wa-* tokens (@substrat-run/elements), so the whole app follows
+   the theme and dark mode, not only the table. The fallbacks are the old fixed palette. */
 :root {
-  --bg: #fbfbfa; --panel: #fff; --ink: #1d1d1b; --muted: #6b6b66;
-  --line: #e6e4df; --accent: #2f6f4e; --warn: #a4462f;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --bg: var(--wa-color-surface-lowered, #fbfbfa); --panel: var(--wa-color-surface-default, #fff);
+  --ink: var(--wa-color-text-normal, #1d1d1b); --muted: var(--wa-color-text-quiet, #6b6b66);
+  --line: var(--wa-color-surface-border, #e6e4df); --accent: var(--wa-color-brand-fill-loud, #2f6f4e);
+  --warn: var(--wa-color-danger-on-quiet, #a4462f);
+  font-family: var(--wa-font-family-body, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); }
 header {
-  display: flex; align-items: center; gap: 1rem; padding: .75rem 1.25rem;
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .75rem 1.25rem;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 header h1 { font-size: 1rem; margin: 0; font-weight: 600; letter-spacing: -.01em; }
 header .who { margin-left: auto; display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
 main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
-h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; font-family: var(--wa-font-family-heading, inherit); }
 .sub { color: var(--muted); font-size: .85rem; margin: 0 0 1.25rem; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
 .card + .card { margin-top: .5rem; }
@@ -24,7 +28,7 @@ h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
   font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
   padding: .12rem .45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
 }
-.tag.shared { color: var(--accent); border-color: #cfe3d7; background: #f2f8f4; }
+.tag.shared { color: var(--wa-color-brand-on-quiet, var(--accent)); border-color: var(--wa-color-brand-border-quiet, #cfe3d7); background: var(--wa-color-brand-fill-quiet, #f2f8f4); }
 .spacer { margin-left: auto; }
 form.inline { display: flex; gap: .5rem; margin-top: .9rem; }
 input[type=text], input[type=email] {
@@ -41,7 +45,7 @@ button:disabled { opacity: .5; cursor: default; }
 .done { text-decoration: line-through; color: var(--muted); }
 .error {
   margin: 0 0 1rem; padding: .7rem .9rem; border-radius: 8px;
-  background: #fdf2ef; border: 1px solid #f0d5cd; color: var(--warn); font-size: .88rem;
+  background: var(--wa-color-danger-fill-quiet, #fdf2ef); border: 1px solid var(--wa-color-danger-border-quiet, #f0d5cd); color: var(--warn); font-size: .88rem;
 }
 .error strong { font-weight: 600; }
 .empty { color: var(--muted); font-size: .9rem; padding: 1.1rem .9rem; }
@@ -54,3 +58,7 @@ section.share h3 { font-size: .95rem; margin: 0 0 .6rem; }
 nav.views { display: flex; gap: .9rem; margin-bottom: .6rem; font-size: .9rem; }
 nav.views a { color: var(--muted); text-decoration: none; padding-bottom: .15rem; }
 nav.views a[aria-current='page'] { color: inherit; border-bottom: 2px solid var(--accent); font-weight: 600; }
+
+/* The theme switcher in the header (src/elements.tsx). */
+header .themes { display: flex; align-items: center; gap: .5rem; font-size: .8rem; color: var(--muted); }
+header .themes label { display: flex; align-items: center; gap: .25rem; }

@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, auth, me, type Item, type List, type Paged, type Session, type Share } from './api.js';
+import { ListsTable, ThemePicker } from './elements.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
 const denied = (error: unknown) => error instanceof ApiError && error.status === 403;
@@ -47,6 +48,9 @@ function Problem({ error }: { error: unknown }) {
 export type ListsShown = 'active' | 'archived' | 'trash';
 
 const VIEW_HASH: Record<ListsShown, string> = { active: '#/', archived: '#/archived', trash: '#/trash' };
+
+/** The same active lists, drawn by the `@substrat-run/elements` prototype. */
+const TABLE_HASH = '#/table';
 
 function shownOf(hash: string): ListsShown {
   return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
@@ -83,6 +87,7 @@ export function App() {
       <header>
         <h1>Todo</h1>
         <span className="tag">on Substrat</span>
+        <ThemePicker />
         <span className="who">
           Signed in as <strong>{session.display}</strong>
           <button onClick={() => auth.switchUser()}>Switch user</button>
@@ -92,6 +97,11 @@ export function App() {
       <main>
         {match ? (
           <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
+        ) : hash === TABLE_HASH ? (
+          <>
+            <ViewsNav current="table" />
+            <ListsTable key={who} />
+          </>
         ) : (
           <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} />
         )}
@@ -121,6 +131,21 @@ const VIEW_COPY: Record<ListsShown, { tab: string; title: string; sub: string; e
     empty: 'The trash is empty.',
   },
 };
+
+function ViewsNav({ current }: { current: ListsShown | 'table' }) {
+  return (
+    <nav className="views">
+      {(Object.keys(VIEW_HASH) as ListsShown[]).map((v) => (
+        <a key={v} href={VIEW_HASH[v]} aria-current={v === current ? 'page' : undefined}>
+          {VIEW_COPY[v].tab}
+        </a>
+      ))}
+      <a href={TABLE_HASH} aria-current={current === 'table' ? 'page' : undefined}>
+        Table
+      </a>
+    </nav>
+  );
+}
 
 /** Each view is its own read: the server decides what is in it. */
 function readOf(shown: ListsShown): () => Promise<Paged<List>> {
@@ -179,13 +204,7 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
 
   return (
     <>
-      <nav className="views">
-        {(Object.keys(VIEW_HASH) as ListsShown[]).map((v) => (
-          <a key={v} href={VIEW_HASH[v]} aria-current={v === shown ? 'page' : undefined}>
-            {VIEW_COPY[v].tab}
-          </a>
-        ))}
-      </nav>
+      <ViewsNav current={shown} />
       <h2>{copy.title}</h2>
       <p className="sub">{copy.sub}</p>
       <Problem error={error} />

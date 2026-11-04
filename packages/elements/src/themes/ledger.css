@@ -1,0 +1,59 @@
+/*
+ * Ledger — the dense one. For screens people work in all day: compact rows, flat
+ * surfaces with hairline borders instead of shadows, small radii, one cool teal accent.
+ *
+ * A Substrat theme is values for Web Awesome's own tokens and nothing else: no selectors
+ * into components, no raw CSS. Put the class on <html> beside Web Awesome's default
+ * theme (and `wa-dark` for dark mode). The layer is Web Awesome's last, so these win over
+ * its theme without `!important` and still lose to an app's unlayered styles.
+ */
+@layer wa-theme-overrides {
+  .sub-theme-ledger {
+    --wa-color-brand-95: oklch(96.8% 0.019 200);
+    --wa-color-brand-90: oklch(93.0% 0.028 200);
+    --wa-color-brand-80: oklch(86.0% 0.044 200);
+    --wa-color-brand-70: oklch(77.5% 0.064 200);
+    --wa-color-brand-60: oklch(66.5% 0.084 200);
+    --wa-color-brand-50: oklch(53.0% 0.105 200);
+    --wa-color-brand-40: oklch(45.0% 0.082 200);
+    --wa-color-brand-30: oklch(38.0% 0.061 200);
+    --wa-color-brand-20: oklch(32.0% 0.040 200);
+    --wa-color-brand-10: oklch(23.5% 0.020 200);
+    --wa-color-brand-05: oklch(17.0% 0.013 200);
+    --wa-color-brand: var(--wa-color-brand-50);
+    --wa-color-brand-on: white;
+    --wa-color-neutral-95: oklch(96.8% 0.004 250);
+    --wa-color-neutral-90: oklch(93.0% 0.004 250);
+    --wa-color-neutral-80: oklch(86.0% 0.005 250);
+    --wa-color-neutral-70: oklch(77.5% 0.007 250);
+    --wa-color-neutral-60: oklch(66.5% 0.010 250);
+    --wa-color-neutral-50: oklch(53.0% 0.012 250);
+    --wa-color-neutral-40: oklch(45.0% 0.009 250);
+    --wa-color-neutral-30: oklch(38.0% 0.007 250);
+    --wa-color-neutral-20: oklch(32.0% 0.005 250);
+    --wa-color-neutral-10: oklch(23.5% 0.004 250);
+    --wa-color-neutral-05: oklch(17.0% 0.004 250);
+    --wa-color-neutral: var(--wa-color-neutral-50);
+    --wa-font-family-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --wa-font-family-heading: var(--wa-font-family-body);
+    --wa-font-size-scale: 0.94;
+    --wa-space-scale: 0.82;
+    --wa-border-radius-scale: 0.45;
+    --wa-shadow-offset-y-scale: 0;
+    --wa-shadow-blur-scale: 0;
+    --wa-form-control-height: 2.1rem;
+    --wa-panel-border-radius: var(--wa-border-radius-s);
+  }
+
+  .sub-theme-ledger:not(.wa-dark) {
+    --wa-color-surface-lowered: var(--wa-color-neutral-95);
+    --wa-color-surface-border: var(--wa-color-neutral-90);
+  }
+
+  .sub-theme-ledger.wa-dark {
+    --wa-color-surface-default: var(--wa-color-neutral-05);
+    --wa-color-surface-raised: var(--wa-color-neutral-10);
+    --wa-color-surface-lowered: oklch(14% 0.008 250);
+    --wa-color-surface-border: var(--wa-color-neutral-20);
+  }
+}

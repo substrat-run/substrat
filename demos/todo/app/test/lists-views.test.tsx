@@ -155,7 +155,7 @@ describe('Lists — active, archived and trash (#119)', () => {
     expect(container.querySelectorAll('.card')).toHaveLength(0);
   });
 
-  it('the switch links to the three views and marks the one shown', async () => {
+  it('the switch links to the three views (and the table prototype) and marks the one shown', async () => {
     client.trashedLists.mockResolvedValue(page());
     await draw('trash');
     const links = [...container.querySelectorAll('nav.views a')];
@@ -163,6 +163,7 @@ describe('Lists — active, archived and trash (#119)', () => {
       ['#/', 'Active'],
       ['#/archived', 'Archived'],
       ['#/trash', 'Trash'],
+      ['#/table', 'Table'],
     ]);
     expect(links.filter((a) => a.getAttribute('aria-current') === 'page').map((a) => a.textContent)).toEqual(['Trash']);
     expect(container.textContent).toContain('The trash is empty.');
