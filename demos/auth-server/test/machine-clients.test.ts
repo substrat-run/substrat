@@ -7,7 +7,8 @@ import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, tokenRequestClientId, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
-import { MACHINE_SCOPES, machineScopesOf } from '../src/settings.js';
+import { MACHINE_SCOPES, deliveredConfig, machineScopesOf } from '../src/settings.js';
+import { AUTH_SERVER_ENV } from '../src/manifest.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
@@ -27,6 +28,7 @@ const RP_REDIRECT = 'http://localhost:9999/cb';
 
 let db: Database.Database;
 let cfg: Record<string, string | undefined>;
+let sql: SqlExec;
 let api: ReturnType<typeof createAdminApi>;
 
 function sqlExecOf(database: Database.Database): SqlExec {
@@ -47,6 +49,9 @@ function sqlExecOf(database: Database.Database): SqlExec {
   };
 }
 
+/** The config in force: `cfg` as the environment, with the console's `cfg:` rows winning, as in the DO. */
+const effective = (): Record<string, string | undefined> => ({ ...cfg, ...deliveredConfig(sql, AUTH_SERVER_ENV) });
+
 /** Better Auth as the runtimes build it: from the config in force for THIS request. */
 const authNow = (): Auth =>
   buildAuth({
@@ -57,7 +62,7 @@ const authNow = (): Auth =>
     transport: new MockEmailTransport(),
     sender: { email: 'no-reply@send.substrat.test', name: 'Substrat Auth' },
     allowSignup: true,
-    machineScopes: machineScopesOf(cfg[MACHINE_SCOPES]).scopes,
+    machineScopes: machineScopesOf(effective()[MACHINE_SCOPES]).scopes,
   });
 
 const call = (path: string, init?: RequestInit): Promise<Response> =>
@@ -139,7 +144,7 @@ const listClients = async (cookie: string): Promise<WireClient[]> =>
 beforeEach(async () => {
   db = new Database(':memory:');
   for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
-  const sql = sqlExecOf(db);
+  sql = sqlExecOf(db);
   cfg = { [MACHINE_SCOPES]: 'reports:read billing:write' };
   const created = await authNow().api.signUpEmail({ body: ADMIN });
   db.prepare("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?").run(created.user.id);
@@ -153,7 +158,7 @@ beforeEach(async () => {
   api = createAdminApi({
     sql,
     session,
-    effectiveCfg: () => cfg,
+    effectiveCfg: effective,
     auth: () => authNow().api as never,
     offeredProviders: () => publicProvidersFrom(readProviders(sql)),
     transaction: (fn) => fn(),
@@ -182,6 +187,39 @@ describe('MACHINE_SCOPES, read', () => {
     const read = machineScopesOf('reports:read "quoted"');
     expect(read.scopes).toEqual([]);
     expect(read.error).toMatch(/"quoted"/);
+  });
+});
+
+describe('MACHINE_SCOPES, written from the console', () => {
+  const setScopes = (cookie: string, machineScopes: string[]) =>
+    adminCall('/settings', cookie, { method: 'PATCH', body: JSON.stringify({ machineScopes }) });
+
+  it('is the ceiling from the next request: a machine client registers and gets a token', async () => {
+    cfg = {};
+    const admin = await signIn();
+    const res = await setScopes(admin, ['exports:read', 'exports:read']);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { machineScopes: string[] }).machineScopes).toEqual(['exports:read']);
+
+    const client = await registerMachine(admin, ['exports:read']);
+    const minted = (await (await token(client.client_id, client.client_secret)).json()) as { scope?: string };
+    expect(minted.scope).toBe('exports:read');
+  });
+
+  it('refuses a list the reader would refuse, says why, and stores nothing', async () => {
+    const admin = await signIn();
+    await setScopes(admin, ['reports:read']);
+    for (const [scopes, reason] of [
+      [['reports:read', 'openid'], /openid/],
+      [['reports:read', '"quoted"'], /"quoted"/],
+      [['reports:read billing:write'], /not scope tokens/],
+      [['a,b'], /a,b/],
+    ] as const) {
+      const res = await setScopes(admin, [...scopes]);
+      expect(res.status, scopes.join('|')).toBe(400);
+      expect(await errorOf(res)).toMatch(reason);
+    }
+    expect(effective()[MACHINE_SCOPES]).toBe('reports:read');
   });
 });
 
