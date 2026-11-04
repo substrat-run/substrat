@@ -1477,28 +1477,34 @@ export function sweeperClassesOf(dir: string, cfg: Record<string, unknown>): str
 }
 
 /**
- * The registry the control plane will judge this push's scope stores by (#2813): the drivers
- * `vertical` may use, read from the plane the push goes to. `undefined` is the built-in registry,
- * for a plane that predates the route (404) and nothing else: a network failure or any other
- * refusal propagates, since the push would fail on the same plane a moment later.
+ * The registry the control plane judges this push's scope stores by (#2813), read from the plane
+ * the push goes to. A local pre-check only: the plane's own check on upload stays the authority, so
+ * a plane that does not offer the route (404, or 403 for a builder, whose routes are default-deny)
+ * leaves `undefined`, the built-in registry. A network failure, a 5xx or a malformed answer
+ * propagates, since the push would fail on the same plane a moment later.
  */
 export async function storeDriversOfPlane(
   controlPlaneUrl: string,
   header: Record<string, string>,
   vertical: string,
+  tenant?: string,
 ): Promise<StoreDriverRegistration[] | undefined> {
   try {
-    const { drivers } = await planeFor(controlPlaneUrl, header).storeDriversFor(vertical);
+    const { drivers } = await planeFor(controlPlaneUrl, header).storeDriversFor(vertical, tenant);
     return storeDriverRegistration.array().parse(drivers);
   } catch (e) {
-    if (e instanceof ControlPlaneError && e.status === 404) return undefined;
+    if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 403)) return undefined;
     throw e;
   }
 }
 
 /** A `--store-drivers` file: a JSON array of registrations, held to the schema the plane's are. */
 export function readStoreDriversFile(path: string): StoreDriverRegistration[] {
-  return storeDriverRegistration.array().parse(JSON.parse(readFileSync(path, 'utf8')));
+  try {
+    return storeDriverRegistration.array().parse(JSON.parse(readFileSync(path, 'utf8')));
+  } catch (e) {
+    throw new Error(`--store-drivers ${path}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export interface PushOptions {
@@ -1881,7 +1887,7 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
   // declaring none asks the plane nothing.
   const scopeStores = readRuntimeNeeds(opts.dir)?.scopeStores;
   if (scopeStores?.length) {
-    const drivers = opts.storeDrivers ?? (await storeDriversOfPlane(opts.controlPlaneUrl, opts.authHeader, opts.slug));
+    const drivers = opts.storeDrivers ?? (await storeDriversOfPlane(opts.controlPlaneUrl, opts.authHeader, opts.slug, opts.tenant));
     assertDeclaredScopeStores({ scopeStores, vertical: opts.slug, ...(drivers ? { drivers } : {}) });
   }
   const snapshot = collectSourceSnapshot(opts.dir);

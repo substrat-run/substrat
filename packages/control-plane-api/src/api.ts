@@ -13185,24 +13185,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals, options.storeReleases?.settleMs), walk: walk ?? null };
   };
 
-  // The drivers a push may declare scope stores over, for ONE vertical: what `assertSandboxContract`
-  // judges its upload against (#2813). A builder's push is judged by this list before the upload, so
-  // it reads it; `?vertical=` is required and the answer carries only the drivers that vertical may
-  // use, each with `verticals` reduced to that vertical (omitted when the driver serves every one),
-  // so no caller reads another vertical's slug. The staff-only `/store-drivers/:driver` below is
-  // the driver's release state and stays as it was.
+  // The scope-store registry a push is judged by, for ONE vertical (#2813): `?vertical=` is the bare
+  // slug the push deploys as, required. Every registration comes back, with `verticals` reduced to
+  // `[vertical]` when it serves that vertical and `[]` when it does not (omitted when it serves
+  // every one), so the CLI's own check can say "does not serve" and no other vertical's slug is
+  // read. "Serves" is judged for the registry id the deploy forms (`<tenant>/<name>` for a builder
+  // or a pinned staff push), the same one `ensureScopeStoresOf` judges. The staff-only
+  // `/store-drivers/:driver` below is the driver's release state and stays as it was.
   app.get('/store-drivers', async (c) => {
     const parsed = verticalSlug.safeParse(c.req.query('vertical'));
     if (!parsed.success) return refuse(c, 'validation_failed', 'vertical is required: the slug the push deploys as');
     const vertical = parsed.data;
     const p = c.get('principal');
-    // A vertical not registered yet is a first push, and is answered; one registered under a
-    // namespace the caller cannot read is a 404 like every slug-addressed read.
-    const id = await resolveVerticalId(c, vertical);
-    if ((await verticalOf(c.get('actor'), id)) && (await notReadable(p, id))) return refuse(c, 'not_found', 'not found');
-    const drivers = (options.storeDrivers ?? STORE_DRIVERS)
-      .filter((d) => storeDriverServesVertical(d, vertical))
-      .map((d) => (d.verticals ? { ...d, verticals: [vertical] } : d));
+    const pin = c.req.header(TENANT_HEADER)?.trim();
+    let id = effectiveSlug(p, vertical);
+    if (p.kind !== 'builder' && pin) {
+      // The pinned-staff branch of the deploy's own slug derivation (`POST /verticals/:slug/deploy`).
+      const workspace = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.slug === pin || t.id === pin);
+      if (!workspace) return refuse(c, 'not_found', `unknown workspace '${pin}'`);
+      const bareOwner = await ownerOf(c.get('actor'), vertical);
+      id = vertical.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? vertical : `${workspace.slug}/${vertical}`;
+    }
+    const drivers = (options.storeDrivers ?? STORE_DRIVERS).map((d) =>
+      d.verticals ? { ...d, verticals: storeDriverServesVertical(d, id) ? [vertical] : [] } : d,
+    );
     return c.json({ drivers });
   });
 
