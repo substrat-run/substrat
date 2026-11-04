@@ -32,10 +32,9 @@
  */
 import type { BuildEvent, BuildEventOf } from '@substrat-run/builder-generator';
 import { formatEvent } from '@substrat-run/builder-generator';
-import type { Page } from '@substrat-run/contracts';
 import type { AssistantStreamBody, AssistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
 import { STUDIO_HOST, studioScope, type StudioEnv } from './studio.js';
-import type { RedGate, TurnSummary, TurnSummaryInput, TurnSummaryOutcome } from './turns.js';
+import type { BuilderRedGate, BuilderTurn, BuilderTurnInput, BuilderTurnOutcome, Page } from '@substrat-run/contracts';
 
 /** Appended in one call at most; the engine takes 200. */
 const BATCH = 50;
@@ -129,7 +128,7 @@ export type TurnOutcome = { readonly kind: 'done' | 'stopped' | 'error' };
 const GATE_LINE_MAX = 400;
 
 /** The gates a run did not pass, each with the first line it printed (or its note). */
-export function redGatesOf(run: BuildEventOf<'gates'>['run']): RedGate[] {
+export function redGatesOf(run: BuildEventOf<'gates'>['run']): BuilderRedGate[] {
 	return run.results
 		.filter((r): r is typeof r & { status: 'failed' | 'blocked' } => r.status === 'failed' || r.status === 'blocked')
 		.slice(0, 32)
@@ -140,7 +139,7 @@ export function redGatesOf(run: BuildEventOf<'gates'>['run']): RedGate[] {
 }
 
 /** Write a turn's summary row. Best-effort, like the record itself: never throws. */
-async function recordSummary(env: StudioEnv, summary: TurnSummaryInput): Promise<void> {
+async function recordSummary(env: StudioEnv, summary: BuilderTurnInput): Promise<void> {
 	try {
 		const owner = await studioScope(env);
 		await owner.invoke('studio/record-turn', summary);
@@ -340,7 +339,7 @@ export class TurnRecord {
 		await recordSummary(this.#env, this.#summary(outcome.kind));
 	}
 
-	#summary(outcome: TurnSummaryOutcome): TurnSummaryInput {
+	#summary(outcome: BuilderTurnOutcome): BuilderTurnInput {
 		const turn = this.#turn;
 		return {
 			turnId: turn.turnId,
@@ -379,7 +378,7 @@ export class TurnRecord {
 }
 
 /** The summary of a turn the studio lost track of: only where it was, and that it never finished. */
-function unknownTurn(turn: OpenTurn, turnId: string, threadId: string): TurnSummaryInput {
+function unknownTurn(turn: OpenTurn, turnId: string, threadId: string): BuilderTurnInput {
 	return {
 		turnId,
 		tenantId: turn.tenantId,
@@ -418,7 +417,7 @@ export async function readRecord(
 const TURN_EVENTS_MAX = 5_000;
 
 /** A page of turn summaries, studio-wide (turns.ts's `studio/list-turns`). */
-export async function listTurns(env: StudioEnv, query: Record<string, unknown>): Promise<Page<TurnSummary>> {
+export async function listTurns(env: StudioEnv, query: Record<string, unknown>): Promise<Page<BuilderTurn>> {
 	const owner = await studioScope(env);
 	return owner.invoke('studio/list-turns', query);
 }
@@ -430,9 +429,9 @@ export async function listTurns(env: StudioEnv, query: Record<string, unknown>):
 export async function readTurn(
 	env: StudioEnv,
 	turnId: string,
-): Promise<{ turn: TurnSummary; events: AssistantStreamEvent[]; cut: boolean } | null> {
+): Promise<{ turn: BuilderTurn; events: AssistantStreamEvent[]; cut: boolean } | null> {
 	const owner = await studioScope(env);
-	const turn = await owner.invoke<TurnSummary | null>('studio/get-turn', { turnId });
+	const turn = await owner.invoke<BuilderTurn | null>('studio/get-turn', { turnId });
 	if (!turn) return null;
 	const { threadId, firstSeq, lastSeq } = turn;
 	if (!threadId || firstSeq === null || lastSeq === null) return { turn, events: [], cut: false };
