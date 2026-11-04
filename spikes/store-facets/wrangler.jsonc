@@ -1,0 +1,15 @@
+// The spike's supervisor, uploaded to a dispatch namespace (RUNBOOK.md step 3). A throwaway:
+// its name, namespace and token belong to the spike, never to a real environment's scripts.
+{
+  "name": "substrat-spike-store-facets",
+  "main": "src/supervisor.mjs",
+  "compatibility_date": "2026-03-01",
+  // The drivers travel inert: Text and Data modules the supervisor hands to the loader, never imports.
+  "rules": [
+    { "type": "Text", "globs": ["**/drivers/*"], "fallthrough": false },
+    { "type": "Data", "globs": ["**/*.bin"], "fallthrough": false }
+  ],
+  "durable_objects": { "bindings": [{ "name": "SUPERVISOR", "class_name": "Supervisor" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Supervisor"] }],
+  "worker_loaders": [{ "binding": "LOADER" }]
+}
