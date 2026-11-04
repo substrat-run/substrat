@@ -48,7 +48,11 @@ its entry or rotates verification keys. Release bytes are identified by a digest
 is uploaded only at a release a person has approved and nobody has revoked since.
 
 An explicit rollout first runs the reserved operations against a fresh canary object, then
-moves the verticals' scripts in bounded batches. A paused rollout resumes when posted again,
+moves the verticals' scripts in bounded batches. The canary object takes the release's own
+fixture, `driver_<package>/substrat_canary.json`: a small `substrat.export` holding rows, which
+it must export back unchanged before `substrat.selfcheck` builds the runtime over it. A release
+without the fixture is not rolled out. The fixture is part of the approved bytes and is not
+uploaded into the store script. A paused rollout resumes when posted again,
 from the verticals it has not reached yet, however many verticals declare the driver.
 A rollback also needs an approved release; it cannot lower the stored schema version. A failure
 can leave the fleet diverged when returning a script would lower its schema or the return
@@ -157,6 +161,7 @@ What a runner answers:
 - `stop` without `start` resolves. A `stop` and then a `start` serve the same objects: they outlive the process, not the runner.
 - Every answer is the envelope, `{ result }` or `{ error: { code, status, body? } }`. An operation the driver does not know is an error answer, not a throw.
 - `substrat.size` answers `{ bytes }`.
+- `substrat.selfcheck` takes no input, builds the driver's whole runtime, and answers `{ operations }`: the catalog that runtime serves. A rollout's canary compares it with the catalog the release was approved with.
 - `substrat.export` answers `{ tables }`, each in the scope-dump table shape.
 - `substrat.import` takes `{ tables }`, replaces the whole object, and answers `{ tables }` as the count it wrote.
 - `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to.

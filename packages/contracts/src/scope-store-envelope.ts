@@ -52,6 +52,7 @@ export const RESERVED_STORE_OPERATIONS = [
   'substrat.size',
   'substrat.wipe',
   'substrat.erase',
+  'substrat.selfcheck',
 ] as const;
 export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
 

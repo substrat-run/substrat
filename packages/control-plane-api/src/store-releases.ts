@@ -18,13 +18,16 @@
  * converges, a rollback included. A request that stops on a failure ends `failed` or `diverged`.
  */
 import {
+  STORE_CANARY_FIXTURE_FILE,
   STORE_RELEASE_MAX_BYTES,
   scopeStoreCanaryObjectName,
   scopeStoreCanaryScriptName,
   scopeStoreScriptName,
   storeDriverReleaseDigest,
   storeDriverReleaseUpload,
+  storeExportResult,
   type PlatformActorId,
+  type StoreExportResult,
   type ReservedStoreOperation,
   type ScopeStoreNeed,
   type StoreDriverRegistration,
@@ -382,12 +385,44 @@ export const canaryObjectName = (binding: string): string => scopeStoreCanaryObj
 const tablesOf = (answer: unknown) => (answer as { tables: { name: string; rows: unknown[] }[] }).tables;
 
 /**
+ * The release's canary fixture (#2814), parsed: a `substrat.export` that holds rows. A release
+ * that ships none, or one that is not that, is refused (422) before the canary calls anything.
+ */
+function canaryFixtureOf(bytes: Uint8Array | undefined): StoreExportResult {
+  const where = `driver_<package>/${STORE_CANARY_FIXTURE_FILE}`;
+  if (!bytes) throw new ControlPlaneError(422, `canary refused: the release ships no canary fixture (${where})`);
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    json = undefined;
+  }
+  const parsed = storeExportResult.safeParse(json);
+  if (!parsed.success) throw new ControlPlaneError(422, `canary refused: ${where} is not a substrat.export answer`);
+  if (!parsed.data.tables.some((t) => t.rows.length > 0)) {
+    throw new ControlPlaneError(422, `canary refused: ${where} holds no rows`);
+  }
+  return parsed.data;
+}
+
+/**
  * Every reserved operation, on a fresh object of the platform's own (D-63): its tenant and scope
  * ids are new ulids, from the runtime's CSPRNG, never in the directory, and its vertical segment
- * is no vertical's. Each answer is parsed by the call and asserted here; the first that is not
- * what an object holding no data answers fails the canary. The object is wiped at the end.
+ * is no vertical's. Each answer is parsed by the call and asserted here; the first that is wrong
+ * fails the canary. The object starts empty, takes the release's own fixture (#2814) and must
+ * export it back unchanged, then builds its runtime over that data (`substrat.selfcheck`) and
+ * must serve exactly the catalog the release's approval records. The object is wiped at the end.
  */
-export async function canaryStoreRelease(input: { call: CanaryCall; scriptName: string; binding?: string }): Promise<void> {
+export async function canaryStoreRelease(input: {
+  call: CanaryCall;
+  scriptName: string;
+  /** The bytes of the release's `driver_<package>/substrat_canary.json`, if it ships one. */
+  fixture: Uint8Array | undefined;
+  /** The catalog the release's approval records. */
+  operations: readonly string[];
+  binding?: string;
+}): Promise<void> {
+  const fixture = canaryFixtureOf(input.fixture);
   const target = { scriptName: input.scriptName, objectName: canaryObjectName(input.binding ?? 'CANARY') };
   const step = async (operation: ReservedStoreOperation, check: (answer: unknown) => string | null, body?: unknown) => {
     let answer: unknown;
@@ -402,9 +437,17 @@ export async function canaryStoreRelease(input: { call: CanaryCall; scriptName: 
   };
   const ok = () => null;
   await step('substrat.size', ok);
-  const exported = tablesOf(await step('substrat.export', (a) => (tablesOf(a).some((t) => t.rows.length > 0) ? 'exported rows from an object holding none' : null)));
-  await step('substrat.import', (a) => ((a as { tables: number }).tables === exported.length ? null : `imported ${(a as { tables: number }).tables} of ${exported.length} tables`), { tables: exported });
-  await step('substrat.export', (a) => (JSON.stringify(tablesOf(a)) === JSON.stringify(exported) ? null : 'did not export what it imported'));
+  await step('substrat.export', (a) => (tablesOf(a).some((t) => t.rows.length > 0) ? 'exported rows from an object holding none' : null));
+  const { tables } = fixture;
+  await step('substrat.import', (a) => ((a as { tables: number }).tables === tables.length ? null : `imported ${(a as { tables: number }).tables} of ${tables.length} tables`), { tables });
+  await step('substrat.export', (a) => (JSON.stringify(tablesOf(a)) === JSON.stringify(tables) ? null : 'did not export the fixture it imported'));
+  const approved = [...input.operations].sort();
+  await step('substrat.selfcheck', (a) => {
+    const served = [...(a as { operations: string[] }).operations].sort();
+    return JSON.stringify(served) === JSON.stringify(approved)
+      ? null
+      : `serves [${served.join(', ')}], and the approval records [${approved.join(', ')}]`;
+  });
   await step('substrat.erase', (a) => ((a as { erased: number }).erased === 0 ? null : 'erased rows of a subject the object never held'), { subjectId: ulid() });
   await step('substrat.wipe', ok);
   await step('substrat.export', (a) => (tablesOf(a).some((t) => t.rows.length > 0) ? 'still holds rows after its wipe' : null));
@@ -422,8 +465,8 @@ export interface StoreDriverRolloutDeps {
    * uploaded: false for a script already there, built the same way.
    */
   ensure: (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to: string; approvals: StoreDriverApprovals }) => Promise<boolean>;
-  /** Put `to` in the driver's canary script; answers its name. */
-  ensureCanary: (to: string, approvals: StoreDriverApprovals) => Promise<{ scriptName: string }>;
+  /** Put `to` in the driver's canary script; answers its name and the release's canary fixture. */
+  ensureCanary: (to: string, approvals: StoreDriverApprovals) => Promise<{ scriptName: string; fixture?: Uint8Array }>;
   callCanary: CanaryCall;
   /** For a test: a smaller batch than {@link ROLLOUT_VERTICALS_PER_REQUEST}. */
   perRequest?: number;
@@ -515,7 +558,8 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     };
 
     try {
-      await deps.ensureCanary(sha256, approvals).then(({ scriptName }) => canaryStoreRelease({ call: deps.callCanary, scriptName }));
+      const { scriptName, fixture } = await deps.ensureCanary(sha256, approvals);
+      await canaryStoreRelease({ call: deps.callCanary, scriptName, fixture, operations: approved.operations });
     } catch (e) {
       // No vertical's script moved in this request; the current release stays. A row the end
       // cannot write (the hold lapsed) reads as diverged, which is what it then is.

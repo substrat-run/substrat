@@ -144,6 +144,16 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
       },
     },
     {
+      // The rollout's canary compares this answer with the approved catalog (#2814).
+      name: 'substrat.selfcheck answers the catalog it serves, the read and the write among it',
+      async run() {
+        await withRunner(async (runner) => {
+          const { operations } = await reserved(runner, freshAddress(), 'substrat.selfcheck');
+          expect(operations).toEqual(expect.arrayContaining([fixture.read.operation, fixture.write.operation]));
+        });
+      },
+    },
+    {
       name: 'substrat.export answers { tables } in the scope-dump table shape',
       async run() {
         await withRunner(async (runner) => {

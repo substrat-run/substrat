@@ -57,6 +57,8 @@ export function counterScopeStoreRunner(): ScopeStoreRunner {
         }
         case 'substrat.size':
           return { result: { bytes: totalOf(object) } };
+        case 'substrat.selfcheck':
+          return { result: { operations: ['increment', 'read'] } };
         case 'substrat.wipe':
           objects.delete(id);
           return { result: {} };

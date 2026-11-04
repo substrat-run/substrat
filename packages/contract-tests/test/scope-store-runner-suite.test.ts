@@ -46,6 +46,7 @@ const CHECK = {
   address: 'the object is keyed on the whole address: tenant, vertical, scope and binding',
   restart: 'a stop and a start serve the same repositories',
   size: 'substrat.size answers { bytes }',
+  selfcheck: 'substrat.selfcheck answers the catalog it serves, the read and the write among it',
   export: 'substrat.export answers { tables } in the scope-dump table shape',
   import: 'substrat.import replaces the whole object and answers the tables it wrote',
   wipe: 'substrat.wipe answers {} and leaves an empty object, also where nothing was written',
@@ -121,6 +122,11 @@ const TWINS: { name: string; breaks: readonly string[]; makeRunner: () => ScopeS
     name: 'a size that is not { bytes }',
     breaks: [CHECK.size],
     makeRunner: answering('substrat.size', { result: { size: 1 } }),
+  },
+  {
+    name: 'a selfcheck whose catalog leaves out an operation it serves',
+    breaks: [CHECK.selfcheck],
+    makeRunner: answering('substrat.selfcheck', { result: { operations: ['read'] } }),
   },
   {
     // An empty export also leaves nothing for an import to restore.

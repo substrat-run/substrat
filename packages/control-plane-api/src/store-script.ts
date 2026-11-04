@@ -1,4 +1,5 @@
 import {
+  classifyPythonStoreModule,
   SCOPE_STORE_CANARY,
   STORE_DRIVERS,
   scopeStoreCanaryScriptName,
@@ -160,7 +161,7 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
   }): Promise<{ uploaded: number }> => {
     const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, drivers: opts.drivers });
     let uploaded = 0;
-    for (const script of plan.scripts) if (await ensure(script, input.to, { existingOnly: input.existingOnly })) uploaded++;
+    for (const script of plan.scripts) if ((await ensure(script, input.to, { existingOnly: input.existingOnly })).uploaded) uploaded++;
     return { uploaded };
   };
 }
@@ -171,20 +172,22 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
  * vertical's script is, except that it may move to a lower `schema`: every canary object is fresh
  * and wiped, so none holds migrated data. With `existingOnly` instead of `to`, the fleet rebuild
  * (#2309): the canary script is rebuilt at the release it runs, and left alone when there is none.
- * Answers the script's name and whether it was uploaded.
+ * Answers the script's name, whether it was uploaded, and the release's canary fixture (#2814):
+ * the bytes of its `driver_<package>/substrat_canary.json`, from the release the ensurer just
+ * hashed and judged, or undefined when it ships none or no release was loaded.
  */
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
-  const ensure = scriptEnsurer(opts);
-  return async (input: StoreCanaryTarget): Promise<{ scriptName: string; uploaded: boolean }> => {
+  return async (input: StoreCanaryTarget): Promise<{ scriptName: string; uploaded: boolean; fixture?: Uint8Array }> => {
     const driver = (opts.drivers ?? STORE_DRIVERS).find((k) => k.driver === input.driver);
     if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(driver.driver);
-    const uploaded = await ensure(
+    const ensured = await scriptEnsurer(opts)(
       { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName },
       'to' in input ? input.to : undefined,
       { anySchema: true, existingOnly: 'existingOnly' in input },
     );
-    return { scriptName, uploaded };
+    const fixture = ensured.release?.modules.find((module) => classifyPythonStoreModule(module.name).kind === 'canaryFixture');
+    return { scriptName, uploaded: ensured.uploaded, ...(fixture ? { fixture: fixture.content } : {}) };
   };
 }
 
@@ -202,12 +205,17 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
-  return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean; existingOnly?: boolean } = {}): Promise<boolean> => {
+  /** Whether the script was uploaded, and the release it was judged at: hashed, approved, and built. */
+  return async (
+    script: EnsuredScript,
+    to: string | undefined,
+    rule: { anySchema?: boolean; existingOnly?: boolean } = {},
+  ): Promise<{ uploaded: boolean; release?: PythonStoreDriverRelease }> => {
     if (opts.approvals.registration.driver !== script.driver) {
       throw new ControlPlaneError(500, `store script '${script.scriptName}' was handed the approvals of driver '${opts.approvals.registration.driver}'`);
     }
     const current = await readStoreScriptSettings(opts, script.scriptName);
-    if (rule.existingOnly && !current.exists) return false;
+    if (rule.existingOnly && !current.exists) return { uploaded: false };
     if (current.exists && !current.release) {
       // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
       throw new ControlPlaneError(409, `store script '${script.scriptName}' records no release`);
@@ -269,9 +277,9 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
       throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
     }
     const build = await buildDigest(built);
-    if (current.exists && current.release === sha256 && current.build === build) return false;
+    if (current.exists && current.release === sha256 && current.build === build) return { uploaded: false, release: loaded };
     await put(scriptUrl(script.scriptName), script.scriptName, built, { sha256, build, first: !current.exists });
-    return true;
+    return { uploaded: true, release: loaded };
   };
   async function put(
     url: string,

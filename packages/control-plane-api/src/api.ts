@@ -581,7 +581,7 @@ export interface ControlPlaneApiOptions {
    */
   storeReleases?: {
     bytes: StoreReleaseBytes;
-    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }): Promise<{ scriptName: string; uploaded: boolean }>;
+    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }): Promise<{ scriptName: string; uploaded: boolean; fixture?: Uint8Array }>;
     callCanary: CanaryCall;
     /** The same script settings release read the ensurer uses; required for a guarded revoke. */
     readScriptRelease?: (scriptName: string) => Promise<{ exists: boolean; release?: string }>;
