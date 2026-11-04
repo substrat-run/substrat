@@ -50,6 +50,11 @@ export interface StoreSource {
   page(seq: number): Promise<ScopeDumpPageTable[]>;
 }
 
+/** One store a restore loads: its binding, its driver, and where its pages come from. */
+export interface RestoreStore extends DeclaredScopeStore {
+  source: StoreSource;
+}
+
 /** An inline store (an older backup's, or an uploaded dump's) as a source: cut at its driver's page size. */
 export const inlineStoreSource = (store: { driver: string; tables: readonly ScopeDumpTable[] }): StoreSource => {
   const pages = storeDumpPages(store.tables, storeDriverDumpPageBytes(store.driver));

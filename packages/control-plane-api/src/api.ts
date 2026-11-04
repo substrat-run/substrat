@@ -347,16 +347,9 @@ import {
   snapshotEnds,
   StoreLandFailure,
   storeHoldsRows,
+  type RestoreStore,
   type StorePlace,
-  type StoreSource,
 } from './store-move-ends.js';
-
-/** One store a restore loads: its binding, its driver, and where its pages come from. */
-interface RestoreStore {
-  binding: string;
-  driver: string;
-  source: StoreSource;
-}
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import {
