@@ -1,5 +1,20 @@
 # @substrat-run/vertical-host
 
+## 0.179.0
+
+### Minor Changes
+
+- 1784e1c: Requests can be counted and filtered by the process state they moved an entity to. The invocation line carries `processStates` (each lifecycle move as `<entityType>:<state>`, never an id), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.processStates`, blob 12) carry it too, and the tenant request reads take a `state` facet. A request that made several moves is counted under each one.
+
+### Patch Changes
+
+- Updated dependencies [f45974b]
+- Updated dependencies [1784e1c]
+- Updated dependencies [994a35f]
+  - @substrat-run/contracts@0.179.0
+  - @substrat-run/kernel@0.179.0
+  - @substrat-run/model-providers@0.5.69
+
 ## 0.178.0
 
 ### Patch Changes

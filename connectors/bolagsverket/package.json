@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-bolagsverket",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Substrat connector: validates a Swedish organisation number against Bolagsverket's free value-datasets API (API för värdefulla datamängder): whether it exists, its registered name, legal form, address, SNI codes and whether it is active, deregistered, in liquidation or bankrupt. OAuth2 client credentials, throttled within the provider's 60 requests a minute. Host code, never module code.",
   "license": "AGPL-3.0-only",

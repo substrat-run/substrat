@@ -1,5 +1,23 @@
 # @substrat-run/control-plane-api
 
+## 0.179.0
+
+### Minor Changes
+
+- 4d7817b: A backup, a restore and a snapshot move a scope store a page at a time: a backup holds each store's pages as entries named in its manifest's `storeEntries`, a restore stages every store before it loads the scope and commits them after, and a snapshot stages the fork's stores from the source's. Backups with stores inline still restore. `PlatformScopeStores` replaces `exportStores` and `importStores` with `callStore` (a breaking change for a caller implemented outside this repo), and `ScopeBackupWriter.commit` takes `storeEntries`.
+- 1784e1c: Requests can be counted and filtered by the process state they moved an entity to. The invocation line carries `processStates` (each lifecycle move as `<entityType>:<state>`, never an id), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.processStates`, blob 12) carry it too, and the tenant request reads take a `state` facet. A request that made several moves is counted under each one.
+
+### Patch Changes
+
+- 372d13d: The control plane's routes record their registry and scope reads through the request's view, so those access rows name the person a team credential carried too.
+- 994a35f: A scope store object admits each signed envelope once: the store entry spends its nonce and refuses the same envelope again (K-59).
+- Updated dependencies [f45974b]
+- Updated dependencies [1784e1c]
+- Updated dependencies [994a35f]
+  - @substrat-run/contracts@0.179.0
+  - @substrat-run/kernel@0.179.0
+  - @substrat-run/control-plane-client@0.6.1
+
 ## 0.178.0
 
 ### Minor Changes
