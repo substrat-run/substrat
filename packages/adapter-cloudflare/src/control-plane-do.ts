@@ -205,7 +205,7 @@ import {
   type AuditedOperationSqlRow,
 } from '@substrat-run/kernel';
 import { replyOf, type DoReply } from './do-reply.js';
-import { switchSqlOver } from './scope-do.js';
+import { rowBytes, switchSqlOver } from './scope-do.js';
 import {
   blankSqlComments,
   boundShapesColumn,
@@ -233,6 +233,7 @@ import type {
   OpsFailureEntry,
   SweepRunEntry,
   RoleDefinition,
+  DirectoryDumpPage,
   ScopeDumpTable,
   ScopeId,
   ScopeStatus,
@@ -249,7 +250,7 @@ import type {
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, AUTO_ADMISSION_NOTE, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, AUTO_ADMISSION_NOTE, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_DUMP_PAGE_MAX_BYTES, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { DeploymentWireAuth, FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
@@ -1641,6 +1642,52 @@ export const REPLIED_METHODS = [
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
+/**
+ * #1713: the directory's epoch describes THIS store's history, not its data, so it never leaves in
+ * a dump. A restore mints its own from the store it lands in (`importDump`).
+ */
+const directoryDumpWhere = (table: string): string => (table === 'lifecycle_revisions' ? `subject <> 'directory:epoch'` : '1');
+
+/**
+ * A paged copy's snapshot (#2868): `_directory_copy` names the copy, `_directory_copy_tables` lists
+ * its tables (their DDL and columns as the copy found them), and `_directory_copy_rows_<ord>` holds
+ * each table's rows, under neutral column names so every one pages by its own rowid. Written in one synchronous turn
+ * by a copy's first page, so the copy is of one instant whatever is written while its pages are
+ * read, and dropped by its last page, or by the next copy's first. Never in a dump.
+ */
+const COPY_GLOB = '_directory_copy*';
+const COPY_TABLE = '_directory_copy';
+const COPY_TABLES_TABLE = '_directory_copy_tables';
+const copyRowsTable = (ord: number): string => `_directory_copy_rows_${ord}`;
+/**
+ * How many rows a dump page reads at a time. Small, because a batch is held whole before the byte
+ * cap is asked: `vertical_versions` keeps every pushed manifest, and a few hundred of them would
+ * be the isolate.
+ */
+const DIRECTORY_READ_BATCH = 32;
+
+/** Where a directory dump page resumes (#2868). */
+interface DirectoryDumpCursor {
+  copyId: string;
+  ord: number;
+  /** The last snapshot rowid read from table `ord`. */
+  after: number;
+}
+
+function decodeDirectoryDumpCursor(cursor: string): DirectoryDumpCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cursor);
+  } catch {
+    parsed = null;
+  }
+  const c = parsed as Partial<DirectoryDumpCursor> | null;
+  if (!c || typeof c.copyId !== 'string' || !Number.isSafeInteger(c.ord) || !Number.isSafeInteger(c.after)) {
+    throw substratError('validation_failed', 'not a directory dump page cursor');
+  }
+  return c as DirectoryDumpCursor;
+}
+
 export class ControlPlaneDO extends DurableObject {
   private readonly sql: SqlStorage;
   /** The directory's store as the kernel's SQL handle — the switch record's helpers (#1674). */
@@ -2072,28 +2119,132 @@ export class ControlPlaneDO extends DurableObject {
    * did before the restore, which is the opposite of what a recovery is for.
    */
   exportDump(): ScopeDumpTable[] {
-    // Not `_cf_*` either: workerd's own tables (the #1764 backfill's alarm creates
-    // `_cf_METADATA`), which are not the directory's and which it refuses to drop on restore.
-    const defs = this.sql
-      .exec(
-        `SELECT name, sql FROM sqlite_master
-          WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
-            AND sql IS NOT NULL
-          ORDER BY name`,
-      )
-      .toArray() as unknown as { name: string; sql: string }[];
-    return defs.map(({ name, sql }) => {
-      // #1713: the directory's epoch describes THIS store's history, not its data, so it never
-      // leaves in a dump. A restore mints its own from the store it lands in (`importDump`).
-      const cursor =
-        name === 'lifecycle_revisions'
-          ? this.sql.exec(`SELECT * FROM "${name}" WHERE subject <> 'directory:epoch'`)
-          : this.sql.exec(`SELECT * FROM "${name}"`);
+    return this.dumpTableDefs().map(({ name, sql }) => {
+      const cursor = this.sql.exec(`SELECT * FROM "${name}" WHERE ${directoryDumpWhere(name)}`);
       const columns = cursor.columnNames;
       const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
       return { name, ddl: sql, columns, rows };
     });
   }
+
+  /**
+   * One page of `exportDump` (#2868): the tables in the same order, each table's rows in order,
+   * until about `maxBytes` of cells are read (a single larger row rides alone). The whole dump
+   * outgrew this object's isolate, mostly through `vertical_versions`, which keeps every pushed
+   * manifest. The first page (`cursor` null) copies every table into a snapshot in one turn, in
+   * SQLite rather than in this isolate, and every page reads that snapshot: a row written, replaced
+   * or removed while the pages are read, or a column added by a deploy in between, is not seen by
+   * any of them. The last page drops the snapshot. `copiedTables` (first page only) is how many
+   * tables the copy holds, for the access log.
+   */
+  exportDumpPage(cursor: string | null, opts: { maxBytes?: number } = {}): DirectoryDumpPage & { copiedTables?: number } {
+    const maxBytes = opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES;
+    const taken = cursor === null ? this.snapshotDirectory() : null;
+    const at = taken?.cursor ?? decodeDirectoryDumpCursor(cursor!);
+    const copy = this.hasCopyTable()
+      ? (this.sql.exec(`SELECT copy_id AS copyId, captured_at AS capturedAt FROM ${COPY_TABLE}`).toArray()[0] as
+          | { copyId: string; capturedAt: string }
+          | undefined)
+      : undefined;
+    if (!copy || copy.copyId !== at.copyId) {
+      throw substratError('conflict', 'this directory copy is gone: a later copy replaced it, or a restore cleared it; start again');
+    }
+    const defs = this.sql
+      .exec(`SELECT ord, name, ddl, columns FROM ${COPY_TABLES_TABLE} WHERE ord >= ? ORDER BY ord`, at.ord)
+      .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string }[];
+    const tables: ScopeDumpTable[] = [];
+    let bytes = 0;
+    let next: string | null = null;
+    for (const { ord, name, ddl, columns } of defs) {
+      let last = ord === at.ord ? at.after : 0;
+      const rows: unknown[][] = [];
+      let full = false;
+      for (;;) {
+        // In batches, each read to its end: a part-read cursor keeps its table locked.
+        const read = Array.from(
+          this.sql.exec(`SELECT rowid, * FROM "${copyRowsTable(ord)}" WHERE rowid > ? ORDER BY rowid LIMIT ?`, last, DIRECTORY_READ_BATCH).raw(),
+          (raw) => raw as unknown[],
+        );
+        for (const cells of read) {
+          const row = cells.slice(1);
+          rows.push(row);
+          last = Number(cells[0]);
+          bytes += rowBytes(row);
+          if (bytes >= maxBytes) {
+            full = true;
+            break;
+          }
+        }
+        if (full || read.length < DIRECTORY_READ_BATCH) break;
+      }
+      tables.push({ name, ddl, columns: JSON.parse(columns) as string[], rows });
+      if (full) {
+        next = JSON.stringify({ copyId: at.copyId, ord, after: last } satisfies DirectoryDumpCursor);
+        break;
+      }
+    }
+    // A full page that ended on the last row of the last table still says `next`; the page after
+    // it is empty, and is the one that drops the snapshot.
+    if (next === null) this.dropDirectorySnapshot();
+    return { capturedAt: copy.capturedAt, tables, next, ...(taken ? { copiedTables: taken.tables } : {}) };
+  }
+
+  private hasCopyTable(): boolean {
+    return this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, COPY_TABLE).toArray().length > 0;
+  }
+
+  /**
+   * Copy every dumped table into a fresh snapshot (#2868), replacing any a copy left unfinished,
+   * and return the cursor of its first page and how many tables it holds. One synchronous
+   * transaction, so no write lands between two tables' reads.
+   */
+  private snapshotDirectory(): { cursor: DirectoryDumpCursor; tables: number } {
+    const copyId = crypto.randomUUID();
+    const capturedAt = new Date().toISOString();
+    return this.ctx.storage.transactionSync(() => {
+      this.dropDirectorySnapshot();
+      this.sql.exec(`CREATE TABLE ${COPY_TABLE} (copy_id TEXT NOT NULL, captured_at TEXT NOT NULL)`);
+      this.sql.exec(`INSERT INTO _directory_copy (copy_id, captured_at) VALUES (?, ?)`, copyId, capturedAt);
+      this.sql.exec(`CREATE TABLE ${COPY_TABLES_TABLE} (ord INTEGER PRIMARY KEY, name TEXT NOT NULL, ddl TEXT NOT NULL, columns TEXT NOT NULL)`);
+      const defs = this.dumpTableDefs();
+      defs.forEach(({ name, sql }, ord) => {
+        const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
+        probe.toArray();
+        const columns = probe.columnNames;
+        // Untyped columns: no affinity, so every value is copied exactly as the table holds it.
+        const neutral = columns.map((_, i) => `c${i}`).join(', ');
+        this.sql.exec(`CREATE TABLE "${copyRowsTable(ord)}" (${neutral})`);
+        this.sql.exec(`INSERT INTO "${copyRowsTable(ord)}" SELECT * FROM "${name}" WHERE ${directoryDumpWhere(name)}`);
+        this.sql.exec(`INSERT INTO _directory_copy_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`, ord, name, sql, JSON.stringify(columns));
+      });
+      return { cursor: { copyId, ord: 0, after: 0 }, tables: defs.length };
+    });
+  }
+
+  private dropDirectorySnapshot(): void {
+    const tables = this.sql
+      .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB ?`, COPY_GLOB)
+      .toArray() as unknown as { name: string }[];
+    for (const { name } of tables) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+  }
+
+  /**
+   * The tables a dump carries, by name. Not `_cf_*` either: workerd's own tables (the #1764
+   * backfill's alarm creates `_cf_METADATA`), which are not the directory's and which it refuses
+   * to drop on restore.
+   */
+  private dumpTableDefs(): { name: string; sql: string }[] {
+    return this.sql
+      .exec(
+        `SELECT name, sql FROM sqlite_master
+          WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
+            AND name NOT GLOB ? AND sql IS NOT NULL
+          ORDER BY name`,
+        COPY_GLOB,
+      )
+      .toArray() as unknown as { name: string; sql: string }[];
+  }
+
 
   /**
    * Replace the directory with a dump — the break-glass write half (#40).

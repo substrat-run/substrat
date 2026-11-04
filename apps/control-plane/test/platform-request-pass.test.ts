@@ -777,8 +777,9 @@ describe('the scheduled pass runs the steps after a failed hostname reconcile', 
         DIRECTORY_BACKUPS: recordingBucket(puts),
       } as never);
       expect(errors).toHaveBeenCalledWith('hostname-reconcile failed', expect.any(String));
-      // The directory copy, written after the hostname step (the bucket also takes other objects).
-      expect(puts.filter((k) => k.startsWith('directory/'))).toHaveLength(1);
+      // The directory copy, written after the hostname step (the bucket also takes other objects):
+      // one manifest, its pages beneath it (#2868).
+      expect(puts.filter((k) => /^directory\/[^/]+\.json$/.test(k))).toHaveLength(1);
     } finally {
       errors.mockRestore();
       await runInDurableObject(cp(), (_i, state) => {

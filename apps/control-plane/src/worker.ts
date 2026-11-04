@@ -2898,6 +2898,11 @@ export default {
           actor: SWEEP_ACTOR,
         });
         if (backup.taken || backup.pruned) console.log('directory-backup', backup);
+        // #2868: a copy that started and never finished is waited out, not retried; every pass
+        // that waits says so, so a backup failing that way is as loud as one that throws.
+        if (backup.waitingOutAttempt) {
+          console.error('directory-backup: waiting out a copy started at', backup.waitingOutAttempt, 'that has not finished');
+        }
       } catch (err) {
         console.error('directory-backup failed', err instanceof Error ? err.message : String(err));
       }

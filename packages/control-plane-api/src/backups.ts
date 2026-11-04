@@ -37,6 +37,7 @@ import type {
   ScopeDump,
   ScopeDumpChange,
   ScopeDumpPageTable,
+  ScopeDumpTable,
 } from '@substrat-run/contracts';
 
 // `ScopeBackup` — the metadata shape a stored copy reports — is a WIRE shape (the reap
@@ -115,14 +116,32 @@ export interface ScopeBackupStore {
  */
 export interface DirectoryBackupStore {
   /**
-   * Store one full-fidelity directory dump and return its metadata. Durable before it
-   * returns, like the scope store's `put`.
+   * Start writing one copy a page at a time (#2868): the directory outgrew being held as one
+   * value. Pages go in order from 0, and `commit` makes the copy listed and readable, durable
+   * before it returns. A copy that is never committed is never listed; `discard` drops its pages.
    */
-  put(input: { dump: DirectoryDump }): Promise<DirectoryBackup>;
+  begin(input: { capturedAt: string }): DirectoryBackupWriter;
   /** Every directory copy held, newest first. */
   list(): Promise<DirectoryBackup[]>;
-  /** One copy's dump, by its capture time. Null when no such copy is held. */
+  /** One copy's dump, by its capture time, its pages joined. Null when no such copy is held. */
   get(input: { capturedAt: string }): Promise<DirectoryDump | null>;
-  /** Drop one copy — how the retention window is enforced. Missing is not an error. */
+  /** Drop one copy, its pages included — how the retention window is enforced. Missing is not an error. */
   delete(input: { capturedAt: string }): Promise<void>;
+  /**
+   * Note that a copy was started (#2868), before its first page is read. A copy that fails leaves
+   * no listed copy, so this is what the schedule waits out instead of trying again every pass.
+   */
+  markAttempt(input: { attemptedAt: string }): Promise<void>;
+  /** The newest `markAttempt`, or null when none was noted. */
+  lastAttempt(): Promise<string | null>;
+}
+
+/** One directory copy being written (#2868). */
+export interface DirectoryBackupWriter {
+  /** Store page `seq` of the copy. */
+  put(seq: number, tables: ScopeDumpTable[]): Promise<void>;
+  /** Drop every page written; the copy was not finished. */
+  discard(): Promise<void>;
+  /** Finish the copy of `entries` pages and `tables` tables, and return its metadata. */
+  commit(input: { entries: number; tables: number }): Promise<DirectoryBackup>;
 }

@@ -29,6 +29,7 @@ import {
   createR2BackupStore,
 } from '../src/index.js';
 import { fakeBucket } from './fake-r2-bucket.js';
+import { createR2DirectoryBackupStore } from '../src/r2-backups.js';
 
 /**
  * The transport contract (control-plane.md §4.5). These drive the HTTP surface
@@ -3895,38 +3896,11 @@ describe('control-plane API', () => {
    * replayed restore that would roll a working platform backwards.
    */
   describe('directory backups (#40)', () => {
-    /** An in-memory `DirectoryBackupStore` over the one directory. */
-    function fakeDirectoryStore() {
-      const copies = new Map<string, DirectoryDump>();
-      return {
-        copies,
-        store: {
-          put: async ({ dump }: { dump: DirectoryDump }) => {
-            copies.set(dump.capturedAt, dump);
-            return {
-              capturedAt: dump.capturedAt,
-              size: JSON.stringify(dump).length,
-              tables: dump.tables.length,
-            };
-          },
-          list: async () =>
-            [...copies.values()]
-              .map((d) => ({
-                capturedAt: d.capturedAt,
-                size: JSON.stringify(d).length,
-                tables: d.tables.length,
-              }))
-              .sort((a, b) => (a.capturedAt < b.capturedAt ? 1 : -1)),
-          get: async ({ capturedAt }: { capturedAt: string }) => copies.get(capturedAt) ?? null,
-          delete: async ({ capturedAt }: { capturedAt: string }) => {
-            copies.delete(capturedAt);
-          },
-        },
-      };
-    }
+    /** The R2 directory store over a fake bucket. */
+    const fakeDirectoryStore = () => ({ store: createR2DirectoryBackupStore(fakeBucket().bucket) });
 
     it('takes a copy on demand, lists it, and serves the dump back as a restore source', async () => {
-      const { store, copies } = fakeDirectoryStore();
+      const { store } = fakeDirectoryStore();
       const api = createControlPlaneApi({
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
@@ -3937,7 +3911,6 @@ describe('control-plane API', () => {
       expect(taken.status).toBe(201);
       const meta = (await taken.json()) as { capturedAt: string; tables: number };
       expect(meta.tables).toBeGreaterThan(0);
-      expect(copies.size).toBe(1);
 
       const listed = await api.request('/directory/backups', { headers: auth });
       expect(await listed.json()).toHaveLength(1);
