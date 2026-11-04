@@ -113,6 +113,12 @@ describe('request facets in the URL', () => {
     expect(requestChips(q)).toEqual([{ key: 'entity', value: 'ticket or assignment', clears: ['ent'] }]);
   });
 
+  it('#2762: carries the process-state facet under `state`, a move per value', () => {
+    const q = { state: 'ticket:resolved,assignment:active' };
+    expect(requestReadQuery(q, { hours: 1 }).state).toEqual(['ticket:resolved', 'assignment:active']);
+    expect(requestChips(q)).toEqual([{ key: 'process state', value: 'ticket:resolved or assignment:active', clears: ['state'] }]);
+  });
+
   it('#2762: carries the path facet under `path`, a route per value', () => {
     const q = { path: 'GET /*,POST /api/mcp' };
     expect(requestReadQuery(q, { hours: 1 }).path).toEqual(['GET /*', 'POST /api/mcp']);

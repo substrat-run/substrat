@@ -640,19 +640,25 @@ describe('withInvocationLog — the record handed back to the router (#1904)', (
     return cap;
   };
 
-  it('carries operation, problem code, principal kind and entity types on a routed request', async () => {
+  it('carries operation, problem code, principal kind, entity types and process states on a routed request', async () => {
     const cap = quiet();
     try {
-      const emitted = { events: [{ type: 'ticket.closed', entity: 'ticket:1' }, { type: 'note.added', entity: 'note:9' }], total: 2 };
+      const emitted = {
+        events: [{ type: 'ticket.closed', entity: 'ticket:1' }, { type: 'note.added', entity: 'note:9' }],
+        total: 2,
+        transitions: [{ entity: 'ticket:1', from: 'open', to: 'closed' }],
+      };
       const res = (await operationWorker({ operation: 'tickets/close', problemCode: 'conflict', principalKind: 'user', emitted }).fetch!(
         new Request('https://acme.example/api/x', { headers: routed }),
         ENV,
         {},
       )) as Response;
       const carried = new URLSearchParams(res.headers.get(HEADER)!);
-      expect(Object.fromEntries(carried)).toEqual({ operation: 'tickets/close', problemCode: 'conflict', principalKind: 'user', entityTypes: 'note,ticket' });
-      // #2762: the line carries the same set the router meters.
-      expect(cap.lines[0]).toMatchObject({ entityTypes: 'note,ticket' });
+      expect(Object.fromEntries(carried)).toEqual({
+        operation: 'tickets/close', problemCode: 'conflict', principalKind: 'user', entityTypes: 'note,ticket', processStates: 'ticket:closed',
+      });
+      // #2762: the line carries the same sets the router meters.
+      expect(cap.lines[0]).toMatchObject({ entityTypes: 'note,ticket', processStates: 'ticket:closed' });
     } finally {
       cap.restore();
     }
@@ -763,7 +769,7 @@ describe('the line’s outputFields (#1331)', () => {
     expect(Object.keys(line)).toEqual([
       'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'route', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
-      'logLines', 'eventTypes', 'entities', 'entityTypes', 'transitions', 'versionId',
+      'logLines', 'eventTypes', 'entities', 'entityTypes', 'transitions', 'processStates', 'versionId',
     ]);
   });
 

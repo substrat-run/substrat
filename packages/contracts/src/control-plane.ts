@@ -2127,6 +2127,8 @@ export const ROUTER_REQUEST_POINT = {
   entityTypes: 'blob10',
   /** #2762: the record header's `route` — method and registered pattern; `''` before it, or for none. */
   route: 'blob11',
+  /** #2762: `joinProcessStates`' value from the record header; `''` before it, or for none. */
+  processStates: 'blob12',
   durationMs: 'double1',
   status: 'double2',
 } as const;

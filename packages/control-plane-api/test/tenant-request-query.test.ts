@@ -14,3 +14,12 @@ describe('parseTenantRequestQuery — the path facet (#2762)', () => {
     expect(() => parseTenantRequestQuery(TENANT, query({ path: '/api/items/7' }))).toThrow(/path is a route/);
   });
 });
+
+describe('parseTenantRequestQuery — the state facet (#2762)', () => {
+  it('takes one type and its state, and refuses a set or a bare state, which could only match nothing', () => {
+    expect(parseTenantRequestQuery(TENANT, query({ state: 'ticket:resolved' })).where).toEqual({ state: ['ticket:resolved'] });
+    for (const state of ['ticket:open,ticket:resolved', 'resolved', ':resolved']) {
+      expect(() => parseTenantRequestQuery(TENANT, query({ state }))).toThrow(/state is one entity type/);
+    }
+  });
+});

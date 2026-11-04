@@ -72,21 +72,24 @@ export interface InvocationRecordFields {
   entityTypes?: string | null | undefined;
   /** #2762: the route that answered — method and registered pattern, never the called path. */
   route?: string | null | undefined;
+  /** #2762: {@link joinProcessStates}' value. */
+  processStates?: string | null | undefined;
 }
 
 /** The longest value kept per field — an operation name, an error code, a subject kind. */
 export const INVOCATION_RECORD_FIELD_MAX = 128;
 
-const FIELDS = ['operation', 'problemCode', 'principalKind', 'entityTypes', 'route'] as const;
+const FIELDS = ['operation', 'problemCode', 'principalKind', 'entityTypes', 'route', 'processStates'] as const;
 type RecordField = (typeof FIELDS)[number];
 
 /**
  * A field's value as the header keeps it: at most {@link INVOCATION_RECORD_FIELD_MAX}
- * characters. `entityTypes` is cut at a type boundary, so no type is ever half a name.
+ * characters. A set (`entityTypes`, `processStates`) is cut at a member boundary, so no member
+ * is ever half a name.
  */
 function capped(key: RecordField, v: string): string | null {
   if (v.length <= INVOCATION_RECORD_FIELD_MAX) return v;
-  if (key !== 'entityTypes') return v.slice(0, INVOCATION_RECORD_FIELD_MAX);
+  if (key !== 'entityTypes' && key !== 'processStates') return v.slice(0, INVOCATION_RECORD_FIELD_MAX);
   const cut = v.lastIndexOf(ENTITY_TYPES_SEPARATOR, INVOCATION_RECORD_FIELD_MAX);
   return cut > 0 ? v.slice(0, cut) : null;
 }
@@ -112,7 +115,14 @@ export function encodeInvocationRecord(record: InvocationRecordFields): string |
  * capped, so a vertical cannot grow the router's datapoint.
  */
 export function decodeInvocationRecord(value: string | null | undefined): Record<RecordField, string | null> {
-  const out: Record<RecordField, string | null> = { operation: null, problemCode: null, principalKind: null, entityTypes: null, route: null };
+  const out: Record<RecordField, string | null> = {
+    operation: null,
+    problemCode: null,
+    principalKind: null,
+    entityTypes: null,
+    route: null,
+    processStates: null,
+  };
   if (!value) return out;
   let params: URLSearchParams;
   try {
@@ -145,6 +155,26 @@ export function joinEntityTypes(types: readonly string[]): string | null {
 /** #2762: an `entityTypes` value read back into its types; absent or empty is none. */
 export function splitEntityTypes(value: string | null | undefined): string[] {
   return value ? value.split(ENTITY_TYPES_SEPARATOR).filter((t) => t !== '') : [];
+}
+
+/**
+ * #2762: one `state` facet value — the entity TYPE and the declared state a request moved it
+ * to, `<entityType>:<state>`, never the entity's id. The type is a ref's text before its FIRST
+ * `:` (an id may hold more); a ref with none names no type, and gives no value.
+ */
+function processStateOf(move: { entity: string; to: string }): string | null {
+  const i = move.entity.indexOf(':');
+  return i > 0 && move.to !== '' ? `${move.entity.slice(0, i)}:${move.to}` : null;
+}
+
+/**
+ * #2762: the `state` request facet's value — the distinct {@link processStateOf} values of a
+ * request's lifecycle moves, as one set in `joinEntityTypes`' grammar (sorted, distinct, joined
+ * with {@link ENTITY_TYPES_SEPARATOR}, a member holding it left out) and read back with
+ * `splitEntityTypes`. Bounded by the model: declared entity types × their declared states.
+ */
+export function joinProcessStates(moves: ReadonlyArray<{ entity: string; to: string }>): string | null {
+  return joinEntityTypes(moves.flatMap((m) => processStateOf(m) ?? []));
 }
 
 /**

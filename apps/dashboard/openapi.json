@@ -3652,6 +3652,17 @@
             }
           },
           {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
             "name": "buckets",
             "in": "query",
             "required": false,
@@ -3914,6 +3925,17 @@
             }
           },
           {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
             "name": "buckets",
             "in": "query",
             "required": false,
@@ -4165,6 +4187,17 @@
           },
           {
             "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "state",
             "in": "query",
             "required": false,
             "schema": {

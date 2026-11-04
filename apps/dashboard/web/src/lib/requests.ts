@@ -11,12 +11,16 @@ import type { ObsQuery } from './observability-query';
  */
 
 /** The plane's facet keys, in the order the sidebar lists them: business facets first. */
-export type RequestFacetKey = 'operation' | 'entity' | 'path' | 'problemCode' | 'principalKind' | 'status' | 'surface' | 'level' | 'kind';
+export type RequestFacetKey =
+  | 'operation' | 'entity' | 'state' | 'path' | 'problemCode' | 'principalKind' | 'status' | 'surface' | 'level' | 'kind';
 export const REQUEST_FACETS: Facet<RequestFacetKey>[] = [
   { key: 'operation', url: 'op', label: 'Operation', mono: true },
   // #2762: the entity types a request's events were about; a request counts under each.
   // `ent`, because `entity` is the process map's lifecycle.
   { key: 'entity', url: 'ent', label: 'Entity', mono: true },
+  // #2762: the process state a request moved an entity to (`ticket:resolved`); a request counts
+  // under each move it made.
+  { key: 'state', url: 'state', label: 'Process state', mono: true },
   // #2762: the route that answered (`GET /api/items/:id`) — what selects a request that
   // reached no operation: a 404 probe, a discovery document, a vertical's own handler.
   { key: 'path', url: 'path', label: 'Path', mono: true },
