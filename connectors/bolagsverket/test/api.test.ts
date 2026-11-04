@@ -117,6 +117,21 @@ describe('token', () => {
     expect(err).toMatchObject({ code: 'refused', status: 401, message: expect.stringMatching(/Invalid token/) });
   });
 
+  it('is minted once for concurrent callers', async () => {
+    const ok = { status: 200, body: { organisationer: [] } };
+    const { api, calls } = client([ok, ok]);
+    await Promise.all([api.validateOrganisation('5560000001'), api.validateOrganisation('5560000001')]);
+    expect(calls.filter((c) => c.url === TOKEN_URL)).toHaveLength(1);
+  });
+
+  it('reads a token endpoint that does not answer as upstream', async () => {
+    const time = manualTime();
+    const down = new BolagsverketApi(CREDENTIAL, async () => {
+      throw new Error('getaddrinfo ENOTFOUND');
+    }, time.options);
+    expect(await failure(down.ping())).toMatchObject({ code: 'upstream', message: expect.stringMatching(/ENOTFOUND/) });
+  });
+
   it('reads an invalid_client mint as refused', async () => {
     const { api, apiCalls } = client([], { status: 400, body: { error: 'invalid_client', error_description: 'Bad client' } });
     const err = await failure(api.ping());

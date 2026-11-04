@@ -12,6 +12,27 @@ const tokenResponse = z.object({
   scope: z.string().optional(),
 });
 
+export interface Exchange {
+  ok: boolean;
+  status: number;
+  body: string;
+  retryAfter: string | null;
+}
+
+/**
+ * One request and its whole body. A transport failure (DNS, a timeout, a body cut off) is
+ * `upstream`: it says nothing about the credential, and a caller branching on
+ * `BolagsverketError.code` must not meet a bare `Error` instead.
+ */
+export async function exchange(fetch: Fetch, url: string, init: Parameters<Fetch>[1], what: string): Promise<Exchange> {
+  try {
+    const res = await fetch(url, init);
+    return { ok: res.ok, status: res.status, body: await res.text(), retryAfter: res.headers?.get('Retry-After') ?? null };
+  } catch (err) {
+    throw new BolagsverketError('upstream', `${what} did not answer: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** Re-mint this long before the provider's expiry, so a token never dies mid-request. */
 const EXPIRY_SKEW_MS = 60_000;
 /** Assumed lifetime when the response states none; short enough to be safe. */
@@ -35,6 +56,8 @@ function form(fields: Record<string, string>): string {
  */
 export class ClientCredentialsToken {
   private cached: { value: string; expiresAtMs: number } | null = null;
+  /** The mint in flight, shared by every caller that asks while it runs. */
+  private minting: Promise<string> | null = null;
 
   /** The scopes the last mint granted, or `null` before a mint. */
   scopes: string[] | null = null;
@@ -53,7 +76,14 @@ export class ClientCredentialsToken {
 
   async get(): Promise<string> {
     if (this.cached && this.cached.expiresAtMs - this.now() > EXPIRY_SKEW_MS) return this.cached.value;
-    const res = await this.fetch(this.tokenUrl, {
+    this.minting ??= this.mint().finally(() => {
+      this.minting = null;
+    });
+    return this.minting;
+  }
+
+  private async mint(): Promise<string> {
+    const res = await exchange(this.fetch, this.tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: form({
@@ -62,8 +92,8 @@ export class ClientCredentialsToken {
         client_secret: this.credential.clientSecret,
         scope: BOLAGSVERKET_SCOPES,
       }),
-    });
-    const body = await res.text();
+    }, 'Bolagsverket token endpoint');
+    const { body } = res;
     if (!res.ok) {
       // RFC 6749 §5.2: a bad client is `400 invalid_client` as often as a 401.
       const refused = res.status === 400 || res.status === 401 || res.status === 403;

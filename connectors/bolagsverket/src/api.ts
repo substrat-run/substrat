@@ -3,7 +3,7 @@ import { BolagsverketError, errorMessage } from './errors.js';
 import { organisationResult, rawOrganisationResponse, type OrganisationValidation } from './organisation.js';
 import { parseOrgnr } from './orgnr.js';
 import { SlidingWindow, retryAfterMs } from './throttle.js';
-import { ClientCredentialsToken, type Fetch } from './token.js';
+import { ClientCredentialsToken, exchange, type Fetch } from './token.js';
 
 // The default `sleep` only; every caller inside the platform, and every test, injects one.
 declare const setTimeout: (handler: () => void, timeout: number) => unknown;
@@ -57,9 +57,10 @@ export class BolagsverketApi {
     for (let attempt = 0; ; attempt += 1) {
       const token = await this.token.get();
       await this.window.acquire();
-      let res: Awaited<ReturnType<Fetch>>;
-      try {
-        res = await this.fetch(`${this.endpoints.apiBase}${path}`, {
+      const res = await exchange(
+        this.fetch,
+        `${this.endpoints.apiBase}${path}`,
+        {
           method,
           headers: {
             Authorization: `Bearer ${token}`,
@@ -67,18 +68,17 @@ export class BolagsverketApi {
             ...(json === undefined ? {} : { 'Content-Type': 'application/json' }),
           },
           ...(json === undefined ? {} : { body: JSON.stringify(json) }),
-        });
-      } catch (err) {
-        throw new BolagsverketError('upstream', `Bolagsverket ${method} ${path} did not answer: ${String(err)}`);
-      }
-      const body = await res.text();
+        },
+        `Bolagsverket ${method} ${path}`,
+      );
+      const { body } = res;
       if (res.status === 401 && !reminted) {
         reminted = true;
         this.token.invalidate();
         continue;
       }
       if (res.status === 429) {
-        const waitMs = retryAfterMs(res.headers?.get('Retry-After') ?? null);
+        const waitMs = retryAfterMs(res.retryAfter);
         if (attempt < this.maxRateLimitRetries) {
           await this.sleep(waitMs);
           continue;
