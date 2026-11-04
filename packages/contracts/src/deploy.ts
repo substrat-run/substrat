@@ -413,30 +413,36 @@ export function storeDriverBasisAdmits(
  * facts of its approval, recorded in the control plane by the person who approved it. Strict, so a
  * registration still carrying a release pin is refused rather than silently ignored.
  */
-export const storeDriverRegistration = z
-  .object({
-    // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
-    // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
-    driver: storeDriverId.pipe(z.literal('graph')),
-    isolationBasis: storeDriverIsolationBasis,
-    // The verticals the driver may serve. Absent, every vertical; a driver on a decision-record
-    // lift must name them, so serving one more is a reviewed change here, not an operating rule.
-    verticals: z.array(verticalSlug).readonly().optional(),
-    // The driver's `substrat.erase` is not implemented yet: a subject erasure that would reach one
-    // of its stores refuses and keeps the key, rather than record `{ erased: 0 }` as done.
-    erasure: z.literal('pending').optional(),
-    // The largest serialized page of its dump the driver takes or gives in one call (D-69). The
-    // platform asks for pages within it, so a driver declares what its own runtime can hold.
-    // Optional on the wire: the CLI parses the registry a plane serves (#2813), and a plane that
-    // predates this field must still parse. Absent, the platform asks for `STORE_DUMP_PAGE_MAX_BYTES`.
-    dumpPageMaxBytes: z.number().int().positive().max(STORE_DUMP_PAGE_MAX_BYTES).optional(),
-  })
-  .strict()
-  .refine((registration) => registration.isolationBasis.kind !== 'decisionRecord' || registration.verticals !== undefined, {
-    message: 'a driver registered on a decision record names the verticals it serves',
-    path: ['verticals'],
-  });
+const storeDriverRegistrationFields = z.object({
+  // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
+  // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
+  driver: storeDriverId.pipe(z.literal('graph')),
+  isolationBasis: storeDriverIsolationBasis,
+  // The verticals the driver may serve. Absent, every vertical; a driver on a decision-record
+  // lift must name them, so serving one more is a reviewed change here, not an operating rule.
+  verticals: z.array(verticalSlug).readonly().optional(),
+  // The driver's `substrat.erase` is not implemented yet: a subject erasure that would reach one
+  // of its stores refuses and keeps the key, rather than record `{ erased: 0 }` as done.
+  erasure: z.literal('pending').optional(),
+  // The largest serialized page of its dump the driver takes or gives in one call (D-69). The
+  // platform asks for pages within it, so a driver declares what its own runtime can hold.
+  // Optional on the wire: the CLI parses the registry a plane serves (#2813), and a plane that
+  // predates this field must still parse. Absent, the platform asks for `STORE_DUMP_PAGE_MAX_BYTES`.
+  dumpPageMaxBytes: z.number().int().positive().max(STORE_DUMP_PAGE_MAX_BYTES).optional(),
+});
+const namesItsVerticals = (registration: { isolationBasis: { kind: string }; verticals?: readonly string[] }) =>
+  registration.isolationBasis.kind !== 'decisionRecord' || registration.verticals !== undefined;
+const namesItsVerticalsMessage = { message: 'a driver registered on a decision record names the verticals it serves', path: ['verticals'] };
+
+export const storeDriverRegistration = storeDriverRegistrationFields.strict().refine(namesItsVerticals, namesItsVerticalsMessage);
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
+
+/**
+ * A registration as a control plane serves it (#2813), for a client that reads the plane's
+ * registry. A key this release does not know is dropped rather than refused, so a CLI keeps
+ * working against a plane that has since added a field; a file a person writes stays strict.
+ */
+export const servedStoreDriverRegistration = storeDriverRegistrationFields.strip().refine(namesItsVerticals, namesItsVerticalsMessage);
 
 /**
  * How large a page of `driver`'s dump the platform asks for: what its registration declares, and
@@ -517,6 +523,12 @@ export const STORE_CANARY_FIXTURE_FILE = 'substrat_canary.json';
  * shape, as a chain of `substrat.export-page` merges to (D-69).
  */
 export const storeCanaryFixture = z.object({ tables: z.array(scopeDumpTable) });
+
+/**
+ * The most rows a canary fixture holds (D-69). A fixture is small by intent: the canary stages it a
+ * row a page and reads it back the same way, inside a rollout's hold, two calls a row.
+ */
+export const STORE_CANARY_FIXTURE_MAX_ROWS = 200;
 export type StoreCanaryFixture = z.infer<typeof storeCanaryFixture>;
 
 /**

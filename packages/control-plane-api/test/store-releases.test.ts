@@ -107,7 +107,12 @@ const canaryAt = (scriptName: string) => async () => ({ scriptName, fixture: FIX
  * An object store the canary can drive (D-69): tables kept per object name, served one table a
  * page, with a stage held aside until it commits, serving the `catalog`.
  */
-function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unknown) => unknown>> = {}, catalog: string[] = []) {
+function canaryStore(
+  fail: Partial<Record<ReservedStoreOperation, (answer: unknown) => unknown>> = {},
+  catalog: string[] = [],
+  /** What a commit keeps of its stage's pages: all of them, unless a broken driver says otherwise. */
+  keep: (pages: unknown[][]) => unknown[][] = (pages) => pages,
+) {
   type Table = { name: string; rows: unknown[] };
   const calls: { scriptName: string; objectName: string; operation: ReservedStoreOperation; input?: unknown }[] = [];
   const tables = new Map<string, Table[]>();
@@ -135,7 +140,7 @@ function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unkno
       }
       case 'substrat.commit-stage': {
         const stage = stages.get(target.objectName)!;
-        const merged = mergeDumpPages(stage.pages as never) as Table[];
+        const merged = mergeDumpPages(keep(stage.pages) as never) as Table[];
         tables.set(target.objectName, merged);
         stages.delete(target.objectName);
         answer = { tables: merged.length };
@@ -176,6 +181,8 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       'substrat.size',
       'substrat.export-page',
       'substrat.stage-page',
+      'substrat.stage-page',
+      'substrat.stage-page',
       'substrat.commit-stage',
       'substrat.export-page',
       'substrat.stage-page',
@@ -205,7 +212,7 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     expect(again.calls[0]!.objectName).not.toBe(name);
   });
 
-  it('asks for the smallest page, loads the fixture as one stage, and discards a second stage by id', async () => {
+  it('asks for the smallest page, loads the fixture as one stage of several pages, and discards a second stage by id', async () => {
     const store = canaryStore({}, ['increment', 'read']);
     await canary(store.call);
     const exports = store.calls.filter((c) => c.operation === 'substrat.export-page');
@@ -215,13 +222,21 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       { cursor: null, maxBytes: 1 },
     ]);
     const stages = store.calls.filter((c) => c.operation === 'substrat.stage-page').map((c) => c.input as { stageId: string; seq: number; tables: unknown });
-    // The fixture as page 0 of one stage, then a second stage whose first page is sent again.
-    expect(stages.map((s) => s.seq)).toEqual([0, 0, 0]);
-    expect(stages[0]!.tables).toEqual(FIXTURE.tables);
-    expect(stages[1]!.stageId).toBe(stages[2]!.stageId);
-    expect(stages[1]!.stageId).not.toBe(stages[0]!.stageId);
+    // A one-row fixture still stages as three pages: its headings, its row, its headings again.
+    // Then a second stage whose first page is sent again.
+    const headings = [{ ...FIXTURE.tables[0]!, rows: [] }];
+    expect(stages.map((s) => [s.seq, s.tables])).toEqual([
+      [0, headings],
+      [1, FIXTURE.tables],
+      [2, headings],
+      [0, FIXTURE.tables],
+      [0, FIXTURE.tables],
+    ]);
+    expect(new Set(stages.slice(0, 3).map((s) => s.stageId)).size).toBe(1);
+    expect(stages[3]!.stageId).toBe(stages[4]!.stageId);
+    expect(stages[3]!.stageId).not.toBe(stages[0]!.stageId);
     expect(store.calls.find((c) => c.operation === 'substrat.commit-stage')!.input).toEqual({ stageId: stages[0]!.stageId });
-    expect(store.calls.find((c) => c.operation === 'substrat.discard-stage')!.input).toEqual({ stageId: stages[1]!.stageId });
+    expect(store.calls.find((c) => c.operation === 'substrat.discard-stage')!.input).toEqual({ stageId: stages[3]!.stageId });
   });
 
   it('compares dumps as they merge, so a driver that cuts its pages differently is not refused', async () => {
@@ -245,9 +260,15 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     expect(repeating.calls.filter((c) => c.operation === 'substrat.export-page')).toHaveLength(2);
   });
 
-  it('refuses a commit that counts other than the distinct tables it was sent', async () => {
-    const fragments = canaryStore({ 'substrat.commit-stage': (answer) => ({ tables: (answer as { tables: number }).tables * 3 }) }, ['increment', 'read']);
-    expect(await refusal(canary(fragments.call))).toMatchObject({ status: 502, message: expect.stringMatching(/wrote 3 tables of the 1/) });
+  it('refuses a commit that kept only the first page, or the last, or counted its fragments, with a one-row fixture', async () => {
+    const cases: [ReturnType<typeof canaryStore>, RegExp][] = [
+      [canaryStore({}, ['increment', 'read'], (pages) => pages.slice(0, 1)), /did not export the fixture it imported/],
+      [canaryStore({}, ['increment', 'read'], (pages) => pages.slice(-1)), /did not export the fixture it imported/],
+      [canaryStore({ 'substrat.commit-stage': (answer) => ({ tables: (answer as { tables: number }).tables * 3 }) }, ['increment', 'read']), /wrote 3 tables of the 1/],
+    ];
+    for (const [store, pattern] of cases) {
+      expect(await refusal(canary(store.call)), String(pattern)).toMatchObject({ status: 502, message: expect.stringMatching(pattern) });
+    }
   });
 
   it('reads a chain of several pages whole', async () => {
@@ -276,6 +297,10 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       [{ 'substrat.discard-stage': () => ({ discarded: false }) }, /did not discard a stage it held/],
       // The runtime does not build over the fixture's data.
       [{ 'substrat.selfcheck': boom }, /selfcheck failed/],
+      // A store's refusal reaches the canary as the call's ControlPlaneError at the store's status;
+      // it is still the release failing its canary (502), never a conflict or a validation error.
+      [{ 'substrat.selfcheck': () => { throw new ControlPlaneError(409, '409 stage_refused by store'); } }, /selfcheck failed/],
+      [{ 'substrat.selfcheck': () => { throw new ControlPlaneError(422, '422 validation_failed by store'); } }, /selfcheck failed/],
       [{ 'substrat.erase': () => ({ erased: 2 }) }, /erased rows/],
       [{ 'substrat.erase': boom }, /erase failed/],
       [{ 'substrat.wipe': boom }, /wipe failed/],
@@ -293,7 +318,7 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     }
     // A page sent again that is staged a second time: the resend must answer it already held.
     let stagings = 0;
-    const twice = canaryStore({ 'substrat.stage-page': (a) => (++stagings === 3 ? { staged: true } : a) }, ['increment', 'read']);
+    const twice = canaryStore({ 'substrat.stage-page': (a) => (++stagings === 5 ? { staged: true } : a) }, ['increment', 'read']);
     expect(await refusal(canary(twice.call))).toMatchObject({ message: expect.stringMatching(/staged a page it already held/) });
     // A commit the object does not keep, or keeps changed: the chain after it differs.
     let exports = 0;
@@ -326,6 +351,7 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       [new Uint8Array([0xff]), /is not a store dump/],
       [encode({ tables: [{ name: 'nodes' }] }), /is not a store dump/],
       [encode({ tables: [{ ...FIXTURE.tables[0]!, rows: [] }] }), /holds no rows/],
+      [encode({ tables: [{ ...FIXTURE.tables[0]!, rows: Array.from({ length: 201 }, (_, i) => [i]) }] }), /holds more than 200 rows/],
     ];
     for (const [fixture, pattern] of cases) {
       const store = canaryStore();

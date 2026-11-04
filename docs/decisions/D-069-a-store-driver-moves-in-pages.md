@@ -113,13 +113,17 @@ writes it for any driver rather than for one language.
   `substrat.export` and `substrat.import`. They are removed, not kept beside the new operations, and
   a driver that answers them gains nothing.
 - **The canary proves it.** It reads its empty object as a chain of the smallest page the contract
-  allows, loads the release's own fixture (#2814) a row a page through the kernel's `writeStoreDump`,
+  allows, then loads the release's own fixture (#2814) through the kernel's `writeStoreDumpPages`
   and reads it back through `readStoreDump`: the writer and the reader the platform's own paths use.
-  It then stages a second stage, sends its first page again (which answers `staged: false`), discards
-  it, runs `substrat.selfcheck` over the loaded data, erases, wipes, and reads once more to see nothing
-  is left. It compares dumps as their pages merge, so a driver that cuts its pages differently is not
-  refused. It calls every reserved operation, and a chain that never ends, or repeats a cursor, is
-  refused.
+  The fixture is staged a row a page between a first and a last page that carry only its table
+  headings, so the stage is several pages whatever its size, and a commit that keeps only its first
+  or last page, or counts fragments, is refused. A fixture is small by intent: at most
+  `STORE_CANARY_FIXTURE_MAX_ROWS` (200) rows, since each costs two calls inside a rollout's hold.
+  The canary then stages a second stage, sends its first page again (which answers
+  `staged: false`), discards it, runs `substrat.selfcheck` over the loaded data, erases, wipes, and
+  reads once more to see nothing is left. It compares dumps as their pages merge, so a driver that
+  cuts its pages differently is not refused. It calls every reserved operation, and a chain that
+  never ends, or repeats a cursor, is refused.
 
 ## Any driver, one reference
 

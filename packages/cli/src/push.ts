@@ -47,6 +47,7 @@ import {
   type DeployManifest,
   type SourceBuildRequest,
   assertDeclaredScopeStores,
+  servedStoreDriverRegistration,
   storeDriverRegistration,
   type StoreDriverRegistration,
   storeNamesOfBindings,
@@ -1491,7 +1492,7 @@ export async function storeDriversOfPlane(
 ): Promise<StoreDriverRegistration[] | undefined> {
   try {
     const { drivers } = await planeFor(controlPlaneUrl, header).storeDriversFor(vertical, tenant);
-    return storeDriverRegistration.array().parse(drivers);
+    return servedStoreDriverRegistration.array().parse(drivers);
   } catch (e) {
     if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 403)) return undefined;
     throw e;

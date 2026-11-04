@@ -35,8 +35,9 @@ import {
   createUlid,
   readStoreDump,
   runtimeSha256,
+  storeDumpPages,
   ulid,
-  writeStoreDump,
+  writeStoreDumpPages,
   type ReservedStoreCall,
   type HostAdmin,
   type StoreDriverApprovalRecord,
@@ -402,10 +403,12 @@ const dumpText = (tables: readonly object[]) =>
  * export it back unchanged, then builds its runtime over that data (`substrat.selfcheck`) and
  * must serve exactly the catalog the release's approval records. The object is wiped at the end.
  *
- * The dump moves in pages (D-69) through the kernel's own `readStoreDump` and `writeStoreDump`,
- * the reader and the writer a backup and a restore use, at the smallest page the contract allows,
- * so the fixture is staged a row a page and read back as many pages. A dump is compared as its
- * pages merge, so a driver that cuts its pages differently is not refused.
+ * The dump moves in pages (D-69) through the kernel's own `readStoreDump` and `writeStoreDumpPages`,
+ * the reader and the writer a backup and a restore use, at the smallest page the contract allows.
+ * The fixture is staged a row a page, between a first and a last page that carry only its table
+ * headings, so the stage is several pages whatever the fixture's size: a commit that keeps only its
+ * first or its last page loses the rows, and one that counts fragments miscounts. A dump is compared
+ * as its pages merge, so a driver that cuts its pages differently is not refused.
  */
 export async function canaryStoreRelease(input: {
   call: CanaryCall;
@@ -418,8 +421,11 @@ export async function canaryStoreRelease(input: {
 }): Promise<void> {
   const fixture = canaryFixtureOf(input.fixture);
   const target = { scriptName: input.scriptName, objectName: canaryObjectName(input.binding ?? 'CANARY') };
+  // The canary's own page cap passes through; anything a call throws, a store's refusal at its own
+  // status included, is the release failing its canary (502), never the status the store answered.
+  let capped: ControlPlaneError | undefined;
   const refused = (what: string, e: unknown) =>
-    e instanceof ControlPlaneError ? e : new ControlPlaneError(502, `canary refused: ${what} failed (${e instanceof Error ? e.message : String(e)})`);
+    e === capped ? e : new ControlPlaneError(502, `canary refused: ${what} failed (${e instanceof Error ? e.message : String(e)})`);
   const step = async (operation: ReservedStoreOperation, check: (answer: unknown) => string | null, body?: unknown) => {
     let answer: unknown;
     try {
@@ -436,7 +442,7 @@ export async function canaryStoreRelease(input: {
   let pagesRead = 0;
   const call = ((operation: ReservedStoreOperation, body?: unknown) => {
     if (operation === 'substrat.export-page' && ++pagesRead > CANARY_MAX_PAGES) {
-      throw new ControlPlaneError(502, `canary refused: substrat.export-page did not end in ${CANARY_MAX_PAGES} pages`);
+      throw (capped = new ControlPlaneError(502, `canary refused: substrat.export-page did not end in ${CANARY_MAX_PAGES} pages`));
     }
     return input.call(target, operation, body);
   }) as ReservedStoreCall;
@@ -454,8 +460,10 @@ export async function canaryStoreRelease(input: {
   const holdsNone = (message: string) => (tables: readonly ScopeDumpTable[]) => (tables.some((t) => t.rows.length > 0) ? message : null);
   await step('substrat.size', ok);
   await read(holdsNone('exported rows from an object holding none'));
+  const headings = fixture.tables.map((table) => ({ ...table, rows: [] }));
+  const pages = storeDumpPages(fixture.tables, 1);
   try {
-    await writeStoreDump(call, fixture.tables, 1);
+    await writeStoreDumpPages(call, [headings, ...pages, headings]);
   } catch (e) {
     throw refused('loading the fixture (substrat.stage-page, substrat.commit-stage)', e);
   }
@@ -463,8 +471,8 @@ export async function canaryStoreRelease(input: {
   // A page sent again is held once, and a stage that is discarded is dropped, never committed.
   const dropped = ulid();
   const staged = (expected: boolean, otherwise: string) => (a: unknown) => ((a as { staged: boolean }).staged === expected ? null : otherwise);
-  await step('substrat.stage-page', staged(true, 'did not stage a first page'), { stageId: dropped, seq: 0, tables: fixture.tables });
-  await step('substrat.stage-page', staged(false, 'staged a page it already held'), { stageId: dropped, seq: 0, tables: fixture.tables });
+  await step('substrat.stage-page', staged(true, 'did not stage a first page'), { stageId: dropped, seq: 0, tables: pages[0] });
+  await step('substrat.stage-page', staged(false, 'staged a page it already held'), { stageId: dropped, seq: 0, tables: pages[0] });
   await step('substrat.discard-stage', (a) => ((a as { discarded: boolean }).discarded ? null : 'did not discard a stage it held'), { stageId: dropped });
   const approved = [...input.operations].sort();
   await step('substrat.selfcheck', (a) => {

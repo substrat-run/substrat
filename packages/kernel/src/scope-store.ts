@@ -432,21 +432,29 @@ export function storeDumpPages(tables: readonly ScopeDumpTable[], maxBytes: numb
 }
 
 /**
- * Replaces a store with `tables`, page by page (D-69). Nothing changes until the commit, and a stage
- * that fails is discarded where the store can still answer. A failed discard does not hide the
- * failure that led to it; the driver drops an abandoned stage itself. Each page goes once under a
- * fresh id, so `staged: false` is an error, and so is a commit that answers any other number of
- * tables than the distinct tables sent.
+ * Replaces a store with `tables`, page by page (D-69): cut by `storeDumpPages`, then written by
+ * {@link writeStoreDumpPages}.
  */
 export async function writeStoreDump(
   call: ReservedStoreCall,
   tables: readonly ScopeDumpTable[],
   maxBytes: number,
 ): Promise<{ tables: number }> {
+  return writeStoreDumpPages(call, storeDumpPages(tables, maxBytes));
+}
+
+/**
+ * Replaces a store with `pages`, staged in order under one fresh id and then committed. Nothing
+ * changes until the commit, and a stage that fails is discarded where the store can still answer.
+ * A failed discard does not hide the failure that led to it; the driver drops an abandoned stage
+ * itself. Each page goes once under a fresh id, so `staged: false` is an error, and so is a commit
+ * that answers any other number of tables than the distinct tables sent.
+ */
+export async function writeStoreDumpPages(call: ReservedStoreCall, pages: readonly (readonly ScopeDumpTable[])[]): Promise<{ tables: number }> {
   const stageId = ulid();
-  const distinct = new Set(tables.map((table) => table.name)).size;
+  const distinct = new Set(pages.flatMap((page) => page.map((table) => table.name))).size;
   try {
-    for (const [seq, page] of storeDumpPages(tables, maxBytes).entries()) {
+    for (const [seq, page] of pages.entries()) {
       const { staged } = await call('substrat.stage-page', { stageId, seq, tables: page });
       if (!staged) throw driverFault(`substrat.stage-page held page ${seq} of a stage it was only just given`);
     }

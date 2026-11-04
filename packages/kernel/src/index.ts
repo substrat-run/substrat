@@ -130,6 +130,7 @@ export {
   replayStoreErasures,
   storeDumpPages,
   writeStoreDump,
+  writeStoreDumpPages,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
   type ReservedStoreCall,

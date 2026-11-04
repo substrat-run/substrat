@@ -856,5 +856,6 @@ export const INDEX_VALUE_EXPORTS = [
   'writeExplicitTupleIn',
   'writeLifecycle',
   'writeStoreDump',
+  'writeStoreDumpPages',
   'writeVersionMigrations',
 ] as const;

@@ -234,8 +234,8 @@ is never a tenant's scope. It calls every reserved operation (`substrat.size`, `
 `substrat.discard-stage`, `substrat.selfcheck`, `substrat.erase`, `substrat.wipe`) and asserts each
 answer before the rollout continues. Since #2814 the object does not stay
 empty: it loads the release's own canary fixture, `driver_<package>/substrat_canary.json`
-(a small store dump, `{ tables }`, holding rows, covered by the release digest and never uploaded into
-a script), a page at a time through the kernel's `writeStoreDump`, must read it back unchanged through
+(a small store dump, `{ tables }`, holding at most 200 rows, covered by the release digest and never
+uploaded into a script), a row a page between two heading-only pages through the kernel's `writeStoreDumpPages`, must read it back unchanged through
 `readStoreDump`, and must then build its runtime over it and serve
 exactly the catalog the release's approval records. A release with no fixture is refused. A rollback goes to the immediately previous good
 release. The module names in a release are validated, and the names the platform's entry

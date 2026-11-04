@@ -2,6 +2,7 @@ import {
   classifyPythonStoreModule,
   SCOPE_STORE_CANARY,
   STORE_CANARY_FIXTURE_FILE,
+  STORE_CANARY_FIXTURE_MAX_ROWS,
   STORE_DRIVERS,
   scopeStoreCanaryScriptName,
   storeDriverBasisAdmits,
@@ -65,7 +66,8 @@ export function liveApprovalOf(approvals: StoreDriverApprovals, sha256: string):
 }
 
 /**
- * A release's canary fixture (#2814), parsed: a store dump (`{ tables }`) that holds rows. A release that
+ * A release's canary fixture (#2814), parsed: a store dump (`{ tables }`) that holds rows, at most
+ * `STORE_CANARY_FIXTURE_MAX_ROWS` of them. A release that
  * ships none, or one that is not that, is refused (422): by the canary ensurer before it uploads
  * anything, and by the canary before it calls anything.
  */
@@ -80,8 +82,10 @@ export function canaryFixtureOf(bytes: Uint8Array | undefined): StoreCanaryFixtu
   }
   const parsed = storeCanaryFixture.safeParse(json);
   if (!parsed.success) throw new ControlPlaneError(422, `canary refused: ${where} is not a store dump ({ tables })`);
-  if (!parsed.data.tables.some((t) => t.rows.length > 0)) {
-    throw new ControlPlaneError(422, `canary refused: ${where} holds no rows`);
+  const rows = parsed.data.tables.reduce((n, t) => n + t.rows.length, 0);
+  if (rows === 0) throw new ControlPlaneError(422, `canary refused: ${where} holds no rows`);
+  if (rows > STORE_CANARY_FIXTURE_MAX_ROWS) {
+    throw new ControlPlaneError(422, `canary refused: ${where} holds more than ${STORE_CANARY_FIXTURE_MAX_ROWS} rows`);
   }
   return parsed.data;
 }
