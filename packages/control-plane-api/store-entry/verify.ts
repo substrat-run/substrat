@@ -8,9 +8,11 @@
  * fixed order. The object binding (check 5) needs the object's id, so each entry makes it itself.
  */
 import {
+  SCOPE_STORE_ENVELOPE_WINDOW_SECONDS,
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
   STORE_CALL_MAX_BYTES,
+  scopeStoreEnvelopeFresh,
   scopeStorePublicKeysFrom,
   verifyScopeStoreCall,
   type ScopeStoreEnvelope,
@@ -101,6 +103,51 @@ export async function verifiedStoreCall(
   const verdict = await storeCallVerdict(request.headers, text, env);
   return verdict.ok ? { ok: true, envelope: verdict.envelope, body: bytes.buffer as ArrayBuffer } : verdict;
 }
+
+/** The prefix of every key the entry keeps in an object's KV storage: one per nonce it has spent. */
+const STORE_NONCE_KEY_PREFIX = 'substrat.store-nonce/';
+
+/** At most this many expired nonces are forgotten per call, so a call's write stays bounded. */
+const STORE_NONCE_PRUNE_BATCH = 64;
+
+/** The slice of a SQLite-backed object's storage the nonce memory uses: its synchronous KV. */
+export interface StoreNonceStorage {
+  readonly kv: {
+    get(key: string): unknown;
+    put(key: string, value: unknown): void;
+    delete(key: string): boolean;
+    list(options: { prefix?: string; end?: string; limit?: number }): Iterable<[string, unknown]>;
+  };
+}
+
+/** The key a nonce is kept under: its issue time first, zero-padded, so expired keys sort first. */
+const nonceKey = (iat: number) => `${STORE_NONCE_KEY_PREFIX}${String(iat).padStart(15, '0')}/`;
+
+/**
+ * Spends a verified envelope's nonce in the object it addressed (K-59): true the first time, false
+ * for the same envelope again, and false for one no longer fresh at this object's clock. A key is
+ * kept while its envelope is fresh. After that the freshness check refuses a replay by itself, so
+ * the key is forgotten, a bounded batch per call. Judging freshness again here, at the clock the
+ * forgetting uses, is what keeps a key from being forgotten while its envelope is still admitted.
+ * Synchronous, so the check and the write are one step that no other call interleaves.
+ *
+ * It lives in the object's KV storage rather than in a SQL table, so it is none of the tables a driver
+ * creates, exports or wipes by name. A wipe that clears the object's whole storage forgets the
+ * nonces too, as it forgets everything else.
+ */
+export function spendStoreNonce(storage: StoreNonceStorage, envelope: Pick<ScopeStoreEnvelope, 'iat' | 'nonce'>, nowSeconds: number): boolean {
+  const { kv } = storage;
+  const expired = nonceKey(nowSeconds - SCOPE_STORE_ENVELOPE_WINDOW_SECONDS);
+  for (const [key] of kv.list({ prefix: STORE_NONCE_KEY_PREFIX, end: expired, limit: STORE_NONCE_PRUNE_BATCH })) kv.delete(key);
+  if (!scopeStoreEnvelopeFresh(envelope.iat, nowSeconds)) return false;
+  const key = `${nonceKey(envelope.iat)}${envelope.nonce}`;
+  if (kv.get(key) !== undefined) return false;
+  kv.put(key, 1);
+  return true;
+}
+
+/** The refusal for an envelope this object has already admitted once. */
+export const spentNonce: StoreCallRefusal = { ok: false, status: 401, message: 'unauthorized: nonce' };
 
 /**
  * The verdict on one call. `body` is the request body, read once by the entry, and the same
