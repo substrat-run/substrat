@@ -120,15 +120,22 @@ silence the compiler.
 
 ## Who writes the handler: `derive` or `authored`
 
-Some operations are described completely by their declaration, and the platform
-writes their handler: a `get` of one row by its id, a `list` that is a `GET` page
-(`paged.over`) of the entity's own rows behind declared filters, an `update` that is a
-`PATCH` field bag with `concurrency`, a `delete` of a row no entity declares as parent,
-a `create` that is a `POST` whose every column comes from the input, the parent its check
-narrows to, a minted id, or the entity's `stamps` (`created_at: 'createdAt'`,
-`created_by: 'createdBy'`, `updated_at: 'updatedAt'`, `updated_by: 'updatedBy'`), and, on an entity that declares `archive` / `trash`, its moves
-(`archive`, `unarchive`, `trash`, `restore`) and its bin (`trashed`). Each of these
-operations must say who writes its handler:
+Most operations declare **neither**. `derive` and `authored` exist only for the few
+shapes the platform can write a handler for from the declaration alone:
+
+- a **`get`** of one row by its id;
+- a **`list`** that is a `GET` page (`paged.over`) of the entity's own rows behind
+  declared filters;
+- an **`update`** that is a `PATCH` field bag with `concurrency`;
+- a **`delete`** that is a `DELETE` taking the id alone, answering `{ id, deleted }`,
+  of a row no entity declares as parent;
+- a **`create`** that is a `POST` whose every column comes from the input, the parent
+  its check narrows to, a minted id, or the entity's `stamps` (`created_at: 'createdAt'`,
+  `created_by: 'createdBy'`, `updated_at: 'updatedAt'`, `updated_by: 'updatedBy'`);
+- on an entity that declares `archive` / `trash`, its moves (`archive`, `unarchive`,
+  `trash`, `restore`) and its bin (`trashed`).
+
+An operation of one of these shapes must say who writes its handler:
 
 ```ts
 'acme/get-customer': {
@@ -143,11 +150,24 @@ operations must say who writes its handler:
 
 `derive: '<shape>'` means the build writes no handler for it. `authored: '<reason>'`
 keeps the handler hand-written, and the reason says what the derived one would get
-wrong here (a projection, a normalised input, a cascade). `defineOperations`
-refuses, at load, an operation of one of these shapes that declares neither, and
-names the shape. It also refuses a `derive` that does not match its shape, and an
-`authored` on an operation nothing could derive. Prefer `derive`; write `authored`
-only with a reason a reviewer could disagree with.
+wrong here (a projection, a normalised input, a cascade). Prefer `derive`; write
+`authored` only with a reason a reviewer could disagree with.
+
+**Every other operation declares neither.** A command (`complete-task`,
+`invite-member`), a projection (`my-day`, `roster`), a list that joins or computes
+anything — none of these matches a shape, so its handler is authored already and
+there is nothing to say. `authored` on one of them is refused at load:
+
+```
+model: 'acme/close-case' declares `authored`, but nothing about it is derivable — it matches none of
+get, list, update, delete, create, archive, unarchive, trash, restore, trashed, so every handler for it
+is authored already.
+```
+
+`defineOperations` checks all of this at load: a derivable operation declaring
+neither (it names the shape), a `derive` that does not match its shape (it names the
+clause that fails), and an `authored` where nothing could be derived. Do not put
+`authored` on everything to be safe; that is the refusal, not the safe side.
 
 **An updated stamp binds every handler, not only the derived ones.** When an entity
 declares `updatedAt`/`updatedBy`, the host checks, after each operation and consumer,
@@ -158,6 +178,37 @@ an authored handler that writes such a row (insert included) sets
 statement and emits about that row, not only about its parent; and a handler that
 emits about such a row it did not otherwise change still stamps it. Declare the pair
 only where every writer can honour it.
+
+## Refused at load, not at compile
+
+These do not show as type errors. The module throws when it loads, the `model-emit`
+gate goes red, and the Model tab keeps the picture from before the turn.
+
+- **A `PATCH` body is a field bag.** Every body field (path `{vars}` excepted) is
+  optional and has no default, because a field the caller left out must mean
+  "unchanged". A rename that always sends the name is a `PUT`:
+
+  ```ts
+  'acme/rename-project': {
+    input: z.object({ projectId: z.string(), name: z.string() }),
+    http: { method: 'PUT', path: '/projects/{projectId}' },
+    // …
+  },
+  ```
+
+  The check has to be able to read that, so the input object and each body field are
+  plain Zod schemas: one it cannot inspect (a `z.custom`, a `z.preprocess`, a
+  transform) is refused even when it is optional without a default, and so is a
+  default or hook on the input object itself. The remedies are the same: `PUT`, or,
+  when a PATCH really cannot be a field bag, `patchException: '<reason>'` saying why.
+- **A partial update declares `concurrency`.** An operation taking a row's id plus two
+  or more optional fields that are that entity's own columns is read-modify-write: two
+  people editing different fields of the same row would each save over the other.
+  Declare `concurrency: { over: '<entity>', idFrom: '<id field>' }` and emit about the
+  entity, since a version is the last event about it.
+- **`derive: 'delete'` answers `{ id, deleted }`** and takes the id alone. A delete
+  that answers anything else, or whose entity is another's parent (a cascade), is
+  hand-written and declares neither.
 
 ## What does NOT go here
 
