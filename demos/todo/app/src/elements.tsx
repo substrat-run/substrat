@@ -1,6 +1,13 @@
 /**
- * The `@substrat-run/elements` prototype, dogfooded: your lists as a `<sub-entity-table>`,
- * and a switcher between Web Awesome's default theme and two Substrat ones.
+ * The `@substrat-run/elements` prototype, dogfooded: the controls every screen uses
+ * (`/controls`, Web Awesome's free core), your lists as a `<sub-entity-table>`, and a
+ * switcher between Web Awesome's default theme and two Substrat ones.
+ *
+ * React 18 sets a custom element's props as ATTRIBUTES, so a boolean is written
+ * `disabled={x || undefined}` — `false` would become the attribute "false", which is
+ * present and so true. A class is `class`, not `className`, which React 18 writes as a
+ * literal `classname` attribute on a custom element. Events arrive through
+ * `onInput`/`onClick`, which bubble out of the shadow root. React 19 removes all three.
  *
  * React 18 passes a custom element's props as attributes, so the table's object and
  * function properties (`source`, `columns`, `actions`) are set through a ref. React 19
@@ -8,8 +15,11 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import type { Column, RowAction, SubEntityTable } from '@substrat-run/elements';
+import type {} from '@substrat-run/elements/jsx';
 import '@substrat-run/elements';
+import '@substrat-run/elements/controls';
 import '@substrat-run/elements/themes/base.css';
+import '@substrat-run/elements/themes/native.css';
 import '@substrat-run/elements/themes/ledger.css';
 import '@substrat-run/elements/themes/atelier.css';
 import { api, type List } from './api.js';
@@ -99,16 +109,25 @@ export function ThemePicker() {
 
   return (
     <span className="themes">
-      <select aria-label="Theme" value={theme} onChange={(e) => setTheme(e.target.value as ThemeId)}>
+      <wa-select
+        size="s"
+        aria-label="Theme"
+        value={theme}
+        onInput={(e) => setTheme((e.target as HTMLSelectElement).value as ThemeId)}
+      >
         {THEMES.map((t) => (
-          <option key={t.id} value={t.id}>
+          <wa-option key={t.id} value={t.id}>
             {t.label}
-          </option>
+          </wa-option>
         ))}
-      </select>
-      <label>
-        <input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} /> Dark
-      </label>
+      </wa-select>
+      <wa-switch
+        size="s"
+        checked={dark || undefined}
+        onInput={(e) => setDark((e.target as HTMLInputElement).checked)}
+      >
+        Dark
+      </wa-switch>
     </span>
   );
 }

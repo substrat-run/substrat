@@ -55,12 +55,12 @@ describe('Lists — active, archived and trash (#119)', () => {
   const draw = (shown?: 'active' | 'archived' | 'trash') =>
     act(async () => root.render(<Lists shown={shown} />));
   const button = (label: string) => {
-    const found = [...container.querySelectorAll('button')].find((b) => b.textContent === label);
+    const found = [...container.querySelectorAll('button, wa-button')].find((b) => b.textContent === label);
     if (!found) throw new Error(`no '${label}' button in: ${container.textContent}`);
     return found;
   };
   const press = (label: string) => act(async () => button(label).click());
-  const labels = () => [...container.querySelectorAll('button')].map((b) => b.textContent);
+  const labels = () => [...container.querySelectorAll('button, wa-button')].map((b) => b.textContent);
 
   it('the active view reads my-lists with no view, and offers archive and trash', async () => {
     client.myLists.mockResolvedValue(page(list('l1', 'Groceries')));
@@ -129,7 +129,7 @@ describe('Lists — active, archived and trash (#119)', () => {
     await act(async () => {
       [...container.querySelectorAll('.card')]
         .find((c) => c.textContent?.includes('Moved elsewhere'))!
-        .querySelector('button')!
+        .querySelector('wa-button')!
         .click();
     });
     expect(client.myLists).toHaveBeenCalledTimes(2);

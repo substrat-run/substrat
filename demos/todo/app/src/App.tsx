@@ -21,6 +21,9 @@ import { ListsTable, ThemePicker } from './elements.js';
 /** The wall, as opposed to a blip: the server said no, not "try again". */
 const denied = (error: unknown) => error instanceof ApiError && error.status === 403;
 
+/** The current value of a `wa-input` (or any control) an input event came from. */
+const valueOf = (e: { target: EventTarget | null }) => (e.target as HTMLInputElement).value;
+
 /** A move against a list that is no longer where this screen shows it (#119). */
 const stale = (error: unknown) => error instanceof ApiError && (error.status === 409 || error.status === 404);
 
@@ -37,10 +40,10 @@ function useHash(): string {
 function Problem({ error }: { error: unknown }) {
   if (!error) return null;
   return (
-    <p className="error">
+    <wa-callout class="error" variant={denied(error) ? 'warning' : 'danger'} size="s">
       <strong>{denied(error) ? 'Not allowed. ' : 'Something went wrong. '}</strong>
       {error instanceof Error ? error.message : String(error)}
-    </p>
+    </wa-callout>
   );
 }
 
@@ -71,11 +74,15 @@ export function App() {
       <>
         <header>
           <h1>Todo</h1>
-          <span className="tag">on Substrat</span>
+          <wa-tag size="s" appearance="outlined">
+            on Substrat
+          </wa-tag>
         </header>
         <main>
           <p>Sign in to see your lists.</p>
-          <button onClick={() => auth.login('/')}>Sign in</button>
+          <wa-button variant="brand" onClick={() => auth.login('/')}>
+            Sign in
+          </wa-button>
         </main>
       </>
     );
@@ -86,12 +93,18 @@ export function App() {
     <>
       <header>
         <h1>Todo</h1>
-        <span className="tag">on Substrat</span>
+        <wa-tag size="s" appearance="outlined">
+            on Substrat
+          </wa-tag>
         <ThemePicker />
         <span className="who">
-          Signed in as <strong>{session.display}</strong>
-          <button onClick={() => auth.switchUser()}>Switch user</button>
-          <button onClick={() => auth.logout()}>Sign out</button>
+          <wa-dropdown>
+            <wa-button slot="trigger" size="s" appearance="outlined" with-caret>
+              {session.display}
+            </wa-button>
+            <wa-dropdown-item onClick={() => auth.switchUser()}>Switch user</wa-dropdown-item>
+            <wa-dropdown-item onClick={() => auth.logout()}>Sign out</wa-dropdown-item>
+          </wa-dropdown>
         </span>
       </header>
       <main>
@@ -190,12 +203,14 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
     }
   };
 
-  const create = async (e: React.FormEvent) => {
+  const create = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const form = e.currentTarget;
     setError(null);
     try {
       await api.createList({ name: name.trim() });
       setName('');
+      form.reset();
       load();
     } catch (e) {
       setError(e);
@@ -223,28 +238,28 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
               <span className="spacer" />
               {shown !== 'trash' && <SharedTag list={l} />}
               {shown === 'active' && (
-                <button className="link" onClick={() => move(() => api.archiveList({ listId: l.id }))}>
+                <wa-button size="s" appearance="plain" onClick={() => move(() => api.archiveList({ listId: l.id }))}>
                   archive
-                </button>
+                </wa-button>
               )}
               {shown === 'archived' && (
-                <button className="link" onClick={() => move(() => api.unarchiveList({ listId: l.id }))}>
+                <wa-button size="s" appearance="plain" onClick={() => move(() => api.unarchiveList({ listId: l.id }))}>
                   unarchive
-                </button>
+                </wa-button>
               )}
               {shown === 'trash' ? (
                 <>
-                  <button className="link" onClick={() => move(() => api.restoreList({ listId: l.id }))}>
+                  <wa-button size="s" appearance="plain" onClick={() => move(() => api.restoreList({ listId: l.id }))}>
                     restore
-                  </button>
-                  <button className="link" onClick={() => move(() => api.deleteList({ listId: l.id }))}>
+                  </wa-button>
+                  <wa-button size="s" appearance="plain" variant="danger" onClick={() => move(() => api.deleteList({ listId: l.id }))}>
                     delete for good
-                  </button>
+                  </wa-button>
                 </>
               ) : (
-                <button className="link" onClick={() => move(() => api.trashList({ listId: l.id }))}>
+                <wa-button size="s" appearance="plain" variant="danger" onClick={() => move(() => api.trashList({ listId: l.id }))}>
                   trash
-                </button>
+                </wa-button>
               )}
             </div>
           </div>
@@ -252,15 +267,10 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
       )}
       {shown === 'active' && (
         <form className="inline" onSubmit={create}>
-          <input
-            type="text"
-            value={name}
-            placeholder="New list…"
-            onChange={(e) => setName(e.target.value)}
-          />
-          <button className="primary" disabled={!name.trim()}>
+          <wa-input name="name" placeholder="New list…" label="New list" class="wa-visually-hidden-label" onInput={(e) => setName(valueOf(e))} />
+          <wa-button type="submit" variant="brand" disabled={!name.trim() || undefined}>
             Create
-          </button>
+          </wa-button>
         </form>
       )}
     </>
@@ -278,7 +288,15 @@ function SharedTag({ list }: { list: List }) {
       .catch(() => setMine(false));
   }, [list.id]);
   if (mine === null) return null;
-  return mine ? <span className="tag">yours</span> : <span className="tag shared">shared with you</span>;
+  return mine ? (
+    <wa-tag size="s" variant="neutral">
+      yours
+    </wa-tag>
+  ) : (
+    <wa-tag size="s" variant="brand">
+      shared with you
+    </wa-tag>
+  );
 }
 
 function ListView({ listId }: { listId: string }) {
@@ -377,9 +395,9 @@ function ListView({ listId }: { listId: string }) {
             query per request, so it is asked for rather than assumed, and a screen that
             never renders it should stop asking. */}
         {page !== null && page.total !== null && (
-          <span className="tag">
+          <wa-tag size="s" variant="neutral">
             {page.entries.length} of {page.total}
-          </span>
+          </wa-tag>
         )}
       </h2>
       <p className="sub">Tick things off, add your own. Both are things a share lets you do.</p>
@@ -395,16 +413,16 @@ function ListView({ listId }: { listId: string }) {
         page.entries.map((i) => (
           <div className="card" key={i.id}>
             <div className="row">
-              <input
-                type="checkbox"
-                checked={i.done === 1}
-                onChange={() => guard(() => api.setItemDone({ itemId: i.id, done: i.done !== 1 }))}
-              />
-              <span className={i.done === 1 ? 'done' : undefined}>{i.text}</span>
+              <wa-checkbox
+                checked={i.done === 1 || undefined}
+                onInput={() => guard(() => api.setItemDone({ itemId: i.id, done: i.done !== 1 }))}
+              >
+                <span className={i.done === 1 ? 'done' : undefined}>{i.text}</span>
+              </wa-checkbox>
               <span className="spacer" />
-              <button className="link" onClick={() => guard(() => api.deleteItem({ itemId: i.id }))}>
+              <wa-button size="s" appearance="plain" variant="danger" onClick={() => guard(() => api.deleteItem({ itemId: i.id }))}>
                 delete
-              </button>
+              </wa-button>
             </div>
           </div>
         ))
@@ -413,27 +431,26 @@ function ListView({ listId }: { listId: string }) {
       {/* Absent `next` is how the walk ends, so this button disappears rather than
           going grey — there is no page to be disabled about. */}
       {page?.next && (
-        <button className="link" onClick={() => void more()}>
+        <wa-button size="s" appearance="outlined" onClick={() => void more()}>
           Load more
-        </button>
+        </wa-button>
       )}
 
       <form
         className="inline"
         onSubmit={(e) => {
           e.preventDefault();
-          void guard(() => api.addItem({ listId, text: text.trim() })).then(() => setText(''));
+          const form = e.currentTarget;
+          void guard(() => api.addItem({ listId, text: text.trim() })).then(() => {
+            setText('');
+            form.reset();
+          });
         }}
       >
-        <input
-          type="text"
-          value={text}
-          placeholder="Add an item…"
-          onChange={(e) => setText(e.target.value)}
-        />
-        <button className="primary" disabled={!text.trim()}>
+        <wa-input name="text" placeholder="Add an item…" label="New item" class="wa-visually-hidden-label" onInput={(e) => setText(valueOf(e))} />
+        <wa-button type="submit" variant="brand" disabled={!text.trim() || undefined}>
           Add
-        </button>
+        </wa-button>
       </form>
 
       {shares !== null && (
@@ -449,9 +466,9 @@ function ListView({ listId }: { listId: string }) {
                 <div className="row">
                   <span>{s.email}</span>
                   <span className="spacer" />
-                  <button className="link" onClick={() => guard(() => api.revokeShare({ shareId: s.id }))}>
+                  <wa-button size="s" appearance="plain" variant="danger" onClick={() => guard(() => api.revokeShare({ shareId: s.id }))}>
                     revoke
-                  </button>
+                  </wa-button>
                 </div>
               </div>
             ))
@@ -460,16 +477,24 @@ function ListView({ listId }: { listId: string }) {
             className="inline"
             onSubmit={(e) => {
               e.preventDefault();
-              void guard(() => api.shareList({ listId, email: email.trim() })).then(() => setEmail(''));
+              const form = e.currentTarget;
+              void guard(() => api.shareList({ listId, email: email.trim() })).then(() => {
+                setEmail('');
+                form.reset();
+              });
             }}
           >
-            <input
+            <wa-input
+              name="email"
               type="email"
-              value={email}
               placeholder="bjorn@example.com"
-              onChange={(e) => setEmail(e.target.value)}
+              label="Share with (email)"
+              class="wa-visually-hidden-label"
+              onInput={(e) => setEmail(valueOf(e))}
             />
-            <button disabled={!email.trim()}>Share</button>
+            <wa-button type="submit" disabled={!email.trim() || undefined}>
+              Share
+            </wa-button>
           </form>
         </section>
       )}

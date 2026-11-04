@@ -7,6 +7,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./controls": "./src/controls.ts",
+    "./jsx": "./src/jsx.ts",
     "./themes/*": "./src/themes/*"
   },
   "scripts": {
