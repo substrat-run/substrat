@@ -180,6 +180,22 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // correct, and a re-paste rotates it in place — which is what a re-paste should do
     // when there is only ever one.
   },
+  bolagsverket: {
+    provider: 'bolagsverket',
+    name: 'Bolagsverket',
+    description: 'Validates Swedish organisation numbers against the Companies Registration Office.',
+    monogram: 'Bv',
+    // The OAuth2 client Bolagsverket issues after a kundanmälan, keyed exactly as the
+    // connector's `bolagsverketCredential` schema parses it. The connection mints its own
+    // short-lived tokens from the pair, so there is no consent round.
+    fields: [
+      { key: 'clientId', label: 'Client ID', secret: false, placeholder: 'From Bolagsverket, after the kundanmälan' },
+      { key: 'clientSecret', label: 'Client secret', secret: true },
+    ],
+    // Empty, as `BOLAGSVERKET_CONNECTION_GRANTS` is: v1 lands nothing in a scope.
+    grants: [],
+    // No `accountRefField`: one client per app, and a re-paste rotates it in place.
+  },
   microsoft365: {
     provider: 'microsoft365',
     name: 'Microsoft 365',
