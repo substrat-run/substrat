@@ -1,5 +1,24 @@
 # @substrat-run/dev-issuer
 
+## 0.2.59
+
+### Patch Changes
+
+- 8f740ab: `/userinfo` refuses a missing or invalid bearer as an `application/problem+json` document with a `WWW-Authenticate: Bearer error="invalid_token"` challenge; the OAuth token errors keep their RFC 6749 shape.
+- Updated dependencies [8ccf734]
+- Updated dependencies [1b2892a]
+- Updated dependencies [e3f681a]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [3c97959]
+- Updated dependencies [fafa51e]
+- Updated dependencies [0afb860]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [de5ea61]
+  - @substrat-run/contracts@0.177.0
+  - @substrat-run/vertical-auth@0.30.1
+
 ## 0.2.58
 
 ### Patch Changes
