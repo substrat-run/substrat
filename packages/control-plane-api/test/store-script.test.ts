@@ -41,6 +41,8 @@ const artifact = (source: string) => ({
     { name: 'driver_counter/store.py', content: bytes(source) },
     // Not UTF-8: a module goes up as the bytes it is.
     { name: 'driver_counter/blob.py', content: new Uint8Array([0x23, 0xff, 0xfe, 0x0a]) },
+    // The canary's fixture (#2814): judged before a canary upload, and never uploaded itself.
+    { name: 'driver_counter/substrat_canary.json', content: bytes('{"tables":[{"name":"n","ddl":"CREATE TABLE n (id)","columns":["id"],"rows":[[1]]}]}') },
   ],
 });
 const v1 = artifact('class Store:\n    pass\n');
@@ -364,10 +366,11 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
     // The fleet rebuild (#2309) creates no canary script where there is none.
     expect(await canary({ driver: 'graph', existingOnly: true })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: false });
     expect(cf.puts).toEqual([]);
-    expect(await canary({ driver: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: true });
+    const fixture = v2.modules[2]!.content;
+    expect(await canary({ driver: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: true, fixture });
     expect(cf.puts.map((p) => p.script)).toEqual(['substrat-store-graph--canary']);
     // Rebuilt where it is, built the same way: nothing is uploaded again.
-    expect(await canary({ driver: 'graph', existingOnly: true })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: false });
+    expect(await canary({ driver: 'graph', existingOnly: true })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: false, fixture });
     expect(cf.puts).toHaveLength(1);
     expect(text(cf.puts[0]!, 'SUBSTRAT_STORE_SCRIPT')).toBe('substrat-store-graph--canary');
     expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);

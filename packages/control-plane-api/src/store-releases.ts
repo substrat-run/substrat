@@ -386,7 +386,8 @@ const tablesOf = (answer: unknown) => (answer as { tables: { name: string; rows:
  * A dump as one string to compare: `objects` is optional (#2820), and an absent list and an
  * empty one are the same table, so a driver that writes one and a fixture that omits it agree.
  */
-const dumpText = (tables: readonly { objects?: unknown[] }[]) => JSON.stringify(tables.map((t) => ({ ...t, objects: t.objects ?? [] })));
+const dumpText = (tables: readonly object[]) =>
+  JSON.stringify(tables.map((t) => ({ ...t, objects: (t as { objects?: unknown[] }).objects ?? [] })));
 
 /**
  * Every reserved operation, on a fresh object of the platform's own (D-63): its tenant and scope
