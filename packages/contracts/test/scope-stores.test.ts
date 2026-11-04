@@ -29,6 +29,7 @@ import {
   storeEraseResult,
   storeExportResult,
   storeImportResult,
+  storeSelfcheckResult,
   storeSizeResult,
   storeWipeResult,
 } from '../src/index.js';
@@ -354,6 +355,11 @@ describe('reserved store results are additive (#2239)', () => {
     expect(storeEraseResult.safeParse({ erased: 0, note: 'x' }).success).toBe(true);
     expect(storeImportResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
     expect(storeExportResult.safeParse({ tables: [], at: 'now' }).success).toBe(true);
+    expect(storeSelfcheckResult.safeParse({ operations: ['read'], took: 3 }).success).toBe(true);
+  });
+
+  it('a selfcheck names its catalog by the rule an approved catalog is held to (#2814)', () => {
+    expect(storeSelfcheckResult.safeParse({ operations: ['substrat.wipe'] }).success).toBe(false);
   });
 });
 

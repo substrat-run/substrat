@@ -1,10 +1,14 @@
 import {
+  classifyPythonStoreModule,
   SCOPE_STORE_CANARY,
+  STORE_CANARY_FIXTURE_FILE,
   STORE_DRIVERS,
   scopeStoreCanaryScriptName,
   storeDriverBasisAdmits,
   storeDriverReleaseDigest,
+  storeExportResult,
   type ScopeStoreNeed,
+  type StoreExportResult,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -59,6 +63,32 @@ export function liveApprovalOf(approvals: StoreDriverApprovals, sha256: string):
   return approvals.records.find((a) =>
     a.sha256 === sha256 && a.revokedAt === null && storeDriverBasisAdmits(approvals.registration.isolationBasis, a.sourceReferences));
 }
+
+/**
+ * A release's canary fixture (#2814), parsed: a `substrat.export` that holds rows. A release that
+ * ships none, or one that is not that, is refused (422): by the canary ensurer before it uploads
+ * anything, and by the canary before it calls anything.
+ */
+export function canaryFixtureOf(bytes: Uint8Array | undefined): StoreExportResult {
+  const where = `driver_<package>/${STORE_CANARY_FIXTURE_FILE}`;
+  if (!bytes) throw new ControlPlaneError(422, `canary refused: the release ships no canary fixture (${where})`);
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    json = undefined;
+  }
+  const parsed = storeExportResult.safeParse(json);
+  if (!parsed.success) throw new ControlPlaneError(422, `canary refused: ${where} is not a substrat.export answer`);
+  if (!parsed.data.tables.some((t) => t.rows.length > 0)) {
+    throw new ControlPlaneError(422, `canary refused: ${where} holds no rows`);
+  }
+  return parsed.data;
+}
+
+/** The bytes of a release's canary fixture, if it ships one. */
+const fixtureBytesOf = (release: PythonStoreDriverRelease): Uint8Array | undefined =>
+  release.modules.find((module) => classifyPythonStoreModule(module.name).kind === 'canaryFixture')?.content;
 
 /**
  * The facts of a release a script is LEAVING: any of its approval rows, revoked or not. Its facts
@@ -160,7 +190,7 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
   }): Promise<{ uploaded: number }> => {
     const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, drivers: opts.drivers });
     let uploaded = 0;
-    for (const script of plan.scripts) if (await ensure(script, input.to, { existingOnly: input.existingOnly })) uploaded++;
+    for (const script of plan.scripts) if ((await ensure(script, input.to, { existingOnly: input.existingOnly })).uploaded) uploaded++;
     return { uploaded };
   };
 }
@@ -171,20 +201,25 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
  * vertical's script is, except that it may move to a lower `schema`: every canary object is fresh
  * and wiped, so none holds migrated data. With `existingOnly` instead of `to`, the fleet rebuild
  * (#2309): the canary script is rebuilt at the release it runs, and left alone when there is none.
- * Answers the script's name and whether it was uploaded.
+ * Answers the script's name, whether it was uploaded, and the release's canary fixture (#2814):
+ * the bytes of its `driver_<package>/substrat_canary.json`, from the release the ensurer just
+ * hashed and judged, or undefined when it ships none or no release was loaded.
  */
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
-  const ensure = scriptEnsurer(opts);
-  return async (input: StoreCanaryTarget): Promise<{ scriptName: string; uploaded: boolean }> => {
+  return async (input: StoreCanaryTarget): Promise<{ scriptName: string; uploaded: boolean; fixture?: Uint8Array }> => {
     const driver = (opts.drivers ?? STORE_DRIVERS).find((k) => k.driver === input.driver);
     if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(driver.driver);
-    const uploaded = await ensure(
+    const to = 'to' in input ? input.to : undefined;
+    // A rollout's target must carry a usable fixture, judged before the script is put, so a release
+    // that cannot be canaried never reaches the canary script. The rebuild keeps what runs there.
+    const ensured = await scriptEnsurer(opts)(
       { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName },
-      'to' in input ? input.to : undefined,
-      { anySchema: true, existingOnly: 'existingOnly' in input },
+      to,
+      { anySchema: true, existingOnly: 'existingOnly' in input, fixture: to !== undefined },
     );
-    return { scriptName, uploaded };
+    const fixture = ensured.release && fixtureBytesOf(ensured.release);
+    return { scriptName, uploaded: ensured.uploaded, ...(fixture ? { fixture } : {}) };
   };
 }
 
@@ -202,12 +237,17 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
-  return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean; existingOnly?: boolean } = {}): Promise<boolean> => {
+  /** Whether the script was uploaded, and the release it was judged at: hashed, approved, and built. */
+  return async (
+    script: EnsuredScript,
+    to: string | undefined,
+    rule: { anySchema?: boolean; existingOnly?: boolean; fixture?: boolean } = {},
+  ): Promise<{ uploaded: boolean; release?: PythonStoreDriverRelease }> => {
     if (opts.approvals.registration.driver !== script.driver) {
       throw new ControlPlaneError(500, `store script '${script.scriptName}' was handed the approvals of driver '${opts.approvals.registration.driver}'`);
     }
     const current = await readStoreScriptSettings(opts, script.scriptName);
-    if (rule.existingOnly && !current.exists) return false;
+    if (rule.existingOnly && !current.exists) return { uploaded: false };
     if (current.exists && !current.release) {
       // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
       throw new ControlPlaneError(409, `store script '${script.scriptName}' records no release`);
@@ -244,6 +284,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     if (!approval) {
       throw new ControlPlaneError(422, `driver '${script.driver}' release ${sha256} has no live approval; roll '${script.scriptName}' out to an approved release`);
     }
+    if (rule.fixture) canaryFixtureOf(fixtureBytesOf(loaded));
     if (current.release && current.release !== sha256 && !rule.anySchema) {
       const running = approvalFactsOf(opts.approvals, current.release);
       if (!running) {
@@ -269,9 +310,9 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
       throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
     }
     const build = await buildDigest(built);
-    if (current.exists && current.release === sha256 && current.build === build) return false;
+    if (current.exists && current.release === sha256 && current.build === build) return { uploaded: false, release: loaded };
     await put(scriptUrl(script.scriptName), script.scriptName, built, { sha256, build, first: !current.exists });
-    return true;
+    return { uploaded: true, release: loaded };
   };
   async function put(
     url: string,

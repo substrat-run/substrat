@@ -492,6 +492,17 @@ export const isPythonCodeModule = (name: string): boolean => PYTHON_CODE_FILE.te
  */
 const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
 
+/** The file in a release's `driver_` package that holds its canary fixture (#2814). */
+export const STORE_CANARY_FIXTURE_FILE = 'substrat_canary.json';
+
+/**
+ * A release's canary fixture (#2814): `driver_<package>/substrat_canary.json`, a small
+ * `substrat.export` of this release holding rows. The rollout's canary imports it and expects it
+ * back unchanged. It is covered by the release digest like every module, so it is approved with
+ * the bytes, and it is never uploaded into a store script.
+ */
+const PYTHON_CANARY_FIXTURE = /^(driver_[a-z0-9_]+)\/substrat_canary\.json$/;
+
 /** One segment of a vendored path: no empty segment, no `.` or `..`, no leading dot. */
 const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 
@@ -564,7 +575,10 @@ const PYTHON_VENDORED_FILES: readonly { readonly match: 'name' | 'suffix'; reado
   { match: 'suffix', names: ['.synced'], why: "it is an installer's sync marker" },
 ];
 
-export type PythonStoreModuleClass = { readonly kind: 'driver'; readonly packageName: string } | { readonly kind: 'vendored' };
+export type PythonStoreModuleClass =
+  | { readonly kind: 'driver'; readonly packageName: string }
+  | { readonly kind: 'canaryFixture'; readonly packageName: string }
+  | { readonly kind: 'vendored' };
 
 function refusePythonStoreModule(name: string, why: string): never {
   throw new Error(`a store driver release may not ship a module named '${name}': ${why}`);
@@ -592,8 +606,13 @@ export function classifyPythonStoreModule(name: string): PythonStoreModuleClass 
   }
   const driver = PYTHON_DRIVER_MODULE.exec(name);
   if (driver) return { kind: 'driver', packageName: driver[1]! };
+  const fixture = PYTHON_CANARY_FIXTURE.exec(name);
+  if (fixture) return { kind: 'canaryFixture', packageName: fixture[1]! };
   if (!name.startsWith('python_modules/')) {
-    refusePythonStoreModule(name, 'a driver module is driver_<package>/…/<module>.py, or a dependency is python_modules/<path>');
+    refusePythonStoreModule(
+      name,
+      `a driver module is driver_<package>/…/<module>.py, its canary fixture driver_<package>/${STORE_CANARY_FIXTURE_FILE}, or a dependency is python_modules/<path>`,
+    );
   }
   const rest = parts.slice(1);
   const top = rest[0]!.split(/[.-]/)[0]!;
@@ -847,6 +866,14 @@ export const storeWipeResult = z.object({});
 export type StoreWipeResult = z.infer<typeof storeWipeResult>;
 
 /**
+ * `substrat.selfcheck` takes no input. The driver builds its whole runtime and only then answers,
+ * with the catalog operations that runtime serves (#2814). The rollout's canary compares them with
+ * the catalog the release's approval records.
+ */
+export const storeSelfcheckResult = z.object({ operations: z.array(storeCatalogOperation) });
+export type StoreSelfcheckResult = z.infer<typeof storeSelfcheckResult>;
+
+/**
  * What each reserved operation answers, parsed (#2239). A plain map of the result
  * types, so a package that names one (the kernel's `callReservedStoreOperation`)
  * publishes no zod type of its own.
@@ -857,6 +884,7 @@ export interface ReservedStoreResults {
   'substrat.size': StoreSizeResult;
   'substrat.wipe': StoreWipeResult;
   'substrat.erase': StoreEraseResult;
+  'substrat.selfcheck': StoreSelfcheckResult;
 }
 
 /** One binding's storage, as `scopeStoreSizes` reports it. */

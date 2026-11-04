@@ -80,6 +80,8 @@ describe('packStoreDriverDir (#2300)', () => {
       [{ 'driver_graph/store.py': '', 'driver_graph/data.json': '{}' }, /driver_graph\/data\.json/],
       [{ 'driver_graph/store.py': '', 'wrangler.toml': '' }, /wrangler\.toml/],
       [{ 'driver_graph/store.py': '', 'driver_other/x.py': '' }, /exactly one driver_ package/],
+      // A canary fixture names its package as the server counts it (#2814).
+      [{ 'driver_graph/store.py': '', 'driver_other/substrat_canary.json': '{}' }, /exactly one driver_ package, not driver_graph, driver_other/],
       [{ 'driver_graph/store.py': '', 'python_modules/driver_other/x.py': '' }, /driver_other/],
       [{ 'driver_graph/store.py': '', 'python_modules/substrat_store/x.py': '' }, /substrat_store/],
       [{ 'driver_graph/store.py': '', 'python_modules/workers/__init__.py': '' }, /workers/],

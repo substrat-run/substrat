@@ -221,7 +221,8 @@ export function withPythonStoreEntry(release: PythonStoreDriverRelease, options:
         content: encode(STORE_ENTRY_PYTHON_VERIFIER_SOURCE),
         contentType: 'application/javascript+module',
       },
-      ...release.modules.map((module) => ({
+      // The canary fixture is the canary's input (#2814), not something the script loads.
+      ...release.modules.filter((module) => classes.get(module.name)!.kind !== 'canaryFixture').map((module) => ({
         name: module.name,
         content: module.content,
         contentType: classes.get(module.name)!.kind === 'vendored' ? STORE_PYTHON_DATA_CONTENT_TYPE : 'text/x-python',
@@ -251,7 +252,7 @@ export function assertPythonDriverModules(release: PythonStoreDriverRelease): Re
     const classified = classifyPythonStoreModule(module.name);
     if (classes.has(module.name)) throw new Error(`a store driver release ships '${module.name}' twice`);
     classes.set(module.name, classified);
-    if (classified.kind === 'driver') packages.add(classified.packageName);
+    if (classified.kind !== 'vendored') packages.add(classified.packageName);
   }
   if (packages.size > 1) {
     throw new Error(`a store driver release ships more than one package (${[...packages].sort().join(', ')})`);

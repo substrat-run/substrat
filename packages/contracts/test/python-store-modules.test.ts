@@ -10,6 +10,11 @@ describe('classifyPythonStoreModule', () => {
     expect(classifyPythonStoreModule(name)).toEqual({ kind: 'driver', packageName });
   });
 
+  it('reads the one fixture name at the package root as its canary fixture (#2814)', () => {
+    expect(classifyPythonStoreModule('driver_graph/substrat_canary.json')).toEqual({ kind: 'canaryFixture', packageName: 'driver_graph' });
+    expect(() => classifyPythonStoreModule('driver_graph/sub/substrat_canary.json')).toThrow(/its canary fixture driver_<package>\/substrat_canary\.json/);
+  });
+
   it.each([
     'python_modules/six.py',
     'python_modules/vendor_probe/__init__.py',

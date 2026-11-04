@@ -45,7 +45,11 @@ const text = (s: string) => new TextEncoder().encode(s);
 const bundle = (n: number) => ({
   sourceCommit: COMMIT,
   entry: 'driver_graph/store.py',
-  modules: [{ name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
+  modules: [
+    { name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) },
+    // The canary's fixture (#2814): one row, imported and exported back.
+    { name: 'driver_graph/substrat_canary.json', content: text(JSON.stringify({ tables: [{ name: 'n', ddl: 'CREATE TABLE n (id)', columns: ['id'], rows: [[1]] }] })) },
+  ],
 });
 const wire = (b: ReturnType<typeof bundle>) => ({
   sourceCommit: b.sourceCommit,
@@ -55,13 +59,20 @@ const wire = (b: ReturnType<typeof bundle>) => ({
 const scriptOf = (vertical: string) => `substrat-store-graph-${vertical}`;
 const CANARY = 'substrat-store-graph--canary';
 
-/** Every reserved call answers as an empty object does, so a canary passes. */
-const canaryCall: CanaryCall = async (_target, operation: ReservedStoreOperation, input) => {
+/** Every reserved call answers as a working store does, keeping what each object imported, so a canary passes. */
+const held = new Map<string, unknown[]>();
+const canaryCall: CanaryCall = async ({ objectName }, operation: ReservedStoreOperation, input) => {
   switch (operation) {
     case 'substrat.export':
-      return { tables: [] };
+      return { tables: held.get(objectName) ?? [] };
     case 'substrat.import':
+      held.set(objectName, (input as { tables: unknown[] }).tables);
       return { tables: (input as { tables: unknown[] }).tables.length };
+    case 'substrat.wipe':
+      held.delete(objectName);
+      return {};
+    case 'substrat.selfcheck':
+      return { operations: [] };
     case 'substrat.erase':
       return { erased: 0 };
     default:

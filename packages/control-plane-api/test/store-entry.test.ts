@@ -104,7 +104,8 @@ describe('withPythonStoreEntry', async () => {
   });
 
   it('puts the Python entry first, imports the driver by its dotted path, and keeps the bytes', () => {
-    const given = release();
+    // The canary fixture is the canary's input (#2814): approved with the release, never uploaded.
+    const given = release({ modules: [...release().modules, py('driver_graph/substrat_canary.json')] });
     const script = withPythonStoreEntry(given, options);
     expect(script.mainModule).toBe('substrat_store_entry.py');
     expect(script.modules.map((m) => [m.name, m.contentType])).toEqual([
@@ -142,6 +143,7 @@ describe('withPythonStoreEntry', async () => {
     ['a module that is not Python', release({ modules: [py('driver_graph/store.py'), py('driver_graph/data.json')] }), {}, /data\.json/],
     ['a module named twice', release({ modules: [py('driver_graph/store.py'), py('driver_graph/store.py')] }), {}, /twice/],
     ['two packages', release({ modules: [py('driver_graph/store.py'), py('driver_other/x.py')] }), {}, /more than one package/],
+    ["another package's canary fixture", release({ modules: [py('driver_graph/store.py'), py('driver_other/substrat_canary.json')] }), {}, /more than one package/],
     ['an entry that is not one of the modules', release({ entry: 'driver_graph/missing.py' }), {}, /not one of the release's modules/],
     ["the entry's object class as the driver class", release(), { className: STORE_OBJECT_CLASS }, /entry's own object class/],
     ['a class name that is not a Python identifier', release(), { className: 'Graph$Store' }, /not an identifier/],
