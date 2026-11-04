@@ -1,5 +1,19 @@
 # @substrat-run/adapter-sqlite
 
+## 0.179.0
+
+### Minor Changes
+
+- f45974b: The access log names the person a read was made for (`onBehalfOf`) when a team credential carried one; rows written before the column read it as null.
+
+### Patch Changes
+
+- Updated dependencies [f45974b]
+- Updated dependencies [1784e1c]
+- Updated dependencies [994a35f]
+  - @substrat-run/contracts@0.179.0
+  - @substrat-run/kernel@0.179.0
+
 ## 0.178.0
 
 ### Minor Changes
@@ -7284,7 +7298,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
