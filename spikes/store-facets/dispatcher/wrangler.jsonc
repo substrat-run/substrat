@@ -1,0 +1,9 @@
+// The spike's front door: an ordinary worker that hands every request to the supervisor in the
+// spike's dispatch namespace (RUNBOOK.md step 4). It holds no token; the supervisor checks it.
+{
+  "name": "substrat-spike-store-facets-dispatcher",
+  "main": "index.mjs",
+  "compatibility_date": "2026-03-01",
+  "workers_dev": true,
+  "dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-spike-store-facets" }]
+}
