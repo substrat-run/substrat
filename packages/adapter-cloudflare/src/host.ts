@@ -589,7 +589,7 @@ import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, u
 import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, readStoreDump, writeStoreDump, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
-import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
+import { PLATFORM_BINDING_PREFIX, PLATFORM_STORE_CODE, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, storeAnswerOf, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverApprovalRecord,
@@ -1028,6 +1028,8 @@ interface ControlPlaneStub {
     audit: AdminEntry,
     expected?: ServedFrom,
   ): Promise<boolean>;
+  readMigrationsExtracted(id: string): Promise<{ verticalSlug: string; digest: string | null } | undefined>;
+  recordMigrationsExtracted(id: string, digest: string, audit: AdminEntry): Promise<void>;
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
@@ -3071,7 +3073,8 @@ interface ScopeStoreNamespace {
 
 /**
  * One store call over an object's fetch, for the vertical's door and the platform's reserved
- * calls alike. A body that is not JSON is the store's failure, answered as a bad envelope.
+ * calls alike. A body that is not JSON, or a `{ result }` on a non-2xx, is the store's failure,
+ * answered as a bad envelope.
  */
 function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (request: StoreRequest) => Promise<unknown> {
   return async (request) => {
@@ -3080,11 +3083,10 @@ function storeObjectSend(object: ReturnType<ScopeStoreNamespace['get']>): (reque
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
     });
-    try {
-      return await response.json();
-    } catch {
-      throw new StoreError({ code: 'bad_envelope', status: 502 });
-    }
+    // The same judgement the router makes on the platform hop (#2810).
+    const answer = storeAnswerOf(response.status, await response.json().catch(() => undefined));
+    if (!answer) throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 });
+    return answer;
   };
 }
 
@@ -5827,18 +5829,27 @@ export class CloudflareScopeHost implements ScopeHost {
             binding,
             operation,
             () =>
-              callScopeStore(async (request) => {
-                const response = await this.fetchImpl(STORE_CALL_URL, {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ scopeId, binding, operation: request.operation, input: request.input }),
-                });
-                try {
-                  return await response.json();
-                } catch {
-                  throw new StoreError({ code: 'bad_envelope', status: 502 });
-                }
-              }, operation, input, ...extra),
+              callScopeStore(
+                {
+                  // The egress hop answers with the platform's own codes too (#2815).
+                  through: 'platform',
+                  send: async (request) => {
+                    const response = await this.fetchImpl(STORE_CALL_URL, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ scopeId, binding, operation: request.operation, input: request.input }),
+                    });
+                    try {
+                      return await response.json();
+                    } catch {
+                      throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 });
+                    }
+                  },
+                },
+                operation,
+                input,
+                ...extra,
+              ),
             options?.onStoreCall,
           ),
       };
@@ -9251,6 +9262,27 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         await this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
+      },
+      versionMigrationsExtracted: async (actor, verticalSlug: string, versionId: string) => {
+        const v = await this.cp.readMigrationsExtracted(versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.recordAccess(actor, 'versionMigrationsExtracted', {}, { verticalSlug, versionId }, v.digest ? 1 : 0);
+        return v.digest;
+      },
+      recordMigrationsExtracted: async (actor, verticalSlug: string, versionId: string, digest: string) => {
+        const v = await this.cp.readMigrationsExtracted(versionId);
+        if (!v || v.verticalSlug !== verticalSlug) {
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+        }
+        await this.cp.recordMigrationsExtracted(versionId, digest, this.adminEntry(
+          actor,
+          'recordMigrationsExtracted',
+          { tenantId: null, vertical: verticalSlug },
+          null,
+          { vertical: verticalSlug, versionId, digest },
+        ));
       },
       recordWireAuth: async (actor, input) => {
         const row = deploymentWireAuth.parse(input);

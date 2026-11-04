@@ -509,6 +509,7 @@ export type {
   ListQueryParams,
 } from './list-index.js';
 export { moduleMigrations } from './module-migrations.js';
+export { REGISTERED_MIGRATIONS, registeredMigrationsOf, type RegisteredMigration } from './registered-migrations.js';
 export {
   MIGRATION_DIGEST_FENCE_DDL,
   MIGRATION_DIGEST_MARK_LEGACY,
@@ -800,6 +801,8 @@ export {
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
+  versionMigrationsExtractedOf,
+  recordVersionMigrationsExtracted,
   versionsAwaitSplit,
   writeVersionMigrations,
 } from './version-migrations.js';

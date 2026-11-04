@@ -268,6 +268,9 @@ export const adminAction = z.enum([
   // script it went to (the state, the audience, the key ids of each list, or why it gave none).
   // Names the vertical, the script and the version; never a key.
   'recordWireAuth',
+  // #2351 — the control plane read a version's migrations from its bundle and recorded their
+  // digest. Names the vertical, the version and the digest.
+  'recordMigrationsExtracted',
   // RFC wire-signing follow-on 4 — a person ran a pass of the fleet walk, which brings every script's
   // key lists, audience and state to what the control plane gives now: dry run or applied, the
   // cursor it started from and the one it ended at, the scripts it changed, held, released or failed

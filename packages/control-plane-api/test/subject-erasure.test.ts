@@ -24,7 +24,9 @@ import {
   unreachablePlatformScopeStores,
   type PlatformScopeStores,
   type ScopeBackupStore,
+  createR2BackupStore,
 } from '../src/index.js';
+import { fakeBucket } from './fake-r2-bucket.js';
 
 /**
  * Subject erasure end to end (#37) — the claim as a round trip rather than a claim.
@@ -55,29 +57,17 @@ describe('subject erasure (#37)', () => {
   const erased = dataSubjectId.parse(ulid());
   const spared = dataSubjectId.parse(ulid());
 
-  /** An in-memory `ScopeBackupStore` that keeps the dump EXACTLY as it was handed over. */
-  const held = new Map<string, ScopeDump>();
-  const store: ScopeBackupStore = {
-    put: async ({ dump }) => {
-      held.set(dump.capturedAt, dump);
-      return {
-        tenantId: dump.tenantId,
-        scopeId: dump.scopeId,
-        vertical: null,
-        capturedAt: dump.capturedAt,
-        size: JSON.stringify(dump).length,
-        tables: dump.tables.length,
-      } satisfies ScopeBackup;
+  /** The R2 store over a fake bucket, which keeps every object EXACTLY as it was handed over. */
+  const { bucket, objects } = fakeBucket();
+  const store: ScopeBackupStore = createR2BackupStore(bucket);
+  /** A held copy as the bucket holds it, ciphertext included: its header and its one entry's tables. */
+  const held = {
+    get: (capturedAt: string): ScopeDump => {
+      const manifest = JSON.parse(objects.get(`scopes/${t}/${s}/${capturedAt}.json`)!.body) as ScopeDump & { stageId: string };
+      const entry = JSON.parse(objects.get(`scopes/${t}/${s}/${capturedAt}/${manifest.stageId}/0.json`)!.body) as { tables: ScopeDump['tables'] };
+      const { format: _, stageId: __, entries: ___, ...header } = manifest as unknown as Record<string, unknown>;
+      return { ...(header as Omit<ScopeDump, 'tables'>), tables: entry.tables };
     },
-    list: async () => [...held.values()].map((d) => ({
-      tenantId: d.tenantId,
-      scopeId: d.scopeId,
-      vertical: null,
-      capturedAt: d.capturedAt,
-      size: JSON.stringify(d).length,
-      tables: d.tables.length,
-    })),
-    get: async ({ capturedAt }) => held.get(capturedAt) ?? null,
   };
 
   const app = () =>
@@ -251,8 +241,9 @@ describe('subject erasure (#37)', () => {
     await host.admin.activateScope(staff, t, dest);
 
     // The sealed bytes as the store holds them — deliberately NOT the opened GET.
-    const [backup] = await store.list({ tenantId: t, scopeId: s });
-    const sealedDump = held.get(backup!.capturedAt)!;
+    // The copy taken before the shred: the oldest.
+    const backup = (await store.list({ tenantId: t, scopeId: s })).at(-1);
+    const sealedDump = held.get(backup!.capturedAt);
     expect(JSON.stringify(sealedDump)).toContain('__sealed');
 
     const res = await app().request(`/tenants/${t}/scopes/${dest}/restore`, {
@@ -598,8 +589,9 @@ describe('subject erasure (#37)', () => {
       const res = await api(recording(calls)).request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
       expect(res.status).toBeLessThan(300);
       expect(calls.exported).toEqual([scoped]);
-      const taken = [...held.values()].find((d) => d.scopeId === scoped);
-      expect(taken!.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
+      const [backup] = await store.list({ tenantId: t, scopeId: scoped });
+      const taken = await store.get({ tenantId: t, scopeId: scoped, capturedAt: backup!.capturedAt });
+      expect(taken!.header.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
     });
 
     it('is carried WITH its store in a full tenant export (Art. 20)', async () => {

@@ -319,8 +319,21 @@ Three decisions worth not re-litigating:
   vertical's own deployment* and activates it, so its bytes live in the very deployment a
   retirement is about to delete, and it counts as a live scope in `countScopesForVertical`
   — re-blocking the `deleteVertical` the reap was clearing. A dump leaves the deployment,
-  and `POST …/restore` already loads one back, so export → store → restore is the round
-  trip that closes.
+  and `POST …/backups/:capturedAt/restore` loads it back, so export → store → restore is the
+  round trip that closes.
+- **Stored a page at a time** ([#2839](https://github.com/substrat-run/substrat/issues/2839)).
+  A scope past one Durable Object RPC (32 MiB) cannot be read whole, so the backup moves out
+  of the deployment as a paged copy does (#2450, with its capture, so a scope taking writes is
+  still copied as of one moment). Each page and each batch of writes caught meanwhile is one
+  sealed object, and a manifest at `scopes/<t>/<s>/<capturedAt>.json`, written last, makes them
+  a backup: a copy that did not finish has none, so it is never listed and never lets a reap
+  wipe. The restore stages the entries back at the deployment, which loads the stage, and the
+  reap's `backupRef` names that restore route. `GET …/backups/:capturedAt` serves only a copy
+  stored in one entry, and answers `413` for one stored in several. Limits that remain: the
+  backup and its restore each run inside one request, the scope's stores stay whole in the
+  manifest, and a scope that keeps writing faster than the copy catches up is refused after
+  three attempts (409), which aborts a reap that asked for a backup. A copy written before #2839 is one whole dump at the manifest's key,
+  and reads, serves and restores as a copy of one entry.
 - **Full fidelity, never masked.** The `GET …/export` route masks by default because it
   hands bytes to a *caller* (§6's governed pull). A backup goes platform→platform and is
   never handed out, so the masking default does not apply — and a masked dump restores a

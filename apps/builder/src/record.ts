@@ -16,6 +16,10 @@
  *     each with a one-line `text` and the event itself as `data`;
  *   - and how it ended: `turn-finish` (`done` or `stopped`), or `turn-error`.
  *
+ * Closing a turn also leaves one summary row for it (turns.ts) — team, project,
+ * outcome, the gates its last run left red, where its events sit in the thread —
+ * which is what a reader filters on before it opens a turn here.
+ *
  * The assistant's side is written by the turn loop's system principal under
  * the run lease, so nothing a person can call writes it.
  *
@@ -26,10 +30,11 @@
  * is closed as `turn-error` `interrupted` by the next turn, which is the only
  * moment anyone can know it will never finish.
  */
-import type { BuildEvent } from '@substrat-run/builder-generator';
+import type { BuildEvent, BuildEventOf } from '@substrat-run/builder-generator';
 import { formatEvent } from '@substrat-run/builder-generator';
 import type { AssistantStreamBody, AssistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
 import { STUDIO_HOST, studioScope, type StudioEnv } from './studio.js';
+import type { BuilderRedGate, BuilderTurn, BuilderTurnInput, BuilderTurnOutcome, Page } from '@substrat-run/contracts';
 
 /** Appended in one call at most; the engine takes 200. */
 const BATCH = 50;
@@ -98,6 +103,8 @@ export interface OpenTurn {
 	/** The thread's title when it is created. */
 	readonly title: string;
 	readonly projectId: string;
+	/** The team (= tenant) the project belongs to — the summary's first filter. */
+	readonly tenantId: string;
 	/** The turn's id — the run's lease, and the key a log line names. */
 	readonly turnId: string;
 	/**
@@ -106,6 +113,8 @@ export interface OpenTurn {
 	 * without waiting for the lease to go stale.
 	 */
 	readonly unfinishedTurnId?: string | null;
+	/** Where that unfinished turn's events begin in the thread, when the caller kept it. */
+	readonly unfinishedFirstSeq?: number | null;
 	readonly message: string;
 	/** Who sent it: the session's subject at the issuer, when the worker passed one. */
 	readonly actor: string | null;
@@ -114,6 +123,30 @@ export interface OpenTurn {
 
 /** How a turn ended. A failure's message is the turn's fatal `error` event, already recorded. */
 export type TurnOutcome = { readonly kind: 'done' | 'stopped' | 'error' };
+
+/** A red gate's first line: what a list of turns shows before anyone opens one. */
+const GATE_LINE_MAX = 400;
+
+/** The gates a run did not pass, each with the first line it printed (or its note). */
+export function redGatesOf(run: BuildEventOf<'gates'>['run']): BuilderRedGate[] {
+	return run.results
+		.filter((r): r is typeof r & { status: 'failed' | 'blocked' } => r.status === 'failed' || r.status === 'blocked')
+		.slice(0, 32)
+		.map((r) => {
+			const first = r.output.split('\n').find((l) => l.trim()) ?? r.note ?? '';
+			return { name: r.name, status: r.status, line: clip(first.trim(), GATE_LINE_MAX) };
+		});
+}
+
+/** Write a turn's summary row. Best-effort, like the record itself: never throws. */
+async function recordSummary(env: StudioEnv, summary: BuilderTurnInput): Promise<void> {
+	try {
+		const owner = await studioScope(env);
+		await owner.invoke('studio/record-turn', summary);
+	} catch (err) {
+		console.error(`record: project ${summary.projectId} turn ${summary.turnId}: summary not recorded: ${String(err)}`);
+	}
+}
 
 /**
  * One turn being written into its project's thread. `open` returns null when
@@ -133,11 +166,28 @@ export class TurnRecord {
 	#finished = false;
 	/** The last fatal `error` event's message — what a failed turn ends with. */
 	#failure: string | null = null;
+	/** What the summary row says about the turn, gathered as its events pass. */
+	readonly #turn: OpenTurn;
+	readonly #startedAt = new Date().toISOString();
+	/** Where this turn's events begin in its thread. */
+	readonly firstSeq: number;
+	#lastSeq: number;
+	#phaseStart: string | null = null;
+	#phaseEnd: string | null = null;
+	#gates: BuildEventOf<'gates'>['run'] | null = null;
+	#repairs = 0;
+	#truncated = false;
+	#commit: string | null = null;
+	#inputTokens = 0;
+	#outputTokens = 0;
 
-	private constructor(env: StudioEnv, threadId: string, turn: OpenTurn) {
+	private constructor(env: StudioEnv, threadId: string, turn: OpenTurn, firstSeq: number) {
 		this.#env = env;
 		this.threadId = threadId;
 		this.#runId = turn.turnId;
+		this.#turn = turn;
+		this.firstSeq = firstSeq;
+		this.#lastSeq = firstSeq;
 		this.#log = `record: project ${turn.projectId} turn ${turn.turnId} thread ${threadId}`;
 		this.#timer = setInterval(() => void this.flush(), FLUSH_MS);
 	}
@@ -164,9 +214,11 @@ export class TurnRecord {
 			const threadId =
 				turn.threadId ??
 				(await owner.invoke<{ id: string }>('assistant/create-thread', { title: clip(turn.title, 200) })).id;
-			const send = () => owner.invoke('assistant/send-message', { threadId, text: fitMessage(turn.message) });
+			const send = () =>
+				owner.invoke<{ firstSeq: number }>('assistant/send-message', { threadId, text: fitMessage(turn.message) });
+			let sent: { firstSeq: number };
 			try {
-				await send();
+				sent = await send();
 			} catch (err) {
 				if (reasonOf(err) !== 'turn_in_progress') throw err;
 				// The last turn never reached rest: the studio stopped mid-turn. This
@@ -174,16 +226,26 @@ export class TurnRecord {
 				// it under its own lease when it is known, or take the lease over.
 				const recovery = turn.unfinishedTurnId ?? `${turn.turnId}-recovery`;
 				await host.invoke('assistant/acquire-run', { threadId, runId: recovery, staleMs: 500 });
-				await host.invoke('assistant/append-events', {
+				const closed = await host.invoke<{ events: AssistantStreamEvent[] }>('assistant/append-events', {
 					threadId,
 					runId: recovery,
 					events: [{ t: 'turn-error', code: 'interrupted', message: 'The studio stopped before this turn finished.' }],
 				});
 				await host.invoke('assistant/release-run', { threadId, runId: recovery });
-				await send();
+				// Only a turn the caller named has an id a summary could be found by.
+				if (turn.unfinishedTurnId) {
+					await recordSummary(env, {
+						...unknownTurn(turn, turn.unfinishedTurnId, threadId),
+						// Its events run from where it began to the turn-error that closes it, so the
+						// turn opens like any other; without a start, it opens empty.
+						firstSeq: turn.unfinishedFirstSeq ?? null,
+						lastSeq: turn.unfinishedFirstSeq != null ? (closed.events.at(-1)?.id ?? null) : null,
+					});
+				}
+				sent = await send();
 			}
 			await host.invoke('assistant/acquire-run', { threadId, runId: turn.turnId, staleMs: LEASE_STALE_MS });
-			const record = new TurnRecord(env, threadId, turn);
+			const record = new TurnRecord(env, threadId, turn, sent.firstSeq);
 			record.#push(
 				hostEvent('turn-context', `sent by ${turn.actor ?? 'an unknown session'} · ${turn.model}`, {
 					actor: turn.actor,
@@ -202,6 +264,17 @@ export class TurnRecord {
 	event(e: BuildEvent): void {
 		if (e.type === 'thinking') return; // presence only, never content
 		if (e.type === 'error' && e.fatal) this.#failure = e.message;
+		if (e.type === 'phase') {
+			this.#phaseStart ??= e.phase;
+			this.#phaseEnd = e.phase;
+		}
+		if (e.type === 'gates') this.#gates = e.run;
+		if (e.type === 'commit') this.#commit = e.sha;
+		if (e.type === 'truncated') this.#truncated = true;
+		if (e.type === 'usage') {
+			this.#inputTokens += e.inputTokens;
+			this.#outputTokens += e.outputTokens;
+		}
 		if (e.type === 'assistant-text') {
 			if (!this.#pid) {
 				this.#pid = `p${++this.#parts}`;
@@ -218,6 +291,7 @@ export class TurnRecord {
 
 	/** Something the studio did that is not a BuildEvent — a repair or continuation prompt. */
 	note(kind: string, text: string, data?: unknown): void {
+		if (kind === 'repair-prompt') this.#repairs += 1;
 		this.#closeText();
 		this.#push(hostEvent(kind, text, data));
 	}
@@ -230,11 +304,12 @@ export class TurnRecord {
 			try {
 				const host = await studioScope(this.#env, STUDIO_HOST);
 				for (let i = 0; i < batch.length; i += BATCH) {
-					await host.invoke<{ events: AssistantStreamEvent[] }>('assistant/append-events', {
+					const appended = await host.invoke<{ events: AssistantStreamEvent[] }>('assistant/append-events', {
 						threadId: this.threadId,
 						runId: this.#runId,
 						events: batch.slice(i, i + BATCH),
 					});
+					this.#lastSeq = appended.events.at(-1)?.id ?? this.#lastSeq;
 				}
 			} catch (err) {
 				console.error(`${this.#log}: ${batch.length} events not recorded: ${String(err)}`);
@@ -261,6 +336,33 @@ export class TurnRecord {
 		} catch (err) {
 			console.error(`${this.#log}: lease not released: ${String(err)}`);
 		}
+		await recordSummary(this.#env, this.#summary(outcome.kind));
+	}
+
+	#summary(outcome: BuilderTurnOutcome): BuilderTurnInput {
+		const turn = this.#turn;
+		return {
+			turnId: turn.turnId,
+			tenantId: turn.tenantId,
+			projectId: turn.projectId,
+			projectName: clip(turn.title, 200),
+			threadId: this.threadId,
+			firstSeq: this.firstSeq,
+			lastSeq: this.#lastSeq,
+			model: clip(turn.model, 200),
+			phaseStart: this.#phaseStart,
+			phaseEnd: this.#phaseEnd,
+			outcome,
+			failure: outcome === 'error' ? clip(this.#failure ?? 'The turn failed.', TEXT_MAX) : null,
+			gatesOk: this.#gates ? this.#gates.ok : null,
+			redGates: this.#gates ? redGatesOf(this.#gates) : [],
+			repairs: this.#repairs,
+			truncated: this.#truncated,
+			commitSha: this.#commit,
+			inputTokens: this.#inputTokens,
+			outputTokens: this.#outputTokens,
+			startedAt: this.#startedAt,
+		};
 	}
 
 	#closeText(): void {
@@ -275,6 +377,32 @@ export class TurnRecord {
 	}
 }
 
+/** The summary of a turn the studio lost track of: only where it was, and that it never finished. */
+function unknownTurn(turn: OpenTurn, turnId: string, threadId: string): BuilderTurnInput {
+	return {
+		turnId,
+		tenantId: turn.tenantId,
+		projectId: turn.projectId,
+		projectName: clip(turn.title, 200),
+		threadId,
+		firstSeq: null,
+		lastSeq: null,
+		model: '',
+		phaseStart: null,
+		phaseEnd: null,
+		outcome: 'interrupted',
+		failure: 'The studio stopped before this turn finished.',
+		gatesOk: null,
+		redGates: [],
+		repairs: 0,
+		truncated: false,
+		commitSha: null,
+		inputTokens: 0,
+		outputTokens: 0,
+		startedAt: null,
+	};
+}
+
 /** A page of a project's record, after a cursor. */
 export async function readRecord(
 	env: StudioEnv,
@@ -283,4 +411,37 @@ export async function readRecord(
 ): Promise<{ events: AssistantStreamEvent[]; lastSeq: number }> {
 	const owner = await studioScope(env);
 	return owner.invoke('assistant/read-events', { threadId, after, limit: 500 });
+}
+
+/** At most this many of a turn's events in one read — a turn's repair passes stay well under it. */
+const TURN_EVENTS_MAX = 5_000;
+
+/** A page of turn summaries, studio-wide (turns.ts's `studio/list-turns`). */
+export async function listTurns(env: StudioEnv, query: Record<string, unknown>): Promise<Page<BuilderTurn>> {
+	const owner = await studioScope(env);
+	return owner.invoke('studio/list-turns', query);
+}
+
+/**
+ * One turn: its summary, and its events out of its project's thread — exactly
+ * the `firstSeq`..`lastSeq` range the summary names. Null when no turn has that id.
+ */
+export async function readTurn(
+	env: StudioEnv,
+	turnId: string,
+): Promise<{ turn: BuilderTurn; events: AssistantStreamEvent[]; cut: boolean } | null> {
+	const owner = await studioScope(env);
+	const turn = await owner.invoke<BuilderTurn | null>('studio/get-turn', { turnId });
+	if (!turn) return null;
+	const { threadId, firstSeq, lastSeq } = turn;
+	if (!threadId || firstSeq === null || lastSeq === null) return { turn, events: [], cut: false };
+	const events: AssistantStreamEvent[] = [];
+	let after = firstSeq - 1;
+	while (after < lastSeq && events.length < TURN_EVENTS_MAX) {
+		const page = await readRecord(env, threadId, after);
+		events.push(...page.events.filter((e) => e.id <= lastSeq));
+		if (page.lastSeq <= after) break;
+		after = page.lastSeq;
+	}
+	return { turn, events: events.slice(0, TURN_EVENTS_MAX), cut: after < lastSeq };
 }

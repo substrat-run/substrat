@@ -750,13 +750,16 @@ export interface PermissionSurface {
 export async function checkPermissionSurface(
   dir: string,
   dataLoss: { readonly require?: boolean; readonly log?: (message: string) => void } = {},
+  /** The slug the push would deploy as, so a scope store's driver is judged for it as a push judges it. */
+  vertical?: string,
 ): Promise<PermissionSurface> {
   const { registry, envSpec: derived, schedules, replay, declaresAttachments } = await deriveDeclaredSurface(dir);
   // The data-loss replay (#2321) a push makes, so `--check` is still the whole local gate. Its
   // narration goes where the caller's other notes go (stderr under `--json`).
   await checkMigrationDataLoss(replay, { require: dataLoss.require, log: dataLoss.log });
-  // The declared-store check a push makes (#2812): a scope store whose driver is not registered
-  // is refused here too. A tree with no deploy config declares no bindings to judge.
+  // The declared-store check a push makes (#2812): a scope store whose driver is not registered,
+  // or does not serve this vertical (D-67), is refused here too. A tree with no deploy config
+  // declares no bindings to judge.
   const needs = readRuntimeNeeds(dir);
   const cfg = deployConfigIfAny(dir);
   const stores = manifestStoresOf(needs, declaresAttachments);
@@ -765,6 +768,7 @@ export async function checkPermissionSurface(
     tenantStores: stores.tenantStores,
     blobStores: stores.blobStores,
     scopeStores: needs?.scopeStores,
+    ...(vertical ? { vertical } : {}),
   });
   // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses exactly what a
   // push would. The duplicate-copy note is push-time chatter, not part of the check artifact.

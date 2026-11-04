@@ -17,6 +17,7 @@ import { Login } from './views/Login';
 import { Members } from './views/Members';
 import { OpsFailures } from './views/OpsFailures';
 import { SweepRuns } from './views/SweepRuns';
+import { BuilderTurns } from './views/BuilderTurns';
 import { Issues } from './views/Issues';
 import { ConnectionsHealth } from './views/ConnectionsHealth';
 import { Permissions } from './views/Permissions';
@@ -255,8 +256,8 @@ export function App() {
         : undefined;
 
   const crumbs: BreadcrumbItem[] = [
-    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' || view === 'issues' || view === 'sweeps' ? 'Operations' : view === 'connections' || view === 'services' ? 'Health' : 'Fleet' },
-    { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
+    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' || view === 'issues' || view === 'sweeps' || view === 'builder-turns' ? 'Operations' : view === 'connections' || view === 'services' ? 'Health' : 'Fleet' },
+    { label: view === 'admin-log' ? 'Admin log' : view === 'builder-turns' ? 'Builder turns' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
     ...(detailCrumb ? [detailCrumb] : []),
   ];
 
@@ -454,6 +455,7 @@ export function App() {
         />
       )}
       {view === 'sweeps' && <SweepRuns api={api} tenants={tenantMap} />}
+      {view === 'builder-turns' && <BuilderTurns api={api} tenants={tenantMap} />}
       {view === 'connections' && <ConnectionsHealth api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
       {view === 'members' && <Members api={api} onToast={notify} />}

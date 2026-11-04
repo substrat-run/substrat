@@ -160,6 +160,8 @@ export const INDEX_VALUE_EXPORTS = [
   'REFUSALS_REBUILD',
   'REFUSALS_TABLE_DDL',
   'REFUSE_UNCHECKED_OPERATIONS_KEY',
+  // #2351: the static a `defineScopeDO` class exposes, read by the control plane from a bundle.
+  'REGISTERED_MIGRATIONS',
   'REQUEST_ROLLUP_DDL',
   'REQUEST_ROLLUP_LIMIT_DEFAULT',
   'REQUEST_ROLLUP_LIMIT_MAX',
@@ -656,6 +658,8 @@ export const INDEX_VALUE_EXPORTS = [
   'recordStoreDriverRevokeWalkIn',
   'recordSwitchedOff',
   'recordSwitchedOn',
+  // #2351: both directories' read and write of the digest of the migrations read from a bundle.
+  'recordVersionMigrationsExtracted',
   'recordWriteSuperseded',
   'recordedOffFromWire',
   'redactSecretText',
@@ -677,6 +681,7 @@ export const INDEX_VALUE_EXPORTS = [
   'refuseUnlicensedOrphanSweep',
   'registerMembershipExecutor',
   'registerTrashTargets',
+  'registeredMigrationsOf',
   'registryImportCandidates',
   // #2446: the reservation a pushed registry marks, and the promote's question of a scope it moves.
   'registryReservations',
@@ -823,6 +828,7 @@ export const INDEX_VALUE_EXPORTS = [
   'unsettledCopyRefusal',
   'uploadContentTypeAllowed',
   'verifiedStream',
+  'versionMigrationsExtractedOf',
   'versionMigrationsOf',
   'versionsAwaitDigest',
   'versionsAwaitSplit',

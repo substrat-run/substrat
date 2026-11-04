@@ -1,6 +1,8 @@
 import {
   errorCodeOf,
+  isPlatformStoreCode,
   mergeDumpPages,
+  PLATFORM_STORE_CODE,
   RESERVED_STORE_OPERATIONS,
   STORE_OPERATION_NAME_MAX,
   StoreError,
@@ -226,12 +228,35 @@ function noteStoreCall(report: StoreCallReport, sink?: (report: StoreCallReport)
 }
 
 /**
+ * Read one answer to a store call. `from` says who answered: a `'store'` answer is the
+ * store's own, so a code reserved to the platform in it is answered as a bad envelope
+ * (#2815); a `'platform'` answer has already been read that way by the platform's hop.
+ */
+function storeResult(answer: unknown, from: 'store' | 'platform'): unknown {
+  const parsed = storeResponse.safeParse(answer);
+  if (!parsed.success) {
+    throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502, body: parsed.error.issues });
+  }
+  if (!('error' in parsed.data)) return parsed.data.result;
+  if (from === 'store' && isPlatformStoreCode(parsed.data.error.code)) {
+    throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502 });
+  }
+  throw new StoreError(parsed.data.error);
+}
+
+type StoreSend = (request: StoreRequest) => Promise<unknown>;
+
+/**
  * Send one envelope and read the answer (#2207). Reserved names are refused
  * here, before `send`, so the store never sees a `substrat.*` call from a
  * vertical. The platform's own caller does not come through this function.
+ *
+ * `send` reaches the store directly. `{ send, through: 'platform' }` is a `send` that
+ * reaches it through the platform's hop, whose answer carries the platform's own codes
+ * as well as the store's, already judged there (#2815).
  */
 export async function callScopeStore(
-  send: (request: StoreRequest) => Promise<unknown>,
+  via: StoreSend | { readonly send: StoreSend; readonly through: 'platform' },
   operation: string,
   input?: unknown,
   ...extra: unknown[]
@@ -243,13 +268,8 @@ export async function callScopeStore(
   if (operation.startsWith('substrat.')) {
     throw substratError('forbidden', `store operation '${operation}' is reserved for the platform`);
   }
-  const request = storeRequest.parse({ operation, input });
-  const parsed = storeResponse.safeParse(await send(request));
-  if (!parsed.success) {
-    throw new StoreError({ code: 'bad_envelope', status: 502, body: parsed.error.issues });
-  }
-  if ('error' in parsed.data) throw new StoreError(parsed.data.error);
-  return parsed.data.result;
+  const [send, from] = typeof via === 'function' ? [via, 'store' as const] : [via.send, 'platform' as const];
+  return storeResult(await send(storeRequest.parse({ operation, input })), from);
 }
 
 const RESERVED_RESULT = {
@@ -308,14 +328,9 @@ export async function callReservedStoreOperation<O extends ReservedStoreOperatio
     throw substratError('forbidden', `store operation '${operation}' is not reserved for the platform`);
   }
   const request = storeRequest.parse({ operation, input: reservedInput(operation, input) });
-  const parsed = storeResponse.safeParse(await send(request));
-  if (!parsed.success) {
-    throw new StoreError({ code: 'bad_envelope', status: 502, body: parsed.error.issues });
-  }
-  if ('error' in parsed.data) throw new StoreError(parsed.data.error);
-  const result = RESERVED_RESULT[operation].safeParse(parsed.data.result);
+  const result = RESERVED_RESULT[operation].safeParse(storeResult(await send(request), 'store'));
   if (!result.success) {
-    throw new StoreError({ code: 'bad_envelope', status: 502, body: result.error.issues });
+    throw new StoreError({ code: PLATFORM_STORE_CODE.badEnvelope, status: 502, body: result.error.issues });
   }
   return result.data as ReservedStoreResult<O>;
 }

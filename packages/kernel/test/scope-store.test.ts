@@ -88,7 +88,15 @@ describe('callScopeStore (#2209)', () => {
       (err: unknown) => err,
     );
     expect(refusal).toBeInstanceOf(StoreError);
-    expect((refusal as StoreError).storeCode).toBe('bad_envelope');
+    expect((refusal as StoreError).storeCode).toBe('substrat.bad_envelope');
+  });
+
+  it("answers a store's code reserved to the platform as a bad envelope, and keeps it through the platform's hop (#2815)", async () => {
+    const answer = async () => ({ error: { code: 'substrat.refused', status: 403 } });
+    const caught = (call: Promise<unknown>) => call.then(() => undefined, (err: unknown) => err as StoreError);
+    expect(await caught(callScopeStore(answer, 'read'))).toMatchObject({ storeCode: 'substrat.bad_envelope', storeStatus: 502 });
+    expect(await caught(callReservedStoreOperation(answer, 'substrat.size'))).toMatchObject({ storeCode: 'substrat.bad_envelope' });
+    expect(await caught(callScopeStore({ send: answer, through: 'platform' }, 'read'))).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
   });
 });
 
@@ -238,7 +246,7 @@ describe('callReservedStoreOperation (#2207)', () => {
       (err: unknown) => err,
     );
     expect(refusal).toBeInstanceOf(StoreError);
-    expect((refusal as StoreError).storeCode).toBe('bad_envelope');
+    expect((refusal as StoreError).storeCode).toBe('substrat.bad_envelope');
   });
 
   it('parses an erase, an export page, a stage, a commit and a discard', async () => {

@@ -701,6 +701,7 @@ export class ScopeStoreCounterDO extends DurableObject {
     if (operation === 'plain') {
       return new Response('not-json', { status: 200, headers: { 'content-type': 'text/plain' } });
     }
+    if (operation === 'result-on-500') return Response.json({ result: 1 }, { status: 500 });
     if (operation === 'fail') {
       return Response.json({ error: { code: 'x'.repeat(80), status: 500, body: { stack: 'secret-trace' } } });
     }

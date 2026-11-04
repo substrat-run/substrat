@@ -8,8 +8,6 @@ import {
   platformActorId,
   scopeId,
   tenantId,
-  type ScopeBackup,
-  type ScopeDump,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
@@ -20,7 +18,9 @@ import {
   type PlatformScopeStores,
   type ScopeBackupStore,
   type VerticalClient,
+  createR2BackupStore,
 } from '../src/index.js';
+import { fakeBucket } from './fake-r2-bucket.js';
 
 /**
  * The platform's copies of a scope (backup, full pull, snapshot, and the reap that wipes
@@ -45,21 +45,11 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     dumpPageMaxBytes: 900_000,
   };
 
-  const held = new Map<string, ScopeDump>();
-  const backups: ScopeBackupStore = {
-    put: async ({ dump }) => {
-      held.set(dump.capturedAt, dump);
-      return {
-        tenantId: dump.tenantId,
-        scopeId: dump.scopeId,
-        vertical: null,
-        capturedAt: dump.capturedAt,
-        size: 1,
-        tables: dump.tables.length,
-      } satisfies ScopeBackup;
-    },
-    list: async () => [],
-    get: async ({ capturedAt }) => held.get(capturedAt) ?? null,
+  const backups: ScopeBackupStore = createR2BackupStore(fakeBucket().bucket);
+  /** The stores the newest backup of `s` holds. */
+  const backedUpStores = async (s: string) => {
+    const [newest] = await backups.list({ tenantId: t, scopeId: s });
+    return (await backups.get({ tenantId: t, scopeId: s, capturedAt: newest!.capturedAt }))!.header.stores;
   };
 
   beforeAll(async () => {
@@ -147,7 +137,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     const s = await docsScope(bind, vertical);
     const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
     expect(backup.status).toBe(201);
-    expect([...held.values()].at(-1)?.stores).toEqual([]);
+    expect(await backedUpStores(s)).toEqual([]);
     const pull = await api.request(`/tenants/${t}/scopes/${s}/export?full=true`, { headers: auth });
     expect(pull.status).toBe(200);
     expect(((await pull.json()) as { stores: unknown[] }).stores).toEqual([]);

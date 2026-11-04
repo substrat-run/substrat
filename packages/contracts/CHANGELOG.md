@@ -1,5 +1,25 @@
 # @substrat-run/contracts
 
+## 0.177.0
+
+### Minor Changes
+
+- 8ccf734: contracts: `builderTurn` and its page and detail schemas, the summary of one builder-studio turn (outcome, red gates, repairs, tokens, its range in the conversation record).
+  control-plane-api: staff-only `GET /builder-turns` and `GET /builder-turns/:turnId`, relayed from the builder studio, with `listBuilderTurns`/`getBuilderTurn` on the staff client.
+- 1b2892a: The control plane can read the migrations a pushed bundle registers (#2351): a `defineScopeDO` class exposes them under `REGISTERED_MIGRATIONS`, `loaderMigrationExtractor` evaluates a bundle in a Worker Loader isolate with no bindings and no network, and with the `extractMigrations` option a push whose declared migrations differ, or whose worker entry cannot be evaluated, is refused before upload. A version pushed earlier is read at its first promote. Both directories record the digest of what was read (`versionMigrationsExtracted`), and the promote review says whether its migrations were read from the bundle.
+- e3f681a: A deployment can ask for an immediate poll of its scope's bindings of one provider (`/internal/connections/sync`, `syncConnections` in vertical-host) and reads what each poll did; Fortnox answers it through `pollFortnoxScope`, and `sweepFortnoxLedger` takes an optional `scopeId`.
+- 90ca456: A store driver registration may name the verticals it serves and mark its erasure pending. The graph driver serves none yet, and a subject erasure that would reach a graph store refuses (501) and keeps the key. `substrat push` refuses a vertical the driver does not serve.
+- 90ca456: The `graph` store driver is registered in `STORE_DRIVERS`, on D-67, which is admitted in `STORE_DRIVER_ADMITTED_ISOLATION_LIFTS`. A push that declares `driver: 'graph'` now passes `substrat push`'s check and the control plane's. No release of the driver is approved yet, so a hosted push, serve or raw version publish (`POST /verticals/:slug/versions`) that declares it is refused before anything is uploaded or published; the raw publish now puts a version's store scripts in place first, as a push does. With a driver registered, backup, wipe and erasure refuse (503) a scope whose running version cannot be told where a version of its vertical declared a store. Once a graph store holds data, never roll the control plane back below this release: an older one skips stores in backup, wipe and erasure.
+- fafa51e: The event drain now prunes a scope's outbox: a row drained to the lake more than 90 days ago is deleted once every local consumer of its type has taken it, unless its type is exported to another vertical or it is its entity's newest event. History reads cover that window and older history is in the lake; a scope walk resumed below the pruned range refuses with `WatermarkPruned`, so a mirror resyncs. A consumer added later backfills only the retained window. Scopes that never drain are never pruned.
+- 0afb860: A scope-store `storeCode` starting with `substrat.` is now the platform's alone: a call the platform refuses arrives as `substrat.refused`, one it cannot serve as `substrat.unavailable`, and an answer outside the envelope as `substrat.bad_envelope` (was `bad_envelope`). A store that answers a `substrat.` code itself arrives as `substrat.bad_envelope`, so a store's answer is never mistaken for the platform's. The contracts package adds `PLATFORM_STORE_CODE` and `isPlatformStoreCode`, and the kernel's `callScopeStore` takes `{ send, through: 'platform' }` for a transport whose answer comes back through the platform's hop.
+- 90ca456: A store-driver release counts only code toward its 1000-module limit (D-68): a file Python can import or load (`.py`, `.pyc`, `.so`, also a versioned `.so.1.2`), by the new `isPythonCodeModule`. A data file beside it, such as a time zone file, counts toward the 10 MiB byte limit and the new 4000-file limit (`STORE_RELEASE_MAX_FILES`) only, and the module rule still judges its name. `substrat store-driver upload` counts the same way when it walks the release, and stops at the byte limit as soon as it is passed.
+- 90ca456: `clientSafeStoreError` cuts a scope store's error answer to what a client may read, the rule `StoreError` applies. The router now hands a store's own refusal on to the vertical in its envelope, so its `code` arrives as `storeCode` on the platform path too.
+- de5ea61: `storeAnswerOf` judges a scope store's HTTP answer once: an error envelope at any status, a result only on a 2xx. The direct-binding store path now refuses a result on a non-2xx as `bad_envelope`, as the platform hop already did.
+
+### Patch Changes
+
+- 3c97959: `defineOperations` refuses once with every problem its checks find, numbered, instead of stopping at the first; the paged-list and `authored` remedies now say which page is derived (`paged.over` with `derive: 'list'`) and that a `paged.sortKey` page needs no `authored`.
+
 ## 0.176.0
 
 ### Minor Changes
@@ -7322,7 +7342,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

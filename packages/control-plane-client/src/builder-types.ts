@@ -404,6 +404,8 @@ export interface StoreDriverRolloutResultView {
   moved: string[];
   /** False when verticals remain: post the same rollout again. */
   complete: boolean;
+  /** The verticals not walked yet; 0 once complete. */
+  remaining: number;
 }
 
 /** A poll connector's landing target. Binding never grants new authority. */
