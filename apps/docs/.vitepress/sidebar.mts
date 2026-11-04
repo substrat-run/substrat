@@ -151,6 +151,7 @@ export function guideSidebar() {
         { text: 'Building for AI agents', link: '/guide/ai-agents' },
         { text: 'Where AI mistakes stop', link: '/guide/ai-guardrails' },
         { text: 'Running locally', link: '/guide/running-locally' },
+        { text: 'Building a platform', link: '/guide/building-a-platform' },
       ],
     },
     {
