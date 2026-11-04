@@ -9446,13 +9446,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const holder = ulid();
     const drivers = [...new Set(stores.map((store) => store.driver))].sort();
     const held: string[] = [];
-    const renew = async () => {
+    const renewHolds = async (when: string) => {
       for (const each of held) {
         if (!(await host.admin.holdStoreDriver(actor, { driver: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
-          throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed during the upload; try again`);
+          throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed ${when}; try again`);
         }
       }
     };
+    const renew = () => renewHolds('during the upload');
     try {
       try {
         if (!options.ensureScopeStores) {
@@ -9499,7 +9500,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
         throw e;
       }
-      return await then(renew);
+      return await then(() => renewHolds('before the version was recorded'));
     } finally {
       for (const driver of held) await host.admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
     }
@@ -10582,7 +10583,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // (or admitted, for a PRIVATE vertical — the registry's self-admit rule). The owner
       // was resolved with the slug above: the builder's tenant, the pinned workspace, or
       // the preserved existing owner for an unpinned staff push. An upload that outlasted the
-      // store hold refuses here (409), before anything is recorded, as a failed upload would.
+      // store hold refuses here (409) before the vertical or its version is registered, so the
+      // label stays reusable; unlike a failed upload, it lands no ops-failure row.
       await renew();
       await c.var.admin.registerVertical(c.get('actor'), {
         slug,

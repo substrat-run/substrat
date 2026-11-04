@@ -50,6 +50,8 @@ describe('a vertical upload carries no scope-store binding, and its store script
   const scripts = new Map<string, { name: string; text?: string }[]>();
   const puts: { url: string; script: string; meta: Record<string, any> }[] = [];
   let failStorePut = false;
+  /** Runs once a store script's PUT has gone through. */
+  let afterStorePut: (() => Promise<void>) | undefined;
 
   const release = {
     entry: 'driver_counter/store.py',
@@ -141,6 +143,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   afterEach(() => {
     scripts.clear();
     failStorePut = false;
+    afterStorePut = undefined;
     rolledOut = release;
     vi.unstubAllGlobals();
   });
@@ -160,6 +163,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
           puts.push({ url, script, meta });
           if (failStorePut && script.startsWith('substrat-store-')) return new Response('{}', { status: 500 });
           scripts.set(script, meta.bindings ?? []);
+          if (script.startsWith('substrat-store-')) await afterStorePut?.();
         }
         return new Response('{}', { status: 200 });
       }),
@@ -449,6 +453,35 @@ describe('a vertical upload carries no scope-store binding, and its store script
       } finally {
         spy.mockRestore();
       }
+    });
+  }
+
+  // #2816: the hold has to be live when the version is recorded, or a rollout could have walked
+  // without it. Its row is gone once the store script is up (as an expired one is dropped), so the
+  // renew before the record refuses, nothing is published, and the same label goes through after.
+  for (const [via, send] of [
+    ['a push', async () => [await push('store-lapse'), 'store-lapse/crm'] as const],
+    ['a raw version publish', async () => [await publish(app, 'raw-lapse'), 'raw-lapse'] as const],
+  ] as const) {
+    it(`${via} whose store hold lapsed before its version was recorded is refused (409), and publishes nothing`, async () => {
+      stubCloudflare();
+      if (!tenantIds.has('store-lapse')) await tenant('store-lapse');
+      const holds = vi.spyOn(host.admin, 'holdStoreDriver');
+      afterStorePut = async () => {
+        const [, taken] = holds.mock.calls.find(([, input]) => input.mode === 'shared')!;
+        await host.admin.releaseStoreDriverHold(staff, { driver: 'graph', holder: taken.holder });
+      };
+      try {
+        const [res, slug] = await send();
+        expect(res.status).toBe(409);
+        expect(await res.text()).toMatch(/hold on scope store driver 'graph' lapsed before the version was recorded/);
+        expect(await host.admin.listVersions(staff, slug)).toEqual([]);
+      } finally {
+        holds.mockRestore();
+        afterStorePut = undefined;
+      }
+      const [retried] = await send();
+      expect(retried.status, await retried.clone().text()).toBe(201);
     });
   }
 
