@@ -13,6 +13,7 @@
  * and never what they printed.
  */
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
+import { CommandFailedError } from './problem.js';
 
 /** ULID, Web-Crypto only — same wire shape as kernel `ulid()`. */
 export function ulid(now = Date.now()): string {
@@ -150,6 +151,16 @@ export function failureDetail(log: BuildLog, detail: string, opts: { withOutput:
 	const where = `build ${log.record.buildId}${log.step ? `, step "${log.step}"` : ''}`;
 	const out = opts.withOutput ? log.outputTail() : '';
 	return `${detail} (${where})${out ? `\n--- last build output ---\n${out}` : ''}`;
+}
+
+/** `failureDetail` for a thrown error: the retained tail is left out only when the error carries its own output. */
+export function errorDetail(log: BuildLog, message: string, error: unknown): string {
+	return failureDetail(log, message, { withOutput: !(error instanceof CommandFailedError) });
+}
+
+/** The fields a rejected request names: zod puts an unrecognised key in `keys`, with `path` the container. */
+export function invalidFields(issues: ReadonlyArray<{ code: string; path: PropertyKey[]; keys?: string[] }>): string[] {
+	return issues.flatMap((i) => (i.code === 'unrecognized_keys' && i.keys ? i.keys.map((k) => [...i.path, k].join('.')) : [i.path.join('.') || '(root)']));
 }
 
 /**

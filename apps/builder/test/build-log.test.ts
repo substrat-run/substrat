@@ -7,7 +7,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
-import { BuildLog, buildIdFrom, failureDetail, fitted, OUTPUT_TAIL, RECORD_MAX, RECORDS_KEPT, retained, ulid, type BuildRecord } from '../src/build-log.js';
+import { CommandFailedError, SourceBuildError } from '../src/problem.js';
+import { BuildLog, buildIdFrom, errorDetail, failureDetail, invalidFields, fitted, OUTPUT_TAIL, RECORD_MAX, RECORDS_KEPT, retained, ulid, type BuildRecord } from '../src/build-log.js';
 
 const ID = '01M6M2KNCVEV3AFPHTAMYRMC1X';
 
@@ -60,6 +61,26 @@ describe('the build record', () => {
 
 		await log.finish('failed', 'stopped');
 		expect(saved.at(-1)).toMatchObject({ outcome: 'failed', detail: 'stopped' });
+	});
+
+	it('a later failure keeps the retained tail; a command failure, which carries its own output, does not', async () => {
+		const { log } = recorded();
+		const sb = log.sandbox(fakeSandbox({ build: { stdout: 'compiled ok' } }));
+		await log.begin('install and build', { keepOutput: true });
+		await sb.exec('build');
+		await log.begin('collect the release');
+
+		expect(errorDetail(log, 'release output exceeds the limit', new SourceBuildError('x'))).toContain('--- last build output ---\ncompiled ok');
+		expect(errorDetail(log, 'command failed: boom', new CommandFailedError('x'))).not.toContain('last build output');
+	});
+
+	it('a request naming an extra field is reported by that field, not by its container', () => {
+		expect(invalidFields([
+			{ code: 'unrecognized_keys', path: [], keys: ['extra'] },
+			{ code: 'unrecognized_keys', path: ['origin'], keys: ['a', 'b'] },
+			{ code: 'invalid_type', path: ['name'] },
+			{ code: 'custom', path: [] },
+		])).toEqual(['extra', 'origin.a', 'origin.b', 'name', '(root)']);
 	});
 
 	it('output is cut to its tail, and a record over the limit drops the oldest output first', () => {

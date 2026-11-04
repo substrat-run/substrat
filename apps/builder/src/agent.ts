@@ -40,7 +40,7 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { BUILD_BUSY, BuildQueue, BuildWaitExpired } from './build-queue.js';
-import { BUILD_ID_HEADER, BuildLog, buildIdFrom, failureDetail, RECORD_INDEX, RECORD_PREFIX, retained, ulid } from './build-log.js';
+import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, invalidFields, RECORD_INDEX, RECORD_PREFIX, retained, ulid } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	orUnhandled,
@@ -322,7 +322,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				await log.begin('check out the repository');
 				entry = (await this.#registry()).projects.find((p) => p.slug === slug);
 				if (!entry && submittedDirectory === undefined) {
-					const detail = 'this vertical has no source repository; submit source or connect GitHub first';
+					const detail = failureDetail(log, 'this vertical has no source repository; submit source or connect GitHub first', { withOutput: false });
 					await log.finish('failed', detail);
 					return refuse(404, detail);
 				}
@@ -396,7 +396,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			});
 		} catch (error) {
 			// A command's failure already carries its own output; any other failure gets the tail.
-			const detail = failureDetail(log, error instanceof BuildWaitExpired ? BUILD_BUSY : sourceBuildFailure(error), { withOutput: !(error instanceof SourceBuildError) });
+			const detail = errorDetail(log, error instanceof BuildWaitExpired ? BUILD_BUSY : sourceBuildFailure(error), error);
 			// The error as its own argument: nested in an object it serialises to `{}`.
 			console.error('source.build.failed', { buildId, step: log.step }, error);
 			await log.finish('failed', detail).catch(() => undefined);
@@ -728,7 +728,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			const { slug, request } = await req.json() as { slug: string; request: unknown };
 			// A request the contract refuses is the caller's 400, not an unexplained 500.
 			const parsed = sourceBuildRequest.safeParse(request);
-			if (!parsed.success) return refuse(400, `invalid build request (${parsed.error.issues.map((i) => i.path.join('.') || '(root)').join(', ')})`);
+			if (!parsed.success) return refuse(400, `invalid build request (${invalidFields(parsed.error.issues).join(', ')})`);
 			return this.#build(slug, parsed.data, buildIdFrom(req.headers.get(BUILD_ID_HEADER)));
 		}
 		const route = `${req.method} ${url.pathname}`;
