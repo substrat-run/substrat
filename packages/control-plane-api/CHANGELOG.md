@@ -1,5 +1,36 @@
 # @substrat-run/control-plane-api
 
+## 0.177.0
+
+### Minor Changes
+
+- 8ccf734: contracts: `builderTurn` and its page and detail schemas, the summary of one builder-studio turn (outcome, red gates, repairs, tokens, its range in the conversation record).
+  control-plane-api: staff-only `GET /builder-turns` and `GET /builder-turns/:turnId`, relayed from the builder studio, with `listBuilderTurns`/`getBuilderTurn` on the staff client.
+- 1b2892a: The control plane can read the migrations a pushed bundle registers (#2351): a `defineScopeDO` class exposes them under `REGISTERED_MIGRATIONS`, `loaderMigrationExtractor` evaluates a bundle in a Worker Loader isolate with no bindings and no network, and with the `extractMigrations` option a push whose declared migrations differ, or whose worker entry cannot be evaluated, is refused before upload. A version pushed earlier is read at its first promote. Both directories record the digest of what was read (`versionMigrationsExtracted`), and the promote review says whether its migrations were read from the bundle.
+- e3f681a: A deployment can ask for an immediate poll of its scope's bindings of one provider (`/internal/connections/sync`, `syncConnections` in vertical-host) and reads what each poll did; Fortnox answers it through `pollFortnoxScope`, and `sweepFortnoxLedger` takes an optional `scopeId`.
+- 90ca456: A store driver registration may name the verticals it serves and mark its erasure pending. The graph driver serves none yet, and a subject erasure that would reach a graph store refuses (501) and keeps the key. `substrat push` refuses a vertical the driver does not serve.
+- 90ca456: The `graph` store driver is registered in `STORE_DRIVERS`, on D-67, which is admitted in `STORE_DRIVER_ADMITTED_ISOLATION_LIFTS`. A push that declares `driver: 'graph'` now passes `substrat push`'s check and the control plane's. No release of the driver is approved yet, so a hosted push, serve or raw version publish (`POST /verticals/:slug/versions`) that declares it is refused before anything is uploaded or published; the raw publish now puts a version's store scripts in place first, as a push does. With a driver registered, backup, wipe and erasure refuse (503) a scope whose running version cannot be told where a version of its vertical declared a store. Once a graph store holds data, never roll the control plane back below this release: an older one skips stores in backup, wipe and erasure.
+- fafa51e: The event drain now prunes a scope's outbox: a row drained to the lake more than 90 days ago is deleted once every local consumer of its type has taken it, unless its type is exported to another vertical or it is its entity's newest event. History reads cover that window and older history is in the lake; a scope walk resumed below the pruned range refuses with `WatermarkPruned`, so a mirror resyncs. A consumer added later backfills only the retained window. Scopes that never drain are never pruned.
+- 2d70912: A scope backup is read and stored a page at a time, so a scope past one Durable Object call can be backed up and reaped with a backup; `POST …/backups/:capturedAt/restore` restores a held backup, and the backup store seam is now `begin`, `list` and `get`, which reads a backup entry by entry.
+
+### Patch Changes
+
+- Updated dependencies [8ccf734]
+- Updated dependencies [1b2892a]
+- Updated dependencies [e3f681a]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [3c97959]
+- Updated dependencies [fafa51e]
+- Updated dependencies [0afb860]
+- Updated dependencies [90ca456]
+- Updated dependencies [dcaad5c]
+- Updated dependencies [90ca456]
+- Updated dependencies [de5ea61]
+  - @substrat-run/contracts@0.177.0
+  - @substrat-run/kernel@0.177.0
+  - @substrat-run/control-plane-client@0.5.5
+
 ## 0.176.0
 
 ### Minor Changes

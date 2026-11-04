@@ -1,5 +1,33 @@
 # @substrat-run/cli
 
+## 0.56.0
+
+### Minor Changes
+
+- 90ca456: The `graph` store driver is registered in `STORE_DRIVERS`, on D-67, which is admitted in `STORE_DRIVER_ADMITTED_ISOLATION_LIFTS`. A push that declares `driver: 'graph'` now passes `substrat push`'s check and the control plane's. No release of the driver is approved yet, so a hosted push, serve or raw version publish (`POST /verticals/:slug/versions`) that declares it is refused before anything is uploaded or published; the raw publish now puts a version's store scripts in place first, as a push does. With a driver registered, backup, wipe and erasure refuse (503) a scope whose running version cannot be told where a version of its vertical declared a store. Once a graph store holds data, never roll the control plane back below this release: an older one skips stores in backup, wipe and erasure.
+- dcaad5c: `substrat store-driver publish` uploads a driver release, waits for its approval (`--wait`) and rolls it out, and can be run again to continue a partial rollout.
+
+### Patch Changes
+
+- 90ca456: A store driver registration may name the verticals it serves and mark its erasure pending. The graph driver serves none yet, and a subject erasure that would reach a graph store refuses (501) and keeps the key. `substrat push` refuses a vertical the driver does not serve.
+- cf37070: `substrat push --check` refuses a scope store whose driver does not serve the vertical, as `substrat push` does.
+- 90ca456: A store-driver release counts only code toward its 1000-module limit (D-68): a file Python can import or load (`.py`, `.pyc`, `.so`, also a versioned `.so.1.2`), by the new `isPythonCodeModule`. A data file beside it, such as a time zone file, counts toward the 10 MiB byte limit and the new 4000-file limit (`STORE_RELEASE_MAX_FILES`) only, and the module rule still judges its name. `substrat store-driver upload` counts the same way when it walks the release, and stops at the byte limit as soon as it is passed.
+- Updated dependencies [8ccf734]
+- Updated dependencies [1b2892a]
+- Updated dependencies [e3f681a]
+- Updated dependencies [90ca456]
+- Updated dependencies [90ca456]
+- Updated dependencies [3c97959]
+- Updated dependencies [fafa51e]
+- Updated dependencies [0afb860]
+- Updated dependencies [90ca456]
+- Updated dependencies [dcaad5c]
+- Updated dependencies [90ca456]
+- Updated dependencies [de5ea61]
+  - @substrat-run/contracts@0.177.0
+  - @substrat-run/control-plane-client@0.5.5
+  - @substrat-run/model-view@0.6.25
+
 ## 0.55.4
 
 ### Patch Changes
