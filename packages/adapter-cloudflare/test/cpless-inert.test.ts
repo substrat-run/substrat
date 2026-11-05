@@ -892,7 +892,9 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
         const s = await unrecordedScope();
         const seated = await seatHeldOpen(s, () => hostFor().deleteScopeLocal(s), 'continue');
         expect(isPairRefusal(seated, t, s)).toBe(true);
-        expect(await receiptOf(s)).toBeNull();
+        // The reap took the meta table with everything else; whatever was rebuilt holds no receipt.
+        const metaHeld = (await sql(s, `SELECT 1 FROM sqlite_master WHERE name = '_substrat_meta'`)).length > 0;
+        expect(metaHeld ? await receiptOf(s) : null).toBeNull();
       });
 
       it('the ownerless reconcile records nothing in a DO never provisioned here, and seats nothing', async () => {
