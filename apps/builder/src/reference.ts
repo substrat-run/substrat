@@ -9,8 +9,11 @@
  *   provisioning, server, routes, personas).
  * - `todo` — the model-first reference vertical: concept → model → module, with
  *   per-list sharing (join, ctx.link to the owner, ctx.grant/ctx.revoke).
+ * - `portal` — the app shell a generated `app/` starts from: elements, themes, user menu,
+ *   hash routing and one entity table, copied whole with `copy_reference`.
  */
 export const REFERENCE_DIRS = {
 	template: 'packages/create-substrat/template',
 	todo: 'demos/todo',
+	portal: 'packages/portal-starter',
 } as const;

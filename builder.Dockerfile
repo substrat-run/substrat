@@ -30,7 +30,7 @@ RUN ln -s /workspace/substrat/node_modules /workspace/node_modules && mkdir -p /
 # platform toolchain baked into the image. Each build gets its own container.
 # The reference verticals (apps/builder/src/reference.ts) are hashed too: the
 # generator copies from them, so two images differing only there build differently.
-RUN (find packages/cli/dist packages/contracts/dist packages/boundary-lint/dist apps/builder/src -type f -exec sha256sum {} \; ; find packages/create-substrat/template demos/todo \( -name node_modules -o -name dist \) -prune -o -type f -exec sha256sum {} \; ; sha256sum pnpm-lock.yaml builder.Dockerfile) | sort | sha256sum > .toolchain-id
+RUN (find packages/cli/dist packages/contracts/dist packages/boundary-lint/dist apps/builder/src -type f -exec sha256sum {} \; ; find packages/create-substrat/template demos/todo packages/portal-starter \( -name node_modules -o -name dist \) -prune -o -type f -exec sha256sum {} \; ; sha256sum pnpm-lock.yaml builder.Dockerfile) | sort | sha256sum > .toolchain-id
 RUN useradd --create-home --shell /bin/sh substrat-build && find /workspace/substrat -perm /022 -exec chmod go-w {} +
 
 # Fail the BUILD, not a session, if the native module doesn't load on amd64.
