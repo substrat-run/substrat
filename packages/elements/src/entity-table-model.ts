@@ -7,12 +7,23 @@
  * a read returns a `Page` (`entries`, `next`, `total`), `next` is followed rather than
  * reassembled, and a refusal is a 403 on the error's `status`.
  *
- * Three answers a hand-written list screen keeps getting wrong, held here once:
+ * The table owns a QUERY — the view, the sort, the equality filters, the search term —
+ * and hands it to `source.read`. What the query may say is what the read declares: `sort`
+ * is one of its `sortable` columns, a filter one of its `filterable` ones, and the
+ * generated client types both, so a sort with no index behind it does not compile. Paging
+ * is the keyset walk the platform has: forward through `next`, never "page 7 of 40".
+ * Search is a different read — ranked and capped, not sorted and paged — so a term
+ * switches the table into search mode rather than into a filtered page.
+ *
+ * Answers a hand-written list screen keeps getting wrong, held here once:
  *
  *   - a 403 on the read is a WALL ("you may not see this"), never an empty list;
  *   - a 403 on a row action is about that row: the rows stay, the refusal is shown;
  *   - a 409 or 404 on a row action means the view went stale (another tab moved it),
- *     so the view is read again before the problem is shown.
+ *     so the view is read again before the problem is shown;
+ *   - an empty answer to a search or a filter is "no matches", not "nothing here";
+ *   - a capped search says so, rather than passing its first N off as all of them;
+ *   - a re-sort keeps the rows it is replacing on screen until the new ones land.
  */
 
 /** One page of a paged read — the generated client's `Paged<T>`, structurally. */
@@ -23,18 +34,54 @@ export interface Page<T> {
   total: number | null;
 }
 
-/** Where the rows come from. `first` is the read; `follow` is the client's `follow`. */
-export interface TableSource<T> {
-  first(): Promise<Page<T>>;
-  follow(next: string): Promise<Page<T>>;
+/** A capped search read's answer — `{ results, capped }`, as a vertical's search ops return it. */
+export interface SearchResult<T> {
+  results: T[];
+  capped: boolean;
 }
 
-export interface Column<T> {
+/** What the table asks its source for. `S` is the read's sortable columns. */
+export interface TableQuery<S extends string = string> {
+  /** The id of the chosen view, or null when the table declares none. */
+  view: string | null;
+  /** A declared sortable column, or null for the read's own default order. */
+  sort: S | null;
+  order: 'asc' | 'desc';
+  /** Equality filters by declared filterable column. An absent key is "any". */
+  filters: Readonly<Record<string, string>>;
+  /** The search term as typed. Shorter than the source's minimum, it searches nothing. */
+  q: string;
+}
+
+/** Where the rows come from. `read` is the generated client's read; `follow` its `follow`. */
+export interface TableSource<T, S extends string = string> {
+  read(query: TableQuery<S>): Promise<Page<T>>;
+  follow(next: string): Promise<Page<T>>;
+  /** The entity's search read, when it has one. Its answer replaces the page. */
+  search?(q: string, query: TableQuery<S>): Promise<SearchResult<T>>;
+}
+
+/** How a cell's value is drawn. Every kind is a fact about the field, not about a screen. */
+export type CellKind = 'text' | 'number' | 'money' | 'date' | 'datetime' | 'relative' | 'badge' | 'boolean' | 'code';
+
+export type Tone = 'brand' | 'neutral' | 'success' | 'warning' | 'danger';
+
+/** The renderer-independent half of a column. */
+export interface ColumnSpec<T, S extends string = string> {
   key: string;
   label: string;
-  value(row: T): string;
-  /** Makes the cell a link. */
-  href?(row: T): string | null;
+  /** Defaults to `row[key]`. */
+  value?(row: T): unknown;
+  /** Defaults to `text`. */
+  kind?: CellKind;
+  /** For `badge`: a tone per value. An unlisted value is `neutral`. */
+  tones?: Readonly<Record<string, Tone>>;
+  /** For `money`: an ISO 4217 code. Money is a decimal string, and is formatted as one. */
+  currency?: string;
+  /** Makes the cell a link. Given the query, so a view (the trash, say) can link nowhere. */
+  href?(row: T, query: TableQuery<S>): string | null;
+  /** The declared sortable column this column sorts by. Absent, the header is not a button. */
+  sort?: S;
   /**
    * 1 always shows; 2 hides on a narrow table; 3 hides first. Intent rather than a pixel
    * width, so a renderer that is not a browser can honour it too.
@@ -47,6 +94,10 @@ export interface RowAction<T> {
   id: string;
   label: string;
   tone?: 'neutral' | 'danger';
+  /** The views it is offered in. Absent, every view. */
+  views?: readonly string[];
+  /** Also offered for a selection, run once per selected row. */
+  bulk?: boolean;
   run(row: T): Promise<unknown>;
 }
 
@@ -58,15 +109,34 @@ export interface Problem {
   message: string;
 }
 
-export interface TableState<T> {
+export interface TableState<T, S extends string = string> {
   phase: Phase;
+  query: TableQuery<S>;
+  /** `search` when the rows are a search's results: ranked, unpaged, maybe capped. */
+  mode: 'page' | 'search';
   rows: T[];
   next: string | null;
   total: number | null;
+  /** The search stopped at its limit; there are more matches than rows. */
+  capped: boolean;
   loadingMore: boolean;
-  /** Key of the row whose action is in flight. */
+  /** A re-read is in flight over rows still on screen (a re-sort, a new view). */
+  refreshing: boolean;
+  /** Key of the row whose action is in flight, or `BULK` while a selection's runs. */
   busy: string | null;
+  selected: ReadonlySet<string>;
   problem: Problem | null;
+}
+
+/** `busy` while an action runs over a selection rather than one row. */
+export const BULK = '\u0000bulk';
+
+export interface TableOptions<T, S extends string = string> {
+  keyOf?: (row: T) => string;
+  /** The query the first read is made with. */
+  query?: Partial<TableQuery<S>>;
+  /** The shortest term that searches. Two is the platform's prefix-index floor. */
+  minSearch?: number;
 }
 
 const statusOf = (error: unknown): number | undefined => {
@@ -76,50 +146,134 @@ const statusOf = (error: unknown): number | undefined => {
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export class EntityTableModel<T> {
-  state: TableState<T> = {
-    phase: 'loading',
-    rows: [],
-    next: null,
-    total: null,
-    loadingMore: false,
-    busy: null,
-    problem: null,
-  };
+const NONE: ReadonlySet<string> = new Set();
 
-  /** Bumped by every reload, so a page that lands after one is dropped, not appended. */
+export class EntityTableModel<T, S extends string = string> {
+  state: TableState<T, S>;
+  readonly keyOf: (row: T) => string;
+  readonly minSearch: number;
+
+  /** Bumped by every read, so an answer that lands after a newer one is dropped, not shown. */
   #generation = 0;
 
   constructor(
-    private readonly source: TableSource<T>,
-    private readonly onChange: (state: TableState<T>) => void,
-    readonly keyOf: (row: T) => string = (row) => String((row as { id?: unknown }).id),
-  ) {}
+    private readonly source: TableSource<T, S>,
+    private readonly onChange: (state: TableState<T, S>) => void,
+    options: TableOptions<T, S> = {},
+  ) {
+    this.keyOf = options.keyOf ?? ((row) => String((row as { id?: unknown }).id));
+    this.minSearch = options.minSearch ?? 2;
+    this.state = {
+      phase: 'loading',
+      query: { view: null, sort: null, order: 'asc', filters: {}, q: '', ...options.query },
+      mode: 'page',
+      rows: [],
+      next: null,
+      total: null,
+      capped: false,
+      loadingMore: false,
+      refreshing: false,
+      busy: null,
+      selected: NONE,
+      problem: null,
+    };
+  }
 
-  #set(patch: Partial<TableState<T>>) {
+  #set(patch: Partial<TableState<T, S>>) {
     this.state = { ...this.state, ...patch };
     this.onChange(this.state);
   }
 
-  /** Read from the first page. Keeps a `problem` it is told to, so a reload can carry one. */
+  /** The term is long enough to search, and there is a search to ask. */
+  get searching(): boolean {
+    return Boolean(this.source.search) && this.state.query.q.trim().length >= this.minSearch;
+  }
+
+  /** Read with the current query. Keeps a `problem` it is told to, so a reload can carry one. */
   async load(keep: Problem | null = null): Promise<void> {
     const generation = ++this.#generation;
-    if (this.state.phase !== 'ready') this.#set({ phase: 'loading' });
+    const { query } = this.state;
+    const shown = this.state.phase === 'ready';
+    this.#set(shown ? { refreshing: true } : { phase: 'loading' });
     try {
-      const page = await this.source.first();
+      const patch: Partial<TableState<T, S>> & { rows: T[] } = this.searching
+        ? await this.source.search!(query.q.trim(), query).then((r) => ({
+            mode: 'search' as const,
+            rows: r.results,
+            next: null,
+            total: null,
+            capped: r.capped,
+          }))
+        : await this.source.read(query).then((p) => ({
+            mode: 'page' as const,
+            rows: p.entries,
+            next: p.next,
+            total: p.total,
+            capped: false,
+          }));
       if (generation !== this.#generation) return;
-      this.#set({ phase: 'ready', rows: page.entries, next: page.next, total: page.total, loadingMore: false, problem: keep });
+      // A selection names rows; one the new read no longer has is not selected any more.
+      const keys = new Set(patch.rows.map(this.keyOf));
+      const selected = new Set([...this.state.selected].filter((k) => keys.has(k)));
+      this.#set({ ...patch, phase: 'ready', loadingMore: false, refreshing: false, selected, problem: keep });
     } catch (error) {
       if (generation !== this.#generation) return;
       if (statusOf(error) === 403) {
-        this.#set({ phase: 'forbidden', rows: [], next: null, total: null, loadingMore: false, problem: null });
-      } else if (this.state.phase === 'ready') {
+        this.#set({
+          phase: 'forbidden',
+          rows: [],
+          next: null,
+          total: null,
+          loadingMore: false,
+          refreshing: false,
+          selected: NONE,
+          problem: null,
+        });
+      } else if (shown) {
         // A failed re-read is a blip over rows we still have, not a reason to drop them.
-        this.#set({ problem: { kind: 'failed', message: messageOf(error) } });
+        this.#set({ refreshing: false, problem: { kind: 'failed', message: messageOf(error) } });
       } else {
         this.#set({ phase: 'error', problem: { kind: 'failed', message: messageOf(error) } });
       }
     }
+  }
+
+  /** Change the query and read again. A new view starts with nothing selected. */
+  setQuery(patch: Partial<TableQuery<S>>): Promise<void> {
+    const query = { ...this.state.query, ...patch };
+    const selected = patch.view !== undefined && patch.view !== this.state.query.view ? NONE : this.state.selected;
+    this.#set({ query, selected });
+    return this.load();
+  }
+
+  /** A header press: ascending, then descending, then back to the read's own order. */
+  sortBy(column: S): Promise<void> {
+    const { sort, order } = this.state.query;
+    if (sort !== column) return this.setQuery({ sort: column, order: 'asc' });
+    if (order === 'asc') return this.setQuery({ order: 'desc' });
+    return this.setQuery({ sort: null, order: 'asc' });
+  }
+
+  filter(key: string, value: string | null): Promise<void> {
+    const rest = { ...this.state.query.filters };
+    delete rest[key];
+    return this.setQuery({ filters: value === null || value === '' ? rest : { ...rest, [key]: value } });
+  }
+
+  /**
+   * A new search term. Typing the first letter, or deleting down to one, changes nothing
+   * the server is asked, so it reads nothing: only crossing the minimum, or a new term
+   * past it, does.
+   */
+  search(q: string): Promise<void> {
+    const before = this.searching;
+    this.#set({ query: { ...this.state.query, q } });
+    return before || this.searching ? this.load() : Promise.resolve();
+  }
+
+  /** Drop the search term and every filter — what "No matches" offers. */
+  clear(): Promise<void> {
+    return this.setQuery({ q: '', filters: {} });
   }
 
   async more(): Promise<void> {
@@ -135,6 +289,27 @@ export class EntityTableModel<T> {
       if (generation !== this.#generation) return;
       this.#set({ loadingMore: false, problem: { kind: 'failed', message: messageOf(error) } });
     }
+  }
+
+  toggle(key: string): void {
+    const selected = new Set(this.state.selected);
+    if (!selected.delete(key)) selected.add(key);
+    this.#set({ selected });
+  }
+
+  /** Select every row on screen, or none if they all are. Rows not yet loaded are not "all". */
+  toggleAll(): void {
+    const keys = this.state.rows.map(this.keyOf);
+    const all = keys.length > 0 && keys.every((k) => this.state.selected.has(k));
+    this.#set({ selected: all ? NONE : new Set(keys) });
+  }
+
+  clearSelection(): void {
+    this.#set({ selected: NONE });
+  }
+
+  get selectedRows(): T[] {
+    return this.state.rows.filter((row) => this.state.selected.has(this.keyOf(row)));
   }
 
   async run(action: RowAction<T>, row: T): Promise<void> {
@@ -153,5 +328,112 @@ export class EntityTableModel<T> {
         this.#set({ problem: { kind: status === 403 ? 'refused' : 'failed', message: messageOf(error) } });
       }
     }
+  }
+
+  /**
+   * Run an action once per selected row, then read once. One row's refusal does not stop
+   * the rest — each is its own operation on the server, so each answers for itself — and
+   * the summary counts them, because "3 of 5 done" is what a person needs to know.
+   * Returns the rows it succeeded on.
+   */
+  async runBulk(action: RowAction<T>): Promise<T[]> {
+    const rows = this.selectedRows;
+    if (this.state.busy || rows.length === 0) return [];
+    this.#set({ busy: BULK, problem: null });
+    const done: T[] = [];
+    let refused = 0;
+    let stale = 0;
+    let failed = 0;
+    let last = '';
+    for (const row of rows) {
+      try {
+        await action.run(row);
+        done.push(row);
+      } catch (error) {
+        const status = statusOf(error);
+        if (status === 403) refused++;
+        else if (status === 409 || status === 404) stale++;
+        else {
+          failed++;
+          last = messageOf(error);
+        }
+      }
+    }
+    this.#set({ busy: null, selected: NONE });
+    const parts = [
+      refused ? `${refused} not allowed` : '',
+      stale ? `${stale} changed somewhere else` : '',
+      failed ? `${failed} failed${last ? ` (${last})` : ''}` : '',
+    ].filter(Boolean);
+    const problem: Problem | null = parts.length
+      ? {
+          kind: refused ? 'refused' : stale ? 'stale' : 'failed',
+          message: `${action.label}: ${done.length} of ${rows.length} done; ${parts.join(', ')}.`,
+        }
+      : null;
+    await this.load(problem);
+    return done;
+  }
+}
+
+/** The actions a view offers on a row, or for a selection. */
+export const actionsIn = <T>(actions: readonly RowAction<T>[], view: string | null, bulk = false): RowAction<T>[] =>
+  actions.filter((a) => (!a.views || view === null || a.views.includes(view)) && (!bulk || a.bulk));
+
+/** Why a ready table has no rows: nothing exists, or nothing matches what was asked. */
+export const emptyReason = (state: Pick<TableState<unknown>, 'mode' | 'query'>): 'empty' | 'no-matches' =>
+  state.mode === 'search' || Object.keys(state.query.filters).length > 0 ? 'no-matches' : 'empty';
+
+/** One cell, as text: what it says, what it says on hover, and its tone when it is a badge. */
+export interface CellText {
+  text: string;
+  title?: string;
+  tone?: Tone;
+  /** No value: drawn quietly, so an empty cell reads as empty rather than as missing. */
+  blank?: boolean;
+}
+
+const RELATIVE: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 24 * 3600],
+  ['month', 30 * 24 * 3600],
+  ['week', 7 * 24 * 3600],
+  ['day', 24 * 3600],
+  ['hour', 3600],
+  ['minute', 60],
+];
+
+/** `now` is passed in, not read, so the same row reads the same in a test and on a screen. */
+export function cellText<T>(column: ColumnSpec<T, string>, row: T, now: Date, locale?: string): CellText {
+  const raw = column.value ? column.value(row) : (row as Record<string, unknown>)[column.key];
+  if (raw === null || raw === undefined || raw === '') return { text: '—', blank: true };
+  switch (column.kind ?? 'text') {
+    case 'number':
+      return { text: new Intl.NumberFormat(locale).format(Number(raw)) };
+    case 'money': {
+      // Decimal strings, never floats: `format` takes the string whole (Intl.NumberFormat v3),
+      // so 0.1 + 0.2 never reaches a screen.
+      const format = new Intl.NumberFormat(locale, column.currency ? { style: 'currency', currency: column.currency } : {});
+      return { text: format.format(String(raw) as unknown as number) };
+    }
+    case 'date':
+    case 'datetime':
+    case 'relative': {
+      const at = new Date(String(raw));
+      if (Number.isNaN(at.getTime())) return { text: String(raw) };
+      const exact = new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(at);
+      if (column.kind === 'datetime') return { text: exact };
+      if (column.kind === 'date') return { text: new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(at), title: exact };
+      const seconds = (at.getTime() - now.getTime()) / 1000;
+      const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+      const unit = RELATIVE.find(([, size]) => Math.abs(seconds) >= size);
+      return { text: unit ? rtf.format(Math.round(seconds / unit[1]), unit[0]) : rtf.format(0, 'minute'), title: exact };
+    }
+    case 'boolean':
+      // SQLite has no boolean, so 1/0 arrive as numbers; both spellings read the same.
+      return raw === true || raw === 1 || raw === '1' ? { text: 'Yes' } : { text: 'No', blank: true };
+    case 'badge':
+      return { text: String(raw), tone: column.tones?.[String(raw)] ?? 'neutral' };
+    default:
+      return { text: String(raw) };
   }
 }

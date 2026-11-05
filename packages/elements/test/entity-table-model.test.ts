@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EntityTableModel, type Page, type TableSource } from '../src/entity-table-model.js';
+import {
+  EntityTableModel,
+  actionsIn,
+  cellText,
+  emptyReason,
+  type ColumnSpec,
+  type Page,
+  type RowAction,
+  type TableQuery,
+  type TableSource,
+} from '../src/entity-table-model.js';
 
 type Row = { id: string };
 
@@ -16,23 +26,21 @@ const page = (ids: string[], next: string | null = null): Page<Row> => ({
 });
 
 const modelOver = (source: Partial<TableSource<Row>>) =>
-  new EntityTableModel<Row>(
-    { first: async () => page([]), follow: async () => page([]), ...source },
-    () => {},
-  );
+  new EntityTableModel<Row>({ read: async () => page([]), follow: async () => page([]), ...source }, () => {});
 
 describe('EntityTableModel', () => {
   it('reads a 403 as a wall and an empty page as empty — never the one for the other', async () => {
-    const walled = modelOver({ first: () => Promise.reject(new Refusal(403)) });
+    const walled = modelOver({ read: () => Promise.reject(new Refusal(403)) });
     const empty = modelOver({});
     await Promise.all([walled.load(), empty.load()]);
     expect(walled.state).toMatchObject({ phase: 'forbidden', rows: [] });
     expect(empty.state).toMatchObject({ phase: 'ready', rows: [], problem: null });
+    expect(emptyReason(empty.state)).toBe('empty');
   });
 
   it('follows next until it is null, appending', async () => {
     const follow = vi.fn(async (next: string) => (next === 'p2' ? page(['b'], 'p3') : page(['c'])));
-    const model = modelOver({ first: async () => page(['a'], 'p2'), follow });
+    const model = modelOver({ read: async () => page(['a'], 'p2'), follow });
     await model.load();
     await model.more();
     await model.more();
@@ -43,24 +51,24 @@ describe('EntityTableModel', () => {
   });
 
   it('keeps the rows when an action is refused, and re-reads when it went stale', async () => {
-    const first = vi.fn(async () => page(['a', 'b']));
-    const model = modelOver({ first });
+    const read = vi.fn(async () => page(['a', 'b']));
+    const model = modelOver({ read });
     await model.load();
 
     await model.run({ id: 'trash', label: 'Trash', run: () => Promise.reject(new Refusal(403)) }, { id: 'a' });
     expect(model.state).toMatchObject({ phase: 'ready', busy: null, problem: { kind: 'refused' } });
     expect(model.state.rows).toHaveLength(2);
-    expect(first).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
 
     await model.run({ id: 'trash', label: 'Trash', run: () => Promise.reject(new Refusal(409)) }, { id: 'a' });
-    expect(first).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(2);
     expect(model.state.problem).toMatchObject({ kind: 'stale' });
   });
 
   it('drops a page that lands after a reload instead of appending it to the new read', async () => {
     let release!: (p: Page<Row>) => void;
     const model = modelOver({
-      first: async () => page(['a'], 'p2'),
+      read: async () => page(['a'], 'p2'),
       follow: () => new Promise<Page<Row>>((resolve) => (release = resolve)),
     });
     await model.load();
@@ -69,5 +77,132 @@ describe('EntityTableModel', () => {
     release(page(['old']));
     await more;
     expect(model.state).toMatchObject({ rows: [{ id: 'a' }], loadingMore: false });
+  });
+
+  it('cycles a header asc → desc → default, keeps the old rows on screen while each re-read is out, and shows only the latest answer', async () => {
+    const asked: Pick<TableQuery, 'sort' | 'order'>[] = [];
+    const answers: ((p: Page<Row>) => void)[] = [];
+    const model = modelOver({
+      read: (q) => {
+        asked.push({ sort: q.sort, order: q.order });
+        return new Promise((resolve) => answers.push(resolve));
+      },
+    });
+    const first = model.load();
+    answers[0]!(page(['a', 'b']));
+    await first;
+
+    const asc = model.sortBy('name');
+    expect(model.state).toMatchObject({ phase: 'ready', refreshing: true, rows: [{ id: 'a' }, { id: 'b' }] });
+    const desc = model.sortBy('name');
+    // The ascending answer arrives after the descending one was asked for: it is not shown.
+    answers[2]!(page(['b', 'a']));
+    answers[1]!(page(['a', 'b']));
+    await Promise.all([asc, desc]);
+    expect(model.state).toMatchObject({ refreshing: false, rows: [{ id: 'b' }, { id: 'a' }] });
+
+    const back = model.sortBy('name');
+    answers[3]!(page(['a', 'b']));
+    await back;
+    expect(asked).toEqual([
+      { sort: null, order: 'asc' },
+      { sort: 'name', order: 'asc' },
+      { sort: 'name', order: 'desc' },
+      { sort: null, order: 'asc' },
+    ]);
+  });
+
+  it('searches only past the minimum, says when the search was capped, and an empty answer is "no matches"', async () => {
+    const read = vi.fn(async () => page(['a', 'b'], 'p2'));
+    const search = vi.fn(async (q: string) =>
+      q === 'zz' ? { results: [], capped: false } : { results: [{ id: 'b' }], capped: true },
+    );
+    const model = modelOver({ read, search });
+    await model.load();
+
+    await model.search('m');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(search).not.toHaveBeenCalled();
+
+    await model.search('mi');
+    expect(model.state).toMatchObject({ mode: 'search', rows: [{ id: 'b' }], next: null, capped: true });
+
+    await model.search('zz');
+    expect(emptyReason(model.state)).toBe('no-matches');
+
+    await model.clear();
+    expect(model.state).toMatchObject({ mode: 'page', rows: [{ id: 'a' }, { id: 'b' }], next: 'p2', capped: false });
+  });
+
+  it('runs a bulk action per row, reads once, and counts what did not happen', async () => {
+    const read = vi.fn(async () => page(['a', 'b', 'c', 'd']));
+    const model = modelOver({ read });
+    await model.load();
+    for (const k of ['a', 'b', 'c']) model.toggle(k);
+
+    const outcome: Record<string, () => Promise<unknown>> = {
+      a: async () => undefined,
+      b: () => Promise.reject(new Refusal(403)),
+      c: () => Promise.reject(new Refusal(409)),
+    };
+    const archive: RowAction<Row> = { id: 'archive', label: 'Archive', bulk: true, run: (row) => outcome[row.id]!() };
+    const done = await model.runBulk(archive);
+
+    expect(done).toEqual([{ id: 'a' }]);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(model.state.selected.size).toBe(0);
+    expect(model.state.problem).toEqual({
+      kind: 'refused',
+      message: 'Archive: 1 of 3 done; 1 not allowed, 1 changed somewhere else.',
+    });
+  });
+
+  it('keeps a selection across a re-read only for rows still there, and drops it on a new view', async () => {
+    let ids = ['a', 'b'];
+    const model = modelOver({ read: async () => page(ids) });
+    await model.load();
+    model.toggleAll();
+    ids = ['b', 'c'];
+    await model.load();
+    expect([...model.state.selected]).toEqual(['b']);
+
+    await model.setQuery({ view: 'archived' });
+    expect(model.state.selected.size).toBe(0);
+  });
+});
+
+describe('actionsIn', () => {
+  it('offers an action in its views only, and for a selection only when it is bulk', () => {
+    const archive: RowAction<Row> = { id: 'archive', label: 'Archive', views: ['active'], bulk: true, run: async () => {} };
+    const rename: RowAction<Row> = { id: 'rename', label: 'Rename', run: async () => {} };
+    expect(actionsIn([archive, rename], 'active').map((a) => a.id)).toEqual(['archive', 'rename']);
+    expect(actionsIn([archive, rename], 'archived').map((a) => a.id)).toEqual(['rename']);
+    expect(actionsIn([archive, rename], 'active', true).map((a) => a.id)).toEqual(['archive']);
+  });
+});
+
+describe('cellText', () => {
+  const now = new Date('2026-11-05T12:00:00Z');
+  const tones = { open: 'success' } as const;
+  const cases: [string, ColumnSpec<Record<string, unknown>>, Record<string, unknown>, object][] = [
+    ['an absent value is a quiet dash', { key: 'x', label: 'X' }, {}, { text: '—', blank: true }],
+    ['a badge takes its tone', { key: 's', label: 'S', kind: 'badge', tones }, { s: 'open' }, { text: 'open', tone: 'success' }],
+    ['an unlisted badge value is neutral', { key: 's', label: 'S', kind: 'badge', tones }, { s: 'held' }, { tone: 'neutral' }],
+    [
+      'money keeps a decimal string exact',
+      { key: 'm', label: 'M', kind: 'money', currency: 'SEK' },
+      { m: '9007199254740993.10' },
+      { text: expect.stringContaining('9,007,199,254,740,993.10') },
+    ],
+    [
+      'relative time says when, with the exact time on hover',
+      { key: 't', label: 'T', kind: 'relative' },
+      { t: '2026-11-02T12:00:00Z' },
+      { text: '3 days ago', title: expect.any(String) },
+    ],
+    ['a SQLite 0 is No', { key: 'd', label: 'D', kind: 'boolean' }, { d: 0 }, { text: 'No', blank: true }],
+  ];
+  it.each(cases)('%s', (_, column, row, expected) => {
+    expect(cellText(column, row, now, 'en-US')).toMatchObject(expected);
   });
 });
