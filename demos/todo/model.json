@@ -155,6 +155,9 @@
     "todo/archive-list": {
       "derive": "archive"
     },
+    "todo/list-items": {
+      "derive": "list"
+    },
     "todo/list-shares": {
       "derive": "list"
     },

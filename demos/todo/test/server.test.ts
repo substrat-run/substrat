@@ -53,8 +53,8 @@ describe('the derived route table, served', () => {
     // otherwise pass every test below that expects a 4xx. The count is pinned on
     // purpose: adding an operation to the model should make somebody look here.
     // Twelve until #827 added the two search reads; fourteen until #119 added the
-    // four archive/trash moves and the bin.
-    expect(mounted).toHaveLength(19);
+    // four archive/trash moves and the bin; nineteen until lists became searchable.
+    expect(mounted).toHaveLength(20);
   });
 
   it('serves a real operation for a seeded persona', async () => {

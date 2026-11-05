@@ -149,8 +149,9 @@ export interface TodoClient {
    * `GET /lists/{listId}/items` — `todo/list-items`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `id` unless `sort` names another declared column.
    */
-  listItems(input: { listId: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<Item>>;
+  listItems(input: { listId: string; done?: number; limit?: number; order?: "asc" | "desc"; sort?: "id" | "text" }): Promise<Paged<Item>>;
 
   /**
    * Who this list is shared with
@@ -206,6 +207,13 @@ export interface TodoClient {
    * `GET /lists/{listId}/items/search` — `todo/search-list-items`
    */
   searchListItems(input: { listId: string; q: string; limit?: number }): Promise<{ results: Item[]; limit: number; capped: boolean }>;
+
+  /**
+   * Find your lists by name
+   *
+   * `GET /lists/search` — `todo/search-lists`
+   */
+  searchLists(input: { q: string; limit?: number }): Promise<{ results: List[]; limit: number; capped: boolean }>;
 
   /**
    * Tick an item off, or put it back
@@ -380,6 +388,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       send("/items/search", "GET", undefined, input),
     searchListItems: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/items/search`, "GET", undefined, omit(input, ["listId"])),
+    searchLists: (input: Args) =>
+      send("/lists/search", "GET", undefined, input),
     setItemDone: (input: Args) =>
       send(`/items/${encodeURIComponent(String(input.itemId))}/done`, "POST", omit(input, ["itemId"]), undefined),
     shareList: (input: Args) =>

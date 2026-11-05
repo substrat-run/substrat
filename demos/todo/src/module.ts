@@ -12,10 +12,8 @@
  * one implemented and not declared, is a compile error naming the exact method.
  */
 import {
-  countedPageOf,
   pageVisible,
   dataSubjectId,
-  LIST_PAGE_DEFAULT,
   substratError,
   z,
   type EntityRow,
@@ -52,9 +50,9 @@ const listRef = (id: string) => ({ entityType: 'list', entityId: id });
 const overfetch = (limit: number) => Math.min(limit * SEARCH_OVERFETCH, MAX_SEARCH_LIMIT);
 
 /** Hits carry the rank; rows carry the shape. Re-join them in the index's order. */
-function rankOrder(hits: readonly { id: string }[], rows: readonly ItemRow[]): ItemRow[] {
+function rankOrder<R extends { id: string }>(hits: readonly { id: string }[], rows: readonly R[]): R[] {
   const byId = new Map(rows.map((row) => [row.id, row]));
-  return hits.map((hit) => byId.get(hit.id)).filter((row): row is ItemRow => row !== undefined);
+  return hits.map((hit) => byId.get(hit.id)).filter((row): row is R => row !== undefined);
 }
 
 /**
@@ -204,31 +202,8 @@ const bound = operationsFor(todoOperations)({
     return { id: input.listId, deleted: true };
   },
 
-  'todo/list-items': async (ctx, input) => {
-    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
-    listOrThrow(ctx, input.listId);
-    // Keyset, not offset: the cursor is the last row's id and the walk is exclusive, so
-    // an item added mid-walk cannot push a row onto a page the caller already read.
-    // `ORDER BY id` alone — a ULID is creation-ordered, so the old `created_at, id`
-    // ordering is the same sequence with a second column the cursor could not name.
-    const limit = input.limit ?? LIST_PAGE_DEFAULT;
-    const rows = input.cursor
-      ? ctx.sql.query<ItemRow>(
-          'SELECT * FROM todo_items WHERE list_id = ? AND id > ? ORDER BY id LIMIT ?',
-          [input.listId, input.cursor, limit],
-        )
-      : ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE list_id = ? ORDER BY id LIMIT ?', [
-          input.listId,
-          limit,
-        ]);
-    // Counted over the SAME filter the page ran under. Counting the table instead
-    // would put a number beside the list that is wrong the moment there are two lists.
-    const total = ctx.sql.query<{ n: number }>(
-      'SELECT COUNT(*) AS n FROM todo_items WHERE list_id = ?',
-      [input.listId],
-    )[0]!.n;
-    return countedPageOf(rows, limit, (row) => row.id, total);
-  },
+  // `todo/list-items` has no handler: it is `derive: 'list'`, so the check, the keyset
+  // walk, the `done` filter and the count over the same WHERE are the kernel's.
 
   /**
    * Search on one list (#827) — one check, then hydrate.
@@ -309,6 +284,33 @@ const bound = operationsFor(todoOperations)({
     }
     // Full either because the walk stopped early or because the index itself
     // capped — both mean there may be more, and neither can be paged past.
+    return { results, limit, capped: results.length === limit || hits.length === fetch };
+  },
+
+  /**
+   * Find your lists by name — `my-lists`' per-list check, run over search hits.
+   *
+   * The index leaves archived and binned lists out on its own, so unlike `search-items`
+   * there is no list state to ask about: only whether this caller reaches each hit. The
+   * walk stops at `limit` reachable lists, in rank order.
+   */
+  'todo/search-lists': async (ctx, input) => {
+    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
+    const fetch = overfetch(limit);
+    const hits = ctx.search('list', input.q, { limit: fetch });
+    if (hits.length === 0) return { results: [], limit, capped: false };
+
+    // One bound JSON array rather than a `?` per hit, for the same 100-parameter ceiling (#1741).
+    const rows = ctx.sql.query<ListRow>(
+      `SELECT * FROM todo_lists WHERE id IN (SELECT value FROM json_each(?))`,
+      [JSON.stringify(hits.map((h) => h.id))],
+    );
+    const results: ListRow[] = [];
+    for (const list of rankOrder(hits, rows)) {
+      if (!(await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed) continue;
+      results.push(list);
+      if (results.length === limit) break;
+    }
     return { results, limit, capped: results.length === limit || hits.length === fetch };
   },
 

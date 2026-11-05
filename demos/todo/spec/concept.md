@@ -216,3 +216,8 @@ _No lifecycle is declared: nothing here moves through stages._
   on every change to the model or to a permission.
 - 2026-10-18: PERMISSIONS.md re-emitted with its new Operations section, which names the key each
   operation declares it checks and what that check narrows to. No operation, key or role changed.
+- 2026-11-05: Lists became searchable by name (`todo/search-lists`, `list.name` in the search index),
+  because the lists are paged now and finding one should not mean walking the pages. It checks
+  `list:contribute` per hit, as `search-items` does; no key or role changed. `list-items` became
+  kernel-composed (`derive: 'list'`) and gained a `done` filter and a sort by `text`; its default
+  order is still the id, so a cursor handed out before stays valid.
