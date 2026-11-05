@@ -60,7 +60,9 @@ as a call between verticals. The router hands the store's envelope back as the s
 refusal included, cut by `clientSafeStoreError` to what a client may read, so the store's
 `code` reaches the vertical as `storeCode`. An answer outside the envelope is `substrat.bad_envelope`
 (502), as on the in-process path. A store it cannot reach is `substrat.unavailable` (503), and a call
-the platform refuses `substrat.refused`. The `substrat.` prefix is the platform's alone (#2815): a store
+the platform refuses carries the refusing rule's code (`substrat.scope_mismatch`,
+`substrat.undeclared_binding`, `substrat.reserved_operation`, `substrat.too_large`, #2406) or else
+`substrat.refused`. The `substrat.` prefix is the platform's alone (#2815): a store
 that answers with it is a bad envelope, so its answer is never mistaken for the platform's.
 
 A direct `durable_object_namespace` binding remains for local development and for tests.

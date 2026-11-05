@@ -852,14 +852,25 @@ export type StoreResponse = z.infer<typeof storeResponse>;
  * The codes the platform answers a store call with, never a store (#2815). A vertical
  * reads them as `storeCode`, so `substrat.` is reserved there as it is for operation
  * names: a store's own answer must not be mistaken for a platform answer, and one
- * carrying a reserved code is answered as `badEnvelope`. `refused` is the platform
- * saying no (a 4xx), `unavailable` the platform unable to serve the call (a 5xx), and
- * `badEnvelope` a store answering outside this envelope.
+ * carrying a reserved code is answered as `badEnvelope`.
+ *
+ * A refusal with a rule of its own carries that rule's code (#2406): `scopeMismatch` (403),
+ * a call naming a scope other than the one its dispatch serves; `undeclaredBinding` (404),
+ * a binding the calling version does not declare; `reservedOperation` (403), a `substrat.`
+ * operation; `tooLarge` (413), a call body over `STORE_CALL_MAX_BYTES`. `refused` is
+ * any other platform refusal (a 4xx), `unavailable` the platform unable to serve the call
+ * (a 5xx), and `badEnvelope` a store answering outside this envelope. More codes may be
+ * added: a caller reads an unknown `substrat.` code as `refused` on a 4xx and as
+ * `unavailable` on a 5xx.
  */
 export const PLATFORM_STORE_CODE = {
   refused: 'substrat.refused',
   unavailable: 'substrat.unavailable',
   badEnvelope: 'substrat.bad_envelope',
+  scopeMismatch: 'substrat.scope_mismatch',
+  undeclaredBinding: 'substrat.undeclared_binding',
+  reservedOperation: 'substrat.reserved_operation',
+  tooLarge: 'substrat.too_large',
 } as const;
 
 /** Whether `code` is reserved to the platform. See {@link PLATFORM_STORE_CODE}. */
