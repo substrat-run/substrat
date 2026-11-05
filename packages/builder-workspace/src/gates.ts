@@ -40,6 +40,7 @@ export type GateName =
 	| 'permissions'
 	| 'api'
 	| 'scenario'
+	| 'app-build'
 	| 'migration-replay';
 
 export type GateStatus = 'passed' | 'failed' | 'blocked' | 'skipped';
@@ -248,6 +249,15 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			cmd: `pnpm --filter ./${projectDir} test`,
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/test`),
 			note: 'no test/ directory yet',
+		},
+		{
+			// The scenario drives the module, never the screens, so without this an
+			// app that does not compile passes every gate. `--dir`, not `--filter`:
+			// a filter matching nothing exits zero, and that is the skip this replaces.
+			name: 'app-build',
+			cmd: `pnpm --dir ${projectDir}/app build`,
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/app/package.json`),
+			note: 'no app/ yet',
 		},
 		{
 			name: 'migration-replay',

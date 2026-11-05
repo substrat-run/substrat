@@ -119,7 +119,10 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 		const { ANTHROPIC_API_KEY: _key, ...env } = process.env;
 
 		const stepUsage: StepUsage[] = [];
-		const seen = new Set<string>();
+		/** Where each request's usage sits in `stepUsage`, by message id. */
+		const seen = new Map<string, number>();
+		/** The pass's own output total, from its `result` — streamed counts run short. */
+		let reportedOutput = 0;
 		let steps = 0;
 		let truncated = false;
 
@@ -151,10 +154,15 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 						if (block.type === 'text' && block.text) emit({ type: 'assistant-text', text: block.text });
 						if (block.type === 'thinking') emit({ type: 'thinking' });
 					}
-					// A streamed message can arrive once per content block with the
-					// same id and usage; count each request once.
-					if (!seen.has(msg.message.id)) {
-						seen.add(msg.message.id);
+					// A streamed message can arrive once per content block with the same
+					// id; count each request once. Its output count is partial until the
+					// last block, so a repeat can only raise it.
+					const counted = seen.get(msg.message.id);
+					if (counted !== undefined) {
+						const step = stepUsage[counted]!;
+						stepUsage[counted] = { ...step, outputTokens: Math.max(step.outputTokens, msg.message.usage.output_tokens) };
+					} else {
+						seen.set(msg.message.id, stepUsage.length);
 						steps += 1;
 						const u = msg.message.usage;
 						stepUsage.push({
@@ -185,6 +193,7 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 					}
 				}
 				if (msg.type === 'result') {
+					reportedOutput = msg.usage.output_tokens;
 					if (msg.subtype === 'error_max_turns') {
 						truncated = true;
 						emit({ type: 'truncated', steps, maxSteps: this.#opts.maxSteps ?? 40 });
@@ -209,6 +218,11 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 		yield* queue.splice(0);
 
 		const sum = (f: (s: StepUsage) => number) => stepUsage.reduce((n, s) => n + f(s), 0);
+		// The stream never carries some of the output; the last step takes the
+		// remainder, so the total is the pass's own and the steps still sum to it.
+		const missing = reportedOutput - sum((s) => s.outputTokens);
+		const last = stepUsage.at(-1);
+		if (missing > 0 && last) stepUsage[stepUsage.length - 1] = { ...last, outputTokens: last.outputTokens + missing };
 		yield {
 			type: 'usage',
 			inputTokens: sum((s) => s.inputTokens),

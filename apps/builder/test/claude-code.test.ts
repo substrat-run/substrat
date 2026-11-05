@@ -20,18 +20,51 @@ const assistant = (id: string, input: number, cacheRead: number, output: number)
 	},
 });
 
+const script = vi.hoisted(() => ({ messages: null as unknown[] | null }));
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 	createSdkMcpServer: () => ({}),
 	tool: () => ({}),
 	// Three requests of 1,000 uncached-equivalent tokens each (cache reads excluded);
 	// a pass that honoured a 1,500 budget never reaches the third.
 	query: async function* ({ options }: { options: { abortController: AbortController } }) {
+		if (script.messages) return yield* script.messages;
 		for (const id of ['a', 'b', 'c']) {
 			if (options.abortController.signal.aborted) return;
 			yield assistant(id, 900, 5_000, 100);
 		}
 	},
 }));
+
+describe('ClaudeCodeGenerator usage', () => {
+	it('takes the highest streamed count per request, and the result\'s total for the pass', async () => {
+		// One request streamed as two blocks, the first with a partial count, and a
+		// second whose output the stream never carried: only `result` holds the total.
+		script.messages = [
+			assistant('a', 900, 0, 2),
+			assistant('a', 900, 0, 40),
+			assistant('b', 900, 0, 3),
+			{ type: 'result', subtype: 'success', is_error: false, result: '', usage: { output_tokens: 100 } },
+		];
+		const { ClaudeCodeGenerator } = await import('../src/claude-code.js');
+		const root = await mkdtemp(join(tmpdir(), 'claude-code-usage-'));
+		const events: BuildEvent[] = [];
+		for await (const e of new ClaudeCodeGenerator({ model: 'sonnet', cwd: root }).run({
+			workspace: new LocalWorkspace({ root }),
+			verticalDir: 'demos/x',
+			concept: 'a test vertical',
+			message: 'go',
+		})) {
+			events.push(e);
+		}
+		script.messages = null;
+		expect(events.find((e) => e.type === 'usage')).toMatchObject({
+			steps: 2,
+			outputTokens: 100,
+			stepUsage: [expect.objectContaining({ outputTokens: 40 }), expect.objectContaining({ outputTokens: 60 })],
+		});
+	});
+});
 
 describe('ClaudeCodeGenerator --max-tokens', () => {
 	it('stops the pass at the budget with a token truncation, counting cache reads at nothing', async () => {
