@@ -574,8 +574,9 @@ export interface Ticket0Client {
    * `GET /agents` — `ticket0/list-agents`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `display_name` unless `sort` names another declared column.
    */
-  listAgents(): Promise<Paged<AgentProfile>>;
+  listAgents(input?: { limit?: number; order?: "asc" | "desc"; sort?: "display_name" | "created_at" }): Promise<Paged<AgentProfile>>;
 
   /**
    * When each of the desk’s built-in behaviours last acted
@@ -590,8 +591,9 @@ export interface Ticket0Client {
    * `GET /desk/block-rules` — `ticket0/list-block-rules`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listBlockRules(input: { kind?: "email" | "domain" | "contact" }): Promise<Paged<BlockRule>>;
+  listBlockRules(input: { kind?: "email" | "domain" | "contact"; limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<BlockRule>>;
 
   /**
    * The people who have asked something
@@ -599,8 +601,9 @@ export interface Ticket0Client {
    * `GET /contacts` — `ticket0/list-contacts`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listContacts(): Promise<Paged<Contact>>;
+  listContacts(input?: { limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<Contact>>;
 
   /**
    * The tags on a conversation
@@ -615,8 +618,9 @@ export interface Ticket0Client {
    * `GET /conversations` — `ticket0/list-conversations`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `updated_at` unless `sort` names another declared column.
    */
-  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string; include_closed?: boolean; queue?: "inbox" | "suspended" | "discarded" }): Promise<Paged<Conversation>>;
+  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string; include_closed?: boolean; queue?: "inbox" | "suspended" | "discarded"; limit?: number; order?: "asc" | "desc"; sort?: "updated_at" | "created_at" | "priority" }): Promise<Paged<Conversation>>;
 
   /**
    * The conversations carrying a tag
@@ -625,7 +629,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listConversationsByTag(input: { tag: string }): Promise<Paged<Conversation>>;
+  listConversationsByTag(input: { tag: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<Conversation>>;
 
   /**
    * The desk’s documentation sources
@@ -633,8 +637,9 @@ export interface Ticket0Client {
    * `GET /kb/sources` — `ticket0/list-kb-sources`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listKbSources(): Promise<Paged<({ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string })>>;
+  listKbSources(input?: { limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "label" }): Promise<Paged<({ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string })>>;
 
   /**
    * Every message on a conversation, notes included
@@ -642,8 +647,9 @@ export interface Ticket0Client {
    * `GET /conversations/{conversationId}/messages` — `ticket0/list-messages`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; withdrawn_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  listMessages(input: { conversationId: string; limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; author_contact_id: string | null; third_party_contact_id: string | null; withdrawn_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * Who is on a conversation
@@ -659,7 +665,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listPendingOutbound(): Promise<Paged<{ messageId: string; conversationId: string; createdAt: string }>>;
+  listPendingOutbound(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<{ messageId: string; conversationId: string; createdAt: string }>>;
 
   /**
    * The canned answers you may use: the desk’s shared ones and your own
@@ -668,7 +674,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listSavedReplies(input: { folderId?: string }): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null })>>;
+  listSavedReplies(input: { folderId?: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null })>>;
 
   /**
    * The folders the desk files its canned answers in
@@ -676,8 +682,9 @@ export interface Ticket0Client {
    * `GET /saved-reply-folders` — `ticket0/list-saved-reply-folders`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `name` unless `sort` names another declared column.
    */
-  listSavedReplyFolders(): Promise<Paged<SavedReplyFolder>>;
+  listSavedReplyFolders(input?: { limit?: number; order?: "asc" | "desc"; sort?: "name" }): Promise<Paged<SavedReplyFolder>>;
 
   /**
    * Who is waiting, and who is subscribed
@@ -685,8 +692,9 @@ export interface Ticket0Client {
    * `GET /signups` — `ticket0/list-signups`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listSignups(input: { kind?: "waitlist" | "newsletter"; state?: "pending" | "confirmed" | "unsubscribed" }): Promise<Paged<({ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; unsubscribe_token: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string })>>;
+  listSignups(input: { kind?: "waitlist" | "newsletter"; state?: "pending" | "confirmed" | "unsubscribed"; limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "confirmed_at" }): Promise<Paged<({ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; unsubscribe_token: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string })>>;
 
   /**
    * The conversations held out of the inbox, with why and what they said
@@ -695,7 +703,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listSuspended(): Promise<Paged<({ id: string; channel: "widget" | "email"; subject: string; contact_id: string; contact_email: string | null; contact_name: string | null; suspended_at: string | null; reasons: ("links" | "repeated" | "discarded-before" | "marked")[]; excerpt: string | null; messages: number; created_at: string; updated_at: string })>>;
+  listSuspended(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<({ id: string; channel: "widget" | "email"; subject: string; contact_id: string; contact_email: string | null; contact_name: string | null; suspended_at: string | null; reasons: ("links" | "repeated" | "discarded-before" | "marked")[]; excerpt: string | null; messages: number; created_at: string; updated_at: string })>>;
 
   /**
    * Every tag the desk uses, most-used first
@@ -711,7 +719,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listTurns(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; message_id: string | null; model: string; confidence: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; error: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  listTurns(input: { conversationId: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<({ id: string; conversation_id: string; message_id: string | null; model: string; confidence: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; error: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * Mark a notification read
@@ -741,7 +749,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  myConversations(): Promise<Paged<Conversation>>;
+  myConversations(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<Conversation>>;
 
   /**
    * The public messages on one of your conversations
@@ -750,7 +758,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  myMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  myMessages(input: { conversationId: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * What you have not read yet
@@ -759,7 +767,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  myNotifications(): Promise<Paged<Notification>>;
+  myNotifications(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<Notification>>;
 
   /**
    * Leave an internal note colleagues can see and the customer cannot
@@ -905,7 +913,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  searchContacts(input: { q: string }): Promise<Paged<Contact>>;
+  searchContacts(input: { q: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<Contact>>;
 
   /**
    * Find a conversation by subject or by what was said in it
@@ -914,7 +922,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  searchConversations(input: { q: string; state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; queue?: "inbox" | "suspended" | "discarded" }): Promise<Paged<Conversation>>;
+  searchConversations(input: { q: string; state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; queue?: "inbox" | "suspended" | "discarded"; limit?: number; order?: "asc" | "desc" }): Promise<Paged<Conversation>>;
 
   /**
    * Search the knowledge base
@@ -1025,7 +1033,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  trashedSavedReplies(input: Record<string, never>): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null })>>;
+  trashedSavedReplies(input: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<({ id: string; title: string; body: string; created_by: string; created_at: string; folder_id: string | null; use_count: number; last_used_at: string | null; actions: ({ type: "tag"; tag: string } | { type: "set-priority"; priority: "low" | "normal" | "urgent" } | { type: "assign"; assignee: string | null } | { type: "resolve" })[]; owner: string | null })>>;
 
   /**
    * Take a colleague off a conversation
@@ -1108,7 +1116,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  widgetThread(input: { sessionId: string; token: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  widgetThread(input: { sessionId: string; token: string; limit?: number; order?: "asc" | "desc" }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal" | "forward"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * Prove a widget session token, for the session’s live feed
@@ -1339,36 +1347,36 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/ingest`, "POST", omit(input, ["sourceId"]), undefined),
     ingestMessage: (input: Args) =>
       send("/relay/inbound", "POST", input, undefined),
-    listAgents: () =>
-      page("/agents", "GET", undefined, undefined),
+    listAgents: (input?: Args) =>
+      page("/agents", "GET", undefined, input),
     listBehaviourRuns: () =>
       send("/desk/behaviours", "GET", undefined, undefined),
     listBlockRules: (input: Args) =>
       page("/desk/block-rules", "GET", undefined, input),
-    listContacts: () =>
-      page("/contacts", "GET", undefined, undefined),
+    listContacts: (input?: Args) =>
+      page("/contacts", "GET", undefined, input),
     listConversationTags: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "GET", undefined, omit(input, ["conversationId"])),
     listConversations: (input: Args) =>
       page("/conversations", "GET", undefined, input),
     listConversationsByTag: (input: Args) =>
       page("/conversations/by-tag", "GET", undefined, input),
-    listKbSources: () =>
-      page("/kb/sources", "GET", undefined, undefined),
+    listKbSources: (input?: Args) =>
+      page("/kb/sources", "GET", undefined, input),
     listMessages: (input: Args) =>
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/messages`, "GET", undefined, omit(input, ["conversationId"])),
     listParticipants: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/participants`, "GET", undefined, omit(input, ["conversationId"])),
-    listPendingOutbound: () =>
-      page("/relay/outbound", "GET", undefined, undefined),
+    listPendingOutbound: (input?: Args) =>
+      page("/relay/outbound", "GET", undefined, input),
     listSavedReplies: (input: Args) =>
       page("/saved-replies", "GET", undefined, input),
-    listSavedReplyFolders: () =>
-      page("/saved-reply-folders", "GET", undefined, undefined),
+    listSavedReplyFolders: (input?: Args) =>
+      page("/saved-reply-folders", "GET", undefined, input),
     listSignups: (input: Args) =>
       page("/signups", "GET", undefined, input),
-    listSuspended: () =>
-      page("/conversations/suspended", "GET", undefined, undefined),
+    listSuspended: (input?: Args) =>
+      page("/conversations/suspended", "GET", undefined, input),
     listTags: () =>
       send("/tags", "GET", undefined, undefined),
     listTurns: (input: Args) =>
@@ -1379,12 +1387,12 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/merge`, "POST", omit(input, ["conversationId"]), undefined),
     mintKbRefreshToken: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token`, "POST", omit(input, ["sourceId"]), undefined),
-    myConversations: () =>
-      page("/me/conversations", "GET", undefined, undefined),
+    myConversations: (input?: Args) =>
+      page("/me/conversations", "GET", undefined, input),
     myMessages: (input: Args) =>
       page(`/me/conversations/${encodeURIComponent(String(input.conversationId))}/messages`, "GET", undefined, omit(input, ["conversationId"])),
-    myNotifications: () =>
-      page("/me/notifications", "GET", undefined, undefined),
+    myNotifications: (input?: Args) =>
+      page("/me/notifications", "GET", undefined, input),
     postNote: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/notes`, "POST", omit(input, ["conversationId"]), undefined),
     postPublicReply: (input: Args) =>

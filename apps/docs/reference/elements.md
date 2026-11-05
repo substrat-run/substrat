@@ -49,11 +49,84 @@ text beside it. It reads the same session as the menu, or draws the `session` pr
 
 ## `<sub-entity-table>`
 
-The rows of one paged read, with the actions a row allows. Give it the generated client's read as
-its `source`, plus `columns` and `actions`, as properties. It tells a 403 from an empty list,
-keeps the rows when one action is refused, reads again when an action finds the view stale (409
-or 404), follows `next` on "Load more", and drops lower-priority columns while the table is wider
-than its frame. `EntityTableModel` is everything here that is not drawing, with no DOM in it.
+The rows of one paged read: its views, its sort, its filters and search, a selection, and the
+actions a row allows. Sorting, filtering and paging all happen on the server. The table owns a
+query and hands it to your read, so it never sorts or filters the rows it happens to have loaded.
+
+```ts
+table.source = {
+  read: ({ sort, order, limit, view }) =>
+    api.myLists({ ...(sort ? { sort } : {}), order, ...(limit ? { limit } : {}), ...(view === 'archived' ? { view } : {}) }),
+  follow: (next) => api.follow(next),
+  search: (q) => api.searchLists({ q }), // optional: the entity's search read, ranked and capped
+  searchViews: ['active'], // optional: the index leaves archived rows out, so search them nowhere
+};
+table.filters = [{ key: 'status', label: 'Status', options: [{ value: 'open', label: 'Open' }] }];
+table.columns = [
+  { key: 'name', label: 'List', sort: 'name', href: (l) => `#/list/${l.id}` },
+  { key: 'created_at', label: 'Created', kind: 'relative', sort: 'created_at', priority: 2 },
+];
+table.views = [{ id: 'active', label: 'Active' }, { id: 'archived', label: 'Archived' }];
+table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: true, run: (l) => api.archiveList({ listId: l.id }) }];
+```
+
+- **Sort.** A column with `sort` gets a header button that cycles through ascending, descending
+  and the read's own order. The generated client types `sort` as the columns the model declares
+  `sortable`, so a column that has no index behind it won't compile.
+- **Paging.** By default the footer shows "21–40 of 132", a rows-per-page picker (`page-size`,
+  default 25; the `pageSizes` property holds the choices) and Previous / Next. The page size
+  reaches your read as the query's `limit`. Next follows the `next` link the server handed out;
+  Previous re-reads the page through the link that led to it, so the walk stays a keyset walk.
+  There are no page numbers, because a keyset walk can't jump to page 7, and faking it would mean
+  an offset that drops and repeats rows while someone writes. "of 132" needs
+  `paged: { total: true }`. `paging="more"` swaps the pager for a single "Load more" that appends.
+- **Search** (`source.search`) replaces the page with a ranked result, and the footer says so when
+  the read was capped. A term shorter than two characters reads nothing. `searchViews` lists the
+  views the search covers; in any other view there's no search box. While a search is showing,
+  the filters are disabled, because a ranked search isn't filtered.
+- **Filters** (`filters`: `{ key, label, options }`) are equality filters on the read's declared
+  `filterable` fields. Each one shows its name beside its value ("Status Open"), and its value
+  reaches your read as `query.filters[key]`. When a search or a filter returns nothing, the table says "Nothing matches"
+  and offers Clear. That's a different message from "Nothing here".
+- **Selection.** `selectable` adds checkboxes. Actions marked `bulk` run once per selected row,
+  then the table reads once and reports what didn't happen ("2 of 3 done; 1 not allowed").
+- **Refusals.** A 403 on the read shows a wall, never an empty list. A refused action keeps the
+  rows on screen. A 409 or 404 on an action reads the view again.
+- **Cells.** `kind` draws the value: `text`, `number`, `money` (a decimal string, never a float),
+  `date`, `datetime`, `relative`, `badge` (with `tones`), `boolean` or `code`. `render(row)` returns a
+  Lit template. `mount(cell, row)` hands you a light-DOM element for React, Vue or plain DOM, and
+  your page's CSS applies inside it. It can return `{ update, unmount }`.
+- **Narrow screens.** Columns with `priority` 3, then 2, are dropped while the table is wider than
+  its frame.
+- **Styling** goes from the outside in. First the theme's `--wa-*` tokens. Then `--sub-table-*`:
+  `row-height`, `cell-padding-inline`, `cell-padding-block`, `header-background`, `row-hover`,
+  `row-selected` and `max-height` (setting a max height makes the header stick). Then
+  `density="compact"`. Last, `::part()`: `frame`, `toolbar`, `bulk-bar`, `table`, `header-cell`,
+  `row` (plus `selected`), `cell`, `footer` and `empty`.
+- The `empty` slot replaces the empty text, for example with a "Create" button.
+- **Events.** `sub-query-change` fires with `{ query }` whenever the person changes the view,
+  sort, filters or search, so a screen can keep the query in its URL and hand it back through the
+  `query` property. `sub-action-done` fires with `{ action, rows }` after an action succeeds.
+- **Choosing columns (opt-in).** `column-picker` adds a Columns button to the toolbar: a
+  checkbox per column to show or hide it, and a drag handle plus Move up / Move down buttons to
+  reorder it, so a keyboard or a screen reader can do anything a drag can. Reset to default
+  goes back to the declared columns. The first column names the row and is always shown. The
+  choice is a `layout` (`{ order, hidden }` by column key), kept apart from the query because it
+  changes nothing the server is asked. `layout-key` keeps it in this browser. A screen that
+  would rather keep it on the account listens for `sub-layout-change` and hands it back through
+  `layout`. A column the table drops for lack of room is listed as "Hidden while narrow", so
+  it does not seem to have vanished. Without `column-picker` the columns are exactly the ones given.
+- **The query in the URL.** The table never writes to the URL itself, because the page owns
+  its routing and may show two tables. `queryToParams(query, spec)` and
+  `queryFromParams(params, spec)` give every app the same parameters
+  (`?view=archived&sort=name&order=desc&done=1&q=milk`). `spec` lists the views, sorts, filter
+  values and page sizes a link may name, and anything else is dropped, so a stale link shows
+  the defaults instead of a refused read. Values equal to `spec.defaults` are left out, and
+  `prefix` keeps two tables apart. The page itself is not written: a cursor answers one query
+  at one moment, so a link or a reload starts at the first page. `demos/todo/app/src/elements.tsx`
+  wires it with `replaceState`, so Back leaves the screen instead of stepping through filters.
+
+`EntityTableModel` is everything here except the drawing, with no DOM in it.
 
 ## The session read
 

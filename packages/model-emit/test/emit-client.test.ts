@@ -243,11 +243,27 @@ describe('rendering a client', () => {
   });
 
   it('wraps a paged read, and only a paged read', () => {
+    // `limit` is declared by the read, so only the platform's `order` is added to it.
     expect(out).toContain(
-      'listNotes(input: { limit?: number; cursor?: string }): Promise<Paged<Note>>;',
+      'listNotes(input: { limit?: number; cursor?: string; order?: "asc" | "desc" }): Promise<Paged<Note>>;',
     );
     expect(out).toContain('export interface Paged<T>');
     expect(out).toContain('follow<T>(next: string): Promise<Paged<T>>;');
+  });
+
+  it('types `sort` as the declared sortable columns, and a read with no input of its own takes none', () => {
+    const printed = render({
+      'demo/notes': {
+        summary: 'The notes',
+        output: entities.note.fields,
+        paged: { over: { entity: 'note', sortable: ['created_at', 'body'] } },
+        http: { method: 'GET', path: '/notes' },
+      },
+    });
+    expect(printed).toContain(
+      'notes(input?: { limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "body" }): Promise<Paged<Note>>;',
+    );
+    expect(printed).toContain('notes: (input?: Args) =>\n      page("/notes", "GET", undefined, input)');
   });
 
   it('carries the summary and the route into the doc comment', () => {

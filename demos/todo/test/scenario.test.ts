@@ -120,6 +120,20 @@ describe('the happy path', () => {
     expect(totals).toEqual([5, 5, 5]);
   });
 
+  it('sorts my-lists by the column and in the direction the caller asks for', async () => {
+    const ada = await as('ada');
+    const names = ['Sort b', 'Sort c', 'Sort a'];
+    for (const name of names) await ada.invoke('todo/create-list', { name });
+    // Other tests' lists are Ada's too; only the relative order of these three is asserted.
+    const read = async (input: Record<string, unknown>) =>
+      (await ada.invoke<Page<{ name: string }>>('todo/my-lists', input)).entries
+        .map((l) => l.name)
+        .filter((n) => names.includes(n));
+    expect(await read({})).toEqual(['Sort b', 'Sort c', 'Sort a']);
+    expect(await read({ sort: 'name' })).toEqual(['Sort a', 'Sort b', 'Sort c']);
+    expect(await read({ sort: 'name', order: 'desc' })).toEqual(['Sort c', 'Sort b', 'Sort a']);
+  });
+
   it('counts the filter, not the table', async () => {
     const ada = await as('ada');
     const mine = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Counted' });
@@ -136,6 +150,23 @@ describe('the happy path', () => {
     // that looks right until a second list exists.
     expect(page.total).toBe(1);
     expect(page.entries).toHaveLength(1);
+  });
+
+  it('filters a list’s items by done, counts under the filter, and sorts by text', async () => {
+    const ada = await as('ada');
+    const list = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Filtered' });
+    const ids: Record<string, string> = {};
+    for (const text of ['pears', 'apples', 'figs']) {
+      ids[text] = (await ada.invoke<{ id: string }>('todo/add-item', { listId: list.id, text })).id;
+    }
+    await ada.invoke('todo/set-item-done', { itemId: ids['apples'], done: true });
+
+    const open = await ada.invoke<CountedPage<{ text: string }>>('todo/list-items', { listId: list.id, done: 0 });
+    expect(open.entries.map((i) => i.text)).toEqual(['pears', 'figs']);
+    expect(open.total).toBe(2);
+
+    const byText = await ada.invoke<CountedPage<{ text: string }>>('todo/list-items', { listId: list.id, sort: 'text' });
+    expect(byText.entries.map((i) => i.text)).toEqual(['apples', 'figs', 'pears']);
   });
 
   it('does not repeat a row when the list is written to mid-walk', async () => {
@@ -351,5 +382,26 @@ describe('finding an item by what someone typed', () => {
       });
       expect(found.results).toEqual([]);
     });
+  });
+});
+
+describe('finding a list by its name', () => {
+  beforeAll(async () => {
+    const ada = await as('ada');
+    await ada.invoke('todo/create-list', { name: 'Allotment seeds' });
+    const old = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Allotment rota' });
+    await ada.invoke('todo/archive-list', { listId: old.id });
+  });
+
+  it('finds Ada’s active list, and not the one she archived', async () => {
+    const ada = await as('ada');
+    const found = await ada.invoke<{ results: { name: string }[] }>('todo/search-lists', { q: 'allot' });
+    expect(found.results.map((l) => l.name)).toEqual(['Allotment seeds']);
+  });
+
+  it('twin: Björn, not shared on it, finds nothing — the same index, refused by the check after it', async () => {
+    const bjorn = await as('bjorn');
+    const found = await bjorn.invoke<{ results: unknown[] }>('todo/search-lists', { q: 'allot' });
+    expect(found.results).toEqual([]);
   });
 });

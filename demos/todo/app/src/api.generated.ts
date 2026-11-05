@@ -149,8 +149,9 @@ export interface TodoClient {
    * `GET /lists/{listId}/items` — `todo/list-items`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `id` unless `sort` names another declared column.
    */
-  listItems(input: { listId: string }): Promise<Paged<Item>>;
+  listItems(input: { listId: string; done?: number; limit?: number; order?: "asc" | "desc"; sort?: "id" | "text" }): Promise<Paged<Item>>;
 
   /**
    * Who this list is shared with
@@ -158,8 +159,9 @@ export interface TodoClient {
    * `GET /lists/{listId}/shares` — `todo/list-shares`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listShares(input: { listId: string }): Promise<Paged<Share>>;
+  listShares(input: { listId: string; limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<Share>>;
 
   /**
    * List the lists you own or have been shared
@@ -167,8 +169,9 @@ export interface TodoClient {
    * `GET /lists` — `todo/my-lists`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  myLists(input: { view?: "active" | "archived" }): Promise<Paged<List>>;
+  myLists(input: { view?: "active" | "archived"; limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "name" }): Promise<Paged<List>>;
 
   /**
    * Rename a list
@@ -206,6 +209,13 @@ export interface TodoClient {
   searchListItems(input: { listId: string; q: string; limit?: number }): Promise<{ results: Item[]; limit: number; capped: boolean }>;
 
   /**
+   * Find your lists by name
+   *
+   * `GET /lists/search` — `todo/search-lists`
+   */
+  searchLists(input: { q: string; limit?: number }): Promise<{ results: List[]; limit: number; capped: boolean }>;
+
+  /**
    * Tick an item off, or put it back
    *
    * `POST /items/{itemId}/done` — `todo/set-item-done`
@@ -232,8 +242,9 @@ export interface TodoClient {
    * `GET /lists/trash` — `todo/trashed-lists`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  trashedLists(): Promise<Paged<List>>;
+  trashedLists(input?: { limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "name" }): Promise<Paged<List>>;
 
   /**
    * Bring an archived list back
@@ -377,14 +388,16 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       send("/items/search", "GET", undefined, input),
     searchListItems: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/items/search`, "GET", undefined, omit(input, ["listId"])),
+    searchLists: (input: Args) =>
+      send("/lists/search", "GET", undefined, input),
     setItemDone: (input: Args) =>
       send(`/items/${encodeURIComponent(String(input.itemId))}/done`, "POST", omit(input, ["itemId"]), undefined),
     shareList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "POST", omit(input, ["listId"]), undefined),
     trashList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/trash`, "POST", omit(input, ["listId"]), undefined),
-    trashedLists: () =>
-      page("/lists/trash", "GET", undefined, undefined),
+    trashedLists: (input?: Args) =>
+      page("/lists/trash", "GET", undefined, input),
     unarchiveList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/unarchive`, "POST", omit(input, ["listId"]), undefined),
     follow: async (next: string) => {

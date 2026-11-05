@@ -83,6 +83,7 @@ shapes.
 | `todo/revoke-share` | `list:manage` | one `list`, resolved in the handler: the list the share is on | `@substrat-run/demo-todo` |
 | `todo/search-items` | `list:contribute` | each row, by a proof walk: Returns only items on lists the caller owns or has been shared | `@substrat-run/demo-todo` |
 | `todo/search-list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/search-lists` | `list:contribute` | each row, by a proof walk: Returns only lists the caller owns or has been shared | `@substrat-run/demo-todo` |
 | `todo/set-item-done` | `list:contribute` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
 | `todo/share-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/trash-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |

@@ -7,11 +7,17 @@ element's attributes or slots.
 
 ## What's in it
 
-- **`<sub-entity-table>`** — the rows of one paged read and the actions a row allows. Give it
-  a `source` (`{ first, follow }` — the generated client's read and `follow`), `columns` and
-  `actions`. It tells a 403 wall from an empty list, keeps the rows when one action is
-  refused, re-reads when an action finds the view stale (409/404), follows `next` on
-  "Load more", and drops `priority` 3, then 2 columns while the table is wider than its frame.
+- **`<sub-entity-table>`** — the rows of one paged read: views, server-side sort, equality
+  filters, a search mode, Previous / Next paging with a rows-per-page picker (or `paging="more"`),
+  a selection with bulk actions, and the actions a row allows. `queryToParams` /
+  `queryFromParams` put its query in a URL and read it back; `column-picker` (opt-in) lets the
+  person show, hide and reorder columns, kept per browser with `layout-key`. Give it
+  a `source` (`{ read(query), follow, search? }` — the generated client's read, `follow` and
+  the entity's search read), `columns` and `actions`. It tells a 403 wall from an empty list
+  and "no matches" from both, keeps the rows when one action is refused, re-reads when an
+  action finds the view stale (409/404), follows `next` on "Load more", and drops `priority` 3,
+  then 2 columns while the table is wider than its frame. Cells are typed (`kind`), or drawn by
+  `render` (Lit) or `mount` (a light-DOM element, for React or Vue).
 - **`<sub-user-menu>`** — the account menu: who is signed in, your own items (slotted
   `<wa-dropdown-item>`s), then "Switch user" and "Sign out", which it owns because it knows
   the auth endpoints (`/api/auth/*`). Every built-in part is a slot with a default, and

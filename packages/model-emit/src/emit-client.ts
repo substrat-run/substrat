@@ -352,11 +352,36 @@ interface HttpOp {
   readonly input?: unknown;
   readonly output?: unknown;
   readonly http?: { readonly method: string; readonly path: string };
-  readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
+  readonly paged?: {
+    readonly sortKey?: string;
+    readonly total?: boolean;
+    readonly over?: { readonly sortable?: readonly string[] };
+  };
   /** #129: this operation participates in optimistic concurrency. */
   readonly concurrency?: { readonly over: string; readonly idFrom: string };
   /** #2170: the response headers the method hands back beside the body. */
   readonly responseHeaders?: readonly string[];
+}
+
+/**
+ * The page parameters the PLATFORM adds to every paged read (#811), as input members.
+ *
+ * `mountOperations` parses `limit` and `order` with the shared `listPageQuery` and forwards
+ * `sort` on every paged route, so an operation never declares them — which left them out of
+ * the client, and a screen that sorts had to cast its way past the type. `sort` is the
+ * declared `sortable` columns and nothing else: a column with no index behind it is refused
+ * by the kernel, so it should not compile either. `cursor` stays out on purpose — `next` is
+ * the walk, and `follow` is how it is taken. A field the read declares itself is left as
+ * declared.
+ */
+function pageMembers(paged: NonNullable<HttpOp['paged']>, declared: Record<string, unknown>): string[] {
+  const sortable = paged.over?.sortable ?? [];
+  const members: [string, string][] = [
+    ['limit', 'number'],
+    ['order', '"asc" | "desc"'],
+    ...(sortable.length ? [['sort', sortable.map((s) => JSON.stringify(s)).join(' | ')] as [string, string]] : []),
+  ];
+  return members.filter(([key]) => !(key in declared)).map(([key, type]) => `${key}?: ${type}`);
 }
 
 /** A field a query string carries once per value: declared as an array, under any transparent wrapper. */
@@ -573,12 +598,19 @@ export function renderClient(
     const where = `${vertical}.${operation}`;
     const params = pathParams(op.http.path);
     const inputShape = (defOf(op.input)?.shape ?? {}) as Record<string, unknown>;
-    const hasInput = op.input !== undefined || params.length > 0;
+    const declaresInput = op.input !== undefined || params.length > 0;
+    const paging = op.paged ? pageMembers(op.paged, inputShape) : [];
+    const hasInput = declaresInput || paging.length > 0;
 
     // The parameter type is the input schema WHOLE — path parameters included.
     // `mountOperations` reads them off the URL, but they are declared input fields
     // and the compile-checked `{var}` join says so, so the caller passes one object.
-    const inputType = op.input ? tsObject(inputShape, { ...ctx, where: `${where}.input` }) : '{}';
+    const declaredType = op.input ? tsObject(inputShape, { ...ctx, where: `${where}.input` }) : '{}';
+    const inputType = !paging.length
+      ? declaredType
+      : declaredType === '{}' || declaredType === 'Record<string, never>'
+        ? `{ ${paging.join('; ')} }`
+        : `${declaredType.slice(0, -2)}; ${paging.join('; ')} }`;
 
     const entryType = tsType(op.output, { ...ctx, where: `${where}.output` });
     const headers = op.responseHeaders ?? [];
@@ -594,13 +626,17 @@ export function renderClient(
     const takesBody = ['POST', 'PUT', 'PATCH'].includes(op.http.method);
     if (!takesBody && Object.values(inputShape).some(isRepeated)) anyRepeated = true;
 
-    const signature = hasInput ? `input: ${inputType}` : '';
+    // A read whose only input is the page parameters may still be called with none.
+    const signature = hasInput ? `input${declaresInput ? '' : '?'}: ${inputType}` : '';
     const doc = [
       '  /**',
       `   * ${op.summary ?? operation}`,
       '   *',
       `   * \`${op.http.method} ${op.http.path}\` — \`${operation}\``,
       ...(op.paged ? ['   *', '   * Paged: walk it with `follow(page.next)` until `next` is `null`.'] : []),
+      ...(op.paged?.over?.sortable?.length
+        ? [`   * Sorted by \`${op.paged.over.sortable[0]}\` unless \`sort\` names another declared column.`]
+        : []),
       ...(op.concurrency
         ? [
             '   *',
@@ -622,6 +658,7 @@ export function renderClient(
       ? '`' + op.http.path.replace(/\{(\w+)\}/g, (_, p: string) => `\${encodeURIComponent(String(input.${p}))}`) + '`'
       : JSON.stringify(op.http.path);
     const rest = params.length ? `omit(input, ${JSON.stringify(params)})` : hasInput ? 'input' : 'undefined';
+    const arg = hasInput ? `input${declaresInput ? '' : '?'}: Args` : '';
     const call = op.paged ? 'page' : op.concurrency ? 'guarded' : headers.length ? 'withHeaders' : 'send';
     // A guarded call carries the entity it is about, so the runtime can key the tag
     // it caches. Read off the declaration rather than guessed from the path: the id
@@ -630,7 +667,7 @@ export function renderClient(
       ? `${JSON.stringify(op.concurrency.over)}, input.${op.concurrency.idFrom}, `
       : headers.length ? `${JSON.stringify(headers)}, ` : '';
     impls.push(
-      `    ${method}: (${hasInput ? 'input: Args' : ''}) =>\n` +
+      `    ${method}: (${arg}) =>\n` +
         `      ${call}(${leadArgs}${pathExpr}, ${JSON.stringify(op.http.method)}, ${takesBody ? `${rest}, undefined` : `undefined, ${rest}`}),`,
     );
   }

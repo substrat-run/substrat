@@ -323,19 +323,28 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
 
   'todo/list-items': {
     summary: 'The items on a list',
+    // Kernel-composed: the WHERE, the keyset walk, the count and the indexes behind them are
+    // derived from `paged.over`, so there is no handler to keep in step with this declaration.
+    derive: 'list',
     permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
     // `limit` and `cursor` are NOT declared here: since #811 the platform parses
     // the page trio with the one shared schema and merges it into the input, so
     // the default and the `LIST_PAGE_MAX` ceiling are true of every paged read
     // rather than of the ones whose author remembered to restate them.
-    input: z.object({ listId: z.string() }),
+    //
+    // `done` is the one filter a person asks of a long list — what is left to do — and an
+    // equality on a declared column, so the kernel indexes it rather than the handler
+    // scanning. A number because SQLite has no boolean (see the entity).
+    input: z.object({ listId: z.string(), done: z.number().int().min(0).max(1).optional() }),
     // The ENTRY, not the envelope: `paged` is what wraps it, here and in the document.
     output: todoEntities.item.fields,
     // A list's items are the one table here that grows without bound — one per line of
-    // shopping, forever. Keyset over the ULID id, which is creation-ordered for free.
+    // shopping, forever. Keyset over the ULID id by default, which is creation-ordered
+    // for free and keeps every cursor handed out before this was kernel-composed valid
+    // (a walk whose sort is the id carries the id alone). `text` sorts alphabetically.
     // `total` because the app renders a count beside the list; it costs a second
     // query per request, which is why it is asked for rather than assumed.
-    paged: { sortKey: 'id', total: true },
+    paged: { over: { entity: 'item', sortable: ['id', 'text'], filterable: ['list_id', 'done'] }, total: true },
     http: { method: 'GET', path: '/lists/{listId}/items' },
   },
 
@@ -403,6 +412,33 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
       capped: z.boolean(),
     }),
     http: { method: 'GET', path: '/items/search' },
+  },
+
+  /**
+   * Find one of your lists by name — the search beside `my-lists`, for when there are
+   * more lists than one page shows.
+   *
+   * The same `narrows` walk as `my-lists`, over search hits instead of every row: the
+   * index is scope-wide and checks nothing, so the per-list check after it is what keeps
+   * someone else's list out of the answer. Active lists only — the kernel leaves archived
+   * and binned rows out of `ctx.search`, as it does out of `ctx.page`.
+   */
+  'todo/search-lists': {
+    summary: 'Find your lists by name',
+    narrows: {
+      reason: 'Returns only lists the caller owns or has been shared',
+      checks: ['list:contribute'],
+    },
+    input: z.object({
+      q: z.string().min(2),
+      limit: z.number().int().positive().max(TODO_SEARCH_MAX).optional(),
+    }),
+    output: z.object({
+      results: z.array(todoEntities.list.fields),
+      limit: z.number().int(),
+      capped: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/lists/search' },
   },
 
   'todo/add-item': {

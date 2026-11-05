@@ -80,20 +80,24 @@ export const todoManifest = moduleManifest.parse({
       'list:trash': 'Move a list to the trash, see what is in it, and restore it',
     },
   }),
-  // #827. `item` only, and only `text`. The kernel derives a per-scope FTS5 index
-  // and its triggers from this line; `table` and the id column come from
-  // `todoEntities`, so nothing here restates where an item lives.
+  // #827. `item.text` and `list.name`. The kernel derives a per-scope FTS5 index and
+  // its triggers from these; `table` and the id column come from `todoEntities`, so
+  // nothing here restates where an item or a list lives.
   //
-  // Nothing else is declared, deliberately. `list.name` would index a handful of
-  // rows a person can already see in one screen, and `owner`/`share` carry the
-  // only `erasable` fields in the app — an index over an address is a second copy
-  // of it, and the migration that builds it is not the place to discover that.
+  // `list.name` joined once your lists stopped fitting on one screen: they are paged
+  // now, and finding one by name should not mean walking the pages (`search-lists`).
+  // Nothing else is declared, deliberately: `owner`/`share` carry the only `erasable`
+  // fields in the app — an index over an address is a second copy of it, and the
+  // migration that builds it is not the place to discover that.
   //
   // Left on the default `prefix` tokenizer: someone typing into a todo list is
   // completing a word they wrote, not searching inside one, and `substring` costs a
   // substantially larger index. Switching is one word, and the migration re-runs.
   ...manifestEntities(todoEntities, {
-    searchables: [{ entityType: 'item', fields: ['text'] }],
+    searchables: [
+      { entityType: 'item', fields: ['text'] },
+      { entityType: 'list', fields: ['name'] },
+    ],
   }),
   // #811: derived from the operations' own `paged.over`, never written twice —
   // the index the kernel builds and the vocabulary the read offers are one fact.

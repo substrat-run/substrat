@@ -1,13 +1,32 @@
-export { SubEntityTable } from './entity-table.js';
+export { SubEntityTable, type CellHandle, type Column, type TableFilter, type TableView } from './entity-table.js';
 export {
+  BULK,
   EntityTableModel,
-  type Column,
+  actionsIn,
+  arrange,
+  cellText,
+  defaultLayout,
+  emptyReason,
+  layoutEntries,
+  moveColumn,
+  toggleColumn,
+  queryFromParams,
+  queryToParams,
+  type CellKind,
+  type CellText,
+  type ColumnSpec,
   type Page,
   type Phase,
   type Problem,
+  type QueryParams,
   type RowAction,
+  type SearchResult,
+  type TableLayout,
+  type TableOptions,
+  type TableQuery,
   type TableSource,
   type TableState,
+  type Tone,
 } from './entity-table-model.js';
 export { SubAvatar, type AvatarShow } from './avatar.js';
 export { SubUserMenu } from './user-menu.js';

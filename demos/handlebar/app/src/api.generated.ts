@@ -397,8 +397,9 @@ export interface HandlebarClient {
    * `GET /customers` — `bike-shop/list-customers`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `number` unless `sort` names another declared column.
    */
-  listCustomers(): Promise<Paged<({ id: string; number: string; name: string; phone: string | null; created_at: string; bikes: Bike[] })>>;
+  listCustomers(input?: { limit?: number; order?: "asc" | "desc"; sort?: "number" | "name" | "created_at" }): Promise<Paged<({ id: string; number: string; name: string; phone: string | null; created_at: string; bikes: Bike[] })>>;
 
   /**
    * The repairs visible to the caller's portal
@@ -407,7 +408,7 @@ export interface HandlebarClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  portalRepairs(): Promise<Paged<WorkOrder>>;
+  portalRepairs(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<WorkOrder>>;
 
   /**
    * The current price list
@@ -416,7 +417,7 @@ export interface HandlebarClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  priceList(): Promise<Paged<Price>>;
+  priceList(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<Price>>;
 
   /**
    * Register a bike against its owner
@@ -466,8 +467,9 @@ export interface HandlebarClient {
    * `GET /invoicing` — `invoicing/list`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `number` unless `sort` names another declared column.
    */
-  invoicingList(input: { status?: string }): Promise<Paged<UnderlagListRow>>;
+  invoicingList(input: { status?: string; limit?: number; order?: "asc" | "desc"; sort?: "number" | "status" | "created_at" }): Promise<Paged<UnderlagListRow>>;
 
   /**
    * What became of each notification, newest first
@@ -475,8 +477,9 @@ export interface HandlebarClient {
    * `GET /notifications/deliveries` — `notifications/list-deliveries`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  notificationsListDeliveries(input: { status?: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; topic?: string; principal?: string }): Promise<Paged<NotificationDelivery>>;
+  notificationsListDeliveries(input: { status?: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; topic?: string; principal?: string; limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<NotificationDelivery>>;
 
   /**
    * What became of each notification sent to the caller, newest first
@@ -484,8 +487,9 @@ export interface HandlebarClient {
    * `GET /me/notifications/deliveries` — `notifications/my-deliveries`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  notificationsMyDeliveries(input: { status?: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; topic?: string }): Promise<Paged<({ id: string; topic: string; channel: string; status: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; reason: string | null; about_type: string | null; about_id: string | null; created_at: string; settled_at: string | null })>>;
+  notificationsMyDeliveries(input: { status?: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; topic?: string; limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<({ id: string; topic: string; channel: string; status: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; reason: string | null; about_type: string | null; about_id: string | null; created_at: string; settled_at: string | null })>>;
 
   /**
    * The caller's notification address and every topic's switch
@@ -536,7 +540,7 @@ export interface HandlebarClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  protocolListTemplates(): Promise<Paged<ProtocolTemplateRow>>;
+  protocolListTemplates(input?: { limit?: number; order?: "asc" | "desc" }): Promise<Paged<ProtocolTemplateRow>>;
 
   /**
    * Sign a protocol in-app — freezes its content forever
@@ -572,8 +576,9 @@ export interface HandlebarClient {
    * `GET /repairs` — `workorder/list`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `number` unless `sort` names another declared column.
    */
-  workorderList(input: { status?: string }): Promise<Paged<WorkOrder>>;
+  workorderList(input: { status?: string; limit?: number; order?: "asc" | "desc"; sort?: "number" | "status" | "created_at" }): Promise<Paged<WorkOrder>>;
 
   /**
    * Report material against the order
@@ -711,12 +716,12 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
       send("/customers", "POST", input, undefined),
     createRepair: (input: Args) =>
       send("/repairs", "POST", input, undefined),
-    listCustomers: () =>
-      page("/customers", "GET", undefined, undefined),
-    portalRepairs: () =>
-      page("/portal/repairs", "GET", undefined, undefined),
-    priceList: () =>
-      page("/prices", "GET", undefined, undefined),
+    listCustomers: (input?: Args) =>
+      page("/customers", "GET", undefined, input),
+    portalRepairs: (input?: Args) =>
+      page("/portal/repairs", "GET", undefined, input),
+    priceList: (input?: Args) =>
+      page("/prices", "GET", undefined, input),
     registerBike: (input: Args) =>
       send(`/customers/${encodeURIComponent(String(input.customerId))}/bikes`, "POST", omit(input, ["customerId"]), undefined),
     startConditionReport: (input: Args) =>
@@ -747,8 +752,8 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
       send(`/protocols/${encodeURIComponent(String(input.instanceId))}/responses`, "POST", omit(input, ["instanceId"]), undefined),
     protocolGet: (input: Args) =>
       send(`/protocols/${encodeURIComponent(String(input.instanceId))}`, "GET", undefined, omit(input, ["instanceId"])),
-    protocolListTemplates: () =>
-      page("/protocol-templates", "GET", undefined, undefined),
+    protocolListTemplates: (input?: Args) =>
+      page("/protocol-templates", "GET", undefined, input),
     protocolSign: (input: Args) =>
       send(`/protocols/${encodeURIComponent(String(input.instanceId))}/sign`, "POST", omit(input, ["instanceId"]), undefined),
     protocolVoid: (input: Args) =>

@@ -75,3 +75,8 @@ wa-radio.theme-card::part(label) { display: grid; gap: .2rem; width: 100%; }
 .preview-chip { width: 1.6rem; height: .7rem; border-radius: 99px; background: var(--wa-color-brand-fill-normal); }
 .preview-chip.quiet { background: var(--wa-color-neutral-fill-normal); }
 h2 wa-tag { margin-left: .5rem; vertical-align: middle; }
+
+/* The Done cell in the items table: a React component the table mounts into a light-DOM
+   cell, so this stylesheet reaches it — which is the point of the seam. */
+.done-toggle { display: inline-flex; align-items: center; gap: .4rem; font-size: .8rem; color: var(--muted); cursor: pointer; }
+.done-toggle input { margin: 0; accent-color: var(--wa-color-brand-fill-loud, #2563eb); }
