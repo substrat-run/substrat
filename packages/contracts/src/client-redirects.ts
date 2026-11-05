@@ -48,7 +48,7 @@ export type ClientRedirects = z.infer<typeof clientRedirects>;
  * `federatedLogout` sends the app's root when the person returns to it and `LOGGED_OUT_PATH`
  * otherwise, so both are registered.
  */
-export const OIDC_POST_LOGOUT_PATHS = ['/', '/api/auth/logged-out'] as const;
+const OIDC_POST_LOGOUT_PATHS = ['/', '/api/auth/logged-out'] as const;
 
 /** The post-logout targets a relying party at `hostname` registers, exact-match. */
 export function oidcPostLogoutUrls(hostname: string): string[] {

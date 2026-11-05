@@ -40,7 +40,7 @@ import type { DashboardAppRow } from './module.js';
 type RedirectsControlPlane = Pick<TenantNarrowedControlPlane, 'listHostnames' | 'configureInstance'>;
 
 /** Where an app's client lives: the team auth-server and the client id it holds there. */
-export interface ClientTarget {
+interface ClientTarget {
   issuerScopeId: ScopeId;
   clientId: string;
 }
@@ -65,7 +65,7 @@ export function clientRedirectsValue(
  * not sent again, so a Domains tab that is re-read while a domain verifies costs one delivery,
  * not one per read; a failed one is not remembered, so the next read retries it.
  */
-export const redirectsSent = new Map<string, string>();
+const redirectsSent = new Map<string, string>();
 
 const memoKey = (issuerScopeId: string, appScopeId: string) => `${issuerScopeId}:${appScopeId}`;
 
@@ -87,7 +87,7 @@ export async function deliverClientRedirects(
 }
 
 /** The app's client target, from its stored identity, if it signs in at one of the team's auth-servers. */
-export function clientTargetOf(auth: PlacesAppAuth | null, issuers: readonly TeamIssuer[]): ClientTarget | null {
+function clientTargetOf(auth: PlacesAppAuth | null, issuers: readonly TeamIssuer[]): ClientTarget | null {
   const issuer = issuerFor(auth?.issuer, issuers);
   return issuer && auth?.clientId ? { issuerScopeId: issuer.scopeId, clientId: auth.clientId } : null;
 }
@@ -115,7 +115,7 @@ export interface RedirectsReconcileOutcome {
 }
 
 /** Did the pass converge? One that did not is run again by the next load. */
-export const redirectsConverged = (o: RedirectsReconcileOutcome): boolean => !o.aborted && o.failed.length === 0;
+const redirectsConverged = (o: RedirectsReconcileOutcome): boolean => !o.aborted && o.failed.length === 0;
 
 /** The Apps list's gate for the pass (one per isolate, like the places gate). */
 export const redirectsReconcile = new PlacesReconcileGate<RedirectsReconcileOutcome>(
