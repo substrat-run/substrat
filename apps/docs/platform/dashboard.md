@@ -197,8 +197,9 @@ the release candidate — is [Environments & previews](/guide/environments-and-p
 Configuration, not daily-driver surfaces — gathered under one tab with its own sections, each keeping
 its own URL (`settings/environment` …) so deep links survive:
 
-- **General** — rename the app, read its kind, and the danger zone (deleting an app deprovisions its
-  scope for real; the audit history is retained). It also carries the **Identity** card: the
+- **General** — rename the app, read its kind, and the danger zone (deleting an app takes it offline and
+  deletes its data, along with every snapshot and test environment copied from it; a backup is taken
+  first where the platform has a backup store, and the audit history is retained). It also carries the **Identity** card: the
   `substrat:auth` choice made at install (which issuer the app trusts), readable and editable after
   the fact — the client secret is write-only.
 - **Environment** — the former *Env* tab. Not a free-form key/value editor, but a form **generated

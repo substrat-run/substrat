@@ -36,7 +36,7 @@ import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
 import { resolveBrowsableScope } from './browsable-scope.js';
 import { allApps, appByScopeId, walkAll } from './walk-all.js';
-import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
+import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, deleteApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
@@ -3914,7 +3914,7 @@ async function installAppIn({ c, host, node }: TeamContext, body: z.infer<typeof
   });
 }
 
-/** Delete an app — deprovisions its scope + takes its hostname offline, in the team's tenant. */
+/** Delete an app — takes it offline and wipes its scope and every copy of it, in the team's tenant. */
 async function removeAppIn({ c, host, node }: TeamContext, id: string): Promise<void> {
   // Resolve the app to its scope id + hostname from the team's OWN apps only — the
   // id is theirs or it does not exist to them (list-apps is tenant-scoped).
@@ -3930,7 +3930,7 @@ async function removeAppIn({ c, host, node }: TeamContext, id: string): Promise<
     appRow.app_scope_id,
     await teamIssuersFor(host, cp, apps),
   );
-  await deprovisionApp(host, {
+  await deleteApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     controlPlane: cp,

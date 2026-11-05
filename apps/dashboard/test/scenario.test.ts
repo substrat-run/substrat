@@ -44,6 +44,7 @@ import {
   createApp,
   installEntitlements,
   deprovisionApp,
+  deleteApp,
   retryApp,
   resumeApp,
   updateApp,
@@ -55,6 +56,7 @@ import {
   type DashboardAppRow,
   type DashboardNode,
 } from '../src/index.js';
+import { snapshotApp } from '../src/provision.js';
 import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeploymentPageFromHost, versionRegistryFromHost, versionSchedulesFromHost, assertOwned } from '../src/deployments.js';
 import { ControlPlaneError } from '../src/authority.js';
 import { allApps, walkAll } from '../src/walk-all.js';
@@ -1041,6 +1043,60 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(reApp.hostname).toBe('temp.global.substrat.run');
   });
 
+  it('deleting an app wipes its scope and every copy forked from it; the name is free again', async () => {
+    const acme = await bootstrap('acme-wipe');
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId, verticalSlug: 'protocol', name: 'Wiped',
+      appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    const expiring = await snapshotApp(host, { node: acme, appScopeId, ttlDays: 7 });
+    const pinned = await snapshotApp(host, { node: acme, appScopeId });
+
+    await deleteApp(host, { node: acme, appScopeId });
+
+    // The copies are gone outright, row and bytes; the scope is a reaped tombstone.
+    for (const fork of [expiring, pinned]) {
+      expect(await host.admin.getScopeRecord(staff, acme.tenantId, scopeId.parse(fork.id))).toBeUndefined();
+    }
+    expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))!.status).toBe('reaped');
+    const again = await createApp(host, {
+      node: acme, appScopeId: scopeId.parse(ulid()), verticalSlug: 'protocol', name: 'Wiped',
+      appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    expect(again.hostname).toBe('wiped.global.substrat.run');
+  });
+
+  it('connected, the delete releases the names before it wipes, deletes the copies, then reaps with the backup', async () => {
+    const acme = await bootstrap('acme-wipe-cp');
+    const appScopeId = scopeId.parse(ulid());
+    await createApp(host, {
+      node: acme, appScopeId, verticalSlug: 'protocol', name: 'Remote',
+      appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
+    });
+    const calls: string[] = [];
+    let status = 'active';
+    let forks = [ulid(), ulid()];
+    const cp = {
+      tenantId: acme.tenantId,
+      scopeStatus: async () => ({ status }),
+      archiveScope: async (sid: string) => { calls.push(`archive ${sid}`); status = 'archived'; },
+      unbindScopeHostnames: async (sid: string) => void calls.push(`unbind ${sid}`),
+      listSnapshots: async () => forks.map((id) => ({ id })),
+      deleteSnapshot: async (sid: string) => { calls.push(`delete ${sid}`); forks = forks.filter((f) => f !== sid); },
+      reapScope: async (sid: string) => { calls.push(`reap ${sid}`); status = 'reaped'; },
+    } as unknown as Parameters<typeof deleteApp>[1]['controlPlane'];
+
+    const [first, second] = forks;
+    await deleteApp(host, { node: acme, appScopeId, controlPlane: cp });
+    expect(calls).toEqual([`archive ${appScopeId}`, `unbind ${appScopeId}`, `delete ${first}`, `delete ${second}`, `reap ${appScopeId}`]);
+
+    // A second delete wipes nothing: the copies are gone and the scope is already a tombstone.
+    calls.length = 0;
+    await deleteApp(host, { node: acme, appScopeId, controlPlane: cp });
+    expect(calls).toEqual([`unbind ${appScopeId}`]);
+  });
+
   it('deleting an app whose scope was already reaped out-of-band cleans up, does not throw', async () => {
     // The split-brain the incident left behind: a scope reaped straight from the console
     // while the dashboard app row still existed. deleteApp used to blindly re-archive it
@@ -1065,7 +1121,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))!.status).toBe('reaped');
 
     // Deleting the app now SUCCEEDS and drops the orphan row, rather than throwing.
-    await expect(deprovisionApp(host, { node: acme, appScopeId })).resolves.toBeUndefined();
+    await expect(deleteApp(host, { node: acme, appScopeId })).resolves.toBeUndefined();
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     expect(await allApps(dash)).toHaveLength(0);
   });
