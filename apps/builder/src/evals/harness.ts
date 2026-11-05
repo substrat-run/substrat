@@ -25,6 +25,7 @@ import type {
 	Workspace,
 } from '@substrat-run/builder-workspace';
 import {
+	checkModel,
 	ensureVerticalRepo,
 	gateRepairPrompt,
 	gateReport,
@@ -335,6 +336,10 @@ export interface EvalResult {
 	readonly turns: number;
 	/** Gate-repair passes across all turns. */
 	readonly repairs: number;
+	/** The same repairs by the phase they were spent in — `model` is what check_model should drive to 0. */
+	readonly repairsByPhase: Readonly<Partial<Record<BuildPhase, number>>>;
+	/** `untilPhase` when the run was cut there, so a phase-only verdict never reads as a whole build. */
+	readonly untilPhase?: 'model';
 	/** ask_user calls across the run — the stop-discipline metric (§9.6). */
 	readonly questions: number;
 	/**
@@ -362,6 +367,14 @@ export interface RunEvalOptions {
 	readonly projectWs: Workspace;
 	/** The read-only reference verticals (`GeneratorInput.references`), as the studio passes them. */
 	readonly references?: Readonly<Record<string, Workspace>>;
+	/** Offer the check_model tool, as the studio does (default true); false for an A/B arm without it. */
+	readonly checkModel?: boolean;
+	/**
+	 * Grade the run as soon as the turn in this phase is done (its repairs included):
+	 * passed means its gates are green, and expect.json is not consulted, since the
+	 * files it pins come later. A minute instead of seven, for a phase-sized question.
+	 */
+	readonly untilPhase?: 'model';
 	/** Project directory relative to the monorepo root. */
 	readonly projectDir: string;
 	readonly fixture: EvalFixture;
@@ -417,6 +430,9 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let totals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0 };
 	let turns = 0;
 	let repairs = 0;
+	const repairsByPhase: Partial<Record<BuildPhase, number>> = {};
+	/** For `untilPhase`: whether the run got as far as finishing that phase's turn. */
+	let reachedUntil = opts.untilPhase === undefined;
 	let questions = 0;
 	let interviewQuestions = 0;
 	let questionsThisTurn = 0;
@@ -438,6 +454,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		for await (const event of generator.run({
 			workspace: projectWs,
 			...(opts.references ? { references: opts.references } : {}),
+			...(opts.checkModel !== false ? { checkModel: () => checkModel(ws, projectDir) } : {}),
 			verticalDir: '.',
 			// `buildContext`, not a raw read of spec/concept.md — the same seam
 			// server.ts uses, and the only one that answers during the interview
@@ -537,12 +554,18 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				attempt++
 			) {
 				repairs += 1;
+				repairsByPhase[phase] = (repairsByPhase[phase] ?? 0) + 1;
 				await runPass(generator, gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS), phase);
 				turn = await runChecks(`eval ${fixture.name} · turn ${turnNo} · repair ${attempt}/${MAX_GATE_REPAIRS}`);
 			}
 
 			lastGates = turn.gates;
 			lastGateReport = gateReport(turn.gates) ?? undefined;
+
+			if (opts.untilPhase !== undefined && phase === opts.untilPhase) {
+				reachedUntil = true;
+				break;
+			}
 
 			expectations = await checkExpectations(ws, projectDir, fixture.expect, probe);
 			if (turn.gates.ok && expectations.every((o) => o.ok)) break;
@@ -552,13 +575,13 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	}
 
 	// A run that crashed before its first check still reports its expectations.
-	if (expectations.length === 0 && fatal) {
+	if (expectations.length === 0 && fatal && opts.untilPhase === undefined) {
 		expectations = await checkExpectations(ws, projectDir, fixture.expect, probe).catch(
 			() => [] as ExpectationOutcome[],
 		);
 	}
 
-	const passed = !fatal && (lastGates?.ok ?? false) && expectations.every((o) => o.ok);
+	const passed = !fatal && reachedUntil && (lastGates?.ok ?? false) && expectations.every((o) => o.ok);
 
 	return {
 		fixture: fixture.name,
@@ -567,6 +590,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		passed,
 		turns,
 		repairs,
+		repairsByPhase,
+		...(opts.untilPhase ? { untilPhase: opts.untilPhase } : {}),
 		questions,
 		interviewQuestions,
 		usage: { ...totals, stepUsage },
@@ -687,8 +712,9 @@ export function formatForkScore(score: ForkScore): string {
 export function formatEvalResult(r: EvalResult): string {
 	const lines: string[] = [];
 	const verdict = r.passed ? 'PASS' : 'FAIL';
+	const byPhase = Object.entries(r.repairsByPhase).map(([p, n]) => `${p} ${n}`).join(', ');
 	lines.push(
-		`${verdict} ${r.fixture}${r.laned ? ' (laned)' : ''} — ${r.turns} turn(s), ${r.repairs} repair(s), ${r.questions} question(s), ` +
+		`${verdict} ${r.fixture}${r.untilPhase ? ` (until ${r.untilPhase})` : ''}${r.laned ? ' (laned)' : ''} — ${r.turns} turn(s), ${r.repairs} repair(s)${byPhase ? ` [${byPhase}]` : ''}, ${r.questions} question(s), ` +
 			`${r.usage.inputTokens}+${r.usage.outputTokens} tokens in ${(r.durationMs / 1000).toFixed(0)}s`,
 	);
 	const score = forkScore(r);

@@ -64,6 +64,8 @@ interface Args {
 	readonly list: boolean;
 	readonly quiet: boolean;
 	readonly lanes: boolean;
+	readonly untilModel: boolean;
+	readonly checkModel: boolean;
 	readonly help: boolean;
 }
 
@@ -88,6 +90,8 @@ function parseArgs(argv: readonly string[]): Args {
 		list: argv.includes('--list'),
 		quiet: argv.includes('--quiet'),
 		lanes: argv.includes('--lanes'),
+		untilModel: get('--until') === 'model',
+		checkModel: !argv.includes('--no-check-model'),
 		help: argv.includes('--help') || argv.includes('-h'),
 	};
 }
@@ -107,6 +111,9 @@ const USAGE = `pnpm builder evals [options]
   --lanes             run build turns as an API lane then a UI lane with disjoint
                       write guards, gates once after both (#682); compare with a
                       run without it
+  --until model       stop and grade once the model-phase turn (and its repairs) is
+                      done: passed = its gates are green. About a minute per fixture
+  --no-check-model    withhold the check_model tool, for a run to compare against
   --help
 
 Grades the generator against frozen concepts (builder-studio.md §9.6): gates
@@ -248,7 +255,7 @@ async function main(): Promise<number> {
 
 	process.stdout.write(
 		`builder evals · ${fixtures.length} fixture(s) · model ${chosen.spec} (via ${chosen.source})` +
-			`${args.lanes ? ' · laned (#682)' : ''}\n` +
+			`${args.lanes ? ' · laned (#682)' : ''}${args.untilModel ? ' · until model' : ''}${args.checkModel ? '' : ' · no check_model'}\n` +
 			`  root ${ws.root}\n` +
 			`  env  ${env.loaded.length ? env.loaded.join(', ') : '(shell only)'}\n` +
 			`  mode A — no isolation; the model has shell access here, once per fixture\n\n`,
@@ -282,6 +289,8 @@ async function main(): Promise<number> {
 			fixture,
 			makeGenerator,
 			lanes: args.lanes,
+			checkModel: args.checkModel,
+			...(args.untilModel ? { untilPhase: 'model' as const } : {}),
 			gates: standaloneGates(projectDir),
 			...(args.maxTurns ? { maxTurns: args.maxTurns } : {}),
 			onEvent,
@@ -329,7 +338,7 @@ async function main(): Promise<number> {
 		// what each spent asking.
 		process.stdout.write(
 			`${r.passed ? '✓' : '✗'} ${r.fixture.padEnd(24)} ` +
-				`${r.turns}t/${r.repairs}r/${r.questions}q/${r.interviewQuestions}i  ` +
+				`${r.turns}t/${r.repairs}r(model ${r.repairsByPhase.model ?? 0})/${r.questions}q/${r.interviewQuestions}i  ` +
 				`${s.met}/${s.total} forks${s.unresolved ? '?' : ''}  ` +
 				`${r.usage.inputTokens + r.usage.outputTokens} tok${c ? `  $${c}` : ''}\n`,
 		);

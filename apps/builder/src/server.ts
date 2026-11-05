@@ -35,6 +35,7 @@ import {
 	LocalWorkspace,
 	modelEmitWarning,
 	runGates,
+	checkModel,
 	runTurn,
 	runTurnLoop,
 	snapshotWorkspace,
@@ -370,6 +371,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			for await (const event of (lane?.generator ?? generator).run({
 				workspace: cur.projectWs,
 				references,
+				checkModel: () => checkModel(ws, cur.entry.dir),
 				verticalDir: '.',
 				concept: lane?.context ?? concept,
 				message: text,

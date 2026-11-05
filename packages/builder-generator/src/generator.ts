@@ -25,6 +25,14 @@ export interface GeneratorInput {
 	 * Without them the model reverse-engineers the host API from `.d.ts` files.
 	 */
 	readonly references?: Readonly<Record<string, Workspace>>;
+	/**
+	 * What the model gate would say about `spec/model.ts` right now — the same compile
+	 * and loader, every problem at once (builder-workspace `checkModel`). Becomes the
+	 * `check_model` tool, so the model fixes the declaration inside its turn instead of
+	 * in a repair turn. Host-provided: the checker lives in the toolchain, outside the
+	 * project the workspace is rooted at.
+	 */
+	readonly checkModel?: () => Promise<string>;
 	/** Directory of the vertical under construction, relative to the workspace root. */
 	readonly verticalDir: string;
 	/** The approved concept document (spec/concept.md), or the opening brief on turn 1. */

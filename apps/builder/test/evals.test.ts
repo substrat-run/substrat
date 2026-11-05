@@ -576,6 +576,7 @@ describe('forkScore — forks correct AT a question count (#740)', () => {
 		passed: expectations.every((o) => o.ok),
 		turns: 1,
 		repairs: 0,
+		repairsByPhase: {},
 		questions: interviewQuestions,
 		interviewQuestions,
 		usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0, stepUsage: [] },

@@ -25,6 +25,7 @@ import {
 	formatGateRun,
 	isGitRepo,
 	LocalWorkspace,
+	checkModel,
 	runTurn,
 	runTurnLoop,
 	standaloneGates,
@@ -218,6 +219,7 @@ async function main(): Promise<number> {
 			for await (const event of generator.run({
 				workspace: projectWs,
 				references,
+				checkModel: () => checkModel(ws, args.vertical),
 				verticalDir: '.',
 				concept: await currentConcept(),
 				message: text,
