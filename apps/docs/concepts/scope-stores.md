@@ -82,7 +82,7 @@ The platform's codes on the platform path (`PLATFORM_STORE_CODE`):
 | `substrat.scope_mismatch` | 403 | `forbidden` | The call names a scope other than the one the request was routed to. | Nothing at run time: call the store of the scope you are in. |
 | `substrat.undeclared_binding` | 404 | `not_found` | The running version does not declare the binding. | Nothing at run time: declare the store and push. |
 | `substrat.reserved_operation` | 403 | `forbidden` | The operation starts with `substrat.`. The vertical's own host refuses this before the call leaves, so it arrives only from a caller that skips it. | Nothing at run time. |
-| `substrat.too_large` | 413 | `unavailable` | The call body is over `STORE_CALL_MAX_BYTES`. Nothing was sent. | Send less in one call. |
+| `substrat.too_large` | 413 | `unavailable` | The call body is over `STORE_CALL_MAX_BYTES`. Nothing was sent. | Send less in one call. Not retryable: the same body is refused again, so branch on `storeCode` here, not on the platform code. |
 | `substrat.refused` | 4xx | from the status | Any other platform refusal. | Treat it as a refusal. |
 | `substrat.unavailable` | 503 | `unavailable` | A store the platform cannot reach, or a platform not set up for stores. | Retry later. |
 | `substrat.bad_envelope` | 502 | `unavailable` | The store answered outside the envelope, or with a `substrat.` code. | Treat it as a store fault. |

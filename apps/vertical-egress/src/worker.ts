@@ -469,7 +469,10 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
     // Not logged: a failure inside the router can carry a store's text in its message.
     return problem(503, 'the router could not be reached');
   }
-  if (!outcome.ok) return problem(outcome.status, outcome.message, outcome.code);
+  if (!outcome.ok) {
+    // Only a platform code is passed on as one: anything else reads as a store's answer.
+    return problem(outcome.status, outcome.message, outcome.code && isPlatformStoreCode(outcome.code) ? outcome.code : undefined);
+  }
   // The router already answers a store's reserved code as a bad envelope; this holds it here
   // too, so a store's answer never reads as the platform's whichever deploy comes first.
   if ('error' in outcome.body && isPlatformStoreCode(outcome.body.error.code)) {
