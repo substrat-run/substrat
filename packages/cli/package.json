@@ -34,7 +34,7 @@
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
-    "@babel/parser": "^7.29.11",
+    "@babel/parser": "^7.29.12",
     "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-client": "workspace:^",
