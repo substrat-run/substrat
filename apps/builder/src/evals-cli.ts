@@ -339,7 +339,7 @@ async function main(): Promise<number> {
 		process.stdout.write(
 			`${r.passed ? '✓' : '✗'} ${r.fixture.padEnd(24)} ` +
 				`${r.turns}t/${r.repairs}r(model ${r.repairsByPhase.model ?? 0})/${r.questions}q/${r.interviewQuestions}i  ` +
-				`${s.met}/${s.total} forks${s.unresolved ? '?' : ''}  ` +
+				(r.untilPhase ? `until ${r.untilPhase}  ` : `${s.met}/${s.total} forks${s.unresolved ? '?' : ''}  `) +
 				`${r.usage.inputTokens + r.usage.outputTokens} tok${c ? `  $${c}` : ''}\n`,
 		);
 	}

@@ -690,7 +690,8 @@ export interface ForkScore {
 }
 
 export function forkScore(r: EvalResult): ForkScore {
-	const forks = r.expectations.filter((o) => o.kind !== 'probe');
+	// A cutoff run checks the file its phase writes, not the fixture's forks.
+	const forks = r.untilPhase ? [] : r.expectations.filter((o) => o.kind !== 'probe');
 	return {
 		met: forks.filter((o) => o.ok).length,
 		total: forks.length,

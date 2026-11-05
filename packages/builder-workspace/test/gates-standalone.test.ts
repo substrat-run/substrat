@@ -25,9 +25,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { runGate, standaloneGates, type GateName, type GateSpec } from '../src/gates.js';
+import { checkModel, runGate, standaloneGates, type GateName, type GateSpec } from '../src/gates.js';
 import { LocalWorkspace } from '../src/local.js';
-import type { ExecOptions, ExecResult } from '../src/workspace.js';
+import type { ExecOptions, ExecResult, Workspace } from '../src/workspace.js';
 
 const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
 const PROJECT = '.builder/projects/acme';
@@ -181,6 +181,19 @@ async function fixtureProject(): Promise<string> {
 	);
 	return dir;
 }
+
+describe('checkModel — a checker that cannot run is not a declaration error', () => {
+	it('answers CANNOT CHECK, not NOT OK, when only the loader is missing', async () => {
+		// A compile that passes and a toolchain without the emitter: calling again
+		// changes nothing, so the verdict must not read as "fix it and retry".
+		const ws = {
+			exists: async () => true,
+			hasTool: async () => false,
+			exec: async (): Promise<ExecResult> => ({ stdout: '', stderr: '', exitCode: 0 }),
+		} as unknown as Workspace;
+		expect(await checkModel(ws, 'proj')).toMatch(/^CANNOT CHECK — .*\(unavailable\)/);
+	});
+});
 
 describe('permission-diff --root — the standalone permission checkpoint', () => {
 	it('renders, then agrees with itself, then reports drift', async () => {

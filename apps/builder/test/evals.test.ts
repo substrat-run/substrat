@@ -502,6 +502,8 @@ describe('a fixture that starts at the prompt', () => {
 			turns: 4,
 			expectations: [{ kind: 'file', target: 'spec/model.ts', ok: writes }],
 		});
+		// That file check is not a fork: a cutoff run reports no fork ratio.
+		expect(forkScore(result)).toMatchObject({ met: 0, total: 0 });
 	});
 
 	it('does not approve a concept that was never proposed when a second round is asked', async () => {

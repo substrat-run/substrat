@@ -171,7 +171,7 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 	const checkModelTool = (check: () => Promise<string>) =>
 		tool({
 			description:
-				'Check spec/model.ts exactly as the model gate will at the end of your turn: the same compile and the same loader, every problem at once with its remedy. Call it after writing or editing spec/model.ts and fix EVERYTHING it reports, then call it again — end the turn only once it answers "ok". A repair turn costs far more than a check.',
+				'Check spec/model.ts exactly as the model gate will at the end of your turn: the same compile and the same loader, every problem at once with its remedy. Call it after writing or editing spec/model.ts and fix EVERYTHING it reports, then call it again — end the turn only once it answers "ok". A repair turn costs far more than a check. "CANNOT CHECK" or "ERROR" means the checker itself did not run: stop calling it, say so, and end the turn.',
 			inputSchema: z.object({}),
 			execute: async () => {
 				emit({ type: 'tool-call', tool: 'check_model', summary: 'spec/model.ts' });

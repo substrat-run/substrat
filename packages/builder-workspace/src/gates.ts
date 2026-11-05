@@ -285,8 +285,13 @@ export async function checkModel(ws: Workspace, projectDir: string): Promise<str
 	}
 	const load = await emitProjectModel(ws, projectDir, { check: true });
 	if (load.status === 'failed') problems.push(`The model loader refused it:\n${load.output}`);
-	if (load.status === 'blocked' || load.status === 'unavailable') {
-		// Not the declaration's fault: say so, or the model rewrites a correct file chasing it.
+	const cannotLoad = load.status === 'blocked' || load.status === 'unavailable';
+	if (problems.length === 0 && cannotLoad) {
+		// Not the declaration's fault, and calling again will not change it: a third
+		// verdict, so the model neither rewrites a correct file nor loops on the check.
+		return `CANNOT CHECK — the loader could not run here (${load.status}); this is not a problem in your file. Stop calling check_model and say so; the gates judge the file at the end of your turn.${load.output ? `\n${load.output}` : ''}`;
+	}
+	if (cannotLoad) {
 		problems.push(`The loader could not run here (${load.status}) — not a problem in your file:\n${load.output}`);
 	}
 	if (problems.length === 0) {
