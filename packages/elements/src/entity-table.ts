@@ -17,13 +17,19 @@
  *   `views`   — `{ id, label }[]`, drawn as a switch above the rows; the first is the default
  *   `filters` — `{ key, label, options }[]`, equality filters on declared filterable columns
  *   `query`   — the first read's query, for a screen restoring one from its URL
+ *   `layout`  — `{ order, hidden }` by column key: which columns show, in what order
  * Attributes: `label` (the table's accessible name), `empty`, `forbidden-text`,
  *   `search-label`, `selectable`, `density="compact"`, `paging` (`pages`, the default —
  *   Previous / Next with "21–40 of 132" — or `more`, one "Load more" that appends), and
  *   `page-size` (25). `pageSizes` is the property behind the rows-per-page picker.
+ *   `column-picker` adds a "Columns" button: show, hide and reorder the columns. Opt-in;
+ *   without it the columns are exactly the ones given. `layout-key` keeps the chosen layout
+ *   in this browser under that key; a screen that would rather keep it on the account
+ *   listens for `sub-layout-change` and hands it back through `layout`.
  * Slot: `empty` — what an empty view says, in place of `empty` (a "Create" button, say).
  * Events: `sub-action-done` `{ action, rows }` after an action succeeded on some rows;
- *   `sub-query-change` `{ query }` whenever the person changes the view, sort, filters or search.
+ *   `sub-query-change` `{ query }` whenever the person changes the view, sort, filters or search;
+ *   `sub-layout-change` `{ layout }` whenever they show, hide or move a column.
  *
  * ## Cells a vertical draws itself
  *
@@ -48,21 +54,29 @@ import '@awesome.me/webawesome/dist/components/dropdown/dropdown.js';
 import '@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js';
 import '@awesome.me/webawesome/dist/components/input/input.js';
 import '@awesome.me/webawesome/dist/components/option/option.js';
+import '@awesome.me/webawesome/dist/components/popover/popover.js';
 import '@awesome.me/webawesome/dist/components/radio/radio.js';
 import '@awesome.me/webawesome/dist/components/radio-group/radio-group.js';
 import '@awesome.me/webawesome/dist/components/select/select.js';
 import '@awesome.me/webawesome/dist/components/skeleton/skeleton.js';
 import '@awesome.me/webawesome/dist/components/spinner/spinner.js';
 import { css, html, nothing, svg, type PropertyValues, type TemplateResult } from 'lit';
+import { repeat } from 'lit/directives/repeat.js';
 import SubstratElement from './internal/substrat-element.js';
 import {
   BULK,
   EntityTableModel,
   actionsIn,
+  arrange,
   cellText,
+  defaultLayout,
   emptyReason,
+  layoutEntries,
+  moveColumn,
+  toggleColumn,
   type ColumnSpec,
   type RowAction,
+  type TableLayout,
   type TableQuery,
   type TableSource,
   type TableState,
@@ -99,6 +113,23 @@ const SEARCH_DEBOUNCE_MS = 250;
 /** At most this many actions show on a row; past that, the first stays and the rest go in "More". */
 const INLINE_ACTIONS = 2;
 
+/** Where `layout-key` keeps a layout in this browser. */
+const LAYOUT_STORE = 'sub-entity-table:layout:';
+
+/** A stored layout as read back, or null for anything that is not one. */
+function parseLayout(raw: string | null): TableLayout | null {
+  try {
+    const v: unknown = raw === null ? null : JSON.parse(raw);
+    const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every((k) => typeof k === 'string');
+    if (v && typeof v === 'object' && strings((v as TableLayout).order) && strings((v as TableLayout).hidden)) {
+      return { order: (v as TableLayout).order, hidden: (v as TableLayout).hidden };
+    }
+  } catch {
+    // Not JSON: a layout nobody can read is no layout.
+  }
+  return null;
+}
+
 /** A slot name is an attribute value; a row key could be anything. */
 const slotOf = (column: string, key: string) => `cell-${column}-${key}`.replace(/[^\w-]/g, '_');
 
@@ -121,6 +152,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     views: { attribute: false },
     filters: { attribute: false },
     query: { attribute: false },
+    layout: { attribute: false },
+    columnPicker: { type: Boolean, attribute: 'column-picker', reflect: true },
+    layoutKey: { attribute: 'layout-key' },
     label: {},
     empty: {},
     forbiddenText: { attribute: 'forbidden-text' },
@@ -139,6 +173,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   declare views: TableView[];
   declare filters: TableFilter[];
   declare query: Partial<TableQuery<S>> | undefined;
+  declare layout: TableLayout | undefined;
+  declare columnPicker: boolean;
+  declare layoutKey: string | undefined;
   declare label: string;
   declare empty: string;
   declare forbiddenText: string;
@@ -154,6 +191,10 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #resize = new ResizeObserver(() => this.#fit());
   #searchTimer: ReturnType<typeof setTimeout> | undefined;
   #mounted = new Map<string, Mounted<T>>();
+  /** The priority level `#fit` is dropping, so the picker can say why a column is not there. */
+  #drop: '2' | '3' | null = null;
+  #dragging: string | null = null;
+  #announce = '';
 
   constructor() {
     super();
@@ -166,6 +207,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.forbiddenText = 'You do not have access to this.';
     this.searchLabel = 'Search';
     this.selectable = false;
+    this.columnPicker = false;
     this.density = 'comfortable';
     this.paging = 'pages';
     this.pageSize = 25;
@@ -186,6 +228,32 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     for (const slot of [...this.#mounted.keys()]) this.#unmount(slot);
   }
 
+  /** The columns on screen: the given ones, arranged by the layout. */
+  get #shown(): Column<T, S>[] {
+    return arrange(this.columns, this.layout);
+  }
+
+  #stored(): TableLayout | null {
+    try {
+      return parseLayout(localStorage.getItem(LAYOUT_STORE + this.layoutKey));
+    } catch {
+      return null; // Storage refused (a private window, blocked site data): the declared layout.
+    }
+  }
+
+  #setLayout(next: TableLayout, said: string) {
+    this.layout = next;
+    this.#announce = said;
+    if (this.layoutKey) {
+      try {
+        localStorage.setItem(LAYOUT_STORE + this.layoutKey, JSON.stringify(next));
+      } catch {
+        // Not kept past this page, which is all a refused store can mean.
+      }
+    }
+    this.dispatchEvent(new CustomEvent('sub-layout-change', { detail: { layout: next }, bubbles: true, composed: true }));
+  }
+
   /** Read again with the current query — after the host created a row, say. */
   reload(): Promise<void> {
     return this.#model?.load() ?? Promise.resolve();
@@ -198,6 +266,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
 
   protected willUpdate(changed: PropertyValues): void {
     super.willUpdate(changed);
+    if (changed.has('layoutKey') && this.layoutKey && this.layout === undefined) {
+      this.layout = this.#stored() ?? undefined;
+    }
     if (changed.has('source') && this.source) {
       const view = this.query?.view ?? this.views[0]?.id ?? null;
       this.#model = new EntityTableModel<T, S>(this.source, (state) => (this.view = state), {
@@ -223,18 +294,24 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
    */
   #fit() {
     const scroll = this.renderRoot.querySelector<HTMLElement>('.scroll');
+    const before = this.#drop;
     this.removeAttribute('drop');
-    if (!scroll) return;
-    for (const level of ['3', '2']) {
-      if (scroll.scrollWidth <= scroll.clientWidth) return;
-      this.setAttribute('drop', level);
+    this.#drop = null;
+    if (scroll) {
+      for (const level of ['3', '2'] as const) {
+        if (scroll.scrollWidth <= scroll.clientWidth) break;
+        this.setAttribute('drop', level);
+        this.#drop = level;
+      }
     }
+    // The picker says which columns are out for lack of room; it settles in one more pass.
+    if (this.#drop !== before && this.columnPicker) this.requestUpdate();
   }
 
   /** Keep one light-DOM cell per (mounted column, row on screen), and no others. */
   #syncMounts() {
     const model = this.#model;
-    const mounting = this.columns.filter((c) => c.mount);
+    const mounting = this.#shown.filter((c) => c.mount);
     const rows = this.view?.phase === 'ready' ? this.view.rows : [];
     const wanted = new Set<string>();
     if (model) {
@@ -318,6 +395,61 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     .toolbar .grow {
       flex: 1 1 12rem;
       max-width: 22rem;
+    }
+    /* The Columns button keeps to the end of the toolbar, whatever is before it. */
+    .columns-button {
+      margin-inline-start: auto;
+    }
+    .picker::part(body) {
+      padding: var(--wa-space-xs);
+      min-width: 16rem;
+    }
+    .picker-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .picker-row {
+      display: grid;
+      grid-template-columns: 1rem 1fr auto auto;
+      align-items: center;
+      gap: var(--wa-space-2xs);
+      padding: var(--wa-space-3xs) var(--wa-space-2xs);
+      border-radius: var(--wa-border-radius-s);
+      font-size: var(--wa-font-size-s);
+    }
+    .picker-row.fixed {
+      grid-template-columns: 1rem 1fr auto;
+      border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+      border-radius: 0;
+      margin-bottom: var(--wa-space-3xs);
+      padding-bottom: var(--wa-space-2xs);
+    }
+    li.picker-row:hover {
+      background: var(--sub-table-row-hover);
+    }
+    .picker-row.dragging {
+      opacity: 0.45;
+    }
+    .grip {
+      color: var(--wa-color-text-quiet);
+      cursor: grab;
+      text-align: center;
+      user-select: none;
+    }
+    .hint {
+      color: var(--wa-color-text-quiet);
+      font-size: var(--wa-font-size-xs);
+    }
+    .moves {
+      display: inline-flex;
+    }
+    .picker-foot {
+      display: flex;
+      justify-content: flex-end;
+      border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+      margin-top: var(--wa-space-3xs);
+      padding-top: var(--wa-space-3xs);
     }
     .toolbar wa-select {
       width: 12rem;
@@ -509,9 +641,12 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     footer wa-select.size {
       width: 8.5rem;
     }
-    /* The label is there for a screen reader only; its part keeps a margin that would sit the
-       select lower than the buttons beside it. */
-    footer wa-select.size::part(form-control-label) {
+    /* Every labelled control in here labels itself for a screen reader only (.vh), and its
+       label part keeps a margin regardless, which makes it taller than a button of the same
+       size and sits it lower beside one — the toolbar's Columns button, the pager's buttons. */
+    wa-input::part(form-control-label),
+    wa-select::part(form-control-label),
+    wa-radio-group::part(form-control-label) {
       margin: 0;
     }
     footer {
@@ -571,7 +706,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     }
     const views = this.views.length > 1;
     const search = model.searchable;
-    if (!views && !search && this.filters.length === 0) return nothing;
+    if (!views && !search && this.filters.length === 0 && !this.columnPicker) return nothing;
     return html`<div part="toolbar" class="toolbar">
       ${views
         ? html`<wa-radio-group
@@ -612,7 +747,110 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
           ${f.options.map((o) => html`<wa-option value=${o.value}>${o.label}</wa-option>`)}
         </wa-select>`,
       )}
+      ${this.columnPicker ? this.#picker() : nothing}
     </div>`;
+  }
+
+  /**
+   * Show, hide and reorder the columns. Dragging is for a pointer; every row also has Move up
+   * and Move down, so a keyboard or a screen reader can do everything a drag can. The first
+   * column names the row and is listed as always shown.
+   */
+  #picker() {
+    const first = this.columns[0];
+    if (!first) return nothing;
+    const entries = layoutEntries(this.columns, this.layout);
+    const plain = JSON.stringify(arrange(this.columns, this.layout).map((c) => c.key)) ===
+      JSON.stringify(this.columns.map((c) => c.key));
+    const narrow = (c: Column<T, S>) =>
+      (this.#drop === '3' && c.priority === 3) || (this.#drop === '2' && (c.priority === 2 || c.priority === 3));
+    const move = (key: string, label: string, by: number) => {
+      const next = moveColumn(this.columns, this.layout, key, { by });
+      const at = layoutEntries(this.columns, next).findIndex((e) => e.column.key === key);
+      this.#setLayout(next, `${label} moved ${by < 0 ? 'up' : 'down'}, ${at + 1} of ${entries.length}.`);
+      // Focus follows the column. At an edge the button pressed is disabled now, and focus
+      // would fall to the page; the other one is where a keyboard wants to be.
+      void this.updateComplete.then(() => {
+        const moves = this.renderRoot.querySelectorAll<HTMLElement>(`li[data-key="${CSS.escape(key)}"] .moves wa-button`);
+        const pressed = moves[by < 0 ? 0 : 1];
+        (pressed && !pressed.hasAttribute('disabled') ? pressed : moves[by < 0 ? 1 : 0])?.focus();
+      });
+    };
+    return html`<wa-button id="columns" class="columns-button" size="s" appearance="outlined">Columns</wa-button>
+      <wa-popover for="columns" placement="bottom-end" class="picker">
+        <div class="picker-body" role="group" aria-label="Columns">
+          <div class="picker-row fixed">
+            <span class="grip" aria-hidden="true"></span>
+            <wa-checkbox size="s" checked disabled>${first.label}</wa-checkbox>
+            <span class="hint">Always shown</span>
+          </div>
+          <ol class="picker-list">
+            ${repeat(
+              entries,
+              (e) => e.column.key,
+              ({ column: c, shown }, i) => html`<li
+                class=${['picker-row', this.#dragging === c.key ? 'dragging' : ''].join(' ')}
+                data-key=${c.key}
+                draggable="true"
+                @dragstart=${(e: DragEvent) => {
+                  this.#dragging = c.key;
+                  e.dataTransfer?.setData('text/plain', c.key);
+                  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+                  this.requestUpdate();
+                }}
+                @dragover=${(e: DragEvent) => {
+                  if (this.#dragging && this.#dragging !== c.key) e.preventDefault();
+                }}
+                @drop=${(e: DragEvent) => {
+                  e.preventDefault();
+                  const key = this.#dragging;
+                  this.#dragging = null;
+                  if (key && key !== c.key) {
+                    const label = this.columns.find((x) => x.key === key)?.label ?? key;
+                    this.#setLayout(moveColumn(this.columns, this.layout, key, { to: c.key }), `${label} moved.`);
+                  } else this.requestUpdate();
+                }}
+                @dragend=${() => {
+                  this.#dragging = null;
+                  this.requestUpdate();
+                }}
+              >
+                <span class="grip" aria-hidden="true">⠿</span>
+                <wa-checkbox
+                  size="s"
+                  .checked=${shown}
+                  @change=${() =>
+                    this.#setLayout(toggleColumn(this.columns, this.layout, c.key), `${c.label} ${shown ? 'hidden' : 'shown'}.`)}
+                  >${c.label}</wa-checkbox
+                >
+                ${shown && narrow(c) ? html`<span class="hint">Hidden while narrow</span>` : html`<span></span>`}
+                <span class="moves">
+                  <wa-button size="xs" appearance="plain" ?disabled=${i === 0} @click=${() => move(c.key, c.label, -1)}
+                    >↑<span class="vh">Move ${c.label} up</span></wa-button
+                  >
+                  <wa-button
+                    size="xs"
+                    appearance="plain"
+                    ?disabled=${i === entries.length - 1}
+                    @click=${() => move(c.key, c.label, 1)}
+                    >↓<span class="vh">Move ${c.label} down</span></wa-button
+                  >
+                </span>
+              </li>`,
+            )}
+          </ol>
+          <div class="picker-foot">
+            <wa-button
+              size="s"
+              appearance="plain"
+              ?disabled=${plain && !this.layout?.hidden.length}
+              @click=${() => this.#setLayout(defaultLayout(this.columns), 'Columns reset.')}
+              >Reset to default</wa-button
+            >
+          </div>
+          <span class="vh" aria-live="polite">${this.#announce}</span>
+        </div>
+      </wa-popover>`;
   }
 
   #problem(state: TableState<T, S>) {
@@ -648,7 +886,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         <tbody>
           ${[0, 1, 2].map(
             () => html`<tr>
-              ${this.columns.map(
+              ${this.#shown.map(
                 (c, i) => html`<td class=${this.#cellClass(c, i)}><wa-skeleton effect="sheen"></wa-skeleton></td>`,
               )}
             </tr>`,
@@ -713,6 +951,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     const keys = state.rows.map(model.keyOf);
     const picked = keys.filter((k) => state.selected.has(k)).length;
     const now = new Date();
+    const columns = this.#shown;
     return html`<div class="scroll">
         <table part="table" class=${state.refreshing ? 'refreshing' : ''}>
           ${this.label ? html`<caption class="vh">${this.label}</caption>` : nothing}
@@ -729,7 +968,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
                     >
                   </th>`
                 : nothing}
-              ${this.columns.map((c, i) => this.#header(c, i, state))}
+              ${columns.map((c, i) => this.#header(c, i, state))}
               ${rowActions.length ? html`<th scope="col" class="actions"><span class="vh">Actions</span></th>` : nothing}
             </tr>
           </thead>
@@ -746,7 +985,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
                       >
                     </td>`
                   : nothing}
-                ${this.columns.map(
+                ${columns.map(
                   (c, i) => html`<td part="cell" class=${this.#cellClass(c, i)}>${this.#cell(c, row, key, state, now)}</td>`,
                 )}
                 ${rowActions.length ? html`<td class="actions">${this.#rowActions(rowActions, row, key, name, state)}</td>` : nothing}

@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   EntityTableModel,
   actionsIn,
+  arrange,
+  defaultLayout,
+  layoutEntries,
+  moveColumn,
+  toggleColumn,
   cellText,
   emptyReason,
   queryFromParams,
@@ -290,5 +295,45 @@ describe('queryToParams / queryFromParams', () => {
 
   it('refuses a filter named like one of the query\'s own parameters', () => {
     expect(() => queryToParams(base, { filters: { order: ['asc'] } })).toThrow(/cannot be called "order"/);
+  });
+});
+
+describe('column layout', () => {
+  const columns = ['name', 'created', 'id', 'owner'].map((key) => ({ key }));
+  const keys = (cs: { key: string }[]) => cs.map((c) => c.key);
+
+  it('shows the layout\'s order without its hidden columns, the first column always first and shown', () => {
+    const layout = { order: ['owner', 'name', 'id', 'created'], hidden: ['id', 'name'] };
+    expect(keys(arrange(columns, layout))).toEqual(['name', 'owner', 'created']);
+    expect(layoutEntries(columns, layout).map((e) => [e.column.key, e.shown])).toEqual([
+      ['owner', true],
+      ['id', false],
+      ['created', true],
+    ]);
+  });
+
+  it('puts a column added since the layout was saved at the end, and ignores one that is gone', () => {
+    expect(keys(arrange(columns, { order: ['name', 'id', 'gone', 'created'], hidden: ['gone'] }))).toEqual([
+      'name',
+      'id',
+      'created',
+      'owner',
+    ]);
+  });
+
+  it('toggles a column, and refuses to hide the first', () => {
+    const hidden = toggleColumn(columns, null, 'id');
+    expect(hidden).toEqual({ order: ['name', 'created', 'id', 'owner'], hidden: ['id'] });
+    expect(toggleColumn(columns, hidden, 'id').hidden).toEqual([]);
+    expect(toggleColumn(columns, hidden, 'name')).toEqual(hidden);
+  });
+
+  it('moves a column among the others, never past an edge or above the first', () => {
+    const up = moveColumn(columns, null, 'id', { by: -1 });
+    expect(up.order).toEqual(['name', 'id', 'created', 'owner']);
+    expect(moveColumn(columns, up, 'id', { by: -1 })).toEqual(up);
+    expect(moveColumn(columns, null, 'owner', { by: 1 }).order).toEqual(defaultLayout(columns).order);
+    expect(moveColumn(columns, null, 'owner', { to: 'created' }).order).toEqual(['name', 'owner', 'created', 'id']);
+    expect(moveColumn(columns, null, 'name', { by: 1 }).order).toEqual(defaultLayout(columns).order);
   });
 });

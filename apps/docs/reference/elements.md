@@ -107,6 +107,15 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 - **Events.** `sub-query-change` fires with `{ query }` whenever the person changes the view,
   sort, filters or search, so a screen can keep the query in its URL and hand it back through the
   `query` property. `sub-action-done` fires with `{ action, rows }` after an action succeeds.
+- **Choosing columns (opt-in).** `column-picker` adds a Columns button to the toolbar: a
+  checkbox per column to show or hide it, and a drag handle plus Move up / Move down buttons to
+  reorder it, so a keyboard or a screen reader can do anything a drag can. Reset to default
+  goes back to the declared columns. The first column names the row and is always shown. The
+  choice is a `layout` (`{ order, hidden }` by column key), kept apart from the query because it
+  changes nothing the server is asked. `layout-key` keeps it in this browser. A screen that
+  would rather keep it on the account listens for `sub-layout-change` and hands it back through
+  `layout`. A column the table drops for lack of room is listed as "Hidden while narrow", so
+  it does not seem to have vanished. Without `column-picker` the columns are exactly the ones given.
 - **The query in the URL.** The table never writes to the URL itself, because the page owns
   its routing and may show two tables. `queryToParams(query, spec)` and
   `queryFromParams(params, spec)` give every app the same parameters

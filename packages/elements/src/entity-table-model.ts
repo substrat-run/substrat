@@ -448,6 +448,84 @@ export class EntityTableModel<T, S extends string = string> {
 export const actionsIn = <T>(actions: readonly RowAction<T>[], view: string | null, bulk = false): RowAction<T>[] =>
   actions.filter((a) => (!a.views || view === null || a.views.includes(view)) && (!bulk || a.bulk));
 
+/**
+ * Which columns a person has chosen to see, and in what order, by column key. Kept apart from
+ * the query: it changes nothing the server is asked, so it is not in the URL either. The
+ * first declared column names the row — the link, the selection's label — so it stays first
+ * and shown whatever a layout says.
+ */
+export interface TableLayout {
+  order: readonly string[];
+  hidden: readonly string[];
+}
+
+/** The declared order with nothing hidden: what "Reset" goes back to. */
+export const defaultLayout = (columns: readonly { key: string }[]): TableLayout => ({
+  order: columns.map((c) => c.key),
+  hidden: [],
+});
+
+/**
+ * The columns a layout shows, in its order. A key the layout does not know — a column added
+ * since it was saved — keeps its declared place among the rest, at the end; a key it names
+ * that no longer exists is ignored.
+ */
+export function arrange<C extends { key: string }>(columns: readonly C[], layout: TableLayout | null | undefined): C[] {
+  if (!layout || columns.length === 0) return [...columns];
+  const [first, ...rest] = columns;
+  const rank = (key: string) => {
+    const i = layout.order.indexOf(key);
+    return i < 0 ? layout.order.length : i;
+  };
+  const ordered = rest
+    .map((c, declared) => ({ c, declared }))
+    .sort((a, b) => rank(a.c.key) - rank(b.c.key) || a.declared - b.declared)
+    .map(({ c }) => c);
+  return [first!, ...ordered.filter((c) => !layout.hidden.includes(c.key))];
+}
+
+/** Every column after the first, in the layout's order, with whether it is shown. */
+export function layoutEntries<C extends { key: string }>(
+  columns: readonly C[],
+  layout: TableLayout | null | undefined,
+): { column: C; shown: boolean }[] {
+  const all = arrange(columns, layout && { order: layout.order, hidden: [] }).slice(1);
+  return all.map((column) => ({ column, shown: !layout?.hidden.includes(column.key) }));
+}
+
+/** Show or hide one column. The first column cannot be hidden, and asking does nothing. */
+export function toggleColumn(columns: readonly { key: string }[], layout: TableLayout | null | undefined, key: string): TableLayout {
+  const base = normalised(columns, layout);
+  if (key === columns[0]?.key) return base;
+  const hidden = base.hidden.includes(key) ? base.hidden.filter((k) => k !== key) : [...base.hidden, key];
+  return { order: base.order, hidden };
+}
+
+/** Move a column `by` places among the others (−1 is up), or to the place of `to`. */
+export function moveColumn(
+  columns: readonly { key: string }[],
+  layout: TableLayout | null | undefined,
+  key: string,
+  by: { by: number } | { to: string },
+): TableLayout {
+  const base = normalised(columns, layout);
+  const [first, ...rest] = base.order;
+  const from = rest.indexOf(key);
+  if (from < 0) return base;
+  const target = 'by' in by ? from + by.by : rest.indexOf(by.to);
+  if (target < 0 || target >= rest.length || target === from) return base;
+  const moved = rest.filter((k) => k !== key);
+  moved.splice(target, 0, key);
+  return { order: [first!, ...moved], hidden: base.hidden };
+}
+
+/** A layout naming every current column exactly once, in the order `arrange` shows them. */
+function normalised(columns: readonly { key: string }[], layout: TableLayout | null | undefined): TableLayout {
+  const known = new Set(columns.map((c) => c.key));
+  const order = arrange(columns, layout && { order: layout.order, hidden: [] }).map((c) => c.key);
+  return { order, hidden: (layout?.hidden ?? []).filter((k) => known.has(k) && k !== columns[0]?.key) };
+}
+
 /** Why a ready table has no rows: nothing exists, or nothing matches what was asked. */
 export const emptyReason = (state: Pick<TableState<unknown>, 'mode' | 'query'>): 'empty' | 'no-matches' =>
   state.mode === 'search' || Object.keys(state.query.filters).length > 0 ? 'no-matches' : 'empty';

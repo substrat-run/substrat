@@ -63,6 +63,8 @@ declare module 'react' {
         density?: 'comfortable' | 'compact';
         paging?: 'pages' | 'more';
         'page-size'?: number;
+        'column-picker'?: boolean;
+        'layout-key'?: string;
       };
       'sub-user-menu': React.DetailedHTMLProps<React.HTMLAttributes<SubUserMenu>, SubUserMenu> & {
         show?: 'avatar' | 'name' | 'email';
@@ -198,12 +200,15 @@ export function ListsTable() {
         The same reads as the three views, drawn by <code>&lt;sub-entity-table&gt;</code>. Sorting, paging and search all
         ask the server: the sort by the two columns the model declares sortable, the pages through the keyset walk, the
         search through the list-name index. Tick lists to archive, trash or restore several at once. When the table runs
-        out of room, the Id column goes first, then Created.
+        out of room, the Id column goes first, then Created. Columns shows, hides and reorders them, and this browser
+        remembers what you chose.
       </p>
       <sub-entity-table
         ref={ref}
         label="Your lists"
         selectable
+        column-picker
+        layout-key="todo.lists"
         search-label="Find a list"
         page-size={LISTS_PAGE}
         empty="Nothing here yet. Create a list, or ask someone to share one with you."
@@ -258,6 +263,8 @@ export function ItemsTable({ listId }: { listId: string }) {
         ref={ref}
         label="Items"
         selectable
+        column-picker
+        layout-key="todo.items"
         density="compact"
         search-label="Search this list"
         empty="Nothing on this list yet."
