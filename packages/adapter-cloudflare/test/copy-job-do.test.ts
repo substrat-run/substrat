@@ -19,7 +19,9 @@ const poll = async <T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T
     if (ok(v)) return v;
     await new Promise((r) => setTimeout(r, 10));
   }
-  return read();
+  const v = await read();
+  if (ok(v)) return v;
+  throw new Error(`never came to pass; last read ${JSON.stringify(v)}`);
 };
 const until = (stub: Stub, ok: (j: TestCopyJob | null) => boolean) => poll(() => stub.get(), ok);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -65,7 +67,8 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
 
   it('the wait after a step that threw is the config\'s when it gives one', async () => {
     // 40 ms here, where the default (above) waits 30 s for an alarm the test has to run itself.
-    const stub = stubOf(env.COPY_JOB_SHORT, `threw-short-${crypto.randomUUID()}`);
+    // Kept 60 s once done, so the retried job is still there to read however late the test looks.
+    const stub = stubOf(env.COPY_JOB_RETRY, `threw-short-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1, throwUntil: Date.now() + 60_000 }));
     expect(await retryIn(stub)).toBeLessThanOrEqual(40);
     await patch(stub, 'job', { throwUntil: undefined });
@@ -202,7 +205,8 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
   it('a finished job is deleted once its retention has passed', async () => {
     const stub = stubOf(env.COPY_JOB_SHORT, `retain-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1 }));
-    expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done' });
+    // Only a finished job is ever deleted, so its going is the proof: its 30 ms of being done is too
+    // short a window to read on a loaded runner.
     expect(await until(stub, (j) => j === null)).toBeNull();
   });
 });
