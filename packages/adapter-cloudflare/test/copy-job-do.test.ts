@@ -13,15 +13,33 @@ type Stub = DurableObjectStub & CopyJobDo<TestCopyJob>;
 const stubOf = (ns: DurableObjectNamespace, name: string) => ns.get(ns.idFromName(name)) as unknown as Stub;
 const job = (over: Partial<TestCopyJob> = {}): TestCopyJob =>
   ({ status: 'copying', nextDelayMs: 0, updatedAt: Date.now(), steps: 0, target: 3, ...over });
-const until = async (stub: Stub, ok: (j: TestCopyJob | null) => boolean): Promise<TestCopyJob | null> => {
+const poll = async <T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T> => {
   for (let i = 0; i < 200; i++) {
-    const held = await stub.get();
-    if (ok(held)) return held;
+    const v = await read();
+    if (ok(v)) return v;
     await new Promise((r) => setTimeout(r, 10));
   }
-  return stub.get();
+  const v = await read();
+  if (ok(v)) return v;
+  throw new Error(`never came to pass; last read ${JSON.stringify(v)}`);
 };
+const until = (stub: Stub, ok: (j: TestCopyJob | null) => boolean) => poll(() => stub.get(), ok);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * How long until the alarm, once one is set in the future: the retry a step that threw scheduled. A
+ * start's alarm is set to now, so it is never in the future, and a job that throws never gets to done.
+ */
+const retryIn = (stub: Stub) => poll(
+  () => runInDurableObject(stub, async (_o, state) => ((await state.storage.getAlarm()) ?? 0) - Date.now()),
+  (ms) => ms > 0,
+);
+/**
+ * Change a stored record's fields: where a case needs a step to stop throwing or a hold to have run out,
+ * it says so here, rather than racing a few milliseconds of wall clock that a loaded runner overshoots.
+ */
+const patch = (stub: Stub, key: 'job' | 'mark', fields: object) => runInDurableObject(stub, async (_o, state) => {
+  await state.storage.put(key, { ...(await state.storage.get<object>(key)), ...fields });
+});
 
 describe('defineCopyJobDO (#2450 step 2)', () => {
   it('starts once, steps by alarm until done, and keeps the finished job', async () => {
@@ -37,19 +55,24 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
 
   it('a step that throws is retried later, and the job is not lost', async () => {
     const stub = stubOf(env.COPY_JOB_TEST, `throw-${crypto.randomUUID()}`);
-    await stub.start(job({ target: 1, throwUntil: Date.now() + 50 }));
-    await sleep(30);
+    await stub.start(job({ target: 1, throwUntil: Date.now() + 60_000 }));
+    // The first step threw: its retry is the default 30 s out, and the job is still there.
+    expect(await retryIn(stub)).toBeGreaterThan(20_000);
     expect(await stub.get()).toMatchObject({ status: 'copying', steps: 0 });
-    await sleep(40);
-    // The retry is scheduled 30 s out; run it now.
+    await patch(stub, 'job', { throwUntil: undefined });
+    // Run the retry now rather than wait for it.
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done', steps: 1 });
   });
 
   it('the wait after a step that threw is the config\'s when it gives one', async () => {
     // 40 ms here, where the default (above) waits 30 s for an alarm the test has to run itself.
-    const stub = stubOf(env.COPY_JOB_SHORT, `threw-short-${crypto.randomUUID()}`);
-    await stub.start(job({ target: 1, throwUntil: Date.now() + 50 }));
+    // Kept 60 s once done, so the retried job is still there to read however late the test looks.
+    const stub = stubOf(env.COPY_JOB_RETRY, `threw-short-${crypto.randomUUID()}`);
+    await stub.start(job({ target: 1, throwUntil: Date.now() + 60_000 }));
+    expect(await retryIn(stub)).toBeLessThanOrEqual(40);
+    await patch(stub, 'job', { throwUntil: undefined });
+    // The retry fires by itself.
     expect(await until(stub, (j) => j?.status !== 'copying')).toMatchObject({ status: 'done', steps: 1 });
   });
 
@@ -146,10 +169,10 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     const stub = stubOf(env.COPY_JOB_TEST, `claim-again-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1 }));
     await until(stub, (j) => j?.status === 'done');
-    expect(await stub.claim(20)).not.toBeNull();
-    expect(await stub.claim(20)).toBeNull();
-    await sleep(40);
-    // The holder died: the next call claims the job.
+    expect(await stub.claim(60_000)).not.toBeNull();
+    expect(await stub.claim(60_000)).toBeNull();
+    // The holder died and its hold has run out: the next call claims the job.
+    await patch(stub, 'job', { claimedUntil: Date.now() - 1 });
     expect(await stub.claim(60_000)).not.toBeNull();
 
     const other = stubOf(env.COPY_JOB_TEST, `claim-cancel-${crypto.randomUUID()}`);
@@ -166,14 +189,15 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     // An older order is answered the newer one, which stays; the same one is held again; a newer one wins.
     expect(await stub.markNewest('a', 60_000)).toBe('b');
     expect(await stub.markNewest('b', 60_000)).toBe('b');
-    expect(await stub.markNewest('c', 40)).toBe('c');
+    expect(await stub.markNewest('c', 60_000)).toBe('c');
     expect(await stub.markNewest('b', 60_000)).toBe('c');
     // Once its hold has run out, an older order is taken.
-    await sleep(60);
-    expect(await stub.markNewest('a', 40)).toBe('a');
+    await patch(stub, 'mark', { until: Date.now() - 1 });
+    expect(await stub.markNewest('a', 60_000)).toBe('a');
     expect(await keys()).toEqual(['mark']);
-    // Its alarm drops it once held; no job runs here.
-    for (let i = 0; i < 200 && (await keys()).length > 0; i++) await sleep(10);
+    // Its alarm drops it once its hold has run out; no job runs here.
+    await patch(stub, 'mark', { until: Date.now() - 1 });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await keys()).toEqual([]);
     expect(await stub.get()).toBeNull();
   });
@@ -181,7 +205,8 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
   it('a finished job is deleted once its retention has passed', async () => {
     const stub = stubOf(env.COPY_JOB_SHORT, `retain-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1 }));
-    expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done' });
+    // Only a finished job is ever deleted, so its going is the proof: its 30 ms of being done is too
+    // short a window to read on a loaded runner.
     expect(await until(stub, (j) => j === null)).toBeNull();
   });
 });

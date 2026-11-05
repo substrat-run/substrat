@@ -757,3 +757,5 @@ const testCopyStep = async (_env: unknown, job: TestCopyJob, step: CopyJobStep):
 export const CopyJobTestDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 60_000, advance: testCopyStep });
 /** The same job object with a retention, and a wait after a step that threw, short enough for a test to outlive. */
 export const CopyJobShortDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 30, advance: testCopyStep, threwRetryMs: () => 40 });
+/** The short wait after a step that threw, with the long retention: a retried job stays done for the test to read. */
+export const CopyJobRetryDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 60_000, advance: testCopyStep, threwRetryMs: () => 40 });

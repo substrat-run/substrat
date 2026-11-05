@@ -73,6 +73,7 @@
       // #2450 step 2: the background copy's job object, over a step the test controls.
       { "name": "COPY_JOB_TEST", "class_name": "CopyJobTestDO" },
       { "name": "COPY_JOB_SHORT", "class_name": "CopyJobShortDO" },
+      { "name": "COPY_JOB_RETRY", "class_name": "CopyJobRetryDO" },
       // #1898: a migration with a foreign key to the spine, and its twin — see test/worker.ts.
       { "name": "SPINE_PARENT_SCOPE", "class_name": "SpineParentScopeDO" },
       { "name": "OWN_PARENT_SCOPE", "class_name": "OwnParentScopeDO" },
@@ -178,6 +179,10 @@
     {
       "tag": "v20",
       "new_sqlite_classes": ["TickSweeperDO"]
+    },
+    {
+      "tag": "v21",
+      "new_sqlite_classes": ["CopyJobRetryDO"]
     }
   ]
 }
