@@ -2310,22 +2310,15 @@ export function defineScopeDO(
     }
 
     /**
-     * #2035: the ownerless reconcile's tenant record — the platform's word, as a lifecycle
-     * delivery's is (`setLifecycle`). Writes the receipt where that back-fill would (`backfills`),
-     * and answers whether this scope now serves `tenantId`: false for a foreign scope and for a DO
-     * nothing provisioned or loaded here, both left untouched.
+     * #2035: whether the ownerless reconcile may seat this scope for `tenantId` — it serves it, or
+     * the platform's word may record it where a lifecycle delivery's would (`backfills`). False for a
+     * foreign scope and for a DO nothing provisioned or loaded here. Read only, without migrating:
+     * the receipt is written by `seatTuples`, in the unit that applies the seat and the recorded-off
+     * positions, so no door admits the scope before they hold, and a failed seat records nothing.
      */
-    recordTenant(tenantId: TenantId): boolean {
+    seatsTenant(tenantId: TenantId): boolean {
       const { verdict } = this.tenantVerdict(tenantId);
-      if (verdict === 'recorded') return true;
-      if (!this.backfills(verdict)) return false;
-      // A carried-away copy takes no write at all, as in `setLifecycle`; the next projection records it.
-      if (!this.carriedAwayCopy) {
-        this.revision.transactionSync(() => {
-          this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
-        });
-      }
-      return true;
+      return verdict === 'recorded' || this.backfills(verdict);
     }
 
     /**
@@ -3052,6 +3045,10 @@ export function defineScopeDO(
     async seatTuples(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
       switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+      /** #2035: the ownerless reconcile's tenant, recorded LAST in this unit (`seatsTenant` judged
+       *  it first): the receipt opens every door, so it lands with the seat and the recorded-off
+       *  positions or not at all. */
+      recordTenant?: TenantId,
     ): Promise<SwitchedOff[]> {
       return this.queue.enqueue(() =>
         this.revision.transactionSync(() => {
@@ -3059,9 +3056,22 @@ export function defineScopeDO(
             const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
             this.sql.exec(seat.sql, ...seat.params);
           }
-          return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
+          const switched = switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
+          if (recordTenant !== undefined) this.recordTenantInUnit(recordTenant);
+          return switched;
         }),
       );
+    }
+
+    /** #2035: `seatTuples`' receipt write, judged again inside its unit, so a scope that turned
+     *  foreign since `seatsTenant` refuses the whole seat. */
+    private recordTenantInUnit(tenantId: TenantId): void {
+      const { verdict, held } = this.tenantVerdict(tenantId);
+      if (verdict === 'foreign') throw substratError('conflict', `seat ${foreignTenant(held, tenantId)}`);
+      // A carried-away copy takes no write at all, as in `setLifecycle`; the next projection records it.
+      if (verdict !== 'recorded' && !this.carriedAwayCopy) {
+        this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
+      }
     }
 
     /** A declared entity-grant shape's grant to one person on one entity (#2071), as ONE unit. */

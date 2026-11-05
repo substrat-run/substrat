@@ -1884,6 +1884,8 @@ interface ScopeStubRpc {
   seatTuples(
     tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
     switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+    /** #2035: the ownerless reconcile's tenant, recorded last in the same unit. */
+    recordTenant?: TenantId,
   ): Promise<SwitchedOff[]>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
@@ -2242,8 +2244,8 @@ interface ScopeStubRpc {
   ): Promise<ImportResult | SystemDoorMoved>;
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
-  /** #2035: record the platform's tenant where a lifecycle delivery would; whether the scope now serves it. */
-  recordTenant(tenantId: TenantId): Promise<boolean>;
+  /** #2035: whether the ownerless reconcile may seat this scope for the tenant — read only. */
+  seatsTenant(tenantId: TenantId): Promise<boolean>;
   /** #2541: the size, or null when this deployment does not hold the scope — held check and read in one call. */
   databaseSizeIfHeld(): Promise<number | null>;
   /** #2541: the attachment bytes, or null when this deployment does not hold the scope — one call, as the size is. */
@@ -12858,8 +12860,10 @@ export class CloudflareScopeHost implements ScopeHost {
    *
    * Only a scope that serves `tenantId` is seated (K-3): this never provisions a scope, and never
    * writes into another tenant's. Like a full reconcile, it records the platform's tenant on a scope
-   * that holds no receipt yet (`recordTenant`, #2035), so a push converges an ownerless vertical's
-   * scopes too — every door refuses a scope whose tenant nothing recorded.
+   * that holds no receipt yet (`seatsTenant`, #2035), so a push converges an ownerless vertical's
+   * scopes too — every door refuses a scope whose tenant nothing recorded. The receipt lands in the
+   * seat's own unit, after the recorded-off positions: until then every door still refuses the
+   * scope, and a seat that fails records nothing.
    */
   async seatScopeLocal(input: {
     tenantId: TenantId;
@@ -12872,13 +12876,14 @@ export class CloudflareScopeHost implements ScopeHost {
     switchFences?: Readonly<Record<string, string>>;
   }): Promise<{ switchedOff?: SwitchedOff[]; skippedConnectionGrants?: SkippedConnectionGrant[] }> {
     const stub = this.scopeStub(input.scopeId);
-    if (!(await stub.recordTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
+    if (!(await stub.seatsTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
     const carry = recordedOffFromWire(input);
     const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants); // #2430
     await this.migrateAndRecord(input.scopeId);
     const switchedOff = await stub.seatTuples(
       this.declaredSeatsLocal(input.scopeId, connections.seat),
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
+      input.tenantId,
     );
     return {
       ...(carry ? { switchedOff } : {}),

@@ -837,6 +837,31 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
         await doors.system!(t, s);
       });
 
+      it('the ownerless reconcile records the tenant only with its seat: a door during the seat is refused, and a seat that throws records nothing', async () => {
+        const s = await unrecordedScope();
+        const host = hostFor();
+        let reached!: () => void;
+        let release!: () => void;
+        const inWindow = new Promise<void>((r) => (reached = r));
+        const held = new Promise<void>((r) => (release = r));
+        // The step between the tenant check and the seat's unit, held open and then made to fail.
+        vi.spyOn(host as unknown as { migrateAndRecord: (s: ScopeId) => Promise<void> }, 'migrateAndRecord').mockImplementationOnce(async () => {
+          reached();
+          await held;
+          throw new Error('seat broke');
+        });
+        const seating = outcome(host.seatScopeLocal({ tenantId: t, scopeId: s }));
+        await inWindow;
+        // Both kinds of door: the role gate (`servesTenant`) and the scope door (`validateScopeAccess`).
+        expect(isPairRefusal(await outcome(hostFor().listScopeRoleHolders(t, s)), t, s)).toBe(true);
+        expect(isPairRefusal(await outcome(doors.system!(t, s)), t, s)).toBe(true);
+        release();
+        expect(String(((await seating) as Error).message)).toBe('seat broke');
+        expect(await receiptOf(s)).toBeNull();
+        expect(isPairRefusal(await outcome(hostFor().listScopeRoleHolders(t, s)), t, s)).toBe(true);
+        expect(isPairRefusal(await outcome(doors.system!(t, s)), t, s)).toBe(true);
+      });
+
       it('the ownerless reconcile records nothing in a DO never provisioned here, and seats nothing', async () => {
         const bare = scopeId.parse(ulid());
         expect(isPairRefusal(await outcome(hostFor().seatScopeLocal({ tenantId: t, scopeId: bare })), t, bare)).toBe(true);
