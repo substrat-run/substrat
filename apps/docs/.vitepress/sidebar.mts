@@ -248,6 +248,7 @@ export function guideSidebar() {
         { text: '@substrat-run/attachment-extractors', link: '/reference/attachment-extractors' },
         { text: '@substrat-run/vertical-host', link: '/reference/vertical-host' },
         { text: '@substrat-run/vertical-auth', link: '/reference/vertical-auth' },
+        { text: '@substrat-run/elements', link: '/reference/elements' },
         { text: '@substrat-run/control-plane-api', link: '/reference/control-plane-api' },
         { text: '@substrat-run/control-plane-client', link: '/reference/control-plane-client' },
         { text: '@substrat-run/contract-tests', link: '/reference/contract-tests' },
