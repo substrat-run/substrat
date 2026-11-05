@@ -186,7 +186,7 @@ async function renderPermissions(
 	const path = `${verticalDir}/${PERMISSIONS_ARTIFACT}`;
 	const before = (await ws.exists(path)) ? await ws.readFile(path) : null;
 	const inputsMoved = written.some(
-		(f) => f === 'package.json' || f.endsWith('/package.json') || /(^|\/)src\//.test(f),
+		(f) => f === 'package.json' || f.endsWith('/package.json') || /(^|\/)(src\/|spec\/model\.ts$)/.test(f),
 	);
 	if (before !== null && !inputsMoved) return 'unchanged';
 	const r = await ws.exec(`pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${JSON.stringify(verticalDir)}`);

@@ -226,7 +226,9 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 					? null
 					: 'src/module.ts exists but package.json declares no substrat.permissions, so no permission ' +
 						'review can render. Add "substrat": { "slug": "<slug>", "name": "<Name>", "permissions": ' +
-						'"src/provision.ts" } — the file exporting MODULES and ROLES. The studio renders ' +
+						'"src/provision.ts" } — the file exporting MODULES, ROLES and ' +
+						'`permissions = definePermissions({ modules: MODULES, roles: ROLES, … })` (from ' +
+						'@substrat-run/contracts), which the gate reads. The studio renders ' +
 						'PERMISSIONS.md from it after the turn.',
 			note: 'no src/module.ts yet — no permission surface owed',
 			exitConvention: 'substrat',

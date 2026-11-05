@@ -48,6 +48,8 @@ export interface ClaudeCodeGeneratorOptions {
 	readonly skills?: readonly string[];
 	/** Claude Code's `maxTurns`: model round-trips in one pass, the step ceiling. */
 	readonly maxSteps?: number;
+	/** The runaway ceiling, as `AiSdkGenerator`'s: uncached-equivalent tokens spent in one pass. */
+	readonly maxTokens?: number;
 	readonly denyWrite?: (path: string) => string | null;
 }
 
@@ -161,6 +163,24 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 							cachedInputTokens: u.cache_read_input_tokens ?? 0,
 							cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
 						});
+						// Same sum as uncachedEquivalent: input - cache reads + output.
+						const spent = stepUsage.reduce(
+							(n, s) => n + Math.max(0, s.inputTokens - (s.cachedInputTokens ?? 0)) + s.outputTokens,
+							0,
+						);
+						const budget = this.#opts.maxTokens;
+						if (budget && spent >= budget) {
+							truncated = true;
+							emit({
+								type: 'truncated',
+								steps,
+								maxSteps: this.#opts.maxSteps ?? 40,
+								reason: 'tokens',
+								spent,
+								budget,
+							});
+							abort.abort();
+						}
 					}
 				}
 				if (msg.type === 'result') {

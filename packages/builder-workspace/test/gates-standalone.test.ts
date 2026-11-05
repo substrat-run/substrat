@@ -98,6 +98,7 @@ describe('standaloneGates — when each gate applies', () => {
 		const r = await runGate(w, gate('permissions'), PROJECT);
 		expect(r.status).toBe('failed');
 		expect(r.output).toContain('"permissions": "src/provision.ts"');
+		expect(r.output).toContain('permissions = definePermissions({ modules: MODULES, roles: ROLES');
 		// Refused before the tool: nothing ran that could report green.
 		expect(w.ran).toEqual([]);
 		await w.dispose();

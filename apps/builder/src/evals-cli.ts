@@ -219,6 +219,7 @@ async function main(): Promise<number> {
 				cwd: join(ws.root, currentProjectDir),
 				skills: skillsForPhase(skills.byFile, phase, lane),
 				maxSteps: args.maxSteps,
+				maxTokens: args.maxTokens,
 				denyWrite: writeGuardFor(phase, lane),
 			});
 		}
