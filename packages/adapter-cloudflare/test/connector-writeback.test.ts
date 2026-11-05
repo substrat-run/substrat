@@ -94,6 +94,17 @@ describe('connector write-back (#574)', () => {
       expect(JSON.parse(String(q.rows[0]![0]))).toEqual({ connection: conn });
     });
 
+    it('reads a delivered grant back with no control plane to ask (#2892)', async () => {
+      // A landing pass reads this before it grants; it threw on every CP-less host, so no
+      // declared landing on a hosted vertical was ever granted.
+      const own = connectionIdOf.parse(ulid());
+      const host = hostFor();
+      await host.connectorGrantLocal(own, s, USE);
+      expect((await host.connectionGrantsInScope(t, s)).filter((g) => g.connectionId === own)).toEqual([
+        { connectionId: own, permission: USE },
+      ]);
+    });
+
     it('delivers grants WITH provisioning (#592) — a scope provisioned after the grant invokes at once', async () => {
       // The acceptance property: no `connectorGrantLocal` hand-write for this scope —
       // the grant rides `provisionScopeLocal` exactly as entitlements/identity links do,
