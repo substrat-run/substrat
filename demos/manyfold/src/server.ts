@@ -112,7 +112,7 @@ app.get('/api/me', async (c) => {
   const who = (await (await host.getScope(caller.principal, world.t1, scope)).invoke('manyfold/whoami', undefined)) as {
     can: Record<string, boolean>;
   };
-  return c.json({ principal: caller.principal, display: caller.display, site: scope, can: who.can });
+  return c.json({ key: caller.principal, display: caller.display, site: scope, can: who.can });
 });
 
 // ── Members & invites (the post-setup join path — admin-only) ────────────────

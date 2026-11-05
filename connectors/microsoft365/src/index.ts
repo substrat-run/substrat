@@ -14,7 +14,10 @@
  * Applications, scoped to the sender mailboxes, and the right to a site is granted per site.
  * So the app can send as the addresses the tenant chose and no other, cannot read any mailbox,
  * and reaches no site it was not given. A send Exchange refuses is reported as outside the
- * scope the tenant granted.
+ * scope the tenant granted. The one widening is the tenant's choice: a message with more than
+ * about 2.5 MB of attachments is sent as a draft, which needs `Application Mail.ReadWrite` in the
+ * same Exchange scope, and that grant lets the app read those sender mailboxes too. Without it,
+ * such a message is refused, saying so; smaller messages need only the send right.
  *
  * **The keypair is the platform's, one per connection.** With no client secret, the platform
  * generates a keypair and a self-signed certificate when the connection is created
@@ -324,31 +327,15 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
     send: async (host, connection, mail) => {
       const conn = await openMicrosoft365Connection(host.admin, options, connection);
       const client = await signedInGraph(conn, options);
-      let result;
-      try {
-        result = await sendMail(client, mail);
-      } catch (e) {
-        // Exchange's RBAC for Applications scope is the tenant's fence; say that, not "403".
-        // Reworded, never re-typed: the status and `Retry-After` are what the platform's retry
-        // reads (#2102), so the new error keeps both.
-        if (e instanceof GraphError && e.status === 403) {
-          throw new GraphError(
-            403,
-            e.code,
-            `Exchange refused to send as '${mail.from.email}' — the address is outside the scope the tenant ` +
-              `granted this app (RBAC for Applications), or the grant has not taken effect yet`,
-          );
-        }
-        if (e instanceof GraphError && e.status === 429) {
-          throw new GraphError(
-            429,
-            e.code,
-            'Exchange is throttling this mailbox (about 30 messages a minute) — try again shortly',
-            e.retryAfter,
-          );
-        }
-        throw e;
-      }
+      const result = await sendMail(client, mail, {
+        // A draft of a large message that failed and could not be deleted stays in the sender's
+        // Drafts folder; say so, with nothing of the message in the line.
+        onDraftLeft: (e) =>
+          console.warn('microsoft365.draft-left', {
+            connectionId: conn.id,
+            ...(e instanceof GraphError ? { status: e.status } : {}),
+          }),
+      });
       // #2343: the address has now sent. Best-effort: the message is already with Microsoft, and
       // a throw here would read as a failed send that the relay retries into a second copy.
       await recordMailVerified(host.admin, conn.id, mail.from.email, nowOf(options)).catch((e: unknown) =>

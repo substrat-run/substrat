@@ -67,13 +67,6 @@ A closed window is not a lost desk: the seat stays pending (`needsSetup` keeps s
 `ownerSeat` says *why* — open, closed, or already claimed) until a claim binds it. A re-provision
 keeps the window it has and never re-opens a claimed seat. Access is invite-only afterwards.
 
-`mountSession` (`@substrat-run/vertical-auth/session-route`) is the read every screen makes
-first, `GET /api/me`. The vertical says how a request resolves to a principal; the route
-answers `{ principal, display, email }` plus any fields of the vertical's own,
-`{ status: 'needs-setup', firstSignInOpen }` while the owner seat is unclaimed, or 401. It
-also reports the login's place to the identity pool. That body is what
-`@substrat-run/elements`' account menu reads.
-
 Also exported: `resolveCookieDomain`, which refuses to set a session cookie on a public suffix
 (guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)) or anywhere
 in the shared platform hostname space. `instanceAuthFor` reads the trusted

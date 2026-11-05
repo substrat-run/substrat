@@ -49,12 +49,12 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
+  observePlace,
   placesReporter,
   reportScopeMembers,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
-import { mountSession } from '@substrat-run/vertical-auth/session-route';
 import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 
 /** The scope-DO class = the app binary: kernel + protocol + Meridian, bundled. */
@@ -396,24 +396,51 @@ async function requireAdmin(c: { env: Env; req: { raw: Request } }) {
 }
 
 /**
- * Who am I — vertical-auth's session route, in the shape the SPA centres on: `{ principal,
- * display, email, role, country, employeeId }`, or `needs-setup` while the owner seat is
- * unclaimed. The principal comes from the auth seam; the role hint + linked employee come from
- * the scope itself (`hr/whoami`), so a real hosted owner (holding `hr-admin`) lands on the admin
- * surface and an employee on their own work — the same shape the dev server serves.
+ * Who am I, in the shape the SPA centres on: `{ key, display, role, country, employeeId }`.
+ * The principal comes from the auth seam; the role hint + linked employee come from the
+ * scope itself (`hr/whoami`), so a real hosted owner (holding `hr-admin`) lands on the
+ * admin surface and an employee on their own work — the same shape the dev server serves.
  */
-mountSession(app, {
-  caller: async (c) => ({ node: nodeFor(c.req.raw, c.env), ...(await callerFor(c.env, c.req.raw)) }),
-  directory: identityDo,
-  async extra(c, { node, principal }) {
-    const scope = await hostFor(c.env).getScope(principalId.parse(principal), node.tenantId, node.scopeId);
-    const who = (await scope.invoke('hr/whoami', undefined)) as {
-      role: string;
-      country: 'SE' | 'ES';
-      employeeId: string | null;
-    };
-    return { role: who.role, country: who.country, employeeId: who.employeeId };
-  },
+app.get('/api/me', async (c) => {
+  const node = nodeFor(c.req.raw, c.env);
+  // Resolve the caller via the configured provider (Better-Auth-DO / OIDC), mapping the
+  // subject → principal (claiming the owner seat on first login).
+  const { identity, subject, principal } = await callerFor(c.env, c.req.raw);
+  // Tell the identity pool what this resolve established (#1670), after the response: the
+  // login's places list, on the issuer's own origin, shows this scope while the login is bound
+  // here and stops once it is not. Only the router-asserted scope and the caller's own `sub`
+  // go out, once per login per isolate, and it never throws.
+  if (subject) {
+    c.executionCtx.waitUntil(
+      observePlace(placesReporter({ identity }), node.scopeId, subject.sub, principal),
+    );
+  }
+  if (!principal) {
+    // No principal yet. If the owner seat is unclaimed, this instance is awaiting first-run
+    // setup — tell the SPA to show "create the admin account", not a bare sign-in.
+    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the first-sign-in
+    // window is open; by a claim link from the dashboard once it has closed. The SPA's copy
+    // depends on which, and it must not offer a sign-in that binds nobody.
+    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
+    return seat.state === 'unclaimed'
+      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
+      : c.json({ error: 'unauthorized' }, 401);
+  }
+  const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
+  const who = (await scope.invoke('hr/whoami', undefined)) as {
+    role: string;
+    country: 'SE' | 'ES';
+    employeeId: string | null;
+  };
+  // The display name the issuer asserted, which keeps the SPA's shape total whether or not the
+  // issuer sends `name`.
+  return c.json({
+    key: principal,
+    display: subject?.name ?? subject?.email ?? 'You',
+    role: who.role,
+    country: who.country,
+    employeeId: who.employeeId,
+  });
 });
 
 /**

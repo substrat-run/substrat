@@ -48,24 +48,14 @@ OBJECT_BINDING = "SUBSTRAT_STORE"
 RESERVED_BINDING_PREFIX = "SUBSTRAT_STORE"
 
 
-def _unwrapped(value, attribute):
-    """The JavaScript object under the SDK's wrapper, or the value itself when nothing wraps it.
-
-    The SDK pywrangler installs wraps env and ctx, with no public unwrap. An upload does not ship that
-    SDK, and the runtime's own may hand either over unwrapped, so the private attribute can be absent
-    on a deployed object (a deployed ctx has no `_ctx`). Every unwrap in this module goes through here.
-    """
-    return getattr(value, attribute, value)
-
-
 def _raw_env(env):
-    """The JavaScript env the runtime handed over."""
-    return _unwrapped(env, "_env")
+    """The JavaScript env the runtime handed over. The SDK wraps it, and has no public unwrap."""
+    return env._env
 
 
 def _raw_storage(ctx):
-    """The object's JavaScript storage."""
-    return _unwrapped(ctx, "_ctx").storage
+    """The object's JavaScript storage. The SDK wraps ctx and its storage, and has no public unwrap."""
+    return ctx._ctx.storage
 
 
 def _driver_env(env):

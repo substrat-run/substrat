@@ -67,15 +67,6 @@ describe('the Python entry, as shipped', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).not.toContain('\r');
   });
 
-  it('unwraps env and ctx only through one helper that tolerates no wrapper: an upload ships no SDK, so a deployed ctx has no _ctx', () => {
-    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('return getattr(value, attribute, value)');
-    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('_unwrapped(env, "_env")');
-    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('_unwrapped(ctx, "_ctx")');
-    // No other spelling reaches a wrapper's private attribute: not `x._ctx`, nor a getattr of one.
-    expect(STORE_ENTRY_PYTHON_SOURCE).not.toMatch(/\._(ctx|env)\b/);
-    expect(STORE_ENTRY_PYTHON_SOURCE).not.toMatch(/getattr\([^)]*["']_(ctx|env)["']/);
-  });
-
   it('parses no envelope of its own', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).not.toMatch(/split\("\\n"\)|b64decode|hashlib|importKey/);
   });

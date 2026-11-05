@@ -95,9 +95,8 @@ export interface InvitesResult {
 // -- shapes (subset the app renders) ----------------------------------------
 
 export interface Me {
-  principal: string;
+  key: string;
   display: string;
-  email?: string;
   role: string;
   country: 'SE' | 'ES';
   employeeId: string | null;

@@ -200,12 +200,6 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   signed-in subject, with one refusal for every failure. A closed window is not a lost instance:
   the seat stays pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a
   claim binds it.
-- `mountSession`, from `@substrat-run/vertical-auth/session-route`, is `GET /api/me`, the read
-  every screen makes first. The vertical supplies how a request resolves to a principal and any
-  fields of its own. The route answers `{ principal, display, email }` with those fields beside
-  it, `{ status: 'needs-setup', firstSignInOpen }` while the owner seat is unclaimed, or 401, and
-  reports the login's place to the identity pool. `display` is the issuer's name, else the email,
-  else "You".
 - `transferOwner(scopeId, from, to)` — the owner hand-over. Moves the owner of record, which
   `setPendingOwner` never does after its first write, and which a reconcile re-seats when a
   scope is locked out. It refuses, changing nothing, when the seat is still unclaimed, `from`

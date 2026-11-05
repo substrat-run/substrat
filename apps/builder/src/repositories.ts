@@ -1,6 +1,6 @@
 import type { ProjectRepository } from '@substrat-run/contracts';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
-import { CommandFailedError, SourceBuildError } from './problem.js';
+import { SourceBuildError } from './problem.js';
 
 /** Binding slice from Cloudflare's Artifacts Workers API. No provider type leaks into projects. */
 export interface ArtifactRepositories {
@@ -58,7 +58,7 @@ export async function repositoryGit(sb: SandboxLike, access: RepositoryAccess, a
 
 export async function checkedExec(sb: SandboxLike, command: string, cwd?: string): Promise<string> {
   const r = await sb.exec(command, cwd ? { cwd } : undefined);
-  if (r.exitCode !== 0) throw new CommandFailedError(`command failed: ${(r.stderr || r.stdout).slice(-6000)}`);
+  if (r.exitCode !== 0) throw new SourceBuildError(`command failed: ${(r.stderr || r.stdout).slice(-6000)}`);
   return r.stdout.trim();
 }
 

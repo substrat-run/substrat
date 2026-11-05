@@ -75,13 +75,13 @@ import {
   authorizationServersOf,
   instanceAuthFor,
   mintOwnerClaimLink,
+  observePlace,
   placesReporter,
   reportScopeMembers,
   type AuthProvider,
   type InstanceAuth,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
-import { mountSession } from '@substrat-run/vertical-auth/session-route';
 import { mountUnbindRoute } from '@substrat-run/vertical-auth/invite-routes';
 import { API_DOCUMENT } from './api.js';
 import { TICKET0_ENV, ticket0Manifest } from './manifest.js';
@@ -521,24 +521,45 @@ app.on(['GET', 'POST'], '/api/auth/*', async (c) =>
 );
 
 /**
- * Who am I — vertical-auth's session route: `{ principal, display, email }`, the shape
- * `app/src/api.ts` centres on, or the first-run signal. A desk whose owner seat is unclaimed
- * answers `needs-setup` rather than a bare 401, so the SPA can say "sign in to claim this desk"
- * instead of showing a login that looks like it failed. The route also tells the identity pool
- * what this resolve established (#1670).
+ * Who am I — `{ principal, display }`, the shape `app/src/api.ts` centres on, plus the
+ * first-run signal. A desk whose owner seat is unclaimed answers `needs-setup` rather
+ * than a bare 401, so the SPA can say "sign in to claim this desk" instead of showing
+ * a login that looks like it failed.
  */
-mountSession(app, {
-  async caller(c) {
-    const node = nodeFor(c.req.raw, c.env);
-    // One provider, resolved once. Going through `principalFor` here would build a second one —
-    // and building a provider reads the delivered config, so the cost would be a whole extra
-    // identity-DO round trip on the request every screen makes first.
-    const instance = await instanceConfig(c.env, node);
-    const subject = await providerOf(instance).resolve(c.req.raw.headers);
-    const principal = subject ? await identityDo(c.env, node).resolvePrincipal(node.scopeId, subject.sub) : null;
-    return { node, subject, principal: principal ? principalId.parse(principal) : null, identity: instance.identity };
-  },
-  directory: identityDo,
+app.get('/api/me', async (c) => {
+  const node = nodeFor(c.req.raw, c.env);
+  // One provider, resolved once. Going through `principalFor` here would build a second
+  // one for the display name — and building a provider reads the delivered config, so
+  // the cost of the convenience is a whole extra identity-DO round trip on the request
+  // every screen makes first.
+  const instance = await instanceConfig(c.env, node);
+  const subject = await providerOf(instance).resolve(c.req.raw.headers);
+  const principal = subject
+    ? await identityDo(c.env, node).resolvePrincipal(node.scopeId, subject.sub)
+    : null;
+  // Tell the identity pool what this resolve established (#1670), after the response: a
+  // login's places list, on the issuer's own origin, shows this desk while the login is bound
+  // here and stops once it is not. Every screen asks `/api/me` first, so this is the one line
+  // that catches every way a binding is made — the owner's first sign-in, a claim link, an
+  // accepted invite. Once per login per isolate, and it never throws.
+  if (subject) {
+    c.executionCtx.waitUntil(
+      observePlace(placesReporter({ identity: instance.identity }), node.scopeId, subject.sub, principal),
+    );
+  }
+  if (!principal) {
+    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the
+    // first-sign-in window is open; by a claim link from the dashboard once it has closed.
+    // The SPA's copy depends on which, and it must not offer a sign-in that binds nobody.
+    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
+    return seat.state === 'unclaimed'
+      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
+      : c.json({ error: 'unauthorized' }, 401);
+  }
+  return c.json({
+    principal: principalId.parse(principal),
+    display: subject?.name ?? subject?.email ?? 'You',
+  });
 });
 
 /**

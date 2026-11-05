@@ -70,7 +70,7 @@ export default function App() {
   // Admin — their setup home — rather than Manage; everyone else lands on their work.
   useEffect(() => {
     if (me) setSection(hasMyWork ? 'work' : isAdmin ? 'admin' : 'manage');
-  }, [me?.principal, hasMyWork, isAdmin]);
+  }, [me?.key, hasMyWork, isAdmin]);
 
   useEffect(() => {
     const root = document.documentElement;

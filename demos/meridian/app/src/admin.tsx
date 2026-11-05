@@ -235,7 +235,7 @@ export function AdminPeople({ d, reload, toast }: AdminProps) {
         name: name.trim(),
         ...(email ? { email: email.trim() } : {}),
         startedAt,
-        ...(linkMe && canLinkMe ? { principalRef: d.me.principal } : {}),
+        ...(linkMe && canLinkMe ? { principalRef: d.me.key } : {}),
       });
       setNumber(''); setName(''); setEmail('');
       // Registering yourself flips on the "My work" surface (whoami now resolves your

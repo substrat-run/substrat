@@ -34,7 +34,8 @@ setup below as written from Microsoft's documentation, not from a run.
 Nothing here asks for access to the whole organisation:
 
 - **Mail**: the app may send only as the addresses you choose, granted in Exchange Online with
-  RBAC for Applications. It cannot read anyone's inbox.
+  RBAC for Applications. It cannot read anyone's inbox, unless you also grant it
+  `Mail.ReadWrite` on those sender mailboxes for large attachments (step 2).
 - **Documents**: the app holds `Sites.Selected` and reaches only the SharePoint site you grant it.
 - **No user signs in** and no password is shared. Disabling the app under **Enterprise
   applications** stops everything at once.
@@ -81,6 +82,17 @@ scope once it has taken effect:
 Test-ServicePrincipalAuthorization -Identity <client-id> -Resource noreply@your-domain.com   # InScope = True
 Test-ServicePrincipalAuthorization -Identity <client-id> -Resource someone.else@your-domain.com  # InScope = False
 ```
+
+To send attachments over about 2.5 MB in total, add a second role in the same scope:
+
+```powershell
+New-ManagementRoleAssignment -App <client-id> -Role "Application Mail.ReadWrite" `
+  -CustomResourceScope "Substrat-senders"
+```
+
+This widens what the app may do: with it, the app can read and change the mail in those sender
+mailboxes (and only those), not just send from them. Leave it out if your messages carry small
+attachments or none.
 
 Exchange allows about 30 messages a minute and 10 000 recipients a day per mailbox — enough for
 notifications and documents, not for bulk mail.
@@ -214,9 +226,11 @@ The connection also needs write access to the attachment target that stores the 
 
 ## Limits
 
-- **Attachments up to about 2.5 MB in total per message.** Graph's `sendMail` takes attachments
-  inline; larger files need a draft and an upload session, which needs `Mail.ReadWrite` on the
-  mailbox — the permission this setup deliberately leaves out.
+- **Attachments over about 2.5 MB in total need one more grant.** Up to that a message is sent in
+  one request with the send right alone. A larger one (up to the 25 MB the platform relays, and
+  your mailbox's own maximum send size) is sent as a draft, with each large file uploaded in
+  pieces, and creating a draft needs `Application Mail.ReadWrite` in the same scope (step 2 of
+  the setup). Without it, such a message is refused, saying so.
 - **HTML body only.** A Graph message has one body; the plain-text part is not sent.
 - **Custom headers** must start with `X-`; others are left out.
 - **A failed send can be retried.** When Exchange throttles the mailbox (about 30 messages a

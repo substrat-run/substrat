@@ -34,7 +34,7 @@ export function createApp({ host, login, env }: AppOptions): Hono {
   app.get('/api/me', async (c) => {
     const caller = await login.caller(c.req.raw.headers);
     if (!caller) return c.json({ error: 'unauthorized' }, 401);
-    return c.json({ principal: caller.principal, display: caller.display, ...(caller.email ? { email: caller.email } : {}) });
+    return c.json({ principal: caller.principal, display: caller.display });
   });
 
   // The document this vertical's own operations describe, served from its own
