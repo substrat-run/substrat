@@ -9,7 +9,7 @@ const read = vi.hoisted(() => vi.fn());
 const readUsage = vi.hoisted(() => vi.fn());
 vi.mock('../src/lib/api', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/lib/api')>(),
-  teamApi: () => ({ listEntitlements: read, readMeteredUsage: readUsage }),
+  teamApi: () => ({ listEntitlements: read, readMeteredUsage: async () => ({ days: [], ...await readUsage() }) }),
 }));
 
 let container: HTMLDivElement;
@@ -239,4 +239,19 @@ it('shows usage unavailable on read failure and recognizes a handwritten 403 ref
   expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
   expect(container.textContent).not.toContain('Usage is unavailable');
   expect(container.textContent).not.toContain('private-grant');
+});
+
+it('draws a day with no reading as a gap, and never as a zero-height bar', async () => {
+  read.mockResolvedValue([]);
+  const day = (date: string, requests: number | null) => ({
+    day: date, requests, requestsByVertical: requests === null ? [] : [{ vertical: 'app', value: requests }],
+    modelCalls: 0, tokens: 0, tokensByVertical: [], storedBytes: null, storedScopes: 0,
+  });
+  const usage = await readUsage();
+  readUsage.mockResolvedValue({ ...usage, days: [day('2026-10-27', 40), day('2026-10-28', null)] });
+  await render();
+  expect(container.querySelector('[data-gap="2026-10-28"]')).not.toBeNull();
+  expect(container.querySelector('[data-gap="2026-10-27"]')).toBeNull();
+  expect(container.querySelector('[title="2026-10-28: no reading"]')).not.toBeNull();
+  expect(container.textContent).toContain('Hatched: no reading for that day');
 });

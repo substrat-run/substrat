@@ -8,7 +8,7 @@ import { markerKey, releaseKey, type OverlayKey } from '../lib/overlay-prefs';
  * chart that invented its own colours would be the one place in the product where a
  * colour means nothing.
  */
-const LINE_COLORS = [
+export const LINE_COLORS = [
   'var(--layer-vertical)',
   'var(--layer-engine)',
   'var(--layer-kernel)',

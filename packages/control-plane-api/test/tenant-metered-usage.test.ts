@@ -68,6 +68,14 @@ it('projects stored usage with coverage and age, with no price or person or scop
   const body = await response.json();
   expect(body.storage).toMatchObject({ bytes: 65_536, sampled: 1, total: 1, estimated: false });
   expect(body.requests).toMatchObject({ requests: 7, estimated: true, coveredDays: 1 });
+  expect(body.days).toHaveLength(30);
+  expect(body.days.at(-1)).toEqual({
+    day, requests: 7, requestsByVertical: [{ vertical: 'app', value: 7 }],
+    modelCalls: 1, tokens: 14, tokensByVertical: [{ vertical: 'app', value: 14 }],
+    storedBytes: 65_536, storedScopes: 1,
+  });
+  // No rollup read and no storage sample that day: unknown, while the ledger's empty day is a real 0.
+  expect(body.days[0]).toMatchObject({ requests: null, modelCalls: 0, tokens: 0, storedBytes: null });
   expect(body.models).toMatchObject({ state: 'complete', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false });
   expect(body.models.byVerticalModel).toContainEqual(expect.objectContaining({ vertical: 'app', model: 'provider:model', calls: 1, reportedCalls: 1 }));
   expect(body.retention).toMatchObject({ storageMonths: 13, modelDays: 400, requestMonths: null });

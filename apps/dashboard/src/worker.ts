@@ -5626,6 +5626,13 @@ const routeHandlers = {
         })),
         breakdownTruncated: raw.models.breakdownTruncated,
       },
+      // A plane deployed before this field answers without it; the chart then says it has no days.
+      days: (raw.days ?? []).map((row) => ({
+        day: row.day, requests: row.requests, modelCalls: row.modelCalls, tokens: row.tokens,
+        requestsByVertical: row.requestsByVertical.map((share) => ({ vertical: share.vertical, value: share.value })),
+        tokensByVertical: row.tokensByVertical.map((share) => ({ vertical: share.vertical, value: share.value })),
+        storedBytes: row.storedBytes, storedScopes: row.storedScopes,
+      })),
     };
   },
   'dashboard/get-app-concept': async (ctx, { scopeId: requested, section, versionId: expected, offset }) => {
