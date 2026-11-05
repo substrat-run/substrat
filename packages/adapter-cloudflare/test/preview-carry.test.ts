@@ -118,7 +118,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           }
         : {}),
       restoreScope: (
-        _t: unknown,
+        tenant: TenantId,
         sid: ScopeId,
         tables: ScopeDumpTable[] | { stageId: string },
         opts?: {
@@ -138,6 +138,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           if (!dump) {
             // #2450: the dump waits in this script's stage; the restore loads it from there.
             const loaded = await host.restoreStagedScopeLocal(sid, (tables as { stageId: string }).stageId, {
+              tenantId: tenant,
               sourceScopeId: opts?.sourceScopeId,
               exact: opts?.exact,
               loadStamp: opts?.loadStamp,
@@ -155,8 +156,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
               : dump,
             // A script that cannot fence keeps no stamp and takes no expectation: it predates both.
             {
-              // As the vertical's `/internal/restore` forwards them: a carry names its own scope as
-              // the source, which is what keeps it from reading as a copy of another scope (#2003).
+              // As the vertical's `/internal/restore` forwards them: the tenant the platform names
+              // records the store's tenant (#2035), and a carry names its own scope as the source,
+              // which is what keeps it from reading as a copy of another scope (#2003).
+              tenantId: tenant,
               sourceScopeId: opts?.sourceScopeId,
               exact: opts?.exact,
               ...(unfenced.has(ref) ? {} : { loadStamp: opts?.loadStamp, expect: opts?.expect, fence: opts?.fence }),

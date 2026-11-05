@@ -655,15 +655,16 @@ describe('the heal asks every served scope for its tenant record until it holds 
   it('a role-free active copy is asked by the heal, records the directory\'s tenant, and is not asked again', async () => {
     const { t, copy } = await unrecordedCopy();
     const foreign = tenantId.parse(ulid());
-    const door = () => deployment().attachments(owner, foreign, copy).then(() => undefined, (e: unknown) => e);
-    // Before: nothing to hold the pair against, so a foreign tenant gets past the door.
-    expect(errorCodeOf(await door())).not.toBe('not_found');
+    const door = (x: TenantId) => deployment().attachments(owner, x, copy).then(() => undefined, (e: unknown) => e);
+    // Before: nothing to hold the pair against, so the door refuses every tenant, its own too (#2035).
+    expect(errorCodeOf(await door(t))).toBe('not_found');
     await platform().healLifecycles(actor);
     expect(askedFor(copy)).toBe(1);
     expect(await receiptOf(copy)).toBe(t);
     expect(await recordedInDirectory(copy)).toBe(1);
-    // After: the foreign tenant is refused at the door.
-    expect(errorCodeOf(await door())).toBe('not_found');
+    // After: its tenant gets past the door, and the foreign one is refused.
+    expect(errorCodeOf(await door(t))).not.toBe('not_found');
+    expect(errorCodeOf(await door(foreign))).toBe('not_found');
     // Converged: the next pass leaves it alone.
     await platform().healLifecycles(actor);
     expect(askedFor(copy)).toBe(1);

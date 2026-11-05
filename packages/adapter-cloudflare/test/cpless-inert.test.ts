@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   CAPABILITY_SESSION_PREFIX,
   connectionId as connectionIdOf,
@@ -687,28 +687,43 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
     expect(await receiptOf(s)).toBeNull();
   });
 
-  const unrecorded = () =>
-    warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded"')).map((l) => JSON.parse(l) as { tenantId: string; scopeId: string });
-  let warn: MockInstance<typeof console.warn>;
-  beforeAll(() => {
-    warn = vi.spyOn(console, 'warn');
-  });
-  afterEach(() => warn.mockClear());
-
-  it('a scope that holds neither a receipt nor roles has nothing to hold the pair against: admitted, and logged each time', async () => {
-    // A load from a world that keeps its roles elsewhere, before its repair: the permission gate
-    // still decides what anyone may do in it, exactly as before the cross-check.
-    const s = scopeId.parse(ulid());
-    await hostFor().restoreScopeLocal(s, []);
-    expect(await receiptOf(s)).toBeNull();
-    for (const tenant of [t, u]) expect(isPairRefusal(await outcome(doors.system!(tenant, s)), tenant, s)).toBe(false);
-    expect(unrecorded()).toEqual([expect.objectContaining({ tenantId: t, scopeId: s }), expect.objectContaining({ tenantId: u, scopeId: s })]);
-  });
-
-  it('twin: a recorded scope writes no unrecorded line', async () => {
+  /** Provisioned (data, migrations, the schedule module's `system:` grants), then stripped of its
+   *  receipt and its role rows: what a load from a world that keeps roles elsewhere leaves. */
+  const unrecordedScope = async () => {
     const s = await seat();
-    await doors.system!(t, s);
-    expect(unrecorded()).toEqual([]);
+    await dropReceipt(s);
+    await sql(s, 'DELETE FROM _substrat_roles');
+    expect(await sql(s, `SELECT 1 FROM _substrat_tuples WHERE subject = ? LIMIT 1`, `system:${SCHED}`)).toHaveLength(1);
+    return s;
+  };
+
+  // #2035: nothing to hold the pair against is refused, not admitted — for every tenant, the
+  // directory's own included, until the platform's word records one. The twins, admitted once it
+  // has, are the back-fill tests below.
+  it.each(Object.keys(doors))('%s: a scope that holds neither a receipt nor roles is refused for any tenant', async (door) => {
+    const s = await unrecordedScope();
+    for (const tenant of [t, u]) expect(isPairRefusal(await outcome(doors[door]!(tenant, s)), tenant, s)).toBe(true);
+    expect(await receiptOf(s)).toBeNull();
+  });
+
+  it('the caller cannot tell an unrecorded scope from a foreign pair; only the unrecorded refusal is logged, with its door', async () => {
+    /** The refusal as a caller sees it, its ids replaced so two pairs compare. */
+    const shape = (e: unknown, x: TenantId, sid: ScopeId) =>
+      JSON.stringify({ ...(e as object), name: (e as Error).name, message: (e as Error).message }).replaceAll(x, 'T').replaceAll(sid, 'S');
+    const lines = (spy: MockInstance<typeof console.warn>) =>
+      spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded-refused"')).map((l) => JSON.parse(l) as unknown);
+    const unrecorded = await unrecordedScope();
+    const recordedForT = await seat();
+    const warn = vi.spyOn(console, 'warn');
+    try {
+      const foreign = await outcome(doors.system!(u, recordedForT));
+      expect(lines(warn)).toEqual([]);
+      const unknown = await outcome(doors.system!(t, unrecorded));
+      expect(shape(unknown, t, unrecorded)).toBe(shape(foreign, u, recordedForT));
+      expect(lines(warn)).toEqual([expect.objectContaining({ level: 'warn', tenantId: t, scopeId: unrecorded, door: 'openSystemDoor' })]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   describe('the back-fill: only from the platform\'s word, never from a request', () => {
@@ -780,29 +795,13 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
     });
 
     describe('a scope with data and system grants but no role rows converges on the directory\'s tenant', () => {
-      /** Provisioned (data, migrations, the schedule module's `system:` grants), then stripped of
-       *  its receipt and its role rows: what a load from a world that keeps roles elsewhere leaves. */
-      const unrecordedScope = async () => {
-        const s = await seat();
-        await dropReceipt(s);
-        await sql(s, 'DELETE FROM _substrat_roles');
-        expect(await sql(s, `SELECT 1 FROM _substrat_tuples WHERE subject = ? LIMIT 1`, `system:${SCHED}`)).toHaveLength(1);
-        // Before the back-fill, any tenant gets in — and its system grants authorize it.
-        expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(false);
-        expect((await hostFor().runDueSchedules(SCHED, u, s)).fired).toBe(2);
-        expect(unrecorded().some((l) => l.tenantId === u && l.scopeId === s)).toBe(true);
-        return s;
-      };
-
-      it('by a lifecycle delivery, after which a mismatched tenant is refused', async () => {
+      it('by a lifecycle delivery, after which its tenant is admitted and a mismatched one refused', async () => {
         const s = await unrecordedScope();
         await hostFor().setLifecycleLocal(s, life(), t);
         expect(await receiptOf(s)).toBe(t);
         expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
         expect(isPairRefusal(await outcome(hostFor().runDueSchedules(SCHED, u, s)), u, s)).toBe(true);
-        warn.mockClear();
-        await doors.system!(t, s);
-        expect(unrecorded()).toEqual([]);
+        expect((await hostFor().runDueSchedules(SCHED, t, s)).fired).toBe(2);
       });
 
       it('a migration-free scope counts by its spine state: a lifecycle delivery records its tenant', async () => {
@@ -815,7 +814,7 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
         expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
       });
 
-      it('by a reconcile (every push runs one against the scopes behind it), after which a mismatched tenant is refused', async () => {
+      it('by a reconcile (every push runs one against the scopes behind it), after which its tenant is admitted and a mismatched one refused', async () => {
         const s = await unrecordedScope();
         await hostFor().provisionScopeLocal({
           tenantId: t,
@@ -826,6 +825,83 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
         });
         expect(await receiptOf(s)).toBe(t);
         expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
+        await doors.system!(t, s);
+      });
+
+      it('by the ownerless reconcile too, which seats no roles: its tenant is admitted and a mismatched one refused', async () => {
+        const s = await unrecordedScope();
+        await hostFor().seatScopeLocal({ tenantId: t, scopeId: s });
+        expect(await receiptOf(s)).toBe(t);
+        expect(await sql(s, 'SELECT 1 FROM _substrat_roles')).toEqual([]);
+        expect(isPairRefusal(await outcome(doors.system!(u, s)), u, s)).toBe(true);
+        await doors.system!(t, s);
+      });
+
+      /**
+       * The ownerless reconcile on an unrecorded scope, held between its tenant check and its seat's
+       * unit (the migration): `during` runs in that window, then `after` decides how the step ends.
+       */
+      const seatHeldOpen = async (s: ScopeId, during: () => Promise<void>, after: 'throw' | 'continue') => {
+        const host = hostFor();
+        const subject = host as unknown as { migrateAndRecord: (s: ScopeId) => Promise<void> };
+        const migrate = subject.migrateAndRecord.bind(host);
+        let reached!: () => void;
+        let release!: () => void;
+        const inWindow = new Promise<void>((r) => (reached = r));
+        const held = new Promise<void>((r) => (release = r));
+        vi.spyOn(subject, 'migrateAndRecord').mockImplementationOnce(async (sid) => {
+          reached();
+          await held;
+          if (after === 'throw') throw new Error('seat broke');
+          return migrate(sid);
+        });
+        // A recorded-off carry, so a seat that lands would also switch the module's grants off.
+        const seating = outcome(host.seatScopeLocal({ tenantId: t, scopeId: s, switchedOff: [SCHED] }));
+        await inWindow;
+        await during();
+        release();
+        return seating;
+      };
+      const tuples = (s: ScopeId) => sql(s, 'SELECT subject, relation, object, revoked_at FROM _substrat_tuples ORDER BY subject, relation, object');
+
+      it('the ownerless reconcile records the tenant only with its seat: a door during the seat is refused, and a seat that throws records nothing', async () => {
+        const s = await unrecordedScope();
+        // Both kinds of door: the role gate (`servesTenant`) and the scope door (`validateScopeAccess`).
+        const refusedAtBoth = async () => {
+          expect(isPairRefusal(await outcome(hostFor().listScopeRoleHolders(t, s)), t, s)).toBe(true);
+          expect(isPairRefusal(await outcome(doors.system!(t, s)), t, s)).toBe(true);
+        };
+        const seated = await seatHeldOpen(s, refusedAtBoth, 'throw');
+        expect(String((seated as Error).message)).toBe('seat broke');
+        expect(await receiptOf(s)).toBeNull();
+        await refusedAtBoth();
+      });
+
+      it('a scope recorded for another tenant during the seat is refused with K-3, naming no other tenant, and nothing is seated', async () => {
+        const s = await unrecordedScope();
+        const before = await tuples(s);
+        // A lifecycle delivery for `u` back-fills `u`'s receipt while the seat for `t` is held open.
+        const seated = await seatHeldOpen(s, async () => void (await hostFor().setLifecycleLocal(s, life(), u)), 'continue');
+        expect(isPairRefusal(seated, t, s)).toBe(true);
+        expect(String((seated as Error).message)).not.toContain(u);
+        expect(await receiptOf(s)).toBe(u);
+        expect(await tuples(s)).toEqual(before);
+      });
+
+      it('a scope reaped during the seat is refused, and its name is not recorded for the tenant', async () => {
+        const s = await unrecordedScope();
+        const seated = await seatHeldOpen(s, () => hostFor().deleteScopeLocal(s), 'continue');
+        expect(isPairRefusal(seated, t, s)).toBe(true);
+        // The reap took the meta table with everything else; whatever was rebuilt holds no receipt.
+        const metaHeld = (await sql(s, `SELECT 1 FROM sqlite_master WHERE name = '_substrat_meta'`)).length > 0;
+        expect(metaHeld ? await receiptOf(s) : null).toBeNull();
+      });
+
+      it('the ownerless reconcile records nothing in a DO never provisioned here, and seats nothing', async () => {
+        const bare = scopeId.parse(ulid());
+        expect(isPairRefusal(await outcome(hostFor().seatScopeLocal({ tenantId: t, scopeId: bare })), t, bare)).toBe(true);
+        expect(await receiptOf(bare)).toBeNull();
+        expect(await sql(bare, 'SELECT 1 FROM _substrat_tuples')).toEqual([]);
       });
     });
 
