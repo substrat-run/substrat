@@ -38,7 +38,9 @@ export interface StoreCallCaller {
  */
 export type StoreCallOutcome =
   | { ok: true; status: number; body: StoreResponse }
-  | { ok: false; status: number; code: string; message: string };
+  | { ok: false; status: number; code: PlatformStoreCode; message: string };
+
+type PlatformStoreCode = (typeof PLATFORM_STORE_CODE)[keyof typeof PLATFORM_STORE_CODE];
 
 export interface StoreCallEnv {
   /** PKCS8 Ed25519 private key, base64url. Signs audience `caller`. The store holds only the public key. */
@@ -145,7 +147,7 @@ function dispatchFailure(error: unknown): string {
 }
 
 /** The platform's own refusal: its rule's code (#2406), and a message for a person. */
-const refused = (status: number, code: string, message: string): StoreCallOutcome => ({ ok: false, status, code, message });
+const refused = (status: number, code: PlatformStoreCode, message: string): StoreCallOutcome => ({ ok: false, status, code, message });
 const unavailable = (message: string): StoreCallOutcome => refused(503, PLATFORM_STORE_CODE.unavailable, message);
 
 /**
