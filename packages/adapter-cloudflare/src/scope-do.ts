@@ -2452,8 +2452,8 @@ export function defineScopeDO(
     /**
      * #2016: what one door into this scope needs from its storage on a CP-less host, in ONE call —
      * how `tenantId` reads against the scope (`tenantVerdict`), and the lifecycle the platform
-     * delivered (#1713). The coordinator refuses a foreign pair before any guard, handler or store
-     * lookup runs, and reports an `unknown` one it lets through. Read without migrating, like
+     * delivered (#1713). The coordinator refuses a foreign or an `unknown` pair before any guard,
+     * handler or store lookup runs, and logs the `unknown` refusal (#2035). Read without migrating, like
      * `servesTenant`.
      */
     admission(tenantId: TenantId): { verdict: TenantVerdict; lifecycle: StoredScopeLifecycle | null } {
@@ -6334,10 +6334,11 @@ export function defineScopeDO(
     /**
      * #119: the purge gate's facts (`PurgeGateFacts`), from this scope's own storage: the module's
      * switch, the lifecycle the platform delivered (#1713), the copy classification (#2009) and the
-     * tenant receipt (`tenantVerdict` — `unknown` passes, as at every door). A directory-backed
+     * tenant receipt (`tenantVerdict` — only `foreign` is refused here). A directory-backed
      * deployment records no receipt and delivers neither a lifecycle nor a copy classification here,
-     * so on one those read clear: this object enforces the kill switch, and the coordinator's gate
-     * is the authority for tenant, lifecycle, copy and the rewind hold.
+     * so on one those read clear and `unknown` is its every scope: this object enforces the kill
+     * switch, and the coordinator's gate is the authority for tenant, lifecycle, copy and the rewind
+     * hold. On a CP-less host that gate has already refused an `unknown` pair at the door (#2035).
      */
     private purgeGateFacts(moduleId: string, tenantId: TenantId): PurgeGateFacts {
       const now = new Date().toISOString();

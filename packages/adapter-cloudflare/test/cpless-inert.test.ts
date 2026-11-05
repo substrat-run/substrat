@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
   CAPABILITY_SESSION_PREFIX,
   connectionId as connectionIdOf,
@@ -704,6 +704,26 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
     const s = await unrecordedScope();
     for (const tenant of [t, u]) expect(isPairRefusal(await outcome(doors[door]!(tenant, s)), tenant, s)).toBe(true);
     expect(await receiptOf(s)).toBeNull();
+  });
+
+  it('the caller cannot tell an unrecorded scope from a foreign pair; only the unrecorded refusal is logged, with its door', async () => {
+    /** The refusal as a caller sees it, its ids replaced so two pairs compare. */
+    const shape = (e: unknown, x: TenantId, sid: ScopeId) =>
+      JSON.stringify({ ...(e as object), name: (e as Error).name, message: (e as Error).message }).replaceAll(x, 'T').replaceAll(sid, 'S');
+    const lines = (spy: MockInstance<typeof console.warn>) =>
+      spy.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded-refused"')).map((l) => JSON.parse(l) as unknown);
+    const unrecorded = await unrecordedScope();
+    const recordedForT = await seat();
+    const warn = vi.spyOn(console, 'warn');
+    try {
+      const foreign = await outcome(doors.system!(u, recordedForT));
+      expect(lines(warn)).toEqual([]);
+      const unknown = await outcome(doors.system!(t, unrecorded));
+      expect(shape(unknown, t, unrecorded)).toBe(shape(foreign, u, recordedForT));
+      expect(lines(warn)).toEqual([expect.objectContaining({ level: 'warn', tenantId: t, scopeId: unrecorded, door: 'openSystemDoor' })]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   describe('the back-fill: only from the platform\'s word, never from a request', () => {
