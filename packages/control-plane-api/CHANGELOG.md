@@ -1,5 +1,15 @@
 # @substrat-run/control-plane-api
 
+## 0.180.0
+
+### Patch Changes
+
+- 810378a: The Python store entry finds its object's storage on a deployed runtime. Spending a nonce (K-59) read `ctx._ctx`, which only the SDK `pywrangler` installs provides, so every call to a Python store uploaded through the platform failed.
+- Updated dependencies [fd7be61]
+  - @substrat-run/contracts@0.180.0
+  - @substrat-run/kernel@0.180.0
+  - @substrat-run/control-plane-client@0.6.2
+
 ## 0.179.0
 
 ### Minor Changes

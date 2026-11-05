@@ -47,12 +47,20 @@ export function retryAfterSeconds(value: string | null | undefined, now: number 
 }
 
 /**
- * The most attachment bytes one message may carry. Graph's `sendMail` takes a request of at
- * most 4 MB, attachments base64-encoded inside it, so this leaves room for the encoding and the
- * body. A larger file needs a draft and an upload session, and creating a draft needs
- * `Mail.ReadWrite` on the mailbox — which the least-privilege setup deliberately does not grant.
+ * The most attachment bytes one message carries inline, in a single `sendMail`. Graph takes a
+ * request of at most 4 MB, attachments base64-encoded inside it, so this leaves room for the
+ * encoding and the body. A message with more goes as a draft (`sendMail` below), and creating a
+ * draft needs `Mail.ReadWrite` on the mailbox, which the least-privilege setup does not grant
+ * unless the tenant adds it for large attachments.
  */
 export const MAX_ATTACHMENT_BYTES = Math.floor(2.5 * 1024 * 1024);
+
+/**
+ * Graph's smallest attachment upload session, its documented "3 MB"; a smaller attachment is posted
+ * to the draft whole. Decimal on purpose: below it the base64 body stays at most 4 000 000 bytes,
+ * which leaves the JSON envelope room under Graph's 4 MiB request limit.
+ */
+const SESSION_ATTACHMENT_MIN_BYTES = 3_000_000;
 
 export interface SiteInfo {
   id: string;
@@ -84,22 +92,26 @@ export async function readSite(client: GraphClient, siteUrl: string): Promise<Si
 }
 
 /**
- * Send one message as `mail.from` with `POST /users/{from}/sendMail`.
+ * Send one message as `mail.from`.
+ *
+ * Up to {@link MAX_ATTACHMENT_BYTES} of attachments it is one `POST /users/{from}/sendMail`, which
+ * needs only `Mail.Send`. Above that it goes as a draft: `POST /users/{from}/messages`, each
+ * attachment added to it (posted whole under {@link SESSION_ATTACHMENT_MIN_BYTES}, through an
+ * upload session above), then `POST …/messages/{id}/send`. Creating the draft needs
+ * `Mail.ReadWrite`, so a tenant that did not grant it gets a refusal saying so. A draft that fails
+ * part-way is deleted (and its open upload session cancelled), best-effort; the original error is
+ * thrown either way, and `onDraftLeft` hears about a draft that could not be deleted. Nothing is
+ * resumed across deliveries: a retry starts a new draft.
  *
  * Graph's message has one body, so the HTML part is sent and the text part is not. Only
  * `X-` headers may be set on a message through Graph; any other header is left out rather
  * than failing the send. Accepted (202) means queued, never delivered — Graph does not say more.
  */
-export async function sendMail(client: GraphClient, mail: OutboundMail): Promise<MailSendResult> {
-  const total = mail.attachments.reduce((n, a) => n + a.content.byteLength, 0);
-  if (total > MAX_ATTACHMENT_BYTES) {
-    throw new GraphError(
-      413,
-      undefined,
-      `the attachments come to ${total} bytes; a message sent through Microsoft 365 carries at most ` +
-        `${MAX_ATTACHMENT_BYTES} (larger files need Mail.ReadWrite on the mailbox, which this setup does not grant)`,
-    );
-  }
+export async function sendMail(
+  client: GraphClient,
+  mail: OutboundMail,
+  opts: { onDraftLeft?: (error: unknown) => void } = {},
+): Promise<MailSendResult> {
   const recipient = (a: { email: string; name?: string }) => ({
     emailAddress: { address: a.email, ...(a.name ? { name: a.name } : {}) },
   });
@@ -112,22 +124,97 @@ export async function sendMail(client: GraphClient, mail: OutboundMail): Promise
     toRecipients: mail.to.map(recipient),
     ...(mail.replyTo ? { replyTo: [recipient(mail.replyTo)] } : {}),
     ...(headers.length ? { internetMessageHeaders: headers } : {}),
-    ...(mail.attachments.length
-      ? {
-          attachments: mail.attachments.map((a) => ({
-            '@odata.type': '#microsoft.graph.fileAttachment',
-            name: a.filename,
-            contentType: a.contentType,
-            contentBytes: toBase64(a.content),
-          })),
-        }
-      : {}),
   };
-  await call(client, 'POST', `users/${encodeURIComponent(mail.from.email)}/sendMail`, {
-    message,
-    saveToSentItems: true,
-  });
+  const user = `users/${encodeURIComponent(mail.from.email)}`;
+  const total = mail.attachments.reduce((n, a) => n + a.content.byteLength, 0);
+  let step: MailStep = 'send';
+  try {
+    if (total <= MAX_ATTACHMENT_BYTES) {
+      await call(client, 'POST', `${user}/sendMail`, {
+        message: { ...message, ...(mail.attachments.length ? { attachments: mail.attachments.map(fileAttachment) } : {}) },
+        saveToSentItems: true,
+      });
+    } else {
+      step = 'draft';
+      const draft = z
+        .object({ id: z.string().min(1) })
+        .parse(await (await call(client, 'POST', `${user}/messages`, message)).json());
+      const at = `${user}/messages/${enc(draft.id)}`;
+      try {
+        for (const a of mail.attachments) {
+          if (a.content.byteLength < SESSION_ATTACHMENT_MIN_BYTES) {
+            await call(client, 'POST', `${at}/attachments`, fileAttachment(a));
+            continue;
+          }
+          const session = z.object({ uploadUrl: z.string().min(1) }).parse(
+            await (
+              await call(client, 'POST', `${at}/attachments/createUploadSession`, {
+                AttachmentItem: { attachmentType: 'file', name: a.filename, size: a.content.byteLength, contentType: a.contentType },
+              })
+            ).json(),
+          );
+          await uploadToSession(client, session.uploadUrl, bufferReader(a.content));
+        }
+        step = 'send';
+        await call(client, 'POST', `${at}/send`);
+      } catch (e) {
+        // A draft that was sent after all has moved to Sent Items under another id, so this
+        // deletes only a draft still sitting in Drafts.
+        await call(client, 'DELETE', at).catch((left: unknown) => opts.onDraftLeft?.(left));
+        throw e;
+      }
+    }
+  } catch (e) {
+    throw mailError(e, step, mail.from.email);
+  }
   return { delivered: [], queued: mail.to.map((t) => t.email), bounced: [] };
+}
+
+type MailStep = 'draft' | 'send';
+
+const fileAttachment = (a: OutboundMail['attachments'][number]) => ({
+  '@odata.type': '#microsoft.graph.fileAttachment',
+  name: a.filename,
+  contentType: a.contentType,
+  contentBytes: toBase64(a.content),
+});
+
+/**
+ * A mail refusal in the connector's words. Reworded, never re-typed: the status and `Retry-After`
+ * are what the platform's retry reads (#2102), so the new error keeps both.
+ */
+function mailError(e: unknown, step: MailStep, from: string): unknown {
+  if (!(e instanceof GraphError)) return e;
+  if (e.status === 403 && step === 'draft') {
+    return new GraphError(
+      403,
+      e.code,
+      `Exchange refused a draft in '${from}' — attachments over ${MAX_ATTACHMENT_BYTES} bytes are sent ` +
+        `through a draft, which needs Application Mail.ReadWrite in the same RBAC for Applications scope as ` +
+        `Mail.Send, and this app's grant does not include it`,
+    );
+  }
+  if (e.status === 403) {
+    // Exchange's RBAC for Applications scope is the tenant's fence; say that, not "403".
+    return new GraphError(
+      403,
+      e.code,
+      `Exchange refused to send as '${from}' — the address is outside the scope the tenant ` +
+        `granted this app (RBAC for Applications), or the grant has not taken effect yet`,
+    );
+  }
+  if (e.status === 429) {
+    return new GraphError(
+      429,
+      e.code,
+      'Exchange is throttling this mailbox (about 30 messages a minute) — try again shortly',
+      e.retryAfter,
+    );
+  }
+  if (e.status === 413 || e.code === 'ErrorMessageSizeExceeded') {
+    return new GraphError(413, e.code, `the message is larger than the most the mailbox '${from}' may send`);
+  }
+  return e;
 }
 
 async function call(client: GraphClient, method: string, path: string, body?: unknown) {
@@ -320,35 +407,44 @@ export async function writeUnder(
           })
         ).json(),
       );
-    // One chunk's buffer, reused: each PUT is answered before the next fill writes into it.
-    const chunk = new Uint8Array(UPLOAD_CHUNK_BYTES);
-    try {
-      for (let start = 0; start < total; start += UPLOAD_CHUNK_BYTES) {
-        const end = Math.min(start + UPLOAD_CHUNK_BYTES, total);
-        const piece = chunk.subarray(0, end - start);
-        await source.fill(piece);
-        // The committing range waits for the stream's own end, so an error at the end lands first.
-        if (end === total) await source.end();
-        // The upload URL is pre-authorized; Graph refuses a request to it that carries the token.
-        const res = await send(client, 'PUT', session.uploadUrl, {
-          auth: false,
-          body: piece,
-          headers: { 'content-range': `bytes ${start}-${end - 1}/${total}` },
-        });
-        if (end === total) return driveItem.parse(await res.json());
-      }
-      throw new GraphError(500, undefined, 'the upload session ended without an item');
-    } catch (e) {
-      await send(client, 'DELETE', session.uploadUrl, { auth: false }).catch(() => undefined);
-      throw e;
-    }
+    return driveItem.parse(await (await uploadToSession(client, session.uploadUrl, source)).json());
   } catch (e) {
     await source.release(e);
     throw e;
   }
 }
 
-/** What `writeUnder` reads a body through: `fill` takes exactly the bytes asked for, `end` that none follow. */
+/**
+ * `source` PUT to an upload session a chunk at a time, answered with the committing range's
+ * response. A chunk that fails cancels the session, best-effort, and its error is thrown as it came.
+ */
+async function uploadToSession(client: GraphClient, uploadUrl: string, source: BodyReader) {
+  const total = source.length;
+  // One chunk's buffer, reused: each PUT is answered before the next fill writes into it.
+  const chunk = new Uint8Array(Math.min(UPLOAD_CHUNK_BYTES, total));
+  try {
+    for (let start = 0; start < total; start += UPLOAD_CHUNK_BYTES) {
+      const end = Math.min(start + UPLOAD_CHUNK_BYTES, total);
+      const piece = chunk.subarray(0, end - start);
+      await source.fill(piece);
+      // The committing range waits for the stream's own end, so an error at the end lands first.
+      if (end === total) await source.end();
+      // The upload URL is pre-authorized; Graph refuses a request to it that carries the token.
+      const res = await send(client, 'PUT', uploadUrl, {
+        auth: false,
+        body: piece,
+        headers: { 'content-range': `bytes ${start}-${end - 1}/${total}`, 'content-type': 'application/octet-stream' },
+      });
+      if (end === total) return res;
+    }
+    throw new GraphError(500, undefined, 'the upload session ended without an item');
+  } catch (e) {
+    await send(client, 'DELETE', uploadUrl, { auth: false }).catch(() => undefined);
+    throw e;
+  }
+}
+
+/** What an upload reads a body through: `fill` takes exactly the bytes asked for, `end` that none follow. */
 interface BodyReader {
   length: number;
   fill(into: Uint8Array): Promise<void>;
