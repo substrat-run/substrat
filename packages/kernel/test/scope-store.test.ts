@@ -92,11 +92,11 @@ describe('callScopeStore (#2209)', () => {
   });
 
   it("answers a store's code reserved to the platform as a bad envelope, and keeps it through the platform's hop (#2815)", async () => {
-    const answer = async () => ({ error: { code: 'substrat.refused', status: 403 } });
+    const answer = async () => ({ error: { code: 'substrat.scope_mismatch', status: 403 } });
     const caught = (call: Promise<unknown>) => call.then(() => undefined, (err: unknown) => err as StoreError);
     expect(await caught(callScopeStore(answer, 'read'))).toMatchObject({ storeCode: 'substrat.bad_envelope', storeStatus: 502 });
     expect(await caught(callReservedStoreOperation(answer, 'substrat.size'))).toMatchObject({ storeCode: 'substrat.bad_envelope' });
-    expect(await caught(callScopeStore({ send: answer, through: 'platform' }, 'read'))).toMatchObject({ code: 'forbidden', storeCode: 'substrat.refused' });
+    expect(await caught(callScopeStore({ send: answer, through: 'platform' }, 'read'))).toMatchObject({ code: 'forbidden', storeCode: 'substrat.scope_mismatch' });
   });
 });
 

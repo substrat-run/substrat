@@ -11647,10 +11647,11 @@ export class CloudflareScopeHost implements ScopeHost {
     // CP-less shape); a scope with a live control plane has its tenant-level grants in
     // the directory instead, where the checker reads them from (`cp.tenantTuples`). Read
     // only the DO and a tenant-wide grant would be reported absent on exactly the
-    // deployments that have a control plane — the fleet — while being enforced.
+    // deployments that have a control plane — the fleet — while being enforced. A CP-less
+    // host has no directory to ask, and its DO already holds the projection (#2892).
     const rows = [
       ...(await this.scopeStub(scopeId).listConnectionGrants(now)),
-      ...(await this.cp.dumpTenantTuples(tenantId))
+      ...(this.cpLess ? [] : await this.cp.dumpTenantTuples(tenantId))
         .filter(
           (r) =>
             r.subject.startsWith('connection:') &&

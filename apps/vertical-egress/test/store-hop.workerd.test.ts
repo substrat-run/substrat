@@ -156,11 +156,11 @@ describe('a vertical reaches only its own scope store (#2207)', () => {
     expect(own, own.text).toEqual({ status: 200, text: JSON.stringify({ result: 2 }) });
 
     const other = await call({ scopeId: OTHER, binding: 'GRAPH', operation: 'increment', input: { by: 5 } });
-    // #2815: the platform's refusal carries a code no store answers with.
+    // #2815, #2406: the platform's refusal carries its rule's code, one no store answers with.
     expect(other).toEqual({
       status: 403,
       text: JSON.stringify({
-        error: { code: 'substrat.refused', status: 403, body: 'store call refused: this dispatch reaches only its own scope' },
+        error: { code: 'substrat.scope_mismatch', status: 403, body: 'store call refused: this dispatch reaches only its own scope' },
       }),
     });
     // Nothing reached the other scope's object: the router refused before it signed.

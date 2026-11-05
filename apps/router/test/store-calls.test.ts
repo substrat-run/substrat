@@ -18,18 +18,15 @@ const vector = JSON.parse(
 const KEY = vector.privateKeyPkcs8;
 
 describe('handleStoreCall', () => {
-  it('refuses another scope, an undeclared binding, and a reserved operation', async () => {
+  it.each([
+    ['another scope', { scopeId: OTHER, binding: 'GRAPH', operation: 'read' }, 403, 'substrat.scope_mismatch'],
+    ['an undeclared binding', { scopeId: SCOPE, binding: 'BLOBS', operation: 'read' }, 404, 'substrat.undeclared_binding'],
+    ['a reserved operation', { scopeId: SCOPE, binding: 'GRAPH', operation: 'substrat.wipe' }, 403, 'substrat.reserved_operation'],
+    ['a body that is not a store call', { scopeId: SCOPE, binding: 'GRAPH' }, 400, 'substrat.refused'],
+  ])('refuses %s with its rule code (#2406)', async (_, request, status, code) => {
     const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
-    const other = await handleStoreCall({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => { throw new Error('not dispatched'); } } }, caller, {
-      scopeId: OTHER,
-      binding: 'GRAPH',
-      operation: 'read',
-    });
-    expect(other).toMatchObject({ ok: false, status: 403 });
-    const missing = await handleStoreCall({ STORE_CALLER_KEY: KEY }, caller, { scopeId: SCOPE, binding: 'BLOBS', operation: 'read' });
-    expect(missing).toMatchObject({ ok: false, status: 404 });
-    const reserved = await handleStoreCall({ STORE_CALLER_KEY: KEY }, caller, { scopeId: SCOPE, binding: 'GRAPH', operation: 'substrat.wipe' });
-    expect(reserved).toMatchObject({ ok: false, status: 403 });
+    const dispatch = { get: () => { throw new Error('not dispatched'); } };
+    expect(await handleStoreCall({ STORE_CALLER_KEY: KEY, DISPATCH: dispatch }, caller, request)).toMatchObject({ ok: false, status, code });
   });
 
   it('signs an envelope over the body it sends and dispatches that driver script', async () => {
@@ -79,9 +76,10 @@ describe('handleStoreCall without a usable key (#2287)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => { warnings.push(String(message)); });
     try {
       const pair = await generateScopeStoreKeyPair();
-      expect(await handleStoreCall({ DISPATCH: dispatch }, caller, request)).toMatchObject({ ok: false, status: 503 });
+      const unavailable = { ok: false, status: 503, code: 'substrat.unavailable' };
+      expect(await handleStoreCall({ DISPATCH: dispatch }, caller, request)).toMatchObject(unavailable);
       // A raw public key pasted where the PKCS8 private key belongs.
-      expect(await handleStoreCall({ STORE_CALLER_KEY: pair.publicKey, DISPATCH: dispatch }, caller, request)).toMatchObject({ ok: false, status: 503 });
+      expect(await handleStoreCall({ STORE_CALLER_KEY: pair.publicKey, DISPATCH: dispatch }, caller, request)).toMatchObject(unavailable);
       expect(warnings).toHaveLength(2);
       expect(warnings[0]).toMatch(/is not set/);
       expect(warnings[1]).toMatch(/set but unusable/);
@@ -140,8 +138,8 @@ describe("handleStoreCall hands on the store's own answer", () => {
     expect(warnings.join('\n')).not.toContain('secret');
   });
 
-  it("answers a store's code reserved to the platform as bad_envelope (#2815)", async () => {
-    const reserved = () => Response.json({ error: { code: 'substrat.refused', status: 403 } }, { status: 403 });
+  it("answers a store's code reserved to the platform as bad_envelope, a rule's code included (#2815, #2406)", async () => {
+    const reserved = () => Response.json({ error: { code: 'substrat.scope_mismatch', status: 403 } }, { status: 403 });
     expect(await handleStoreCall(answering(reserved), caller, request)).toEqual(BAD_ENVELOPE);
     expect(warnings).toEqual(['scope store substrat-store-graph-docs answered with a code reserved to the platform']);
   });
@@ -150,7 +148,7 @@ describe("handleStoreCall hands on the store's own answer", () => {
     const throwing = (error: unknown) => ({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => ({ fetch: () => Promise.reject(error) }) } });
     const traceback = new Error('Traceback (most recent call last): secret row s1');
     for (const error of [new Error('Worker not found.'), traceback, 'secret string']) {
-      expect(await handleStoreCall(throwing(error), caller, request)).toMatchObject({ ok: false, status: 503 });
+      expect(await handleStoreCall(throwing(error), caller, request)).toMatchObject({ ok: false, status: 503, code: 'substrat.unavailable' });
     }
     expect(warnings).toEqual([
       'scope store call to substrat-store-graph-docs failed: the script is not in the dispatch namespace',
@@ -180,7 +178,12 @@ describe('handleStoreCall and the limit on a store call body (#2811)', () => {
   it('refuses a body one byte over with 413 before it signs or dispatches', async () => {
     const sent: Request[] = [];
     const outcome = await handleStoreCall(recording(sent), caller, requestOf(STORE_CALL_MAX_BYTES + 1));
-    expect(outcome).toMatchObject({ ok: false, status: 413, message: expect.stringContaining(`over the limit of ${STORE_CALL_MAX_BYTES}`) });
+    expect(outcome).toMatchObject({
+      ok: false,
+      status: 413,
+      code: 'substrat.too_large',
+      message: expect.stringContaining(`over the limit of ${STORE_CALL_MAX_BYTES}`),
+    });
     expect(sent).toHaveLength(0);
   });
 
