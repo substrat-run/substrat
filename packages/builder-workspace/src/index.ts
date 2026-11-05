@@ -27,6 +27,7 @@ export {
 	MAX_CONTINUATIONS,
 	MAX_GATE_REPAIRS,
 	repairNeeded,
+	checkModel,
 	runGate,
 	runGates,
 	runInstall,

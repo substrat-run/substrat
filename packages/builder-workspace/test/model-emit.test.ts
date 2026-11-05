@@ -22,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 import { emitProjectModel, modelEmitWarning } from '../src/model.js';
 import { LocalWorkspace } from '../src/local.js';
 import { ensureVerticalRepo, runTurn } from '../src/turn.js';
-import { repairNeeded, runGates, standaloneGates } from '../src/gates.js';
+import { checkModel, repairNeeded, runGates, standaloneGates } from '../src/gates.js';
 import type { ExecOptions, ExecResult } from '../src/workspace.js';
 
 const PROJECT = 'proj';
@@ -339,10 +339,15 @@ describe('model-diff --root — the emitter the studio calls', () => {
 			expect(await ws.exec(spec.cmd)).toMatchObject({ exitCode: 0 });
 			expect(await tool(['tools/model-diff.mts', '--root', dir])).toMatchObject({ code: 0 });
 			expect(JSON.parse(await readFile(join(dir, 'model.json'), 'utf8')).entities.item.table).toBe('acme_items');
+			// check_model answers what the gate would, from the same compile and loader.
+			expect(await checkModel(ws, relative(REPO_ROOT, dir))).toMatch(/^ok — /);
 			await writeFile(source, valid + '\nconst bad: string = 42;\n');
 			const invalid = await ws.exec(spec.cmd);
 			expect(invalid.exitCode).not.toBe(0);
 			expect(invalid.stdout + invalid.stderr).toContain('TS2322');
+			const refused = await checkModel(ws, relative(REPO_ROOT, dir));
+			expect(refused).toMatch(/^NOT OK — /);
+			expect(refused).toContain('TS2322');
 			await ws.dispose();
 		} finally {
 			await rm(dir, { recursive: true, force: true });

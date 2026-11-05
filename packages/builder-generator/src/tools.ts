@@ -34,6 +34,8 @@ export interface WorkspaceToolOptions {
 	 * host declares it per model (builder-harness.md H1, format-per-model).
 	 */
 	readonly editTool?: boolean;
+	/** Offer check_model over this checker (GeneratorInput.checkModel). */
+	readonly checkModel?: () => Promise<string>;
 	/** Offer read_reference/list_reference over these read-only workspaces (GeneratorInput.references). */
 	readonly references?: Readonly<Record<string, Workspace>>;
 }
@@ -166,6 +168,21 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 		},
 	});
 
+	const checkModelTool = (check: () => Promise<string>) =>
+		tool({
+			description:
+				'Check spec/model.ts exactly as the model gate will at the end of your turn: the same compile and the same loader, every problem at once with its remedy. Call it after writing or editing spec/model.ts and fix EVERYTHING it reports, then call it again — end the turn only once it answers "ok". A repair turn costs far more than a check.',
+			inputSchema: z.object({}),
+			execute: async () => {
+				emit({ type: 'tool-call', tool: 'check_model', summary: 'spec/model.ts' });
+				try {
+					return await check();
+				} catch (err) {
+					return `ERROR: the checker did not run — ${err instanceof Error ? err.message : String(err)}`;
+				}
+			},
+		});
+
 	const referenceTools = (refs: Readonly<Record<string, Workspace>>) => {
 		const names = Object.keys(refs) as [string, ...string[]];
 		const which = z.enum(names).describe(`Which reference: ${names.join(' or ')}`);
@@ -209,6 +226,7 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 	return {
 		...(opts.editTool ? { edit_file: editFile } : {}),
 		...(opts.references && Object.keys(opts.references).length ? referenceTools(opts.references) : {}),
+		...(opts.checkModel ? { check_model: checkModelTool(opts.checkModel) } : {}),
 		read_file: tool({
 			description:
 				'Read a UTF-8 file from the workspace. Call this before editing any file you have not already read this session — never guess a file\'s current contents.',
