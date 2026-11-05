@@ -1,5 +1,28 @@
 # @substrat-run/builder
 
+## 0.9.0
+
+### Minor Changes
+
+- 05eda18: Give the builder read-only reference verticals (the create-substrat template and the todo demo) through new `read_reference` and `list_reference` tools, so a build copies working host, seed and sharing code instead of guessing the API. A generated vertical now gets its permission review: the turn renders and commits `PERMISSIONS.md`, and the permissions gate is red once `src/module.ts` exists without a `substrat.permissions` entry. Engines resolve in the model phase, before scaffold. `pnpm builder evals --model claude-code:<model>` runs the sweep on a local Claude Code login and keeps a transcript per fixture.
+
+### Patch Changes
+
+- Updated dependencies [05eda18]
+- Updated dependencies [c797d27]
+- Updated dependencies [3cbbe62]
+- Updated dependencies [4808495]
+  - @substrat-run/builder-generator@0.9.0
+  - @substrat-run/builder-workspace@0.9.0
+  - @substrat-run/adapter-cloudflare@0.181.0
+  - @substrat-run/contracts@0.181.0
+  - @substrat-run/engine-assistant@0.1.33
+  - @substrat-run/engine-metering@0.6.65
+  - @substrat-run/cli@0.57.3
+  - @substrat-run/control-plane-api@0.181.0
+  - @substrat-run/kernel@0.181.0
+  - @substrat-run/model-providers@0.5.71
+
 ## 0.8.1
 
 ### Patch Changes
