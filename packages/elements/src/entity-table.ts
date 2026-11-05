@@ -487,6 +487,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     footer wa-select.size {
       width: 8.5rem;
     }
+    /* The label is there for a screen reader only; its part keeps a margin that would sit the
+       select lower than the buttons beside it. */
+    footer wa-select.size::part(form-control-label) {
+      margin: 0;
+    }
     footer {
       display: flex;
       align-items: center;
