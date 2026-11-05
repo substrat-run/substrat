@@ -250,6 +250,7 @@ async function main(): Promise<number> {
 	);
 
 	const results: EvalResult[] = [];
+	const transcripts = new Map<string, string>();
 	for (const fixture of fixtures) {
 		const projectDir = `${EVAL_PROJECT_PREFIX}${fixture.name}`;
 		currentProjectDir = projectDir;
@@ -257,7 +258,12 @@ async function main(): Promise<number> {
 		await prepareProject(ws, projectDir, fixture);
 		const projectWs = new LocalWorkspace({ root: join(ws.root, projectDir) });
 
+		// The whole stream, prose included, kept beside the report: a failed run
+		// is diagnosed from what the model SAID it was doing, which the sweep log
+		// leaves out.
+		const transcript: string[] = [];
 		const onEvent = (e: BuildEvent): void => {
+			transcript.push(formatEvent(e));
 			if (args.quiet) return;
 			if (e.type === 'assistant-text') return; // prose is noise in a sweep log
 			process.stdout.write(`  ${formatEvent(e)}\n`);
@@ -275,6 +281,7 @@ async function main(): Promise<number> {
 			onEvent,
 		});
 		results.push(result);
+		transcripts.set(fixture.name, transcript.join('\n'));
 		await projectWs.dispose();
 		process.stdout.write(`${formatEvalResult(result)}\n\n`);
 	}
@@ -302,6 +309,9 @@ async function main(): Promise<number> {
 	const stamp = report.ranAt.replace(/[:.]/g, '-');
 	const outFile = join(outDir, `run-${stamp}.json`);
 	await writeFile(outFile, `${JSON.stringify(report, null, '\t')}\n`);
+	for (const [name, text] of transcripts) {
+		await writeFile(join(outDir, `run-${stamp}.${name}.log`), `${text}\n`);
+	}
 
 	const passed = results.filter((r) => r.passed).length;
 	process.stdout.write(`${'─'.repeat(60)}\n`);
