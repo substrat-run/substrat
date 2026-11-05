@@ -381,6 +381,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
       width: 1%;
       padding-inline-end: 0;
     }
+    /* A block, not inline: on the text's baseline the checkbox keeps a descender's room under
+       it and sits above the middle of the row. */
+    .pick wa-checkbox {
+      display: flex;
+    }
     /* The last resort when the columns still left are wider than the frame: scroll the
        table, never clip the actions off its edge. A max height makes the header stick. */
     .scroll {
