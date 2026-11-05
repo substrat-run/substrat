@@ -533,10 +533,25 @@ describe('a connection: summary, certificate and mail', () => {
         AttachmentItem: { attachmentType: 'file', name: 'plans.zip', size: LARGE, contentType: 'application/zip' },
       });
       const puts = rest.filter((c) => c.method === 'PUT');
-      expect(puts.map((c) => [c.headers['content-range'], c.bytes, c.headers.authorization])).toEqual([
-        [`bytes 0-${UPLOAD_CHUNK_BYTES - 1}/${LARGE}`, UPLOAD_CHUNK_BYTES, undefined],
-        [`bytes ${UPLOAD_CHUNK_BYTES}-${LARGE - 1}/${LARGE}`, 5, undefined],
+      expect(puts.map((c) => [c.headers['content-range'], c.headers['content-type'], c.bytes, c.headers.authorization])).toEqual([
+        [`bytes 0-${UPLOAD_CHUNK_BYTES - 1}/${LARGE}`, 'application/octet-stream', UPLOAD_CHUNK_BYTES, undefined],
+        [`bytes ${UPLOAD_CHUNK_BYTES}-${LARGE - 1}/${LARGE}`, 'application/octet-stream', 5, undefined],
       ]);
+    });
+
+    it("posts an attachment just under Graph's 3 MB session floor whole, inside the 4 MiB request limit, and one at it by session", async () => {
+      const ms = microsoft(draftRoutes());
+      const file = (n: number) => ({ filename: `f${n}.bin`, contentType: 'application/octet-stream', content: new Uint8Array(n) });
+      await microsoft365MailSender({ fetch: ms.fetchImpl, now: () => NOW }).send(
+        hostWith(await withCert()).host,
+        conn,
+        mail({ attachments: [file(2_999_999), file(3_000_000)] }),
+      );
+      const whole = ms.calls.find((c) => c.url.endsWith('/DRAFT/attachments'))!;
+      expect(JSON.parse(whole.body).name).toBe('f2999999.bin');
+      expect(whole.body.length).toBeLessThan(4 * 1024 * 1024);
+      const session = ms.calls.find((c) => c.url.endsWith('/createUploadSession'))!;
+      expect(JSON.parse(session.body).AttachmentItem).toMatchObject({ name: 'f3000000.bin', size: 3_000_000 });
     });
 
     it('a chunk Graph fails on cancels the session and deletes the draft, and the error stays retryable', async () => {

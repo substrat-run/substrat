@@ -55,8 +55,12 @@ export function retryAfterSeconds(value: string | null | undefined, now: number 
  */
 export const MAX_ATTACHMENT_BYTES = Math.floor(2.5 * 1024 * 1024);
 
-/** Graph's smallest attachment upload session; a smaller attachment is posted to the draft whole. */
-const SESSION_ATTACHMENT_MIN_BYTES = 3 * 1024 * 1024;
+/**
+ * Graph's smallest attachment upload session, its documented "3 MB"; a smaller attachment is posted
+ * to the draft whole. Decimal on purpose: below it the base64 body stays at most 4 000 000 bytes,
+ * which leaves the JSON envelope room under Graph's 4 MiB request limit.
+ */
+const SESSION_ATTACHMENT_MIN_BYTES = 3_000_000;
 
 export interface SiteInfo {
   id: string;
@@ -429,7 +433,7 @@ async function uploadToSession(client: GraphClient, uploadUrl: string, source: B
       const res = await send(client, 'PUT', uploadUrl, {
         auth: false,
         body: piece,
-        headers: { 'content-range': `bytes ${start}-${end - 1}/${total}` },
+        headers: { 'content-range': `bytes ${start}-${end - 1}/${total}`, 'content-type': 'application/octet-stream' },
       });
       if (end === total) return res;
     }
