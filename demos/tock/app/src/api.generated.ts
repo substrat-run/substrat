@@ -284,8 +284,9 @@ export interface TockClient {
    * `GET /sources/{sourceKey}/mappings` — `tock/list-mappings`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `variant_key` unless `sort` names another declared column.
    */
-  listMappings(input: { sourceKey: string }): Promise<Paged<Mapping>>;
+  listMappings(input: { sourceKey: string; limit?: number; order?: "asc" | "desc"; sort?: "variant_key" | "output_key" | "version" }): Promise<Paged<Mapping>>;
 
   /**
    * What arrived in one run, field by field
@@ -293,8 +294,9 @@ export interface TockClient {
    * `GET /runs/{runId}/observations` — `tock/list-observations`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `field` unless `sort` names another declared column.
    */
-  listObservations(input: { runId: string; declared?: boolean; variantKey?: string }): Promise<Paged<Observation>>;
+  listObservations(input: { runId: string; declared?: boolean; variantKey?: string; limit?: number; order?: "asc" | "desc"; sort?: "field" }): Promise<Paged<Observation>>;
 
   /**
    * The stable shapes declared for a source
@@ -302,8 +304,9 @@ export interface TockClient {
    * `GET /sources/{sourceKey}/outputs` — `tock/list-output-schemas`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `key` unless `sort` names another declared column.
    */
-  listOutputSchemas(input: { sourceKey: string }): Promise<Paged<OutputSchema>>;
+  listOutputSchemas(input: { sourceKey: string; limit?: number; order?: "asc" | "desc"; sort?: "key" | "version" }): Promise<Paged<OutputSchema>>;
 
   /**
    * The mapped rows of one run
@@ -311,8 +314,9 @@ export interface TockClient {
    * `GET /runs/{runId}/rows` — `tock/list-rows`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `occurred_at` unless `sort` names another declared column.
    */
-  listRows(input: { runId: string }): Promise<Paged<Row>>;
+  listRows(input: { runId: string; limit?: number; order?: "asc" | "desc"; sort?: "occurred_at" }): Promise<Paged<Row>>;
 
   /**
    * The runs over a source, newest first
@@ -320,8 +324,9 @@ export interface TockClient {
    * `GET /sources/{sourceKey}/runs` — `tock/list-runs`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `received_at` unless `sort` names another declared column.
    */
-  listRuns(input: { sourceKey: string }): Promise<Paged<Run>>;
+  listRuns(input: { sourceKey: string; limit?: number; order?: "asc" | "desc"; sort?: "received_at" | "period_from" }): Promise<Paged<Run>>;
 
   /**
    * Every version of a source shape
@@ -329,8 +334,9 @@ export interface TockClient {
    * `GET /sources/{sourceKey}/schemas` — `tock/list-schemas`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `version` unless `sort` names another declared column.
    */
-  listSchemas(input: { sourceKey: string; variantKey?: string }): Promise<Paged<Schema>>;
+  listSchemas(input: { sourceKey: string; variantKey?: string; limit?: number; order?: "asc" | "desc"; sort?: "version" }): Promise<Paged<Schema>>;
 
   /**
    * The sources in this workspace
@@ -338,8 +344,9 @@ export interface TockClient {
    * `GET /sources` — `tock/list-sources`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
    */
-  listSources(): Promise<Paged<Source>>;
+  listSources(input?: { limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "key" }): Promise<Paged<Source>>;
 
   /**
    * The record kinds declared for a source
@@ -537,8 +544,8 @@ export function createClient(options: ClientOptions = {}): TockClient {
       page(`/sources/${encodeURIComponent(String(input.sourceKey))}/runs`, "GET", undefined, omit(input, ["sourceKey"])),
     listSchemas: (input: Args) =>
       page(`/sources/${encodeURIComponent(String(input.sourceKey))}/schemas`, "GET", undefined, omit(input, ["sourceKey"])),
-    listSources: () =>
-      page("/sources", "GET", undefined, undefined),
+    listSources: (input?: Args) =>
+      page("/sources", "GET", undefined, input),
     listVariants: (input: Args) =>
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/variants`, "GET", undefined, omit(input, ["sourceKey"])),
     mapRun: (input: Args) =>
