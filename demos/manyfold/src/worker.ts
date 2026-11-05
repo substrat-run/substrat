@@ -33,12 +33,12 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
-  observePlace,
   placesReporter,
   reportScopeMembers,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
+import { mountSession } from '@substrat-run/vertical-auth/session-route';
 import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 import { MODULES, ROLES, permissions } from './provision.js';
 import { MANYFOLD_ENV } from './manifest.js';
@@ -234,31 +234,22 @@ app.use(
 app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProviderFor(c.env, c.req.raw)).handle(c.req.raw));
 app.get('/api/session', async (c) => c.json(await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers)));
 
-// Who am I, in the selected site, and what may I do — needs-setup aware (first-run).
-app.get('/api/me', async (c) => {
-  const { identity, subject, principal, node, home } = await callerFor(c.env, c.req.raw);
-  // Tell the identity pool what this resolve established (#1670), after the response: the login's
-  // places list, on the issuer's own origin, shows this site while the login is bound here and
-  // stops once it is not. Only the routed site is reported, and its id is the router-asserted
-  // one: a site picked with `x-site`/`x-scope` is not a place the platform registers (multi-site
-  // is the issue's open item), so it is neither reported nor allowed to name one.
-  if (subject && home) {
-    c.executionCtx.waitUntil(
-      observePlace(placesReporter({ identity }), node.scopeId, subject.sub, principal),
-    );
-  }
-  if (!principal) {
-    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the first-sign-in
-    // window is open; by a claim link from the dashboard once it has closed. The SPA's copy
-    // depends on which, and it must not offer a sign-in that binds nobody.
-    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
-    return seat.state === 'unclaimed'
-      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
-      : c.json({ error: 'unauthorized' }, 401);
-  }
-  const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
-  const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: Record<string, boolean> };
-  return c.json({ key: principal, display: subject?.name ?? subject?.email ?? 'You', site: node.scopeId, can: who.can });
+// Who am I, in the selected site, and what may I do — vertical-auth's session route, so
+// needs-setup aware (first-run) and in the shape `<sub-user-menu>` reads, plus the site and the
+// capability map. Only the routed site is reported to the identity pool (#1670), and its id is
+// the router-asserted one: a site picked with `x-site`/`x-scope` is not a place the platform
+// registers (multi-site is the issue's open item), so it is neither reported nor allowed to name one.
+mountSession(app, {
+  async caller(c) {
+    const { home, ...resolved } = await callerFor(c.env, c.req.raw);
+    return { ...resolved, place: home };
+  },
+  directory: identityDo,
+  async extra(c, { node, principal }) {
+    const scope = await hostFor(c.env).getScope(principalId.parse(principal), node.tenantId, node.scopeId);
+    const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: Record<string, boolean> };
+    return { site: node.scopeId, can: who.can };
+  },
 });
 
 // The tenant's sites — the in-app site switcher's list (M2). Tenant-level (not per-scope), so it

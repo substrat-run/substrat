@@ -64,6 +64,8 @@ export interface DevCaller {
   sub: string;
   /** `name`, else `email`, else the `sub`. Never empty. */
   display: string;
+  /** The issuer's `email` claim, or null when it sent none. */
+  email: string | null;
 }
 
 export interface DevLogin {
@@ -119,6 +121,7 @@ export function devLogin(opts: DevLoginOptions): DevLogin {
         scopeId: identity.scopeId,
         sub: subject.sub,
         display: subject.name ?? subject.email ?? subject.sub,
+        email: subject.email,
       };
     },
   };

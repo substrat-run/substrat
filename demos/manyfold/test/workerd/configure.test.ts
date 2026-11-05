@@ -273,13 +273,13 @@ describe('the config is per scope: sites of one tenant (#2201)', () => {
     const slug = (await env.AUTH.get(env.AUTH.idFromName(home.t)).listSites()).find((x) => x.scopeId === other.s)!.slug;
     const sel = select(other, slug);
     const bearer = (token: string) => ({ authorization: `Bearer ${token}`, ...sel });
-    const me = async (token: string) => (await (await get(home, '/api/me', bearer(token))).json()) as { key?: string; status?: string };
+    const me = async (token: string) => (await (await get(home, '/api/me', bearer(token))).json()) as { principal?: string; status?: string };
     // The home's issuer signs in, and the first sign-in claims the SELECTED site's open owner seat.
     expect((await (await get(home, '/api/session', bearer(await perInstall.mint('sub-ann')))).json())).toMatchObject({ sub: 'sub-ann' });
-    expect((await me(await perInstall.mint('sub-ann'))).key).toBeDefined();
+    expect((await me(await perInstall.mint('sub-ann'))).principal).toBeDefined();
     // The selected site's binding default is NOT consulted: its issuer's token resolves to nobody.
     expect(await (await get(home, '/api/session', bearer(await binding.mint('sub-bob')))).json()).toBeNull();
     const bob = await me(await binding.mint('sub-bob'));
-    expect(bob.key).toBeUndefined();
+    expect(bob.principal).toBeUndefined();
   });
 });
