@@ -8,6 +8,10 @@ name: Deploy to Substrat
 # at the repo root (the workspace lockfile lives there), and the workspace packages this
 # vertical imports are built before every push — a sibling resolves through its dist/.
 #
+# The CLI is `@latest` on purpose: in this monorepo the root links engines whose dev
+# dependencies reach the workspace CLI, so a bare `npx @substrat-run/cli` finds that unbuilt copy
+# (`sh: substrat: not found`) instead of the published one. A tag spec always fetches.
+#
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
 #   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push
@@ -134,7 +138,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push demos/meridian --slug meridian | tee push.out
+          npx @substrat-run/cli@latest push demos/meridian --slug meridian | tee push.out
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
           # Promote only while this commit is still the branch tip. Queued runs resume in
@@ -147,7 +151,7 @@ jobs:
             echo "::warning::main has moved past $GITHUB_SHA (tip is $TIP) — pushed version $VID without promoting prod; the tip commit's run owns the pointer."
             exit 0
           fi
-          npx @substrat-run/cli promote meridian --version "$VID"
+          npx @substrat-run/cli@latest promote meridian --version "$VID"
       - name: Update the test environment
         if: vars.SUBSTRAT_TEST_SCOPE_ID != ''
         env:
@@ -161,12 +165,12 @@ jobs:
         run: |
           set -euo pipefail
           BASE=$(node -p "require('./demos/meridian/package.json').version")
-          npx @substrat-run/cli push demos/meridian --slug meridian --version "$BASE-test.${{ github.run_number }}" | tee push.out
+          npx @substrat-run/cli@latest push demos/meridian --slug meridian --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
-          npx @substrat-run/cli scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
+          npx @substrat-run/cli@latest scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
 
   preview:
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
@@ -236,7 +240,7 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli preview create demos/meridian --slug meridian --tag pr-${{ github.event.number }} | tee preview.out
+          npx @substrat-run/cli@latest preview create demos/meridian --slug meridian --tag pr-${{ github.event.number }} | tee preview.out
           # Take the URL from the CLI success line (the ✓ marker) only — the push it runs
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
@@ -250,7 +254,7 @@ jobs:
           # A FRESH scope, bound once and never rebound, so this URL is frozen to this build
           # forever. Clean-room (--empty) rather than a fork: a throwaway per build should not
           # copy prod data every push. Short TTL — the sticky preview is the one that lives.
-          npx @substrat-run/cli preview create demos/meridian --slug meridian \
+          npx @substrat-run/cli@latest preview create demos/meridian --slug meridian \
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
@@ -288,4 +292,4 @@ jobs:
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
-        run: npx @substrat-run/cli preview delete --slug meridian --tag pr-${{ github.event.number }}
+        run: npx @substrat-run/cli@latest preview delete --slug meridian --tag pr-${{ github.event.number }}
