@@ -226,9 +226,7 @@ let stub: Awaited<ReturnType<typeof host.getScope>>;
 let attachments: Awaited<ReturnType<typeof host.attachments>>;
 const attach = (filename: string, body: Uint8Array) =>
   attachments.upload({ entity: { entityType: 'doc', entityId: 'd1' }, filename, contentType: 'application/octet-stream', visibility: 'internal', body });
-const ledgers = async () =>
-  (await host.admin.listConnectorState(conn, 'microsoft365:write:')).map((r) => r.value as { status: string; files: unknown[] });
-const statusesNow = async () => (await ledgers()).map((l) => l.status);
+const ledgerKeys = async () => new Set((await host.admin.listConnectorState(conn, 'microsoft365:write:')).map((r) => r.key));
 
 /** Run passes until one completes. Returns the changes landed. */
 async function syncToEnd(): Promise<{ changes: number; pages: number; full: boolean }> {
@@ -255,10 +253,17 @@ async function syncUntil<T>(from: number, found: (since: Microsoft365ChannelChan
   }
 }
 
-/** Write one file through the host's dispatch, exactly as a vertical's event would. */
+/**
+ * Write one file through the host's dispatch, exactly as a vertical's event would. Returns a read of
+ * that event's own ledger row (`pending` until a delivery finishes, then `done`).
+ */
 async function write(name: string, body: Uint8Array, conflict: 'replace' | 'rename' | 'fail') {
+  const before = await ledgerKeys();
   const a = await attach(name, body);
   await stub.invoke('docs/send', { directory: RUN_DIR, files: [{ attachmentId: a.id, size: a.size }], conflict });
+  const key = [...(await ledgerKeys())].find((k) => !before.has(k));
+  if (!key) throw new Error('the write left no ledger row');
+  return async () => ((await host.admin.getConnectorState(conn, key)) as { status: string }).status;
 }
 
 // ── the run ──────────────────────────────────────────────────────────────────
@@ -313,8 +318,8 @@ async function main() {
   const large = bytesOf(6 * 1024 * 1024 + 123, 2);
   for (const [label, name, body] of [['write-put', 'small.bin', small], ['write-session', 'large.bin', large]] as const) {
     await check(label, async () => {
-      await write(name, body, 'fail');
-      expect((await statusesNow()).at(-1) === 'done', 'the ledger row is not done');
+      const status = await write(name, body, 'fail');
+      expect((await status()) === 'done', 'the ledger row is not done');
       const item = (await runFiles()).find((i) => i.name === name);
       expect(item !== undefined, 'the file is not in the folder');
       expect(item.size === body.byteLength, 'the size differs');
@@ -333,11 +338,11 @@ async function main() {
   ] as const) {
     await check(label, async () => {
       dropAnswer = match;
-      await write(name, body, 'fail');
+      const status = await write(name, body, 'fail');
       expect(dropAnswer === null, 'no request matched the answer to drop');
-      expect((await statusesNow()).at(-1) === 'pending', 'the first delivery did not fail');
+      expect((await status()) === 'pending', 'the first delivery did not fail');
       await host.drainDue(t, s);
-      expect((await statusesNow()).at(-1) === 'done', 'the redelivery did not finish');
+      expect((await status()) === 'done', 'the redelivery did not finish');
       const copies = (await runFiles()).filter((i) => i.name?.startsWith(name.replace('.bin', ''))).length;
       expect(copies === 1, `${copies} copies`);
       return '1 copy after a redelivery';
@@ -346,17 +351,17 @@ async function main() {
 
   // 5. Collisions with the app's own file from another event.
   await check('conflict-fail', async () => {
-    await write('small.bin', bytesOf(1000, 9), 'fail');
+    const status = await write('small.bin', bytesOf(1000, 9), 'fail');
     await host.drainDue(t, s);
-    expect((await statusesNow()).at(-1) === 'pending', 'a conflicting write finished');
+    expect((await status()) === 'pending', 'a conflicting write finished');
     const files = await runFiles();
     expect(files.filter((i) => i.name === 'small.bin').length === 1 && files.find((i) => i.name === 'small.bin')?.size === small.byteLength, 'the existing file changed');
     return 'refused, existing file kept';
   });
   await check('conflict-rename', async () => {
     const before = (await runFiles()).length;
-    await write('small.bin', bytesOf(2000, 10), 'rename');
-    expect((await statusesNow()).at(-1) === 'done', 'the ledger row is not done');
+    const status = await write('small.bin', bytesOf(2000, 10), 'rename');
+    expect((await status()) === 'done', 'the ledger row is not done');
     const files = await runFiles();
     expect(files.length === before + 1, `${files.length - before} new files`);
     expect(files.some((i) => /^small \([0-9a-f]{8}\)\.bin$/.test(i.name ?? '')), 'no suffixed name');
