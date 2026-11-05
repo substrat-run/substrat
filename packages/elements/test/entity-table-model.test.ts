@@ -169,6 +169,54 @@ describe('EntityTableModel', () => {
     await model.setQuery({ view: 'archived' });
     expect(model.state.selected.size).toBe(0);
   });
+
+  it('pages forward through next and back through the link that led to each page, and a reload stays put', async () => {
+    const pages: Record<string, Page<Row>> = { p2: page(['c', 'd'], 'p3'), p3: page(['e']) };
+    const read = vi.fn(async () => page(['a', 'b'], 'p2'));
+    const follow = vi.fn(async (next: string) => pages[next]!);
+    const model = modelOver({ read, follow });
+    await model.load();
+
+    await model.nextPage();
+    await model.nextPage();
+    expect(model.state).toMatchObject({ page: 2, offset: 4, rows: [{ id: 'e' }], next: null });
+    await model.nextPage(); // the end: nothing to follow
+    expect(model.state.page).toBe(2);
+
+    await model.prevPage();
+    expect(model.state).toMatchObject({ page: 1, offset: 2, rows: [{ id: 'c' }, { id: 'd' }] });
+    await model.load();
+    expect(follow).toHaveBeenLastCalledWith('p2');
+    expect(model.state.page).toBe(1);
+
+    await model.prevPage();
+    expect(model.state).toMatchObject({ page: 0, offset: 0, rows: [{ id: 'a' }, { id: 'b' }] });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('steps back a page when a reload finds this one emptied, and a new query starts at the first', async () => {
+    let second = page(['c']);
+    const model = modelOver({ read: async () => page(['a', 'b'], 'p2'), follow: async () => second });
+    await model.load();
+    await model.nextPage();
+    second = page([]);
+    await model.load();
+    expect(model.state).toMatchObject({ page: 0, rows: [{ id: 'a' }, { id: 'b' }] });
+
+    await model.nextPage();
+    await model.setPageSize(50);
+    expect(model.state).toMatchObject({ page: 0, offset: 0, query: { limit: 50 } });
+  });
+
+  it('does not search a view its source says search cannot cover', async () => {
+    const search = vi.fn(async () => ({ results: [], capped: false }));
+    const model = modelOver({ search, searchViews: ['active'] });
+    await model.setQuery({ view: 'archived' });
+    expect(model.searchable).toBe(false);
+    await model.search('milk');
+    expect(search).not.toHaveBeenCalled();
+    expect(model.state.mode).toBe('page');
+  });
 });
 
 describe('actionsIn', () => {

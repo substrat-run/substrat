@@ -27,6 +27,8 @@ import {
   type SessionState,
   type SubEntityTable,
   type SubUserMenu,
+  type TableFilter,
+  type TableQuery,
   type TableSource,
   type TableView,
 } from '@substrat-run/elements';
@@ -50,6 +52,8 @@ declare module 'react' {
         'search-label'?: string;
         selectable?: boolean;
         density?: 'comfortable' | 'compact';
+        paging?: 'pages' | 'more';
+        'page-size'?: number;
       };
       'sub-user-menu': React.DetailedHTMLProps<React.HTMLAttributes<SubUserMenu>, SubUserMenu> & {
         show?: 'avatar' | 'name' | 'email';
@@ -58,8 +62,9 @@ declare module 'react' {
   }
 }
 
-/** What `my-lists` may be sorted by — the generated client's own union, not a copy of it. */
+/** What each read may be sorted by — the generated client's own unions, not copies of them. */
 type ListSort = NonNullable<Parameters<typeof api.myLists>[0]['sort']>;
+type ItemSort = NonNullable<Parameters<typeof api.listItems>[0]['sort']>;
 
 /**
  * A cell drawn by React, into the light-DOM element the table hands `mount`: the page's
@@ -79,7 +84,13 @@ export function reactCell<T>(draw: (row: T) => ReactNode): NonNullable<Column<T>
  */
 function useTable<T, S extends string = string>(
   ref: React.RefObject<SubEntityTable>,
-  props: { source: TableSource<T, S>; columns: Column<T, S>[]; actions?: RowAction<T>[]; views?: TableView[] },
+  props: {
+    source: TableSource<T, S>;
+    columns: Column<T, S>[];
+    actions?: RowAction<T>[];
+    views?: TableView[];
+    filters?: TableFilter[];
+  },
 ) {
   useEffect(() => {
     const table = ref.current as SubEntityTable<T, S> | null;
@@ -87,6 +98,7 @@ function useTable<T, S extends string = string>(
     table.columns = props.columns;
     table.actions = props.actions ?? [];
     table.views = props.views ?? [];
+    table.filters = props.filters ?? [];
     table.source = props.source;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -98,14 +110,26 @@ const LIST_VIEWS: TableView[] = [
   { id: 'trash', label: 'Trash' },
 ];
 
-/** Each view is its own read on the server, as on the Lists screen (#119). */
+/** The query's page half, as the generated client's page parameters. */
+const pageOf = <S extends string>({ sort, order, limit }: TableQuery<S>) => ({
+  ...(sort ? { sort } : {}),
+  order,
+  ...(limit ? { limit } : {}),
+});
+
+/**
+ * Each view is its own read on the server, as on the Lists screen (#119). Search is the
+ * active lists only: the index leaves archived and binned lists out, so the box is not
+ * offered over them rather than answering "no matches" for a list that is right there.
+ */
 const LISTS: TableSource<List, ListSort> = {
-  read: ({ view, sort, order }) => {
-    const page = { ...(sort ? { sort } : {}), order };
-    if (view === 'trash') return api.trashedLists(page);
-    return api.myLists({ ...page, ...(view === 'archived' ? { view: 'archived' as const } : {}) });
+  read: (query) => {
+    if (query.view === 'trash') return api.trashedLists(pageOf(query));
+    return api.myLists({ ...pageOf(query), ...(query.view === 'archived' ? { view: 'archived' as const } : {}) });
   },
   follow: (next) => api.follow<List>(next),
+  search: (q) => api.searchLists({ q }),
+  searchViews: ['active'],
 };
 
 const LIST_COLUMNS: Column<List, ListSort>[] = [
@@ -131,14 +155,17 @@ export function ListsTable() {
     <>
       <h2>Your lists, as a table</h2>
       <p className="sub">
-        The same reads as the three views, drawn by <code>&lt;sub-entity-table&gt;</code>. Sorting asks the server, by the two
-        columns the model declares sortable. Tick lists to archive, trash or restore several at once. When the table runs
+        The same reads as the three views, drawn by <code>&lt;sub-entity-table&gt;</code>. Sorting, paging and search all
+        ask the server: the sort by the two columns the model declares sortable, the pages through the keyset walk, the
+        search through the list-name index. Tick lists to archive, trash or restore several at once. When the table runs
         out of room, the Id column goes first, then Created.
       </p>
       <sub-entity-table
         ref={ref}
         label="Your lists"
         selectable
+        search-label="Find a list"
+        page-size={10}
         empty="Nothing here yet. Create a list, or ask someone to share one with you."
         forbidden-text="You may not see these lists."
       />
@@ -149,14 +176,18 @@ export function ListsTable() {
 /** A list's items: a paged read with a total, its search read, and a React-drawn Done cell. */
 export function ItemsTable({ listId }: { listId: string }) {
   const ref = useRef<SubEntityTable>(null);
-  useTable<Item>(ref, {
+  useTable<Item, ItemSort>(ref, {
     source: {
-      read: () => api.listItems({ listId }),
+      // `done` is a declared filterable column, so it goes to the server as one, never to a
+      // `.filter()` over the page that happened to load.
+      read: (query) =>
+        api.listItems({ listId, ...pageOf(query), ...(query.filters['done'] ? { done: Number(query.filters['done']) } : {}) }),
       follow: (next) => api.follow<Item>(next),
       search: (q) => api.searchListItems({ listId, q }),
     },
+    filters: [{ key: 'done', label: 'Status', options: [{ value: '0', label: 'Open' }, { value: '1', label: 'Done' }] }],
     columns: [
-      { key: 'text', label: 'Item' },
+      { key: 'text', label: 'Item', sort: 'text' },
       {
         key: 'done',
         label: 'Done',
@@ -167,7 +198,8 @@ export function ItemsTable({ listId }: { listId: string }) {
         )),
       },
       { key: 'added_by', label: 'Added by', kind: 'code', priority: 3 },
-      { key: 'created_at', label: 'Added', kind: 'relative', priority: 2 },
+      // Sorted by the id, which is a ULID and so the order they were added in.
+      { key: 'created_at', label: 'Added', kind: 'relative', sort: 'id', priority: 2 },
     ],
     actions: [{ id: 'delete', label: 'Delete', tone: 'danger', bulk: true, run: (i) => api.deleteItem({ itemId: i.id }) }],
   });
@@ -178,8 +210,8 @@ export function ItemsTable({ listId }: { listId: string }) {
       </a>
       <h2 style={{ marginTop: '.6rem' }}>Items, as a table</h2>
       <p className="sub">
-        Search asks the list's text index rather than filtering what has loaded, so it finds an item on page nine. The
-        Done column is a React component the table mounts into its cell.
+        Search asks the list's text index and the Status filter asks the server, rather than either sifting what has
+        loaded, so both find an item on page nine. The Done column is a React component the table mounts into its cell.
       </p>
       <sub-entity-table
         ref={ref}

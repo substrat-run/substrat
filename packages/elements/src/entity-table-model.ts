@@ -11,7 +11,9 @@
  * and hands it to `source.read`. What the query may say is what the read declares: `sort`
  * is one of its `sortable` columns, a filter one of its `filterable` ones, and the
  * generated client types both, so a sort with no index behind it does not compile. Paging
- * is the keyset walk the platform has: forward through `next`, never "page 7 of 40".
+ * is the keyset walk the platform has: forward through `next`, never a jump to "page 7 of
+ * 40". Previous works anyway — the table keeps the `next` link that led to each page it has
+ * shown, so going back re-reads exactly the page it came from.
  * Search is a different read — ranked and capped, not sorted and paged — so a term
  * switches the table into search mode rather than into a filtered page.
  *
@@ -51,6 +53,8 @@ export interface TableQuery<S extends string = string> {
   filters: Readonly<Record<string, string>>;
   /** The search term as typed. Shorter than the source's minimum, it searches nothing. */
   q: string;
+  /** Rows per page, or null for the read's own default. Pass it on as the read's `limit`. */
+  limit: number | null;
 }
 
 /** Where the rows come from. `read` is the generated client's read; `follow` its `follow`. */
@@ -59,6 +63,11 @@ export interface TableSource<T, S extends string = string> {
   follow(next: string): Promise<Page<T>>;
   /** The entity's search read, when it has one. Its answer replaces the page. */
   search?(q: string, query: TableQuery<S>): Promise<SearchResult<T>>;
+  /**
+   * The views search covers, when it does not cover them all — an index that leaves archived
+   * rows out cannot search the archive, and a search box over it would answer "no matches".
+   */
+  searchViews?: readonly string[];
 }
 
 /** How a cell's value is drawn. Every kind is a fact about the field, not about a screen. */
@@ -117,6 +126,10 @@ export interface TableState<T, S extends string = string> {
   rows: T[];
   next: string | null;
   total: number | null;
+  /** Which page is on screen, from 0, when the table pages rather than appends. */
+  page: number;
+  /** How many rows came before this page — so the footer can say "21–40". */
+  offset: number;
   /** The search stopped at its limit; there are more matches than rows. */
   capped: boolean;
   loadingMore: boolean;
@@ -156,6 +169,15 @@ export class EntityTableModel<T, S extends string = string> {
   /** Bumped by every read, so an answer that lands after a newer one is dropped, not shown. */
   #generation = 0;
 
+  /**
+   * How to read each page shown so far: the first is the query itself (null), every later one
+   * the `next` link the page before it handed out. A cursor is a position, so re-following one
+   * re-reads that page as it is now — which is what a reload after an action wants.
+   */
+  #trail: (string | null)[] = [null];
+  /** Where each page shown so far starts, beside `#trail`. */
+  #offsets: number[] = [0];
+
   constructor(
     private readonly source: TableSource<T, S>,
     private readonly onChange: (state: TableState<T, S>) => void,
@@ -165,11 +187,13 @@ export class EntityTableModel<T, S extends string = string> {
     this.minSearch = options.minSearch ?? 2;
     this.state = {
       phase: 'loading',
-      query: { view: null, sort: null, order: 'asc', filters: {}, q: '', ...options.query },
+      query: { view: null, sort: null, order: 'asc', filters: {}, q: '', limit: null, ...options.query },
       mode: 'page',
       rows: [],
       next: null,
       total: null,
+      page: 0,
+      offset: 0,
       capped: false,
       loadingMore: false,
       refreshing: false,
@@ -184,15 +208,26 @@ export class EntityTableModel<T, S extends string = string> {
     this.onChange(this.state);
   }
 
-  /** The term is long enough to search, and there is a search to ask. */
-  get searching(): boolean {
-    return Boolean(this.source.search) && this.state.query.q.trim().length >= this.minSearch;
+  /** The current view is one the source can search. */
+  get searchable(): boolean {
+    const { search, searchViews } = this.source;
+    const { view } = this.state.query;
+    return Boolean(search) && (!searchViews || view === null || searchViews.includes(view));
   }
 
-  /** Read with the current query. Keeps a `problem` it is told to, so a reload can carry one. */
+  /** The term is long enough to search, and there is a search to ask in this view. */
+  get searching(): boolean {
+    return this.searchable && this.state.query.q.trim().length >= this.minSearch;
+  }
+
+  /**
+   * Read the page on screen again, with the current query. Keeps a `problem` it is told to,
+   * so a reload can carry one.
+   */
   async load(keep: Problem | null = null): Promise<void> {
     const generation = ++this.#generation;
-    const { query } = this.state;
+    const { query, page } = this.state;
+    const link = this.#trail[page] ?? null;
     const shown = this.state.phase === 'ready';
     this.#set(shown ? { refreshing: true } : { phase: 'loading' });
     try {
@@ -204,7 +239,7 @@ export class EntityTableModel<T, S extends string = string> {
             total: null,
             capped: r.capped,
           }))
-        : await this.source.read(query).then((p) => ({
+        : await (link === null ? this.source.read(query) : this.source.follow(link)).then((p) => ({
             mode: 'page' as const,
             rows: p.entries,
             next: p.next,
@@ -212,6 +247,8 @@ export class EntityTableModel<T, S extends string = string> {
             capped: false,
           }));
       if (generation !== this.#generation) return;
+      // The last row of a later page went (deleted here, or elsewhere): show the page before.
+      if (patch.rows.length === 0 && page > 0 && link !== null) return this.#goTo(page - 1, keep);
       // A selection names rows; one the new read no longer has is not selected any more.
       const keys = new Set(patch.rows.map(this.keyOf));
       const selected = new Set([...this.state.selected].filter((k) => keys.has(k)));
@@ -238,12 +275,38 @@ export class EntityTableModel<T, S extends string = string> {
     }
   }
 
-  /** Change the query and read again. A new view starts with nothing selected. */
+  /** Change the query and read again, from the first page. A new view starts with nothing selected. */
   setQuery(patch: Partial<TableQuery<S>>): Promise<void> {
     const query = { ...this.state.query, ...patch };
     const selected = patch.view !== undefined && patch.view !== this.state.query.view ? NONE : this.state.selected;
-    this.#set({ query, selected });
+    this.#trail = [null];
+    this.#offsets = [0];
+    this.#set({ query, selected, page: 0, offset: 0 });
     return this.load();
+  }
+
+  /** The page after this one, through the `next` link it handed out. */
+  nextPage(): Promise<void> {
+    const { next, page, offset, rows, mode } = this.state;
+    if (!next || mode === 'search' || this.state.loadingMore) return Promise.resolve();
+    this.#trail = [...this.#trail.slice(0, page + 1), next];
+    this.#offsets = [...this.#offsets.slice(0, page + 1), offset + rows.length];
+    return this.#goTo(page + 1);
+  }
+
+  /** The page before this one, re-read through the link that led to it. */
+  prevPage(): Promise<void> {
+    return this.state.page > 0 ? this.#goTo(this.state.page - 1) : Promise.resolve();
+  }
+
+  /** Rows per page. A new size starts again from the first page. */
+  setPageSize(limit: number): Promise<void> {
+    return this.setQuery({ limit });
+  }
+
+  #goTo(page: number, keep: Problem | null = null): Promise<void> {
+    this.#set({ page, offset: this.#offsets[page] ?? 0 });
+    return this.load(keep);
   }
 
   /** A header press: ascending, then descending, then back to the read's own order. */
@@ -268,7 +331,12 @@ export class EntityTableModel<T, S extends string = string> {
   search(q: string): Promise<void> {
     const before = this.searching;
     this.#set({ query: { ...this.state.query, q } });
-    return before || this.searching ? this.load() : Promise.resolve();
+    if (!before && !this.searching) return Promise.resolve();
+    // Into a search, or back out of one: either way the answer starts at its first page.
+    this.#trail = [null];
+    this.#offsets = [0];
+    this.#set({ page: 0, offset: 0 });
+    return this.load();
   }
 
   /** Drop the search term and every filter — what "No matches" offers. */

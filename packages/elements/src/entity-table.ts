@@ -18,7 +18,9 @@
  *   `filters` — `{ key, label, options }[]`, equality filters on declared filterable columns
  *   `query`   — the first read's query, for a screen restoring one from its URL
  * Attributes: `label` (the table's accessible name), `empty`, `forbidden-text`,
- *   `search-label`, `selectable`, `density="compact"`.
+ *   `search-label`, `selectable`, `density="compact"`, `paging` (`pages`, the default —
+ *   Previous / Next with "21–40 of 132" — or `more`, one "Load more" that appends), and
+ *   `page-size` (25). `pageSizes` is the property behind the rows-per-page picker.
  * Slot: `empty` — what an empty view says, in place of `empty` (a "Create" button, say).
  * Events: `sub-action-done` `{ action, rows }` after an action succeeded on some rows;
  *   `sub-query-change` `{ query }` whenever the person changes the view, sort, filters or search.
@@ -125,6 +127,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     searchLabel: { attribute: 'search-label' },
     selectable: { type: Boolean, reflect: true },
     density: { reflect: true },
+    paging: { reflect: true },
+    pageSize: { type: Number, attribute: 'page-size' },
+    pageSizes: { attribute: false },
     view: { state: true },
   };
 
@@ -140,6 +145,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   declare searchLabel: string;
   declare selectable: boolean;
   declare density: 'comfortable' | 'compact';
+  declare paging: 'pages' | 'more';
+  declare pageSize: number;
+  declare pageSizes: number[];
   declare view: TableState<T, S> | undefined;
 
   #model: EntityTableModel<T, S> | undefined;
@@ -159,6 +167,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.searchLabel = 'Search';
     this.selectable = false;
     this.density = 'comfortable';
+    this.paging = 'pages';
+    this.pageSize = 25;
+    this.pageSizes = [10, 25, 50, 100];
   }
 
   connectedCallback(): void {
@@ -190,7 +201,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     if (changed.has('source') && this.source) {
       const view = this.query?.view ?? this.views[0]?.id ?? null;
       this.#model = new EntityTableModel<T, S>(this.source, (state) => (this.view = state), {
-        query: { ...this.query, view },
+        query: { limit: this.pageSize, ...this.query, view },
       });
       this.view = this.#model.state;
       void this.#model.load();
@@ -462,6 +473,14 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     .note wa-button {
       margin-top: var(--wa-space-s);
     }
+    footer .pages {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--wa-space-xs);
+    }
+    footer wa-select.size {
+      width: 8.5rem;
+    }
     footer {
       display: flex;
       align-items: center;
@@ -518,7 +537,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
       </div>`;
     }
     const views = this.views.length > 1;
-    const search = Boolean(this.source?.search);
+    const search = model.searchable;
     if (!views && !search && this.filters.length === 0) return nothing;
     return html`<div part="toolbar" class="toolbar">
       ${views
@@ -551,6 +570,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
           with-clear
           placeholder=${f.label}
           .value=${state.query.filters[f.key] ?? ''}
+          ?disabled=${state.mode === 'search'}
+          title=${state.mode === 'search' ? 'A search is ranked, not filtered: clear it to filter' : nothing}
           @change=${(e: Event) => this.#changed(model.filter(f.key, (e.target as HTMLSelectElement).value || null))}
         >
           <span slot="label" class="vh">${f.label}</span>
@@ -746,6 +767,10 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         : `${n} ${n === 1 ? 'match' : 'matches'}`;
       return html`<footer part="footer"><span>${said}</span></footer>`;
     }
+    return this.paging === 'more' ? this.#more(state) : this.#pager(state);
+  }
+
+  #more(state: TableState<T, S>) {
     if (!state.next && state.total === null) return nothing;
     const shown = state.total === null ? `${state.rows.length} shown` : `${state.rows.length} of ${state.total}`;
     return html`<footer part="footer">
@@ -755,6 +780,44 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
             >Load more</wa-button
           >`
         : nothing}
+    </footer>`;
+  }
+
+  /**
+   * "21–40 of 132", rows per page, Previous and Next. No page numbers: a keyset walk cannot
+   * jump to page 7, and pretending it can means an offset, which drops and repeats rows on a
+   * table someone is writing to.
+   */
+  #pager(state: TableState<T, S>) {
+    const model = this.#model!;
+    const first = state.page === 0;
+    // A single short first page needs no pager — unless its size is the reason it is short.
+    if (first && !state.next && state.rows.length < Math.min(...this.pageSizes)) {
+      return state.total === null ? nothing : html`<footer part="footer"><span>${state.total} in all</span></footer>`;
+    }
+    const from = state.offset + 1;
+    const to = state.offset + state.rows.length;
+    const range = `${from}–${to}${state.total === null ? '' : ` of ${state.total}`}`;
+    const busy = state.refreshing;
+    return html`<footer part="footer" class="pager">
+      <span aria-live="polite">${range}</span>
+      <span class="pages">
+        <wa-select
+          size="s"
+          class="size"
+          .value=${String(state.query.limit ?? this.pageSize)}
+          @change=${(e: Event) => this.#changed(model.setPageSize(Number((e.target as HTMLSelectElement).value)))}
+        >
+          <span slot="label" class="vh">Rows per page</span>
+          ${this.pageSizes.map((n) => html`<wa-option value=${String(n)}>${n} per page</wa-option>`)}
+        </wa-select>
+        <wa-button size="s" appearance="outlined" ?disabled=${first || busy} @click=${() => model.prevPage()}
+          >‹ Previous</wa-button
+        >
+        <wa-button size="s" appearance="outlined" ?disabled=${!state.next || busy} @click=${() => model.nextPage()}
+          >Next ›</wa-button
+        >
+      </span>
     </footer>`;
   }
 
