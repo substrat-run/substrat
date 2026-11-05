@@ -55,10 +55,13 @@ query and hands it to your read, so it never sorts or filters the rows it happen
 
 ```ts
 table.source = {
-  read: ({ sort, order, view }) => api.myLists({ ...(sort ? { sort } : {}), order, ...(view === 'archived' ? { view } : {}) }),
+  read: ({ sort, order, limit, view }) =>
+    api.myLists({ ...(sort ? { sort } : {}), order, ...(limit ? { limit } : {}), ...(view === 'archived' ? { view } : {}) }),
   follow: (next) => api.follow(next),
   search: (q) => api.searchLists({ q }), // optional: the entity's search read, ranked and capped
+  searchViews: ['active'], // optional: the index leaves archived rows out, so search them nowhere
 };
+table.filters = [{ key: 'status', label: 'Status', options: [{ value: 'open', label: 'Open' }] }];
 table.columns = [
   { key: 'name', label: 'List', sort: 'name', href: (l) => `#/list/${l.id}` },
   { key: 'created_at', label: 'Created', kind: 'relative', sort: 'created_at', priority: 2 },
@@ -70,12 +73,20 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 - **Sort.** A column with `sort` gets a header button that cycles through ascending, descending
   and the read's own order. The generated client types `sort` as the columns the model declares
   `sortable`, so a column that has no index behind it won't compile.
-- **Paging** follows `next` on "Load more". Keyset paging can only walk forward, so there are no
-  page numbers. With `paged: { total: true }` the footer shows "40 of 1 203".
+- **Paging.** By default the footer shows "21–40 of 132", a rows-per-page picker (`page-size`,
+  default 25; the `pageSizes` property holds the choices) and Previous / Next. The page size
+  reaches your read as the query's `limit`. Next follows the `next` link the server handed out;
+  Previous re-reads the page through the link that led to it, so the walk stays a keyset walk.
+  There are no page numbers, because a keyset walk can't jump to page 7, and faking it would mean
+  an offset that drops and repeats rows while someone writes. "of 132" needs
+  `paged: { total: true }`. `paging="more"` swaps the pager for a single "Load more" that appends.
 - **Search** (`source.search`) replaces the page with a ranked result, and the footer says so when
-  the read was capped. A term shorter than two characters reads nothing.
+  the read was capped. A term shorter than two characters reads nothing. `searchViews` lists the
+  views the search covers; in any other view there's no search box. While a search is showing,
+  the filters are disabled, because a ranked search isn't filtered.
 - **Filters** (`filters`: `{ key, label, options }`) are equality filters on the read's declared
-  `filterable` fields. When a search or a filter returns nothing, the table says "Nothing matches"
+  `filterable` fields. Each one shows its name beside its value ("Status Open"), and its value
+  reaches your read as `query.filters[key]`. When a search or a filter returns nothing, the table says "Nothing matches"
   and offers Clear. That's a different message from "Nothing here".
 - **Selection.** `selectable` adds checkboxes. Actions marked `bulk` run once per selected row,
   then the table reads once and reports what didn't happen ("2 of 3 done; 1 not allowed").

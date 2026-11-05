@@ -8,7 +8,8 @@ element's attributes or slots.
 ## What's in it
 
 - **`<sub-entity-table>`** — the rows of one paged read: views, server-side sort, equality
-  filters, a search mode, a selection with bulk actions, and the actions a row allows. Give it
+  filters, a search mode, Previous / Next paging with a rows-per-page picker (or `paging="more"`),
+  a selection with bulk actions, and the actions a row allows. Give it
   a `source` (`{ read(query), follow, search? }` — the generated client's read, `follow` and
   the entity's search read), `columns` and `actions`. It tells a 403 wall from an empty list
   and "no matches" from both, keeps the rows when one action is refused, re-reads when an

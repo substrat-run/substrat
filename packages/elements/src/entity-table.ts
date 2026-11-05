@@ -320,7 +320,13 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
       max-width: 22rem;
     }
     .toolbar wa-select {
-      width: 11rem;
+      width: 12rem;
+    }
+    /* "Status  Open": a filter keeps its name once it has a value, the way a chip does. */
+    .filter-name {
+      color: var(--wa-color-text-quiet);
+      font-size: var(--wa-font-size-xs);
+      margin-inline-end: var(--wa-space-2xs);
     }
     .bulk {
       background: var(--sub-table-row-selected);
@@ -568,13 +574,14 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         (f) => html`<wa-select
           size="s"
           with-clear
-          placeholder=${f.label}
+          placeholder="Any"
           .value=${state.query.filters[f.key] ?? ''}
           ?disabled=${state.mode === 'search'}
           title=${state.mode === 'search' ? 'A search is ranked, not filtered: clear it to filter' : nothing}
           @change=${(e: Event) => this.#changed(model.filter(f.key, (e.target as HTMLSelectElement).value || null))}
         >
           <span slot="label" class="vh">${f.label}</span>
+          <span slot="start" class="filter-name" aria-hidden="true">${f.label}</span>
           ${f.options.map((o) => html`<wa-option value=${o.value}>${o.label}</wa-option>`)}
         </wa-select>`,
       )}
