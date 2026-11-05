@@ -94,6 +94,25 @@ describe('connector write-back (#574)', () => {
       expect(JSON.parse(String(q.rows[0]![0]))).toEqual({ connection: conn });
     });
 
+    it('reads a delivered grant back with no control plane to ask (#2892)', async () => {
+      // The control plane's landing pass reads this through the delegation before it grants;
+      // it threw on every CP-less host, so no declared landing on a hosted vertical was granted.
+      // Not in the shared scope-host suite: its connection-grant block seeds through
+      // `admin.grantToConnection`, which needs a directory, and the SQLite host has no CP-less shape.
+      const own = connectionIdOf.parse(ulid());
+      const scope = scopeId.parse(ulid());
+      const host = hostFor();
+      await host.provisionScopeLocal({
+        tenantId: t,
+        scopeId: scope,
+        owner,
+        roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+        ownerRoleKey: 'office-admin',
+      });
+      await host.connectorGrantLocal(own, scope, USE);
+      expect(await host.connectionGrantsInScope(t, scope)).toEqual([{ connectionId: own, permission: USE }]);
+    });
+
     it('delivers grants WITH provisioning (#592) — a scope provisioned after the grant invokes at once', async () => {
       // The acceptance property: no `connectorGrantLocal` hand-write for this scope —
       // the grant rides `provisionScopeLocal` exactly as entitlements/identity links do,

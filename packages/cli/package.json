@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/cli",
-  "version": "0.57.2",
+  "version": "0.57.3",
   "description": "The substrat CLI — authenticated deploy tooling: push a vertical to the platform, manage its versions and channels",
   "license": "Apache-2.0",
   "repository": {
@@ -34,7 +34,7 @@
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
-    "@babel/parser": "^7.29.11",
+    "@babel/parser": "^7.29.12",
     "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-client": "workspace:^",

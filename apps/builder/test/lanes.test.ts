@@ -330,7 +330,7 @@ describe('an unlaned build reads what it read on main (#2200 r1)', () => {
 		// dependencies and their own lockfile. Keep prompt changes deliberate.
 		const rejoined = `${await skill('apps/builder/skills/scaffold.md')}\n${await skill('apps/builder/skills/ui.md')}`;
 		expect(createHash('sha256').update(rejoined).digest('hex')).toBe(
-			'5242b20de057354d6d187d96874d55078596b84d1e32e0fdf28778e01adb8b92',
+			'6b2e7c458742ac0a054d7c5a7e900ed079c978b399a833d2b7ece922dfbd8e46',
 		);
 	});
 

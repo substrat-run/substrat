@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-manyfold",
-  "version": "0.7.97",
+  "version": "0.7.98",
   "private": true,
   "license": "Apache-2.0",
   "description": "CMS demo vertical (Manyfold) — multi-scope headless CMS, see spec/concept.md",
@@ -90,7 +90,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
-    "@scalar/api-reference": "^1.76.0",
+    "@scalar/api-reference": "^1.76.4",
     "@substrat-run/cli": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",

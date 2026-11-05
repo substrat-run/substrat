@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-meridian",
-  "version": "0.7.93",
+  "version": "0.7.94",
   "private": true,
   "license": "Apache-2.0",
   "description": "HR demo vertical (Meridian) — see spec/concept.md",
@@ -102,7 +102,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
-    "@scalar/api-reference": "^1.76.0",
+    "@scalar/api-reference": "^1.76.4",
     "@substrat-run/cli": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",

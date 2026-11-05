@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.181.0
+
+### Minor Changes
+
+- 4808495: `PLATFORM_STORE_CODE` adds `substrat.scope_mismatch`, `substrat.undeclared_binding`, `substrat.reserved_operation` and `substrat.too_large`: a scope-store call the platform refuses now carries the refusing rule's code as `storeCode`. Code that compared `storeCode === 'substrat.refused'` for another scope, an undeclared binding, a reserved operation or a call body over the limit now sees that rule's code instead; `substrat.refused` remains for a platform refusal with no rule of its own. Read an unknown `substrat.` code as `substrat.refused` on a 4xx and `substrat.unavailable` on a 5xx.
+
 ## 0.180.0
 
 ### Minor Changes
@@ -7371,7 +7377,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   composing a contracts schema into their own —
   `z.object({ facility: entityRef, unitPrice: money })`
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
-  schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
+schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
   what `engines/workorder` itself does (`unitPrice: money`, `facility: entityRef`),
   so anyone copying the reference hit it immediately. Found by building a vertical
   from scratch against the published packages — the flow the docs describe and

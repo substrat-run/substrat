@@ -1,5 +1,12 @@
 # @substrat-run/model-emit
 
+## 0.11.11
+
+### Patch Changes
+
+- Updated dependencies [4808495]
+  - @substrat-run/contracts@0.181.0
+
 ## 0.11.10
 
 ### Patch Changes

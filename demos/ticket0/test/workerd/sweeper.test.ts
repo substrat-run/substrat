@@ -39,7 +39,7 @@
  * runtime's own, so the DST answers are proven where a hosted desk computes them.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   errorCodeOf,
   moduleId,
@@ -2678,8 +2678,7 @@ describe('ticket0 on workerd — the saved-reply trash (#2161)', () => {
 /**
  * #2035 (condition 2): a load never leaves a desk the door cannot hold a (tenant, scope) pair
  * against. On a control-plane-less host each door reads the scope's own tenant record (#2016);
- * a store holding neither that record nor role rows is admitted only as a compatibility state,
- * which #2035 will refuse. A dump from a world that keeps its roles elsewhere lands with no role
+ * a store holding neither that record nor role rows is refused. A dump from a world that keeps its roles elsewhere lands with no role
  * rows, so it is the platform's tenant, sent on the restore and the snapshot, that records the
  * copy's tenant. The routes now require it: a body without one is refused before any store is
  * touched, so the refusal itself writes nothing. Driven through the deployed worker's own
@@ -2707,14 +2706,9 @@ describe('ticket0 on workerd — every load names its tenant, so none leaves a t
     e instanceof Error && errorCodeOf(e) === 'not_found' && e.message.includes(`unknown scope for tenant: (${x}, ${s})`);
   const MISSING_TENANT = { code: 'validation_failed', errors: [{ path: 'tenantId', message: 'Invalid input: expected string, received undefined' }] };
 
-  let warn: MockInstance<typeof console.warn>;
-  const unrecorded = () => warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"substrat":"tenant-unrecorded"'));
   beforeAll(async () => {
     expect((await platform('/internal/provision', { tenantId: tenant, scopeId: source, owner, entitlements })).status).toBe(201);
-    warn = vi.spyOn(console, 'warn');
   });
-  afterEach(() => warn.mockClear());
-  afterAll(() => warn.mockRestore());
 
   it('a restore that names the tenant records it on a copy that arrives with no role rows: the door admits it and refuses another', async () => {
     const copy = scopeId.parse(ulid());
@@ -2725,7 +2719,6 @@ describe('ticket0 on workerd — every load names its tenant, so none leaves a t
     expect(await roleTenantsOf(copy)).toEqual([tenant]);
     expect(await door(tenant, copy)).toBe('admitted');
     expect(isPairRefusal(await door(foreign, copy), foreign, copy)).toBe(true);
-    expect(unrecorded()).toEqual([]);
   });
 
   it('twin: a restore that names no tenant is refused and loads nothing, onto a fresh store or a live one', async () => {
@@ -2765,6 +2758,5 @@ describe('ticket0 on workerd — every load names its tenant, so none leaves a t
     expect(refused.status).toBe(400);
     expect(await refused.json()).toMatchObject(MISSING_TENANT);
     expect(await exportOf(unnamed)).toEqual(await exportOf(untouched));
-    expect(unrecorded()).toEqual([]);
   });
 });

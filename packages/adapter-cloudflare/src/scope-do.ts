@@ -2310,6 +2310,29 @@ export function defineScopeDO(
     }
 
     /**
+     * #2035: whether the ownerless reconcile may seat this scope for `tenantId` — it serves it, or
+     * the platform's word may record it where a lifecycle delivery's would (`backfills`). False for a
+     * foreign scope and for a DO nothing provisioned or loaded here. Read only, without migrating:
+     * the receipt is written by `seatTuplesFor`, which judges this rule again in the unit that
+     * applies the seat and the recorded-off positions, so no door admits the scope before they
+     * hold, and a failed seat records nothing.
+     */
+    seatsTenant(tenantId: TenantId): boolean {
+      const { verdict } = this.tenantVerdict(tenantId);
+      return verdict === 'recorded' || this.backfills(verdict);
+    }
+
+    /**
+     * #2016: whether the platform's word may record the tenant on a scope with no receipt — one
+     * provisioned before the receipt (its role rows agree), or one whose tenant nothing recorded
+     * although it holds data (a load from a world that keeps its roles elsewhere). A DO never
+     * provisioned here records nothing, or `servesTenant` would answer for a scope it does not hold.
+     */
+    private backfills(verdict: TenantVerdict): boolean {
+      return verdict === 'inferred' || (verdict === 'unknown' && this.holdsData());
+    }
+
+    /**
      * #2541: this scope's database size, or null when the deployment does not hold it. The held
      * check and the read are ONE call: a reap or wipe cannot land between them, so a scope that
      * stopped being held is answered "not held", never with a number.
@@ -2423,8 +2446,8 @@ export function defineScopeDO(
     /**
      * #2016: what one door into this scope needs from its storage on a CP-less host, in ONE call —
      * how `tenantId` reads against the scope (`tenantVerdict`), and the lifecycle the platform
-     * delivered (#1713). The coordinator refuses a foreign pair before any guard, handler or store
-     * lookup runs, and reports an `unknown` one it lets through. Read without migrating, like
+     * delivered (#1713). The coordinator refuses a foreign or an `unknown` pair before any guard,
+     * handler or store lookup runs, and logs the `unknown` refusal (#2035). Read without migrating, like
      * `servesTenant`.
      */
     admission(tenantId: TenantId): { verdict: TenantVerdict; lifecycle: StoredScopeLifecycle | null } {
@@ -3024,15 +3047,44 @@ export function defineScopeDO(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
       switchOff?: RecordedOffCarry & { scopeId: string; at: string },
     ): Promise<SwitchedOff[]> {
-      return this.queue.enqueue(() =>
-        this.revision.transactionSync(() => {
-          for (const t of tuples) {
-            const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
-            this.sql.exec(seat.sql, ...seat.params);
-          }
-          return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
-        }),
-      );
+      return this.queue.enqueue(() => this.revision.transactionSync(() => this.seatIn(tuples, switchOff)));
+    }
+
+    /**
+     * #2035: the ownerless reconcile's seat — `seatTuples`' unit, with the tenant recorded LAST in
+     * it. The receipt opens every door, so it lands with the seat and the recorded-off positions or
+     * not at all. `seatsTenant`'s rule is judged again before the unit's first write (the seat's
+     * own tuples would read as state), against what holds now: a scope reaped or recorded for
+     * another tenant since the host asked is refused untouched, as data, so the host answers K-3's
+     * uniform refusal and no other tenant is named.
+     */
+    async seatTuplesFor(
+      tenantId: TenantId,
+      tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+    ): Promise<{ switchedOff: SwitchedOff[] } | { refused: 'tenant' }> {
+      return this.queue.enqueue(async () => {
+        // Read before the unit, as `projectInUnit` reads it.
+        const reaped = await this.isReaped();
+        return this.revision.transactionSync(() => {
+          if (reaped || !this.seatsTenant(tenantId)) return { refused: 'tenant' as const };
+          const switchedOff = this.seatIn(tuples, switchOff);
+          this.sql.exec(`INSERT OR IGNORE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
+          return { switchedOff };
+        });
+      });
+    }
+
+    /** The seat and the recorded-off positions, in the caller's unit. */
+    private seatIn(
+      tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+    ): SwitchedOff[] {
+      for (const t of tuples) {
+        const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
+        this.sql.exec(seat.sql, ...seat.params);
+      }
+      return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
     }
 
     /** A declared entity-grant shape's grant to one person on one entity (#2071), as ONE unit. */
@@ -6305,10 +6357,11 @@ export function defineScopeDO(
     /**
      * #119: the purge gate's facts (`PurgeGateFacts`), from this scope's own storage: the module's
      * switch, the lifecycle the platform delivered (#1713), the copy classification (#2009) and the
-     * tenant receipt (`tenantVerdict` — `unknown` passes, as at every door). A directory-backed
+     * tenant receipt (`tenantVerdict` — only `foreign` is refused here). A directory-backed
      * deployment records no receipt and delivers neither a lifecycle nor a copy classification here,
-     * so on one those read clear: this object enforces the kill switch, and the coordinator's gate
-     * is the authority for tenant, lifecycle, copy and the rewind hold.
+     * so on one those read clear and `unknown` is its every scope: this object enforces the kill
+     * switch, and the coordinator's gate is the authority for tenant, lifecycle, copy and the rewind
+     * hold. On a CP-less host that gate has already refused an `unknown` pair at the door (#2035).
      */
     private purgeGateFacts(moduleId: string, tenantId: TenantId): PurgeGateFacts {
       const now = new Date().toISOString();
@@ -7007,10 +7060,8 @@ export function defineScopeDO(
       if (verdict === 'foreign') {
         return { refused: 'tenant', message: `lifecycle delivery ${foreignTenant(held, tenantId!)}` };
       }
-      // The back-fill: a scope provisioned before the receipt (its role rows agree), or one whose
-      // tenant nothing recorded although it holds data (a load from a world that keeps its roles
-      // elsewhere). The directory's word records it; a DO never provisioned here records nothing.
-      const backfill = verdict === 'inferred' || (verdict === 'unknown' && this.holdsData());
+      // The back-fill (`backfills`): the directory's word records the tenant.
+      const backfill = verdict !== null && this.backfills(verdict);
       let out!: LifecycleDelivery;
       this.revision.transactionSync(() => {
         // A write the carry fences on, not bookkeeping: it happens once per legacy scope, and

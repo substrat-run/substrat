@@ -1,5 +1,13 @@
 # @substrat-run/adapter-sqlite
 
+## 0.181.0
+
+### Patch Changes
+
+- Updated dependencies [4808495]
+  - @substrat-run/contracts@0.181.0
+  - @substrat-run/kernel@0.181.0
+
 ## 0.180.0
 
 ### Minor Changes
@@ -7311,7 +7319,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   composing a contracts schema into their own —
   `z.object({ facility: entityRef, unitPrice: money })`
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
-  schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
+schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
   what `engines/workorder` itself does (`unitPrice: money`, `facility: entityRef`),
   so anyone copying the reference hit it immediately. Found by building a vertical
   from scratch against the published packages — the flow the docs describe and
