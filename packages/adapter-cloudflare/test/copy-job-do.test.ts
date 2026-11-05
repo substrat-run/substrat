@@ -13,15 +13,28 @@ type Stub = DurableObjectStub & CopyJobDo<TestCopyJob>;
 const stubOf = (ns: DurableObjectNamespace, name: string) => ns.get(ns.idFromName(name)) as unknown as Stub;
 const job = (over: Partial<TestCopyJob> = {}): TestCopyJob =>
   ({ status: 'copying', nextDelayMs: 0, updatedAt: Date.now(), steps: 0, target: 3, ...over });
-const until = async (stub: Stub, ok: (j: TestCopyJob | null) => boolean): Promise<TestCopyJob | null> => {
+const poll = async <T>(read: () => Promise<T>, ok: (v: T) => boolean): Promise<T> => {
   for (let i = 0; i < 200; i++) {
-    const held = await stub.get();
-    if (ok(held)) return held;
+    const v = await read();
+    if (ok(v)) return v;
     await new Promise((r) => setTimeout(r, 10));
   }
-  return stub.get();
+  return read();
 };
+const until = (stub: Stub, ok: (j: TestCopyJob | null) => boolean) => poll(() => stub.get(), ok);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * How long until the alarm, once one is set in the future: the retry a step that threw scheduled. A
+ * start's alarm is set to now, so it is never in the future, and a job that throws never gets to done.
+ */
+const retryIn = (stub: Stub) => poll(
+  () => runInDurableObject(stub, async (_o, state) => ((await state.storage.getAlarm()) ?? 0) - Date.now()),
+  (ms) => ms > 0,
+);
+/** Let the job's next step succeed. Its steps throw until then, however late their alarms fire. */
+const stopThrowing = (stub: Stub) => runInDurableObject(stub, async (_o, state) => {
+  await state.storage.put('job', { ...(await state.storage.get<TestCopyJob>('job')), throwUntil: undefined });
+});
 
 describe('defineCopyJobDO (#2450 step 2)', () => {
   it('starts once, steps by alarm until done, and keeps the finished job', async () => {
@@ -37,11 +50,12 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
 
   it('a step that throws is retried later, and the job is not lost', async () => {
     const stub = stubOf(env.COPY_JOB_TEST, `throw-${crypto.randomUUID()}`);
-    await stub.start(job({ target: 1, throwUntil: Date.now() + 50 }));
-    await sleep(30);
+    await stub.start(job({ target: 1, throwUntil: Date.now() + 60_000 }));
+    // The first step threw: its retry is the default 30 s out, and the job is still there.
+    expect(await retryIn(stub)).toBeGreaterThan(20_000);
     expect(await stub.get()).toMatchObject({ status: 'copying', steps: 0 });
-    await sleep(40);
-    // The retry is scheduled 30 s out; run it now.
+    await stopThrowing(stub);
+    // Run the retry now rather than wait for it.
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done', steps: 1 });
   });
@@ -49,7 +63,10 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
   it('the wait after a step that threw is the config\'s when it gives one', async () => {
     // 40 ms here, where the default (above) waits 30 s for an alarm the test has to run itself.
     const stub = stubOf(env.COPY_JOB_SHORT, `threw-short-${crypto.randomUUID()}`);
-    await stub.start(job({ target: 1, throwUntil: Date.now() + 50 }));
+    await stub.start(job({ target: 1, throwUntil: Date.now() + 60_000 }));
+    expect(await retryIn(stub)).toBeLessThanOrEqual(40);
+    await stopThrowing(stub);
+    // The retry fires by itself.
     expect(await until(stub, (j) => j?.status !== 'copying')).toMatchObject({ status: 'done', steps: 1 });
   });
 
