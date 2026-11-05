@@ -56,7 +56,7 @@ export function retryAfterSeconds(value: string | null | undefined, now: number 
 export const MAX_ATTACHMENT_BYTES = Math.floor(2.5 * 1024 * 1024);
 
 /** Graph's smallest attachment upload session; a smaller attachment is posted to the draft whole. */
-export const SESSION_ATTACHMENT_MIN_BYTES = 3 * 1024 * 1024;
+const SESSION_ATTACHMENT_MIN_BYTES = 3 * 1024 * 1024;
 
 export interface SiteInfo {
   id: string;
@@ -132,7 +132,9 @@ export async function sendMail(
       });
     } else {
       step = 'draft';
-      const draft = z.object({ id: z.string().min(1) }).parse(await (await call(client, 'POST', `${user}/messages`, message)).json());
+      const draft = z
+        .object({ id: z.string().min(1) })
+        .parse(await (await call(client, 'POST', `${user}/messages`, message)).json());
       const at = `${user}/messages/${enc(draft.id)}`;
       try {
         for (const a of mail.attachments) {
@@ -438,7 +440,7 @@ async function uploadToSession(client: GraphClient, uploadUrl: string, source: B
   }
 }
 
-/** What `writeUnder` reads a body through: `fill` takes exactly the bytes asked for, `end` that none follow. */
+/** What an upload reads a body through: `fill` takes exactly the bytes asked for, `end` that none follow. */
 interface BodyReader {
   length: number;
   fill(into: Uint8Array): Promise<void>;
