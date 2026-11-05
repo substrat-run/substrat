@@ -1,5 +1,18 @@
 # @substrat-run/vertical-auth
 
+## 0.31.0
+
+### Minor Changes
+
+- fd7be61: A member who is already in a scope can now be bound to a record by a `bind` link (K-60), a third capability mode beside `act` and `become`. A holder of the binding's key on the record mints it for one named member with the hosts' new `mintBindLinkBounded`. It binds that member when their own session presents it: `exchangeCapability(…, { mode: 'bind', presenter })`. It is single use, its expiry is optional, and it is on the spine as the new `capability.bind-minted` and the record's unchanged `entity.holder-bound`. An unbind of the record, or the erasure of the member it names, revokes it. `vertical-auth` mounts it with `mountBindLinkRoutes`, and `contract-tests` adds `bindLinkContractSuite`.
+- 03f20e7: vertical-auth: `mountSession` (`/session-route`) is `GET /api/me` — `{ principal, display, email }` plus a vertical's own fields, `needs-setup` while the owner seat is unclaimed, or 401 — and reports the login's place. dev-issuer: `DevCaller` carries the issuer's `email`.
+
+### Patch Changes
+
+- Updated dependencies [fd7be61]
+  - @substrat-run/contracts@0.180.0
+  - @substrat-run/kernel@0.180.0
+
 ## 0.30.3
 
 ### Patch Changes

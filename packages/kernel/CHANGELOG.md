@@ -1,5 +1,16 @@
 # @substrat-run/kernel
 
+## 0.180.0
+
+### Minor Changes
+
+- fd7be61: A member who is already in a scope can now be bound to a record by a `bind` link (K-60), a third capability mode beside `act` and `become`. A holder of the binding's key on the record mints it for one named member with the hosts' new `mintBindLinkBounded`. It binds that member when their own session presents it: `exchangeCapability(…, { mode: 'bind', presenter })`. It is single use, its expiry is optional, and it is on the spine as the new `capability.bind-minted` and the record's unchanged `entity.holder-bound`. An unbind of the record, or the erasure of the member it names, revokes it. `vertical-auth` mounts it with `mountBindLinkRoutes`, and `contract-tests` adds `bindLinkContractSuite`.
+
+### Patch Changes
+
+- Updated dependencies [fd7be61]
+  - @substrat-run/contracts@0.180.0
+
 ## 0.179.0
 
 ### Minor Changes
@@ -7345,11 +7356,9 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   Zod schemas do not compose across majors, so the moment a user wrote the pattern
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
-
-                                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
-
+  `z.object({ facility: entityRef, unitPrice: money })`
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
-schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
+  schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
   what `engines/workorder` itself does (`unitPrice: money`, `facility: entityRef`),
   so anyone copying the reference hit it immediately. Found by building a vertical
   from scratch against the published packages — the flow the docs describe and
