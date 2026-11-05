@@ -41,8 +41,9 @@ type Out<K extends keyof DashboardClient> = Awaited<ReturnType<DashboardClient[K
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
  *
- * The worker serves everything under `/api`: `/api/me` (who am I — and, on first
- * call, bootstraps my tenant), and the team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
+ * The worker serves everything under `/api`: the team-less routes (`/api/me` — who am I and
+ * which teams, read-only — team create, switch and invite accept; `accountApi`), and the
+ * team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
  * redirect to the platform's AuthHero instance — there is no password here, so
  * sign-in/out are full-page navigations, not fetches. `credentials: 'include'`
  * carries the same-origin session cookie the worker sets.
@@ -673,9 +674,8 @@ export const isApiError = (error: unknown): error is GeneratedApiError | Account
 /**
  * The declared surface (#2170), bound to ONE team: every call goes to
  * `/api/teams/<teamId>/…`, so the request names its team in its own URL. The `sb_team`
- * cookie, which every tab shares, is no longer what a request acts on. The hand-written
- * helper below (`call`) reaches only the invite preview; the other team-less routes are
- * `accountApi`'s.
+ * cookie, which every tab shares, is no longer what a request acts on; the team-less
+ * routes are `accountApi`'s.
  *
  * Build it from the team the TAB is on (`me.currentTeamId`, pinned by the URL), never
  * once at module load.

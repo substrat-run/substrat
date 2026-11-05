@@ -1,8 +1,9 @@
 # @substrat-run/elements
 
 Web components for a vertical's screens, built so a project gets a table that is good and
-looks like *its* theme without writing either. **A prototype**: private, three components, and
-dogfooded in `demos/todo/app` (`#/table`).
+looks like *its* theme without writing either. Three components so far, dogfooded in
+`demos/todo/app` (`#/table`, and its header). Still `0.x`: a minor release may change an
+element's attributes or slots.
 
 ## What's in it
 
@@ -29,6 +30,10 @@ dogfooded in `demos/todo/app` (`#/table`).
   roomy) are classes over it. A theme is token values only — no selectors into components.
 
 ## Using it
+
+```sh
+npm install @substrat-run/elements
+```
 
 ```ts
 import '@substrat-run/elements';

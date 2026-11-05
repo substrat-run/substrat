@@ -14,8 +14,9 @@
  * The container is disposable; source is pushed after commits. Project and session
  * metadata, plus disposable editor snapshots, live in this tenant's agent DO.
  *
- * Honest limit: /api/dev (preview) stays 503 — background processes want the
- * SDK's process API + exposePort wiring, a named follow-up of #626.
+ * /api/dev (local dev processes) stays 503 here: the hosted preview is a preview
+ * SLOT, released from the saved revision by the worker's /api/preview (#2895,
+ * studio-preview.ts), so nothing in the sandbox has to run or be exposed.
  */
 import { DurableObject } from 'cloudflare:workers';
 import { getSandbox, type Sandbox } from '@cloudflare/sandbox';
