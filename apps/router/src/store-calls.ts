@@ -34,11 +34,11 @@ export interface StoreCallCaller {
  * envelope is `ok` too, as `substrat.bad_envelope` with 502, the code the in-process path gives it.
  * The store's `code` travels only as the envelope's `code`, which the vertical reads as
  * `storeCode`; the platform's code is derived from the status. Not `ok` is the
- * platform's own refusal, or a store it could not reach.
+ * platform's own refusal, or a store it could not reach, with a `PLATFORM_STORE_CODE`.
  */
 export type StoreCallOutcome =
   | { ok: true; status: number; body: StoreResponse }
-  | { ok: false; status: number; message: string };
+  | { ok: false; status: number; code: string; message: string };
 
 export interface StoreCallEnv {
   /** PKCS8 Ed25519 private key, base64url. Signs audience `caller`. The store holds only the public key. */
@@ -60,25 +60,29 @@ export async function handleStoreCall(
 ): Promise<StoreCallOutcome> {
   const parsed = storeCallRequest.safeParse(rawRequest);
   if (!parsed.success) {
-    return { ok: false, status: 400, message: 'store call refused: the body is not a store call' };
+    return refused(400, PLATFORM_STORE_CODE.refused, 'store call refused: the body is not a store call');
   }
   const request: StoreCallRequest = parsed.data;
   if (request.operation.startsWith('substrat.')) {
-    return { ok: false, status: 403, message: `store operation '${request.operation}' is reserved for the platform` };
+    return refused(403, PLATFORM_STORE_CODE.reservedOperation, `store operation '${request.operation}' is reserved for the platform`);
   }
   if (request.scopeId !== caller.scopeId) {
-    return { ok: false, status: 403, message: 'store call refused: this dispatch reaches only its own scope' };
+    return refused(403, PLATFORM_STORE_CODE.scopeMismatch, 'store call refused: this dispatch reaches only its own scope');
   }
   const declared = caller.stores?.find((store) => store.binding === request.binding);
   if (!declared) {
-    return { ok: false, status: 404, message: `store call refused: '${request.binding}' is not a store this version declares` };
+    return refused(
+      404,
+      PLATFORM_STORE_CODE.undeclaredBinding,
+      `store call refused: '${request.binding}' is not a store this version declares`,
+    );
   }
   if (!env.STORE_CALLER_KEY) {
     console.warn('scope store call refused: STORE_CALLER_KEY is not set');
-    return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
+    return unavailable('this router is not configured for scope stores');
   }
   if (!env.DISPATCH) {
-    return { ok: false, status: 503, message: 'this router cannot dispatch scope stores' };
+    return unavailable('this router cannot dispatch scope stores');
   }
   const objectName = scopeStoreObjectName(caller.tenantId, caller.vertical, request.scopeId, request.binding);
   const scriptName = scopeStoreScriptName(caller.vertical, declared.driver);
@@ -86,11 +90,11 @@ export async function handleStoreCall(
   // The store entry refuses a body over the limit (#2811), so it is refused here, before it is signed.
   const bytes = scopeStoreBodyBytes(body);
   if (bytes > STORE_CALL_MAX_BYTES) {
-    return {
-      ok: false,
-      status: 413,
-      message: `store call refused: its body is ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
-    };
+    return refused(
+      413,
+      PLATFORM_STORE_CODE.tooLarge,
+      `store call refused: its body is ${bytes} bytes, over the limit of ${STORE_CALL_MAX_BYTES}. Nothing was sent.`,
+    );
   }
   let issued;
   try {
@@ -106,7 +110,7 @@ export async function handleStoreCall(
     if (!(error instanceof ScopeStoreKeyError)) throw error;
     // Set but unusable, e.g. a raw key where PKCS8 belongs. The message never carries the key.
     console.warn(`scope store call refused: STORE_CALLER_KEY is set but unusable (${error.message})`);
-    return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
+    return unavailable('this router is not configured for scope stores');
   }
   let response: Response;
   try {
@@ -123,7 +127,7 @@ export async function handleStoreCall(
     );
   } catch (error) {
     console.warn(`scope store call to ${scriptName} failed: ${dispatchFailure(error)}`);
-    return { ok: false, status: 503, message: 'the scope store could not be reached' };
+    return unavailable('the scope store could not be reached');
   }
   return storeAnswer(scriptName, response);
 }
@@ -139,6 +143,10 @@ function dispatchFailure(error: unknown): string {
   if (error.message.startsWith('Worker not found')) return 'the script is not in the dispatch namespace';
   return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : 'an error was thrown';
 }
+
+/** The platform's own refusal: its rule's code (#2406), and a message for a person. */
+const refused = (status: number, code: string, message: string): StoreCallOutcome => ({ ok: false, status, code, message });
+const unavailable = (message: string): StoreCallOutcome => refused(503, PLATFORM_STORE_CODE.unavailable, message);
 
 /**
  * Read what the store script answered. An `{ error }` envelope is the store's refusal

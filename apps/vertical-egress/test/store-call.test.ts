@@ -10,7 +10,10 @@ afterEach(() => {
 
 const SCOPE = '01J00000000000000000000S01';
 
-function storeCall(invoke: NonNullable<Env['STORE_CALLS']>['invoke']): Promise<Response> {
+function storeCall(
+  invoke: NonNullable<Env['STORE_CALLS']>['invoke'],
+  call: object = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' },
+): Promise<Response> {
   const env: Env = {
     ROUTER: { fetch: async () => new Response('routed') } as unknown as Fetcher,
     PLATFORM_BASE_DOMAINS: 'substrat.run',
@@ -21,7 +24,7 @@ function storeCall(invoke: NonNullable<Env['STORE_CALLS']>['invoke']): Promise<R
   return worker.fetch(
     new Request(STORE_CALL_URL, {
       method: 'POST',
-      body: JSON.stringify({ scopeId: SCOPE, binding: 'GRAPH', operation: 'read' }),
+      body: JSON.stringify(call),
     }),
     env,
   );
@@ -43,5 +46,25 @@ describe('a store call through egress', () => {
     const res = await storeCall(async () => ({ ok: true, status: 403, body: { error: { code: 'substrat.refused', status: 403 } } }));
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: { code: 'substrat.bad_envelope', status: 502 } });
+  });
+
+  it("passes on the router's rule code, and derives one from the status for a router that sends none (#2406)", async () => {
+    const coded = await storeCall(async () => ({ ok: false, status: 404, code: 'substrat.undeclared_binding', message: 'not declared' }));
+    expect([coded.status, await coded.json()]).toEqual([404, { error: { code: 'substrat.undeclared_binding', status: 404, body: 'not declared' } }]);
+    // A router deployed before #2406.
+    for (const [status, code] of [[403, 'substrat.refused'], [503, 'substrat.unavailable']] as const) {
+      const older = await storeCall(async () => ({ ok: false, status, message: 'm' }));
+      expect(await older.json()).toEqual({ error: { code, status, body: 'm' } });
+    }
+  });
+
+  it('refuses a reserved operation itself, with its rule code, before the router', async () => {
+    const invoke = vi.fn();
+    const res = await storeCall(invoke, { scopeId: SCOPE, binding: 'GRAPH', operation: 'substrat.wipe' });
+    expect([res.status, await res.json()]).toEqual([
+      403,
+      { error: { code: 'substrat.reserved_operation', status: 403, body: "store operation 'substrat.wipe' is reserved for the platform" } },
+    ]);
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

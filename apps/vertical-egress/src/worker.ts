@@ -337,8 +337,13 @@ function logRefusal(env: Env, verdict: 'refused' | 'inert' | 'peer', hostname: s
 /** What the router's peer entrypoint answers. */
 type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
 
-/** What the router's scope-store entrypoint answers: the store's envelope, or the platform's refusal. */
-type StoreCallOutcome = { ok: true; status: number; body: StoreResponse } | { ok: false; status: number; message: string };
+/**
+ * What the router's scope-store entrypoint answers: the store's envelope, or the platform's
+ * refusal with its rule's code. A router deployed before #2406 sends no `code`.
+ */
+type StoreCallOutcome =
+  | { ok: true; status: number; body: StoreResponse }
+  | { ok: false; status: number; code?: string; message: string };
 
 /** Where a subrequest ended up: the seven verdicts the meter distinguishes. `inert` is a
  *  third-party subrequest refused because the scope is not primary (#2005). */
@@ -424,11 +429,12 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
 /**
  * Hand one scope-store call to the router (#2207). The caller is the dispatch, not the body.
  * The platform's own answers carry a code reserved to it (#2815), so the vertical can tell
- * them from its store's: `substrat.refused` for a 4xx, `substrat.unavailable` for a 5xx.
+ * them from its store's: the refusing rule's code (#2406), or else `substrat.refused` for a
+ * 4xx and `substrat.unavailable` for a 5xx.
  */
 async function storeCall(request: Request, env: Env): Promise<Response> {
-  const problem = (status: number, error: string): Response => {
-    const code = status < 500 ? PLATFORM_STORE_CODE.refused : PLATFORM_STORE_CODE.unavailable;
+  const problem = (status: number, error: string, ruleCode?: string): Response => {
+    const code = ruleCode ?? (status < 500 ? PLATFORM_STORE_CODE.refused : PLATFORM_STORE_CODE.unavailable);
     return new Response(JSON.stringify({ error: { code, status, body: error } }), {
       status,
       headers: { 'content-type': 'application/json' },
@@ -446,7 +452,7 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
     return problem(400, 'store call refused: the body is not a store call');
   }
   if (parsed.data.operation.startsWith('substrat.')) {
-    return problem(403, `store operation '${parsed.data.operation}' is reserved for the platform`);
+    return problem(403, `store operation '${parsed.data.operation}' is reserved for the platform`, PLATFORM_STORE_CODE.reservedOperation);
   }
   let outcome: StoreCallOutcome;
   try {
@@ -463,7 +469,7 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
     // Not logged: a failure inside the router can carry a store's text in its message.
     return problem(503, 'the router could not be reached');
   }
-  if (!outcome.ok) return problem(outcome.status, outcome.message);
+  if (!outcome.ok) return problem(outcome.status, outcome.message, outcome.code);
   // The router already answers a store's reserved code as a bad envelope; this holds it here
   // too, so a store's answer never reads as the platform's whichever deploy comes first.
   if ('error' in outcome.body && isPlatformStoreCode(outcome.body.error.code)) {
