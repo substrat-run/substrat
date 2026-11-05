@@ -34,6 +34,11 @@ entire value. `pnpm lint:tests` enforces this; it is not a style preference.
 Import from `src/` — `buildHost`, `seed` — because those are the things under
 test. Never from `spec/model.ts`.
 
+`src/` does not exist yet, so take their shape from the reference vertical
+(`read_reference` on `src/seed.ts` and `test/scenario.test.ts`) instead of guessing
+it — the scaffold copies the same file, so the names you import are the names it
+will export.
+
 ## What to write
 
 The concept's §9 is the script; it was approved precisely so this file could be

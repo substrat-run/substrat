@@ -68,4 +68,7 @@ engines don't own. If the core noun isn't job/inspection/booking-shaped, most
 of the app is Tier 3 — a normal, supported outcome, not a failure.
 
 This inventory can go stale; the engines are self-describing. After
-`pnpm install`, ground truth is `node_modules/@substrat-run/<engine>/dist/index.d.ts`.
+`pnpm install`, ground truth for an engine's exports is
+`node_modules/@substrat-run/<engine>/dist/index.d.ts`. For the host, seed and
+provisioning API, the reference vertical (`read_reference`) is the ground truth —
+read it, not the kernel's declarations.

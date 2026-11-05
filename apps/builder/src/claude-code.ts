@@ -86,6 +86,7 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 			emit,
 			editTool: true,
 			...(this.#opts.denyWrite ? { denyWrite: this.#opts.denyWrite } : {}),
+			...(input.reference ? { reference: input.reference } : {}),
 		});
 		const server = createSdkMcpServer({
 			name: SERVER,
@@ -116,6 +117,7 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 		const stepUsage: StepUsage[] = [];
 		const seen = new Set<string>();
 		let steps = 0;
+		let truncated = false;
 
 		try {
 			for await (const msg of query({
@@ -162,6 +164,7 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 				}
 				if (msg.type === 'result') {
 					if (msg.subtype === 'error_max_turns') {
+						truncated = true;
 						emit({ type: 'truncated', steps, maxSteps: this.#opts.maxSteps ?? 40 });
 					} else if (msg.is_error) {
 						const detail =
@@ -172,7 +175,10 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 				yield* queue.splice(0);
 			}
 		} catch (err) {
-			emit({ type: 'error', message: `claude-code: ${err instanceof Error ? err.message : String(err)}`, fatal: true });
+			// The SDK throws after an `error_max_turns` result as well. That is the
+			// step ceiling, already reported as `truncated` — the studio's loop goes
+			// on to the next turn there, and a fatal here would end the eval instead.
+			if (!truncated) emit({ type: 'error', message: `claude-code: ${err instanceof Error ? err.message : String(err)}`, fatal: true });
 		}
 		yield* queue.splice(0);
 
