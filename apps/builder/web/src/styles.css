@@ -200,6 +200,16 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .model-list button:disabled, .option-list button:disabled { opacity: .55; cursor: default; }
 .model-list .current, .option-list .current { border-color: var(--status-success-dot); color: var(--status-success-fg); }
 
+/* the next ladder step (model · tests · build): the one primary action in the
+   chat while the model waits, so it reads as the way forward, not an option */
+.next-step { display: flex; }
+.next-step button {
+	height: 30px; border: 0; border-radius: 6px; padding: 0 14px;
+	background: var(--action-primary-bg); color: var(--action-primary-text);
+	font-weight: 500; font-size: 13px; cursor: pointer; font-family: inherit;
+}
+.next-step button:hover { background: var(--action-primary-bg-hover); }
+
 /* ── interview questions (single + tabbed) ─────────────────────────────────── */
 .q-block { display: flex; flex-direction: column; gap: 8px; }
 .q-multi {

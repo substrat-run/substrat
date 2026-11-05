@@ -4,7 +4,7 @@
  * the user sees files written, commands run, gates and commits as they happen.
  */
 import { type DragEvent as ReactDragEvent, useEffect, useRef, useState } from 'react';
-import { api, type BuildEvent, type PlanAssumption } from './api.js';
+import { api, type BuildEvent, type BuildPhase, type PlanAssumption } from './api.js';
 import { BuildPanel } from './BuildPanel.js';
 import { Markdown } from './Markdown.js';
 
@@ -197,6 +197,38 @@ export function extractInlineOptions(text: string): string[] | null {
 		}
 	}
 	return null;
+}
+
+/**
+ * The step a click starts, per ladder position. Every phase before iterate ends
+ * its turn on purpose (each writes one artifact the builder approves), so the
+ * builder is always one step from the next one — which is a button, not a phrase
+ * to guess. The interview has none: the concept is proposed in an ask_user turn,
+ * whose option is the button there. Sent as the user message, so the transcript
+ * reads as what was asked for.
+ */
+const NEXT_STEP: Partial<Record<BuildPhase, string>> = {
+	model: 'Create the model',
+	scenario: 'Write the tests',
+	scaffold: 'Build the app',
+};
+
+/** The live next-step label, or null while a question is waiting for its answer. */
+export function nextStepFor(phase: BuildPhase | null, items: readonly ChatItem[]): string | null {
+	const label = phase ? NEXT_STEP[phase] : undefined;
+	if (!label) return null;
+	let lastUser = -1;
+	for (let i = items.length - 1; i >= 0; i--) {
+		if (items[i]?.kind === 'user') {
+			lastUser = i;
+			break;
+		}
+	}
+	const turn = items.slice(lastUser + 1);
+	if (turn.some((it) => it.kind === 'event' && it.e.type === 'question')) return null;
+	const last = turn[turn.length - 1];
+	if (last?.kind === 'assistant' && extractInlineOptions(last.text)) return null;
+	return label;
 }
 
 /** The always-present free-text answer — the "Other" the options don't cover. */
@@ -399,6 +431,8 @@ function safeName(name: string): string {
 export function Chat(props: {
 	items: ChatItem[];
 	busy: boolean;
+	/** The server's ladder position — decides which next-step button shows. */
+	phase: BuildPhase | null;
 	liveness: { label: string; silentForS: number };
 	queued: readonly PlanAssumption[];
 	/** Project dir attachments are saved under; null before the session loads. */
@@ -511,6 +545,7 @@ export function Chat(props: {
 		props.onSend(message);
 	}
 
+	const nextStep = nextStepFor(props.phase, props.items);
 	const canSend = (draft.trim().length > 0 || attachments.length > 0) && !sending;
 
 	return (
@@ -590,6 +625,11 @@ export function Chat(props: {
 					const { text, cls } = eventLine(item.e);
 					return <div key={i} className={`evt ${cls}`}>{text}</div>;
 				})}
+				{!props.busy && nextStep && (
+					<div className="next-step">
+						<button onClick={() => props.onSend(nextStep)}>{nextStep} →</button>
+					</div>
+				)}
 				{props.busy && (
 					<WorkingIndicator label={props.liveness.label} silentForS={props.liveness.silentForS} />
 				)}
