@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, type Item, type List, type Paged, type Share } from './api.js';
-import { AccountMenu, ListsTable, useSession } from './elements.js';
+import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
 import { Settings } from './settings.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
@@ -67,6 +67,7 @@ export function App() {
   const hash = useHash();
   const state = useSession();
   const match = /^#\/list\/(.+)$/.exec(hash);
+  const tableList = /^#\/table\/list\/(.+)$/.exec(hash);
 
   if (state.phase === 'loading') return <main><p>Loading…</p></main>;
   if (state.phase === 'signed-out') {
@@ -101,6 +102,8 @@ export function App() {
       <main>
         {match ? (
           <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
+        ) : tableList ? (
+          <ItemsTable key={`${who}:${tableList[1]}`} listId={tableList[1]!} />
         ) : hash === SETTINGS_HASH ? (
           <Settings />
         ) : hash === TABLE_HASH ? (

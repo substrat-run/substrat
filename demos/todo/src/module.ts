@@ -162,7 +162,10 @@ const bound = operationsFor(todoOperations)({
   'todo/my-lists': async (ctx, input) =>
     pageVisible(
       // #119: the kernel leaves archived and binned lists out unless the archive is asked for.
-      (p) => ctx.page<ListRow>('list', { ...p, view: input?.view }),
+      // The input is passed on whole, under the walk's own `p`: it carries the caller's `view`
+      // and the `sort` / `order` the platform parsed, which a hand-picked `{ view }` dropped —
+      // so a sort by name came back in creation order, with nothing red anywhere.
+      (p) => ctx.page<ListRow>('list', { ...input, ...p }),
       input,
       async (list) => (await ctx.check(TODO_PERM.listContribute, listRef(list.id))).allowed,
       { continuation: ctx.pageContinuation('list:my-lists', input) },

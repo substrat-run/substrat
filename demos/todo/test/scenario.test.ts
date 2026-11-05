@@ -120,6 +120,20 @@ describe('the happy path', () => {
     expect(totals).toEqual([5, 5, 5]);
   });
 
+  it('sorts my-lists by the column and in the direction the caller asks for', async () => {
+    const ada = await as('ada');
+    const names = ['Sort b', 'Sort c', 'Sort a'];
+    for (const name of names) await ada.invoke('todo/create-list', { name });
+    // Other tests' lists are Ada's too; only the relative order of these three is asserted.
+    const read = async (input: Record<string, unknown>) =>
+      (await ada.invoke<Page<{ name: string }>>('todo/my-lists', input)).entries
+        .map((l) => l.name)
+        .filter((n) => names.includes(n));
+    expect(await read({})).toEqual(['Sort b', 'Sort c', 'Sort a']);
+    expect(await read({ sort: 'name' })).toEqual(['Sort a', 'Sort b', 'Sort c']);
+    expect(await read({ sort: 'name', order: 'desc' })).toEqual(['Sort c', 'Sort b', 'Sort a']);
+  });
+
   it('counts the filter, not the table', async () => {
     const ada = await as('ada');
     const mine = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Counted' });
