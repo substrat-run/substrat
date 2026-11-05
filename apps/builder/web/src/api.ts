@@ -22,6 +22,11 @@ export interface ProjectInfo {
 	updatedAt: string;
 }
 
+/** GET/POST /api/preview — the worker's answer (src/studio-preview.ts). */
+export type StudioPreview =
+	| { state: 'none' }
+	| { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
+
 export interface SessionInfo {
 	sourceProjects?: boolean;
 	root: string;
@@ -92,8 +97,8 @@ function f(input: string, init?: RequestInit): Promise<Response> {
 }
 
 async function j<T>(res: Response): Promise<T> {
-	const body = (await res.json()) as T & { error?: string };
-	if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+	const body = (await res.json()) as T & { error?: string; detail?: string };
+	if (!res.ok) throw new Error(body.error ?? body.detail ?? `HTTP ${res.status}`);
 	return body;
 }
 
@@ -233,6 +238,10 @@ export const api = {
 				log: string[];
 			}>(r),
 		),
+	/** Hosted Run (#2895): the studio's preview slot as it stands. */
+	studioPreview: () => f('/api/preview').then((r) => j<StudioPreview>(r)),
+	/** Release the saved revision onto the slot. Minutes: it is a full build. */
+	runStudioPreview: () => f('/api/preview', { method: 'POST' }).then((r) => j<StudioPreview>(r)),
 	dev: (action: 'start' | 'stop') =>
 		f('/api/dev', {
 			method: 'POST',
