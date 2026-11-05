@@ -163,10 +163,12 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     const stub = stubOf(env.COPY_JOB_TEST, `claim-again-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1 }));
     await until(stub, (j) => j?.status === 'done');
-    expect(await stub.claim(20)).not.toBeNull();
-    expect(await stub.claim(20)).toBeNull();
-    await sleep(40);
-    // The holder died: the next call claims the job.
+    expect(await stub.claim(60_000)).not.toBeNull();
+    expect(await stub.claim(60_000)).toBeNull();
+    // The holder died and its hold has run out: the next call claims the job.
+    await runInDurableObject(stub, async (_o, state) => {
+      await state.storage.put('job', { ...(await state.storage.get<TestCopyJob>('job')), claimedUntil: Date.now() - 1 });
+    });
     expect(await stub.claim(60_000)).not.toBeNull();
 
     const other = stubOf(env.COPY_JOB_TEST, `claim-cancel-${crypto.randomUUID()}`);
