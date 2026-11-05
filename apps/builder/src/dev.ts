@@ -31,7 +31,7 @@ import {
 	type TurnResult,
 } from '@substrat-run/builder-workspace';
 import { loadEnvFiles } from './env.js';
-import { REFERENCE_DIR } from './reference.js';
+import { REFERENCE_DIRS } from './reference.js';
 import { editToolFor, samplingFor } from './model-pairs.js';
 import { detectPhase, skillsForPhase } from './phase.js';
 import { loadSkills } from './skills.js';
@@ -138,7 +138,9 @@ async function main(): Promise<number> {
 	// The generator's workspace is the PROJECT, not the studio checkout (§5.3):
 	// its file and shell surface cannot reach the monorepo or any .env.
 	const projectWs = new LocalWorkspace({ root: join(ws.root, args.vertical) });
-	const referenceWs = new LocalWorkspace({ root: join(ws.root, REFERENCE_DIR), id: 'reference' });
+	const references = Object.fromEntries(
+		Object.entries(REFERENCE_DIRS).map(([name, dir]) => [name, new LocalWorkspace({ root: join(ws.root, dir), id: `reference:${name}` })]),
+	);
 	const skills = await loadSkills(ws.root);
 
 	const generator = new AiSdkGenerator({
@@ -215,7 +217,7 @@ async function main(): Promise<number> {
 			let truncated = false;
 			for await (const event of generator.run({
 				workspace: projectWs,
-				reference: referenceWs,
+				references,
 				verticalDir: '.',
 				concept: await currentConcept(),
 				message: text,

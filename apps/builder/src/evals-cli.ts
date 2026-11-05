@@ -30,7 +30,7 @@ import {
 import { LocalWorkspace, standaloneGates } from '@substrat-run/builder-workspace';
 import { ClaudeCodeGenerator, claudeCodeModel } from './claude-code.js';
 import { loadEnvFiles } from './env.js';
-import { REFERENCE_DIR } from './reference.js';
+import { REFERENCE_DIRS } from './reference.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import { skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
 import { costOfSteps } from './pricing.js';
@@ -186,7 +186,9 @@ async function main(): Promise<number> {
 
 	const env = loadEnvFiles(args.root);
 	const ws = new LocalWorkspace({ root: args.root });
-	const referenceWs = new LocalWorkspace({ root: join(args.root, REFERENCE_DIR), id: 'reference' });
+	const references = Object.fromEntries(
+		Object.entries(REFERENCE_DIRS).map(([name, dir]) => [name, new LocalWorkspace({ root: join(args.root, dir), id: `reference:${name}` })]),
+	);
 	const chosen = resolveModelSpec(args);
 
 	// `claude-code:<model>` runs on the local Claude Code login (claude-code.ts),
@@ -274,7 +276,7 @@ async function main(): Promise<number> {
 		const result = await runEval({
 			ws,
 			projectWs,
-			referenceWs,
+			references,
 			projectDir,
 			fixture,
 			makeGenerator,

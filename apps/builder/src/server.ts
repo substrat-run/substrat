@@ -53,7 +53,7 @@ import {
 } from './problem.js';
 import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
-import { REFERENCE_DIR } from './reference.js';
+import { REFERENCE_DIRS } from './reference.js';
 import { providerCatalog } from './hosting.js';
 import {
 	loadRegistry,
@@ -107,7 +107,9 @@ const PROJECTS_DIR = '.builder/projects';
 const env = loadEnvFiles(ROOT);
 /** Root workspace: registry, gates, commits. NEVER handed to the generator. */
 const ws = new LocalWorkspace({ root: ROOT });
-const referenceWs = new LocalWorkspace({ root: join(ROOT, REFERENCE_DIR), id: 'reference' });
+const references = Object.fromEntries(
+	Object.entries(REFERENCE_DIRS).map(([name, dir]) => [name, new LocalWorkspace({ root: join(ROOT, dir), id: `reference:${name}` })]),
+);
 let skills: LoadedSkills = { byFile: new Map(), loaded: [], missing: [] };
 
 // ── the current project (the DO-state analog, resumable and switchable) ──────
@@ -367,7 +369,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			let truncated = false;
 			for await (const event of (lane?.generator ?? generator).run({
 				workspace: cur.projectWs,
-				reference: referenceWs,
+				references,
 				verticalDir: '.',
 				concept: lane?.context ?? concept,
 				message: text,

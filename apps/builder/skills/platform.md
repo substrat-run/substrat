@@ -70,5 +70,5 @@ of the app is Tier 3 — a normal, supported outcome, not a failure.
 This inventory can go stale; the engines are self-describing. After
 `pnpm install`, ground truth for an engine's exports is
 `node_modules/@substrat-run/<engine>/dist/index.d.ts`. For the host, seed and
-provisioning API, the reference vertical (`read_reference`) is the ground truth —
+provisioning API, the reference verticals (`read_reference`) are the ground truth —
 read it, not the kernel's declarations.

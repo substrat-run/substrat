@@ -433,7 +433,7 @@ export class AiSdkGenerator implements VerticalGenerator {
 			emit,
 			editTool,
 			...(this.#opts.denyWrite ? { denyWrite: this.#opts.denyWrite } : {}),
-			...(input.reference ? { reference: input.reference } : {}),
+			...(input.references ? { references: input.references } : {}),
 		});
 
 		// Prefix discipline (§5.4): everything before the chat history must be

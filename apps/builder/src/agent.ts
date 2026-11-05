@@ -53,7 +53,7 @@ import {
 	SourceBuildError,
 } from './problem.js';
 import type { BuildPhase } from './phase.js';
-import { REFERENCE_DIR } from './reference.js';
+import { REFERENCE_DIRS } from './reference.js';
 import {
 	buildWriteGuard,
 	buildContext,
@@ -591,7 +591,12 @@ export class BuilderAgent extends DurableObject<Env> {
 					}
 					for await (const event of generator.run({
 						workspace: projectWs,
-						reference: new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${REFERENCE_DIR}`, id: 'reference' }),
+						references: Object.fromEntries(
+							Object.entries(REFERENCE_DIRS).map(([name, dir]) => [
+								name,
+								new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${dir}`, id: `reference:${name}` }),
+							]),
+						),
 						verticalDir: '.',
 						concept,
 						message: text,

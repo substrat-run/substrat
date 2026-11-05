@@ -34,8 +34,8 @@ export interface WorkspaceToolOptions {
 	 * host declares it per model (builder-harness.md H1, format-per-model).
 	 */
 	readonly editTool?: boolean;
-	/** Offer read_reference/list_reference over this read-only workspace (GeneratorInput.reference). */
-	readonly reference?: Workspace;
+	/** Offer read_reference/list_reference over these read-only workspaces (GeneratorInput.references). */
+	readonly references?: Readonly<Record<string, Workspace>>;
 }
 
 /**
@@ -155,41 +155,49 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 		},
 	});
 
-	const referenceTools = (ref: Workspace) => ({
-		read_reference: tool({
-			description:
-				'Read a file from the REFERENCE vertical: a complete, working Substrat project (the create-substrat template) that is compiled against the platform on every change, so its code is correct for the platform version you build on. Read it BEFORE writing harness code you have not written this session — seed.ts (host, provisioning, roles, cast), provision.ts (MODULES, ROLES), server.ts, routes.ts, personas.ts, test/scenario.test.ts — and copy its shape, renaming its domain to yours. Never grep node_modules type declarations for an API the reference already shows in use. Read-only: nothing you do changes it.',
-			inputSchema: z.object({
-				path: z.string().describe('Path inside the reference project, e.g. src/seed.ts'),
+	const referenceTools = (refs: Readonly<Record<string, Workspace>>) => {
+		const names = Object.keys(refs) as [string, ...string[]];
+		const which = z.enum(names).describe(`Which reference: ${names.join(' or ')}`);
+		const open = (name: string): Workspace => refs[name]!;
+		return {
+			read_reference: tool({
+				description:
+					'Read a file from a REFERENCE vertical — complete, working Substrat projects compiled against the platform on every change, so their code is correct for the platform version you build on. "template" (the create-substrat template) shows the harness: src/seed.ts (host, provisioning, roles, cast), src/provision.ts (MODULES, ROLES), src/server.ts, src/routes.ts, src/personas.ts, test/scenario.test.ts. "todo" is a model-first vertical with per-list sharing: spec/concept.md, spec/model.ts, src/module.ts (join, create, ctx.grant/ctx.revoke, ctx.link), test/scenario.test.ts. Read the matching file BEFORE writing one you have not written this session, and copy its shape with your domain\'s names. Never grep node_modules type declarations for an API a reference already shows in use. Read-only.',
+				inputSchema: z.object({
+					reference: which,
+					path: z.string().describe('Path inside that reference, e.g. src/seed.ts'),
+				}),
+				execute: async ({ reference, path }) => {
+					emit({ type: 'tool-call', tool: 'read_reference', summary: `${reference}:${path}` });
+					try {
+						return await open(reference).readFile(path);
+					} catch (err) {
+						return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
+					}
+				},
 			}),
-			execute: async ({ path }) => {
-				emit({ type: 'tool-call', tool: 'read_reference', summary: path });
-				try {
-					return await ref.readFile(path);
-				} catch (err) {
-					return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
-				}
-			},
-		}),
-		list_reference: tool({
-			description:
-				'List a directory of the REFERENCE vertical (see read_reference). Start with "." and "src" to see what it contains.',
-			inputSchema: z.object({ path: z.string().describe('Directory inside the reference project') }),
-			execute: async ({ path }) => {
-				emit({ type: 'tool-call', tool: 'list_reference', summary: path });
-				try {
-					const entries = await ref.listFiles(path);
-					return entries.length ? entries.join('\n') : '(empty)';
-				} catch (err) {
-					return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
-				}
-			},
-		}),
-	});
+			list_reference: tool({
+				description: 'List a directory of a REFERENCE vertical (see read_reference). Start with "." and "src".',
+				inputSchema: z.object({
+					reference: which,
+					path: z.string().describe('Directory inside that reference'),
+				}),
+				execute: async ({ reference, path }) => {
+					emit({ type: 'tool-call', tool: 'list_reference', summary: `${reference}:${path}` });
+					try {
+						const entries = await open(reference).listFiles(path);
+						return entries.length ? entries.join('\n') : '(empty)';
+					} catch (err) {
+						return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
+					}
+				},
+			}),
+		};
+	};
 
 	return {
 		...(opts.editTool ? { edit_file: editFile } : {}),
-		...(opts.reference ? referenceTools(opts.reference) : {}),
+		...(opts.references && Object.keys(opts.references).length ? referenceTools(opts.references) : {}),
 		read_file: tool({
 			description:
 				'Read a UTF-8 file from the workspace. Call this before editing any file you have not already read this session — never guess a file\'s current contents.',

@@ -86,7 +86,7 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 			emit,
 			editTool: true,
 			...(this.#opts.denyWrite ? { denyWrite: this.#opts.denyWrite } : {}),
-			...(input.reference ? { reference: input.reference } : {}),
+			...(input.references ? { references: input.references } : {}),
 		});
 		const server = createSdkMcpServer({
 			name: SERVER,

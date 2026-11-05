@@ -360,8 +360,8 @@ export interface RunEvalOptions {
 	readonly ws: Workspace;
 	/** The project-root workspace the generator acts through (§5.3). */
 	readonly projectWs: Workspace;
-	/** The read-only reference vertical (`GeneratorInput.reference`), as the studio passes it. */
-	readonly referenceWs?: Workspace;
+	/** The read-only reference verticals (`GeneratorInput.references`), as the studio passes them. */
+	readonly references?: Readonly<Record<string, Workspace>>;
 	/** Project directory relative to the monorepo root. */
 	readonly projectDir: string;
 	readonly fixture: EvalFixture;
@@ -437,7 +437,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		let prose = '';
 		for await (const event of generator.run({
 			workspace: projectWs,
-			...(opts.referenceWs ? { reference: opts.referenceWs } : {}),
+			...(opts.references ? { references: opts.references } : {}),
 			verticalDir: '.',
 			// `buildContext`, not a raw read of spec/concept.md — the same seam
 			// server.ts uses, and the only one that answers during the interview

@@ -35,7 +35,7 @@ Import from `src/` — `buildHost`, `seed` — because those are the things unde
 test. Never from `spec/model.ts`.
 
 `src/` does not exist yet, so take their shape from the reference vertical
-(`read_reference` on `src/seed.ts` and `test/scenario.test.ts`) instead of guessing
+(`read_reference` on `template` `src/seed.ts` and `test/scenario.test.ts`) instead of guessing
 it — the scaffold copies the same file, so the names you import are the names it
 will export.
 

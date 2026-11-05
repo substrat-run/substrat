@@ -59,11 +59,11 @@ build outputs and the platform checkout are never deployment inputs.
 
 ## The files
 
-**Copy the reference before you write.** `list_reference` / `read_reference` open a
-complete working vertical — the `create-substrat` template, compiled against this
-platform on every change. Read its `src/seed.ts`, `src/provision.ts`,
-`src/server.ts`, `src/routes.ts` and `src/personas.ts` before writing your own, and
-copy their shape with your domain's names: that is how a host is built, a tenant
+**Copy the reference before you write.** `list_reference` / `read_reference` open
+complete working verticals, compiled against this platform on every change. From
+`template`, read `src/seed.ts`, `src/provision.ts`, `src/server.ts`, `src/routes.ts`
+and `src/personas.ts` before writing your own; from `todo`, `src/module.ts` for
+operations that create, link and share. Copy their shape with your domain's names: that is how a host is built, a tenant
 and scope provisioned, roles defined and assigned, and an operation invoked as a
 person. Where this skill and the reference disagree, the reference wins — it is
 compiled, this text is not. Never reverse-engineer that API from
