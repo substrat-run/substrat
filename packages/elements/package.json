@@ -8,7 +8,7 @@
     "url": "git+https://github.com/substrat-run/substrat.git",
     "directory": "packages/elements"
   },
-  "homepage": "https://substrat.net",
+  "homepage": "https://substrat.net/reference/elements",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -28,10 +28,11 @@
     "./themes/*": "./dist/themes/*"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp -R src/themes dist/",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/themes','dist/themes',{recursive:true})\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
