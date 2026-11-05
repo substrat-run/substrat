@@ -30,6 +30,7 @@ import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 import { clearAppMcpResources, isSharedIssuer, registerAppMcpResources, type TeamIssuer } from './mcp-resources.js';
+import { settleClientRedirects } from './client-redirects.js';
 import { appByScopeId } from './walk-all.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
@@ -391,6 +392,13 @@ export async function createApp(
           reason: e instanceof Error ? e.message : String(e),
         }),
       );
+      // And the client's URIs for every hostname that bound (#2904), which is also what turns
+      // on RP-initiated logout for it: open DCR cannot. Best-effort for the same reason.
+      await settleClientRedirects(input.controlPlane, {
+        appScopeId: input.appScopeId,
+        issuerScopeId: input.appAuth.issuerScopeId,
+        clientId: config!.clientId ?? null,
+      });
     }
   }
 
@@ -550,7 +558,8 @@ export async function deprovisionApp(
     controlPlane?: TenantNarrowedControlPlane;
     /**
      * The team auth-server this app's MCP endpoint is registered at (#1619), which the
-     * delete un-registers so the issuer stops minting for it. The caller resolves it (it
+     * delete un-registers so the issuer stops minting for it — and takes the app's hostnames
+     * off its client there (#2904). The caller resolves it (it
      * holds the issuer list). Absent, nothing is cleared: the Apps list's reconcile only
      * walks apps that still exist, so it cannot clear this one afterwards.
      */
@@ -578,6 +587,12 @@ export async function deprovisionApp(
         reason: e instanceof Error ? e.message : String(e),
       }),
     );
+    // Its client's URIs too (#2904): the hostnames are about to be released to anyone.
+    await settleClientRedirects(input.controlPlane, {
+      appScopeId: input.appScopeId,
+      issuerScopeId: input.mcpIssuerScopeId,
+      clientId: null,
+    });
   }
 
   // 2. Take the app scope offline in the caller's own tenant (ambient, never a request arg).

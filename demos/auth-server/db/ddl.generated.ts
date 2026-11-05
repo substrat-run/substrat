@@ -288,4 +288,14 @@ export const SCHEMA_STATEMENTS: string[] = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
   // A preview's own clients, oldest first — what every delete walks.
   `CREATE INDEX IF NOT EXISTS preview_client_scope_idx ON preview_client (preview_scope_id, generation)`,
+  // An app's client and the hostnames the platform last registered on it (#2904,
+  // `src/client-redirects.ts`). Written ONLY by the platform's delivery
+  // (`substrat:redirects:<app scope>`). The hostnames say which of the client's URIs the
+  // platform added, so the next delivery removes exactly those and never an operator's own.
+  // No foreign key: a client an operator deleted is found missing by the next delivery.
+  `CREATE TABLE IF NOT EXISTS platform_client_redirects (
+    app_scope_id TEXT PRIMARY KEY NOT NULL,
+    client_id TEXT NOT NULL,
+    hostnames TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
 ];

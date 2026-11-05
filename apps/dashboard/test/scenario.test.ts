@@ -488,7 +488,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(app.status).toBe('active');
     // First the vertical learns its issuer, THEN the issuer learns the vertical's endpoints —
     // to the issuer's own scope, as the whole set, one per live hostname.
-    expect(configured.map((c) => c.scopeId)).toEqual([appScope, issuerScope]);
+    expect(configured.map((c) => c.scopeId)).toEqual([appScope, issuerScope, issuerScope]);
     expect(configured[1]!.entries).toEqual([
       {
         key: `substrat:resources:${appScope}`,
@@ -496,6 +496,13 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
           mcpResourceOf('https://people-acme.global.substrat.run'),
           mcpResourceOf('https://people.acme.example'),
         ]),
+      },
+    ]);
+    // And its client's URIs, for the same live hostnames, under the client it just registered (#2904).
+    expect(configured[2]!.entries).toEqual([
+      {
+        key: `substrat:redirects:${appScope}`,
+        value: JSON.stringify({ clientId: 'minted-id', hostnames: ['people-acme.global.substrat.run', 'people.acme.example'] }),
       },
     ]);
 
@@ -539,7 +546,11 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }) as unknown as Parameters<typeof deprovisionApp>[1]['controlPlane'];
 
     await deprovisionApp(host, { node: acme, appScopeId, controlPlane: cp(), mcpIssuerScopeId: issuerScope });
-    expect(configured).toEqual([{ scopeId: issuerScope, entries: [{ key: `substrat:resources:${appScopeId}`, value: '' }] }]);
+    expect(configured).toEqual([
+      { scopeId: issuerScope, entries: [{ key: `substrat:resources:${appScopeId}`, value: '' }] },
+      // Its client's URIs come off too (#2904): the hostnames are about to be released.
+      { scopeId: issuerScope, entries: [{ key: `substrat:redirects:${appScopeId}`, value: '' }] },
+    ]);
     expect(archived).toEqual([appScopeId]);
 
     // The twin: the issuer is down, and the app is still deleted.

@@ -225,15 +225,20 @@ async function placesPass(deps: PlacesReconcileDeps): Promise<PlacesReconcileOut
  * member's load may trigger it, viewers included, for the reason `McpReconcileGate` gives: it
  * writes nothing the member asked for, only what the team's own configuration implies.
  */
-export class PlacesReconcileGate {
+export class PlacesReconcileGate<T = PlacesReconcileOutcome> {
   private readonly last = new Map<string, { at: number; fingerprint: string }>();
   private readonly running = new Set<string>();
-  /** Per team: issuer scope → the value that last landed there. */
+  /** Per team: delivery key → the value that last landed there. */
   private readonly sentByTeam = new Map<string, Map<string, string>>();
 
+  /**
+   * `converged` judges a pass's outcome; the default is the places pass's. The client-redirect
+   * pass (#2904, `client-redirects.ts`) runs on a gate of its own with its own judge.
+   */
   constructor(
     private readonly everyMs: number = PLACES_RECONCILE_EVERY_MS,
     private readonly now: () => number = Date.now,
+    private readonly converged: (outcome: T) => boolean = placesConverged as unknown as (outcome: T) => boolean,
   ) {}
 
   /** What a page of apps looks like to the gate: which apps, where, in what state. */
@@ -244,8 +249,8 @@ export class PlacesReconcileGate {
   run(
     tenantId: string,
     page: readonly DashboardAppRow[],
-    pass: (sent: Map<string, string>) => Promise<PlacesReconcileOutcome>,
-  ): Promise<PlacesReconcileOutcome> | null {
+    pass: (sent: Map<string, string>) => Promise<T>,
+  ): Promise<T> | null {
     if (this.running.has(tenantId)) return null;
     const fingerprint = PlacesReconcileGate.fingerprintOf(page);
     const last = this.last.get(tenantId);
@@ -255,7 +260,7 @@ export class PlacesReconcileGate {
     if (!sent) this.sentByTeam.set(tenantId, (sent = new Map()));
     return pass(sent)
       .then((outcome) => {
-        if (placesConverged(outcome)) this.last.set(tenantId, { at: this.now(), fingerprint });
+        if (this.converged(outcome)) this.last.set(tenantId, { at: this.now(), fingerprint });
         return outcome;
       })
       .finally(() => this.running.delete(tenantId));

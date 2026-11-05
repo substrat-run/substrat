@@ -39,6 +39,7 @@ import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './resources.js';
 import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
+import { isClientRedirectsEntry, parseClientRedirectsEntry, syncClientRedirects } from './client-redirects.js';
 import { authenticateClient, servePlaces, serveReport } from './places-http.js';
 import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
 import { isSocialRelayEntry, parseSocialRelayEntry, relayHop, syncSocialRelay } from './social-relay.js';
@@ -441,8 +442,18 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     // platform's social relay, which becomes `<upstream>-relay` rows in `identity_provider`.
     // It carries a client secret, which is one more reason it is never a `cfg:` row.
     const socialRelay = entries.filter((e) => isSocialRelayEntry(e.key)).map((e) => parseSocialRelayEntry(e.value));
+    // `substrat:redirects:<app>` likewise (#2904, `client-redirects.ts`): the hostnames an app's
+    // client answers on, which become that client's callback and post-logout URIs.
+    const redirects = entries
+      .filter((e) => isClientRedirectsEntry(e.key))
+      .map((e) => parseClientRedirectsEntry(e.key, e.value));
     const config = entries.filter(
-      (e) => !isResourcesEntry(e.key) && !isPlacesEntry(e.key) && !isDelegationsEntry(e.key) && !isSocialRelayEntry(e.key),
+      (e) =>
+        !isResourcesEntry(e.key) &&
+        !isPlacesEntry(e.key) &&
+        !isDelegationsEntry(e.key) &&
+        !isSocialRelayEntry(e.key) &&
+        !isClientRedirectsEntry(e.key),
     );
     // ONE transaction for the whole delivery. DO SQLite commits each `exec` on its own
     // unless it is wrapped, so a statement that fails halfway through a multi-host
@@ -464,9 +475,13 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         ...syncDelegations(this.ctx.storage.sql, delivery, now),
       }));
       const socialRelayResults = socialRelay.map((delivery) => syncSocialRelay(this.ctx.storage.sql, delivery));
+      const redirectResults = redirects.map((delivery) => syncClientRedirects(this.ctx.storage.sql, delivery, now));
       if (config.length) putDeliveredConfig(this.ctx.storage.sql, config);
-      return { results, placeResults, delegationResults, socialRelayResults };
+      return { results, placeResults, delegationResults, socialRelayResults, redirectResults };
     });
+    for (const sync of synced.redirectResults) {
+      if (sync.added.length || sync.removed.length) console.log('auth-server: client redirects synced', JSON.stringify(sync));
+    }
     // Logged only once committed, so a line never describes writes that rolled back.
     for (const sync of synced.results) {
       if (sync.added.length || sync.removed.length || sync.operatorOwned.length) {

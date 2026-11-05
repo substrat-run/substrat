@@ -79,6 +79,11 @@ describe('registerOidcClient', () => {
       {
         client_name: 'People',
         redirect_uris: ['https://people-acme.global.substrat.test/api/auth/callback'],
+        // Where the issuer may send the browser back after its logout (#2904).
+        post_logout_redirect_uris: [
+          'https://people-acme.global.substrat.test/',
+          'https://people-acme.global.substrat.test/api/auth/logged-out',
+        ],
         // oidc-rp presents the secret in the token-request BODY, so the client must be
         // registered to match — a basic-auth-only client would fail every exchange.
         token_endpoint_auth_method: 'client_secret_post',

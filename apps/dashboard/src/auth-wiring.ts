@@ -10,7 +10,7 @@
  * copy-paste.
  */
 
-import { SHARED_ISSUER_CONFIG_KEY, type ScopeId } from '@substrat-run/contracts';
+import { SHARED_ISSUER_CONFIG_KEY, oidcPostLogoutUrls, type ScopeId } from '@substrat-run/contracts';
 import { isAllowedEndpoint, readDiscovery } from '@substrat-run/oidc-rp/discovery';
 
 export type AppAuthChoice =
@@ -78,6 +78,10 @@ export async function registerOidcClient(
     body: JSON.stringify({
       client_name: input.appName,
       redirect_uris: [input.redirectUri],
+      // Where the issuer may send the browser back after its logout (#2904): the app's own
+      // origin, at the paths oidc-rp sends. Every later hostname's come with the platform's
+      // `substrat:redirects` delivery, which also turns end-session on (DCR cannot).
+      post_logout_redirect_uris: oidcPostLogoutUrls(new URL(input.redirectUri).host),
       token_endpoint_auth_method: 'client_secret_post',
     }),
   });
