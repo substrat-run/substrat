@@ -1,10 +1,10 @@
 import { URLSearchParams } from 'node:url';
 import { X509Certificate, constants, createPrivateKey, createPublicKey, createSign, createVerify, verify } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { connectionCertificate, type Connection } from '@substrat-run/contracts';
 import type { FetchLike, ScopeHost } from '@substrat-run/kernel';
 import {
-  MAX_ATTACHMENT_BYTES,
+  UPLOAD_CHUNK_BYTES,
   classifyTokenError,
   generateCertificate,
   microsoft365Certificate,
@@ -40,19 +40,34 @@ const base = {
   siteUrl: 'https://acme.sharepoint.com/sites/Team',
 };
 
-type Call = { url: string; method: string; headers: Record<string, string>; body: string };
-type Routes = Record<string, { status: number; body: unknown }>;
+type Call = { url: string; method: string; headers: Record<string, string>; body: string; bytes: number };
+type Routes = Record<string, { status: number; body: unknown; headers?: Record<string, string> }>;
 
-/** A scripted Microsoft: the first route whose key the URL contains answers. */
+/**
+ * A scripted Microsoft: the first route whose key the URL contains answers. A key may start with
+ * a method (`DELETE /messages/`) to answer that method only. A byte body is recorded by its length.
+ */
 function microsoft(routes: Routes) {
   const calls: Call[] = [];
   const fetchImpl: FetchLike = async (input, init) => {
-    calls.push({ url: input, method: init?.method ?? 'GET', headers: init?.headers ?? {}, body: String(init?.body ?? '') });
-    const key = Object.keys(routes).find((k) => input.includes(k));
+    const method = init?.method ?? 'GET';
+    const body = init?.body;
+    calls.push({
+      url: input,
+      method,
+      headers: init?.headers ?? {},
+      body: body instanceof Uint8Array ? '' : String(body ?? ''),
+      bytes: body instanceof Uint8Array ? body.byteLength : 0,
+    });
+    const key = Object.keys(routes).find((k) => {
+      const [m, path] = k.includes(' ') ? k.split(' ', 2) : [method, k];
+      return m === method && input.includes(path!);
+    });
     const r = key ? routes[key]! : { status: 404, body: { error: { code: 'itemNotFound', message: 'no route' } } };
     return {
       ok: r.status >= 200 && r.status < 300,
       status: r.status,
+      headers: new Headers(r.headers ?? {}),
       json: async () => r.body,
       text: async () => JSON.stringify(r.body),
       arrayBuffer: async () => new ArrayBuffer(0),
@@ -457,18 +472,6 @@ describe('a connection: summary, certificate and mail', () => {
     expect(h.uses).toHaveLength(2); // token + sendMail, each settled against the connection
   });
 
-  it('refuses attachments over the inline limit before calling Graph, saying why', async () => {
-    const ms = microsoft({ ...tokenOk, '/sendMail': { status: 202, body: {} } });
-    const big = new Uint8Array(MAX_ATTACHMENT_BYTES + 1);
-    await expect(
-      microsoft365MailSender({ fetch: ms.fetchImpl, now: () => NOW }).send(
-        hostWith(await withCert()).host,
-        conn,
-        mail({ attachments: [{ filename: 'big.bin', contentType: 'application/octet-stream', content: big }] }),
-      ),
-    ).rejects.toThrow(/Mail\.ReadWrite/);
-    expect(ms.calls.some((c) => c.url.endsWith('/sendMail'))).toBe(false);
-  });
 
   it('an Exchange refusal reads as outside the scope the tenant granted', async () => {
     const ms = microsoft({
@@ -478,6 +481,117 @@ describe('a connection: summary, certificate and mail', () => {
     await expect(
       microsoft365MailSender({ fetch: ms.fetchImpl, now: () => NOW }).send(hostWith(await withCert()).host, conn, mail()),
     ).rejects.toThrow(/outside the scope the tenant granted/);
+  });
+
+  describe('a message over the inline limit goes as a draft', () => {
+    // Over the inline limit, over Graph's 3 MB session minimum, and two upload chunks long.
+    const LARGE = UPLOAD_CHUNK_BYTES + 5;
+    const large = mail({
+      attachments: [
+        { filename: 'offer.pdf', contentType: 'application/pdf', content: new Uint8Array([1, 2, 3]) },
+        { filename: 'plans.zip', contentType: 'application/zip', content: new Uint8Array(LARGE) },
+      ],
+    });
+    const UPLOAD = 'https://outlook.office.com/api/v2.0/upload/s1';
+    // `over` replaces a route's answer and keeps its place, which matters: the first match answers.
+    const draftRoutes = (over: Routes = {}): Routes => ({
+      ...tokenOk,
+      'POST /messages/DRAFT/attachments/createUploadSession': { status: 200, body: { uploadUrl: UPLOAD } },
+      'POST /messages/DRAFT/attachments': { status: 201, body: {} },
+      'POST /messages/DRAFT/send': { status: 202, body: {} },
+      'DELETE /messages/DRAFT': { status: 204, body: {} },
+      'POST /messages': { status: 201, body: { id: 'DRAFT' } },
+      '/upload/s1': { status: 200, body: {} },
+      ...over,
+    });
+    const sendWith = async (routes: Routes) => {
+      const ms = microsoft(routes);
+      const sent = microsoft365MailSender({ fetch: ms.fetchImpl, now: () => NOW }).send(hostWith(await withCert()).host, conn, large);
+      return { ms, sent };
+    };
+    const graphCalls = (ms: ReturnType<typeof microsoft>) =>
+      ms.calls
+        .filter((c) => !c.url.includes('/oauth2/'))
+        .map((c) => `${c.method} ${c.url.replace('https://graph.microsoft.com/v1.0/users/office%40acme.example', '')}`);
+
+    it('drafts, posts the small file, uploads the large one in ranges without the token, then sends', async () => {
+      const { ms, sent } = await sendWith(draftRoutes());
+      expect(await sent).toEqual({ delivered: [], queued: ['customer@example.com'], bounced: [] });
+      expect(graphCalls(ms)).toEqual([
+        'POST /messages',
+        'POST /messages/DRAFT/attachments',
+        'POST /messages/DRAFT/attachments/createUploadSession',
+        `PUT ${UPLOAD}`,
+        `PUT ${UPLOAD}`,
+        'POST /messages/DRAFT/send',
+      ]);
+      const [draft, small, session, ...rest] = ms.calls.filter((c) => !c.url.includes('/oauth2/'));
+      expect(JSON.parse(draft!.body)).toMatchObject({ subject: 'Your offer', internetMessageHeaders: [{ name: 'X-Ref', value: 'abc' }] });
+      expect(JSON.parse(draft!.body).attachments).toBeUndefined();
+      expect(JSON.parse(small!.body)).toMatchObject({ name: 'offer.pdf', contentBytes: 'AQID' });
+      expect(JSON.parse(session!.body)).toEqual({
+        AttachmentItem: { attachmentType: 'file', name: 'plans.zip', size: LARGE, contentType: 'application/zip' },
+      });
+      const puts = rest.filter((c) => c.method === 'PUT');
+      expect(puts.map((c) => [c.headers['content-range'], c.headers['content-type'], c.bytes, c.headers.authorization])).toEqual([
+        [`bytes 0-${UPLOAD_CHUNK_BYTES - 1}/${LARGE}`, 'application/octet-stream', UPLOAD_CHUNK_BYTES, undefined],
+        [`bytes ${UPLOAD_CHUNK_BYTES}-${LARGE - 1}/${LARGE}`, 'application/octet-stream', 5, undefined],
+      ]);
+    });
+
+    it("posts an attachment just under Graph's 3 MB session floor whole, inside the 4 MiB request limit, and one at it by session", async () => {
+      const ms = microsoft(draftRoutes());
+      const file = (n: number) => ({ filename: `f${n}.bin`, contentType: 'application/octet-stream', content: new Uint8Array(n) });
+      await microsoft365MailSender({ fetch: ms.fetchImpl, now: () => NOW }).send(
+        hostWith(await withCert()).host,
+        conn,
+        mail({ attachments: [file(2_999_999), file(3_000_000)] }),
+      );
+      const whole = ms.calls.find((c) => c.url.endsWith('/DRAFT/attachments'))!;
+      expect(JSON.parse(whole.body).name).toBe('f2999999.bin');
+      expect(whole.body.length).toBeLessThan(4 * 1024 * 1024);
+      const session = ms.calls.find((c) => c.url.endsWith('/createUploadSession'))!;
+      expect(JSON.parse(session.body).AttachmentItem).toMatchObject({ name: 'f3000000.bin', size: 3_000_000 });
+    });
+
+    it('a chunk Graph fails on cancels the session and deletes the draft, and the error stays retryable', async () => {
+      const { ms, sent } = await sendWith(draftRoutes({ '/upload/s1': { status: 503, body: {} } }));
+      await expect(sent).rejects.toMatchObject({ status: 503 });
+      expect(graphCalls(ms).slice(3)).toEqual([`PUT ${UPLOAD}`, `DELETE ${UPLOAD}`, 'DELETE /messages/DRAFT']);
+    });
+
+    it('a draft Exchange refuses says Mail.ReadWrite is missing, and nothing follows it', async () => {
+      const denied = { status: 403, body: { error: { code: 'ErrorAccessDenied', message: 'Access is denied.' } } };
+      const { ms, sent } = await sendWith({ ...tokenOk, 'POST /messages': denied });
+      await expect(sent).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringMatching(/needs Application Mail\.ReadWrite in the same RBAC for Applications scope/),
+      });
+      expect(graphCalls(ms)).toEqual(['POST /messages']);
+    });
+
+    it("a message over the mailbox's send size is refused for good, and its draft deleted", async () => {
+      const tooBig = { status: 400, body: { error: { code: 'ErrorMessageSizeExceeded', message: 'too big' } } };
+      const { ms, sent } = await sendWith(draftRoutes({ 'POST /messages/DRAFT/send': tooBig }));
+      await expect(sent).rejects.toMatchObject({ status: 413, message: expect.stringMatching(/most the mailbox/) });
+      expect(graphCalls(ms).at(-1)).toBe('DELETE /messages/DRAFT');
+    });
+
+    it('a throttle keeps its Retry-After, and a draft that cannot be deleted is logged without hiding it', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { sent } = await sendWith(
+          draftRoutes({
+            '/upload/s1': { status: 429, body: {}, headers: { 'retry-after': '7' } },
+            'DELETE /messages/DRAFT': { status: 500, body: {} },
+          }),
+        );
+        await expect(sent).rejects.toMatchObject({ status: 429, retryAfter: 7, message: expect.stringMatching(/throttling/) });
+        expect(warn).toHaveBeenCalledWith('microsoft365.draft-left', { connectionId: '01CONN', status: 500 });
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('refuses a connection row that is not the live one', async () => {
