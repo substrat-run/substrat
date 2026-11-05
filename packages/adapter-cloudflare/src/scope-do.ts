@@ -186,6 +186,7 @@ import {
   type RunSub,
   NotSearchable,
   isSearchIndexTable,
+  rowCountTable,
   searchIndexPlans,
   NotListable,
   listIndexPlans,
@@ -7474,10 +7475,11 @@ export function defineScopeDO(
           .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*' ORDER BY name`)
           .toArray() as unknown as { name: string }[]
       ).map((r) => r.name);
+      const known = new Set(names);
       const count = (sql: string) => Number((this.sql.exec(sql).toArray()[0] as { c: number }).c);
       return names.map((name) => ({
         name,
-        rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
+        rowCount: count(`SELECT COUNT(*) AS c FROM "${rowCountTable(name, known)}"`),
         system: isSystemTable(name),
         // #2531: rows whose `revoked_at` is null, for any table with that column (`ScopeTable.liveRowCount`).
         // Scope health reads it for `_substrat_roles`, where a dropped role is kept revoked.
