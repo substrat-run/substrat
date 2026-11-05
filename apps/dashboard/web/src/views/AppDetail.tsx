@@ -2870,8 +2870,26 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
 /** Sentinel option: reveal a free-text field for a surface the vertical didn't declare. */
 const OTHER_SURFACE = '__other__';
 
-function AppDomains({ teamId, app }: { teamId: string; app: AppRow }) {
+function AppDomains({ teamId, app, authServers }: { teamId: string; app: AppRow; authServers: AppRow[] }) {
   const [view, setView] = useState<AppHostnamesView | null>(null);
+  // The issuer the app signs in at when it is NOT one of the team's Auth Servers (#2904): the
+  // platform registers a team Auth Server's callbacks itself, and cannot reach anyone else's.
+  const [externalIssuer, setExternalIssuer] = useState<string | null>(null);
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    teamApi(teamId)
+      .getAppAuth({ scopeId: app.app_scope_id })
+      .then((v) => {
+        const issuer = v.auth?.issuer;
+        const team = authServers.some((a) => a.hostname && `https://${a.hostname}` === issuer);
+        if (live) setExternalIssuer(issuer && !team ? issuer : null);
+      })
+      .catch(() => live && setExternalIssuer(null));
+    return () => {
+      live = false;
+    };
+  }, [teamId, app.app_scope_id, authServers]);
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -2974,6 +2992,12 @@ function AppDomains({ teamId, app }: { teamId: string; app: AppRow }) {
   const COLS = '2.4fr 1fr 1.4fr 1fr 40px';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {externalIssuer && (
+        <div style={{ ...card, padding: '12px 16px', fontSize: 13, color: 'var(--text-secondary)' }}>
+          This app signs in at an external issuer ({externalIssuer}). For each hostname you add, register its sign-in
+          callback <span style={{ fontFamily: 'var(--font-mono)' }}>https://&lt;hostname&gt;/api/auth/callback</span> there.
+        </div>
+      )}
       <div style={{ ...card, overflow: 'hidden' }}>
         <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
           <span>Hostname</span><span>Surface</span><span>Status</span><span>Added</span><span />
@@ -3166,7 +3190,7 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
       <Tabs tabs={SETTINGS_SECTIONS} value={section} onChange={onSection} />
       {section === 'general' && <GeneralSettings teamId={teamId} app={app} onDeleted={onDeleted} authServers={authServers} />}
       {section === 'environment' && <EnvVars teamId={teamId} app={app} />}
-      {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
+      {section === 'domains' && <AppDomains teamId={teamId} app={app} authServers={authServers} />}
       {section === 'integrations' && <AppIntegrations teamId={teamId} app={app} />}
       {section === 'members' && <AppMembers teamId={teamId} app={app} />}
       {section === 'permissions' && <><EmailSenderPermission key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} /><AppPermissions teamId={teamId} app={app} /></>}

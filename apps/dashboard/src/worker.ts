@@ -73,7 +73,8 @@ import {
   type Provenance,
 } from './explain.js';
 import { businessGrid, businessRows, lifecycleMovesOf, type BusinessVolumesAnswer, type BusinessUnavailable } from './business-volumes.js';
-import { placesReconcile, reconcilePlaces } from './places.js';
+import { placesReconcile, reconcilePlaces, type PlacesAppAuth } from './places.js';
+import { reconcileClientRedirects, redirectsReconcile, settleClientRedirects } from './client-redirects.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
@@ -825,6 +826,37 @@ async function mcpIssuerOf(
   return issuerFor(auth?.issuer, issuers)?.scopeId;
 }
 
+/**
+ * Tell an app's team auth-server about its hostnames after one was bound or unbound: its
+ * client's callback and post-logout URIs (#2904) and its MCP resources (#1619). After the
+ * response and best-effort, so the bind never waits on or fails with the issuer; what does not
+ * land is logged, and the Domains tab's next read or the Apps list's pass delivers it again.
+ * `mcp: false` is the Domains tab's read, which re-sends only what its memo says changed.
+ */
+function syncAppIssuerIn(ctx: TeamContext, appScopeId: string, opts: { mcp: boolean }): void {
+  const { c, host, node } = ctx;
+  const work = (async () => {
+    const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+    const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+    const issuers = await teamIssuersFor(host, cp, await allApps(dash));
+    const auth = (await dash.invoke('dashboard/get-app-auth', { appScopeId })) as PlacesAppAuth | null;
+    const issuer = issuerFor(auth?.issuer, issuers);
+    if (!issuer) return;
+    const app = scopeId.parse(appScopeId);
+    await Promise.all([
+      auth?.clientId ? settleClientRedirects(cp, { appScopeId: app, issuerScopeId: issuer.scopeId, clientId: auth.clientId }) : null,
+      opts.mcp
+        ? registerAppMcpResources(cp, { appScopeId: app, issuerScopeId: issuer.scopeId }).catch((e: unknown) =>
+            console.error('dashboard: MCP resource registration failed', { appScopeId, reason: e instanceof Error ? e.message : String(e) }),
+          )
+        : null,
+    ]);
+  })().catch((e: unknown) =>
+    console.error('dashboard: issuer sync after a hostname change failed', { appScopeId, reason: e instanceof Error ? e.message : String(e) }),
+  );
+  c.executionCtx.waitUntil(work);
+}
+
 /** The Apps list's MCP reconcile, once per isolate per TEAM until it converges (#1619). */
 const mcpReconcile = new McpReconcileGate();
 
@@ -1411,6 +1443,27 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
     c.executionCtx.waitUntil(
       placesPass.catch((e: unknown) =>
         console.error('dashboard: places reconcile failed', e instanceof Error ? e.message : String(e)),
+      ),
+    );
+  }
+  // Every app's client URIs at its team auth-server (#2904, `client-redirects.ts`): how an
+  // install that predates them converges, and how a custom domain the cron activated reaches
+  // the issuer when nobody opens its Domains tab. Gated like places; deliveries only on change.
+  const redirectsPass = redirectsReconcile.run(node.tenantId, apps, async () => {
+    const all = await allApps(dash);
+    const slugs = await oidcProviderSlugsFor(host, cp);
+    return reconcileClientRedirects({
+      tenantId: node.tenantId,
+      apps: all,
+      isIssuer: (a) => slugs.has(a.vertical_slug),
+      authOf: async (appScopeId) => (await dash.invoke('dashboard/get-app-auth', { appScopeId })) as PlacesAppAuth | null,
+      controlPlane: cp,
+    });
+  });
+  if (redirectsPass) {
+    c.executionCtx.waitUntil(
+      redirectsPass.catch((e: unknown) =>
+        console.error('dashboard: client redirect reconcile failed', e instanceof Error ? e.message : String(e)),
       ),
     );
   }
@@ -3622,6 +3675,9 @@ async function listAppHostnamesIn(ctx: TeamContext, appScopeId: string) {
     appScopeId: scopeId.parse(appRow.app_scope_id),
     controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
   });
+  // A custom domain the control plane's cron activated since the last read: its client URIs
+  // go to the issuer now, so the person watching it turn active can sign in on it (#2904).
+  syncAppIssuerIn(ctx, appRow.app_scope_id, { mcp: false });
   // Declared surfaces: local registry first, then the shared plane's catalog for a
   // vertical pushed there — the same lookup ladder the Env tab's spec uses.
   await ensureCatalogOnce(host);
@@ -3656,7 +3712,7 @@ async function addAppHostnameIn(
   const { c, host, node } = ctx;
   const appRow = await ownAppRow(ctx, appScopeId);
   try {
-    return await addAppHostname(host, {
+    const row = await addAppHostname(host, {
       node,
       appScopeId: scopeId.parse(appRow.app_scope_id),
       surface: body.surface,
@@ -3665,6 +3721,9 @@ async function addAppHostnameIn(
       platformBases: parsePlatformBaseDomains(c.env.PLATFORM_BASE_DOMAINS),
       controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
     });
+    // A custom domain is not active yet; the Domains tab's read delivers it once it is.
+    if (row.status === 'active') syncAppIssuerIn(ctx, appRow.app_scope_id, { mcp: true });
+    return row;
   } catch (e) {
     if (isPermissionDenial(e)) throw e;
     throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind hostname' });
@@ -3689,6 +3748,7 @@ async function removeAppHostnameIn(ctx: TeamContext, appScopeId: string, hostnam
     // `not_found` is the hostname not being bound to this app (both narrowings type it).
     throw new HTTPException(errorCodeOf(e) === 'not_found' ? 404 : 409, { message });
   }
+  syncAppIssuerIn(ctx, appRow.app_scope_id, { mcp: true });
   return { deleted: hostname.toLowerCase() };
 }
 
@@ -3854,6 +3914,14 @@ async function setAppAuthIn({ c, host, node }: TeamContext, appScopeId: string, 
   if (nextIssuer) await settle(registerAppMcpResources(cp, { appScopeId: appScope, issuerScopeId: nextIssuer }));
   if (previousIssuer && previousIssuer !== nextIssuer) {
     await settle(clearAppMcpResources(cp, { appScopeId: appScope, issuerScopeId: previousIssuer }));
+  }
+  // The client URIs move the same way (#2904): the new client carries every hostname, and the
+  // issuer the app left takes its URIs off the old one.
+  if (nextIssuer && merged.clientId) {
+    await settleClientRedirects(cp, { appScopeId: appScope, issuerScopeId: nextIssuer, clientId: merged.clientId });
+  }
+  if (previousIssuer && previousIssuer !== nextIssuer) {
+    await settleClientRedirects(cp, { appScopeId: appScope, issuerScopeId: previousIssuer, clientId: null });
   }
   return { delivered, ...(note ? { note } : {}) };
 }
