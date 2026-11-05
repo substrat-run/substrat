@@ -2310,6 +2310,35 @@ export function defineScopeDO(
     }
 
     /**
+     * #2035: the ownerless reconcile's tenant record — the platform's word, as a lifecycle
+     * delivery's is (`setLifecycle`). Writes the receipt where that back-fill would (`backfills`),
+     * and answers whether this scope now serves `tenantId`: false for a foreign scope and for a DO
+     * nothing provisioned or loaded here, both left untouched.
+     */
+    recordTenant(tenantId: TenantId): boolean {
+      const { verdict } = this.tenantVerdict(tenantId);
+      if (verdict === 'recorded') return true;
+      if (!this.backfills(verdict)) return false;
+      // A carried-away copy takes no write at all, as in `setLifecycle`; the next projection records it.
+      if (!this.carriedAwayCopy) {
+        this.revision.transactionSync(() => {
+          this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
+        });
+      }
+      return true;
+    }
+
+    /**
+     * #2016: whether the platform's word may record the tenant on a scope with no receipt — one
+     * provisioned before the receipt (its role rows agree), or one whose tenant nothing recorded
+     * although it holds data (a load from a world that keeps its roles elsewhere). A DO never
+     * provisioned here records nothing, or `servesTenant` would answer for a scope it does not hold.
+     */
+    private backfills(verdict: TenantVerdict): boolean {
+      return verdict === 'inferred' || (verdict === 'unknown' && this.holdsData());
+    }
+
+    /**
      * #2541: this scope's database size, or null when the deployment does not hold it. The held
      * check and the read are ONE call: a reap or wipe cannot land between them, so a scope that
      * stopped being held is answered "not held", never with a number.
@@ -7007,10 +7036,8 @@ export function defineScopeDO(
       if (verdict === 'foreign') {
         return { refused: 'tenant', message: `lifecycle delivery ${foreignTenant(held, tenantId!)}` };
       }
-      // The back-fill: a scope provisioned before the receipt (its role rows agree), or one whose
-      // tenant nothing recorded although it holds data (a load from a world that keeps its roles
-      // elsewhere). The directory's word records it; a DO never provisioned here records nothing.
-      const backfill = verdict === 'inferred' || (verdict === 'unknown' && this.holdsData());
+      // The back-fill (`backfills`): the directory's word records the tenant.
+      const backfill = verdict !== null && this.backfills(verdict);
       let out!: LifecycleDelivery;
       this.revision.transactionSync(() => {
         // A write the carry fences on, not bookkeeping: it happens once per legacy scope, and

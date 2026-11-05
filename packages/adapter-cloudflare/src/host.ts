@@ -2242,6 +2242,8 @@ interface ScopeStubRpc {
   ): Promise<ImportResult | SystemDoorMoved>;
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
+  /** #2035: record the platform's tenant where a lifecycle delivery would; whether the scope now serves it. */
+  recordTenant(tenantId: TenantId): Promise<boolean>;
   /** #2541: the size, or null when this deployment does not hold the scope — held check and read in one call. */
   databaseSizeIfHeld(): Promise<number | null>;
   /** #2541: the attachment bytes, or null when this deployment does not hold the scope — one call, as the size is. */
@@ -2813,18 +2815,6 @@ export interface CloudflareScopeHostOptions {
  */
 const unknownScopeForTenant = (tenantId: string, scopeId: string) =>
   substratError('not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
-
-/**
- * #2016: the line a CP-less host writes each time it admits a pair to a scope with no tenant record
- * and no role rows — nothing to hold the pair against. Ids only.
- */
-export const tenantUnrecordedLine = (tenantId: string, scopeId: string) => ({
-  substrat: 'tenant-unrecorded' as const,
-  level: 'warn' as const,
-  tenantId,
-  scopeId,
-  message: 'admitted to a scope whose tenant is not recorded; a reconcile or lifecycle delivery records it',
-});
 
 /** #2430: a delivered connection grant a provision or reconcile did not seat, and why it is reported. */
 export interface SkippedConnectionGrant {
@@ -11300,12 +11290,11 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     if (!this.cpLess) return null;
     const { verdict, lifecycle } = await this.scopeStub(scopeId).admission(tenantId);
-    if (verdict === 'foreign') throw unknownScopeForTenant(tenantId, scopeId);
-    // A scope with no tenant record and no role rows has nothing to hold the pair against, so it is
-    // let through — a compatibility state, not a steady one: the next reconcile (every push runs
-    // one against the scopes behind it, #1172) or lifecycle delivery records the directory's tenant.
-    // Logged on every admission, so an operator sees a scope that has not converged.
-    if (verdict === 'unknown') console.warn(JSON.stringify(tenantUnrecordedLine(tenantId, scopeId)));
+    // #2035: a scope with no tenant record and no role rows has nothing to hold the pair against, so
+    // it is refused like a foreign one. The platform's paths record the tenant without passing this
+    // door — a provision or reconcile (every push runs one, #1172), a restore or snapshot, a
+    // lifecycle delivery to a scope holding data — so a scope converges rather than staying shut.
+    if (verdict === 'foreign' || verdict === 'unknown') throw unknownScopeForTenant(tenantId, scopeId);
     return lifecycle;
   }
 
@@ -12845,8 +12834,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * and a switched-off subject gets nothing. It can therefore only add what the running code
    * declares, and never takes anything away but a recorded OFF.
    *
-   * Only a scope already provisioned for `tenantId` is seated (`servesTenant`, K-3): this never
-   * provisions a scope, and never writes into another tenant's.
+   * Only a scope that serves `tenantId` is seated (K-3): this never provisions a scope, and never
+   * writes into another tenant's. Like a full reconcile, it records the platform's tenant on a scope
+   * that holds no receipt yet (`recordTenant`, #2035), so a push converges an ownerless vertical's
+   * scopes too — every door refuses a scope whose tenant nothing recorded.
    */
   async seatScopeLocal(input: {
     tenantId: TenantId;
@@ -12859,7 +12850,7 @@ export class CloudflareScopeHost implements ScopeHost {
     switchFences?: Readonly<Record<string, string>>;
   }): Promise<{ switchedOff?: SwitchedOff[]; skippedConnectionGrants?: SkippedConnectionGrant[] }> {
     const stub = this.scopeStub(input.scopeId);
-    if (!(await stub.servesTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
+    if (!(await stub.recordTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
     const carry = recordedOffFromWire(input);
     const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants); // #2430
     await this.migrateAndRecord(input.scopeId);

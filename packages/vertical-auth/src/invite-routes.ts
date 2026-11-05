@@ -91,8 +91,8 @@ export type InviteDirectory = Pick<
   Partial<Pick<IdentityStub, 'legacyInviteCount'>>;
 
 /**
- * #2175: the line that measures the legacy hash-only invite branch, as `tenantUnrecordedLine` is
- * the line that measures an unrecorded scope — one JSON line, `substrat` naming it, ids only.
+ * #2175: the line that measures the legacy hash-only invite branch — one JSON line, `substrat`
+ * naming it, ids only.
  * `pending` is the scope's unclaimed hash-only invites (null when the door cannot count them); `via` is the door that wrote it. The list
  * writes it ONLY when `pending > 0`, so a settled period has no line at all; an accept through the
  * legacy branch always writes it, since that is the branch still serving. No address, token or

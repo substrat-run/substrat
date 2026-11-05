@@ -25,6 +25,13 @@ describe('scope store door (cloudflare host, #2209)', () => {
     await host.admin.activateScope(staff, t, b);
     return { host, t, a, b };
   };
+  /** A scope a host with no control plane admits: its tenant recorded, as a load naming it records it (#2035). */
+  const recorded = async (host: CloudflareScopeHost) => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.restoreScopeLocal(s, [], { tenantId: t });
+    return { t, s };
+  };
 
   it('reaches the bound object, and a second scope does not share it', async () => {
     const { host, t, a, b } = await world();
@@ -87,8 +94,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
   // no-store empty list is held on adapter-sqlite, where a host can be built without one.
   it('a host with no control plane sizes the object its door reached, under the vertical it was given', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
+    const { t, s } = await recorded(host);
     await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment', { by: 3 });
     // The test store answers its counter as its size, so 3 names this tenant, vertical and scope.
     expect(await host.scopeStoreSizesLocal(t, s)).toEqual([{ binding: 'GRAPH', bytes: 3 }]);
@@ -96,8 +102,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
 
   it('a host with no control plane refuses a size read on a scope its lifecycle holds, as the door does', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
+    const { t, s } = await recorded(host);
     await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('increment');
     const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
     await host.setLifecycleLocal(s, { scope: 'suspended', tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
@@ -111,8 +116,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
 
   it('a reserved call whose answer is not JSON is a bad envelope, as at the door', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
+    const { t, s } = await recorded(host);
     await (await host.getScopeStore(principal, t, s, 'GRAPH')).invoke('break-envelope');
     const refusal = await host.scopeStoreSizesLocal(t, s).then(
       () => undefined,
@@ -227,8 +231,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
 
   it('a bound store object exports a page, and an import stages it and commits it, over the binding (D-69)', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
+    const { t, s } = await recorded(host);
     const store = await host.getScopeStore(principal, t, s, 'GRAPH');
     await store.invoke('increment', { by: 5 });
     const dump = await host.scopeStoreExportLocal(t, s);
@@ -279,8 +282,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
 
   it('a host with no control plane names the vertical it was given', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs', runners: [], transport: 'binding' } });
-    const t = tenantId.parse(ulid());
-    const a = scopeId.parse(ulid());
+    const { t, s: a } = await recorded(host);
     const store = await host.getScopeStore(principal, t, a, 'GRAPH');
     expect(await store.invoke('increment', { by: 1 })).toBe(1);
   });
@@ -325,8 +327,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
         scope: env.SCOPE,
         scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner: recordingRunner(log) }] },
       });
-      const t = tenantId.parse(ulid());
-      const s = scopeId.parse(ulid());
+      const { t, s } = await recorded(host);
       const at = '2026-10-01T00:00:00.000Z' as ScopeLifecycle['at'];
       await host.setLifecycleLocal(s, { scope: status, tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
       // The door is refused on it, so the scope's lifecycle is the one delivered.
@@ -402,7 +403,8 @@ describe('scope store door (cloudflare host, #2209)', () => {
       scope: env.SCOPE,
       scopeStores: { vertical: 'docs', runners: [{ binding: 'GRAPH', runner: runner('A', gate) }, { binding: 'OTHER', runner: runner('B') }] },
     });
-    const opening = host.getScopeStore(principal, tenantId.parse(ulid()), scopeId.parse(ulid()), 'GRAPH');
+    const { t, s } = await recorded(host);
+    const opening = host.getScopeStore(principal, t, s, 'GRAPH');
     // The first start is in flight once A has been asked.
     while (log.length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
     const closing = host.close();
@@ -439,8 +441,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
         ],
       },
     });
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
+    const { t, s } = await recorded(host);
     const open = () => host.getScopeStore(principal, t, s, 'GRAPH');
     await expect(open()).rejects.toThrow(/B start broke/);
     expect(await (await open()).invoke('read')).toBe(7);
