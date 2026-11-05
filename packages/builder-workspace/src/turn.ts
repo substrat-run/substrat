@@ -17,7 +17,15 @@
  *   Commits are then path-scoped, because the tree may hold unrelated work.
  *   Kept for running the gates over monorepo demos; new projects never use it.
  */
-import { runGates, runInstall, type GateResult, type GateRun, type GateSpec } from './gates.js';
+import {
+	declaresPermissions,
+	PERMISSION_EMITTER_PATH,
+	runGates,
+	runInstall,
+	type GateResult,
+	type GateRun,
+	type GateSpec,
+} from './gates.js';
 import { emitProjectModel, type ModelEmitResult } from './model.js';
 import type { Workspace } from './workspace.js';
 
@@ -189,10 +197,21 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// artifact. No-op until the model phase has written that file, and deterministic
 	// after it, so a turn that changed no entity leaves the artifact untouched.
 	const model = await emitProjectModel(ws, opts.verticalDir);
+	// Re-render PERMISSIONS.md beside it, for the same reason: the permission
+	// checkpoint is a human reading that file's diff, and a generated project had
+	// no way to produce it — the renderer lives in the toolchain, outside the
+	// project the model can reach. A render that fails is left for the gate's
+	// --check to report; this only writes.
+	const permissions =
+		(await declaresPermissions(ws, opts.verticalDir)) && (await ws.hasTool(PERMISSION_EMITTER_PATH))
+			? (await ws.exec(`pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${JSON.stringify(opts.verticalDir)}`))
+					.exitCode === 0
+			: false;
 	// Re-read the tree: the emit may have written the artifact, and a turn whose
 	// ONLY change is the artifact still has to commit it — an uncommitted one never
 	// reaches the snapshot the Model tab reads, and dies with the container.
-	const files = model.status === 'emitted' ? await changedFiles(ws, opts.verticalDir) : written;
+	const files =
+		model.status === 'emitted' || permissions ? await changedFiles(ws, opts.verticalDir) : written;
 
 	// The shared runner owns the verdict, including on direct gate rechecks.
 	// Reuse this turn's emission so it does not import the model a second time.

@@ -55,6 +55,9 @@ export interface GateResult {
 	readonly note?: string;
 }
 
+/** The permission renderer, run by the gate (`--check`) and by the turn loop (emit). */
+export const PERMISSION_EMITTER_PATH = 'tools/permission-diff.mts';
+
 export interface GateSpec {
 	readonly name: GateName;
 	readonly cmd: string;
@@ -130,7 +133,7 @@ export function defaultGates(verticalDir: string): GateSpec[] {
  * `install` gates own that failure and say so far better than a permission gate
  * would.
  */
-async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
+export async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
 	try {
 		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
 			substrat?: { permissions?: string };
@@ -203,10 +206,20 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			// string-equality drift check, same 0/1/2 — only the discovery differs, so a
 			// generated vertical's permission surface reaches the same human checkpoint
 			// every demo's does.
+			//
+			// Once src/module.ts exists the surface is owed, so an undeclared one is
+			// RED rather than skipped: skipping let a build pass with no permission
+			// review at all, which the checkpoint exists to make impossible.
 			name: 'permissions',
-			cmd: `pnpm exec tsx tools/permission-diff.mts --root ${projectDir} --check`,
-			appliesWhen: (ws) => declaresPermissions(ws, projectDir),
-			note: 'no substrat.permissions entry in package.json — no permission surface declared yet',
+			cmd:
+				`node -e "const p=require('./${projectDir}/package.json');if(typeof p.substrat?.permissions!=='string'){` +
+				`console.error('src/module.ts exists but package.json declares no substrat.permissions, so no permission review can render. ` +
+				`Add \\"substrat\\": { \\"slug\\": \\"<slug>\\", \\"name\\": \\"<Name>\\", \\"permissions\\": \\"src/provision.ts\\" } — ` +
+				`the file exporting MODULES and ROLES. The studio renders PERMISSIONS.md from it after the turn.');process.exit(1)}" && ` +
+				`pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${projectDir} --check`,
+			appliesWhen: async (ws) =>
+				(await declaresPermissions(ws, projectDir)) || (await ws.exists(`${projectDir}/src/module.ts`)),
+			note: 'no src/module.ts yet — no permission surface owed',
 			exitConvention: 'substrat',
 		},
 		{

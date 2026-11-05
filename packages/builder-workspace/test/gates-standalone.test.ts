@@ -44,8 +44,8 @@ const gate = (name: GateName): GateSpec => {
 
 describe('standaloneGates — permissions and api are real gates, not stubs', () => {
 	it('runs the per-project form of each tool', () => {
-		expect(gate('permissions').cmd).toBe(
-			`pnpm exec tsx tools/permission-diff.mts --root ${PROJECT} --check`,
+		expect(gate('permissions').cmd).toMatch(
+			new RegExp(` && pnpm exec tsx tools/permission-diff\\.mts --root ${PROJECT} --check$`),
 		);
 		expect(gate('api').cmd).toBe(`pnpm exec tsx tools/api-diff.mts --root ${PROJECT} --check`);
 	});
@@ -73,16 +73,30 @@ async function fixtureWorkspace(): Promise<ScriptedWorkspace> {
 }
 
 describe('standaloneGates — when each gate applies', () => {
-	it('skips permissions with a note until the project declares substrat.permissions', async () => {
+	it('skips permissions with a note until src/module.ts exists', async () => {
 		const w = await fixtureWorkspace();
 		await w.mkdir(PROJECT, { recursive: true });
 		await w.writeFile(`${PROJECT}/package.json`, JSON.stringify({ name: 'acme' }));
 
 		const r = await runGate(w, gate('permissions'), PROJECT);
 		expect(r.status).toBe('skipped');
-		expect(r.note).toMatch(/no substrat.permissions entry/);
+		expect(r.note).toMatch(/no src\/module.ts yet/);
 		// The point of a skip: the tool was NOT run, so nothing can report green.
 		expect(w.ran).toEqual([]);
+		await w.dispose();
+	});
+
+	it('refuses a project with a module and no substrat.permissions, saying what to add', async () => {
+		// Real exec: the refusal is a quoted shell string, and only running it proves the quoting.
+		const root = await mkdtemp(join(tmpdir(), 'builder-standalone-'));
+		const w = new LocalWorkspace({ root });
+		await w.mkdir(`${PROJECT}/src`, { recursive: true });
+		await w.writeFile(`${PROJECT}/package.json`, JSON.stringify({ name: 'acme' }));
+		await w.writeFile(`${PROJECT}/src/module.ts`, 'export {};\n');
+
+		const r = await runGate(w, gate('permissions'), PROJECT);
+		expect(r.status).toBe('failed');
+		expect(r.output).toContain('"permissions": "src/provision.ts"');
 		await w.dispose();
 	});
 

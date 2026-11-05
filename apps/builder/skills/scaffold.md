@@ -43,6 +43,10 @@ Projects are standalone source repositories. Use published, pinned versions of
 `@substrat-run/*` packages; platform dependencies must not use `workspace:`, `catalog:`,
 `file:` or links to the platform checkout. `pnpm add --save-exact` resolves the available package version.
 Typical dependencies: `contracts`, `kernel`, `adapter-sqlite`, plus the engines composed.
+Declare the vertical: `"substrat": { "slug": "<slug>", "name": "<Name>", "permissions":
+"src/provision.ts" }` — the file exporting `MODULES` and `ROLES`. The studio renders
+`PERMISSIONS.md` from it after every turn (the permission review a person signs off),
+and the permissions gate is red without it once `src/module.ts` exists.
 Scripts: `"typecheck": "tsc -p tsconfig.json --noEmit"`, `"test": "vitest run"`,
 `"dev": "tsx src/server.ts"`. devDependencies: `typescript`, `tsx`, `vitest`, `hono`,
 `@hono/node-server`, `@types/node`. Run `pnpm --ignore-workspace install` from the project
