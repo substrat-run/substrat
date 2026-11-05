@@ -18,7 +18,10 @@ export const modelAttribution = z
   .object({
     tenant: tenantId,
     scope: scopeId,
-    /** The vertical's package name — `@substrat-run/demo-ticket0`. */
+    /**
+     * The vertical's package name — `@substrat-run/demo-ticket0`. A drained line is filed
+     * under the scope's own vertical slug instead, which the platform knows without asking.
+     */
     vertical: z.string().min(1),
     /** The vertical version that made the call — what a cost change correlates with. */
     version: z.string().min(1),

@@ -1682,14 +1682,16 @@ describe('modelUsageHandler — meter 3, idempotent on the intent id (#1054)', (
     expect(await host.admin.listModelUsage(staff, { tenantId: other })).toHaveLength(0);
   });
 
-  it('refuses, terminally, a line naming a vertical this scope does not run', async () => {
+  it('files a line under the scope\'s own vertical, whatever label the host gave it', async () => {
     const handler = modelUsageHandler({ host });
-    const out = await handler(
+    const tagged = await handler(
       ctx,
-      intent('model-usage', { payload: line({ attribution: { tenant: t, scope: s, vertical: 'other-vert', version: '0.1.0', operation: 'x' } }) }),
+      intent('model-usage', { payload: line({ attribution: { tenant: t, scope: s, vertical: '@substrat-run/demo-ticket0', version: '0.1.0', operation: 'x' } }) }),
     );
-    expect(out.status).toBe('failed');
-    expect(out.error).toMatch(/names vertical 'other-vert'/);
+    expect(tagged.status).toBe('done');
+    const [filed] = await host.admin.listModelUsage(staff, { tenantId: t, vertical: ctx.vertical, limit: 1 });
+    expect(filed!.attribution.vertical).toBe(ctx.vertical);
+    expect(await host.admin.listModelUsage(staff, { tenantId: t, vertical: '@substrat-run/demo-ticket0' })).toHaveLength(0);
   });
 
   it('refuses, terminally, a payload that is not a usage line — a sixth attribution key included', async () => {
