@@ -225,11 +225,22 @@ export function nextStepFor(phase: BuildPhase | null, items: readonly ChatItem[]
 		}
 	}
 	const turn = items.slice(lastUser + 1);
-	if (turn.some((it) => it.kind === 'event' && it.e.type === 'question')) return null;
-	const last = turn[turn.length - 1];
+	const asked = turn.some((it) =>
+		it.kind === 'event' ? it.e.type === 'question' : it.kind === 'assistant' && ASKED_MARKER.test(it.text),
+	);
+	if (asked) return null;
+	// The last thing SAID: a usage or commit event can follow the text.
+	const last = turn.findLast((it) => it.kind !== 'event');
 	if (last?.kind === 'assistant' && extractInlineOptions(last.text)) return null;
 	return label;
 }
+
+/**
+ * A question as reloaded history carries it: the live `question` event is not
+ * persisted, only the line builder-generator's `historyMarker` appends to the
+ * assistant text (`[asked <header>: <question>]`).
+ */
+const ASKED_MARKER = /^\[asked[^\n]*:[^\n]*\]$/m;
 
 /** The always-present free-text answer — the "Other" the options don't cover. */
 function OtherAnswer(props: { onSubmit: (text: string) => void }) {
@@ -625,7 +636,7 @@ export function Chat(props: {
 					const { text, cls } = eventLine(item.e);
 					return <div key={i} className={`evt ${cls}`}>{text}</div>;
 				})}
-				{!props.busy && nextStep && (
+				{!props.busy && !sending && nextStep && (
 					<div className="next-step">
 						<button onClick={() => props.onSend(nextStep)}>{nextStep} →</button>
 					</div>

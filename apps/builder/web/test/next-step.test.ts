@@ -32,4 +32,17 @@ describe('nextStepFor', () => {
 			'Create the model',
 		);
 	});
+
+	it('hides for a question restored from history, which carries only its marker', () => {
+		const reloaded: ChatItem[] = [
+			{ kind: 'user', text: 'Create the model' },
+			said('Two ways to model approval.\n\n[asked Approval: Who approves?]'),
+		];
+		expect(nextStepFor('model', reloaded)).toBeNull();
+	});
+
+	it('sees inline options past the usage event that follows the text', () => {
+		const usage: ChatItem = { kind: 'event', e: { type: 'usage', inputTokens: 1, outputTokens: 1, steps: 1 } };
+		expect(nextStepFor('model', [said('Which one?\n\n1. Parents\n2. Anyone'), usage])).toBeNull();
+	});
 });
