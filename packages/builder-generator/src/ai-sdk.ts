@@ -272,11 +272,12 @@ iterate. A phase you claim but the files don't show does not exist.
    never offer an "Other" option yourself. Ask only the questions whose answers
    decide the domain model (who uses it; the entity lifecycle; who must be
    DENIED what; whether money or sign-off is involved). When you have enough,
-   propose the concept in prose for approval. In the turn where the builder
-   agrees: FIRST write spec/concept.md with write_file, then call
+   propose the concept in prose, then end that turn with ONE ask_user call whose
+   options are "Create the concept" and "Change an assumption". In the turn where
+   the builder agrees: FIRST write spec/concept.md with write_file, then call
    set_project_name once with a short product name, then confirm in a sentence
-   and END the turn, telling the builder to say "build it" (or anything) to
-   start — the scaffold begins next turn, with the scaffold references loaded.
+   and END the turn. Each later phase (model, tests, build) starts from a button
+   the studio shows between turns — never ask the builder to type "build it".
 2. BUILD. On a substantial build turn (initial scaffold, a new feature) your FIRST
    act is one propose_plan call: the files you will touch, packages you will add,
    and 3-4 build assumptions phrased as assumption + alternative (surface shape,

@@ -26,7 +26,9 @@ type Tab = 'preview' | 'concept' | 'model' | 'code' | 'database' | 'gates' | 'us
 
 const PHASE_STEPS: readonly { key: BuildPhase; label: string; hint: string }[] = [
 	{ key: 'interview', label: 'Interview', hint: 'No approved concept yet — the model asks, one question at a time' },
-	{ key: 'scaffold', label: 'Scaffold', hint: 'Concept approved (spec/concept.md) — first build in progress' },
+	{ key: 'model', label: 'Model', hint: 'Concept approved (spec/concept.md) — next, the declared model (spec/model.ts)' },
+	{ key: 'scenario', label: 'Tests', hint: 'Model declared — next, the scenario tests, written before the code they judge' },
+	{ key: 'scaffold', label: 'Build', hint: 'Tests written (test/scenario.test.ts) — next, the first build' },
 	{ key: 'iterate', label: 'Iterate', hint: 'The module exists — extending against the approved concept' },
 ];
 
@@ -352,6 +354,7 @@ export function App() {
 					<Chat
 						items={items}
 						busy={busy}
+						phase={phase}
 						liveness={{ label: workLabel, silentForS }}
 						queued={queued}
 						vertical={session?.vertical ?? null}

@@ -184,6 +184,12 @@ Present the concept in prose for approval first; write the file only after the
 builder agrees. Walk them through sections 4 and 10 — those are the two a
 builder can correct cheaply now and expensively later.
 
+End the proposal turn with ONE ask_user call — the approval is a button, not a
+phrase the builder has to guess. Its first option is exactly "Create the
+concept"; the second is "Change an assumption". The UI's free-text answer is
+where a builder names the assumption to change, so never ask them to type
+"build it" or "go".
+
 ## The approval turn — exact sequence
 
 The phase ladder advances on workspace facts, and interview turns can write
@@ -191,6 +197,7 @@ only spec/**. So in the turn where the builder says yes:
 
 1. Write spec/concept.md (write_file) — this is what moves the ladder.
 2. Call set_project_name once with a short product name.
-3. Confirm in a sentence and END the turn — invite the builder to say
-   "build it". The model phase begins next turn. Never start code in the
-   approval turn; the write will be refused.
+3. Confirm in a sentence and END the turn. The studio then shows a "Create
+   the model" button, which starts the model phase next turn — do not ask the
+   builder to type anything. Never start code in the approval turn; the write
+   will be refused.
