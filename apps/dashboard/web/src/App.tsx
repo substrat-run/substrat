@@ -376,10 +376,10 @@ export function App() {
         signIn(here !== '/' ? { returnTo: here } : {});
         return; // `me` stays undefined → interstitial while the browser navigates
       }
-      // A team-prefixed deep link (`/other-team/apps`) may name a DIFFERENT team than
-      // the cookie-pinned one — switch BEFORE the fetch burst below so everything
-      // loads scoped to the team the URL asks for. An unknown slug is left alone
-      // here; the normalize effect rewrites it onto the pinned team.
+      // A team-prefixed deep link (`/other-team/apps`) may name a DIFFERENT team than the
+      // one `/api/me` opened on (the last team used) — switch BEFORE the fetch burst below
+      // so the tab adopts the team the URL asks for. An unknown slug is left alone here;
+      // the normalize effect rewrites it onto the tab's team.
       if (m && !needsOnboarding(m)) {
         const session = m;
         const urlTeam = parsePath().team;
@@ -675,8 +675,9 @@ export function App() {
     [promoting, reloadDeployments, teamClient],
   );
 
-  // Switch team → the server pins the choice in a cookie and the whole portal
-  // re-scopes on reload. Dev-preview just flips the local mock selection.
+  // Switch team → the server records it as the last team used, and the tab navigates onto
+  // the new team's URL, which is what every request then names. Dev-preview just flips the
+  // local mock selection.
   const switchTeam = useCallback(
     async (teamId: string) => {
       if (!me || needsOnboarding(me) || teamId === me.currentTeamId) return;

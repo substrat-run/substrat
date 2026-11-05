@@ -1,19 +1,40 @@
 {
   "name": "@substrat-run/elements",
   "version": "0.0.0",
-  "private": true,
   "description": "Substrat's web components: Lit elements on Web Awesome's free core, themed through its --wa-* tokens, with the model-bound pieces (an entity table first) a vertical drops in",
   "license": "Apache-2.0",
-  "type": "module",
-  "exports": {
-    ".": "./src/index.ts",
-    "./controls": "./src/controls.ts",
-    "./jsx": "./src/jsx.ts",
-    "./themes/*": "./src/themes/*"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "packages/elements"
   },
+  "homepage": "https://substrat.net",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./controls": {
+      "types": "./dist/controls.d.ts",
+      "default": "./dist/controls.js"
+    },
+    "./jsx": {
+      "types": "./dist/jsx.d.ts",
+      "default": "./dist/jsx.js"
+    },
+    "./themes/*": "./dist/themes/*"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp -R src/themes dist/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
     "@awesome.me/webawesome": "3.14.0",
@@ -22,5 +43,8 @@
   "devDependencies": {
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

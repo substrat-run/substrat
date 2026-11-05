@@ -698,11 +698,13 @@ function verifyGithubState(env: Env, token: string): Promise<GithubStateClaim | 
 /**
  * The authenticated customer's account node — the tenant, their dashboard scope,
  * and their principal in that tenant. Derived from the OIDC session (the ID token
- * `sub`) plus the selected-team cookie, NOT the URL.
+ * `sub`) plus the team the caller names: the path's team on a declared team route
+ * (`teamContext`), the signed state's on the GitHub callback.
  *
  * A login can belong to several teams (tenants), so `selectedTeamId` picks which
  * one this request is scoped to; the selection can never name a team you are not
- * in. `null` when there is no session OR the login belongs to no team yet — a
+ * in, and a team that is not yours falls back to your first one — which is why
+ * both callers refuse any answer but the team they asked for. `null` when there is no session OR the login belongs to no team yet — a
  * teamless login is routed to onboarding by `/api/me`, never here. This resolver
  * is READ-ONLY: teams are created explicitly (`createTeam` / `POST /api/teams`),
  * not as a side effect of resolving who you are — the roster self-heal below only
