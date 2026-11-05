@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/elements",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Substrat's web components: Lit elements on Web Awesome's free core, themed through its --wa-* tokens, with the model-bound pieces (an entity table first) a vertical drops in",
   "license": "Apache-2.0",
   "repository": {

@@ -1,5 +1,18 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.181.0
+
+### Minor Changes
+
+- 3cbbe62: A control-plane-less host refuses every door into a scope whose tenant is not recorded (no provision receipt and no role rows) with the same `not_found` a mismatched (tenant, scope) pair gets, instead of admitting it with a `tenant-unrecorded` warn line; the ownerless reconcile now records the platform's tenant on such a scope, as a full reconcile and a lifecycle delivery do.
+
+### Patch Changes
+
+- c797d27: A CP-less host reads its connection grants without asking for a control plane it does not have, so a declared landing on a hosted vertical is granted instead of failing every pass (#2892).
+- Updated dependencies [4808495]
+  - @substrat-run/contracts@0.181.0
+  - @substrat-run/kernel@0.181.0
+
 ## 0.180.0
 
 ### Minor Changes
@@ -7905,7 +7918,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   composing a contracts schema into their own —
   `z.object({ facility: entityRef, unitPrice: money })`
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
-  schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
+schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
   what `engines/workorder` itself does (`unitPrice: money`, `facility: entityRef`),
   so anyone copying the reference hit it immediately. Found by building a vertical
   from scratch against the published packages — the flow the docs describe and
