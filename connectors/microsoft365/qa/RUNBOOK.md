@@ -58,18 +58,40 @@ pnpm build
 3. In the **second** channel's Files tab, upload one file with a name you would recognise, e.g.
    `decoy-7c1f.txt`. It is in the same site as the bound folder, so it is exactly what the fence must
    keep out.
-4. Grant the app `Write` on the site, and only that site:
+4. Grant the app `Write` on the site, and only that site. The QA app cannot do this itself: it holds
+   `Sites.Selected` and nothing else. The grant is made by an administrator, signed in through a
+   **second** app that holds the **delegated** Microsoft Graph permission `Sites.FullControl.All`
+   (admin consented). PnP PowerShell no longer ships a shared app for interactive sign-in, so in a
+   fresh tenant register one first, or use a PnP app your tenant already has configured:
 
 ```powershell
-Connect-PnPOnline -Url https://<tenant>.sharepoint.com/sites/<name> -Interactive
-Grant-PnPEntraIDAppSitePermission -AppId <client-id> -DisplayName "Substrat QA" -Site https://<tenant>.sharepoint.com/sites/<name> -Permissions Write
-Get-PnPEntraIDAppSitePermission -Site https://<tenant>.sharepoint.com/sites/<name>
+Register-PnPEntraIDAppForInteractiveLogin -ApplicationName "PnP admin" -Tenant <tenant>.onmicrosoft.com
 ```
 
-Instead of PnP you can use `POST /sites/{site-id}/permissions` in Graph Explorer, with `roles:
-["write"]` and the app as `grantedToIdentities`.
+   Consent to the permissions it asks for, and note the client id it prints. That is the
+   administrator's app, not the QA app. Then, signed in as a SharePoint Administrator (or Global
+   Administrator) who is a member of the team's site:
 
-**Expect** the last command to list the app with the role `write`. **Paste back** the role only.
+```powershell
+Connect-PnPOnline -Url https://<tenant>.sharepoint.com/sites/<name> -Interactive -ClientId <admin-app-client-id>
+$grant = Grant-PnPEntraIDAppSitePermission -AppId <qa-app-client-id> -DisplayName "Substrat QA" -Site https://<tenant>.sharepoint.com/sites/<name> -Permissions Write
+$grant.Id
+Get-PnPEntraIDAppSitePermission -Site https://<tenant>.sharepoint.com/sites/<name> -PermissionId $grant.Id
+```
+
+   Pass `-PermissionId` to the check. Without it, `Get-PnPEntraIDAppSitePermission` lists the
+   site's grants with their ids but leaves `Roles` empty (PnP documents this as an API limitation),
+   so it cannot show the role. If you lost the id, list without `-PermissionId`, find the QA app's
+   row, and run the check again with that row's id. Keep the id for step 7.
+
+Instead of PnP, an administrator can call `POST /sites/{site-id}/permissions` in Graph Explorer. The
+body is `roles: ["write"]` with the QA app in `grantedToIdentities`. Graph Explorer must then be
+consented the delegated `Sites.FullControl.All`. Microsoft documents that a delegated caller must
+also hold an administrator role such as SharePoint Administrator and be a member of the site. The
+answer is `201 Created` with the permission and its `id`, and `GET
+/sites/{site-id}/permissions/{id}` shows its `roles`.
+
+**Expect** the check to show the QA app with the role `write`. **Paste back** the role only.
 
 ## 3. Wait for the grant
 
@@ -88,6 +110,10 @@ export M365_QA_SITE_URL=https://<tenant>.sharepoint.com/sites/<name>
 export M365_QA_FOLDER=<the folder name from step 2>
 export M365_QA_DECOY_NAME=<the decoy file's name from step 2>
 ```
+
+All six are required. The run refuses to start without the decoy's name, because without it the
+read side of the fence (`decoy-unseen`) would go unchecked and the block could read all `PASS`
+anyway.
 
 `M365_QA_WAIT_SECONDS` (default 180) is how long the run waits for each change you make in Teams
 to show in the change feed.
@@ -143,9 +169,10 @@ lag. A second run starts clean: it binds again and writes into a new folder of i
 ## 7. Remove everything
 
 1. If `cleanup` failed, delete the `substrat-qa-…` folder in the channel's Files tab.
-2. Remove the site grant:
-   `Revoke-PnPEntraIDAppSitePermission -PermissionId <id from Get-PnPEntraIDAppSitePermission> -Site <site url>`.
-3. In Entra, delete the client secret, then the app registration.
+2. Remove the site grant, signed in through the administrator's app as in step 2:
+   `Revoke-PnPEntraIDAppSitePermission -PermissionId <the grant's id from step 2> -Site <site url>`.
+3. In Entra, delete the QA app's client secret, then the QA app's registration. Delete the
+   administrator's app too if you registered it only for this run.
 4. Delete the test team, or keep it for the next run.
 5. `unset M365_QA_CLIENT_SECRET` (or close the shell).
 

@@ -67,7 +67,8 @@ const secret = microsoft365Secret.parse({
   senders: 'qa@example.invalid',
 });
 const FOLDER = env('M365_QA_FOLDER');
-const DECOY = env('M365_QA_DECOY_NAME', false);
+// Required: without it `decoy-unseen` could not run, and the block could read all PASS with the read fence unchecked.
+const DECOY = env('M365_QA_DECOY_NAME');
 /** How long to wait for a change made in Teams to show in the change feed. */
 const WAIT_MS = Number(process.env.M365_QA_WAIT_SECONDS ?? 180) * 1000;
 
@@ -419,13 +420,11 @@ async function main() {
   }
 
   // 8. Nothing from outside the folder.
-  if (DECOY) {
-    await check('decoy-unseen', async () => {
-      expect(!landed.some((c) => c.name === DECOY || c.path.split('/').includes(DECOY)), 'a change named the decoy');
-      expect(!JSON.stringify(await host.admin.listConnectorState(conn)).includes(DECOY), "the connector's state names the decoy");
-      return `none of ${landed.length} changes, and no stored state`;
-    });
-  }
+  await check('decoy-unseen', async () => {
+    expect(!landed.some((c) => c.name === DECOY || c.path.split('/').includes(DECOY)), 'a change named the decoy');
+    expect(!JSON.stringify(await host.admin.listConnectorState(conn)).includes(DECOY), "the connector's state names the decoy");
+    return `none of ${landed.length} changes, and no stored state`;
+  });
 
   // 9. The fence on a write: refused before any request.
   await check('fence-write', async () => {
@@ -457,7 +456,14 @@ try {
   await main();
 } finally {
   prompt.close();
-  rmSync(dir, { recursive: true, force: true });
+  try {
+    // Close the database before its directory goes.
+    await host.close();
+  } catch {
+    console.warn('(local only, do not paste) the host did not close cleanly');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
   const failed = results.filter((l) => l.includes('] FAIL ')).length;
   console.log('\n==== PASTE BACK FROM HERE ====');
   console.log(`microsoft365 channel-folder QA · ${results.length} checks, ${failed} failed · ${calls} requests`);
