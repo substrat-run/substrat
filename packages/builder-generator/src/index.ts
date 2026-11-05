@@ -20,7 +20,7 @@ export {
 	type WorkspaceTools,
 } from './tools.js';
 
-export { AiSdkGenerator, type AiSdkGeneratorOptions } from './ai-sdk.js';
+export { AiSdkGenerator, generatorPrompt, type AiSdkGeneratorOptions } from './ai-sdk.js';
 
 export { classifyProviderError, retryDelayMs, type RetryDecision } from './retry.js';
 

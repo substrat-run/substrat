@@ -333,6 +333,42 @@ tool for NEW files and full rewrites. If an edit fails, the error tells you exac
 fix that one block and retry; never fall back to write_file just to force a change through.`;
 
 /**
+ * The three prompt parts every generator sends — exported so a second
+ * implementation of the seam (apps/builder's Claude Code driver) sends the
+ * SAME bytes rather than a paraphrase that drifts. `stable` is the cacheable
+ * prefix (system + skills), `concept` the per-project context, `user` the
+ * volatile final message (brief + carried gate report + this turn's message).
+ */
+export function generatorPrompt(
+	input: GeneratorInput,
+	opts: { readonly system?: string; readonly skills?: readonly string[]; readonly editTool: boolean },
+): { readonly stable: string; readonly concept: string; readonly user: string } {
+	const stable = [
+		opts.system ?? DEFAULT_SYSTEM,
+		...(opts.editTool ? [EDIT_GUIDANCE] : []),
+		...(opts.skills ?? []),
+	].join('\n\n---\n\n');
+	const concept = [
+		`The vertical under construction lives at: ${input.verticalDir}`,
+		`Approved concept:\n${input.concept}`,
+	].join('\n\n---\n\n');
+	const user = [
+		...(input.workspaceBrief
+			? [
+					`Project map (current — trust it; never call list_files to re-discover it):\n${input.workspaceBrief}`,
+				]
+			: []),
+		...(input.gateReport
+			? [
+					`Tier-1 gates are RED from the previous turn — the tree is broken until these pass. Getting them green is part of whatever you do next:\n${input.gateReport}`,
+				]
+			: []),
+		input.message,
+	].join('\n\n---\n\n');
+	return { stable, concept, user };
+}
+
+/**
  * Stop the turn once it has spent `budget` UNCACHED-equivalent tokens.
  *
  * Exported so it can be tested directly: a stop condition that never fires is
@@ -446,33 +482,19 @@ export class AiSdkGenerator implements VerticalGenerator {
 		// Present only when the edit_file tool is (format-per-model, H1): a prompt
 		// naming an absent tool would send weak models chasing it. Stable per
 		// session — the model, and with it this block, never changes mid-project.
-		const stable = [
-			this.#opts.system ?? DEFAULT_SYSTEM,
-			...(editTool ? [EDIT_GUIDANCE] : []),
-			...(this.#opts.skills ?? []),
-		].join('\n\n---\n\n');
-		const conceptCtx = [
-			`The vertical under construction lives at: ${input.verticalDir}`,
-			`Approved concept:\n${input.concept}`,
-		].join('\n\n---\n\n');
+		const {
+			stable,
+			concept: conceptCtx,
+			user: userText,
+		} = generatorPrompt(input, {
+			...(this.#opts.system !== undefined ? { system: this.#opts.system } : {}),
+			...(this.#opts.skills ? { skills: this.#opts.skills } : {}),
+			editTool,
+		});
 
 		const history = (input.history ?? []).map(
 			(t): ModelMessage => ({ role: t.role, content: t.text }),
 		);
-
-		const userText = [
-			...(input.workspaceBrief
-				? [
-						`Project map (current — trust it; never call list_files to re-discover it):\n${input.workspaceBrief}`,
-					]
-				: []),
-			...(input.gateReport
-				? [
-						`Tier-1 gates are RED from the previous turn — the tree is broken until these pass. Getting them green is part of whatever you do next:\n${input.gateReport}`,
-					]
-				: []),
-			input.message,
-		].join('\n\n---\n\n');
 
 		const messages: ModelMessage[] = [
 			{

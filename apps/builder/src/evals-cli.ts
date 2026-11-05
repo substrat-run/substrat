@@ -28,6 +28,7 @@ import {
 	type VerticalGenerator,
 } from '@substrat-run/builder-generator';
 import { LocalWorkspace, standaloneGates } from '@substrat-run/builder-workspace';
+import { ClaudeCodeGenerator, claudeCodeModel } from './claude-code.js';
 import { loadEnvFiles } from './env.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import { skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
@@ -93,7 +94,9 @@ function parseArgs(argv: readonly string[]): Args {
 const USAGE = `pnpm builder evals [options]
 
   --eval <a,b>        run only these fixtures (default: all under apps/builder/evals/)
-  --model <spec>      provider:model (default ${DEFAULT_MODEL}; also SUBSTRAT_BUILDER_MODEL)
+  --model <spec>      provider:model (default ${DEFAULT_MODEL}; also SUBSTRAT_BUILDER_MODEL);
+                      claude-code:<sonnet|haiku|id> runs on your local Claude Code
+                      login instead of an API key
   --max-steps <n>     tool-loop ceiling per pass (default 40)
   --max-turns <n>     turn ceiling per fixture (fixture expect.json wins)
   --root <path>       monorepo root (default cwd)
@@ -184,9 +187,13 @@ async function main(): Promise<number> {
 	const ws = new LocalWorkspace({ root: args.root });
 	const chosen = resolveModelSpec(args);
 
+	// `claude-code:<model>` runs on the local Claude Code login (claude-code.ts),
+	// so there is no provider credential to validate.
+	const claudeCode = claudeCodeModel(chosen.spec);
+
 	// Validate the spec once, up front — same contract as dev.ts.
 	try {
-		await resolveModel(resolveAutoSpec(chosen.spec, 'iterate'));
+		if (!claudeCode) await resolveModel(resolveAutoSpec(chosen.spec, 'iterate'));
 	} catch (err) {
 		if (err instanceof ProviderError) {
 			process.stderr.write(`${err.message}\n`);
@@ -196,10 +203,21 @@ async function main(): Promise<number> {
 	}
 
 	const skills = await loadSkills(ws.root);
+	/** The fixture being driven — a Claude Code session's cwd. */
+	let currentProjectDir = '';
 
 	// Fresh generator per turn so the phase ladder binds the right skills —
 	// byte-identical construction to server.ts makeGenerator.
 	const makeGenerator = async (phase: BuildPhase, lane?: BuildLane): Promise<VerticalGenerator> => {
+		if (claudeCode) {
+			return new ClaudeCodeGenerator({
+				model: claudeCode,
+				cwd: join(ws.root, currentProjectDir),
+				skills: skillsForPhase(skills.byFile, phase, lane),
+				maxSteps: args.maxSteps,
+				denyWrite: writeGuardFor(phase, lane),
+			});
+		}
 		const resolved = await resolveModel(resolveAutoSpec(chosen.spec, phase));
 		return new AiSdkGenerator({
 			model: resolved.model,
@@ -234,6 +252,7 @@ async function main(): Promise<number> {
 	const results: EvalResult[] = [];
 	for (const fixture of fixtures) {
 		const projectDir = `${EVAL_PROJECT_PREFIX}${fixture.name}`;
+		currentProjectDir = projectDir;
 		process.stdout.write(`── ${fixture.name} → ${projectDir}\n`);
 		await prepareProject(ws, projectDir, fixture);
 		const projectWs = new LocalWorkspace({ root: join(ws.root, projectDir) });

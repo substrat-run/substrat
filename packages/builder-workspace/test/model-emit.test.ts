@@ -317,9 +317,11 @@ describe('model-diff --root — the emitter the studio calls', () => {
 		}
 	}, 60_000);
 
-	it('checks and emits a contracts model before the project has a package.json', async () => {
+	it('checks and emits a model composing an engine before the project has a package.json', async () => {
 		// Under the repo like a builder project, but not a workspace member: the
-		// old pnpm filter silently ran no compiler at all in this phase.
+		// old pnpm filter silently ran no compiler at all in this phase. The
+		// engine import is what model.md tells the model to write, and it only
+		// resolves because the root declares the engines beside contracts.
 		// Real compiler and emitter subprocesses take a few seconds; allow CI headroom.
 		await mkdir(join(REPO_ROOT, '.builder'), { recursive: true });
 		const dir = await mkdtemp(join(REPO_ROOT, '.builder/model-phase-'));
@@ -328,6 +330,8 @@ describe('model-diff --root — the emitter the studio calls', () => {
 			const source = join(dir, 'spec/model.ts');
 			const valid =
 				'import { defineEntities, emitModel, z } from "@substrat-run/contracts";\n' +
+				'import { workorderEntities } from "@substrat-run/engine-workorder";\n' +
+				'export const engines = [workorderEntities];\n' +
 				'export const model = emitModel(defineEntities({ item: { table: "acme_items", fields: z.object({ id: z.string() }) } }));\n';
 			await writeFile(source, valid);
 			const spec = standaloneGates(relative(REPO_ROOT, dir)).find((g) => g.name === 'model')!;
