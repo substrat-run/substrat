@@ -43,6 +43,10 @@
     "./owner-claim-routes": {
       "types": "./dist/owner-claim-routes.d.ts",
       "default": "./dist/owner-claim-routes.js"
+    },
+    "./session-route": {
+      "types": "./dist/session-route.d.ts",
+      "default": "./dist/session-route.js"
     }
   },
   "files": [

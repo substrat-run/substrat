@@ -108,6 +108,9 @@ export function turnFailure(err: unknown): string {
 /** Reviewed source-operation failures may include the tenant's compiler diagnostics. */
 export class SourceBuildError extends Error {}
 
+/** A sandbox command that exited non-zero: its message already carries the command's own output. */
+export class CommandFailedError extends SourceBuildError {}
+
 export function sourceBuildFailure(err: unknown): string {
 	return err instanceof SourceBuildError ? err.message : 'the source build stopped unexpectedly; the cause is in the server log';
 }

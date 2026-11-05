@@ -189,7 +189,7 @@ app.get('/api/me', async (c) => {
     country: 'SE' | 'ES';
     employeeId: string | null;
   };
-  return c.json({ key: p.principal, display: p.display, role: who.role, country: who.country, employeeId: who.employeeId });
+  return c.json({ principal: p.principal, display: p.display, role: who.role, country: who.country, employeeId: who.employeeId });
 });
 
 /**

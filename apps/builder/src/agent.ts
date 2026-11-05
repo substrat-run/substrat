@@ -40,6 +40,7 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { BUILD_BUSY, BuildQueue, BuildWaitExpired } from './build-queue.js';
+import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, invalidFields, RECORD_INDEX, RECORD_PREFIX, retained, ulid } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	orUnhandled,
@@ -113,21 +114,6 @@ interface ProjectState {
 	turnNo: number;
 	/** Red-gate report carried into the next turn's context (H5) — unset while green. */
 	lastGateReport?: string;
-}
-
-/** ULID, Web-Crypto only — same wire shape as kernel `ulid()`. */
-function ulid(now = Date.now()): string {
-	const A = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-	let t = now;
-	let time = '';
-	for (let i = 0; i < 10; i++) {
-		time = A[t % 32] + time;
-		t = Math.floor(t / 32);
-	}
-	const rand = crypto.getRandomValues(new Uint8Array(16));
-	let out = time;
-	for (const b of rand) out += A[b % 32];
-	return out;
 }
 
 /** Bridge the real sandbox stub to the structural slice ContainerWorkspace takes. */
@@ -312,16 +298,18 @@ export class BuilderAgent extends DurableObject<Env> {
 	 * operation on its project (#2795) — never behind the rest of the workspace. A submitted
 	 * snapshot is written to the build's sandbox before the wait, not held through it.
 	 */
-	async #build(slug: string, request: SourceBuildRequest): Promise<Response> {
-		const buildId = ulid();
+	async #build(slug: string, request: SourceBuildRequest, buildId: string): Promise<Response> {
 		/** Where a submitted snapshot builds from; undefined for a pinned revision. */
 		const submittedDirectory = request.snapshot?.directory;
 		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`);
-		const sb = sandboxLike(raw, 600_000);
+		const log = new BuildLog(buildId, slug, (record) => this.ctx.storage.put(`${RECORD_PREFIX}${buildId}`, record));
+		const sb = log.sandbox(sandboxLike(raw, 600_000));
 		let entry: ProjectEntry | undefined;
 		let revision: string | undefined;
 		try {
+			await this.#keepBuildRecord(buildId);
 			if (request.snapshot) {
+				await log.begin('stage submitted source');
 				// stage-source reads the tree from the sandbox's disk, so it goes there before the
 				// queue. Kept in `request` it would sit in this DO's memory for the whole wait and
 				// build: an async frame holds its locals across every await.
@@ -329,14 +317,21 @@ export class BuilderAgent extends DurableObject<Env> {
 				await writeSandboxFile(sb, '/build/snapshot.json', JSON.stringify(request.snapshot));
 				request = { ...request, snapshot: undefined };
 			}
+			await log.begin('wait for the build queue');
 			return await this.#builds.run(slug, () => this.#busy && this.#studioSlug === slug, async () => {
+				await log.begin('check out the repository');
 				entry = (await this.#registry()).projects.find((p) => p.slug === slug);
-				if (!entry && submittedDirectory === undefined) return refuse(404, 'this vertical has no source repository; submit source or connect GitHub first');
+				if (!entry && submittedDirectory === undefined) {
+					const detail = failureDetail(log, 'this vertical has no source repository; submit source or connect GitHub first', { withOutput: false });
+					await log.finish('failed', detail);
+					return refuse(404, detail);
+				}
 				entry ??= await this.#createProject(request.name ?? slug, slug, undefined, false);
 				const root = '/build/source';
 				await checkedExec(sb, 'mkdir -p /build');
 				await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
 				if (submittedDirectory !== undefined) {
+					await log.begin('save the submitted source');
 					await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
 					await checkedExec(sb, "git -c core.hooksPath=/dev/null add -A && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=build@substrat.invalid commit --allow-empty -m 'Source snapshot'", root);
 					if (entry.repository.kind === 'artifacts') {
@@ -352,6 +347,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					}
 				} else {
 					// The request pins a commit, not a moving branch. Fetch that commit explicitly.
+					await log.begin('fetch the pinned revision');
 					const access = await this.#access(entry, 'read', this.#tenant);
 					const { repositoryGit } = await import('./repositories.js');
 					await repositoryGit(sb, access, ['fetch', access.remote, request.revision!], root);
@@ -359,6 +355,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					revision = await checkedExec(sb, 'git rev-parse HEAD', root);
 					entry.revision = revision;
 				}
+				await log.begin('prepare the build');
 				const directory = submittedDirectory ?? entry.directory;
 				entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
 				await this.#putEntry(entry);
@@ -371,7 +368,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				await checkedExec(sb, 'chown -R substrat-build:substrat-build /build');
 				const install = "cd /build/source && pnpm install --frozen-lockfile";
 				const run = 'cd /workspace/substrat && node --import tsx apps/builder/src/build-runner.ts /build/request.json /build/result.json';
+				// The one step that runs the tenant's code, and the one whose output is kept.
+				await log.begin('install and build', { keepOutput: true });
 				await checkedExec(sb, `su -s /bin/sh substrat-build -c ${shellQuote(`${install} && ${run}`)}`);
+				await log.begin('collect the release');
 				const outputBytes = Number(await checkedExec(sb, 'wc -c < /build/result.json'));
 				if (!Number.isFinite(outputBytes) || outputBytes > 24 * 1024 * 1024) throw new SourceBuildError('release output exceeds the build transfer limit');
 				const resultFile = await raw.readFile('/build/result.json');
@@ -391,18 +391,29 @@ export class BuilderAgent extends DurableObject<Env> {
 				form.set('manifest', JSON.stringify(manifest));
 				form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss: result.dataLoss }));
 				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'built', completedAt: new Date().toISOString() });
+				await log.finish('built');
 				return new Response(form);
 			});
 		} catch (error) {
-			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
-			const detail = sourceBuildFailure(error);
+			// A command's failure already carries its own output; any other failure gets the tail.
+			const detail = errorDetail(log, error instanceof BuildWaitExpired ? BUILD_BUSY : sourceBuildFailure(error), error);
 			// The error as its own argument: nested in an object it serialises to `{}`.
-			console.error('source.build.failed', { buildId }, error);
+			console.error('source.build.failed', { buildId, step: log.step }, error);
+			await log.finish('failed', detail).catch(() => undefined);
+			// The CLI retries on this sentence; it stays exactly as the queue words it.
+			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
 			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry?.id, state: 'failed', detail, completedAt: new Date().toISOString() });
 			return refuse(error instanceof SourceBuildError ? 422 : 500, `platform build failed: ${detail}`);
 		} finally {
 			await raw.destroy().catch(() => undefined);
 		}
+	}
+
+	/** Adds `buildId` to the kept build records and deletes those that fall out (build-log.ts). */
+	async #keepBuildRecord(buildId: string): Promise<void> {
+		const { index, dropped } = retained((await this.ctx.storage.get<string[]>(RECORD_INDEX)) ?? [], buildId);
+		await this.ctx.storage.put(RECORD_INDEX, index);
+		if (dropped.length) await this.ctx.storage.delete(dropped.map((id) => `${RECORD_PREFIX}${id}`));
 	}
 
 	async #cachedSnapshot(entry: ProjectEntry): Promise<Response | null> {
@@ -715,7 +726,10 @@ export class BuilderAgent extends DurableObject<Env> {
 		const url = new URL(req.url);
 		if (url.pathname === '/internal/build' && req.method === 'POST') {
 			const { slug, request } = await req.json() as { slug: string; request: unknown };
-			return this.#build(slug, sourceBuildRequest.parse(request));
+			// A request the contract refuses is the caller's 400, not an unexplained 500.
+			const parsed = sourceBuildRequest.safeParse(request);
+			if (!parsed.success) return refuse(400, `invalid build request (${invalidFields(parsed.error.issues).join(', ')})`);
+			return this.#build(slug, parsed.data, buildIdFrom(req.headers.get(BUILD_ID_HEADER)));
 		}
 		const route = `${req.method} ${url.pathname}`;
 

@@ -38,6 +38,7 @@ import { studioUsage } from './metering.js';
 import { listTurns, readTurn } from './record.js';
 import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
+import { BUILD_ID_HEADER, ulid } from './build-log.js';
 import { refuse, unhandledResponse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
@@ -176,7 +177,20 @@ app.all('/internal/*', async (c) => {
 	const url = new URL(c.req.url);
 	if (path === '/internal/projects') url.pathname = '/api/projects';
 	const request = new Request(url, c.req.raw);
-	return c.env.BUILDER_AGENT.get(c.env.BUILDER_AGENT.idFromName(tenant)).fetch(request);
+	const agent = c.env.BUILDER_AGENT.get(c.env.BUILDER_AGENT.idFromName(tenant));
+	if (path !== '/internal/build') return agent.fetch(request);
+	// A build is named here, so a build the agent never answers for still has an id the
+	// caller can quote and the agent's stored record can be found by (build-log.ts).
+	const buildId = ulid();
+	request.headers.set(BUILD_ID_HEADER, buildId);
+	try {
+		return await agent.fetch(request);
+	} catch (error) {
+		// The agent's isolate reset or its stub threw mid-build. Without this the throw
+		// reached `app.onError`, and the caller got a 500 with no sentence at all.
+		console.error('source.build.interrupted', { tenant, buildId }, error);
+		return refuse(502, `platform build failed: the build service stopped before it answered (build ${buildId}); retry the push`);
+	}
 });
 
 // A throw no route caught — the agent DO's included, since the dispatch below awaits
