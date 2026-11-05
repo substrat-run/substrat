@@ -1,5 +1,18 @@
 # @substrat-run/dev-issuer
 
+## 0.3.0
+
+### Minor Changes
+
+- 03f20e7: vertical-auth: `mountSession` (`/session-route`) is `GET /api/me` — `{ principal, display, email }` plus a vertical's own fields, `needs-setup` while the owner seat is unclaimed, or 401 — and reports the login's place. dev-issuer: `DevCaller` carries the issuer's `email`.
+
+### Patch Changes
+
+- Updated dependencies [fd7be61]
+- Updated dependencies [03f20e7]
+  - @substrat-run/contracts@0.180.0
+  - @substrat-run/vertical-auth@0.31.0
+
 ## 0.2.61
 
 ### Patch Changes
