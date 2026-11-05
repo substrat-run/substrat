@@ -1,5 +1,15 @@
 # @substrat-run/builder-web
 
+## 0.4.0
+
+### Minor Changes
+
+- f5bd62f: The studio moves through the build with buttons instead of a typed "build it": the concept proposal ends with **Create the concept**, then **Create the model**, **Write the tests** and **Build the app** appear between phases, and the phase stepper shows all five phases.
+
+### Patch Changes
+
+- @substrat-run/model-view@0.6.30
+
 ## 0.3.75
 
 ### Patch Changes

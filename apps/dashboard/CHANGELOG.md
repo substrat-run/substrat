@@ -1,5 +1,25 @@
 # @substrat-run/dashboard
 
+## 0.49.0
+
+### Minor Changes
+
+- bb9863d: Deleting an app now deletes its data. Delete used to archive the app's scope and leave its storage in place indefinitely, and snapshots or test environments kept "until deleted" outlived the app. Now the copies are deleted and the scope is reaped, after the platform takes its backup copy. If no backup can be taken, the app goes offline with its data intact, and Retire on the app type's installs finishes the wipe. Deleting a team still only archives its apps until the tenant's grace window ends.
+
+### Patch Changes
+
+- Updated dependencies [ab2cbdd]
+  - @substrat-run/contracts@0.182.0
+  - @substrat-run/engine-invites@0.9.59
+  - @substrat-run/engine-protocol@0.13.67
+  - @substrat-run/connector-fortnox@0.7.5
+  - @substrat-run/adapter-cloudflare@0.182.0
+  - @substrat-run/control-plane-api@0.182.0
+  - @substrat-run/control-plane-client@0.6.4
+  - @substrat-run/kernel@0.182.0
+  - @substrat-run/model-providers@0.5.72
+  - @substrat-run/vertical-host@0.182.0
+
 ## 0.48.16
 
 ### Patch Changes
