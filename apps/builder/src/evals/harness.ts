@@ -563,10 +563,12 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			lastGateReport = gateReport(turn.gates) ?? undefined;
 
 			if (opts.untilPhase !== undefined && phase === opts.untilPhase) {
-				// The verdict is this turn's gates alone. An interview turn's expectation
-				// check (only spec/concept.md exists yet) must not carry into it.
+				// The verdict is this turn's gates plus the file the phase exists to write —
+				// the model gate skips without it, so green gates alone would pass an empty
+				// turn. An interview turn's expectation check must not carry into it.
 				reachedUntil = true;
-				expectations = [];
+				const target = 'spec/model.ts';
+				expectations = [{ kind: 'file', target, ok: await ws.exists(`${projectDir}/${target}`) }];
 				break;
 			}
 
