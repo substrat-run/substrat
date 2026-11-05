@@ -28,6 +28,7 @@ import {
 	type VerticalGenerator,
 } from '@substrat-run/builder-generator';
 import {
+	checkModel,
 	ContainerWorkspace,
 	modelEmitWarning,
 	runGates,
@@ -598,6 +599,7 @@ export class BuilderAgent extends DurableObject<Env> {
 								new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${dir}`, id: `reference:${name}` }),
 							]),
 						),
+						checkModel: () => checkModel(this.#sourceWs(sb, entry), entry.directory),
 						verticalDir: '.',
 						concept,
 						message: text,

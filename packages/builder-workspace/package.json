@@ -35,6 +35,7 @@
   },
   "devDependencies": {
     "@substrat-run/contracts": "workspace:*",
+    "@substrat-run/engine-workorder": "workspace:*",
     "@types/node": "catalog:",
     "ai": "7.0.159",
     "typescript": "catalog:",

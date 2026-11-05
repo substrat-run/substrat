@@ -267,6 +267,39 @@ function trimOutput(stdout: string, stderr: string): string {
 	return `…[${combined.length - MAX_OUTPUT} chars trimmed]…\n${combined.slice(-MAX_OUTPUT)}`;
 }
 
+/**
+ * What the model gate would say about `spec/model.ts` right now, as one answer the
+ * generator's `check_model` tool hands the model mid-turn: the same compile the gate
+ * runs and the same loader (`--check`, so nothing is written), every problem at once.
+ * The gate still decides at the end of the turn; this only lets the model meet it
+ * green instead of learning its rules from a repair turn.
+ */
+export async function checkModel(ws: Workspace, projectDir: string): Promise<string> {
+	if (!(await ws.exists(`${projectDir}/spec/model.ts`))) {
+		return 'NOT OK — spec/model.ts does not exist yet. Write it, then call check_model again.';
+	}
+	const problems: string[] = [];
+	const compile = await ws.exec(modelCompileCmd(projectDir));
+	if (compile.exitCode !== 0) {
+		problems.push(`The compile (tsc over spec/model.ts) failed:\n${trimOutput(compile.stdout, compile.stderr)}`);
+	}
+	const load = await emitProjectModel(ws, projectDir, { check: true });
+	if (load.status === 'failed') problems.push(`The model loader refused it:\n${load.output}`);
+	const cannotLoad = load.status === 'blocked' || load.status === 'unavailable';
+	if (problems.length === 0 && cannotLoad) {
+		// Not the declaration's fault, and calling again will not change it: a third
+		// verdict, so the model neither rewrites a correct file nor loops on the check.
+		return `CANNOT CHECK — the loader could not run here (${load.status}); this is not a problem in your file. Stop calling check_model and say so; the gates judge the file at the end of your turn.${load.output ? `\n${load.output}` : ''}`;
+	}
+	if (cannotLoad) {
+		problems.push(`The loader could not run here (${load.status}) — not a problem in your file:\n${load.output}`);
+	}
+	if (problems.length === 0) {
+		return 'ok — spec/model.ts compiles and loads, so the model gate will pass this file.';
+	}
+	return `NOT OK — fix every problem below, then call check_model again:\n\n${problems.join('\n\n')}`;
+}
+
 export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string): Promise<GateResult> {
 	if (spec.appliesWhen && !(await spec.appliesWhen(ws, verticalDir))) {
 		return {

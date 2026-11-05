@@ -460,6 +460,52 @@ describe('a fixture that starts at the prompt', () => {
 		expect(result.questions).toBe(1);
 	});
 
+	it.each([
+		{ writes: true, passed: true },
+		{ writes: false, passed: false },
+	])('until model: grades the model turn by its gates and spec/model.ts (written: $writes), not by files pinned for later', async ({ writes, passed }) => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}${PROMPT_FIXTURE.name}`;
+		await prepareProject(ws, dir, PROMPT_FIXTURE);
+		const projectWs = new LocalWorkspace({ root: join((ws as LocalWorkspace).root, dir) });
+		const gen = scripted([
+			async () => [{ type: 'question', question: 'who uses it?', options: ['a', 'b'] }, usage(400, 40)],
+			async () => [{ type: 'assistant-text', text: 'here is the concept…' }, usage(500, 90)],
+			async (input) => {
+				await input.workspace.mkdir('spec', { recursive: true });
+				await input.workspace.writeFile('spec/concept.md', '# Thing tracker\n');
+				return [{ type: 'assistant-text', text: 'written' }, usage(600, 120)];
+			},
+			async (input) => {
+				if (writes) await input.workspace.writeFile('spec/model.ts', 'export {};\n');
+				return [{ type: 'assistant-text', text: 'modelled' }, usage(700, 140)];
+			},
+		]);
+
+		const result = await runEval({
+			ws,
+			projectWs,
+			projectDir: dir,
+			fixture: PROMPT_FIXTURE,
+			makeGenerator: async () => gen,
+			gates: [],
+			probe: probeOf(GOOD_PROBE),
+			untilPhase: 'model',
+		});
+
+		// Stopped after the model turn: no build message was ever sent.
+		expect(gen.received).toEqual([PROMPT_FIXTURE.prompt, PROMPT_FIXTURE.answers, APPROVE_MESSAGE, BUILD_MESSAGE]);
+		// With no spec/model.ts the model gate skips, so the file is what fails the turn.
+		expect(result).toMatchObject({
+			passed,
+			untilPhase: 'model',
+			turns: 4,
+			expectations: [{ kind: 'file', target: 'spec/model.ts', ok: writes }],
+		});
+		// That file check is not a fork: a cutoff run reports no fork ratio.
+		expect(forkScore(result)).toMatchObject({ met: 0, total: 0 });
+	});
+
 	it('does not approve a concept that was never proposed when a second round is asked', async () => {
 		// The replay is keyed on PHASE, not on turn number. A model that asks
 		// again after the answers must get the approval message (which also says
@@ -576,6 +622,7 @@ describe('forkScore — forks correct AT a question count (#740)', () => {
 		passed: expectations.every((o) => o.ok),
 		turns: 1,
 		repairs: 0,
+		repairsByPhase: {},
 		questions: interviewQuestions,
 		interviewQuestions,
 		usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0, stepUsage: [] },

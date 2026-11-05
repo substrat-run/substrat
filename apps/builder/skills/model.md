@@ -290,8 +290,13 @@ vertical owns.
 
 ## When you are done
 
-Write `spec/model.ts` and stop. Say briefly what you declared and what you
-deliberately left as prose, so the builder can approve or correct it.
+Write `spec/model.ts`, then call `check_model` if it is among your tools. It runs exactly
+what the model gate runs at the end of your turn and lists every problem at once; fix all
+of them and call it again. Stop only when it answers `ok` — a red gate costs a whole repair
+turn. If it answers `CANNOT CHECK` or `ERROR`, the checker itself did not run: stop calling
+it and say so. Without the tool, stop once `spec/model.ts` is written and the gates judge it. Say
+briefly what you declared and what you deliberately left as prose, so the builder can
+approve or correct it.
 
 Next is the **scenario phase**, not the build: the concept's scenario becomes a
 failing suite before any code exists, so that something in the project is still
