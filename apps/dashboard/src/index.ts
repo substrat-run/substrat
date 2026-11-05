@@ -8,6 +8,7 @@ export {
   provisionDashboard,
   createApp,
   deprovisionApp,
+  deleteApp,
   retryApp,
   resumeApp,
   updateApp,

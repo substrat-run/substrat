@@ -3442,7 +3442,7 @@ function GeneralSettings({ teamId, app, onDeleted, authServers }: { teamId: stri
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--status-danger-fg)' }}>Danger zone</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1 }}>
-            Deleting {app.name} deprovisions its scope and takes {app.hostname ? <span style={{ fontFamily: 'var(--font-mono)' }}>{app.hostname}</span> : 'its hostname'} offline. The audit history is retained.
+            Deleting {app.name} takes {app.hostname ? <span style={{ fontFamily: 'var(--font-mono)' }}>{app.hostname}</span> : 'its hostname'} offline and deletes its data, test copies included. The audit history is retained.
           </div>
           <Button variant="danger" onClick={() => setOpen(true)}>Delete app</Button>
         </div>
@@ -3458,10 +3458,10 @@ function GeneralSettings({ teamId, app, onDeleted, authServers }: { teamId: stri
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: 'var(--status-danger-bg)', borderRadius: 6, padding: '12px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
-            This deprovisions the scope the moment you confirm:
+            This cannot be undone. The moment you confirm:
             <div>→ {app.hostname ? <span style={{ fontFamily: 'var(--font-mono)' }}>{app.hostname}</span> : 'the app hostname'} goes dark</div>
             <div>→ members lose access to this app</div>
-            <div>→ App data is archived, then deleted after 30 days</div>
+            <div>→ its data is deleted, with every snapshot and test environment copied from it</div>
           </div>
           <Input label="Type the app name to confirm" placeholder={app.name} mono value={confirm} onChange={(e) => setConfirm(e.target.value)} />
         </div>

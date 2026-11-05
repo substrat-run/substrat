@@ -610,6 +610,45 @@ export async function deprovisionApp(
 const ARCHIVABLE_STATUSES = new Set(['provisioning', 'active', 'suspended']);
 
 /**
+ * Delete an app for good — what the Apps page's Delete does. `deprovisionApp` first
+ * (record, MCP, archive, every hostname), then the app's data goes with it: each copy
+ * forked from the scope — snapshots and test environments that carry its data — is
+ * deleted, and the scope itself is reaped (archived → reaped: its storage, stores and
+ * script copies wiped, the directory row kept as a tombstone). Archived alone, a deleted
+ * app's bytes stayed forever unless a retention window was configured.
+ *
+ * Connected, the reap asks for the backup (`reapScope` sends `backup: true`), so a plane
+ * with no backup store refuses and the data stays intact rather than going unrecoverably.
+ * The refusal is thrown after the app is already offline; the archived scope is still
+ * listed under the vertical's installs, where Retire finishes the wipe.
+ *
+ * Only the per-app delete wipes. Deleting a team archives its apps through
+ * `deprovisionApp` and leaves the bytes to the tenant reap after its grace window, and
+ * a retry tears down a failed attempt the same way.
+ *
+ * Idempotent: a fork already deleted is no longer listed, and a scope already reaped
+ * (or never in the directory) is not reaped again.
+ */
+export async function deleteApp(host: ScopeHost, input: Parameters<typeof deprovisionApp>[1]): Promise<void> {
+  await deprovisionApp(host, input);
+  const { tenantId } = input.node;
+  if (input.controlPlane) {
+    for (const fork of await input.controlPlane.listSnapshots(input.appScopeId)) {
+      await input.controlPlane.deleteSnapshot(scopeIdSchema.parse(fork.id));
+    }
+    const cur = await input.controlPlane.scopeStatus(input.appScopeId);
+    if (cur?.status === 'archived') await input.controlPlane.reapScope(input.appScopeId);
+    return;
+  }
+  const staff = platformActorId.parse(ulid());
+  for (const fork of await host.admin.listScopes(staff, { tenantId })) {
+    if (fork.forkedFrom === input.appScopeId) await host.deleteSnapshot(staff, tenantId, scopeIdSchema.parse(fork.id));
+  }
+  const cur = await host.admin.getScopeRecord(staff, tenantId, input.appScopeId);
+  if (cur?.status === 'archived') await host.admin.reapScope(staff, tenantId, input.appScopeId);
+}
+
+/**
  * Retry a FAILED app: best-effort tear down the failed attempt, then re-provision
  * fresh under a NEW scope with the same vertical + name. Composing the proven
  * `deprovisionApp` + `createApp` (rather than re-running a half-finished sequence in
