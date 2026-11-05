@@ -406,7 +406,7 @@ export function App() {
 						)}
 					</nav>
 					<div className="pane">
-						{tab === 'preview' && <PreviewPane />}
+						{tab === 'preview' && session && <PreviewPane hosted={session.sourceProjects ?? false} />}
 						{tab === 'concept' && session && (
 							<ConceptPane vertical={session.vertical} refreshKey={refreshKey} />
 						)}

@@ -40,6 +40,7 @@ import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
 import { BUILD_ID_HEADER, ulid } from './build-log.js';
 import { refuse, unhandledResponse } from './problem.js';
+import { readStudioPreview, runStudioPreview, type ControlPlaneCall, type StudioProject } from './studio-preview.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
 import { teamsFor, type Team } from './teams.js';
@@ -307,8 +308,31 @@ app.all('/api/*', async (c) => {
 	// so a browser cannot name somebody else.
 	headers.set('x-substrat-actor', (c.get('user' as never) as SessionUser).id);
 	headers.delete('x-service-token');
+	const projectSource = async (): Promise<Response> =>
+		await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
+	if (c.req.path === '/api/preview' && (c.req.method === 'POST' || c.req.method === 'GET')) {
+		const cp: ControlPlaneCall = (path, init) => {
+			const cpHeaders = new Headers(init?.headers);
+			cpHeaders.set('x-service-token', c.env.CP_SERVICE_TOKEN ?? '');
+			return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api${path}`, { ...init, headers: cpHeaders });
+		};
+		if (c.req.method === 'GET') {
+			// The registry read, not project-source: opening the tab must not boot the sandbox.
+			const listed = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/projects', { headers }));
+			if (!listed.ok) return listed;
+			const { current, projects } = await listed.json() as { current: string; projects: Array<StudioProject & { id: string }> };
+			const project = projects.find((p) => p.id === current);
+			return project ? readStudioPreview(cp, project) : c.json({ state: 'none' });
+		}
+		const projectResponse = await projectSource();
+		if (!projectResponse.ok) return projectResponse;
+		const project = await projectResponse.json() as StudioProject;
+		const { versionId } = await c.req.json().catch(() => ({})) as { versionId?: string };
+		// The whole id, never a slice of it: (slug, version) is unique, and a suffix collides.
+		return runStudioPreview(cp, project, team.id, { versionLabel: `0.0.0-studio.${ulid().toLowerCase()}`, versionId });
+	}
 	if (c.req.path === '/api/release' && c.req.method === 'POST') {
-		const projectResponse = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
+		const projectResponse = await projectSource();
 		if (!projectResponse.ok) return projectResponse;
 		const project = await projectResponse.json() as { slug: string; revision?: string };
 		if (!project.revision) return refuse(409, 'save source before building a release');
