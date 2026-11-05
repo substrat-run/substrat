@@ -44,8 +44,11 @@ const gate = (name: GateName): GateSpec => {
 
 describe('standaloneGates — permissions and api are real gates, not stubs', () => {
 	it('runs the per-project form of each tool', () => {
-		expect(gate('permissions').cmd).toMatch(
-			new RegExp(` && pnpm exec tsx tools/permission-diff\\.mts --root ${PROJECT} --check$`),
+		// Exactly the bare tool call: ContainerWorkspace re-points a command at the
+		// toolchain only when it STARTS with `pnpm exec tsx tools/…`, so any prefix
+		// would run it from the project, where tools/ does not exist.
+		expect(gate('permissions').cmd).toBe(
+			`pnpm exec tsx tools/permission-diff.mts --root ${PROJECT} --check`,
 		);
 		expect(gate('api').cmd).toBe(`pnpm exec tsx tools/api-diff.mts --root ${PROJECT} --check`);
 	});
@@ -87,9 +90,7 @@ describe('standaloneGates — when each gate applies', () => {
 	});
 
 	it('refuses a project with a module and no substrat.permissions, saying what to add', async () => {
-		// Real exec: the refusal is a quoted shell string, and only running it proves the quoting.
-		const root = await mkdtemp(join(tmpdir(), 'builder-standalone-'));
-		const w = new LocalWorkspace({ root });
+		const w = await fixtureWorkspace();
 		await w.mkdir(`${PROJECT}/src`, { recursive: true });
 		await w.writeFile(`${PROJECT}/package.json`, JSON.stringify({ name: 'acme' }));
 		await w.writeFile(`${PROJECT}/src/module.ts`, 'export {};\n');
@@ -97,6 +98,8 @@ describe('standaloneGates — when each gate applies', () => {
 		const r = await runGate(w, gate('permissions'), PROJECT);
 		expect(r.status).toBe('failed');
 		expect(r.output).toContain('"permissions": "src/provision.ts"');
+		// Refused before the tool: nothing ran that could report green.
+		expect(w.ran).toEqual([]);
 		await w.dispose();
 	});
 

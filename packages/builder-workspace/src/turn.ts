@@ -172,6 +172,29 @@ export interface RunTurnOptions {
 	readonly onGateResult?: Parameters<typeof runGates>[3];
 }
 
+const PERMISSIONS_ARTIFACT = 'PERMISSIONS.md';
+
+/** Render the project's PERMISSIONS.md when it may be stale; `changed` only when its bytes moved. */
+async function renderPermissions(
+	ws: Workspace,
+	verticalDir: string,
+	written: readonly string[],
+): Promise<'changed' | 'unchanged' | 'not-rendered'> {
+	if (!(await declaresPermissions(ws, verticalDir)) || !(await ws.hasTool(PERMISSION_EMITTER_PATH))) {
+		return 'not-rendered';
+	}
+	const path = `${verticalDir}/${PERMISSIONS_ARTIFACT}`;
+	const before = (await ws.exists(path)) ? await ws.readFile(path) : null;
+	const inputsMoved = written.some(
+		(f) => f === 'package.json' || f.endsWith('/package.json') || /(^|\/)src\//.test(f),
+	);
+	if (before !== null && !inputsMoved) return 'unchanged';
+	const r = await ws.exec(`pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${JSON.stringify(verticalDir)}`);
+	if (r.exitCode !== 0) return 'not-rendered';
+	const after = (await ws.exists(path)) ? await ws.readFile(path) : null;
+	return after !== before ? 'changed' : 'unchanged';
+}
+
 /** Run the gates, then commit. Call after every generator turn. */
 export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<TurnResult> {
 	const written = await changedFiles(ws, opts.verticalDir);
@@ -198,20 +221,19 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// after it, so a turn that changed no entity leaves the artifact untouched.
 	const model = await emitProjectModel(ws, opts.verticalDir);
 	// Re-render PERMISSIONS.md beside it, for the same reason: the permission
-	// checkpoint is a human reading that file's diff, and a generated project had
-	// no way to produce it — the renderer lives in the toolchain, outside the
-	// project the model can reach. A render that fails is left for the gate's
-	// --check to report; this only writes.
-	const permissions =
-		(await declaresPermissions(ws, opts.verticalDir)) && (await ws.hasTool(PERMISSION_EMITTER_PATH))
-			? (await ws.exec(`pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${JSON.stringify(opts.verticalDir)}`))
-					.exitCode === 0
-			: false;
+	// checkpoint is a person reading that file's diff in the turn's commit, and a
+	// generated project had no way to produce it — the renderer lives in the
+	// toolchain, out of the model's reach. The studio is the file's producer, as
+	// it is model.json's, so overwriting it is the point; the gate's --check after
+	// this proves only that the surface still RENDERS (exit 2: a module that will
+	// not load, a reserved key), not that nobody edited the file. Rendered only
+	// when what it reads may have moved (package.json or src/), or it is missing.
+	const permissions = await renderPermissions(ws, opts.verticalDir, written);
 	// Re-read the tree: the emit may have written the artifact, and a turn whose
 	// ONLY change is the artifact still has to commit it — an uncommitted one never
 	// reaches the snapshot the Model tab reads, and dies with the container.
 	const files =
-		model.status === 'emitted' || permissions ? await changedFiles(ws, opts.verticalDir) : written;
+		model.status === 'emitted' || permissions === 'changed' ? await changedFiles(ws, opts.verticalDir) : written;
 
 	// The shared runner owns the verdict, including on direct gate rechecks.
 	// Reuse this turn's emission so it does not import the model a second time.

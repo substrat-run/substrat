@@ -65,6 +65,13 @@ export interface GateSpec {
 	readonly appliesWhen?: (ws: Workspace, verticalDir: string) => Promise<boolean>;
 	readonly note?: string;
 	/**
+	 * A precondition the gate refuses on BEFORE running `cmd`: a sentence when it
+	 * fails (reported as `failed`, the sentence as output), null when `cmd` may run.
+	 * In code rather than in `cmd` so the command stays the bare tool call a
+	 * ContainerWorkspace re-points at the toolchain — a prefix breaks that match.
+	 */
+	readonly refuse?: (ws: Workspace, verticalDir: string) => Promise<string | null>;
+	/**
 	 * Exit-code dialect. `'substrat'` = the 0/1/2 convention above (2 → blocked);
 	 * only our own checkers speak it. Absent = binary: any nonzero exit is
 	 * `failed`. Misclassifying a crashed external checker as failed shows the
@@ -211,14 +218,16 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			// RED rather than skipped: skipping let a build pass with no permission
 			// review at all, which the checkpoint exists to make impossible.
 			name: 'permissions',
-			cmd:
-				`node -e "const p=require('./${projectDir}/package.json');if(typeof p.substrat?.permissions!=='string'){` +
-				`console.error('src/module.ts exists but package.json declares no substrat.permissions, so no permission review can render. ` +
-				`Add \\"substrat\\": { \\"slug\\": \\"<slug>\\", \\"name\\": \\"<Name>\\", \\"permissions\\": \\"src/provision.ts\\" } — ` +
-				`the file exporting MODULES and ROLES. The studio renders PERMISSIONS.md from it after the turn.');process.exit(1)}" && ` +
-				`pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${projectDir} --check`,
+			cmd: `pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${projectDir} --check`,
 			appliesWhen: async (ws) =>
 				(await declaresPermissions(ws, projectDir)) || (await ws.exists(`${projectDir}/src/module.ts`)),
+			refuse: async (ws) =>
+				(await declaresPermissions(ws, projectDir))
+					? null
+					: 'src/module.ts exists but package.json declares no substrat.permissions, so no permission ' +
+						'review can render. Add "substrat": { "slug": "<slug>", "name": "<Name>", "permissions": ' +
+						'"src/provision.ts" } — the file exporting MODULES and ROLES. The studio renders ' +
+						'PERMISSIONS.md from it after the turn.',
 			note: 'no src/module.ts yet — no permission surface owed',
 			exitConvention: 'substrat',
 		},
@@ -269,6 +278,10 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
 	}
 
 	const started = Date.now();
+	const refusal = await spec.refuse?.(ws, verticalDir);
+	if (refusal) {
+		return { name: spec.name, status: 'failed', exitCode: 1, durationMs: Date.now() - started, output: refusal };
+	}
 	const { stdout, stderr, exitCode } = await ws.exec(spec.cmd);
 	const durationMs = Date.now() - started;
 	const status: GateStatus =

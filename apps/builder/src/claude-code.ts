@@ -111,7 +111,8 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 		const history = renderHistory(input);
 
 		const abort = new AbortController();
-		input.signal?.addEventListener('abort', () => abort.abort(), { once: true });
+		const onAbort = (): void => abort.abort();
+		input.signal?.addEventListener('abort', onAbort, { once: true });
 		const { ANTHROPIC_API_KEY: _key, ...env } = process.env;
 
 		const stepUsage: StepUsage[] = [];
@@ -179,6 +180,10 @@ export class ClaudeCodeGenerator implements VerticalGenerator {
 			// step ceiling, already reported as `truncated` — the studio's loop goes
 			// on to the next turn there, and a fatal here would end the eval instead.
 			if (!truncated) emit({ type: 'error', message: `claude-code: ${err instanceof Error ? err.message : String(err)}`, fatal: true });
+		} finally {
+			// One signal spans every pass of a turn loop; a listener per pass would
+			// keep each pass's tools and MCP server alive for the signal's lifetime.
+			input.signal?.removeEventListener('abort', onAbort);
 		}
 		yield* queue.splice(0);
 
