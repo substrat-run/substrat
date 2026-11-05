@@ -1231,3 +1231,62 @@ describe('machine clients on the deployed issuer (#2267)', () => {
     expect(((await res.json()) as { error: string }).error).toContain('MACHINE_SCOPES');
   });
 });
+
+/**
+ * An app's client URIs (#2904, `src/client-redirects.ts`), on the real `AuthServerDO`: the
+ * delivery's raw-SQL writes are read back by the plugin itself, at `/authorize` (the callback
+ * of a hostname bound after install) and at `/end-session` (which refuses a client without
+ * `enable_end_session`, the one thing open DCR cannot set).
+ */
+describe("an app's client follows the hostnames the platform delivers (#2904)", () => {
+  it('a hostname bound after install signs in and out once delivered, and not after it is removed', async () => {
+    const scope = scopeId.parse(ulid());
+    expect((await platform('/internal/provision', install(scope))).status).toBe(201);
+    // The install's registration, exactly as the dashboard makes it.
+    const registered = await atIssuer(scope, '/api/auth/oauth2/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Desk',
+        redirect_uris: ['https://desk.acme.test/api/auth/callback'],
+        token_endpoint_auth_method: 'client_secret_post',
+      }),
+    });
+    expect(registered.status).toBe(201);
+    const clientId = ((await registered.json()) as { client_id: string }).client_id;
+
+    const authorize = async () => {
+      const q = new URLSearchParams({
+        response_type: 'code',
+        client_id: clientId,
+        redirect_uri: 'https://desk.custom.test/api/auth/callback',
+        scope: 'openid',
+        state: 'st',
+        code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+        code_challenge_method: 'S256',
+      });
+      const res = await atIssuer(scope, `/api/auth/oauth2/authorize?${q}`, {
+        headers: { 'sec-fetch-mode': 'navigate' },
+        redirect: 'manual',
+      });
+      return `${res.status} ${res.headers.get('location') ?? (await res.text())}`;
+    };
+    const endSession = async () => {
+      const q = new URLSearchParams({ client_id: clientId, post_logout_redirect_uri: 'https://desk.custom.test/' });
+      return (await atIssuer(scope, `/api/auth/oauth2/end-session?${q}`, { redirect: 'manual' })).status;
+    };
+    const app = scopeId.parse(ulid());
+    const deliver = (hostnames: string[]) =>
+      configure(scope, [{ key: `substrat:redirects:${app}`, value: JSON.stringify({ clientId, hostnames }) }]);
+
+    expect(await authorize()).not.toContain('/login?');
+    expect(await endSession()).toBe(401);
+
+    expect((await deliver(['desk.acme.test', 'desk.custom.test'])).status).toBe(200);
+    expect(await authorize()).toContain('/login?');
+    expect(await endSession()).not.toBe(401);
+
+    expect((await deliver(['desk.acme.test'])).status).toBe(200);
+    expect(await authorize()).not.toContain('/login?');
+  });
+});
