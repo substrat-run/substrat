@@ -43,6 +43,10 @@ Projects are standalone source repositories. Use published, pinned versions of
 `@substrat-run/*` packages; platform dependencies must not use `workspace:`, `catalog:`,
 `file:` or links to the platform checkout. `pnpm add --save-exact` resolves the available package version.
 Typical dependencies: `contracts`, `kernel`, `adapter-sqlite`, plus the engines composed.
+Declare the vertical: `"substrat": { "slug": "<slug>", "name": "<Name>", "permissions":
+"src/provision.ts" }` — the file exporting `MODULES` and `ROLES`. The studio renders
+`PERMISSIONS.md` from it after every turn (the permission review a person signs off),
+and the permissions gate is red without it once `src/module.ts` exists.
 Scripts: `"typecheck": "tsc -p tsconfig.json --noEmit"`, `"test": "vitest run"`,
 `"dev": "tsx src/server.ts"`. devDependencies: `typescript`, `tsx`, `vitest`, `hono`,
 `@hono/node-server`, `@types/node`. Run `pnpm --ignore-workspace install` from the project
@@ -58,6 +62,16 @@ A release is built on the platform from saved source with a frozen lockfile, so 
 build outputs and the platform checkout are never deployment inputs.
 
 ## The files
+
+**Copy the reference before you write.** `list_reference` / `read_reference` open
+complete working verticals, compiled against this platform on every change. From
+`template`, read `src/seed.ts`, `src/provision.ts`, `src/server.ts`, `src/routes.ts`
+and `src/personas.ts` before writing your own; from `todo`, `src/module.ts` for
+operations that create, link and share. Copy their shape with your domain's names: that is how a host is built, a tenant
+and scope provisioned, roles defined and assigned, and an operation invoked as a
+person. Where this skill and the reference disagree, the reference wins — it is
+compiled, this text is not. Never reverse-engineer that API from
+`node_modules/**/*.d.ts`.
 
 **src/manifest.ts** — the declarative surface:
 

@@ -18,6 +18,13 @@ import type { BuildEvent } from './events.js';
 export interface GeneratorInput {
 	/** The workspace the model acts through. Its methods are the model's tools. */
 	readonly workspace: Workspace;
+	/**
+	 * Read-only working verticals to copy from, by name — the `create-substrat`
+	 * template and the todo demo, both compiled against the platform on every
+	 * PR. They become `read_reference`/`list_reference`; nothing writes to them.
+	 * Without them the model reverse-engineers the host API from `.d.ts` files.
+	 */
+	readonly references?: Readonly<Record<string, Workspace>>;
 	/** Directory of the vertical under construction, relative to the workspace root. */
 	readonly verticalDir: string;
 	/** The approved concept document (spec/concept.md), or the opening brief on turn 1. */

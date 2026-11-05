@@ -34,6 +34,8 @@ export interface WorkspaceToolOptions {
 	 * host declares it per model (builder-harness.md H1, format-per-model).
 	 */
 	readonly editTool?: boolean;
+	/** Offer read_reference/list_reference over these read-only workspaces (GeneratorInput.references). */
+	readonly references?: Readonly<Record<string, Workspace>>;
 }
 
 /**
@@ -90,6 +92,17 @@ const DEFAULT_DENY: Array<[RegExp, string]> = [
 export function defaultDenyCommand(cmd: string): string | null {
 	for (const [re, why] of DEFAULT_DENY) if (re.test(cmd)) return why;
 	return null;
+}
+
+/** Cap what one read can cost: head + tail with an honest gap marker. */
+function capRead(content: string): string {
+	const CAP = 24_000;
+	if (content.length <= CAP) return content;
+	return (
+		content.slice(0, CAP / 2) +
+		`\n\n…[${content.length - CAP} chars omitted — re-read a narrower file or use run_command with grep]…\n\n` +
+		content.slice(-CAP / 2)
+	);
 }
 
 /** Interview discipline, enforced (see ask_user): the prompt already says 4. */
@@ -153,8 +166,49 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 		},
 	});
 
+	const referenceTools = (refs: Readonly<Record<string, Workspace>>) => {
+		const names = Object.keys(refs) as [string, ...string[]];
+		const which = z.enum(names).describe(`Which reference: ${names.join(' or ')}`);
+		const open = (name: string): Workspace => refs[name]!;
+		return {
+			read_reference: tool({
+				description:
+					`Read a file from a REFERENCE vertical (${names.join(', ')}) — complete, working Substrat projects compiled against the platform on every change, so their code is correct for the platform version you build on. The skills say which reference shows what. Read the matching file BEFORE writing one you have not written this session, and copy its shape with your domain's names. Never grep node_modules type declarations for an API a reference already shows in use. Read-only.`,
+				inputSchema: z.object({
+					reference: which,
+					path: z.string().describe('Path inside that reference, e.g. src/seed.ts'),
+				}),
+				execute: async ({ reference, path }) => {
+					emit({ type: 'tool-call', tool: 'read_reference', summary: `${reference}:${path}` });
+					try {
+						return capRead(await open(reference).readFile(path));
+					} catch (err) {
+						return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
+					}
+				},
+			}),
+			list_reference: tool({
+				description: 'List a directory of a REFERENCE vertical (see read_reference). Start with "." and "src".',
+				inputSchema: z.object({
+					reference: which,
+					path: z.string().describe('Directory inside that reference'),
+				}),
+				execute: async ({ reference, path }) => {
+					emit({ type: 'tool-call', tool: 'list_reference', summary: `${reference}:${path}` });
+					try {
+						const entries = await open(reference).listFiles(path);
+						return entries.length ? entries.join('\n') : '(empty)';
+					} catch (err) {
+						return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
+					}
+				},
+			}),
+		};
+	};
+
 	return {
 		...(opts.editTool ? { edit_file: editFile } : {}),
+		...(opts.references && Object.keys(opts.references).length ? referenceTools(opts.references) : {}),
 		read_file: tool({
 			description:
 				'Read a UTF-8 file from the workspace. Call this before editing any file you have not already read this session — never guess a file\'s current contents.',
@@ -164,15 +218,7 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 			execute: async ({ path }) => {
 				emit({ type: 'tool-call', tool: 'read_file', summary: path });
 				try {
-					const content = await ws.readFile(path);
-					// Cap what one read can cost: head + tail with an honest gap marker.
-					const CAP = 24_000;
-					if (content.length <= CAP) return content;
-					return (
-						content.slice(0, CAP / 2) +
-						`\n\n…[${content.length - CAP} chars omitted — re-read a narrower file or use run_command with grep]…\n\n` +
-						content.slice(-CAP / 2)
-					);
+					return capRead(await ws.readFile(path));
 				} catch (err) {
 					return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
 				}

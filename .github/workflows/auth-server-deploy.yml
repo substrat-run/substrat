@@ -140,7 +140,7 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push demos/auth-server --slug auth-server | tee release.out
+          npx @substrat-run/cli@latest push demos/auth-server --slug auth-server | tee release.out
           # Matches the CLI's own success line (packages/cli/src/cli.ts: "✓ pushed <slug>.
           # version <id> (<pkg-version>) is <admission>; deploymentRef=<ref>") and the id's
           # actual shape — a 26-char Crockford-base32 ULID (0-9, A-Z minus I/L/O/U,
@@ -182,11 +182,11 @@ jobs:
         run: |
           set -euo pipefail
           BASE=$(node -p "require('./demos/auth-server/package.json').version")
-          npx @substrat-run/cli push demos/auth-server --slug auth-server --version "$BASE-test.${{ github.run_number }}" | tee push.out
+          npx @substrat-run/cli@latest push demos/auth-server --slug auth-server --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep. Same
           # ULID-shaped match as the push step above, not a loose alnum one.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [0-9A-HJKMNP-TV-Z]{26}' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
-          npx @substrat-run/cli scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
+          npx @substrat-run/cli@latest scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
 

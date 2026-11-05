@@ -55,12 +55,22 @@ export interface GateResult {
 	readonly note?: string;
 }
 
+/** The permission renderer, run by the gate (`--check`) and by the turn loop (emit). */
+export const PERMISSION_EMITTER_PATH = 'tools/permission-diff.mts';
+
 export interface GateSpec {
 	readonly name: GateName;
 	readonly cmd: string;
 	/** When present and false at run time, the gate is skipped with `note`. */
 	readonly appliesWhen?: (ws: Workspace, verticalDir: string) => Promise<boolean>;
 	readonly note?: string;
+	/**
+	 * A precondition the gate refuses on BEFORE running `cmd`: a sentence when it
+	 * fails (reported as `failed`, the sentence as output), null when `cmd` may run.
+	 * In code rather than in `cmd` so the command stays the bare tool call a
+	 * ContainerWorkspace re-points at the toolchain — a prefix breaks that match.
+	 */
+	readonly refuse?: (ws: Workspace, verticalDir: string) => Promise<string | null>;
 	/**
 	 * Exit-code dialect. `'substrat'` = the 0/1/2 convention above (2 → blocked);
 	 * only our own checkers speak it. Absent = binary: any nonzero exit is
@@ -130,7 +140,7 @@ export function defaultGates(verticalDir: string): GateSpec[] {
  * `install` gates own that failure and say so far better than a permission gate
  * would.
  */
-async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
+export async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
 	try {
 		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
 			substrat?: { permissions?: string };
@@ -203,10 +213,24 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			// string-equality drift check, same 0/1/2 — only the discovery differs, so a
 			// generated vertical's permission surface reaches the same human checkpoint
 			// every demo's does.
+			//
+			// Once src/module.ts exists the surface is owed, so an undeclared one is
+			// RED rather than skipped: skipping let a build pass with no permission
+			// review at all, which the checkpoint exists to make impossible.
 			name: 'permissions',
-			cmd: `pnpm exec tsx tools/permission-diff.mts --root ${projectDir} --check`,
-			appliesWhen: (ws) => declaresPermissions(ws, projectDir),
-			note: 'no substrat.permissions entry in package.json — no permission surface declared yet',
+			cmd: `pnpm exec tsx ${PERMISSION_EMITTER_PATH} --root ${projectDir} --check`,
+			appliesWhen: async (ws) =>
+				(await declaresPermissions(ws, projectDir)) || (await ws.exists(`${projectDir}/src/module.ts`)),
+			refuse: async (ws) =>
+				(await declaresPermissions(ws, projectDir))
+					? null
+					: 'src/module.ts exists but package.json declares no substrat.permissions, so no permission ' +
+						'review can render. Add "substrat": { "slug": "<slug>", "name": "<Name>", "permissions": ' +
+						'"src/provision.ts" } — the file exporting MODULES, ROLES and ' +
+						'`permissions = definePermissions({ modules: MODULES, roles: ROLES, … })` (from ' +
+						'@substrat-run/contracts), which the gate reads. The studio renders ' +
+						'PERMISSIONS.md from it after the turn.',
+			note: 'no src/module.ts yet — no permission surface owed',
 			exitConvention: 'substrat',
 		},
 		{
@@ -256,6 +280,10 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
 	}
 
 	const started = Date.now();
+	const refusal = await spec.refuse?.(ws, verticalDir);
+	if (refusal) {
+		return { name: spec.name, status: 'failed', exitCode: 1, durationMs: Date.now() - started, output: refusal };
+	}
 	const { stdout, stderr, exitCode } = await ws.exec(spec.cmd);
 	const durationMs = Date.now() - started;
 	const status: GateStatus =

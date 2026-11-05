@@ -226,6 +226,25 @@ need to express it.
 included. A prettier domain naming here would be a second description of the same
 rows, and two descriptions are how they come to disagree.
 
+## Every row has an operation that writes it
+
+The seed builds its cast through operations, never raw SQL, and the build phases
+cannot add an operation to this file. So before you stop, walk each entity and name
+the operation that inserts its rows. The one most often missing is the **person**:
+the household member, the customer, the owner. A person entity needs its own
+operation (a join on first sign-in, or an admin adding someone), or nothing can
+ever create one.
+
+Read the `todo` reference (`read_reference` on `todo` `spec/model.ts`,
+`src/manifest.ts` and `src/module.ts`) before declaring sharing. It is the worked
+answer to "who may act on the thing I just created": `todo/join` creates the
+person's own `owner` entity; a declared entity-grant shape gives each person the
+list keys on their own owner entity (`{ entityType: 'owner', permissions:
+OWNER_GRANTS, bootstrap: true, holder: 'self' }` in `src/manifest.ts`); and every
+list is `ctx.link`ed to its owner, so that grant reaches each list through the
+edge. `ctx.grant` is only for sharing with *another* person — it re-checks that
+the caller holds the key on that entity, which the owner does through the link.
+
 ## Not every table is an entity
 
 An entity is something the platform can *point at*: attachments hang off one,
