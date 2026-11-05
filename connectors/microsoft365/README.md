@@ -3,7 +3,9 @@
 A tenant's own Microsoft 365, over Microsoft Graph with app-only client credentials in the
 tenant's Entra directory. It sends mail as the tenant's own addresses: it implements the
 kernel's `MailSender`, so the platform's email relay routes a message to it when the message's
-`from` is one of the connection's addresses.
+`from` is one of the connection's addresses. It cannot read a mailbox, unless the tenant also
+grants `Application Mail.ReadWrite` on its sender mailboxes, which a message with more than about
+2.5 MB of attachments needs: that one is sent as a draft with the large files uploaded in pieces.
 
 It also reads and writes files in one Teams channel's folder of the tenant's SharePoint site:
 `bindMicrosoft365Scope` binds the folder to a scope, a vertical's
