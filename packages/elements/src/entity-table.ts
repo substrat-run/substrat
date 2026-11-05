@@ -404,6 +404,15 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     .end {
       text-align: end;
     }
+    /* A mounted cell is a flex row, so a component in it is centred on the row's middle
+       rather than sat on a text baseline with a descender's room under it. */
+    slot::slotted([data-sub-cell]) {
+      display: flex;
+      align-items: center;
+    }
+    .end slot::slotted([data-sub-cell]) {
+      justify-content: flex-end;
+    }
     .sort {
       all: unset;
       cursor: pointer;
