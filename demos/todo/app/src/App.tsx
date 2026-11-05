@@ -64,7 +64,10 @@ function shownOf(hash: string): ListsShown {
 }
 
 export function App() {
-  const hash = useHash();
+  // The table screens keep their query after the route (`#/table?sort=name`); the route is
+  // what picks the screen, and the whole hash is what remounts a table on a real navigation.
+  const full = useHash();
+  const hash = full.split('?')[0]!;
   const state = useSession();
   const match = /^#\/list\/(.+)$/.exec(hash);
   const tableList = /^#\/table\/list\/(.+)$/.exec(hash);
@@ -103,13 +106,13 @@ export function App() {
         {match ? (
           <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
         ) : tableList ? (
-          <ItemsTable key={`${who}:${tableList[1]}`} listId={tableList[1]!} />
+          <ItemsTable key={`${who}:${full}`} listId={tableList[1]!} />
         ) : hash === SETTINGS_HASH ? (
           <Settings />
         ) : hash === TABLE_HASH ? (
           <>
             <ViewsNav current="table" />
-            <ListsTable key={who} />
+            <ListsTable key={`${who}:${full}`} />
           </>
         ) : (
           <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} />

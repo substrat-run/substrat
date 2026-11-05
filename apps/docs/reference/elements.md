@@ -107,6 +107,15 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 - **Events.** `sub-query-change` fires with `{ query }` whenever the person changes the view,
   sort, filters or search, so a screen can keep the query in its URL and hand it back through the
   `query` property. `sub-action-done` fires with `{ action, rows }` after an action succeeds.
+- **The query in the URL.** The table never writes to the URL itself, because the page owns
+  its routing and may show two tables. `queryToParams(query, spec)` and
+  `queryFromParams(params, spec)` give every app the same parameters
+  (`?view=archived&sort=name&order=desc&done=1&q=milk`). `spec` lists the views, sorts, filter
+  values and page sizes a link may name, and anything else is dropped, so a stale link shows
+  the defaults instead of a refused read. Values equal to `spec.defaults` are left out, and
+  `prefix` keeps two tables apart. The page itself is not written: a cursor answers one query
+  at one moment, so a link or a reload starts at the first page. `demos/todo/app/src/elements.tsx`
+  wires it with `replaceState`, so Back leaves the screen instead of stepping through filters.
 
 `EntityTableModel` is everything here except the drawing, with no DOM in it.
 

@@ -9,7 +9,8 @@ element's attributes or slots.
 
 - **`<sub-entity-table>`** — the rows of one paged read: views, server-side sort, equality
   filters, a search mode, Previous / Next paging with a rows-per-page picker (or `paging="more"`),
-  a selection with bulk actions, and the actions a row allows. Give it
+  a selection with bulk actions, and the actions a row allows. `queryToParams` /
+  `queryFromParams` put its query in a URL and read it back. Give it
   a `source` (`{ read(query), follow, search? }` — the generated client's read, `follow` and
   the entity's search read), `columns` and `actions`. It tells a 403 wall from an empty list
   and "no matches" from both, keeps the rows when one action is refused, re-reads when an

@@ -452,6 +452,78 @@ export const actionsIn = <T>(actions: readonly RowAction<T>[], view: string | nu
 export const emptyReason = (state: Pick<TableState<unknown>, 'mode' | 'query'>): 'empty' | 'no-matches' =>
   state.mode === 'search' || Object.keys(state.query.filters).length > 0 ? 'no-matches' : 'empty';
 
+/**
+ * What a table's query may say in a URL. Read back, anything not listed here is dropped, so
+ * a stale or hand-edited link gives the table's defaults rather than a read the server
+ * refuses. Written, a value equal to `defaults` is left out, so the plain screen has a plain
+ * URL. `prefix` keeps two tables on one page apart (`items.sort`).
+ */
+export interface QueryParams<S extends string = string> {
+  views?: readonly string[];
+  sorts?: readonly S[];
+  /** Each filter's key and the values it may take. Filters are written under their key. */
+  filters?: Readonly<Record<string, readonly string[]>>;
+  limits?: readonly number[];
+  defaults?: Partial<Pick<TableQuery<S>, 'view' | 'limit'>>;
+  prefix?: string;
+}
+
+/** The parameter names the query itself uses, which a filter key may not take. */
+const QUERY_PARAMS = ['view', 'sort', 'order', 'q', 'limit'] as const;
+
+function filterKeys(spec: QueryParams<string>): string[] {
+  const keys = Object.keys(spec.filters ?? {});
+  const taken = keys.find((k) => (QUERY_PARAMS as readonly string[]).includes(k));
+  if (taken) throw new Error(`A filter cannot be called "${taken}": the query's own parameter has that name.`);
+  return keys;
+}
+
+/**
+ * The query as URL parameters — not the page: a page is a cursor that answers one query at one
+ * moment, so a link or a reload starts at the first page of the same view, sort and filters.
+ */
+export function queryToParams<S extends string>(query: TableQuery<S>, spec: QueryParams<S> = {}): URLSearchParams {
+  const p = spec.prefix ?? '';
+  const params = new URLSearchParams();
+  if (query.view !== null && query.view !== spec.defaults?.view) params.set(`${p}view`, query.view);
+  if (query.sort !== null) params.set(`${p}sort`, query.sort);
+  if (query.order === 'desc') params.set(`${p}order`, 'desc');
+  for (const key of filterKeys(spec)) {
+    const value = query.filters[key];
+    if (value !== undefined) params.set(`${p}${key}`, value);
+  }
+  if (query.q.trim() !== '') params.set(`${p}q`, query.q);
+  if (query.limit !== null && query.limit !== spec.defaults?.limit) params.set(`${p}limit`, String(query.limit));
+  return params;
+}
+
+/** The query a URL's parameters name, as the table's starting `query`. */
+export function queryFromParams<S extends string>(
+  params: URLSearchParams | string,
+  spec: QueryParams<S> = {},
+): Partial<TableQuery<S>> {
+  const read = typeof params === 'string' ? new URLSearchParams(params) : params;
+  const p = spec.prefix ?? '';
+  const get = (name: string) => read.get(`${p}${name}`);
+  const query: Partial<TableQuery<S>> = {};
+  const view = get('view');
+  if (view !== null && spec.views?.includes(view)) query.view = view;
+  const sort = spec.sorts?.find((s) => s === get('sort'));
+  if (sort !== undefined) query.sort = sort;
+  if (get('order') === 'desc') query.order = 'desc';
+  const filters: Record<string, string> = {};
+  for (const key of filterKeys(spec)) {
+    const value = get(key);
+    if (value !== null && spec.filters![key]!.includes(value)) filters[key] = value;
+  }
+  if (Object.keys(filters).length > 0) query.filters = filters;
+  const q = get('q');
+  if (q !== null && q.trim() !== '') query.q = q;
+  const limit = Number(get('limit'));
+  if (spec.limits?.includes(limit)) query.limit = limit;
+  return query;
+}
+
 /** One cell, as text: what it says, what it says on hover, and its tone when it is a badge. */
 export interface CellText {
   text: string;

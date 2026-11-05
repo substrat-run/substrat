@@ -3,6 +3,12 @@
  * (`/controls`, Web Awesome's free core), the themes, and two `<sub-entity-table>`s —
  * your lists, and one list's items. Choosing a theme is `src/settings.tsx`.
  *
+ * Each table keeps its query in the URL, after the route (`#/table?view=archived&sort=name`):
+ * read once when the table mounts, written back on every `sub-query-change` with
+ * `replaceState`, so a reload or a shared link shows the same view, sort, filter and search,
+ * and Back leaves the screen rather than stepping through filter changes. The page is not
+ * kept — a cursor answers one query at one moment — so a link starts at the first page.
+ *
  * Nothing here filters, sorts or pages in the browser. The lists table hands each query to
  * `my-lists` / `trashed-lists`, whose `sort` the generated client types as the two columns
  * the model declares sortable; the items table hands a search term to `search-list-items`,
@@ -21,8 +27,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  queryFromParams,
+  queryToParams,
   sessionAt,
   type Column,
+  type QueryParams,
   type RowAction,
   type SessionState,
   type SubEntityTable,
@@ -74,7 +83,9 @@ export function reactCell<T>(draw: (row: T) => ReactNode): NonNullable<Column<T>
   return (cell, row) => {
     const root = createRoot(cell);
     root.render(draw(row));
-    return { update: (next) => root.render(draw(next)), unmount: () => root.unmount() };
+    // Deferred: leaving the screen unmounts the table during React's own render, and a root
+    // unmounted synchronously inside it is a race React warns about.
+    return { update: (next) => root.render(draw(next)), unmount: () => queueMicrotask(() => root.unmount()) };
   };
 }
 
@@ -90,19 +101,42 @@ function useTable<T, S extends string = string>(
     actions?: RowAction<T>[];
     views?: TableView[];
     filters?: TableFilter[];
+    /** What the query may say in the URL; the views, sorts and filters are read off the rest. */
+    params: Pick<QueryParams<S>, 'defaults' | 'limits'>;
   },
 ) {
   useEffect(() => {
     const table = ref.current as SubEntityTable<T, S> | null;
     if (!table) return;
+    const spec: QueryParams<S> = {
+      ...props.params,
+      views: (props.views ?? []).map((v) => v.id),
+      sorts: props.columns.flatMap((c) => (c.sort ? [c.sort] : [])),
+      filters: Object.fromEntries((props.filters ?? []).map((f) => [f.key, f.options.map((o) => o.value)])),
+    };
     table.columns = props.columns;
     table.actions = props.actions ?? [];
     table.views = props.views ?? [];
     table.filters = props.filters ?? [];
+    table.query = queryFromParams(hashParams(), spec);
     table.source = props.source;
+    const write = (e: Event) => {
+      const params = queryToParams((e as CustomEvent<{ query: TableQuery<S> }>).detail.query, spec).toString();
+      const route = window.location.hash.split('?')[0];
+      history.replaceState(history.state, '', params ? `${route}?${params}` : route);
+    };
+    table.addEventListener('sub-query-change', write);
+    return () => table.removeEventListener('sub-query-change', write);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }
+
+/** The parameters after the route in the hash: `#/table?sort=name` → `sort=name`. */
+const hashParams = () => new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+
+/** The table's own rows-per-page choices, and the lists table's first one. */
+const PAGE_SIZES = [10, 25, 50, 100];
+const LISTS_PAGE = 10;
 
 const LIST_VIEWS: TableView[] = [
   { id: 'active', label: 'Active' },
@@ -150,7 +184,13 @@ const LIST_ACTIONS: RowAction<List>[] = [
 
 export function ListsTable() {
   const ref = useRef<SubEntityTable>(null);
-  useTable(ref, { source: LISTS, columns: LIST_COLUMNS, actions: LIST_ACTIONS, views: LIST_VIEWS });
+  useTable(ref, {
+    source: LISTS,
+    columns: LIST_COLUMNS,
+    actions: LIST_ACTIONS,
+    views: LIST_VIEWS,
+    params: { defaults: { view: 'active', limit: LISTS_PAGE }, limits: PAGE_SIZES },
+  });
   return (
     <>
       <h2>Your lists, as a table</h2>
@@ -165,7 +205,7 @@ export function ListsTable() {
         label="Your lists"
         selectable
         search-label="Find a list"
-        page-size={10}
+        page-size={LISTS_PAGE}
         empty="Nothing here yet. Create a list, or ask someone to share one with you."
         forbidden-text="You may not see these lists."
       />
@@ -202,6 +242,7 @@ export function ItemsTable({ listId }: { listId: string }) {
       { key: 'created_at', label: 'Added', kind: 'relative', sort: 'id', priority: 2 },
     ],
     actions: [{ id: 'delete', label: 'Delete', tone: 'danger', bulk: true, run: (i) => api.deleteItem({ itemId: i.id }) }],
+    params: { defaults: { limit: 25 }, limits: PAGE_SIZES },
   });
   return (
     <>

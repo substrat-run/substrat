@@ -4,7 +4,10 @@ import {
   actionsIn,
   cellText,
   emptyReason,
+  queryFromParams,
+  queryToParams,
   type ColumnSpec,
+  type QueryParams,
   type Page,
   type RowAction,
   type TableQuery,
@@ -252,5 +255,40 @@ describe('cellText', () => {
   ];
   it.each(cases)('%s', (_, column, row, expected) => {
     expect(cellText(column, row, now, 'en-US')).toMatchObject(expected);
+  });
+});
+
+describe('queryToParams / queryFromParams', () => {
+  const spec: QueryParams<'name' | 'created_at'> = {
+    views: ['active', 'archived'],
+    sorts: ['name', 'created_at'],
+    filters: { done: ['0', '1'] },
+    limits: [10, 25],
+    defaults: { view: 'active', limit: 10 },
+  };
+  const base: TableQuery<'name' | 'created_at'> = { view: 'active', sort: null, order: 'asc', filters: {}, q: '', limit: 10 };
+
+  it('writes only what differs from the defaults, and reads the same query back', () => {
+    expect(queryToParams(base, spec).toString()).toBe('');
+    const query = { ...base, view: 'archived', sort: 'name' as const, order: 'desc' as const, filters: { done: '1' }, q: 'oat milk', limit: 25 };
+    const params = queryToParams(query, spec);
+    expect(params.toString()).toBe('view=archived&sort=name&order=desc&done=1&q=oat+milk&limit=25');
+    expect(queryFromParams(params, spec)).toEqual({ view: 'archived', sort: 'name', order: 'desc', filters: { done: '1' }, q: 'oat milk', limit: 25 });
+  });
+
+  it('drops what the spec does not list, so a stale link falls back to the defaults', () => {
+    expect(queryFromParams('view=gone&sort=secret&done=7&limit=100000&other=x', spec)).toEqual({});
+  });
+
+  it('keeps two tables apart by prefix', () => {
+    const items = { ...spec, prefix: 'items.' };
+    const params = queryToParams({ ...base, sort: 'name' }, items);
+    expect(params.toString()).toBe('items.sort=name');
+    expect(queryFromParams(params, spec)).toEqual({});
+    expect(queryFromParams(params, items)).toEqual({ sort: 'name' });
+  });
+
+  it('refuses a filter named like one of the query\'s own parameters', () => {
+    expect(() => queryToParams(base, { filters: { order: ['asc'] } })).toThrow(/cannot be called "order"/);
   });
 });
