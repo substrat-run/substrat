@@ -364,8 +364,13 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     }
     td {
       padding: var(--sub-table-cell-padding-block) var(--sub-table-cell-padding-inline);
-      height: var(--sub-table-row-height);
       border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    }
+    /* The header takes the rows' height too: on its own it shrinks to its text, and its labels
+       then sit closer to its edges than a row's values do to theirs. */
+    th,
+    td {
+      height: var(--sub-table-row-height);
     }
     /* Values stay on one line; the first data column takes the slack and is the one that wraps. */
     th,
@@ -447,10 +452,13 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     .arrow[data-order='desc'] .up {
       opacity: 0;
     }
+    /* No block padding: the buttons are already a control's height, and padded they would make
+       every row taller than the row height the header and the other cells keep. */
     .actions {
       text-align: end;
       white-space: nowrap;
       width: 1%;
+      padding-block: 0;
     }
     /* With a pointer that hovers, a row's actions wait to be wanted; on touch, or held by
        the keyboard, or while one runs, they show. */
