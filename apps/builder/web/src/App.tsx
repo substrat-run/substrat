@@ -406,7 +406,10 @@ export function App() {
 						)}
 					</nav>
 					<div className="pane">
-						{tab === 'preview' && session && <PreviewPane hosted={session.sourceProjects ?? false} />}
+						{tab === 'preview' && (
+							// Keyed to the project, so a switch never frames the previous project's slot.
+							<PreviewPane key={session?.project.id ?? ''} hosted={session?.sourceProjects ?? false} />
+						)}
 						{tab === 'concept' && session && (
 							<ConceptPane vertical={session.vertical} refreshKey={refreshKey} />
 						)}

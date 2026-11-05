@@ -40,7 +40,7 @@ import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
 import { BUILD_ID_HEADER, ulid } from './build-log.js';
 import { refuse, unhandledResponse } from './problem.js';
-import { readStudioPreview, runStudioPreview, type ControlPlaneCall, type StudioProject } from './studio-preview.js';
+import { readStudioPreview, releaseRevision, runStudioPreview, type ControlPlaneCall, type StudioProject } from './studio-preview.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
 import { teamsFor, type Team } from './teams.js';
@@ -310,49 +310,45 @@ app.all('/api/*', async (c) => {
 	headers.delete('x-service-token');
 	const projectSource = async (): Promise<Response> =>
 		await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
-	if (c.req.path === '/api/preview' && (c.req.method === 'POST' || c.req.method === 'GET')) {
-		const cp: ControlPlaneCall = (path, init) => {
-			const cpHeaders = new Headers(init?.headers);
-			cpHeaders.set('x-service-token', c.env.CP_SERVICE_TOKEN ?? '');
-			return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api${path}`, { ...init, headers: cpHeaders });
-		};
-		if (c.req.method === 'GET') {
-			// The registry read, not project-source: opening the tab must not boot the sandbox.
-			const listed = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/projects', { headers }));
-			if (!listed.ok) return listed;
-			const { current, projects } = await listed.json() as { current: string; projects: Array<StudioProject & { id: string }> };
-			const project = projects.find((p) => p.id === current);
-			return project ? readStudioPreview(cp, project) : c.json({ state: 'none' });
-		}
+	// The control plane over the service binding: the `/api` prefix and the service credential,
+	// written once for every call this handler makes on the team's behalf.
+	const cp: ControlPlaneCall = (path, init) => {
+		const cpHeaders = new Headers(init?.headers);
+		cpHeaders.set('x-service-token', c.env.CP_SERVICE_TOKEN ?? '');
+		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api${path}`, { ...init, headers: cpHeaders });
+	};
+	if (c.req.path === '/api/preview' && c.req.method === 'GET') {
+		// The registry read, not project-source: opening the tab must not boot the sandbox.
+		const listed = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/projects', { headers }));
+		if (!listed.ok) return listed;
+		const { current, projects } = await listed.json() as { current: string; projects: Array<StudioProject & { id: string }> };
+		const project = projects.find((p) => p.id === current);
+		return project ? readStudioPreview(cp, project, new Date()) : c.json({ state: 'none' });
+	}
+	if (c.req.path === '/api/preview' && c.req.method === 'POST') {
 		const projectResponse = await projectSource();
 		if (!projectResponse.ok) return projectResponse;
 		const project = await projectResponse.json() as StudioProject;
-		const { versionId } = await c.req.json().catch(() => ({})) as { versionId?: string };
 		// The whole id, never a slice of it: (slug, version) is unique, and a suffix collides.
-		return runStudioPreview(cp, project, team.id, { versionLabel: `0.0.0-studio.${ulid().toLowerCase()}`, versionId });
+		return runStudioPreview(cp, project, team.id, `0.0.0-studio.${ulid().toLowerCase()}`);
 	}
 	if (c.req.path === '/api/release' && c.req.method === 'POST') {
 		const projectResponse = await projectSource();
 		if (!projectResponse.ok) return projectResponse;
-		const project = await projectResponse.json() as { slug: string; revision?: string };
+		const project = await projectResponse.json() as StudioProject;
 		if (!project.revision) return refuse(409, 'save source before building a release');
 		const { version } = await c.req.json() as { version?: string };
-		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api/verticals/${encodeURIComponent(project.slug)}/deploy`, {
-			method: 'POST', headers: { 'content-type': 'application/json', 'x-service-token': c.env.CP_SERVICE_TOKEN ?? '' },
-			body: JSON.stringify({ version, revision: project.revision, tenant: team.id }),
-		});
+		return releaseRevision(cp, { ...project, revision: project.revision }, team.id, version);
 	}
 	if (c.req.path === '/api/verticals' && c.req.method === 'GET') {
-		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api/verticals?ownerTenant=${encodeURIComponent(team.id)}&limit=200`, {
-			headers: { 'x-service-token': c.env.CP_SERVICE_TOKEN ?? '' },
-		});
+		return cp(`/verticals?ownerTenant=${encodeURIComponent(team.id)}&limit=200`);
 	}
 	if (c.req.path === '/api/projects' && c.req.method === 'POST') {
 		const body = await c.req.json() as { slug?: string; name?: string; [key: string]: unknown };
 		body.name = body.name?.trim() || 'Untitled';
 		body.slug ??= body.name === 'Untitled' ? `draft-${crypto.randomUUID()}` : body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `draft-${crypto.randomUUID()}`;
-		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api/projects?tenant=${encodeURIComponent(team.id)}`, {
-			method: 'POST', headers: { 'content-type': 'application/json', 'x-service-token': c.env.CP_SERVICE_TOKEN ?? '' }, body: JSON.stringify(body),
+		return cp(`/projects?tenant=${encodeURIComponent(team.id)}`, {
+			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 		});
 	}
 	return await c.env.BUILDER_AGENT.get(id).fetch(new Request(c.req.raw, { headers }));

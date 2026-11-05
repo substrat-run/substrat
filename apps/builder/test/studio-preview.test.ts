@@ -27,7 +27,7 @@ const ready = { url: 'https://todo--studio.acme.substrat.run', scopeId: 'scp_1',
 describe('runStudioPreview', () => {
 	it('releases the revision pinned to the team, then binds it to the studio tag as a clean-room slot', async () => {
 		const { cp, calls } = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } }, [previews]: { status: 201, body: ready } });
-		const res = await runStudioPreview(cp, project, 'ten_a', { versionLabel: '0.0.0-studio.x' });
+		const res = await runStudioPreview(cp, project, 'ten_a', '0.0.0-studio.x');
 		expect(calls).toEqual([
 			{ path: deploy, method: 'POST', body: { version: '0.0.0-studio.x', revision: project.revision, tenant: 'ten_a' } },
 			{ path: previews, method: 'POST', body: { tag: STUDIO_PREVIEW_TAG, versionId: 'ver_1', empty: true } },
@@ -39,37 +39,31 @@ describe('runStudioPreview', () => {
 	it('relays a refused release as it came and never asks for a slot', async () => {
 		const refusal = { error: 'a build of this vertical is already running', detail: 'a build of this vertical is already running' };
 		const { cp, calls } = plane({ [deploy]: { status: 409, body: refusal } });
-		const res = await runStudioPreview(cp, project, 'ten_a', { versionLabel: 'v' });
+		const res = await runStudioPreview(cp, project, 'ten_a', 'v');
 		expect(res.status).toBe(409);
 		expect(await res.json()).toEqual(refusal);
 		expect(calls.map((c) => c.path)).toEqual([deploy]);
 	});
 
-	it('answers copying while the plane copies, and resumes with the built version without releasing again', async () => {
-		const copying = { copying: true, scopeId: 'scp_1', versionId: 'ver_1', progress: { pages: 1, rows: 9, attempt: 1 }, retryAfter: 5 };
-		const { cp, calls } = plane({ [previews]: { status: 202, body: copying } });
-		const res = await runStudioPreview(cp, project, 'ten_a', { versionLabel: 'v', versionId: 'ver_1' });
-		expect(res.status).toBe(202);
-		expect(await res.json()).toEqual({ state: 'copying', versionId: 'ver_1', retryAfter: 5 });
-		expect(calls.map((c) => c.path)).toEqual([previews]);
-	});
-
 	it('refuses a project with no saved revision before calling the plane', async () => {
 		const { cp, calls } = plane({});
-		const res = await runStudioPreview(cp, { slug: 'acme/todo' }, 'ten_a', { versionLabel: 'v' });
+		const res = await runStudioPreview(cp, { slug: 'acme/todo' }, 'ten_a', 'v');
 		expect(res.status).toBe(409);
 		expect(calls).toEqual([]);
 	});
 });
 
 describe('readStudioPreview', () => {
+	const now = new Date('2026-11-05T12:00:00Z');
+	const ci = { tag: 'pr-7', versionId: 'ver_0', url: 'https://x', expiresAt: null };
 	it.each([
-		['the studio slot', { status: 200, body: [{ tag: 'pr-7', versionId: 'ver_0', url: 'https://x' }, { tag: 'studio', versionId: 'ver_1', url: ready.url }] }, { state: 'ready', url: ready.url, versionId: 'ver_1', reused: true }],
-		['none when only CI slots exist', { status: 200, body: [{ tag: 'pr-7', versionId: 'ver_0', url: 'https://x' }] }, { state: 'none' }],
+		['the studio slot', { status: 200, body: [ci, { tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: '2026-11-06T00:00:00Z' }] }, { state: 'ready', url: ready.url, versionId: 'ver_1', reused: true }],
+		['none when only CI slots exist', { status: 200, body: [ci] }, { state: 'none' }],
+		['none for a slot past its TTL', { status: 200, body: [{ tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: '2026-11-05T11:59:59Z' }] }, { state: 'none' }],
 		['none for a project never released', { status: 404, body: { error: "unknown vertical 'acme/todo'" } }, { state: 'none' }],
 	])('reads %s', async (_name, answer, expected) => {
 		const { cp } = plane({ [previews]: answer });
-		const res = await readStudioPreview(cp, project);
+		const res = await readStudioPreview(cp, project, now);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual(expected);
 	});

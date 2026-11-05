@@ -12,7 +12,7 @@
  * The manual URL field stays as an escape hatch for apps the user runs in their
  * own terminal.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { api, type StudioPreview } from './api.js';
 
 type DevState = 'stopped' | 'starting' | 'running' | 'error';
@@ -27,6 +27,7 @@ function LocalPreview() {
 	const [log, setLog] = useState<string[]>([]);
 	const [manual, setManual] = useState('');
 	const [src, setSrc] = useState<string | null>(null);
+	const [frame, reloadFrame] = useReducer((n: number) => n + 1, 0);
 	const polling = useRef(false);
 
 	async function refresh(): Promise<void> {
@@ -88,13 +89,13 @@ function LocalPreview() {
 					onKeyDown={(e) => e.key === 'Enter' && setSrc(manual)}
 					placeholder="…or open a URL you started yourself"
 				/>
-				{src && <button className="pill" onClick={() => setSrc(`${src.split('#')[0]}`)}>reload</button>}
+				{src && <button className="pill" onClick={reloadFrame}>reload</button>}
 			</div>
 			{state === 'error' && log.length > 0 && (
 				<pre className="dev-log">{log.slice(-20).join('\n')}</pre>
 			)}
 			{src ? (
-				<iframe src={src} title="preview" />
+				<iframe key={frame} src={src} title="preview" />
 			) : (
 				<div className="empty">
 					{state === 'starting'
@@ -106,7 +107,7 @@ function LocalPreview() {
 	);
 }
 
-type HostedState = 'idle' | 'building' | 'copying' | 'ready' | 'error';
+type HostedState = 'idle' | 'building' | 'ready' | 'error';
 
 function HostedPreview() {
 	const [state, setState] = useState<HostedState>('idle');
@@ -115,7 +116,9 @@ function HostedPreview() {
 	const [error, setError] = useState<string | null>(null);
 	const [manual, setManual] = useState('');
 	const [src, setSrc] = useState<string | null>(null);
-	const alive = useRef(true);
+	const [frame, reloadFrame] = useReducer((n: number) => n + 1, 0);
+	/** Set by Run: the tab's opening read must not land on top of a Run already under way. */
+	const ran = useRef(false);
 
 	function show(p: StudioPreview): void {
 		if (p.state !== 'ready') return;
@@ -123,40 +126,31 @@ function HostedPreview() {
 		setUrl(p.url);
 		setSrc(p.url);
 		setNote(p.authNote ?? null);
+		// A re-run rebinds the same URL, so the frame is reloaded rather than left on the old version.
+		reloadFrame();
 	}
 
 	useEffect(() => {
-		alive.current = true;
-		void api.studioPreview().then(show, () => undefined);
-		return () => {
-			alive.current = false;
-		};
+		void api.studioPreview().then((p) => !ran.current && show(p), () => undefined);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
 	async function run(): Promise<void> {
+		ran.current = true;
 		setState('building');
 		setError(null);
 		setNote(null);
 		try {
-			let p = await api.runStudioPreview();
-			// A copy still running answers `copying`: the same call again, once the plane says.
-			while (p.state === 'copying' && alive.current) {
-				setState('copying');
-				const wait = p.retryAfter;
-				await new Promise((r) => setTimeout(r, wait * 1000));
-				p = await api.runStudioPreview(p.versionId);
-			}
-			show(p);
+			show(await api.runStudioPreview());
 		} catch (e) {
 			setState('error');
 			setError((e as Error).message);
 		}
 	}
 
-	const busy = state === 'building' || state === 'copying';
+	const busy = state === 'building';
 	const label =
-		state === 'building' ? 'building and deploying' : state === 'copying' ? 'preparing data' : state === 'ready' ? 'ready' : state === 'error' ? 'failed' : 'not running';
+		state === 'building' ? 'building and deploying' : state === 'ready' ? 'ready' : state === 'error' ? 'failed' : 'not running';
 	return (
 		<div className="preview">
 			<div className="preview-bar">
@@ -175,12 +169,12 @@ function HostedPreview() {
 					onKeyDown={(e) => e.key === 'Enter' && setSrc(manual)}
 					placeholder="…or open a URL yourself"
 				/>
-				{src && <button className="pill" onClick={() => setSrc(`${src.split('#')[0]}`)}>reload</button>}
+				{src && <button className="pill" onClick={reloadFrame}>reload</button>}
 			</div>
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
 			{note && <pre className="dev-log">{note}</pre>}
 			{src ? (
-				<iframe src={src} title="preview" />
+				<iframe key={frame} src={src} title="preview" />
 			) : (
 				<div className="empty">
 					{busy

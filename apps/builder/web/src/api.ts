@@ -25,8 +25,7 @@ export interface ProjectInfo {
 /** GET/POST /api/preview — the worker's answer (src/studio-preview.ts). */
 export type StudioPreview =
 	| { state: 'none' }
-	| { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string }
-	| { state: 'copying'; versionId: string; retryAfter: number };
+	| { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
 
 export interface SessionInfo {
 	sourceProjects?: boolean;
@@ -241,13 +240,8 @@ export const api = {
 		),
 	/** Hosted Run (#2895): the studio's preview slot as it stands. */
 	studioPreview: () => f('/api/preview').then((r) => j<StudioPreview>(r)),
-	/** Release the saved revision onto the slot; `versionId` resumes a create that answered `copying`. */
-	runStudioPreview: (versionId?: string) =>
-		f('/api/preview', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify(versionId ? { versionId } : {}),
-		}).then((r) => j<StudioPreview>(r)),
+	/** Release the saved revision onto the slot. Minutes: it is a full build. */
+	runStudioPreview: () => f('/api/preview', { method: 'POST' }).then((r) => j<StudioPreview>(r)),
 	dev: (action: 'start' | 'stop') =>
 		f('/api/dev', {
 			method: 'POST',

@@ -35,68 +35,67 @@ const releasedVersion = z.object({ id: z.string().min(1) });
 /** The fields of a created preview the studio shows; the rest passes through untouched. */
 const createdPreview = z.object({
 	url: z.string().url(),
-	scopeId: z.string().min(1),
 	versionId: z.string().min(1),
 	reused: z.boolean(),
 	auth: z.object({ status: z.string(), note: z.string() }).optional(),
 });
 
-/** A create whose copy is still running (#2450): same call again after `retryAfter` seconds. */
-const copyingPreview = z.object({
-	copying: z.literal(true),
-	versionId: z.string().min(1),
-	retryAfter: z.number(),
+const previewRow = z.object({
+	tag: z.string().nullable(),
+	versionId: z.string().nullable(),
+	url: z.string().nullable(),
+	expiresAt: z.string().nullable(),
 });
 
-const previewRow = z.object({ tag: z.string().nullable(), versionId: z.string().nullable(), url: z.string().nullable() });
-
-export type StudioPreview =
-	| { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string }
-	| { state: 'copying'; versionId: string; retryAfter: number };
+export type StudioPreview = { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
 
 const json = (status: number, body: unknown): Response =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+/**
+ * Build `revision` into a version of the project's vertical — the one deploy call both
+ * `/api/release` and Run make. The tenant pin is what proves the slug is this team's: deploy
+ * refuses a vertical the pinned workspace does not own.
+ */
+export async function releaseRevision(
+	cp: ControlPlaneCall,
+	project: StudioProject & { revision: string },
+	tenantId: string,
+	version: string | undefined,
+): Promise<Response> {
+	return await cp(`/verticals/${encodeURIComponent(project.slug)}/deploy`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ version, revision: project.revision, tenant: tenantId }),
+	});
+}
 
 /**
  * Release the project's revision and bind it to the studio's slot. A refusal from either call
  * is relayed as it came — its sentence is the plane's (a busy build queue, a failed build, a
  * bad manifest), and the studio shows it rather than a red badge with nothing under it.
  *
- * `versionId` resumes a create that answered `copying`: the version is already built, so the
- * second call only asks the slot again.
+ * A clean-room create copies nothing, so it never answers the 202 a data copy can (#2450):
+ * that one is only for a caller that asks with `async: true`, which this one does not.
  */
 export async function runStudioPreview(
 	cp: ControlPlaneCall,
 	project: StudioProject,
 	tenantId: string,
-	opts: { versionLabel: string; versionId?: string },
+	versionLabel: string,
 ): Promise<Response> {
 	if (!project.revision) return refuse(409, 'save source before running a preview');
-	const slug = encodeURIComponent(project.slug);
-	let versionId = opts.versionId;
-	if (!versionId) {
-		// The tenant pin is what proves the slug is this team's: deploy refuses a vertical the
-		// pinned workspace does not own, so the preview call below only ever sees an owned one.
-		const released = await cp(`/verticals/${slug}/deploy`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ version: opts.versionLabel, revision: project.revision, tenant: tenantId }),
-		});
-		if (!released.ok) return released;
-		versionId = releasedVersion.parse(await released.json()).id;
-	}
-	const created = await cp(`/verticals/${slug}/previews`, {
+	const released = await releaseRevision(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
+	if (!released.ok) return released;
+	const versionId = releasedVersion.parse(await released.json()).id;
+	// Only after the pinned deploy succeeded, so the slug is proven this team's.
+	const created = await cp(`/verticals/${encodeURIComponent(project.slug)}/previews`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ tag: STUDIO_PREVIEW_TAG, versionId, empty: true }),
 	});
 	if (!created.ok) return created;
-	const body: unknown = await created.json();
-	if (created.status === 202) {
-		const copying = copyingPreview.parse(body);
-		return json(202, { state: 'copying', versionId: copying.versionId, retryAfter: copying.retryAfter } satisfies StudioPreview);
-	}
-	const ready = createdPreview.parse(body);
+	const ready = createdPreview.parse(await created.json());
 	return json(200, {
 		state: 'ready',
 		url: ready.url,
@@ -106,13 +105,17 @@ export async function runStudioPreview(
 	} satisfies StudioPreview);
 }
 
-/** The studio's slot as it stands, or `{ state: 'none' }` — what the preview tab opens on. */
-export async function readStudioPreview(cp: ControlPlaneCall, project: StudioProject): Promise<Response> {
+/**
+ * The studio's slot as it stands, or `{ state: 'none' }` — what the preview tab opens on. A slot
+ * past its TTL is none: the sweep may already have reaped it, and its URL serves nothing.
+ */
+export async function readStudioPreview(cp: ControlPlaneCall, project: StudioProject, now: Date): Promise<Response> {
 	const listed = await cp(`/verticals/${encodeURIComponent(project.slug)}/previews`);
 	// A project that was never released has no vertical yet: no slot, not an error.
 	if (listed.status === 404) return json(200, { state: 'none' });
 	if (!listed.ok) return listed;
 	const slot = z.array(previewRow).parse(await listed.json()).find((p) => p.tag === STUDIO_PREVIEW_TAG);
 	if (!slot?.url || !slot.versionId) return json(200, { state: 'none' });
-	return json(200, { state: 'ready', url: slot.url, versionId: slot.versionId, reused: true });
+	if (slot.expiresAt && Date.parse(slot.expiresAt) <= now.getTime()) return json(200, { state: 'none' });
+	return json(200, { state: 'ready', url: slot.url, versionId: slot.versionId, reused: true } satisfies StudioPreview);
 }
