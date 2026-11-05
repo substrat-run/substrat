@@ -31,9 +31,12 @@ const retryIn = (stub: Stub) => poll(
   () => runInDurableObject(stub, async (_o, state) => ((await state.storage.getAlarm()) ?? 0) - Date.now()),
   (ms) => ms > 0,
 );
-/** Let the job's next step succeed. Its steps throw until then, however late their alarms fire. */
-const stopThrowing = (stub: Stub) => runInDurableObject(stub, async (_o, state) => {
-  await state.storage.put('job', { ...(await state.storage.get<TestCopyJob>('job')), throwUntil: undefined });
+/**
+ * Change a stored record's fields: where a case needs a step to stop throwing or a hold to have run out,
+ * it says so here, rather than racing a few milliseconds of wall clock that a loaded runner overshoots.
+ */
+const patch = (stub: Stub, key: 'job' | 'mark', fields: object) => runInDurableObject(stub, async (_o, state) => {
+  await state.storage.put(key, { ...(await state.storage.get<object>(key)), ...fields });
 });
 
 describe('defineCopyJobDO (#2450 step 2)', () => {
@@ -54,7 +57,7 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     // The first step threw: its retry is the default 30 s out, and the job is still there.
     expect(await retryIn(stub)).toBeGreaterThan(20_000);
     expect(await stub.get()).toMatchObject({ status: 'copying', steps: 0 });
-    await stopThrowing(stub);
+    await patch(stub, 'job', { throwUntil: undefined });
     // Run the retry now rather than wait for it.
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done', steps: 1 });
@@ -65,7 +68,7 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     const stub = stubOf(env.COPY_JOB_SHORT, `threw-short-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1, throwUntil: Date.now() + 60_000 }));
     expect(await retryIn(stub)).toBeLessThanOrEqual(40);
-    await stopThrowing(stub);
+    await patch(stub, 'job', { throwUntil: undefined });
     // The retry fires by itself.
     expect(await until(stub, (j) => j?.status !== 'copying')).toMatchObject({ status: 'done', steps: 1 });
   });
@@ -166,9 +169,7 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     expect(await stub.claim(60_000)).not.toBeNull();
     expect(await stub.claim(60_000)).toBeNull();
     // The holder died and its hold has run out: the next call claims the job.
-    await runInDurableObject(stub, async (_o, state) => {
-      await state.storage.put('job', { ...(await state.storage.get<TestCopyJob>('job')), claimedUntil: Date.now() - 1 });
-    });
+    await patch(stub, 'job', { claimedUntil: Date.now() - 1 });
     expect(await stub.claim(60_000)).not.toBeNull();
 
     const other = stubOf(env.COPY_JOB_TEST, `claim-cancel-${crypto.randomUUID()}`);
@@ -185,14 +186,15 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     // An older order is answered the newer one, which stays; the same one is held again; a newer one wins.
     expect(await stub.markNewest('a', 60_000)).toBe('b');
     expect(await stub.markNewest('b', 60_000)).toBe('b');
-    expect(await stub.markNewest('c', 40)).toBe('c');
+    expect(await stub.markNewest('c', 60_000)).toBe('c');
     expect(await stub.markNewest('b', 60_000)).toBe('c');
     // Once its hold has run out, an older order is taken.
-    await sleep(60);
-    expect(await stub.markNewest('a', 40)).toBe('a');
+    await patch(stub, 'mark', { until: Date.now() - 1 });
+    expect(await stub.markNewest('a', 60_000)).toBe('a');
     expect(await keys()).toEqual(['mark']);
-    // Its alarm drops it once held; no job runs here.
-    for (let i = 0; i < 200 && (await keys()).length > 0; i++) await sleep(10);
+    // Its alarm drops it once its hold has run out; no job runs here.
+    await patch(stub, 'mark', { until: Date.now() - 1 });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(await keys()).toEqual([]);
     expect(await stub.get()).toBeNull();
   });
