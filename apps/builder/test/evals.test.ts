@@ -460,6 +460,41 @@ describe('a fixture that starts at the prompt', () => {
 		expect(result.questions).toBe(1);
 	});
 
+	it('until model: grades the model turn by its gates, not by files pinned for later', async () => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}${PROMPT_FIXTURE.name}`;
+		await prepareProject(ws, dir, PROMPT_FIXTURE);
+		const projectWs = new LocalWorkspace({ root: join((ws as LocalWorkspace).root, dir) });
+		const gen = scripted([
+			async () => [{ type: 'question', question: 'who uses it?', options: ['a', 'b'] }, usage(400, 40)],
+			async () => [{ type: 'assistant-text', text: 'here is the concept…' }, usage(500, 90)],
+			async (input) => {
+				await input.workspace.mkdir('spec', { recursive: true });
+				await input.workspace.writeFile('spec/concept.md', '# Thing tracker\n');
+				return [{ type: 'assistant-text', text: 'written' }, usage(600, 120)];
+			},
+			async (input) => {
+				await input.workspace.writeFile('spec/model.ts', 'export {};\n');
+				return [{ type: 'assistant-text', text: 'modelled' }, usage(700, 140)];
+			},
+		]);
+
+		const result = await runEval({
+			ws,
+			projectWs,
+			projectDir: dir,
+			fixture: PROMPT_FIXTURE,
+			makeGenerator: async () => gen,
+			gates: [],
+			probe: probeOf(GOOD_PROBE),
+			untilPhase: 'model',
+		});
+
+		// Stopped after the model turn: no build message was ever sent.
+		expect(gen.received).toEqual([PROMPT_FIXTURE.prompt, PROMPT_FIXTURE.answers, APPROVE_MESSAGE, BUILD_MESSAGE]);
+		expect(result).toMatchObject({ passed: true, untilPhase: 'model', turns: 4, expectations: [] });
+	});
+
 	it('does not approve a concept that was never proposed when a second round is asked', async () => {
 		// The replay is keyed on PHASE, not on turn number. A model that asks
 		// again after the answers must get the approval message (which also says

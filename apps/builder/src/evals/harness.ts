@@ -563,7 +563,10 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			lastGateReport = gateReport(turn.gates) ?? undefined;
 
 			if (opts.untilPhase !== undefined && phase === opts.untilPhase) {
+				// The verdict is this turn's gates alone. An interview turn's expectation
+				// check (only spec/concept.md exists yet) must not carry into it.
 				reachedUntil = true;
+				expectations = [];
 				break;
 			}
 
