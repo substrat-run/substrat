@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.182.0
+
+### Minor Changes
+
+- ab2cbdd: Add `substrat:redirects:<app scope>`, the delivery that keeps an app's OIDC client at a team auth-server in step with the hostnames the app answers on, and `oidcPostLogoutUrls` / `clientRedirectUris` to derive its URIs.
+
 ## 0.181.0
 
 ### Minor Changes

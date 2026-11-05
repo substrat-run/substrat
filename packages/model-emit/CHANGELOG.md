@@ -1,5 +1,16 @@
 # @substrat-run/model-emit
 
+## 0.12.0
+
+### Minor Changes
+
+- 6b1a031: A generated client's paged reads now take the platform's `limit`, `order` and `sort` parameters, with `sort` typed as the read's declared sortable columns.
+
+### Patch Changes
+
+- Updated dependencies [ab2cbdd]
+  - @substrat-run/contracts@0.182.0
+
 ## 0.11.11
 
 ### Patch Changes
