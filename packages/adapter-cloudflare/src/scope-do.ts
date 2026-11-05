@@ -2313,8 +2313,9 @@ export function defineScopeDO(
      * #2035: whether the ownerless reconcile may seat this scope for `tenantId` — it serves it, or
      * the platform's word may record it where a lifecycle delivery's would (`backfills`). False for a
      * foreign scope and for a DO nothing provisioned or loaded here. Read only, without migrating:
-     * the receipt is written by `seatTuples`, in the unit that applies the seat and the recorded-off
-     * positions, so no door admits the scope before they hold, and a failed seat records nothing.
+     * the receipt is written by `seatTuplesFor`, which judges this rule again in the unit that
+     * applies the seat and the recorded-off positions, so no door admits the scope before they
+     * hold, and a failed seat records nothing.
      */
     seatsTenant(tenantId: TenantId): boolean {
       const { verdict } = this.tenantVerdict(tenantId);
@@ -3045,33 +3046,45 @@ export function defineScopeDO(
     async seatTuples(
       tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
       switchOff?: RecordedOffCarry & { scopeId: string; at: string },
-      /** #2035: the ownerless reconcile's tenant, recorded LAST in this unit (`seatsTenant` judged
-       *  it first): the receipt opens every door, so it lands with the seat and the recorded-off
-       *  positions or not at all. */
-      recordTenant?: TenantId,
     ): Promise<SwitchedOff[]> {
-      return this.queue.enqueue(() =>
-        this.revision.transactionSync(() => {
-          for (const t of tuples) {
-            const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
-            this.sql.exec(seat.sql, ...seat.params);
-          }
-          const switched = switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
-          if (recordTenant !== undefined) this.recordTenantInUnit(recordTenant);
-          return switched;
-        }),
-      );
+      return this.queue.enqueue(() => this.revision.transactionSync(() => this.seatIn(tuples, switchOff)));
     }
 
-    /** #2035: `seatTuples`' receipt write, judged again inside its unit, so a scope that turned
-     *  foreign since `seatsTenant` refuses the whole seat. */
-    private recordTenantInUnit(tenantId: TenantId): void {
-      const { verdict, held } = this.tenantVerdict(tenantId);
-      if (verdict === 'foreign') throw substratError('conflict', `seat ${foreignTenant(held, tenantId)}`);
-      // A carried-away copy takes no write at all, as in `setLifecycle`; the next projection records it.
-      if (verdict !== 'recorded' && !this.carriedAwayCopy) {
-        this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
+    /**
+     * #2035: the ownerless reconcile's seat — `seatTuples`' unit, with the tenant recorded LAST in
+     * it. The receipt opens every door, so it lands with the seat and the recorded-off positions or
+     * not at all. `seatsTenant`'s rule is judged again before the unit's first write (the seat's
+     * own tuples would read as state), against what holds now: a scope reaped or recorded for
+     * another tenant since the host asked is refused untouched, as data, so the host answers K-3's
+     * uniform refusal and no other tenant is named.
+     */
+    async seatTuplesFor(
+      tenantId: TenantId,
+      tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+    ): Promise<{ switchedOff: SwitchedOff[] } | { refused: 'tenant' }> {
+      return this.queue.enqueue(async () => {
+        // Read before the unit, as `projectInUnit` reads it.
+        const reaped = await this.isReaped();
+        return this.revision.transactionSync(() => {
+          if (reaped || !this.seatsTenant(tenantId)) return { refused: 'tenant' as const };
+          const switchedOff = this.seatIn(tuples, switchOff);
+          this.sql.exec(`INSERT OR IGNORE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
+          return { switchedOff };
+        });
+      });
+    }
+
+    /** The seat and the recorded-off positions, in the caller's unit. */
+    private seatIn(
+      tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+      switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+    ): SwitchedOff[] {
+      for (const t of tuples) {
+        const seat = seatScopeTuple(t.subject, t.relation, t.object, t.expires_at);
+        this.sql.exec(seat.sql, ...seat.params);
       }
+      return switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
     }
 
     /** A declared entity-grant shape's grant to one person on one entity (#2071), as ONE unit. */

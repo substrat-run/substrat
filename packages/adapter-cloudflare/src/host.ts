@@ -1884,9 +1884,14 @@ interface ScopeStubRpc {
   seatTuples(
     tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
     switchOff?: RecordedOffCarry & { scopeId: string; at: string },
-    /** #2035: the ownerless reconcile's tenant, recorded last in the same unit. */
-    recordTenant?: TenantId,
   ): Promise<SwitchedOff[]>;
+  /** #2035: the ownerless reconcile's seat, with the tenant recorded last in the same unit; the
+   *  refusal of a scope that no longer seats the tenant comes back as data. */
+  seatTuplesFor(
+    tenantId: TenantId,
+    tuples: { subject: string; relation: string; object: string; expires_at: string | null }[],
+    switchOff?: RecordedOffCarry & { scopeId: string; at: string },
+  ): Promise<{ switchedOff: SwitchedOff[] } | { refused: 'tenant' }>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
   revokeTupleAndAuditIntent(subject: string, relation: string, object: string, at: string): Promise<boolean>;
@@ -12880,11 +12885,14 @@ export class CloudflareScopeHost implements ScopeHost {
     const carry = recordedOffFromWire(input);
     const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants); // #2430
     await this.migrateAndRecord(input.scopeId);
-    const switchedOff = await stub.seatTuples(
+    const seated = await stub.seatTuplesFor(
+      input.tenantId,
       this.declaredSeatsLocal(input.scopeId, connections.seat),
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
-      input.tenantId,
     );
+    // Reaped or recorded for another tenant since the check: K-3's refusal, naming no other tenant.
+    if ('refused' in seated) throw unknownScopeForTenant(input.tenantId, input.scopeId);
+    const { switchedOff } = seated;
     return {
       ...(carry ? { switchedOff } : {}),
       ...(connections.skipped.length ? { skippedConnectionGrants: connections.skipped } : {}),

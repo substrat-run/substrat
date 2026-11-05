@@ -837,29 +837,62 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
         await doors.system!(t, s);
       });
 
-      it('the ownerless reconcile records the tenant only with its seat: a door during the seat is refused, and a seat that throws records nothing', async () => {
-        const s = await unrecordedScope();
+      /**
+       * The ownerless reconcile on an unrecorded scope, held between its tenant check and its seat's
+       * unit (the migration): `during` runs in that window, then `after` decides how the step ends.
+       */
+      const seatHeldOpen = async (s: ScopeId, during: () => Promise<void>, after: 'throw' | 'continue') => {
         const host = hostFor();
+        const subject = host as unknown as { migrateAndRecord: (s: ScopeId) => Promise<void> };
+        const migrate = subject.migrateAndRecord.bind(host);
         let reached!: () => void;
         let release!: () => void;
         const inWindow = new Promise<void>((r) => (reached = r));
         const held = new Promise<void>((r) => (release = r));
-        // The step between the tenant check and the seat's unit, held open and then made to fail.
-        vi.spyOn(host as unknown as { migrateAndRecord: (s: ScopeId) => Promise<void> }, 'migrateAndRecord').mockImplementationOnce(async () => {
+        vi.spyOn(subject, 'migrateAndRecord').mockImplementationOnce(async (sid) => {
           reached();
           await held;
-          throw new Error('seat broke');
+          if (after === 'throw') throw new Error('seat broke');
+          return migrate(sid);
         });
-        const seating = outcome(host.seatScopeLocal({ tenantId: t, scopeId: s }));
+        // A recorded-off carry, so a seat that lands would also switch the module's grants off.
+        const seating = outcome(host.seatScopeLocal({ tenantId: t, scopeId: s, switchedOff: [SCHED] }));
         await inWindow;
-        // Both kinds of door: the role gate (`servesTenant`) and the scope door (`validateScopeAccess`).
-        expect(isPairRefusal(await outcome(hostFor().listScopeRoleHolders(t, s)), t, s)).toBe(true);
-        expect(isPairRefusal(await outcome(doors.system!(t, s)), t, s)).toBe(true);
+        await during();
         release();
-        expect(String(((await seating) as Error).message)).toBe('seat broke');
+        return seating;
+      };
+      const tuples = (s: ScopeId) => sql(s, 'SELECT subject, relation, object, revoked_at FROM _substrat_tuples ORDER BY subject, relation, object');
+
+      it('the ownerless reconcile records the tenant only with its seat: a door during the seat is refused, and a seat that throws records nothing', async () => {
+        const s = await unrecordedScope();
+        // Both kinds of door: the role gate (`servesTenant`) and the scope door (`validateScopeAccess`).
+        const refusedAtBoth = async () => {
+          expect(isPairRefusal(await outcome(hostFor().listScopeRoleHolders(t, s)), t, s)).toBe(true);
+          expect(isPairRefusal(await outcome(doors.system!(t, s)), t, s)).toBe(true);
+        };
+        const seated = await seatHeldOpen(s, refusedAtBoth, 'throw');
+        expect(String((seated as Error).message)).toBe('seat broke');
         expect(await receiptOf(s)).toBeNull();
-        expect(isPairRefusal(await outcome(hostFor().listScopeRoleHolders(t, s)), t, s)).toBe(true);
-        expect(isPairRefusal(await outcome(doors.system!(t, s)), t, s)).toBe(true);
+        await refusedAtBoth();
+      });
+
+      it('a scope recorded for another tenant during the seat is refused with K-3, naming no other tenant, and nothing is seated', async () => {
+        const s = await unrecordedScope();
+        const before = await tuples(s);
+        // A lifecycle delivery for `u` back-fills `u`'s receipt while the seat for `t` is held open.
+        const seated = await seatHeldOpen(s, async () => void (await hostFor().setLifecycleLocal(s, life(), u)), 'continue');
+        expect(isPairRefusal(seated, t, s)).toBe(true);
+        expect(String((seated as Error).message)).not.toContain(u);
+        expect(await receiptOf(s)).toBe(u);
+        expect(await tuples(s)).toEqual(before);
+      });
+
+      it('a scope reaped during the seat is refused, and its name is not recorded for the tenant', async () => {
+        const s = await unrecordedScope();
+        const seated = await seatHeldOpen(s, () => hostFor().deleteScopeLocal(s), 'continue');
+        expect(isPairRefusal(seated, t, s)).toBe(true);
+        expect(await receiptOf(s)).toBeNull();
       });
 
       it('the ownerless reconcile records nothing in a DO never provisioned here, and seats nothing', async () => {
