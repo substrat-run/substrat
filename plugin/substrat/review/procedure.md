@@ -24,8 +24,9 @@ different digests were made under different rules.
    run `git fetch origin` first (a stale base drags in other people's merged commits), then
    `git diff $(git merge-base origin/<target> HEAD)`: commits, staged and unstaged work against
    the branch you will merge into (not against `HEAD`). `<target>` is that branch: a stacked
-   change names its own base, and anything else targets `main`. If there is no `origin/main`,
-   find the default branch (`git symbolic-ref refs/remotes/origin/HEAD`) and use that; if the
+   change names its own base, and anything else targets the default branch. That is `main`
+   here; where there is no `origin/main`, read it from
+   `git symbolic-ref refs/remotes/origin/HEAD`. A named base stays the target either way. If the
    merge-base command prints nothing, stop and say the base is unknown rather than reviewing a
    bare `git diff`. Add untracked files from
    `git ls-files --others --exclude-standard`; they are in no diff, so open them. A file with

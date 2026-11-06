@@ -38,7 +38,8 @@ Substrat's rules can see.
   in that list marks what no script can decide, which is the part to read; an item that is
   `gates: judgement` alone has no mechanical half. `pnpm lint:review-checklist` holds every
   command named there to one that exists and that CI runs, so a gate listed here is a gate
-  that bites. `<ref>` stands for the base branch (`origin/main`).
+  that bites. `<ref>` stands for the branch the change merges into, `origin/<target>` as
+  [`procedure.md`](procedure.md) step 1 picks it: `origin/main` unless the change is stacked.
 - Severity is per item. **blocking**: the change is unsafe to merge as written.
   **advisory**: worth a comment, never a stop.
 - No finding is a valid result. Say which items you checked and found clean. Do not invent
@@ -95,7 +96,7 @@ gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client
 ### S4 · Migrations are append-only and declare what they lose: blocking
 
 - *Gate:* `pnpm lint:migration-fence` replays every authored migration against populated
-  data and refuses an undeclared loss. `pnpm lint:migration-ledger --base origin/main`
+  data and refuses an undeclared loss. `pnpm lint:migration-ledger --base <ref>`
   refuses a migration the base branch shipped that is now edited, removed or renumbered
   (each package's `MIGRATIONS.md` records the digest a scope checks).
 - *Reader:* a shipped migration edited, removed or renumbered, wherever `lint:migration-ledger`
@@ -143,7 +144,7 @@ gates: `pnpm lint:secret-literals` · judgement
 ### S8 · A new operation has an acceptance test: advisory
 
 - *Gate:* `pnpm lint:tests` refuses a test that reads the emitted model to decide what to
-  assert. `pnpm lint:operation-tests --base origin/main` warns (never fails) on an operation
+  assert. `pnpm lint:operation-tests --base <ref>` warns (never fails) on an operation
   new since the base that no test in its package names.
 - *Reader:* an operation added with no scenario calling it, or only a happy path where it
   has a permission failure and a not-found.
