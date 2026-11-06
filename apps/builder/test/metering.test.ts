@@ -114,6 +114,57 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 		expect(report.cost).toEqual({ listUsd: '0.68', billedUsd: '0.816', unpricedTokens: 0 });
 	});
 
+	describe('the team\'s bill (reportTurnUsage → the control plane\'s ledger)', () => {
+		const TENANT = '01JZ0000000000000000TENANT';
+		const turn = { tenantId: TENANT, projectId: 'p1', turnId: 't-bill', model: FLASH, inputTokens: 1_000_000, outputTokens: 100_000, elapsedMs: 4200 };
+		const ledgerEnv = (answer: Response) => {
+			const posted: { url: string; token: string | null; body: { requestId: string; line: Record<string, unknown> } }[] = [];
+			const fetch = async (url: string, init: RequestInit) => {
+				posted.push({ url, token: new Headers(init.headers).get('x-service-token'), body: JSON.parse(init.body as string) });
+				return answer;
+			};
+			return { posted, env: { ...env, CONTROL_PLANE_SVC: { fetch }, CP_SERVICE_TOKEN: 'svc' } as unknown as import('../src/metering.js').LedgerEnv };
+		};
+
+		it('files the turn under the team, priced, keyed on the turn', async () => {
+			const { env: ledger, posted } = ledgerEnv(new Response('{}'));
+			await metering.reportTurnUsage(ledger, turn);
+			expect(posted).toHaveLength(1);
+			expect(posted[0]).toMatchObject({ url: 'https://control-plane/api/model-usage', token: 'svc' });
+			expect(posted[0]!.body.requestId).toBe('builder:t-bill');
+			expect(posted[0]!.body.line).toMatchObject({
+				attribution: { tenant: TENANT, scope: STUDIO_NODE.scopeId, vertical: '@substrat-run/builder', operation: 'builder/turn' },
+				model: FLASH,
+				provider: 'qwen',
+				modelId: 'qwen3.6-flash',
+				reported: true,
+				inputTokens: 1_000_000,
+				outputTokens: 100_000,
+				elapsedMs: 4200,
+			});
+			expect(posted[0]!.body.line.listUsd).toEqual(expect.stringMatching(/^\d/));
+		});
+
+		it('says a provider reported nothing rather than billing zero tokens as a price', () => {
+			const line = metering.turnUsageLine({ ...turn, inputTokens: 0, outputTokens: 0 }, new Date(0));
+			expect(line).toMatchObject({ reported: false, listUsd: null });
+		});
+
+		it('keeps an unpriced model\'s tokens on the bill, with no guessed price', () => {
+			const line = metering.turnUsageLine({ ...turn, model: 'cloudflare:deepseek/deepseek-v4-pro' }, new Date(0));
+			expect(line).toMatchObject({ reported: true, inputTokens: 1_000_000, listUsd: null });
+		});
+
+		it('still records the studio ledger when the control plane refuses, and does not throw', async () => {
+			const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+			const { env: ledger } = ledgerEnv(new Response('no', { status: 503 }));
+			await metering.reportTurnUsage(ledger, turn);
+			expect((await metering.studioUsage(env)).totals).toEqual({ input: 1_000_000, output: 100_000 });
+			expect(error).toHaveBeenCalledWith(expect.stringContaining('the control plane answered 503'));
+			error.mockRestore();
+		});
+	});
+
 	it('replaying a turn (same turnId) never double-bills — tokens or cost', async () => {
 		const turn = {
 			projectId: 'proj-1',
