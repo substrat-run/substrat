@@ -114,6 +114,18 @@ export function entityStateMigrationContractSuite(
       `ALTER TABLE ${table}_new RENAME TO ${table}`,
     ];
 
+    it('still lists a scope whose search index outlived its content table', async () => {
+      const { s } = await scopeWith('rbsearch');
+      // What a withdrawn searchable leaves: DROP TABLE takes the triggers and not the index, and
+      // an external-content index reads that table for COUNT(*).
+      await raw.sql(t, s, 'DROP TABLE rb_search');
+
+      const tables = await host.admin.listScopeTables(staff, t, s);
+      const index = tables.find((table) => /^_substrat_search_.*rbsearch$/.test(table.name));
+      expect(index).toMatchObject({ rowCount: 2, system: true });
+      expect(tables.some((table) => table.name === 'rb_search')).toBe(false);
+    });
+
     it('puts back the guard triggers and list indexes a rebuild dropped, and the guard holds after it', async () => {
       const { s, stub, binned } = await scopeWith('rbnote');
       const derived = await objectsOn(s, 'rb_notes');
