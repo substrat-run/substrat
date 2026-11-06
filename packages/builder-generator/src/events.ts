@@ -42,6 +42,8 @@ export type BuildEvent =
 	| { readonly type: 'assistant-text'; readonly text: string }
 	/** The model decided to call a workspace tool. Emitted before execution. */
 	| { readonly type: 'tool-call'; readonly tool: string; readonly summary: string }
+	/** The tool came back: how long it took, and whether it refused or failed. */
+	| { readonly type: 'tool-result'; readonly tool: string; readonly ms: number; readonly ok: boolean }
 	| { readonly type: 'file-written'; readonly path: string; readonly bytes: number }
 	| { readonly type: 'command'; readonly cmd: string; readonly exitCode: number }
 	| { readonly type: 'check'; readonly result: GateResult }
@@ -179,6 +181,8 @@ export function formatEvent(e: BuildEvent): string {
 			return e.text;
 		case 'tool-call':
 			return `· ${e.tool}: ${e.summary}`;
+		case 'tool-result':
+			return `· ${e.tool} ${e.ok ? 'ok' : 'failed'} in ${e.ms}ms`;
 		case 'file-written':
 			return `· wrote ${e.path} (${e.bytes}b)`;
 		case 'command':

@@ -1,3 +1,4 @@
+import type { BuilderTurn } from '@substrat-run/contracts';
 import type { AssistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
 
 /**
@@ -11,6 +12,23 @@ export type TimelineItem =
   | { kind: 'prose'; id: number; text: string }
   | { kind: 'host'; id: number; event: string; text: string; output?: string }
   | { kind: 'end'; id: number; text: string; failed: boolean };
+
+/** What a turn's metrics say at a glance; empty for a turn from before they were kept. */
+export function metricsLine({ metrics, inputTokens }: Pick<BuilderTurn, 'metrics' | 'inputTokens'>): string[] {
+  if (!metrics) return [];
+  const seconds = (ms: number) => `${Math.round(ms / 1000)}s`;
+  const toolCalls = Object.values(metrics.tools);
+  const failed = toolCalls.reduce((n, t) => n + t.errors, 0);
+  return [
+    ...(metrics.resolvedModel ? [`ran ${metrics.resolvedModel}`] : []),
+    ...(metrics.skills ? [`skills ${metrics.skills}`] : []),
+    `${metrics.passes} passes, ${metrics.steps} steps`,
+    `${seconds(metrics.generatorMs)} model, ${seconds(metrics.gateMs)} gates`,
+    ...(inputTokens ? [`${Math.round((100 * metrics.cachedInputTokens) / inputTokens)}% cached`] : []),
+    `${toolCalls.reduce((n, t) => n + t.calls, 0)} tool calls${failed ? `, ${failed} failed` : ''}`,
+    `${metrics.filesWritten} files written`,
+  ];
+}
 
 /** The output a check event carries, when its gate did not pass. */
 function gateOutput(event: string, data: unknown): string | undefined {

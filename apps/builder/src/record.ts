@@ -34,7 +34,15 @@ import type { BuildEvent, BuildEventOf } from '@substrat-run/builder-generator';
 import { formatEvent } from '@substrat-run/builder-generator';
 import type { AssistantStreamBody, AssistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
 import { STUDIO_HOST, studioScope, type StudioEnv } from './studio.js';
-import type { BuilderRedGate, BuilderTurn, BuilderTurnInput, BuilderTurnOutcome, Page } from '@substrat-run/contracts';
+import type {
+	BuilderRedGate,
+	BuilderToolStat,
+	BuilderTurn,
+	BuilderTurnInput,
+	BuilderTurnMetrics,
+	BuilderTurnOutcome,
+	Page,
+} from '@substrat-run/contracts';
 
 /** Appended in one call at most; the engine takes 200. */
 const BATCH = 50;
@@ -88,6 +96,35 @@ export function fitMessage(text: string): string {
 	return text.slice(0, keep) + note;
 }
 
+/** The most of a gate's output a `check` row keeps, leaving room for the rest of the event. */
+const GATE_OUTPUT_MAX = 12_000;
+
+/**
+ * Head and tail, since a compiler's verdict comes last. A gate's output is capped above what
+ * a row holds, so without this the failures that say the most lost it all to `fit`'s preview.
+ */
+export function clipMiddle(s: string, max: number): string {
+	if (s.length <= max) return s;
+	const note = `\n…[${s.length - max} characters cut]…\n`;
+	const side = Math.floor((max - note.length) / 2);
+	return s.slice(0, side) + note + s.slice(-side);
+}
+
+/** What an event keeps in its row. A `gates` run drops the outputs its `check` events hold. */
+function recorded(e: BuildEvent): unknown {
+	if (e.type === 'check') return { ...e, result: { ...e.result, output: clipMiddle(e.result.output, GATE_OUTPUT_MAX) } };
+	if (e.type === 'gates') {
+		return { ...e, run: { ...e.run, results: e.run.results.map(({ output: _output, ...result }) => result) } };
+	}
+	return e;
+}
+
+/** A short digest of what a turn was prompted with, so two turns can be told apart by it. */
+export async function digestOf(text: string): Promise<string> {
+	const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+	return [...new Uint8Array(hash).slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 function hostEvent(kind: string, text: string, data?: unknown): AssistantStreamBody {
 	return { t: 'host-event', kind, text: clip(text, TEXT_MAX), ...(data === undefined ? {} : { data: fit(data) }) };
 }
@@ -119,6 +156,13 @@ export interface OpenTurn {
 	/** Who sent it: the session's subject at the issuer, when the worker passed one. */
 	readonly actor: string | null;
 	readonly model: string;
+}
+
+/** What ran: `OpenTurn.model` may be `<provider>:auto`, and only the phase makes it concrete. */
+export interface PassContext {
+	readonly model: string | null;
+	readonly skills: string | null;
+	readonly toolchain: string | null;
 }
 
 /** How a turn ended. A failure's message is the turn's fatal `error` event, already recorded. */
@@ -180,6 +224,17 @@ export class TurnRecord {
 	#commit: string | null = null;
 	#inputTokens = 0;
 	#outputTokens = 0;
+	#context: PassContext = { model: null, skills: null, toolchain: null };
+	#cachedInputTokens = 0;
+	#cacheWriteTokens = 0;
+	#steps = 0;
+	#passes = 0;
+	#generatorMs = 0;
+	#gateMs = 0;
+	#questions = 0;
+	#filesWritten = 0;
+	#bytesWritten = 0;
+	readonly #tools = new Map<string, BuilderToolStat>();
 
 	private constructor(env: StudioEnv, threadId: string, turn: OpenTurn, firstSeq: number) {
 		this.#env = env;
@@ -268,12 +323,27 @@ export class TurnRecord {
 			this.#phaseStart ??= e.phase;
 			this.#phaseEnd = e.phase;
 		}
-		if (e.type === 'gates') this.#gates = e.run;
+		if (e.type === 'gates') {
+			this.#gates = e.run;
+			this.#gateMs += e.run.durationMs;
+		}
+		if (e.type === 'question') this.#questions += 1;
+		if (e.type === 'file-written') {
+			this.#filesWritten += 1;
+			this.#bytesWritten += e.bytes;
+		}
+		if (e.type === 'tool-result') {
+			const tool = this.#tools.get(e.tool) ?? { calls: 0, errors: 0, ms: 0 };
+			this.#tools.set(e.tool, { calls: tool.calls + 1, errors: tool.errors + (e.ok ? 0 : 1), ms: tool.ms + e.ms });
+		}
 		if (e.type === 'commit') this.#commit = e.sha;
 		if (e.type === 'truncated') this.#truncated = true;
 		if (e.type === 'usage') {
 			this.#inputTokens += e.inputTokens;
 			this.#outputTokens += e.outputTokens;
+			this.#cachedInputTokens += e.cachedInputTokens ?? 0;
+			this.#cacheWriteTokens += e.cacheWriteTokens ?? 0;
+			this.#steps += e.steps;
 		}
 		if (e.type === 'assistant-text') {
 			if (!this.#pid) {
@@ -286,7 +356,19 @@ export class TurnRecord {
 			return;
 		}
 		this.#closeText();
-		this.#push(hostEvent(e.type, formatEvent(e), e));
+		this.#push(hostEvent(e.type, formatEvent(e), recorded(e)));
+	}
+
+	/** What this turn runs on, known once its phase is. */
+	context(context: PassContext): void {
+		this.#context = context;
+		this.note('run-context', `${context.model ?? 'unknown model'} · skills ${context.skills ?? 'unknown'}`, context);
+	}
+
+	/** One generator pass finished. */
+	pass(ms: number): void {
+		this.#passes += 1;
+		this.#generatorMs += ms;
 	}
 
 	/** Something the studio did that is not a BuildEvent — a repair or continuation prompt. */
@@ -362,6 +444,28 @@ export class TurnRecord {
 			inputTokens: this.#inputTokens,
 			outputTokens: this.#outputTokens,
 			startedAt: this.#startedAt,
+			metrics: this.#metrics(),
+		};
+	}
+
+	#metrics(): BuilderTurnMetrics {
+		return {
+			resolvedModel: this.#context.model && clip(this.#context.model, 200),
+			toolchain: this.#context.toolchain && clip(this.#context.toolchain, 128),
+			skills: this.#context.skills,
+			cachedInputTokens: this.#cachedInputTokens,
+			cacheWriteTokens: this.#cacheWriteTokens,
+			steps: this.#steps,
+			passes: this.#passes,
+			generatorMs: this.#generatorMs,
+			gateMs: this.#gateMs,
+			questions: this.#questions,
+			filesWritten: this.#filesWritten,
+			bytesWritten: this.#bytesWritten,
+			tools: Object.fromEntries(this.#tools),
+			gates: (this.#gates?.results ?? [])
+				.slice(0, 32)
+				.map((r) => ({ name: r.name, status: r.status, ms: r.durationMs })),
 		};
 	}
 

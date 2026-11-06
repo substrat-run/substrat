@@ -79,7 +79,7 @@ export const turnOperations = defineOperations(entities, PERMISSIONS)({
 const COLUMNS =
 	'id, turn_id, tenant_id, project_id, project_name, thread_id, first_seq, last_seq, model, phase_start, ' +
 	'phase_end, outcome, failure, gates_ok, red_gates, repairs, truncated, commit_sha, input_tokens, ' +
-	'output_tokens, started_at, ended_at';
+	'output_tokens, started_at, ended_at, metrics';
 
 interface TurnRow {
 	id: string;
@@ -104,6 +104,7 @@ interface TurnRow {
 	output_tokens: number;
 	started_at: string | null;
 	ended_at: string;
+	metrics: string | null;
 }
 
 function summaryOf(r: TurnRow): BuilderTurn {
@@ -130,6 +131,7 @@ function summaryOf(r: TurnRow): BuilderTurn {
 		outputTokens: r.output_tokens,
 		startedAt: r.started_at,
 		endedAt: r.ended_at,
+		metrics: r.metrics === null ? null : (JSON.parse(r.metrics) as unknown),
 	});
 }
 
@@ -186,6 +188,10 @@ export const turnsModule: ModuleRegistration = {
 CREATE INDEX studio_turns_tenant ON studio_turns (tenant_id, id);
 CREATE INDEX studio_turns_project ON studio_turns (project_id, id);`,
 		},
+		{
+			version: '0002-studio-turn-metrics',
+			sql: 'ALTER TABLE studio_turns ADD COLUMN metrics TEXT;',
+		},
 	],
 	...operationsFor(turnOperations)({
 		'studio/record-turn': async (ctx, input) => {
@@ -194,7 +200,7 @@ CREATE INDEX studio_turns_project ON studio_turns (project_id, id);`,
 			if (existing) return { id: existing.id, deduped: true };
 			const row = builderTurn.parse({ ...input, id: ulid(), endedAt: ctx.now() });
 			ctx.sql.exec(
-				`INSERT INTO studio_turns (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO studio_turns (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					row.id,
 					row.turnId,
@@ -218,6 +224,7 @@ CREATE INDEX studio_turns_project ON studio_turns (project_id, id);`,
 					row.outputTokens,
 					row.startedAt,
 					row.endedAt,
+					row.metrics ? JSON.stringify(row.metrics) : null,
 				],
 			);
 			ctx.emit({

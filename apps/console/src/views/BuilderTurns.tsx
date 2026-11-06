@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import type { BuilderTurn, BuilderTurnDetail, BuilderTurnOutcome, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Select, Tag } from '../components';
 import type { Api } from '../lib/api';
-import { timelineOf } from '../lib/builder-turn';
+import { metricsLine, timelineOf } from '../lib/builder-turn';
 
 const PAGE = 25;
 
@@ -44,6 +44,7 @@ function TurnDetail({ api, turn }: { api: Api; turn: BuilderTurn }) {
         {turn.model && <span>{turn.model}</span>}
         {turn.phaseStart && <span>phase {turn.phaseStart}{turn.phaseEnd && turn.phaseEnd !== turn.phaseStart ? ` → ${turn.phaseEnd}` : ''}</span>}
         {turn.commitSha && <span>commit {turn.commitSha.slice(0, 8)}</span>}
+        {metricsLine(turn).map((fact) => <span key={fact}>{fact}</span>)}
         {turn.truncated && <span>truncated</span>}
       </div>
       {turn.failure && <div style={{ ...mono, color: 'var(--status-danger-fg)' }}>{turn.failure}</div>}

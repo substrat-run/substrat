@@ -27,6 +27,38 @@ export type BuilderRedGate = z.infer<typeof builderRedGate>;
 const instant = z.string().min(1).max(40);
 const count = z.number().int().nonnegative();
 
+/** One workspace tool across a turn. */
+export const builderToolStat = z.object({ calls: count, errors: count, ms: count });
+export type BuilderToolStat = z.infer<typeof builderToolStat>;
+
+/**
+ * What a turn needs to be compared with another: which model and which prompt actually ran,
+ * and where its time and tokens went. Absent on a turn from before these were kept, and on
+ * one the studio lost track of.
+ */
+export const builderTurnMetrics = z.object({
+  /** The concrete model, where the turn's `model` may be `<provider>:auto`. */
+  resolvedModel: z.string().max(200).nullable(),
+  /** The image the turn ran on, and a digest of the skills it was given. */
+  toolchain: z.string().max(128).nullable(),
+  skills: z.string().max(64).nullable(),
+  cachedInputTokens: count,
+  cacheWriteTokens: count,
+  /** Model requests across the turn's passes. */
+  steps: count,
+  passes: count,
+  /** Time inside the generator, and inside every gate run. */
+  generatorMs: count,
+  gateMs: count,
+  questions: count,
+  filesWritten: count,
+  bytesWritten: count,
+  tools: z.record(z.string().max(64), builderToolStat),
+  /** The last gate run, every gate. `redGates` keeps only the failures, with their line. */
+  gates: z.array(z.object({ name: z.string().max(64), status: z.string().max(16), ms: count })).max(32),
+});
+export type BuilderTurnMetrics = z.infer<typeof builderTurnMetrics>;
+
 /** What the studio knows about a turn when it closes it. */
 export const builderTurnInput = z.object({
   turnId: z.string().min(1).max(64),
@@ -53,6 +85,7 @@ export const builderTurnInput = z.object({
   outputTokens: count,
   /** Null for a turn the studio lost track of (`interrupted`). */
   startedAt: instant.nullable(),
+  metrics: builderTurnMetrics.nullable().optional(),
 });
 export type BuilderTurnInput = z.infer<typeof builderTurnInput>;
 

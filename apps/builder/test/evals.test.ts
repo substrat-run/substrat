@@ -629,6 +629,7 @@ describe('forkScore — forks correct AT a question count (#740)', () => {
 		repairs: 0,
 		repairsByPhase: {},
 		stages: {},
+		tools: {},
 		questions: interviewQuestions,
 		interviewQuestions,
 		usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0, stepUsage: [] },

@@ -75,7 +75,7 @@ import {
 	type ProviderSecrets,
 } from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
-import { readRecord, TurnRecord, type TurnOutcome } from './record.js';
+import { digestOf, readRecord, TurnRecord, type TurnOutcome } from './record.js';
 import { underProject, withinProject } from './project-path.js';
 import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
@@ -572,11 +572,15 @@ export class BuilderAgent extends DurableObject<Env> {
 				const allSkills = await this.#loadSkills(new ContainerWorkspace({ sandbox: sb, root: TOOLCHAIN, id: 'toolchain' }));
 				// `<provider>:auto` becomes concrete per phase (model-pairs.ts) —
 				// fast for interview, strong for build turns.
-				const generator = await this.#generator(
-					resolveAutoSpec(modelSpec, phase),
-					skillsForPhase(allSkills, phase),
-					phase,
-				);
+				const resolvedSpec = resolveAutoSpec(modelSpec, phase);
+				const phaseSkills = skillsForPhase(allSkills, phase);
+				const generator = await this.#generator(resolvedSpec, phaseSkills, phase);
+				const toolchain = await sb.exec('cat /workspace/substrat/.toolchain-id').catch(() => null);
+				record?.context({
+					model: resolvedSpec,
+					skills: await digestOf(phaseSkills.join('\n')),
+					toolchain: toolchain?.exitCode === 0 ? toolchain.stdout.trim() : null,
+				});
 				const concept = `${await buildContext(projectWs, phase)}\n\nHosted project identity: ${entry.slug}. Keep package.json substrat.slug pinned to ${entry.slug.split('/').pop()} and substrat.tenant pinned to ${this.#tenantSlug || this.#tenant}; these identify the same project when exported and pushed with the CLI. A display-name change does not change this identity.`;
 
 				// Same shape as the local server's handleTurn: pass → checks → capped
@@ -587,6 +591,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 					let assistant = '';
 					let truncated = false;
+					const passStarted = Date.now();
 					// The turn loop's own prompts — a continuation, a repair — are not
 					// the user's words, so the record keeps them as the studio's.
 					if (text !== message) {
@@ -652,6 +657,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					}
 					transcript.push({ role: 'user', text });
 					if (assistant) transcript.push({ role: 'assistant', text: assistant });
+					record?.pass(Date.now() - passStarted);
 					return truncated;
 				};
 

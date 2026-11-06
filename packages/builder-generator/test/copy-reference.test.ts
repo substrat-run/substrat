@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { LocalWorkspace } from '@substrat-run/builder-workspace';
-import { workspaceTools } from '../src/index.js';
+import { workspaceTools, type BuildEvent } from '../src/index.js';
 
 const scratch = async (): Promise<LocalWorkspace> =>
 	new LocalWorkspace({ root: await mkdtemp(join(tmpdir(), 'builder-copy-')) });
@@ -53,5 +53,29 @@ describe('copy_reference', () => {
 		expect(await project.readFile('src/main.ts')).toBe('main');
 		expect(await copy(tools, 'src/main.ts', 'spec/main.ts')).toContain('REFUSED spec/main.ts: the model is frozen');
 		expect(await project.exists('spec/main.ts')).toBe(false);
+	});
+});
+
+describe('tool-result', () => {
+	it('reports each tool as it comes back, and a refusal or error as a failure', async () => {
+		const project = await scratch();
+		await project.writeFile('a.txt', 'hello');
+		const events: BuildEvent[] = [];
+		const tools = workspaceTools({
+			workspace: project,
+			emit: (e) => events.push(e),
+			denyWrite: () => 'not here',
+		}) as unknown as Record<string, { execute(i: unknown, o: unknown): Promise<string> }>;
+		const opts = { toolCallId: 't', messages: [] };
+
+		await tools.read_file!.execute({ path: 'a.txt' }, opts);
+		await tools.read_file!.execute({ path: 'missing.txt' }, opts);
+		await tools.write_file!.execute({ path: 'b.txt', content: 'x' }, opts);
+
+		expect(events.filter((e) => e.type === 'tool-result')).toEqual([
+			expect.objectContaining({ tool: 'read_file', ok: true }),
+			expect.objectContaining({ tool: 'read_file', ok: false }),
+			expect.objectContaining({ tool: 'write_file', ok: false }),
+		]);
 	});
 });
