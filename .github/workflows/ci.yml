@@ -649,8 +649,16 @@ jobs:
   # if one byte differs from what is committed (tools/mtls-wasm-emit.mjs). Its own job because
   # the build takes minutes, and only when the crate, the module or the emitter changed — or on
   # a push to main, which always runs it. Docker is on the runner; nothing else is installed.
+  #
+  # The toolchain image is cached under its Dockerfile's hash, the same hash the emitter tags it
+  # with, so a loaded image is one it skips building. Building it means reaching Docker Hub and
+  # snapshot.debian.org, and the snapshot archive answers 503, 504 and 404 for hours at a time:
+  # on a run that has to build, that is this job's whole risk. Only the image is cached; the
+  # module is still compiled from source on every run, which is what the gate vouches for. A push
+  # to main is what writes the cache and keeps it from expiring, and a PR reads main's copy.
   mtls-wasm:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -668,8 +676,18 @@ jobs:
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
+      - id: toolchain
+        if: steps.touched.outputs.run == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/mtls-toolchain.tar
+          key: mtls-toolchain-${{ hashFiles('apps/social-relay/mtls-wasm/Dockerfile') }}
+      - if: steps.toolchain.outputs.cache-hit == 'true'
+        run: docker load -i "$RUNNER_TEMP/mtls-toolchain.tar"
       - if: steps.touched.outputs.run == 'true'
         run: node tools/mtls-wasm-emit.mjs --check
+      - if: steps.touched.outputs.run == 'true' && steps.toolchain.outputs.cache-hit != 'true'
+        run: docker save -o "$RUNNER_TEMP/mtls-toolchain.tar" $(docker image ls --format '{{.Repository}}:{{.Tag}}' substrat-mtls-wasm)
 
   # The one verdict: green only when the checks, every shard and the Windows CLI suite
   # succeeded. A skipped or cancelled job is not a pass. Named `test` because that is the
