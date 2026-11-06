@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.185.0
+
+### Minor Changes
+
+- cffd8d7: Meter how long each successful hosted build worked, per tenant and vertical, and report it in a team's metered usage.
+
+### Patch Changes
+
+- Updated dependencies [cffd8d7]
+- Updated dependencies [7c04a4e]
+  - @substrat-run/contracts@0.185.0
+  - @substrat-run/kernel@0.185.0
+  - @substrat-run/control-plane-client@0.6.7
+
 ## 0.184.0
 
 ### Minor Changes

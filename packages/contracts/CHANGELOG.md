@@ -1,5 +1,12 @@
 # @substrat-run/contracts
 
+## 0.185.0
+
+### Minor Changes
+
+- cffd8d7: Meter how long each successful hosted build worked, per tenant and vertical, and report it in a team's metered usage.
+- 7c04a4e: Each builder turn now records what is needed to compare it with another: the model that actually ran, a digest of its skills, the toolchain, cached tokens, steps, passes, generator and gate time, files written, and every tool's calls, failures and time. Generators emit a `tool-result` event, and a long gate output keeps its head and tail in the record instead of being lost.
+
 ## 0.184.0
 
 ### Minor Changes
