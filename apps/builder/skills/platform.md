@@ -11,6 +11,13 @@ entity-narrowed grants, every decision carries a proof path), events + audit
 mislabeled), migrations (journaled per module). This is usually most of what
 the builder would otherwise get wrong — say so plainly, even when no engine fits.
 
+A grant delegates, it never elevates: `ctx.grant` hands out only what its caller
+holds on that entity. So sharing a record is an operation the holder calls, naming
+someone who has already joined, never an accept step the invitee calls (`engine-invites`
+is for joining an org, not for sharing one record). A person's first grant on their
+own record is host code, the seed or the worker after the join operation; that is the
+normal path, not a defect in the model.
+
 **Tier 1 — engines you compose** (imported; their in-scope functions run in
 YOUR transaction):
 

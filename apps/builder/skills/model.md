@@ -238,12 +238,26 @@ ever create one.
 Read the `todo` reference (`read_reference` on `todo` `spec/model.ts`,
 `src/manifest.ts` and `src/module.ts`) before declaring sharing. It is the worked
 answer to "who may act on the thing I just created": `todo/join` creates the
-person's own `owner` entity; a declared entity-grant shape gives each person the
-list keys on their own owner entity (`{ entityType: 'owner', permissions:
+person's own `owner` entity; a declared entity-grant shape names the list keys each
+person holds on their own owner entity (`{ entityType: 'owner', permissions:
 OWNER_GRANTS, bootstrap: true, holder: 'self' }` in `src/manifest.ts`); and every
 list is `ctx.link`ed to its owner, so that grant reaches each list through the
-edge. `ctx.grant` is only for sharing with *another* person — it re-checks that
-the caller holds the key on that entity, which the owner does through the link.
+edge.
+
+Two rules follow from `ctx.grant` delegating, and the build cannot repair a model
+that breaks them:
+
+- **Host code makes a person's first grant.** The shape only declares it, and no
+  operation can make it, because the caller holds nothing yet. The seed does it with
+  `grantEntityShape` (`todo` `src/seed.ts`); a deployed worker does it after the join
+  operation returns. So the join operation only writes the row, and this is settled:
+  nothing in the model needs to change for it.
+- **Whoever holds a key shares it.** `ctx.grant` re-checks that the caller holds the
+  key on that entity, which the owner does through the link. An operation called by
+  the person being added can give them nothing. So when the concept says people are
+  invited and accept, declare one operation the *holder* calls, finding someone who
+  has already joined by their email (`todo/share-list`), and no pending invitation
+  whose accept step would have to grant.
 
 ## Not every table is an entity
 
