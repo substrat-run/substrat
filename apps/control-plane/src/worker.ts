@@ -18,6 +18,7 @@ import { sourceBuildService, builderTurnsService, githubConfig, installationToke
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono, type Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi } from './reviews.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
@@ -207,7 +208,7 @@ import {
   type CopyJobRecord,
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
-import { refuse, refuseStatus } from './problem.js';
+import { problemForThrow, refuse, refuseStatus } from './problem.js';
 import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
@@ -2948,6 +2949,16 @@ export default {
   fetch(request: Request, env: Env): Response | Promise<Response> {
     const app = new Hono<{ Bindings: Env }>();
 
+    // #113: a throw no route caught is a problem document, not Hono's text 500. A typed
+    // `SubstratError` keeps its code and sentence; anything else is `internal` with no detail,
+    // and the throw itself goes to the log only. `/api` keeps its own handler (the API router's).
+    // An `HTTPException` (a Hono middleware's own refusal) is answered as it chose.
+    app.onError((err) => {
+      if (err instanceof HTTPException) return err.getResponse();
+      console.error('control-plane: unhandled throw', err);
+      return problemForThrow(err);
+    });
+
     // #113: a request id on every /api answer and in its problem body. First, so it stamps the
     // answer every middleware below settled on. Not /internal or /hooks: no person reads those.
     app.use('/api/*', controlPlaneRequestId());
@@ -3109,7 +3120,7 @@ export default {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
       } catch (e) {
-        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
         throw e;
       }
       const body = (await c.req.json().catch(() => ({}))) as {
@@ -3121,7 +3132,7 @@ export default {
       const ids = tenantId.safeParse(body.tenantId);
       const sids = scopeId.safeParse(body.scopeId);
       if (!ids.success || !sids.success) {
-        return c.json({ error: 'tenantId and scopeId (ULIDs) are required' }, 400);
+        return refuse('validation_failed', 'tenantId and scopeId (ULIDs) are required');
       }
       const kick = drainKickOf(body);
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
@@ -3165,34 +3176,32 @@ export default {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
       } catch (e) {
-        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
       const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
-      if (!caller.ok) return c.json({ error: caller.error }, 403);
+      if (!caller.ok) return refuse('forbidden', caller.error);
       const parsed = emailRelayRequest.safeParse(body);
       if (!parsed.success) {
-        return c.json({ error: 'tenantId, scopeId (ULIDs) and {to, subject, html, text} are required' }, 400);
+        return refuse('validation_failed', 'tenantId, scopeId (ULIDs) and {to, subject, html, text} are required');
       }
       const { tenantId: t, scopeId: s, to, subject, html, text, fromName, from, attachments } = parsed.data;
       // #2098: the platform's own sender carries no files — attachments are read as the tenant
       // connection that sends, and the platform's sender is not one.
       if (attachments?.length && !from) {
-        return c.json({ error: "attachments ride only with `from` — the platform's own sender carries none" }, 400);
+        return refuse('validation_failed', "attachments ride only with `from` — the platform's own sender carries none");
       }
       const host = hostFor(c.env);
       const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
-      if (!rec?.vertical) return c.json({ error: 'scope has no vertical bound' }, 404);
+      if (!rec?.vertical) return refuse('not_found', 'scope has no vertical bound');
       // #2005: a preview or a fork causes no outbound effects, and mail is one. Nothing is sent.
-      if (!isPrimaryScope(rec)) return c.json({ error: PREVIEW_EMAIL_REFUSAL }, 403);
+      if (!isPrimaryScope(rec)) return refuse('forbidden', PREVIEW_EMAIL_REFUSAL);
       const registered = (await host.admin.listVerticals(SWEEP_ACTOR)).find((v) => v.slug === rec.vertical);
       if (!registered?.emailSender) {
-        return c.json(
-          {
-            error: `vertical '${rec.vertical}' does not hold the email-sender capability — enable it in the owning team’s dashboard under Settings → Permissions`,
-          },
-          403,
+        return refuse(
+          'forbidden',
+          `vertical '${rec.vertical}' does not hold the email-sender capability — enable it in the owning team’s dashboard under Settings → Permissions`,
         );
       }
       if (!from) {
@@ -3209,9 +3218,9 @@ export default {
       // body's scope is the caller's claim until the platform has proven who is calling (#2103),
       // and here that claim would decide whose mailbox the message leaves from.
       if (!caller.proven) {
-        return c.json(
-          { error: 'sending as a tenant address needs a proven caller — call the relay from the vertical\'s worker, not from inside a Durable Object' },
-          403,
+        return refuse(
+          'forbidden',
+          'sending as a tenant address needs a proven caller — call the relay from the vertical\'s worker, not from inside a Durable Object',
         );
       }
       try {
@@ -3237,7 +3246,7 @@ export default {
         );
         return c.json({ sent: true, ...result });
       } catch (e) {
-        if (e instanceof TenantMailRefusal) return c.json({ error: e.message }, e.status);
+        if (e instanceof TenantMailRefusal) return refuseStatus(e.status, e.message);
         throw e;
       }
     });
@@ -3258,12 +3267,12 @@ export default {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
       } catch (e) {
-        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
       const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
-      if (!caller.ok) return c.json({ error: caller.error }, 403);
+      if (!caller.ok) return refuse('forbidden', caller.error);
       try {
         const result = await relayConnectionUpsert(
           hostFor(c.env),
@@ -3296,7 +3305,7 @@ export default {
         return c.json(result);
       } catch (e) {
         if (e instanceof ConnectionRelayError) {
-          return c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, e.status);
+          return refuseStatus(e.status, e.message, e.probe ? { probe: e.probe } : undefined);
         }
         throw e;
       }
@@ -3313,16 +3322,16 @@ export default {
         try {
           assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
         } catch (e) {
-          if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+          if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
           throw e;
         }
         const body: unknown = await c.req.json().catch(() => ({}));
         const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
-        if (!caller.ok) return c.json({ error: caller.error }, 403);
+        if (!caller.ok) return refuse('forbidden', caller.error);
         try {
           return c.json(await run(c.env, hostFor(c.env), body, caller.proven));
         } catch (e) {
-          if (e instanceof ConnectionRelayError) return c.json({ error: e.message }, e.status);
+          if (e instanceof ConnectionRelayError) return refuseStatus(e.status, e.message);
           throw e;
         }
       };
@@ -3391,12 +3400,12 @@ export default {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
       } catch (e) {
-        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
       const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
-      if (!caller.ok) return c.json({ error: caller.error }, 403);
+      if (!caller.ok) return refuse('forbidden', caller.error);
       try {
         const result = await relayConnectUrl(
           hostFor(c.env),
@@ -3410,7 +3419,7 @@ export default {
         );
         return c.json(result);
       } catch (e) {
-        if (e instanceof ConnectUrlRelayError) return c.json({ error: e.message }, e.status);
+        if (e instanceof ConnectUrlRelayError) return refuseStatus(e.status, e.message);
         throw e;
       }
     });
@@ -3427,16 +3436,16 @@ export default {
         try {
           assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
         } catch (e) {
-          if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+          if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
           throw e;
         }
         const body: unknown = await c.req.json().catch(() => ({}));
         const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
-        if (!caller.ok) return c.json({ error: caller.error }, 403);
+        if (!caller.ok) return refuse('forbidden', caller.error);
         try {
           return c.json(await run(hostFor(c.env), body, c.env));
         } catch (e) {
-          if (e instanceof ConnectUrlRelayError) return c.json({ error: e.message }, e.status);
+          if (e instanceof ConnectUrlRelayError) return refuseStatus(e.status, e.message);
           throw e;
         }
       };
@@ -3470,22 +3479,22 @@ export default {
       try {
         assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
       } catch (e) {
-        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
         throw e;
       }
       const body: unknown = await c.req.json().catch(() => ({}));
       const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
-      if (!caller.ok) return c.json({ error: caller.error }, 403);
+      if (!caller.ok) return refuse('forbidden', caller.error);
       if (!caller.proven) {
-        return c.json({ error: "a mail-in address needs a proven caller — call the relay from the vertical's worker, not from inside a Durable Object" }, 403);
+        return refuse('forbidden', "a mail-in address needs a proven caller — call the relay from the vertical's worker, not from inside a Durable Object");
       }
       const parsed = mailInRelayRequest.safeParse(body);
       if (!parsed.success) {
         const first = parsed.error.issues[0];
-        return c.json({ error: `invalid mail-in request: ${first ? `${first.path.join('.') || '(root)'} — ${first.message}` : 'malformed body'}` }, 400);
+        return refuse('validation_failed', `invalid mail-in request: ${first ? `${first.path.join('.') || '(root)'} — ${first.message}` : 'malformed body'}`);
       }
       const input = parsed.data;
-      if (input.action !== 'get' && !input.createdBy) return c.json({ error: `'${input.action}' names the principal whose check authorized it (createdBy)` }, 400);
+      if (input.action !== 'get' && !input.createdBy) return refuse('validation_failed', `'${input.action}' names the principal whose check authorized it (createdBy)`);
       const host = hostFor(c.env);
       const deps = mailInAddressDeps(c.env, host);
       const key = { tenantId: input.tenantId, scopeId: input.scopeId };
@@ -3499,7 +3508,7 @@ export default {
         const address = await act(host, deps, { ...key, createdBy: input.createdBy!, ...(input.allowlist ? { allowlist: input.allowlist } : {}) });
         return c.json({ address });
       } catch (e) {
-        if (e instanceof MailInError) return c.json({ error: e.message }, e.status);
+        if (e instanceof MailInError) return refuseStatus(e.status, e.message);
         throw e;
       }
     });
@@ -3527,7 +3536,7 @@ export default {
           const outcome = await callback.handle(c.env, hostFor(c.env), ref);
           if (!outcome.accepted) {
             console.log(`[${tag}] rejected (${outcome.reason})`);
-            return c.json({ error: 'not found' }, 404);
+            return refuse('not_found', 'not found');
           }
           console.log(`[${tag}] ${outcome.log}`);
           return c.json({ ok: true });
@@ -3535,7 +3544,9 @@ export default {
           // Verified but the reconcile failed (provider hiccup, a vertical deployment out
           // of reach): 500 so the provider retries; the poll floor covers what push drops.
           console.error(`[${tag}] reconcile failed`, err);
-          return c.json({ error: 'reconcile failed' }, 500);
+          // By status, not `internal`: the sentence is ours and fixed, and the provider's
+          // retry reads the status alone, so the body keeps saying what it always said.
+          return refuseStatus(500, 'reconcile failed');
         }
       });
     }

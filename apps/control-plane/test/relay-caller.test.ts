@@ -103,7 +103,7 @@ describe('the relay holds a proven caller to its own scope', () => {
       const before = sent.length;
       const res = await viaGateway('/internal/email/send', mail(tB, sB), callerHeader(tA, sA));
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: `relay refused: '${vertical}' may only act for its own scope` });
+      expect(await res.json()).toMatchObject({ error: `relay refused: '${vertical}' may only act for its own scope`, detail: `relay refused: '${vertical}' may only act for its own scope` });
       expect(sent).toHaveLength(before);
     });
 
@@ -149,7 +149,7 @@ describe('the relay holds a proven caller to its own scope', () => {
       const before = sent.length;
       const res = await viaGateway('/internal/email/send', mail(tA, foreign), callerHeader(tA, sA));
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: `relay refused: '${vertical}' may only act for its own scope` });
+      expect(await res.json()).toMatchObject({ error: `relay refused: '${vertical}' may only act for its own scope`, detail: `relay refused: '${vertical}' may only act for its own scope` });
       expect(sent).toHaveLength(before);
     });
 

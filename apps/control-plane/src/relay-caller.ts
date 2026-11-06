@@ -1,4 +1,5 @@
 import { RELAY_CALLER_HEADER, relayCaller, scopeId, type RelayCaller, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { refuse } from './problem.js';
 
 /**
  * Who called the relay — the half of the relay's authentication its platform check does not
@@ -32,7 +33,7 @@ export function relayGatewayRequest(request: Request): Request | Response {
     parsed = undefined;
   }
   if (!parsed?.success) {
-    return Response.json({ error: 'relay gateway: the caller is missing or unreadable' }, { status: 400 });
+    return refuse('validation_failed', 'relay gateway: the caller is missing or unreadable');
   }
   const served = new Request(request);
   served.headers.delete(RELAY_CALLER_HEADER);
