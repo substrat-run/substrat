@@ -17,7 +17,7 @@ const PRIVATE_WORKSPACE_PACKAGES = [
   'demos/meridian', 'demos/meridian/app', 'demos/shop', 'demos/shop/admin', 'demos/shop/app', 'demos/ticket0', 'demos/ticket0/app',
   'demos/tock', 'demos/tock/app', 'demos/todo', 'demos/todo/app',
   'packages/adapter-email', 'packages/builder-generator', 'packages/builder-workspace', 'packages/console-data',
-  'packages/engine-test-kit', 'packages/template-check', 'packages/ui',
+  'packages/engine-test-kit', 'packages/portal-starter', 'packages/template-check', 'packages/ui',
   'spikes/k3s-sharding',
 ] as const;
 

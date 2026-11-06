@@ -69,7 +69,8 @@ complete working verticals, compiled against this platform on every change. From
 and `src/personas.ts` before writing your own; from `todo`, `src/module.ts` for
 operations that create, link and share. Copy their shape with your domain's names: that is how a host is built, a tenant
 and scope provisioned, roles defined and assigned, and an operation invoked as a
-person. Where this skill and the reference disagree, the reference wins — it is
+person. A file you would keep mostly as it is goes in with `copy_reference`, then
+gets edited, rather than being read and written back. Where this skill and the reference disagree, the reference wins — it is
 compiled, this text is not. Never reverse-engineer that API from
 `node_modules/**/*.d.ts`.
 

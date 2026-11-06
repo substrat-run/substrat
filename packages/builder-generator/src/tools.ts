@@ -41,6 +41,15 @@ export interface WorkspaceToolOptions {
 }
 
 /**
+ * A reference's package.json as a project outside this repo can install it: its `workspace:`
+ * and `catalog:` versions resolve only here, so they become `latest`, which the project's
+ * lockfile then pins. `private` and the name stay for the model to edit.
+ */
+export function standalonePackageJson(text: string): string {
+	return text.replace(/"(workspace|catalog):[^"]*"/g, '"latest"');
+}
+
+/**
  * Commands refused regardless of prompt. Not a security boundary in mode A (§10 —
  * there is no isolation there), but it stops the most common ways an agent
  * destroys a session's own history or escapes the workspace by shelling out.
@@ -199,6 +208,50 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 					emit({ type: 'tool-call', tool: 'read_reference', summary: `${reference}:${path}` });
 					try {
 						return capRead(await open(reference).readFile(path));
+					} catch (err) {
+						return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
+					}
+				},
+			}),
+			copy_reference: tool({
+				description:
+					'Copy a file or a whole directory from a REFERENCE into the project in one call, instead of reading it and writing it back. Use it for anything you would keep mostly as it is, then edit the copies. node_modules and dist are left out, and workspace:/catalog: versions in a package.json become "latest".',
+				inputSchema: z.object({
+					reference: which,
+					from: z.string().describe('File or directory inside that reference; "." is all of it'),
+					to: z.string().describe('Where it lands, relative to the workspace root, e.g. app'),
+				}),
+				execute: async ({ reference, from, to }) => {
+					emit({ type: 'tool-call', tool: 'copy_reference', summary: `${reference}:${from} → ${to}` });
+					try {
+						const source = open(reference);
+						const copied: string[] = [];
+						const refused: string[] = [];
+						const copy = async (src: string, dest: string): Promise<void> => {
+							const refusal = opts.denyWrite?.(dest);
+							if (refusal) {
+								refused.push(`${dest}: ${refusal}`);
+								return;
+							}
+							const read = await source.readFile(src);
+							const content = src.endsWith('package.json') ? standalonePackageJson(read) : read;
+							await ws.writeFile(dest, content);
+							emit({ type: 'file-written', path: dest, bytes: content.length });
+							copied.push(dest);
+						};
+						const walk = async (dir: string, dest: string): Promise<void> => {
+							for (const entry of await source.listFiles(dir)) {
+								const name = entry.replace(/\/$/, '');
+								if (name === 'node_modules' || name === 'dist') continue;
+								const src = dir === '.' ? name : `${dir}/${name}`;
+								if (entry.endsWith('/')) await walk(src, `${dest}/${name}`);
+								else await copy(src, `${dest}/${name}`);
+							}
+						};
+						const isDirectory = await source.listFiles(from).then(() => true, () => false);
+						if (isDirectory) await walk(from.replace(/\/$/, ''), to.replace(/\/$/, ''));
+						else await copy(from, to);
+						return [`copied ${copied.length} file(s):`, ...copied, ...refused.map((r) => `REFUSED ${r}`)].join('\n');
 					} catch (err) {
 						return `ERROR: ${err instanceof Error ? err.message : String(err)}`;
 					}

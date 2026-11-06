@@ -326,6 +326,21 @@ export interface EvalUsage {
 	readonly stepUsage: readonly StepUsage[];
 }
 
+/** What one build phase cost: its passes, repairs included, and the gates after them. */
+export interface StageUsage {
+	readonly passes: number;
+	/** Wall clock inside the generator. */
+	readonly durationMs: number;
+	/** Wall clock in the gates. Kept apart: a slow gate is not a slow model. */
+	readonly gateMs: number;
+	readonly steps: number;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cachedInputTokens: number;
+}
+
+const NO_STAGE: StageUsage = { passes: 0, durationMs: 0, gateMs: 0, steps: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+
 export interface EvalResult {
 	readonly fixture: string;
 	readonly generatorId: string;
@@ -338,6 +353,8 @@ export interface EvalResult {
 	readonly repairs: number;
 	/** The same repairs by the phase they were spent in — `model` is what check_model should drive to 0. */
 	readonly repairsByPhase: Readonly<Partial<Record<BuildPhase, number>>>;
+	/** Time and tokens by phase, in the order the run reached them. */
+	readonly stages: Readonly<Partial<Record<BuildPhase, StageUsage>>>;
 	/** `untilPhase` when the run was cut there, so a phase-only verdict never reads as a whole build. */
 	readonly untilPhase?: 'model';
 	/** ask_user calls across the run — the stop-discipline metric (§9.6). */
@@ -431,6 +448,12 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let turns = 0;
 	let repairs = 0;
 	const repairsByPhase: Partial<Record<BuildPhase, number>> = {};
+	const stages: Partial<Record<BuildPhase, StageUsage>> = {};
+	const addStage = (phase: BuildPhase, cost: Partial<StageUsage>): void => {
+		const stage: Record<string, number> = { ...NO_STAGE, ...stages[phase] };
+		for (const [key, n] of Object.entries(cost)) stage[key]! += n;
+		stages[phase] = stage as unknown as StageUsage;
+	};
 	/** For `untilPhase`: whether the run got as far as finishing that phase's turn. */
 	let reachedUntil = opts.untilPhase === undefined;
 	let questions = 0;
@@ -451,6 +474,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		plan?: LanePlan,
 	): Promise<void> => {
 		let prose = '';
+		const passStarted = Date.now();
 		for await (const event of generator.run({
 			workspace: projectWs,
 			...(opts.references ? { references: opts.references } : {}),
@@ -492,14 +516,27 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 					steps: totals.steps + event.steps,
 				};
 				if (event.stepUsage) stepUsage.push(...event.stepUsage);
+				addStage(phase, {
+					steps: event.steps,
+					inputTokens: event.inputTokens,
+					outputTokens: event.outputTokens,
+					cachedInputTokens: event.cachedInputTokens ?? 0,
+				});
 			}
 		}
+		addStage(phase, { passes: 1, durationMs: Date.now() - passStarted });
 		history.push({ role: 'user', text, lane: plan?.lane });
 		if (prose) history.push({ role: 'assistant', text: prose, lane: plan?.lane });
 	};
 
-	const runChecks = async (label: string) =>
-		await runTurn(ws, { verticalDir: projectDir, message: label, gates: opts.gates });
+	const runChecks = async (label: string, phase: BuildPhase) => {
+		const checkStarted = Date.now();
+		try {
+			return await runTurn(ws, { verticalDir: projectDir, message: label, gates: opts.gates });
+		} finally {
+			addStage(phase, { gateMs: Date.now() - checkStarted });
+		}
+	};
 
 	let expectations: readonly ExpectationOutcome[] = [];
 
@@ -543,7 +580,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				const carried = lastGateReport === undefined ? undefined : reportForLane(lastGateReport, plan.lane);
 				await runPass(await opts.makeGenerator(phase, plan.lane), message, phase, carried, plan);
 			}
-			let turn = await runChecks(`eval ${fixture.name} · turn ${turnNo}`);
+			let turn = await runChecks(`eval ${fixture.name} · turn ${turnNo}`, phase);
 			for (
 				let attempt = 1;
 				attempt <= MAX_GATE_REPAIRS &&
@@ -556,7 +593,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				repairs += 1;
 				repairsByPhase[phase] = (repairsByPhase[phase] ?? 0) + 1;
 				await runPass(generator, gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS), phase);
-				turn = await runChecks(`eval ${fixture.name} · turn ${turnNo} · repair ${attempt}/${MAX_GATE_REPAIRS}`);
+				turn = await runChecks(`eval ${fixture.name} · turn ${turnNo} · repair ${attempt}/${MAX_GATE_REPAIRS}`, phase);
 			}
 
 			lastGates = turn.gates;
@@ -596,6 +633,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		turns,
 		repairs,
 		repairsByPhase,
+		stages,
 		...(opts.untilPhase ? { untilPhase: opts.untilPhase } : {}),
 		questions,
 		interviewQuestions,
@@ -715,6 +753,17 @@ export function formatForkScore(score: ForkScore): string {
 	);
 }
 
+/** `scaffold  201s + 30s gates · 22 steps · 1298k in (94% cached) · 8k out` — one per phase reached. */
+export function formatStages(stages: EvalResult['stages']): string[] {
+	return Object.entries(stages).map(([phase, s]) => {
+		const cached = s.inputTokens ? Math.round((s.cachedInputTokens / s.inputTokens) * 100) : 0;
+		return (
+			`  ${phase.padEnd(9)} ${(s.durationMs / 1000).toFixed(0)}s + ${(s.gateMs / 1000).toFixed(0)}s gates · ${s.steps} steps · ` +
+			`${(s.inputTokens / 1000).toFixed(0)}k in (${cached}% cached) · ${(s.outputTokens / 1000).toFixed(1)}k out`
+		);
+	});
+}
+
 export function formatEvalResult(r: EvalResult): string {
 	const lines: string[] = [];
 	const verdict = r.passed ? 'PASS' : 'FAIL';
@@ -723,6 +772,7 @@ export function formatEvalResult(r: EvalResult): string {
 		`${verdict} ${r.fixture}${r.untilPhase ? ` (until ${r.untilPhase})` : ''}${r.laned ? ' (laned)' : ''} — ${r.turns} turn(s), ${r.repairs} repair(s)${byPhase ? ` [${byPhase}]` : ''}, ${r.questions} question(s), ` +
 			`${r.usage.inputTokens}+${r.usage.outputTokens} tokens in ${(r.durationMs / 1000).toFixed(0)}s`,
 	);
+	lines.push(...formatStages(r.stages));
 	const score = forkScore(r);
 	// Printed for every run, pass or fail: a PASS at eight interview questions
 	// and a PASS at one are not the same result, and the verdict line cannot

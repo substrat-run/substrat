@@ -140,6 +140,16 @@ describe('standaloneGates — when each gate applies', () => {
 		expect((await runGate(w, gate('api'), PROJECT)).status).toBe('passed');
 		await w.dispose();
 	});
+
+	it('builds app/ once it has a package.json, by directory so a missing member cannot pass', async () => {
+		const w = await fixtureWorkspace();
+		expect((await runGate(w, gate('app-build'), PROJECT)).status).toBe('skipped');
+		await w.mkdir(`${PROJECT}/app`, { recursive: true });
+		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
+		expect(gate('app-build').cmd).toBe(`pnpm --dir ${PROJECT}/app build`);
+		expect((await runGate(w, gate('app-build'), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
 });
 
 // ---------------------------------------------------------------------------

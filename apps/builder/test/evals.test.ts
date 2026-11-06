@@ -502,6 +502,11 @@ describe('a fixture that starts at the prompt', () => {
 			turns: 4,
 			expectations: [{ kind: 'file', target: 'spec/model.ts', ok: writes }],
 		});
+		// Each pass lands in the phase it ran in, so the model turn's cost stands alone.
+		expect(result.stages).toMatchObject({
+			interview: { passes: 3, inputTokens: 1500, outputTokens: 250 },
+			model: { passes: 1, inputTokens: 700, outputTokens: 140 },
+		});
 		// That file check is not a fork: a cutoff run reports no fork ratio.
 		expect(forkScore(result)).toMatchObject({ met: 0, total: 0 });
 	});
@@ -623,6 +628,7 @@ describe('forkScore — forks correct AT a question count (#740)', () => {
 		turns: 1,
 		repairs: 0,
 		repairsByPhase: {},
+		stages: {},
 		questions: interviewQuestions,
 		interviewQuestions,
 		usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0, stepUsage: [] },

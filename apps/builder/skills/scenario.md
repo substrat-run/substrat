@@ -49,6 +49,12 @@ whether the suite is worth anything:
 
 - **Every denial the concept names.** Wrong role. One customer's data invisible
   to another. The cross-tenant attacker reaching nothing.
+- **Where the cross-tenant refusal lands.** `host.getScope` checks only that the
+  tenant and scope belong together: `getScope(attacker, theirTenant, yourScope)`
+  rejects with `unknown scope`, but the correct pair resolves for anyone. The
+  refusal then comes at `invoke`, as `permission denied`, and a narrowing read
+  answers empty rather than refusing. `template` `test/scenario.test.ts` shows all
+  of it.
 - **A control beside every denial.** A closed door proves nothing on its own: the
   same assertion passes if access is broken for everyone, or if the module was
   never registered. Pair each refusal with a neighbouring door that opens.

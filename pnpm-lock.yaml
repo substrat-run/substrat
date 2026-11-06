@@ -2377,6 +2377,22 @@ importers:
         specifier: 'catalog:'
         version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
+  packages/portal-starter:
+    dependencies:
+      '@substrat-run/elements':
+        specifier: workspace:*
+        version: link:../elements
+      lit:
+        specifier: ^3.3.0
+        version: 3.3.3
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/psl:
     devDependencies:
       typescript:
