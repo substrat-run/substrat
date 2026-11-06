@@ -50,6 +50,7 @@ import {
 	type LanePlan,
 	type LaneTurn,
 } from '../phase.js';
+import type { BuilderToolStat } from '@substrat-run/contracts';
 import { runProbe, type ProbeFn, type ProbeResult } from './probe.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -355,6 +356,8 @@ export interface EvalResult {
 	readonly repairsByPhase: Readonly<Partial<Record<BuildPhase, number>>>;
 	/** Time and tokens by phase, in the order the run reached them. */
 	readonly stages: Readonly<Partial<Record<BuildPhase, StageUsage>>>;
+	/** Each tool across the run: how often, how often it failed, how long it took. */
+	readonly tools: Readonly<Record<string, BuilderToolStat>>;
 	/** `untilPhase` when the run was cut there, so a phase-only verdict never reads as a whole build. */
 	readonly untilPhase?: 'model';
 	/** ask_user calls across the run — the stop-discipline metric (§9.6). */
@@ -449,6 +452,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let repairs = 0;
 	const repairsByPhase: Partial<Record<BuildPhase, number>> = {};
 	const stages: Partial<Record<BuildPhase, StageUsage>> = {};
+	const tools: Record<string, BuilderToolStat> = {};
 	const addStage = (phase: BuildPhase, cost: Partial<StageUsage>): void => {
 		const stage: Record<string, number> = { ...NO_STAGE, ...stages[phase] };
 		for (const [key, n] of Object.entries(cost)) stage[key]! += n;
@@ -507,6 +511,10 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				if (phase === 'interview') interviewQuestions += 1;
 			}
 			if (event.type === 'error' && event.fatal) fatal = event.message;
+			if (event.type === 'tool-result') {
+				const tool = tools[event.tool] ?? { calls: 0, errors: 0, ms: 0 };
+				tools[event.tool] = { calls: tool.calls + 1, errors: tool.errors + (event.ok ? 0 : 1), ms: tool.ms + event.ms };
+			}
 			if (event.type === 'usage') {
 				totals = {
 					inputTokens: totals.inputTokens + event.inputTokens,
@@ -634,6 +642,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		repairs,
 		repairsByPhase,
 		stages,
+		tools,
 		...(opts.untilPhase ? { untilPhase: opts.untilPhase } : {}),
 		questions,
 		interviewQuestions,

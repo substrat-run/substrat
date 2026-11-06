@@ -127,13 +127,32 @@ describe('the conversation record', () => {
 
 	it('keeps an event too large for a row as a bounded preview rather than losing the turn', async () => {
 		const record = (await rec.TurnRecord.open(env, turn(null, 'T1', 'Build it')))!;
-		const output = 'x'.repeat(100_000);
-		record.event({ type: 'check', result: { name: 'model', status: 'failed', output } as never });
+		record.event({ type: 'command', cmd: 'x'.repeat(100_000), exitCode: 0 });
 		await record.finish({ kind: 'done' });
 
 		const { events } = await rec.readRecord(env, record.threadId, 0);
-		expect(shape(events).slice(3)).toEqual(['host-event:check', 'turn-finish']);
-		expect(events[3]).toMatchObject({ data: { truncated: true, preview: expect.stringMatching(/^\{"type":"check"/) } });
+		expect(shape(events).slice(3)).toEqual(['host-event:command', 'turn-finish']);
+		expect(events[3]).toMatchObject({ data: { truncated: true, preview: expect.stringMatching(/^\{"type":"command"/) } });
+	});
+
+	it.each([
+		['over the character cap', 'x'.repeat(16_000)],
+		['under it, over the row in multi-byte text', '界'.repeat(8_000)],
+		['under it, over the row in JSON escapes', '\u001b'.repeat(5_000)],
+	])('keeps both ends of a gate output %s, and the outputs only once', async (_name, middle) => {
+		const record = (await rec.TurnRecord.open(env, turn(null, 'T1', 'Build it')))!;
+		const output = `first line\n${middle}\nthe verdict`;
+		const result = { name: 'typecheck', status: 'failed', exitCode: 1, durationMs: 9, output } as const;
+		record.event({ type: 'check', result });
+		record.event({ type: 'gates', run: { ok: false, durationMs: 9, results: [result] } });
+		await record.finish({ kind: 'done' });
+
+		const { events } = await rec.readRecord(env, record.threadId, 0);
+		expect(events[3]).toMatchObject({
+			data: { result: { output: expect.stringMatching(/^first line[\s\S]*characters cut[\s\S]*the verdict$/) } },
+		});
+		expect(events[4]).toMatchObject({ data: { run: { results: [{ name: 'typecheck', status: 'failed' }] } } });
+		expect(JSON.stringify((events[4] as { data?: unknown }).data)).not.toContain('first line');
 	});
 
 	it.each([

@@ -64,8 +64,14 @@ describe('turn summaries', () => {
 		second.event({ type: 'phase', phase: 'model' });
 		second.event({ type: 'gates', run: { ok: true, durationMs: 1, results: [] } });
 		second.note('repair-prompt', 'The gates are red');
-		second.event({ type: 'usage', inputTokens: 100, outputTokens: 10, steps: 1 });
-		second.event({ type: 'usage', inputTokens: 50, outputTokens: 5, steps: 1 });
+		second.context({ model: 'qwen:qwen3.8-max', skills: 'abc123', toolchain: 'tc-1' });
+		second.event({ type: 'usage', inputTokens: 100, outputTokens: 10, cachedInputTokens: 60, steps: 1 });
+		second.event({ type: 'usage', inputTokens: 50, outputTokens: 5, cacheWriteTokens: 7, steps: 1 });
+		second.pass(1_200);
+		second.event({ type: 'tool-result', tool: 'read_file', ms: 4, ok: true });
+		second.event({ type: 'tool-result', tool: 'read_file', ms: 6, ok: false });
+		second.event({ type: 'question', question: 'Which lists?', options: ['a', 'b'] });
+		second.event({ type: 'file-written', path: 'spec/model.ts', bytes: 300 });
 		second.event({ type: 'gates', run: redModelEmit });
 		second.event({ type: 'commit', sha: 'cfe7cd60abc', summary: '1 files' });
 		second.event({ type: 'phase', phase: 'scenario' });
@@ -86,6 +92,25 @@ describe('turn summaries', () => {
 			commitSha: 'cfe7cd60abc',
 			inputTokens: 150,
 			outputTokens: 15,
+			metrics: {
+				resolvedModel: 'qwen:qwen3.8-max',
+				skills: 'abc123',
+				toolchain: 'tc-1',
+				cachedInputTokens: 60,
+				cacheWriteTokens: 7,
+				steps: 2,
+				passes: 1,
+				generatorMs: 1_200,
+				gateMs: 11,
+				questions: 1,
+				filesWritten: 1,
+				bytesWritten: 300,
+				tools: { read_file: { calls: 2, errors: 1, ms: 10 } },
+				gates: [
+					{ name: 'model', status: 'passed', ms: 1 },
+					{ name: 'model-emit', status: 'failed', ms: 1 },
+				],
+			},
 		});
 		expect(read.events[0]).toMatchObject({ t: 'user-message' });
 		expect(read.events.at(-1)).toMatchObject({ t: 'turn-finish' });

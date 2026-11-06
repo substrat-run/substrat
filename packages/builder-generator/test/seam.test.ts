@@ -96,6 +96,7 @@ describe('the generator seam (§5.2)', () => {
 		const known: ReadonlyArray<BuildEvent['type']> = [
 			'assistant-text',
 			'tool-call',
+				'tool-result',
 			'file-written',
 			'command',
 			'check',

@@ -127,6 +127,27 @@ function normalizeQuestion(s: string): string {
 		.trim();
 }
 
+/** Each tool reports back as it finishes, a throw included: `tool-call` says it began, this says how it went. */
+function timed<T extends object>(emit: WorkspaceToolOptions['emit'], tools: T): T {
+	type Run = (...args: unknown[]) => Promise<unknown>;
+	for (const [name, t] of Object.entries(tools) as [string, { execute?: Run }][]) {
+		const run = t.execute;
+		if (!run) continue;
+		t.execute = async (...args) => {
+			const started = Date.now();
+			let ok = false;
+			try {
+				const out = await run(...args);
+				ok = !(typeof out === 'string' && /^(ERROR|REFUSED|FAILED|CANNOT CHECK)\b/.test(out));
+				return out;
+			} finally {
+				emit({ type: 'tool-result', tool: name, ms: Date.now() - started, ok });
+			}
+		};
+	}
+	return tools;
+}
+
 export function workspaceTools(opts: WorkspaceToolOptions) {
 	const { workspace: ws, emit } = opts;
 	const deny = opts.denyCommand ?? defaultDenyCommand;
@@ -276,7 +297,7 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 		};
 	};
 
-	return {
+	return timed(emit, {
 		...(opts.editTool ? { edit_file: editFile } : {}),
 		...(opts.references && Object.keys(opts.references).length ? referenceTools(opts.references) : {}),
 		...(opts.checkModel ? { check_model: checkModelTool(opts.checkModel) } : {}),
@@ -429,7 +450,7 @@ export function workspaceTools(opts: WorkspaceToolOptions) {
 				return `exit ${r.exitCode}\n${body.length > cap ? `…[${body.length - cap} chars omitted]…\n` : ''}${kept}`;
 			},
 		}),
-	};
+	});
 }
 
 export type WorkspaceTools = ReturnType<typeof workspaceTools>;
