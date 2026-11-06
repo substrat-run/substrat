@@ -1,5 +1,16 @@
 # @substrat-run/builder-generator
 
+## 0.11.0
+
+### Minor Changes
+
+- 38fedd9: Generated apps start from a portal shell on `@substrat-run/elements` (themes, user menu, hash routing, an entity table), which a new `copy_reference` tool copies into the project in one call, instead of a hand-built React app.
+
+### Patch Changes
+
+- Updated dependencies [38fedd9]
+  - @substrat-run/builder-workspace@0.11.0
+
 ## 0.10.0
 
 ### Minor Changes

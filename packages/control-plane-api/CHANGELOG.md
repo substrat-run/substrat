@@ -1,5 +1,22 @@
 # @substrat-run/control-plane-api
 
+## 0.183.0
+
+### Minor Changes
+
+- 6a85238: `GET /tenants/:tenantId/metered-usage` answers a `days` row for each closed UTC day, and the kernel exports `STORAGE_HISTORY_LIMIT_MAX`.
+- 405d856: A builder turn now counts against the team it ran for: each turn files one line in the platform's model usage ledger, so it shows on the team's usage page and the console's meters. `POST /model-usage` is the staff-only door, idempotent on the caller's `requestId`.
+
+### Patch Changes
+
+- aa567d3: A hosted vertical's model usage reaches the ledger: the drain now files each line under the scope's own vertical instead of refusing it because the host labelled it with its package name.
+- Updated dependencies [6a85238]
+- Updated dependencies [c17ba1a]
+- Updated dependencies [aa567d3]
+  - @substrat-run/kernel@0.183.0
+  - @substrat-run/contracts@0.183.0
+  - @substrat-run/control-plane-client@0.6.5
+
 ## 0.182.0
 
 ### Patch Changes

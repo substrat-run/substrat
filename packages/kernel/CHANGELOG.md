@@ -1,5 +1,14 @@
 # @substrat-run/kernel
 
+## 0.183.0
+
+### Patch Changes
+
+- 6a85238: `GET /tenants/:tenantId/metered-usage` answers a `days` row for each closed UTC day, and the kernel exports `STORAGE_HISTORY_LIMIT_MAX`.
+- c17ba1a: The Data tab loads for a scope whose search index outlived the table it was built over, instead of failing with `no such table`.
+- Updated dependencies [aa567d3]
+  - @substrat-run/contracts@0.183.0
+
 ## 0.182.0
 
 ### Patch Changes

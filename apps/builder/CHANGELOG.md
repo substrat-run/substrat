@@ -1,5 +1,33 @@
 # @substrat-run/builder
 
+## 0.11.0
+
+### Minor Changes
+
+- 38fedd9: `pnpm builder evals` reports time, gate time, steps and tokens per build phase, and a Claude Code run's output tokens are now the pass's own total. A new `app-build` gate builds `app/`, so a generated app that does not compile fails the build instead of passing unseen.
+- 38fedd9: Generated apps start from a portal shell on `@substrat-run/elements` (themes, user menu, hash routing, an entity table), which a new `copy_reference` tool copies into the project in one call, instead of a hand-built React app.
+- 405d856: A builder turn now counts against the team it ran for: each turn files one line in the platform's model usage ledger, so it shows on the team's usage page and the console's meters. `POST /model-usage` is the staff-only door, idempotent on the caller's `requestId`.
+
+### Patch Changes
+
+- 8adcd56: The builder's skills now say who makes a person's first grant and that whoever holds a key shares it, so a model no longer declares an accept step the kernel cannot honour and the scaffold no longer stops over a join it can build.
+- Updated dependencies [6a85238]
+- Updated dependencies [38fedd9]
+- Updated dependencies [38fedd9]
+- Updated dependencies [405d856]
+- Updated dependencies [c17ba1a]
+- Updated dependencies [aa567d3]
+  - @substrat-run/control-plane-api@0.183.0
+  - @substrat-run/kernel@0.183.0
+  - @substrat-run/builder-workspace@0.11.0
+  - @substrat-run/builder-generator@0.11.0
+  - @substrat-run/adapter-cloudflare@0.183.0
+  - @substrat-run/contracts@0.183.0
+  - @substrat-run/engine-assistant@0.1.35
+  - @substrat-run/engine-metering@0.6.67
+  - @substrat-run/cli@0.57.5
+  - @substrat-run/model-providers@0.5.73
+
 ## 0.10.0
 
 ### Minor Changes

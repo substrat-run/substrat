@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.183.0
+
+### Patch Changes
+
+- aa567d3: A hosted vertical's model usage reaches the ledger: the drain now files each line under the scope's own vertical instead of refusing it because the host labelled it with its package name.
+
 ## 0.182.0
 
 ### Minor Changes

@@ -1,5 +1,16 @@
 # @substrat-run/adapter-sqlite
 
+## 0.183.0
+
+### Patch Changes
+
+- c17ba1a: The Data tab loads for a scope whose search index outlived the table it was built over, instead of failing with `no such table`.
+- Updated dependencies [6a85238]
+- Updated dependencies [c17ba1a]
+- Updated dependencies [aa567d3]
+  - @substrat-run/kernel@0.183.0
+  - @substrat-run/contracts@0.183.0
+
 ## 0.182.0
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @substrat-run/elements
 
+## 0.3.0
+
+### Minor Changes
+
+- aedb15c: `session-url=""` on `<sub-user-menu>` and `<sub-avatar>` reads nothing, for a host that sets `session` itself: React sets that property only after the element is connected, so the default URL used to be asked first.
+
 ## 0.2.0
 
 ### Minor Changes
