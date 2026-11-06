@@ -135,9 +135,13 @@ describe('the conversation record', () => {
 		expect(events[3]).toMatchObject({ data: { truncated: true, preview: expect.stringMatching(/^\{"type":"command"/) } });
 	});
 
-	it('keeps both ends of a long gate output, and the outputs only once', async () => {
+	it.each([
+		['over the character cap', 'x'.repeat(16_000)],
+		['under it, over the row in multi-byte text', '界'.repeat(8_000)],
+		['under it, over the row in JSON escapes', '\u001b'.repeat(5_000)],
+	])('keeps both ends of a gate output %s, and the outputs only once', async (_name, middle) => {
 		const record = (await rec.TurnRecord.open(env, turn(null, 'T1', 'Build it')))!;
-		const output = `first line\n${'x'.repeat(16_000)}\nthe verdict`;
+		const output = `first line\n${middle}\nthe verdict`;
 		const result = { name: 'typecheck', status: 'failed', exitCode: 1, durationMs: 9, output } as const;
 		record.event({ type: 'check', result });
 		record.event({ type: 'gates', run: { ok: false, durationMs: 9, results: [result] } });
