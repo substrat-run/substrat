@@ -17,6 +17,10 @@ import '@substrat-run/elements/themes/base.css';
 
 The package is still `0.x`: a minor release may change an element's attributes or slots.
 
+This page is the reference. [Building screens](/elements/) is where to start, with
+[framework use](/elements/frameworks), [theming](/elements/theming) and
+[Web Awesome's controls](/elements/web-awesome).
+
 ## `<sub-user-menu>`
 
 The account menu in a vertical's header. It shows who is signed in, opens a menu with your own

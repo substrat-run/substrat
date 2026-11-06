@@ -227,6 +227,15 @@ export function guideSidebar() {
       ],
     },
     {
+      text: 'Elements',
+      items: [
+        { text: 'Building screens', link: '/elements/' },
+        { text: 'Using them in your framework', link: '/elements/frameworks' },
+        { text: 'Theming', link: '/elements/theming' },
+        { text: 'Web Awesome', link: '/elements/web-awesome' },
+      ],
+    },
+    {
       text: 'Platform',
       items: [
         { text: 'The platform surfaces', link: '/platform/' },
