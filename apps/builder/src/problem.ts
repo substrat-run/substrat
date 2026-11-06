@@ -152,6 +152,19 @@ export function refuse(status: number, detail: string): Response {
 }
 
 /**
+ * The answer for a build the agent never answered for (#2931). `detail` is the reviewed sentence;
+ * `diagnostic` is the runtime's own text, which the control plane keeps on a row only staff read
+ * and answers to nobody. It is a private member of this one hop, so not a declared extension.
+ */
+export function interruptedResponse(detail: string, diagnostic: string): Response {
+	const problem = refusalProblem(502, detail);
+	return new Response(JSON.stringify({ ...problem, diagnostic }), {
+		status: problem.status,
+		headers: { 'content-type': PROBLEM_CONTENT_TYPE },
+	});
+}
+
+/**
  * The answer to a throw no route caught, in every runtime: the node server's handler
  * catch, the worker's `app.onError` and the agent DO's `fetch`. The throw is logged
  * and the document discloses nothing of it.

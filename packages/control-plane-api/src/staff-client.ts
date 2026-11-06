@@ -3,6 +3,7 @@ import type {
   AdminAction,
   AdminLogEntry,
   BuilderTurnDetail,
+  SourceBuildRecord,
   BuilderTurnsPage,
   BuilderTurnsQuery,
   ChannelName,
@@ -641,6 +642,8 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   listBuilderTurns = (q: BuilderTurnsListQuery = {}): Promise<BuilderTurnsPage> =>
     this.call(`/builder-turns${query({ ...q, troubled: q.troubled ? 'true' : undefined })}`);
   getBuilderTurn = (turnId: string): Promise<BuilderTurnDetail> => this.call(`/builder-turns/${seg(turnId)}`);
+  getBuilderBuild = (tenantId: string, buildId: string): Promise<SourceBuildRecord> =>
+    this.call(`/builder-builds/${seg(tenantId)}/${seg(buildId)}`);
   // The schedule kill-switch fleet read (#1674) — every (tenant, scope, module) the
   // directory records a switch position for. `position` defaults to `off` server-side:
   // "what is switched off across the fleet" is the question this read exists to answer.

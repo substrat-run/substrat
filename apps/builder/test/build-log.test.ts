@@ -7,8 +7,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
-import { CommandFailedError, SourceBuildError } from '../src/problem.js';
-import { BuildLog, buildIdFrom, errorDetail, failureDetail, invalidFields, fitted, OUTPUT_TAIL, RECORD_MAX, RECORDS_KEPT, retained, ulid, type BuildRecord } from '../src/build-log.js';
+import { CommandFailedError, interruptedResponse, SourceBuildError } from '../src/problem.js';
+import { BuildLog, buildIdFrom, errorDetail, failureDetail, INTERRUPTION_MAX, interruptedRecord, interruptionOf, invalidFields, isBuildId, fitted, OUTPUT_TAIL, RECORD_MAX, RECORDS_KEPT, retained, ulid, type BuildRecord } from '../src/build-log.js';
 
 const ID = '01M6M2KNCVEV3AFPHTAMYRMC1X';
 
@@ -110,6 +110,36 @@ describe('the build record', () => {
 	});
 });
 
+describe('a build the agent never answered for (#2931)', () => {
+	it('keeps what the stub threw as one line, with the flags that tell a reset from a refusal', () => {
+		const reset = Object.assign(new Error('Network connection lost.'), { retryable: true, overloaded: true });
+		expect(interruptionOf(reset)).toBe('Error: Network connection lost. [retryable, overloaded]');
+		expect(interruptionOf(new TypeError('Illegal invocation'))).toBe('TypeError: Illegal invocation');
+		expect(interruptionOf('dropped')).toBe('dropped');
+		expect(interruptionOf(new Error('x'.repeat(INTERRUPTION_MAX * 2))).length).toBe(INTERRUPTION_MAX);
+	});
+
+	it('marks a running record, writes one for a build that never did, and leaves a finished one', () => {
+		const steps = [{ step: 'install and build', startedAt: 't', commands: [] }];
+		const running: BuildRecord = { buildId: ID, slug: 'acme/crm', outcome: 'building', steps };
+		expect(interruptedRecord(running, ID, 'why')).toEqual({ ...running, outcome: 'interrupted', interruption: 'why' });
+		expect(interruptedRecord(undefined, ID, 'why')).toEqual({ buildId: ID, slug: null, steps: [], outcome: 'interrupted', interruption: 'why' });
+		expect(interruptedRecord({ ...running, outcome: 'built' }, ID, 'why')).toBeNull();
+		expect(interruptedRecord({ ...running, outcome: 'failed' }, ID, 'why')).toBeNull();
+	});
+
+	it('answers the sentence with the runtime text beside it, never in it', async () => {
+		const response = interruptedResponse('the build service stopped', 'Error: Network connection lost.');
+		expect(response.status).toBe(502);
+		expect(await response.json()).toMatchObject({ detail: 'the build service stopped', diagnostic: 'Error: Network connection lost.' });
+	});
+
+	it('reads a build id out of a path only when it is shaped like one', () => {
+		expect(isBuildId(ID)).toBe(true);
+		expect(isBuildId('../source-registry')).toBe(false);
+	});
+});
+
 describe('the hosted build uses it', () => {
 	const read = (f: string) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), 'utf8');
 
@@ -125,6 +155,15 @@ describe('the hosted build uses it', () => {
 	it('the worker names the build and answers a sentence when the agent never does', () => {
 		const worker = read('worker.ts');
 		expect(worker).toContain('request.headers.set(BUILD_ID_HEADER, buildId);');
-		expect(worker).toMatch(/catch \(error\) \{[\s\S]*?source\.build\.interrupted[\s\S]*?refuse\(502, `platform build failed: the build service stopped before it answered \(build \$\{buildId\}\)/);
+		expect(worker).toMatch(/catch \(error\) \{[\s\S]*?source\.build\.interrupted[\s\S]*?interruptedResponse\(`platform build failed: the build service stopped before it answered \(build \$\{buildId\}\)[^`]*`, interruption\)/);
+	});
+
+	it('the worker marks the record on a new stub, and keeps that route to itself', () => {
+		const worker = read('worker.ts');
+		const caught = worker.slice(worker.indexOf('const interruption = interruptionOf(error);'));
+		expect(caught).toContain('c.env.BUILDER_AGENT.get(c.env.BUILDER_AGENT.idFromName(tenant))');
+		expect(caught).toContain("'https://builder/internal/build-interrupted'");
+		expect(worker).toContain("if (path !== '/internal/build' && path !== '/internal/projects' && !buildRead) return refuse(404, 'not found');");
+		expect(worker).toContain("if (buildRead && !isBuildId(buildRead[1]!)) return refuse(400, 'invalid build id');");
 	});
 });

@@ -18,7 +18,13 @@ for (const [version, status, message] of [
 ]) {
   await assert.rejects(() => service.build('tenant-a', 'acme/demo', { version, revision }), (error) => error.status === status && message.test(error.message));
 }
+await assert.rejects(
+  () => service.build('tenant-a', 'acme/demo', { version: 'interrupted', revision }),
+  (error) => error.status === 502 && error.message === 'the build service stopped before it answered' && error.diagnostic === 'Error: Network connection lost.',
+);
+assert.equal((await service.record('tenant-a', '01M6R10KTYPSD5MNDWBTFKEBK0')).outcome, 'interrupted');
+assert.equal(await service.record('tenant-a', '01M6R10KTYPSD5MNDWBTFKEBK1'), null);
 const projects = await service.projects('tenant-b', new Request('https://source/projects'));
 assert.equal((await projects.json()).tenant, 'tenant-b');
 await assert.rejects(() => sourceBuildService(undefined, undefined).build('tenant-a', 'demo', { version: '1.0.0', revision }), (error) => error.status === 503);
-console.log('source build HTTP checks passed: multipart, tenant context, 422, 503, malformed output and missing binding');
+console.log('source build HTTP checks passed: multipart, tenant context, 422, 503, an interrupted build and its record, malformed output and missing binding');
