@@ -65,9 +65,12 @@ it('projects stored usage with coverage and age, with no price or person or scop
     inputTokens: 11, outputTokens: 3, cachedInputTokens: 0, cacheWriteTokens: 0,
     listUsd: '9.99', at, elapsedMs: 10,
   } });
+  await host.admin.recordBuildUsage({ buildId: 'build-1', tenantId: own, vertical: 'app', ms: 90_000, at });
+  await host.admin.recordBuildUsage({ buildId: 'build-2', tenantId: other, vertical: 'app', ms: 5_000, at });
   const response = await app.request(`/tenants/${own}/metered-usage`, { headers });
   expect(response.status, await response.clone().text()).toBe(200);
   const body = await response.json();
+  expect(body.builds).toMatchObject({ state: 'complete', builds: 1, ms: 90_000, lowerBound: false, byVertical: [{ vertical: 'app', builds: 1, ms: 90_000 }] });
   expect(body.storage).toMatchObject({ bytes: 65_536, sampled: 1, total: 1, estimated: false });
   expect(body.requests).toMatchObject({ requests: 7, estimated: true, coveredDays: 1 });
   expect(body.days).toHaveLength(30);

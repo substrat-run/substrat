@@ -18,6 +18,8 @@
  *   `filters` — `{ key, label, options }[]`, equality filters on declared filterable columns
  *   `query`   — the first read's query, for a screen restoring one from its URL
  *   `layout`  — `{ order, hidden }` by column key: which columns show, in what order
+ *   `detail`  — `(cell, row)`, drawing the open row's detail, as `mount` draws a cell
+ *   `expanded` — the key of the row whose `detail` is open, or null: the screen owns it
  * Attributes: `label` (the table's accessible name), `empty`, `forbidden-text`,
  *   `search-label`, `selectable`, `density="compact"`, `paging` (`pages`, the default —
  *   Previous / Next with "21–40 of 132" — or `more`, one "Load more" that appends), and
@@ -25,11 +27,14 @@
  *   `column-picker` adds a "Columns" button: show, hide and reorder the columns. Opt-in;
  *   without it the columns are exactly the ones given. `layout-key` keeps the chosen layout
  *   in this browser under that key; a screen that would rather keep it on the account
- *   listens for `sub-layout-change` and hands it back through `layout`.
+ *   listens for `sub-layout-change` and hands it back through `layout`. `row-click` makes a
+ *   row answer a click anywhere that is not a control of its own, with `sub-row-click`.
  * Slot: `empty` — what an empty view says, in place of `empty` (a "Create" button, say).
  * Events: `sub-action-done` `{ action, rows }` after an action succeeded on some rows;
  *   `sub-query-change` `{ query }` whenever the person changes the view, sort, filters or search;
- *   `sub-layout-change` `{ layout }` whenever they show, hide or move a column.
+ *   `sub-layout-change` `{ layout }` whenever they show, hide or move a column;
+ *   `sub-row-click` `{ row }` when a row is clicked, under `row-click`. A pointer's shortcut
+ *   only: what it opens should also be reachable by a link or a button in the row.
  *
  * ## Cells a vertical draws itself
  *
@@ -44,7 +49,7 @@
  * The theme's `--wa-*` tokens; then `--sub-table-*` (row height, header and selected
  * backgrounds, cell padding, `--sub-table-max-height` — set it and the header sticks);
  * then `::part()` — `frame`, `toolbar`, `bulk-bar`, `table`, `header-cell`, `row`
- * (plus `selected`), `cell`, `footer`, `empty`.
+ * (plus `selected`), `cell`, `detail`, `footer`, `empty`.
  */
 import '@awesome.me/webawesome/dist/components/badge/badge.js';
 import '@awesome.me/webawesome/dist/components/button/button.js';
@@ -93,6 +98,8 @@ export interface Column<T, S extends string = string> extends ColumnSpec<T, S> {
   render?(row: T): TemplateResult | string;
   /** Draw the cell yourself, into a light-DOM element — for React, Vue, or plain DOM. */
   mount?(cell: HTMLElement, row: T): CellHandle<T> | void;
+  /** A CSS width for the column, for one whose content is narrower than its share (a checkbox). */
+  width?: string;
 }
 
 export interface TableView {
@@ -109,6 +116,12 @@ export interface TableFilter {
 
 /** How long a typed term waits before it is searched, so a word is one read, not five. */
 const SEARCH_DEBOUNCE_MS = 250;
+
+/** What a click on a row leaves alone: it belongs to the control, not to the row. */
+const OWN_CLICK = 'a,button,input,select,textarea,label,summary,[role="button"],wa-button,wa-checkbox,wa-dropdown,wa-input,wa-select';
+
+/** A column's own width. `min-width` too: the first column otherwise keeps its claim on the slack. */
+const widthOf = <T, S extends string>(c: Column<T, S>) => (c.width ? `width:${c.width};min-width:${c.width}` : nothing);
 
 /** At most this many actions show on a row; past that, the first stays and the rest go in "More". */
 const INLINE_ACTIONS = 2;
@@ -132,6 +145,7 @@ function parseLayout(raw: string | null): TableLayout | null {
 
 /** A slot name is an attribute value; a row key could be anything. */
 const slotOf = (column: string, key: string) => `cell-${column}-${key}`.replace(/[^\w-]/g, '_');
+const detailSlotOf = (key: string) => `detail-${key}`.replace(/[^\w-]/g, '_');
 
 const arrow = (order: 'asc' | 'desc' | null) =>
   svg`<svg class="arrow" viewBox="0 0 12 12" aria-hidden="true" data-order=${order ?? 'none'}>
@@ -153,6 +167,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     filters: { attribute: false },
     query: { attribute: false },
     layout: { attribute: false },
+    detail: { attribute: false },
+    expanded: { attribute: false },
+    rowClick: { type: Boolean, attribute: 'row-click', reflect: true },
     columnPicker: { type: Boolean, attribute: 'column-picker', reflect: true },
     layoutKey: { attribute: 'layout-key' },
     label: {},
@@ -174,6 +191,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   declare filters: TableFilter[];
   declare query: Partial<TableQuery<S>> | undefined;
   declare layout: TableLayout | undefined;
+  declare detail: ((cell: HTMLElement, row: T) => CellHandle<T> | void) | undefined;
+  declare expanded: string | null;
+  declare rowClick: boolean;
   declare columnPicker: boolean;
   declare layoutKey: string | undefined;
   declare label: string;
@@ -202,6 +222,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.actions = [];
     this.views = [];
     this.filters = [];
+    this.expanded = null;
+    this.rowClick = false;
     this.label = '';
     this.empty = 'Nothing here.';
     this.forbiddenText = 'You do not have access to this.';
@@ -319,23 +341,42 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         for (const column of mounting) {
           const slot = slotOf(column.key, model.keyOf(row));
           wanted.add(slot);
-          const known = this.#mounted.get(slot);
-          if (known && known.row === row) continue;
-          if (known?.handle?.update) {
-            known.handle.update(row);
-            known.row = row;
-            continue;
-          }
-          if (known) this.#unmount(slot);
-          const el = document.createElement('div');
-          el.slot = slot;
-          el.dataset['subCell'] = column.key;
-          this.append(el);
-          this.#mounted.set(slot, { el, row, handle: column.mount!(el, row) });
+          this.#syncMount(slot, row, column.mount!, (el) => (el.dataset['subCell'] = column.key));
         }
+      }
+      const open = this.detail && rows.find((row) => model.keyOf(row) === this.expanded);
+      if (open !== undefined && open !== false) {
+        const slot = detailSlotOf(this.expanded!);
+        wanted.add(slot);
+        this.#syncMount(slot, open, this.detail!, (el) => (el.dataset['subDetail'] = ''));
       }
     }
     for (const slot of [...this.#mounted.keys()]) if (!wanted.has(slot)) this.#unmount(slot);
+  }
+
+  #syncMount(slot: string, row: T, mount: (cell: HTMLElement, row: T) => CellHandle<T> | void, mark: (el: HTMLElement) => void) {
+    const known = this.#mounted.get(slot);
+    if (known && known.row === row) return;
+    if (known?.handle?.update) {
+      known.handle.update(row);
+      known.row = row;
+      return;
+    }
+    if (known) this.#unmount(slot);
+    const el = document.createElement('div');
+    el.slot = slot;
+    mark(el);
+    this.append(el);
+    this.#mounted.set(slot, { el, row, handle: mount(el, row) });
+  }
+
+  #onRowClick(e: Event, row: T) {
+    if (!this.rowClick) return;
+    for (const node of e.composedPath()) {
+      if (node === e.currentTarget) break;
+      if (node instanceof Element && node.matches(OWN_CLICK)) return;
+    }
+    this.dispatchEvent(new CustomEvent('sub-row-click', { detail: { row }, bubbles: true, composed: true }));
   }
 
   #unmount(slot: string) {
@@ -532,7 +573,17 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     tbody tr:first-child td {
       border-top: 0;
     }
-    tbody tr:hover td {
+    tbody tr:hover td,
+    tbody tr.expanded td {
+      background: var(--sub-table-row-hover);
+    }
+    :host([row-click]) tbody tr:not(.detail) {
+      cursor: pointer;
+    }
+    tr.detail td {
+      white-space: normal;
+      height: auto;
+      padding-block: var(--wa-space-s);
       background: var(--sub-table-row-hover);
     }
     tbody tr.selected td {
@@ -921,7 +972,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     const sortable = c.sort !== undefined && state.mode === 'page';
     const order = sortable && state.query.sort === c.sort ? state.query.order : null;
     const ariaSort = !sortable ? nothing : order === 'asc' ? 'ascending' : order === 'desc' ? 'descending' : 'none';
-    return html`<th scope="col" part="header-cell" class=${this.#cellClass(c, index)} aria-sort=${ariaSort}>
+    return html`<th scope="col" part="header-cell" class=${this.#cellClass(c, index)} style=${widthOf(c)} aria-sort=${ariaSort}>
       ${sortable
         ? html`<button class="sort" @click=${() => this.#changed(this.#model!.sortBy(c.sort!))}>
             ${c.label}${arrow(order)}
@@ -977,7 +1028,12 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
               const key = keys[r]!;
               const selected = state.selected.has(key);
               const name = this.columns[0] ? cellText(this.columns[0], row, now).text : key;
-              return html`<tr part=${selected ? 'row selected' : 'row'} class=${selected ? 'selected' : ''}>
+              const open = this.expanded === key;
+              return html`<tr
+                  part=${selected ? 'row selected' : 'row'}
+                  class=${[selected ? 'selected' : '', open ? 'expanded' : ''].join(' ').trim()}
+                  @click=${(e: Event) => this.#onRowClick(e, row)}
+                >
                 ${this.selectable
                   ? html`<td class="pick">
                       <wa-checkbox size="s" .checked=${selected} @change=${() => model.toggle(key)}
@@ -986,10 +1042,17 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
                     </td>`
                   : nothing}
                 ${columns.map(
-                  (c, i) => html`<td part="cell" class=${this.#cellClass(c, i)}>${this.#cell(c, row, key, state, now)}</td>`,
+                  (c, i) => html`<td part="cell" class=${this.#cellClass(c, i)} style=${widthOf(c)}>${this.#cell(c, row, key, state, now)}</td>`,
                 )}
                 ${rowActions.length ? html`<td class="actions">${this.#rowActions(rowActions, row, key, name, state)}</td>` : nothing}
-              </tr>`;
+              </tr>
+              ${open && this.detail
+                ? html`<tr class="detail">
+                    <td part="detail" colspan=${columns.length + (this.selectable ? 1 : 0) + (rowActions.length ? 1 : 0)}>
+                      <slot name=${detailSlotOf(key)}></slot>
+                    </td>
+                  </tr>`
+                : nothing}`;
             })}
           </tbody>
         </table>

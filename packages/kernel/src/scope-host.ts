@@ -216,6 +216,7 @@ import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { substratError, type EntityStateName } from '@substrat-run/contracts';
+import type { BuildUsageInput, TenantBuildUsageFilter, TenantBuildUsageRow } from './build-usage.js';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow, TenantModelUsageMeterFilter, TenantModelUsageMeterRow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
@@ -4561,6 +4562,10 @@ export interface HostAdmin {
   listModelUsage(actor: PlatformActorId, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]>;
   /** Indexed and projected page for the tenant usage read. */
   listTenantModelUsageMeter(actor: PlatformActorId, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]>;
+  /** #2946: one successful source build, idempotent on its build id. */
+  recordBuildUsage(input: BuildUsageInput): Promise<{ recorded: boolean }>;
+  /** #2946: a tenant's builds in a window, one row per vertical. */
+  listTenantBuildUsage(actor: PlatformActorId, filter: TenantBuildUsageFilter): Promise<TenantBuildUsageRow[]>;
 
   /**
    * Meter 3, folded: per (tenant, vertical, model) over a half-open window, list price

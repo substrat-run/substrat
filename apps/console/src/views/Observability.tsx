@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Card, EmptyState, Select, Tag } from '../components';
+import { Button, Card, EmptyState, Select, Table, Tag } from '../components';
 import { ApiError } from '../lib/api';
 import type { Api, ServiceMetricsRow } from '../lib/api';
 import { LOGS_IDLE, LOGS_INCOMPLETE_NOTICE, loadLogs, logsLoading, logsPanelOf, type LogsView } from '../lib/logs-view';
@@ -23,27 +23,6 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 const ms = (us: number) => (us >= 100_000 ? `${Math.round(us / 1000)} ms` : `${(us / 1000).toFixed(1)} ms`);
 const pct = (part: number, whole: number) => (whole === 0 ? '—' : `${((part / whole) * 100).toFixed(2)}%`);
 
-const th: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '0 16px',
-  height: 36,
-  fontSize: 11,
-  fontWeight: 500,
-  letterSpacing: '0.06em',
-  textTransform: 'uppercase',
-  color: 'var(--text-tertiary)',
-  borderBottom: '1px solid var(--border-default)',
-  background: 'var(--surface-inset)',
-  whiteSpace: 'nowrap',
-};
-const td: React.CSSProperties = {
-  padding: '0 16px',
-  height: 40,
-  borderBottom: '1px solid var(--border-subtle)',
-  fontSize: 12.5,
-};
-const num: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--font-mono)' };
-const numTh: React.CSSProperties = { ...th, textAlign: 'right' };
 
 /**
  * Said above the logs table when the plane marked the page it answered as possibly incomplete
@@ -73,46 +52,37 @@ export function LogsCard({ view }: { view: LogsView }) {
       {panel.failure !== null ? (
         <div style={{ padding: 16, fontSize: 13, color: 'var(--status-danger-fg)' }}>{panel.failure}</div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, width: 170 }}>Time</th>
-              <th style={{ ...th, width: 80 }}>Level</th>
-              <th style={th}>Message</th>
-              <th style={{ ...th, width: 110 }}>Outcome</th>
-            </tr>
-          </thead>
-          <tbody>
-            {view.events.map((l, i) => (
-              <tr key={i}>
-                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                  {l.timestamp ? new Date(l.timestamp).toISOString().slice(0, 19).replace('T', ' ') : '—'}
-                </td>
-                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
-                  {l.level ?? '—'}
-                </td>
-                <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, wordBreak: 'break-all' }}>
-                  {l.message ?? <span style={{ color: 'var(--text-placeholder)' }}>(no message)</span>}
-                </td>
-                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{l.outcome ?? '—'}</td>
-              </tr>
-            ))}
-            {panel.emptyRow !== null && (
-              <tr>
-                <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
-                  {panel.emptyRow}
-                </td>
-              </tr>
-            )}
-            {panel.loading && (
-              <tr>
-                <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
-                  Loading…
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <>
+          <Table
+            label="Recent logs"
+            rows={view.events}
+            emptyText={panel.emptyRow ?? ''}
+            columns={[
+              {
+                header: 'Time',
+                width: 170,
+                mono: true,
+                muted: true,
+                render: (l) => (l.timestamp ? new Date(l.timestamp).toISOString().slice(0, 19).replace('T', ' ') : '—'),
+              },
+              {
+                header: 'Level',
+                width: 80,
+                mono: true,
+                render: (l) => <span style={{ color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>{l.level ?? '—'}</span>,
+              },
+              {
+                header: 'Message',
+                mono: true,
+                render: (l) => (
+                  <span style={{ wordBreak: 'break-all', whiteSpace: 'normal' }}>{l.message ?? <span style={{ color: 'var(--text-placeholder)' }}>(no message)</span>}</span>
+                ),
+              },
+              { header: 'Outcome', width: 110, mono: true, muted: true, render: (l) => l.outcome ?? '—' },
+            ]}
+          />
+          {panel.loading && <div style={{ padding: 16, fontSize: 13, textAlign: 'center', color: 'var(--text-placeholder)' }}>Loading…</div>}
+        </>
       )}
     </>
   );
@@ -232,55 +202,40 @@ export function Observability({ api }: ObservabilityProps) {
       )}
 
       <Card padding={0} footer="Invocation analytics grouped by service. CPU times are per-request quantiles.">
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              <th style={th}>Service</th>
-              <th style={numTh}>Requests</th>
-              <th style={numTh}>Errors</th>
-              <th style={numTh}>Error rate</th>
-              <th style={numTh}>CPU P50</th>
-              <th style={numTh}>CPU P99</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                key={r.service}
-                onClick={() => setSelected(selected === r.service ? undefined : r.service)}
-                style={{ cursor: 'pointer', background: selected === r.service ? 'var(--surface-hover)' : 'transparent' }}
-              >
-                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+        <Table
+          label="Services"
+          rows={rows}
+          rowKey={(r) => r.service}
+          expanded={selected}
+          onRowClick={(r) => setSelected(selected === r.service ? undefined : r.service)}
+          emptyText={state === 'loading' ? 'Loading…' : state === 'ready' ? 'No invocations in this window.' : ''}
+          columns={[
+            {
+              header: 'Service',
+              mono: true,
+              render: (r) => (
+                <>
                   {r.service}
                   {r.namespace && (
                     <Tag mono style={{ marginLeft: 8 }}>
                       {r.namespace}
                     </Tag>
                   )}
-                </td>
-                <td style={num}>{fmt(r.requests)}</td>
-                <td style={{ ...num, color: r.errors > 0 ? 'var(--status-danger-fg)' : undefined }}>{fmt(r.errors)}</td>
-                <td style={num}>{pct(r.errors, r.requests)}</td>
-                <td style={num}>{ms(r.cpuTimeP50)}</td>
-                <td style={num}>{ms(r.cpuTimeP99)}</td>
-              </tr>
-            ))}
-            {state === 'ready' && rows.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                  No invocations in this window.
-                </td>
-              </tr>
-            )}
-            {state === 'loading' && (
-              <tr>
-                <td colSpan={6} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                  Loading…
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                </>
+              ),
+            },
+            { header: 'Requests', align: 'right', mono: true, render: (r) => fmt(r.requests) },
+            {
+              header: 'Errors',
+              align: 'right',
+              mono: true,
+              render: (r) => <span style={{ color: r.errors > 0 ? 'var(--status-danger-fg)' : undefined }}>{fmt(r.errors)}</span>,
+            },
+            { header: 'Error rate', align: 'right', mono: true, render: (r) => pct(r.errors, r.requests) },
+            { header: 'CPU P50', align: 'right', mono: true, render: (r) => ms(r.cpuTimeP50) },
+            { header: 'CPU P99', align: 'right', mono: true, render: (r) => ms(r.cpuTimeP99) },
+          ]}
+        />
       </Card>
 
       {selected && (

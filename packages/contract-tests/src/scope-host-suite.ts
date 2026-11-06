@@ -5342,6 +5342,25 @@ export function scopeHostContractSuite(
       });
     });
 
+    describe('build usage (#2946)', () => {
+      it('counts a build once, per vertical, inside a half-open window', async () => {
+        const day = new Date(Date.now() - 86_400_000).setUTCHours(0, 0, 0, 0);
+        const at = new Date(day).toISOString();
+        const record = (buildId: string, vertical: string, ms: number, when = at) =>
+          host.admin.recordBuildUsage({ buildId, tenantId: t1, vertical, ms, at: when });
+        expect(await record('build-a', 'app', 60_000)).toEqual({ recorded: true });
+        expect(await record('build-a', 'app', 60_000)).toEqual({ recorded: false });
+        await record('build-b', 'app', 30_000);
+        await record('build-c', 'other', 5_000);
+        await record('build-d', 'app', 7_000, new Date(day + 86_400_000).toISOString());
+
+        const rows = await host.admin.listTenantBuildUsage(staff, {
+          tenantId: t1, since: at, until: new Date(day + 86_400_000).toISOString(), limit: 10,
+        });
+        expect(rows).toEqual([{ vertical: 'app', builds: 2, ms: 90_000 }, { vertical: 'other', builds: 1, ms: 5_000 }]);
+      });
+    });
+
     // -- operational failures (#559): the durable record of what the platform could NOT do --
 
     describe('operational failures (#559)', () => {

@@ -16,7 +16,7 @@ import {
 import { resolveScopedEnvSpec } from '@substrat-run/contracts';
 import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { upgradeLegacySchema } from '../db/upgrade.js';
+import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { buildAuth, DEMO_CLIENT, seedDemoClient, type Auth } from './auth.js';
 import { senderFor } from './email.js';
@@ -91,6 +91,7 @@ const sql: SqlExec = {
 // because `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed.
 const upgraded = upgradeLegacySchema(sql);
 for (const stmt of SCHEMA_STATEMENTS) sqlite.exec(stmt);
+rewritePlaceholderAddresses(sql, Date.now());
 // The issuer's own console, as a row in its own registry (`console-client.ts`) — the same
 // call the Durable Object's constructor makes, in the same place, so the dev database and a
 // deployed issuer hold the same row. Idempotent; an operator's edits to it survive a restart.

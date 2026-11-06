@@ -11,6 +11,7 @@ import {
   BankIdApiError,
   type BankIdTransport,
 } from './bankid.js';
+import { bankidPlaceholderAddress } from './placeholder-address.js';
 
 /**
  * The BankID sign-in flow, as a Better Auth plugin — four endpoints under the issuer's own
@@ -202,13 +203,13 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
                   'This BankID is not linked to an account here. Ask an administrator to create one, or allow BankID to create accounts.',
               });
             }
-            // BankID asserts identity, not an email address, so the account gets the same
-            // placeholder shape Better Auth's other identity-only sign-ins mint. The name is
-            // the verified one from the completion data.
+            // BankID asserts identity, not an email address, so the account gets a placeholder
+            // that says nothing about the person. The name is the verified one from the
+            // completion data.
             user = await ctx.context.internalAdapter.createUser(
               {
                 name: who.name,
-                email: `${who.personalNumber}@bankid.placeholder.invalid`,
+                email: bankidPlaceholderAddress(),
                 emailVerified: false,
               },
               { method: PROVIDER_ID },

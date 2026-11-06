@@ -7,7 +7,7 @@ import type {
   Tenant,
   TenantId,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Input, Pager, Select, Table, Tag, usePaged } from '../components';
+import { Badge, Button, Card, Checkbox, Input, Select, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { scopeHandle } from '../lib/fleet';
 import type { Api } from '../lib/api';
@@ -77,7 +77,6 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
       return `${h.hostname} ${handle} ${h.surface} ${h.statusNote ?? ''}`.toLowerCase().includes(needle);
     });
   }, [hostnames, q, statusFilter, scopeById, tenants]);
-  const paged = usePaged(filtered, `${q}|${statusFilter}`);
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     setBusy(true);
@@ -194,39 +193,35 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
         title="Bind a hostname"
         description="The router resolves hostname → (tenant, scope, surface). A binding does not serve traffic until it is active."
       >
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <Field label="Hostname" hint="e.g. acme.example.com">
-            <input
-              value={hostname}
-              onChange={(e) => setHostname(e.target.value)}
-              placeholder="acme.example.com"
-              style={INPUT}
-            />
-          </Field>
-          <Field label="Scope">
-            <select value={scopeKey} onChange={(e) => setScopeKey(e.target.value)} style={INPUT}>
-              <option value="">Select a scope…</option>
-              {bindable.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {scopeHandle(s, tenants)}
-                </option>
-              ))}
-            </select>
-          </Field>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <Input
+            label="Hostname"
+            hint="e.g. acme.example.com"
+            value={hostname}
+            onChange={(e) => setHostname(e.target.value)}
+            placeholder="acme.example.com"
+            style={{ width: 240 }}
+          />
+          <Select
+            label="Scope"
+            options={[{ value: '', label: 'Select a scope…' }, ...bindable.map((s) => ({ value: s.id, label: scopeHandle(s, tenants) }))]}
+            value={scopeKey}
+            onChange={(e) => setScopeKey(e.target.value)}
+            style={{ width: 240 }}
+          />
           {/* A scope can front more than one app — the shop's storefront and back
               office, RallyPoint's player app and manager console. Free text, because
               the surface name is the VERTICAL's vocabulary; the kernel never
               branches on it. */}
-          <Field label="Surface" hint="app · storefront · back-office">
-            <input value={surface} onChange={(e) => setSurface(e.target.value)} style={{ ...INPUT, width: 150 }} />
-          </Field>
-          <Field label="Canonical" hint="one per scope + surface">
-            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', height: 34, fontSize: 13 }}>
-              <input type="checkbox" checked={canonical} onChange={(e) => setCanonical(e.target.checked)} />
-              Primary for this surface
-            </label>
-          </Field>
-          <Button onClick={() => void bind()} disabled={busy || !scopeKey || !hostname.trim()}>
+          <Input label="Surface" hint="app · storefront · back-office" value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 210 }} />
+          <Checkbox
+            label="Primary for this surface"
+            description="one per scope + surface"
+            checked={canonical}
+            onChange={setCanonical}
+            style={{ marginTop: 30 }}
+          />
+          <Button onClick={() => void bind()} disabled={busy || !scopeKey || !hostname.trim()} style={{ marginTop: 26 }}>
             Bind
           </Button>
         </div>
@@ -267,14 +262,15 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
       <Card padding={0}>
         <Table
           columns={columns}
-          rows={paged.rows}
+          rows={filtered}
+          paged
+          resetKey={`${q}|${statusFilter}`}
           emptyText={
             hostnames.length === 0
               ? 'No hostnames bound. A scope with no hostname is unreachable — the router will not serve a name it does not know.'
               : 'No hostnames match this filter.'
           }
         />
-        <Pager p={paged} />
       </Card>
 
       <Card title="Not built yet" description="Stated rather than implied, so the gap is visible.">
@@ -291,36 +287,5 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
         </ul>
       </Card>
     </div>
-  );
-}
-
-const INPUT: React.CSSProperties = {
-  height: 34,
-  padding: '0 10px',
-  fontSize: 13,
-  borderRadius: 6,
-  border: '1px solid var(--border-default)',
-  background: 'var(--surface-card)',
-  color: 'var(--text-primary)',
-  minWidth: 220,
-};
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label style={{ display: 'grid', gap: 4 }}>
-      <span style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
-        {label}
-      </span>
-      {children}
-      {hint && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{hint}</span>}
-    </label>
   );
 }

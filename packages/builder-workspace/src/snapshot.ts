@@ -29,6 +29,11 @@ export interface WorkspaceSnapshot {
 	readonly skipped: string[];
 }
 
+/** A path under node_modules, which a snapshot never lists, ignored or not. */
+export function isDependencyPath(path: string): boolean {
+	return /(^|\/)node_modules\//.test(path);
+}
+
 /**
  * Snapshot the vertical's working tree. `ws` is the ROOT workspace (repo root),
  * mirroring the turn loop's calling convention; paths in the result are
@@ -54,6 +59,8 @@ export async function snapshotWorkspace(
 		.split('\0')
 		.filter(Boolean)
 		.map((p) => (project ? p : p.startsWith(prefix) ? p.slice(prefix.length) : p))
+		// A project may not have its .gitignore yet, and a snapshot runs mid-turn, one read per file.
+		.filter((p) => !isDependencyPath(p))
 		.sort();
 
 	const files: Record<string, string> = {};

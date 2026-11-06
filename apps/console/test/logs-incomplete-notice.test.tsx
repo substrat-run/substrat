@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api';
 import { createApi } from '../src/lib/api';
 import type { RecentLogEvent } from '../src/lib/api';
+import type { TableProps } from '../src/components/Table';
 import {
   LOGS_EMPTY_COMPLETE,
   LOGS_EMPTY_INCOMPLETE,
@@ -17,6 +18,29 @@ import {
   type LogsView,
 } from '../src/lib/logs-view';
 import { LogsCard, LogsIncompleteNotice } from '../src/views/Observability';
+
+// `<sub-entity-table>` draws its rows in the browser, which `renderToString` does not reach. The
+// branches under test are the card's own, so a plain table stands in for the element.
+vi.mock('../src/components/Table', () => ({
+  Table: <T,>({ rows, columns, emptyText }: TableProps<T>) => (
+    <table>
+      <tbody>
+        {rows.map((row, i) => (
+          <tr key={i}>
+            {columns.map((c) => (
+              <td key={c.header}>{c.render?.(row, i)}</td>
+            ))}
+          </tr>
+        ))}
+        {rows.length === 0 && (
+          <tr>
+            <td>{emptyText}</td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  ),
+}));
 
 /**
  * #2520: `GET /observability/logs` says beside its list when the read stopped short of vouching

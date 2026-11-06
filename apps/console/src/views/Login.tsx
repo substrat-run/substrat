@@ -1,4 +1,4 @@
-import { Card } from '../components';
+import { Button, Card } from '../components';
 import { signIn } from '../lib/auth';
 
 /**
@@ -20,22 +20,7 @@ export function Login() {
               Sign-in did not complete. Please try again.
             </span>
           )}
-          <button
-            type="button"
-            onClick={() => signIn()}
-            style={{
-              height: 34,
-              borderRadius: 'var(--radius-sm)',
-              border: 0,
-              background: 'var(--brand-600, #3b6cf6)',
-              color: '#fff',
-              fontSize: 13.5,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            Sign in
-          </button>
+          <Button onClick={() => signIn()}>Sign in</Button>
         </div>
       </Card>
     </div>

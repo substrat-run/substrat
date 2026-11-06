@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/console",
-  "version": "0.14.98",
+  "version": "0.14.99",
   "private": true,
   "description": "The control-plane admin console (control-plane.md §4.5)",
   "type": "module",
@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@awesome.me/webawesome": "3.14.0",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/elements": "workspace:^",

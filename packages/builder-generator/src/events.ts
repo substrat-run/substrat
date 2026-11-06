@@ -45,6 +45,8 @@ export type BuildEvent =
 	/** The tool came back: how long it took, and whether it refused or failed. */
 	| { readonly type: 'tool-result'; readonly tool: string; readonly ms: number; readonly ok: boolean }
 	| { readonly type: 'file-written'; readonly path: string; readonly bytes: number }
+	/** The host saved the working tree mid-turn: panes reading it have something new. */
+	| { readonly type: 'workspace-updated' }
 	| { readonly type: 'command'; readonly cmd: string; readonly exitCode: number }
 	| { readonly type: 'check'; readonly result: GateResult }
 	| { readonly type: 'gates'; readonly run: GateRun }
@@ -185,6 +187,8 @@ export function formatEvent(e: BuildEvent): string {
 			return `· ${e.tool} ${e.ok ? 'ok' : 'failed'} in ${e.ms}ms`;
 		case 'file-written':
 			return `· wrote ${e.path} (${e.bytes}b)`;
+		case 'workspace-updated':
+			return '· progress saved';
 		case 'command':
 			return `· $ ${e.cmd} → ${e.exitCode}`;
 		case 'check':

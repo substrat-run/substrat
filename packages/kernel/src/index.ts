@@ -1118,6 +1118,12 @@ export {
   type TenantModelUsageMeterFilter,
   type TenantModelUsageMeterRow,
 } from './model-usage.js';
+export {
+  BUILD_USAGE_RETENTION_DAYS,
+  type BuildUsageInput,
+  type TenantBuildUsageFilter,
+  type TenantBuildUsageRow,
+} from './build-usage.js';
 export type {
   MeterEntitlementInput,
   MeterInput,

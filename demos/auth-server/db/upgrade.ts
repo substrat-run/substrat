@@ -195,3 +195,22 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
 
   return upgrade;
 }
+
+/**
+ * Take the personal number out of every BankID placeholder address (#2938). Accounts created
+ * before the placeholder went random carry `<personal number>@bankid.placeholder.invalid`, and
+ * `user.email` is read by far more than sign-in. BankID sign-in itself is untouched, because
+ * it finds the person through `account`.
+ *
+ * Run AFTER the DDL, on every boot: an account already rewritten starts `bankid-`, so the
+ * pattern no longer matches it and a second run changes nothing. Returns how many changed.
+ */
+export function rewritePlaceholderAddresses(sql: SqlExec, nowMs: number): number {
+  return sql
+    .exec(
+      `UPDATE user SET email = 'bankid-' || lower(hex(randomblob(16))) || '@bankid.placeholder.invalid', updated_at = ?
+       WHERE email GLOB '[0-9]*@bankid.placeholder.invalid' RETURNING id`,
+      nowMs,
+    )
+    .toArray().length;
+}

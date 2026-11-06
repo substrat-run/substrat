@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/portal-starter",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "The app shell a generated vertical starts from: Web Awesome themes, the user menu, hash routing and an entity table. The builder copies it to app/ with copy_reference",
   "license": "Apache-2.0",

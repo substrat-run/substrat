@@ -174,6 +174,10 @@ import {
   type SwitchSql,
   type SystemSwitchRecordRow,
   MODEL_USAGE_RETENTION_DAYS,
+  BUILD_USAGE_RETENTION_DAYS,
+  type BuildUsageInput,
+  type TenantBuildUsageFilter,
+  type TenantBuildUsageRow,
   type TenantModelUsageMeterFilter,
   type TenantModelUsageMeterRow,
   DO_SQL_LIMITS,
@@ -1423,6 +1427,16 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant_page ON _substrat_model_usage (tenant_id, at, id);
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
+  -- #2946: one row per successful source build, retention-bounded and pruned on write.
+  CREATE TABLE IF NOT EXISTS _substrat_build_usage (
+    build_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    vertical TEXT NOT NULL,
+    build_ms INTEGER NOT NULL,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_build_usage_tenant ON _substrat_build_usage (tenant_id, at);
+  CREATE INDEX IF NOT EXISTS _substrat_build_usage_at ON _substrat_build_usage (at);
   -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
   ${SCOPE_STORAGE_DDL}
   -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
@@ -6961,6 +6975,28 @@ export class ControlPlaneDO extends DurableObject {
     const horizon = new Date(Date.now() - MODEL_USAGE_RETENTION_DAYS * 86_400_000).toISOString();
     this.sql.exec('DELETE FROM _substrat_model_usage WHERE at < ?', horizon);
     return { recorded };
+  }
+
+  /** #2946: idempotent on the build id, so a repeated report counts the build once. */
+  recordBuildUsage(input: BuildUsageInput): { recorded: boolean } {
+    const cursor = this.sql.exec(
+      'INSERT OR IGNORE INTO _substrat_build_usage (build_id, tenant_id, vertical, build_ms, at) VALUES (?, ?, ?, ?, ?)',
+      input.buildId, input.tenantId, input.vertical, input.ms, input.at,
+    );
+    const recorded = cursor.rowsWritten > 0;
+    const horizon = new Date(Date.now() - BUILD_USAGE_RETENTION_DAYS * 86_400_000).toISOString();
+    this.sql.exec('DELETE FROM _substrat_build_usage WHERE at < ?', horizon);
+    return { recorded };
+  }
+
+  listTenantBuildUsage(query: TenantBuildUsageFilter): TenantBuildUsageRow[] {
+    return this.sql.exec(
+      `SELECT vertical, COUNT(*) AS builds, SUM(build_ms) AS ms
+         FROM _substrat_build_usage
+        WHERE tenant_id = ? AND at >= ? AND at < ?
+        GROUP BY vertical ORDER BY vertical LIMIT ?`,
+      query.tenantId, canonicalInstant(query.since), canonicalInstant(query.until), assertRowLimit('limit', query.limit),
+    ).toArray() as unknown as TenantBuildUsageRow[];
   }
 
   listModelUsage(query: ModelUsageQuery): ModelUsageRow[] {

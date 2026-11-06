@@ -13,7 +13,7 @@
  * and never what they printed.
  */
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
-import { CommandFailedError } from './problem.js';
+import { CommandFailedError, diagnosedResponse, sourceBuildFailure } from './problem.js';
 
 /** ULID, Web-Crypto only — same wire shape as kernel `ulid()`. */
 export function ulid(now = Date.now()): string {
@@ -139,8 +139,13 @@ export class BuildLog {
 		return step;
 	}
 
+	/** The record is the build's account of itself: failing to store it must not fail the build. */
 	async #save(): Promise<void> {
-		await this.persist(fitted(this.record));
+		try {
+			await this.persist(fitted(this.record));
+		} catch (error) {
+			console.error('source.build.unstored', { buildId: this.record.buildId, cause: interruptionOf(error) }, error);
+		}
 	}
 }
 
@@ -176,6 +181,17 @@ export function interruptionOf(error: unknown): string {
 	const flags = [e?.retryable === true && 'retryable', e?.overloaded === true && 'overloaded'].filter(Boolean);
 	const text = e ? `${e.name}: ${e.message}` : String(error);
 	return `${text.slice(0, INTERRUPTION_MAX)}${flags.length ? ` [${flags.join(', ')}]` : ''}`;
+}
+
+/** `handle`'s answer, or a 500 naming the build when a throw gets past `#build`'s own catch. */
+export async function orBuildFailure(buildId: string, handle: () => Promise<Response>): Promise<Response> {
+	try {
+		return await handle();
+	} catch (error) {
+		const cause = interruptionOf(error);
+		console.error('source.build.failed', { buildId, cause }, error);
+		return diagnosedResponse(500, `platform build failed: ${sourceBuildFailure(error)} (build ${buildId})`, cause);
+	}
 }
 
 /**

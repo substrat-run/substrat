@@ -301,7 +301,7 @@ through its team path for an owner or admin. The control plane's new
 `GET /tenants/:tenantId/metered-usage` is path-pinned to the same tenant and returns
 only scope-database storage samples, estimated daily router requests, and recorded
 model calls and provider-reported tokens, as totals and as one row per day for the
-page's chart. A day with no reading behind it is null, not zero, and stored bytes have
+page's chart, plus the minutes successful hosted builds worked, per app (#2946). A day with no reading behind it is null, not zero, and stored bytes have
 no per-app split. It reads at most 30 closed UTC days, 10,000 request rows, 10,000
 storage rows, and 25 pages of 501 model records. Capped totals are labelled
 as partial, with bounded app/model breakdowns. It contains no prices, invoice,

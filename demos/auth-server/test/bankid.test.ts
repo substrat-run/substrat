@@ -455,6 +455,7 @@ describe('the sign-in flow', () => {
     // The response IS the sign-in: its cookie resolves to a session for the verified person.
     const session = await auth.api.getSession({ headers: new Headers({ cookie: cookieOf(complete) }) as never });
     expect(session?.user.name).toBe('Anna Andersson');
+    expect(session?.user.email).toMatch(/^bankid-[0-9a-f-]+@bankid\.placeholder\.invalid$/);
 
     // The identity key is the personal number, under the bankid provider — sign in twice,
     // land in the same account.
@@ -485,6 +486,21 @@ describe('the sign-in flow', () => {
     const res = await call('/api/auth/bankid/collect', { orderRef });
     expect(res.status).toBe(403);
     expect((db.prepare('SELECT count(*) AS n FROM user').get() as { n: number }).n).toBe(0);
+  });
+
+  it('refuses to mark a placeholder address verified, and allows it with a real address', async () => {
+    auth = rebuild({ issuerSignup: true });
+    const created = await auth.api.signUpEmail({ body: ADMIN });
+    db.prepare("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?").run(created.user.id);
+    const cookie = cookieOf(await auth.api.signInEmail({ body: ADMIN, asResponse: true }));
+    bankid.setCollect(COMPLETE);
+    await call('/api/auth/bankid/collect', { orderRef: (await startOrder()).orderRef });
+    const userId = (db.prepare("SELECT user_id FROM account WHERE provider_id = 'bankid'").get() as { user_id: string }).user_id;
+    const update = (data: Record<string, unknown>) =>
+      call('/api/auth/admin/update-user', { userId, data }, { cookie, origin: ORIGIN });
+
+    expect((await update({ emailVerified: true })).status).toBe(400);
+    expect(await update({ email: 'anna@example.com', emailVerified: true })).toMatchObject({ status: 200 });
   });
 
   it('refuses a banned user despite a completed order — the ban is on the session, not the password', async () => {
