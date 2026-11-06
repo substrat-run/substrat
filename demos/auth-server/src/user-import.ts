@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import { isBcryptHash } from './legacy-password.js';
+import { isPlaceholderAddress } from './placeholder-address.js';
 import {
   DRY_RUN_LIMIT,
   IMPORT_BATCH_LIMIT,
@@ -76,6 +77,9 @@ const importedUser = z.object({
     .refine(isBcryptHash, 'not a bcrypt hash of cost 4–12 ($2a$/$2b$/$2y$) — nothing else can be verified here')
     .optional(),
   accounts: z.array(importedAccount).max(20).optional(),
+}).refine((u) => !(u.emailVerified && isPlaceholderAddress(u.email)), {
+  message: 'a placeholder address cannot be verified',
+  path: ['emailVerified'],
 });
 
 export const importBody = z

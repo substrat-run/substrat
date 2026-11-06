@@ -13,7 +13,7 @@ import { introspectTables, introspectTable } from './introspect.js';
 import { exportDump } from './dump.js';
 import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { upgradeLegacySchema } from '../db/upgrade.js';
+import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
@@ -121,6 +121,8 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         console.log('auth-server: schema upgraded', JSON.stringify(upgrade));
       }
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
+      const rewritten = rewritePlaceholderAddresses(ctx.storage.sql, Date.now());
+      if (rewritten) console.log(`auth-server: rewrote ${rewritten} BankID placeholder addresses`);
       // The issuer's own console, as a row in its own registry (`console-client.ts`).
       // Seeded here rather than at provisioning time because a STANDALONE deploy is never
       // provisioned, and both shapes need it — waking the DO is the one thing every install

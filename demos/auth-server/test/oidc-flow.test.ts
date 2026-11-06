@@ -385,9 +385,12 @@ describe('prompt=none answers without any UI', () => {
  * must carry the flag beside it, and must carry it as a real boolean in both directions.
  */
 describe('email_verified travels with the address', () => {
-  async function claimsAfterLogin(): Promise<Record<string, unknown>> {
+  const PLACEHOLDER = 'bankid-test@bankid.placeholder.invalid';
+
+  async function claimsAfterLogin(afterSignIn?: () => void): Promise<Record<string, unknown>> {
     const { clientId, clientSecret } = await registerClient('Verified-email RP');
     const cookie = await signInAs(ADMIN);
+    afterSignIn?.();
     const { verifier, challenge } = await pkce();
     const authorize = await call(authorizeUrl(clientId, 'st-ev', challenge, { scope: 'openid email profile' }), {
       headers: { ...NAVIGATE, cookie },
@@ -439,6 +442,20 @@ describe('email_verified travels with the address', () => {
       expect(claims.email_verified).toBe(false);
     } finally {
       sqlite.prepare('UPDATE user SET email_verified = 1 WHERE email = ?').run(ADMIN.email);
+    }
+  });
+
+  it('says nothing at all about a placeholder address (#2938)', async () => {
+    try {
+      // Swapped after the password sign-in, which needs the real address to find them.
+      const claims = await claimsAfterLogin(() => {
+        sqlite.prepare('UPDATE user SET email = ?, email_verified = 0 WHERE email = ?').run(PLACEHOLDER, ADMIN.email);
+      });
+      expect(claims).toMatchObject({ sub: expect.any(String), name: expect.any(String) });
+      expect(claims).not.toHaveProperty('email');
+      expect(claims).not.toHaveProperty('email_verified');
+    } finally {
+      sqlite.prepare('UPDATE user SET email = ?, email_verified = 1 WHERE email = ?').run(ADMIN.email, PLACEHOLDER);
     }
   });
 });
