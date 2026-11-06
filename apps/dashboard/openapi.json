@@ -23454,6 +23454,137 @@
                         "breakdownTruncated"
                       ],
                       "additionalProperties": false
+                    },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string"
+                          },
+                          "requests": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "requestsByVertical": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "vertical": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "value": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "vertical",
+                                "value"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "modelCalls": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "tokens": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "tokensByVertical": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "vertical": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "value": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "vertical",
+                                "value"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "storedBytes": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "storedScopes": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "requests",
+                          "requestsByVertical",
+                          "modelCalls",
+                          "tokens",
+                          "tokensByVertical",
+                          "storedBytes",
+                          "storedScopes"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
@@ -23461,7 +23592,8 @@
                     "retention",
                     "storage",
                     "requests",
-                    "models"
+                    "models",
+                    "days"
                   ],
                   "additionalProperties": false
                 }

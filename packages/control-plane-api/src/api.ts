@@ -208,6 +208,7 @@ import {
   type SubjectErasureFence,
   REQUEST_ROLLUP_LIMIT_DEFAULT,
   REQUEST_ROLLUP_LIMIT_MAX,
+  STORAGE_HISTORY_LIMIT_MAX,
   STORAGE_GAUGE_RETENTION_MONTHS,
   MODEL_USAGE_RETENTION_DAYS,
   BILLING_ROLLUP_RETENTION_MONTHS,
@@ -373,6 +374,7 @@ import {
 } from './wire-walk.js';
 import { wireKeyDropSince, wireReadinessReport, WIRE_READINESS_LIMIT_DEFAULT, WIRE_READINESS_LIMIT_MAX } from './wire-readiness.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
+import { usageDays, utcDaysBetween, type UsageDayModels, type UsageDayRequests, type UsageDayStorage } from './metered-usage-days.js';
 import { queryLakeEvents, teamWindowRefusal, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
 import {
@@ -2800,6 +2802,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       coveredDays: 0, totalDays: 30, sinceDay: since, untilDay: through,
       lastReadAt: null, byVertical: [], breakdownTruncated: false,
     };
+    let requestDays: UsageDayRequests | null = null;
     if (usageNow() < deadline && admin.listTenantRequestMeter && admin.listRequestMeterDays) {
       const [rows, days] = await Promise.all([
         admin.listTenantRequestMeter(actor, tenantId, since, through, REQUEST_ROLLUP_LIMIT_MAX),
@@ -2808,6 +2811,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const covered = days.filter((d) => d.readAt !== null && !d.saturated);
       const coveredDaySet = new Set(covered.map((day) => day.day));
       const clipped = rows.length === REQUEST_ROLLUP_LIMIT_MAX;
+      requestDays = { rows: rows.slice(0, REQUEST_ROLLUP_LIMIT_MAX - 1), covered: coveredDaySet, clipped };
       const groups = new Map<string | null, number>();
       let count = 0;
       let countedRows = 0;
@@ -2847,6 +2851,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     let truncatedReason: 'page-cap' | 'time-budget' | null = null;
     let modelSkipped = false;
     let labelsTruncated = false;
+    const modelDayRows: UsageDayModels['rows'][number][] = [];
     const earlier = (a: string | null, b: string): string => a === null || b < a ? b : a;
     const later = (a: string | null, b: string): string => a === null || b > a ? b : a;
     if (typeof admin.listTenantModelUsageMeter === 'function') {
@@ -2860,6 +2865,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const entries = await admin.listTenantModelUsageMeter(actor, { tenantId, since: `${since}T00:00:00Z`, until: `${until}T00:00:00Z`, limit: 501, ...(cursor ? { cursor } : {}) });
         for (const entry of entries.slice(0, 500)) {
           calls++;
+          modelDayRows.push({
+            day: entry.at.slice(0, 10), vertical: entry.labelTruncated ? null : entry.vertical,
+            reported: entry.reported, tokens: entry.inputTokens + entry.outputTokens,
+          });
           if (entry.reported) {
             reportedCalls++;
             inputTokens += entry.inputTokens;
@@ -2903,12 +2912,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       byVerticalModel: modelGroups.slice(0, 50).map((row) => ({ vertical: row.vertical, model: row.model, calls: row.calls, reportedCalls: row.reportedCalls, inputTokens: row.reportedCalls > 0 ? row.inputTokens : null, outputTokens: row.reportedCalls > 0 ? row.outputTokens : null })),
       breakdownTruncated: modelGroups.length > 50 || labelsTruncated,
     };
+
+    // Scopes sort before days in this read, so a capped one is missing whole scopes from every
+    // day. That makes each day a low number with no way to mark which, so the series is dropped.
+    let storageDays: UsageDayStorage | null = null;
+    if (usageNow() < deadline && admin.listScopeStorage) {
+      const rows = await admin.listScopeStorage(actor, { tenantId, since, until: through, limit: STORAGE_HISTORY_LIMIT_MAX });
+      if (rows.length < STORAGE_HISTORY_LIMIT_MAX) storageDays = { rows };
+    }
+    const hasModelLedger = typeof admin.listTenantModelUsageMeter === 'function' && !modelSkipped;
     return c.json({
       readAt,
       retention: { storageMonths: STORAGE_GAUGE_RETENTION_MONTHS, modelDays: MODEL_USAGE_RETENTION_DAYS, requestMonths: BILLING_ROLLUP_RETENTION_MONTHS },
       storage,
       requests,
       models,
+      days: usageDays(utcDaysBetween(since, through), {
+        requests: requestDays,
+        models: hasModelLedger ? { rows: modelDayRows, truncated } : null,
+        storage: storageDays,
+      }),
     });
   });
 

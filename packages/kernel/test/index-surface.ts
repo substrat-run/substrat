@@ -186,6 +186,8 @@ export const INDEX_VALUE_EXPORTS = [
   'SHAPE_MARKER_INDEX_DDL',
   'SHAPE_MARKER_READS_PER_ROW',
   'STORAGE_GAUGE_RETENTION_MONTHS',
+  // #2915: the most history rows one read returns — a caller at the cap knows its read was clipped.
+  'STORAGE_HISTORY_LIMIT_MAX',
   'STORE_DRIVER_RELEASES_DDL',
   'STORE_LOCAL_META_KEYS',
   // #2518: the idle window of a streamed connector response body.

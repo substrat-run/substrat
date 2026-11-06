@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Page } from '../components/layout';
-import { card, PageTitle } from '../components/ui';
+import { UsageChart } from '../components/UsageChart';
+import { card, PageTitle, Pill, type PillKind } from '../components/ui';
 import { isApiError, teamApi } from '../lib/api';
+import { shortBytes, shortNumber } from '../lib/usage-days';
 import { isExactUsageFigure, type UsageScalar } from '../lib/usage-precision';
 
 type Grants = Awaited<ReturnType<ReturnType<typeof teamApi>['listEntitlements']>>;
@@ -20,6 +22,51 @@ const coverage = (state: UsageScalar, known: Set<string>) => knownCoverage(state
 const reasonLabel = (reason: UsageScalar) => reason === null || reason === undefined ? '' : ` · other truncation reason (${reason === '' || typeof reason === 'string' && reason.trim() === '' ? 'limited' : scalarLabel(reason)})`;
 const oddTruncationLabel = (truncated: UsageScalar) => truncated === true || truncated === false ? '' : ` Truncation status: unknown (${scalarLabel(truncated)}).`;
 const oddEstimateLabel = (estimated: UsageScalar) => estimated === true || estimated === false ? '' : ` Reported estimate status: unknown (${scalarLabel(estimated)}).`;
+
+function Tile({ label, value, caption, badge, kind }: { label: string; value: string; caption: string; badge: string; kind: PillKind }) {
+  return (
+    <div style={{ flex: '1 1 200px', boxSizing: 'border-box', padding: '18px 20px' }}>
+      <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>{label}</div>
+      <div style={{ marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>{value}</div>
+      <div style={{ margin: '4px 0 8px', fontSize: 12.5, color: 'var(--text-secondary)' }}>{caption}</div>
+      <Pill kind={kind}>{badge}</Pill>
+    </div>
+  );
+}
+
+/** The three figures at a glance. The sentences behind each sit under Meter details. */
+function UsageSummary({ usage }: { usage: Usage }) {
+  const { storage, requests, models } = usage;
+  const storageExact = isExactUsageFigure({ truncated: storage.lowerBound, reason: storage.truncatedReason, coverage: storage.state, estimated: storage.estimated, complete: storage.basis === 'scope-databases' && storage.sampled === storage.total && storage.failing === 0 });
+  const tokens = models.inputTokens === null || models.outputTokens === null ? null : models.inputTokens + models.outputTokens;
+  const tokensExact = isExactUsageFigure({ truncated: models.lowerBound, reason: models.truncatedReason, coverage: models.state, estimated: models.estimated, complete: models.calls !== null && models.reportedCalls === models.calls });
+  const figure = (value: string | null, exact: boolean) => value === null ? 'Not available' : `${exact ? '' : '≥ '}${value}`;
+  return (
+    <section aria-label="Usage summary" style={{ ...card, display: 'flex', flexWrap: 'wrap' }}>
+      <Tile
+        label="Requests"
+        value={figure(requests.requests === null ? null : shortNumber(requests.requests), requests.lowerBound === false)}
+        caption={`${requests.coveredDays} of ${requests.totalDays} days covered`}
+        badge="Estimated"
+        kind="warning"
+      />
+      <Tile
+        label="Model tokens"
+        value={figure(tokens === null ? null : shortNumber(tokens), tokensExact)}
+        caption={models.calls === null ? 'No calls recorded' : `${number(models.reportedCalls)} of ${number(models.calls)} calls reported usage`}
+        badge="As reported"
+        kind="info"
+      />
+      <Tile
+        label="Stored"
+        value={figure(storage.bytes === null ? null : shortBytes(storage.bytes), storageExact)}
+        caption={`${storage.sampled} of ${storage.total} scopes sampled`}
+        badge={storageExact ? 'Sampled' : 'Lower bound'}
+        kind={storageExact ? 'success' : 'warning'}
+      />
+    </section>
+  );
+}
 
 function UsageCards({ usage }: { usage: Usage }) {
   const storage = usage.storage;
@@ -99,10 +146,25 @@ export function Billing({ teamId, canRead }: { teamId: string; canRead: boolean 
   const refused = !canRead || shown?.error === 'forbidden' || shownUsage?.error === 'forbidden';
   return (
     <Page maxWidth={960}>
-      <PageTitle title="Entitlements and usage" subtitle="Current grants and persisted usage recorded for this team." />
+      <PageTitle title="Billing" subtitle="What this team has used over the last 30 closed days, and what it is entitled to. Nothing here is charged yet." />
       {refused ? (
         <div role="status" style={{ ...card, padding: 20 }}>Ask a team owner or admin to view entitlements.</div>
       ) : <>
+      {!shownUsage ? (
+        <div role="status" style={{ ...card, padding: 20 }}>Loading usage…</div>
+      ) : shownUsage.error === 'unavailable' || !shownUsage.usage ? (
+        <div role="status" style={{ ...card, padding: 20 }}>Usage is unavailable. Try again later.</div>
+      ) : (
+        <>
+          <UsageSummary usage={shownUsage.usage} />
+          <UsageChart days={shownUsage.usage.days} />
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Meter details</summary>
+            <UsageCards usage={shownUsage.usage} />
+          </details>
+        </>
+      )}
+      <h2 style={{ marginTop: 28 }}>Entitlements</h2>
       {!shown ? (
         <div role="status" style={{ ...card, padding: 20 }}>Loading entitlements…</div>
       ) : shown.error === 'unavailable' ? (
@@ -121,14 +183,6 @@ export function Billing({ teamId, canRead }: { teamId: string; canRead: boolean 
             </div>
           ))}
         </div>
-      )}
-      <h2 style={{ marginTop: 28 }}>Metered usage</h2>
-      {!shownUsage ? (
-        <div role="status" style={{ ...card, padding: 20 }}>Loading usage…</div>
-      ) : shownUsage.error === 'unavailable' || !shownUsage.usage ? (
-        <div role="status" style={{ ...card, padding: 20 }}>Usage is unavailable. Try again later.</div>
-      ) : (
-        <UsageCards usage={shownUsage.usage} />
       )}
       </>}
     </Page>

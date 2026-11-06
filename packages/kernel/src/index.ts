@@ -1140,6 +1140,7 @@ export {
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
+  STORAGE_HISTORY_LIMIT_MAX,
 } from './storage-gauge.js';
 export { BILLING_ROLLUP_RETENTION_MONTHS } from './billing-retention.js';
 export {

@@ -862,6 +862,7 @@ const eventDeliveryOut = eventDelivery.extend({ state: z.string() });
 // Plane-owned status tokens may change independently of this dashboard. Accept
 // JSON scalars only; the view treats anything except known-good values as limited.
 const planeScalar = z.union([z.string(), z.number(), z.boolean()]).nullable().optional();
+const usageDayShare = z.object({ vertical: z.string().nullable(), value: z.number().int() });
 export const meteredUsageOut = z.object({
   readAt: z.string(),
   retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
@@ -892,6 +893,17 @@ export const meteredUsageOut = z.object({
     byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), reportedCalls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
     breakdownTruncated: z.boolean(),
   }),
+  // One row per closed UTC day. A null is a day with no reading behind it, never a day of no usage.
+  days: z.array(z.object({
+    day: z.string(),
+    requests: z.number().int().nullable(),
+    requestsByVertical: z.array(usageDayShare),
+    modelCalls: z.number().int().nullable(),
+    tokens: z.number().int().nullable(),
+    tokensByVertical: z.array(usageDayShare),
+    storedBytes: z.number().int().nullable(),
+    storedScopes: z.number().int(),
+  })),
 });
 export type MeteredUsageOut = z.infer<typeof meteredUsageOut>;
 interface EventEffectsOut {

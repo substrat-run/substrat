@@ -187,6 +187,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   read-only answer for that tenant's dashboard owner or admin. It returns the stored
   scope-database gauge, estimated daily router requests, and recorded model calls and
   provider-reported tokens for the last 30 closed UTC days, with coverage and freshness.
+  `days` holds one row per closed day; a null there is a day with no reading, not zero.
   It exposes no prices, person or scope identifiers. Capped scans and breakdowns are
   labelled as truncated; an absent source is not returned as zero. The fleet meter and
   model-usage routes above remain staff-only.
