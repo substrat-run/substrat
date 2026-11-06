@@ -259,6 +259,12 @@ that breaks them:
   has already joined by their email (`todo/share-list`), and no pending invitation
   whose accept step would have to grant.
 
+Finding people by email makes the joined address a credential: a member who joins
+with someone else's address receives that person's shares. The operation cannot see
+the session, so host code holds this. Before the join operation runs, it compares
+the claimed email with the session's issuer-verified one, refuses a mismatch, and
+passes on the verified spelling (`joiningAsYourself` in `todo` `src/app.ts`).
+
 ## Not every table is an entity
 
 An entity is something the platform can *point at*: attachments hang off one,

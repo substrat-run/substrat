@@ -531,9 +531,11 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 
 	const runChecks = async (label: string, phase: BuildPhase) => {
 		const checkStarted = Date.now();
-		const checked = await runTurn(ws, { verticalDir: projectDir, message: label, gates: opts.gates });
-		addStage(phase, { gateMs: Date.now() - checkStarted });
-		return checked;
+		try {
+			return await runTurn(ws, { verticalDir: projectDir, message: label, gates: opts.gates });
+		} finally {
+			addStage(phase, { gateMs: Date.now() - checkStarted });
+		}
 	};
 
 	let expectations: readonly ExpectationOutcome[] = [];

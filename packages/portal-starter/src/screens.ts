@@ -30,7 +30,12 @@ const ITEM_COLUMNS: Column<Item>[] = [
 async function addItem(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   const form = event.target as HTMLFormElement;
-  await invoke('acme/add-item', { name: new FormData(form).get('name') });
+  try {
+    await invoke('acme/add-item', { name: new FormData(form).get('name') });
+  } catch (err) {
+    alert(err instanceof Error ? err.message : String(err));
+    return;
+  }
   form.reset();
   location.reload();
 }

@@ -86,4 +86,24 @@ describe('ClaudeCodeGenerator --max-tokens', () => {
 		expect(events.find((e) => e.type === 'usage')).toMatchObject({ steps: 2 });
 		expect(events.some((e) => e.type === 'error')).toBe(false);
 	});
+
+	it('stops once, on the repeat that crosses the budget', async () => {
+		const { ClaudeCodeGenerator } = await import('../src/claude-code.js');
+		const root = await mkdtemp(join(tmpdir(), 'claude-code-budget-'));
+		const gen = new ClaudeCodeGenerator({ model: 'sonnet', cwd: root, maxTokens: 1_500 });
+		script.messages = [assistant('a', 900, 0, 100), assistant('a', 900, 0, 600), assistant('a', 900, 0, 700)];
+		const events: BuildEvent[] = [];
+		for await (const e of gen.run({
+			workspace: new LocalWorkspace({ root }),
+			verticalDir: 'demos/x',
+			concept: 'a test vertical',
+			message: 'go',
+		})) {
+			events.push(e);
+		}
+		script.messages = null;
+		expect(events.filter((e) => e.type === 'truncated')).toEqual([
+			expect.objectContaining({ reason: 'tokens', spent: 1_500, budget: 1_500 }),
+		]);
+	});
 });

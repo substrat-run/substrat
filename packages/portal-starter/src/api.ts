@@ -18,7 +18,11 @@ async function pageAt<T>(url: string): Promise<Page<T>> {
   };
 }
 
-/** What `<sub-entity-table>` reads from: the paged route in `spec/model.ts`, e.g. `/api/items`. */
+/**
+ * What `<sub-entity-table>` reads from: the paged route in `spec/model.ts`, e.g. `/api/items`.
+ * It passes on sort, order and limit only. A table that declares views, filters or search
+ * needs a source written for its route, as `LISTS` is in `todo`'s `app/src/elements.tsx`.
+ */
 export function pagedRead<T, S extends string = string>(path: string): TableSource<T, S> {
   return {
     read({ sort, order, limit }: TableQuery<S>) {
