@@ -64,18 +64,21 @@ describe('tool-result', () => {
 		const tools = workspaceTools({
 			workspace: project,
 			emit: (e) => events.push(e),
-			denyWrite: () => 'not here',
+			editTool: true,
+			denyWrite: (path) => (path === 'b.txt' ? 'not here' : null),
 		}) as unknown as Record<string, { execute(i: unknown, o: unknown): Promise<string> }>;
 		const opts = { toolCallId: 't', messages: [] };
 
 		await tools.read_file!.execute({ path: 'a.txt' }, opts);
 		await tools.read_file!.execute({ path: 'missing.txt' }, opts);
 		await tools.write_file!.execute({ path: 'b.txt', content: 'x' }, opts);
+		await tools.edit_file!.execute({ path: 'a.txt', oldString: 'absent', newString: 'x' }, opts);
 
 		expect(events.filter((e) => e.type === 'tool-result')).toEqual([
 			expect.objectContaining({ tool: 'read_file', ok: true }),
 			expect.objectContaining({ tool: 'read_file', ok: false }),
 			expect.objectContaining({ tool: 'write_file', ok: false }),
+			expect.objectContaining({ tool: 'edit_file', ok: false }),
 		]);
 	});
 
