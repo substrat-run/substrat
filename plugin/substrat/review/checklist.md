@@ -15,12 +15,14 @@ Substrat's rules can see.
 - Review **the change**, not the whole tree. A finding must point at a line the change adds
   or alters (`file:line`), quote it, and say how it fails. Pre-existing problems are out of
   scope unless the change makes them reachable.
-- **Run gates read-only.** Only the `--check` form of a gate, and only a gate that has one:
-  a bare `lint:model`, `lint:permissions` or `lint:agent-rules` rewrites files, which a
-  review must not do. A gate with no read-only form is not run.
+- **Run gates read-only.** A gate with a `--check` form runs only in that form: a bare
+  `lint:model`, `lint:permissions` or `lint:agent-rules` rewrites files, which a review must
+  not do. A gate that only reads and reports has no such form and runs as named. A gate that
+  would rewrite a tracked file and has no read-only form is not run.
 - **Gate invocation.** In the monorepo, pass `--check` through `pnpm run`
   (`pnpm run lint:migrations --check`). `pnpm lint:migration-fence` has no `--check` form but
-  only replays and reports, so it is safe to run.
+  only replays and reports, so it is safe to run: its one write is the scaffold template
+  materialized into `packages/template-check`, and every file of that is gitignored.
 - **Which gates exist depends on where you are.** In a project made by `npm create substrat`
   there are three: `npm run lint:boundaries`, `npm run typecheck`, `npm test`. The rest named
   below (`tools/…`, `pnpm lint:…`) exist in the Substrat monorepo, where the demos live. If a

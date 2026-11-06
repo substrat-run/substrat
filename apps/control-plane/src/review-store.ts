@@ -22,7 +22,7 @@ export class ReviewCollisionError extends Error {}
 // The rules digest (checklist then procedure, plugin/substrat/review/procedure.md) and the
 // plugin version of this release. tools/review-checklist.test.mjs holds both to the source
 // files, so a rules or plugin change cannot silently go unstamped.
-export const REVIEW_CHECKLIST_DIGEST = '5235250deb1a5d5672517443e97544d63e686a61658d858d5d7c29dd5fde25c1';
+export const REVIEW_CHECKLIST_DIGEST = 'b3071915682ac659f45208f8fbbb00dd773766fee62186c5c9f585dd6a580dde';
 export const REVIEW_PLUGIN_VERSION = '0.7.0';
 const REVIEW_DAYS = 30;
 

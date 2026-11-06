@@ -22,15 +22,16 @@ different digests were made under different rules.
 
 1. **Find the change.** Everything that would land, committed or not:
    run `git fetch origin` first (a stale base drags in other people's merged commits), then
-   `git diff $(git merge-base origin/main HEAD)`: commits, staged and unstaged work against
-   the branch you will merge into (not against `HEAD`). If there is no `origin/main`, find the
-   default branch (`git symbolic-ref refs/remotes/origin/HEAD`) and use that; if the merge-base
-   command prints nothing, stop and say the base is unknown rather than reviewing a bare
-   `git diff`. Add untracked files from
+   `git diff $(git merge-base origin/<target> HEAD)`: commits, staged and unstaged work against
+   the branch you will merge into (not against `HEAD`). `<target>` is that branch: a stacked
+   change names its own base, and anything else targets `main`. If there is no `origin/main`,
+   find the default branch (`git symbolic-ref refs/remotes/origin/HEAD`) and use that; if the
+   merge-base command prints nothing, stop and say the base is unknown rather than reviewing a
+   bare `git diff`. Add untracked files from
    `git ls-files --others --exclude-standard`; they are in no diff, so open them. If the base
    is not `main`, say which you used. If all of that is empty, say so and stop.
 2. **Run the gates the checklist names that exist here**, in the vertical's own project, in
-   their read-only `--check` form only, and read their output. Which gates exist depends on
+   the read-only form the checklist gives each, and read their output. Which gates exist depends on
    whether this is a scaffolded project or the monorepo; the checklist says which. A gate that
    cannot run here (not built, dependency missing) is reported as *not run*. Do not guess its
    answer.
