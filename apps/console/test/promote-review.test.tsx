@@ -231,7 +231,7 @@ describe('MigrationDiffView: declared moves and discards (#2322)', () => {
     expect(html).toContain('deliberately discards data in <!-- -->1<!-- --> place');
     expect(html).toContain('unused since 2024');
     expect(html).toContain('c.d');
-    expect(html.match(/discards <span/g)).toHaveLength(1);
+    expect(html.match(/discards <wa-tag/g)).toHaveLength(1);
     expect(view(migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's' }], undefined))).not.toMatch(/discards|moves/);
   });
 

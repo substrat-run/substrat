@@ -193,7 +193,7 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
         title="Bind a hostname"
         description="The router resolves hostname → (tenant, scope, surface). A binding does not serve traffic until it is active."
       >
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <Input
             label="Hostname"
             hint="e.g. acme.example.com"
@@ -213,9 +213,15 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
               office, RallyPoint's player app and manager console. Free text, because
               the surface name is the VERTICAL's vocabulary; the kernel never
               branches on it. */}
-          <Input label="Surface" hint="app · storefront · back-office" value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 150 }} />
-          <Checkbox label="Primary for this surface" description="one per scope + surface" checked={canonical} onChange={setCanonical} />
-          <Button onClick={() => void bind()} disabled={busy || !scopeKey || !hostname.trim()}>
+          <Input label="Surface" hint="app · storefront · back-office" value={surface} onChange={(e) => setSurface(e.target.value)} style={{ width: 210 }} />
+          <Checkbox
+            label="Primary for this surface"
+            description="one per scope + surface"
+            checked={canonical}
+            onChange={setCanonical}
+            style={{ marginTop: 30 }}
+          />
+          <Button onClick={() => void bind()} disabled={busy || !scopeKey || !hostname.trim()} style={{ marginTop: 26 }}>
             Bind
           </Button>
         </div>

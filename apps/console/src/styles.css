@@ -5,6 +5,7 @@
 /* The elements read --wa-* tokens: Web Awesome's theme, then those tokens from ours. */
 @import "@substrat-run/elements/themes/base.css";
 @import "@substrat-run/ui/elements-theme.css";
+@import "@awesome.me/webawesome/dist/styles/utilities/visually-hidden.css";
 
 /* Web Awesome's parts, at the console's density. */
 wa-input::part(hint),
@@ -19,6 +20,10 @@ wa-select::part(hint) {
 }
 .console-mono {
   font-family: var(--font-mono);
+}
+/* On an input the value is mono, and its label and hint are not. */
+wa-input.console-mono {
+  font-family: var(--font-sans);
 }
 .console-mono::part(input) {
   font-family: var(--font-mono);
@@ -46,6 +51,11 @@ wa-select::part(hint) {
 }
 .console-tabs::part(body) {
   display: none;
+}
+.console-tabs wa-tab::part(base) {
+  padding: 8px 4px;
+  margin-inline-end: 12px;
+  font-size: var(--text-base);
 }
 
 /* A table sits in a card, so the card is its frame. */
