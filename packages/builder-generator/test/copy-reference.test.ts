@@ -82,6 +82,22 @@ describe('tool-result', () => {
 		]);
 	});
 
+	it.each([
+		['a checker that could not run as a failure', 'CANNOT CHECK — the loader could not run here', false],
+		['a model with problems as a success, since the tool worked', 'NOT OK — fix every problem below', true],
+	])('reports %s', async (_name, verdict, ok) => {
+		const events: BuildEvent[] = [];
+		const tools = workspaceTools({
+			workspace: await scratch(),
+			emit: (e) => events.push(e),
+			checkModel: () => Promise.resolve(verdict),
+		}) as unknown as Record<string, { execute(i: unknown, o: unknown): Promise<string> }>;
+
+		await tools.check_model!.execute({}, { toolCallId: 't', messages: [] });
+
+		expect(events.filter((e) => e.type === 'tool-result')).toEqual([expect.objectContaining({ tool: 'check_model', ok })]);
+	});
+
 	it('reports a tool that throws as a failure, and lets the error through', async () => {
 		const project = await scratch();
 		project.exec = () => Promise.reject(new Error('sandbox gone'));

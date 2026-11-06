@@ -138,7 +138,7 @@ function timed<T extends object>(emit: WorkspaceToolOptions['emit'], tools: T): 
 			let ok = false;
 			try {
 				const out = await run(...args);
-				ok = !(typeof out === 'string' && /^(ERROR|REFUSED|FAILED)\b/.test(out));
+				ok = !(typeof out === 'string' && /^(ERROR|REFUSED|FAILED|CANNOT CHECK)\b/.test(out));
 				return out;
 			} finally {
 				emit({ type: 'tool-result', tool: name, ms: Date.now() - started, ok });
