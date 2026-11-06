@@ -52,7 +52,7 @@
 			"class_name": "Sandbox",
 			"image": "../../builder.Dockerfile",
 			"instance_type": "standard-3",
-			"max_instances": 4
+			"max_instances": 50
 		}
 	],
 
@@ -80,7 +80,7 @@
 				{ "name": "Sandbox", "class_name": "Sandbox" },
 				{ "name": "SCOPE", "class_name": "ScopeDO" }
 			] },
-			"containers": [{ "class_name": "Sandbox", "image": "../../builder.Dockerfile", "instance_type": "standard-3", "max_instances": 4 }],
+			"containers": [{ "class_name": "Sandbox", "image": "../../builder.Dockerfile", "instance_type": "standard-3", "max_instances": 50 }],
 			"artifacts": [{ "binding": "ARTIFACTS", "namespace": "substrat-projects-test" }],
 			"d1_databases": [{ "binding": "AUTH_DB", "database_name": "substrat-control-plane-auth-test", "database_id": "${CF_D1_AUTH_DB_ID_TEST}" }]
 		}

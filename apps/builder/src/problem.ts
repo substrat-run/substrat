@@ -152,16 +152,21 @@ export function refuse(status: number, detail: string): Response {
 }
 
 /**
- * The answer for a build the agent never answered for (#2931). `detail` is the reviewed sentence;
- * `diagnostic` is the runtime's own text, which the control plane keeps on a row only staff read
- * and answers to nobody. It is a private member of this one hop, so not a declared extension.
+ * A failed build's answer. `detail` is the reviewed sentence; `diagnostic` is the runtime's own
+ * text, which the control plane keeps on a row only staff read and answers to nobody. It is a
+ * private member of this one hop, so not a declared extension.
  */
-export function interruptedResponse(detail: string, diagnostic: string): Response {
-	const problem = refusalProblem(502, detail);
+export function diagnosedResponse(status: number, detail: string, diagnostic: string): Response {
+	const problem = refusalProblem(status, detail);
 	return new Response(JSON.stringify({ ...problem, diagnostic }), {
 		status: problem.status,
 		headers: { 'content-type': PROBLEM_CONTENT_TYPE },
 	});
+}
+
+/** The answer for a build the agent never answered for (#2931). */
+export function interruptedResponse(detail: string, diagnostic: string): Response {
+	return diagnosedResponse(502, detail, diagnostic);
 }
 
 /**

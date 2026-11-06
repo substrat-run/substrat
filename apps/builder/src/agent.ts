@@ -42,7 +42,7 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { BUILD_BUSY, BuildQueue, BuildWaitExpired } from './build-queue.js';
-import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, interruptedRecord, invalidFields, RECORD_INDEX, RECORD_PREFIX, retained, ulid, type BuildRecord } from './build-log.js';
+import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, interruptedRecord, interruptionOf, invalidFields, orBuildFailure, RECORD_INDEX, RECORD_PREFIX, retained, ulid, type BuildRecord } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	orUnhandled,
@@ -53,6 +53,7 @@ import {
 	turnFailure,
 	sourceBuildFailure,
 	SourceBuildError,
+	diagnosedResponse,
 } from './problem.js';
 import type { BuildPhase } from './phase.js';
 import { REFERENCE_DIRS } from './reference.js';
@@ -80,6 +81,7 @@ import { readRecord, TurnRecord, type TurnOutcome } from './record.js';
 import { underProject, withinProject } from './project-path.js';
 import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
+import { collectRelease, RELEASE_DIR } from './release-files.js';
 import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
 
 const REPO = '/workspace';
@@ -400,20 +402,15 @@ export class BuilderAgent extends DurableObject<Env> {
 				// Source code and dependency hooks run without repository or control-plane credentials.
 				await checkedExec(sb, 'chown -R substrat-build:substrat-build /build');
 				const install = "cd /build/source && pnpm install --frozen-lockfile";
-				const run = 'cd /workspace/substrat && node --import tsx apps/builder/src/build-runner.ts /build/request.json /build/result.json';
+				const run = `cd /workspace/substrat && node --import tsx apps/builder/src/build-runner.ts /build/request.json ${RELEASE_DIR}`;
 				// The one step that runs the tenant's code, and the one whose output is kept.
 				await log.begin('install and build', { keepOutput: true });
 				await checkedExec(sb, `su -s /bin/sh substrat-build -c ${shellQuote(`${install} && ${run}`)}`);
 				await log.begin('collect the release');
-				const outputBytes = Number(await checkedExec(sb, 'wc -c < /build/result.json'));
-				if (!Number.isFinite(outputBytes) || outputBytes > 24 * 1024 * 1024) throw new SourceBuildError('release output exceeds the build transfer limit');
-				const resultFile = await raw.readFile('/build/result.json');
-				const result = JSON.parse(typeof resultFile === 'string' ? resultFile : resultFile.content) as { parts: Array<{ name: string; text?: string; base64?: string; type?: string }>; dataLoss: unknown };
-				const form = new FormData();
-				for (const part of result.parts) {
-					if (part.text !== undefined) form.set(part.name, part.text);
-					else form.set(part.name, new Blob([Uint8Array.from(atob(part.base64!), (c) => c.charCodeAt(0))], { type: part.type }), part.name);
-				}
+				const { form, dataLoss } = await collectRelease(async (path) => {
+					const file = await raw.readFile(path);
+					return typeof file === 'string' ? file : file.content;
+				});
 				const gate = JSON.parse(form.get('origin') as string)?.gate;
 				const origin = entry.repository.kind === 'github' && submittedDirectory === undefined
 					? { source: 'git', gitRepo: `${entry.repository.owner}/${entry.repository.repo}`, gitCommit: revision, gitRef: entry.repository.branch }
@@ -422,7 +419,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				const manifest = JSON.parse(form.get('manifest') as string);
 				manifest.build = { id: buildId, projectId: entry.id, revision, toolchain };
 				form.set('manifest', JSON.stringify(manifest));
-				form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss: result.dataLoss }));
+				form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss }));
 				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'built', completedAt: new Date().toISOString() });
 				await log.finish('built');
 				return new Response(form);
@@ -431,12 +428,21 @@ export class BuilderAgent extends DurableObject<Env> {
 			// A command's failure already carries its own output; any other failure gets the tail.
 			const detail = errorDetail(log, error instanceof BuildWaitExpired ? BUILD_BUSY : sourceBuildFailure(error), error);
 			// The error as its own argument: nested in an object it serialises to `{}`.
-			console.error('source.build.failed', { buildId, step: log.step }, error);
+			// `cause` too: Workers Logs keeps that argument's stack and drops its message.
+			const cause = interruptionOf(error);
+			console.error('source.build.failed', { buildId, step: log.step, cause }, error);
 			await log.finish('failed', detail).catch(() => undefined);
 			// The CLI retries on this sentence; it stays exactly as the queue words it.
 			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
-			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry?.id, state: 'failed', detail, completedAt: new Date().toISOString() });
-			return refuse(error instanceof SourceBuildError ? 422 : 500, `platform build failed: ${detail}`);
+			// A try, not `.catch`: a storage write can throw before it returns a promise. Escaping
+			// here would answer the caller with neither the sentence nor the build id.
+			try {
+				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry?.id, state: 'failed', detail, completedAt: new Date().toISOString() });
+			} catch (unstored) {
+				console.error('source.build.unstored', { buildId, cause: interruptionOf(unstored) }, unstored);
+			}
+			if (error instanceof SourceBuildError) return refuse(422, `platform build failed: ${detail}`);
+			return diagnosedResponse(500, `platform build failed: ${detail}`, cause);
 		} finally {
 			await raw.destroy().catch(() => undefined);
 		}
@@ -785,11 +791,14 @@ export class BuilderAgent extends DurableObject<Env> {
 		if (!this.#tenant) return refuse(400, 'tenant context is required');
 		const url = new URL(req.url);
 		if (url.pathname === '/internal/build' && req.method === 'POST') {
-			const { slug, request } = await req.json() as { slug: string; request: unknown };
-			// A request the contract refuses is the caller's 400, not an unexplained 500.
-			const parsed = sourceBuildRequest.safeParse(request);
-			if (!parsed.success) return refuse(400, `invalid build request (${invalidFields(parsed.error.issues).join(', ')})`);
-			return this.#build(slug, parsed.data, buildIdFrom(req.headers.get(BUILD_ID_HEADER)));
+			const buildId = buildIdFrom(req.headers.get(BUILD_ID_HEADER));
+			return orBuildFailure(buildId, async () => {
+				const { slug, request } = await req.json() as { slug: string; request: unknown };
+				// A request the contract refuses is the caller's 400, not an unexplained 500.
+				const parsed = sourceBuildRequest.safeParse(request);
+				if (!parsed.success) return refuse(400, `invalid build request (${invalidFields(parsed.error.issues).join(', ')})`);
+				return await this.#build(slug, parsed.data, buildId);
+			});
 		}
 		// The worker's own call, on a new stub, after the one running the build threw: no route
 		// outside this object reaches it.

@@ -5,10 +5,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
 import { CommandFailedError, interruptedResponse, SourceBuildError } from '../src/problem.js';
-import { BuildLog, buildIdFrom, errorDetail, failureDetail, INTERRUPTION_MAX, interruptedRecord, interruptionOf, invalidFields, isBuildId, fitted, OUTPUT_TAIL, RECORD_MAX, RECORDS_KEPT, retained, ulid, type BuildRecord } from '../src/build-log.js';
+import { BuildLog, buildIdFrom, errorDetail, failureDetail, INTERRUPTION_MAX, interruptedRecord, interruptionOf, invalidFields, isBuildId, fitted, orBuildFailure, OUTPUT_TAIL, RECORD_MAX, RECORDS_KEPT, retained, ulid, type BuildRecord } from '../src/build-log.js';
 
 const ID = '01M6M2KNCVEV3AFPHTAMYRMC1X';
 
@@ -29,6 +29,27 @@ function recorded(): { log: BuildLog; saved: BuildRecord[] } {
 }
 
 describe('the build record', () => {
+	it('keeps building when the record cannot be stored, and logs why', async () => {
+		const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		// Thrown, not rejected: the shape the storage write took in production.
+		const log = new BuildLog(ID, 'acme/crm', () => { throw new Error('storage refused'); });
+		await log.begin('collect the release');
+		expect(log.step).toBe('collect the release');
+		expect(logged).toHaveBeenCalledWith('source.build.unstored', { buildId: ID, cause: 'Error: storage refused' }, expect.any(Error));
+		logged.mockRestore();
+	});
+
+	it('answers a throw that escapes the build with its id, and the cause for staff only', async () => {
+		const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const answer = await orBuildFailure(ID, async () => { throw new Error('storage refused'); });
+		logged.mockRestore();
+		expect(answer.status).toBe(500);
+		expect(await answer.json()).toMatchObject({
+			detail: `platform build failed: the source build stopped unexpectedly; the cause is in the server log (build ${ID})`,
+			diagnostic: 'Error: storage refused',
+		});
+	});
+
 	it('stores each step as it starts, and keeps output only for a step that asks', async () => {
 		const { log, saved } = recorded();
 		const sb = log.sandbox(fakeSandbox({
