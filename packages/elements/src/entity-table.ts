@@ -1028,7 +1028,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
               const key = keys[r]!;
               const selected = state.selected.has(key);
               const name = this.columns[0] ? cellText(this.columns[0], row, now).text : key;
-              const open = this.detail !== undefined && this.expanded === key;
+              const open = this.expanded === key;
               return html`<tr
                   part=${selected ? 'row selected' : 'row'}
                   class=${[selected ? 'selected' : '', open ? 'expanded' : ''].join(' ').trim()}
@@ -1046,7 +1046,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
                 )}
                 ${rowActions.length ? html`<td class="actions">${this.#rowActions(rowActions, row, key, name, state)}</td>` : nothing}
               </tr>
-              ${open
+              ${open && this.detail
                 ? html`<tr class="detail">
                     <td part="detail" colspan=${columns.length + (this.selectable ? 1 : 0) + (rowActions.length ? 1 : 0)}>
                       <slot name=${detailSlotOf(key)}></slot>

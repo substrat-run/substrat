@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
 import type {
   EntitlementGrant,
   HostnameBinding,
@@ -9,7 +8,7 @@ import type {
   Tenant,
   TenantId,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Select, SelectBox, Stat, Tabs, Tag } from '../components';
+import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Stat, Table, Tabs, Tag } from '../components';
 import {
   availableActions,
   effectiveStatus,
@@ -106,9 +105,6 @@ const BULK_ACTIONS: {
   { action: 'reap', label: 'Reap storage', variant: 'danger', past: 'reaped' },
 ];
 
-/** Options for the client-side page-size control. */
-const PAGE_SIZES = [25, 50, 100];
-
 export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, onChanged, onToast }: ScopesProps) {
   // How many hostnames each scope binds — the fact that tells a live install apart from
   // dead cruft, and the one the reap guard turns on. Counted once over the whole fleet's
@@ -131,8 +127,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
   const [tenantFilter, setTenantFilter] = useState('all');
   const [verticalFilter, setVerticalFilter] = useState('all');
   const [jurisFilter, setJurisFilter] = useState('all');
-  const [pageSize, setPageSize] = useState(PAGE_SIZES[0]!);
-  const [pageIndex, setPageIndex] = useState(0);
 
   // Bulk selection, keyed by scope id so it survives the re-sliced page window.
   const [selectedIds, setSelectedIds] = useState<Set<ScopeId>>(new Set());
@@ -196,17 +190,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
     });
   }, [scopes, tenants, tab, tenantFilter, verticalFilter, jurisFilter, q]);
 
-  // A filter change can shrink the result below the current page — reset to the
-  // first page so the operator never lands on an empty tail.
-  useEffect(() => {
-    setPageIndex(0);
-  }, [tab, tenantFilter, verticalFilter, jurisFilter, q, pageSize]);
-
-  const total = filtered.length;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const page = Math.min(pageIndex, pageCount - 1);
-  const start = page * pageSize;
-  const pageRows = filtered.slice(start, start + pageSize);
 
   // Selection is scoped to what the filters currently show: everything derived
   // from `filtered`, so a hidden-but-still-selected row never silently rides
@@ -351,26 +334,6 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
     );
   }
 
-  const th: CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: CSSProperties = {
-    padding: '0 16px',
-    height: 'var(--table-row-h)',
-    borderBottom: '1px solid var(--border-subtle)',
-    fontSize: 14,
-    whiteSpace: 'nowrap',
-  };
   const anyFilter = q !== '' || tenantFilter !== 'all' || verticalFilter !== 'all' || jurisFilter !== 'all';
 
   return (
@@ -447,6 +410,13 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
           value={jurisFilter}
           onChange={(e) => setJurisFilter(e.target.value)}
           style={{ width: 160 }}
+        />
+        <Checkbox
+          label={`Select all ${filtered.length}`}
+          checked={allSelected}
+          indeterminate={someSelected}
+          onChange={toggleAll}
+          disabled={filtered.length === 0}
         />
         {anyFilter && (
           <Button
@@ -529,123 +499,55 @@ export function Scopes({ api, scopes, tenants, entitlements, hostnames, onOpen, 
       )}
 
       <Card padding={0}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, width: 44, paddingRight: 0 }}>
+        <Table
+          label="Scopes"
+          rows={filtered}
+          rowKey={(s) => s.id}
+          paged
+          resetKey={`${tab}|${tenantFilter}|${verticalFilter}|${jurisFilter}|${q}`}
+          onRowClick={(s) => onOpen(s.id)}
+          emptyText="No scopes match this filter."
+          columns={[
+            {
+              header: '',
+              width: 44,
+              render: (s) => (
                 <SelectBox
-                  checked={allSelected}
-                  indeterminate={someSelected}
-                  onChange={toggleAll}
-                  ariaLabel={allSelected ? 'Deselect all' : 'Select all matching'}
+                  checked={selectedIds.has(s.id)}
+                  onChange={(on) => toggleOne(s.id, on)}
+                  ariaLabel={`Select ${scopeHandle(s, tenants)}`}
                 />
-              </th>
-              <th style={th}>Scope</th>
-              <th style={th}>Slug</th>
-              <th style={th}>Kind</th>
-              <th style={{ ...th, textAlign: 'center' }}>Shape</th>
-              <th style={th}>Jurisdiction</th>
-              <th style={th}>Schema</th>
-              <th style={{ ...th, textAlign: 'right' }}>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageRows.map((s) => {
-              const rowEff = effectiveStatus(s, tenants.get(s.tenantId));
-              const checked = selectedIds.has(s.id);
-              return (
-                <tr
-                  key={s.id}
-                  onClick={() => onOpen(s.id)}
-                  style={{
-                    cursor: 'pointer',
-                    background: checked ? 'var(--surface-hover)' : 'transparent',
-                  }}
-                >
-                  <td style={{ ...td, paddingRight: 0 }}>
-                    <SelectBox
-                      checked={checked}
-                      onChange={(on) => toggleOne(s.id, on)}
-                      ariaLabel={`Select ${scopeHandle(s, tenants)}`}
-                    />
-                  </td>
-                  <td style={{ ...td, color: 'var(--text-primary)' }}>{s.name}</td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-                    {scopeHandle(s, tenants)}
-                  </td>
-                  <td style={td}>
-                    <Tag mono>{s.kind}</Tag>
-                  </td>
-                  <td style={{ ...td, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{s.storageShape}</td>
-                  <td style={td}>
-                    <Tag mono>{s.jurisdiction}</Tag>
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-                    {s.schemaVersion}
-                  </td>
-                  <td style={{ ...td, textAlign: 'right' }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                      {/* A cascade-suspended scope's own row still says `active`. The note
-                          keeps the badge from looking like a per-scope suspend to undo here. */}
-                      {rowEff === 'suspended-via-tenant' && (
-                        <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>via tenant</span>
-                      )}
-                      {/* Serving badge: this scope resolves ≥1 hostname, i.e. it is (or will
-                          be) live — the load-bearing fact when the row sits in a reap flow.
-                          It also means reap is guarded until the names are unbound (#500). */}
-                      {(bindingCounts.get(s.id) ?? 0) > 0 && (
-                        <Badge status="info">Serving · {bindingCounts.get(s.id)}</Badge>
-                      )}
-                      {/* Migration failure is orthogonal to lifecycle status — shown beside it. */}
-                      {s.migrationFailure && <Badge status="danger">Migration failed</Badge>}
-                      <Badge status={statusTone(rowEff)}>{statusLabel(rowEff)}</Badge>
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-            {pageRows.length === 0 && (
-              <tr>
-                <td colSpan={8} style={{ ...td, textAlign: 'center', color: 'var(--text-placeholder)', height: 80 }}>
-                  No scopes match this filter.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        {total > 0 && (
-          <div
-            style={{
-              padding: '10px 14px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              borderTop: '1px solid var(--border-subtle)',
-              flexWrap: 'wrap',
-            }}
-          >
-            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Showing {start + 1}–{Math.min(start + pageSize, total)} of {total}
-            </span>
-            <Select
-              size="sm"
-              options={PAGE_SIZES.map((n) => ({ value: String(n), label: `${n} / page` }))}
-              value={String(pageSize)}
-              onChange={(e) => setPageSize(Number(e.target.value))}
-              style={{ width: 110 }}
-            />
-            <span style={{ flex: 1 }} />
-            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-              Page {page + 1} of {pageCount}
-            </span>
-            <Button variant="secondary" size="sm" disabled={page === 0} onClick={() => setPageIndex(page - 1)}>
-              Prev
-            </Button>
-            <Button variant="secondary" size="sm" disabled={page >= pageCount - 1} onClick={() => setPageIndex(page + 1)}>
-              Next
-            </Button>
-          </div>
-        )}
+              ),
+            },
+            { header: 'Scope', key: 'name' },
+            { header: 'Slug', mono: true, muted: true, render: (s) => scopeHandle(s, tenants) },
+            { header: 'Kind', render: (s) => <Tag mono>{s.kind}</Tag> },
+            { header: 'Shape', align: 'center', mono: true, key: 'storageShape' },
+            { header: 'Jurisdiction', render: (s) => <Tag mono>{s.jurisdiction}</Tag> },
+            { header: 'Schema', mono: true, muted: true, key: 'schemaVersion' },
+            {
+              header: 'Status',
+              align: 'right',
+              render: (s) => {
+                const rowEff = effectiveStatus(s, tenants.get(s.tenantId));
+                return (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
+                    {/* A cascade-suspended scope's own row still says `active`. The note
+                        keeps the badge from looking like a per-scope suspend to undo here. */}
+                    {rowEff === 'suspended-via-tenant' && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>via tenant</span>}
+                    {/* Serving badge: this scope resolves ≥1 hostname, i.e. it is (or will
+                        be) live — the load-bearing fact when the row sits in a reap flow.
+                        It also means reap is guarded until the names are unbound (#500). */}
+                    {(bindingCounts.get(s.id) ?? 0) > 0 && <Badge status="info">Serving · {bindingCounts.get(s.id)}</Badge>}
+                    {/* Migration failure is orthogonal to lifecycle status — shown beside it. */}
+                    {s.migrationFailure && <Badge status="danger">Migration failed</Badge>}
+                    <Badge status={statusTone(rowEff)}>{statusLabel(rowEff)}</Badge>
+                  </span>
+                );
+              },
+            },
+          ]}
+        />
       </Card>
 
       {/* Bulk reap confirmation. Reap is irreversible, and a bulk reap multiplies

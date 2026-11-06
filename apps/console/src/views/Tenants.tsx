@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { EntitlementGrant, Scope, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Pager, Select, SubIcon, SubIcons, Table, Tag, usePaged } from '../components';
+import { Badge, Button, Card, Dialog, Input, Select, SubIcon, SubIcons, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { ulid } from '@substrat-run/kernel';
 import { tenantTone } from '../lib/fleet';
@@ -52,7 +52,6 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
       }),
     [tenants, provenance, statusFilter, q],
   );
-  const paged = usePaged(filtered, `${provenance}|${statusFilter}|${q}`);
   const reapedCount = useMemo(() => tenants.filter((t) => t.status === 'reaped').length, [tenants]);
   const provisionedCount = useMemo(() => tenants.filter((t) => t.provisionedByTenant !== null).length, [tenants]);
 
@@ -190,7 +189,9 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
       <Card padding={0}>
         <Table
           columns={columns}
-          rows={paged.rows}
+          rows={filtered}
+          paged
+          resetKey={`${provenance}|${statusFilter}|${q}`}
           onRowClick={(t) => onOpen(t.id)}
           emptyText={
             tenants.length === 0
@@ -200,7 +201,6 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
                 : 'No tenants match this filter.'
           }
         />
-        <Pager p={paged} />
       </Card>
 
       <Dialog

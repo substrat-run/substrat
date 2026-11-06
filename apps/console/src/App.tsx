@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EntitlementGrant, HostnameBinding, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
-import { Card, SupportWidget, Toast, useAutoRefresh } from './components';
+import { Card, Input, SupportWidget, Toast, useAutoRefresh } from './components';
 import { scopeHandle } from './lib/fleet';
 import { navPath, parseNav, type Nav } from './lib/nav';
 import { ConsoleShell } from './ConsoleShell';
@@ -285,20 +285,12 @@ export function App() {
             ?actor=&lt;PlatformActorId&gt;
           </code>
           <div style={{ marginTop: 12 }}>
-            <input
+            <Input
+              ariaLabel="PlatformActorId"
+              mono
               placeholder="Paste the PlatformActorId"
-              onKeyDown={(e) => e.key === 'Enter' && setActor((e.target as HTMLInputElement).value.trim())}
-              style={{
-                width: 380,
-                height: 32,
-                padding: '0 10px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border-default)',
-                background: 'var(--surface-card)',
-                color: 'var(--text-primary)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 12.5,
-              }}
+              onEnter={(actor) => setActor(actor.trim())}
+              style={{ width: 380 }}
             />
           </div>
         </Card>

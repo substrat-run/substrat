@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { upstreamReferenceOf, type OpsFailureEntry, type Tenant, type TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Input, Select, Tag } from '../components';
+import { Badge, Button, Card, Input, Select, Table, Tag } from '../components';
 import { ActorCell } from '../patterns/ActorCell';
 import type { Api } from '../lib/api';
 
@@ -119,25 +119,6 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint,
     return hay.includes(q.toLowerCase());
   });
 
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = {
-    padding: '0 16px',
-    height: 40,
-    borderBottom: '1px solid var(--border-subtle)',
-    fontSize: 12.5,
-  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -182,124 +163,102 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint,
         padding={0}
         footer="Rows are pruned after the retention horizon (90 days). Row click shows the full message. Cursor-paginated."
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              {['Time', 'Operation', 'Vertical', 'Tenant', 'Status', 'Reference'].map((h) => (
-                <th key={h} style={th}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((e) => (
-              <Fragment key={e.id}>
-                <tr
-                  onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
-                  style={{ cursor: 'pointer', background: expanded === e.id ? 'var(--surface-hover)' : 'transparent' }}
-                >
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {e.at.slice(0, 19).replace('T', ' ')}
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                    {e.operation}
-                    {e.stage && <span style={{ color: 'var(--text-tertiary)' }}> · {e.stage}</span>}
-                  </td>
-                  <td style={td}>
-                    {e.vertical ? <Tag mono>{e.vertical}</Tag> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>}
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                    {e.tenantId ? (
-                      (tenants.get(e.tenantId)?.slug ?? e.tenantId.slice(0, 8))
-                    ) : (
-                      <span style={{ color: 'var(--text-placeholder)' }}>platform</span>
-                    )}
-                  </td>
-                  <td style={td}>
-                    {e.status !== null ? (
-                      <Badge status={e.status >= 500 ? 'danger' : 'warning'}>{e.status}</Badge>
-                    ) : (
-                      <span style={{ color: 'var(--text-placeholder)' }}>—</span>
-                    )}
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
-                    {e.reference ? (
-                      <button
-                        title="Copy for a Cloudflare support ticket"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          copyReference(e.reference!);
-                        }}
-                        style={{
-                          background: 'none',
-                          border: '1px solid var(--border-default)',
-                          borderRadius: 4,
-                          padding: '2px 6px',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 11.5,
-                          color: 'var(--text-secondary)',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {copied === e.reference ? 'copied' : e.reference}
-                      </button>
-                    ) : (
-                      <span style={{ color: 'var(--text-placeholder)' }}>—</span>
-                    )}
-                  </td>
-                </tr>
-                {expanded === e.id && (
-                  <tr>
-                    <td colSpan={6} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
-                        <div style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text-primary)' }}>
-                          {e.message}
-                        </div>
-                        <div style={{ display: 'flex', gap: 16, alignItems: 'center', color: 'var(--text-tertiary)' }}>
-                          <ActorCell actor={e.actor} />
-                          {e.scopeId && (
-                            <span style={{ fontFamily: 'var(--font-mono)' }}>scope {e.scopeId}</span>
-                          )}
-                          {/* #2540: a withheld failure's own reference is the platform's; Cloudflare's,
-                              when there is one, is named at the start of staff's row. */}
-                          {supportReference(e) && (
-                            <Button size="sm" variant="secondary" onClick={() => copyReference(supportReference(e)!)}>
-                              {copied === supportReference(e) ? 'Copied' : supportReferenceLabel(e)}
-                            </Button>
-                          )}
-                          {/* #2540: a tenant's row may say only what was answered; the failure's own
-                              text is on a row with no tenant under the same reference. */}
-                          {e.tenantId && e.reference && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                // Every filter the staff row could miss: the tenant and the page text.
-                                setTenantFilter('all');
-                                setQ('');
-                                setReferenceInput(e.reference!);
-                              }}
-                            >
-                              All rows with this reference
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
+        <Table
+          label="Ops failures"
+          rows={visible}
+          rowKey={(e) => e.id}
+          expanded={expanded}
+          onRowClick={(e) => setExpanded(expanded === e.id ? undefined : e.id)}
+          detail={(e) => (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text-primary)' }}>
+                {e.message}
+              </div>
+              <div style={{ display: 'flex', gap: 16, alignItems: 'center', color: 'var(--text-tertiary)' }}>
+                <ActorCell actor={e.actor} />
+                {e.scopeId && <span style={{ fontFamily: 'var(--font-mono)' }}>scope {e.scopeId}</span>}
+                {/* #2540: a withheld failure's own reference is the platform's; Cloudflare's,
+                    when there is one, is named at the start of staff's row. */}
+                {supportReference(e) && (
+                  <Button size="sm" variant="secondary" onClick={() => copyReference(supportReference(e)!)}>
+                    {copied === supportReference(e) ? 'Copied' : supportReferenceLabel(e)}
+                  </Button>
                 )}
-              </Fragment>
-            ))}
-            {visible.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                  {entries.length === 0 && !error ? 'No failures recorded — a quiet fleet.' : 'No entries match.'}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                {/* #2540: a tenant's row may say only what was answered; the failure's own
+                    text is on a row with no tenant under the same reference. */}
+                {e.tenantId && e.reference && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      // Every filter the staff row could miss: the tenant and the page text.
+                      setTenantFilter('all');
+                      setQ('');
+                      setReferenceInput(e.reference!);
+                    }}
+                  >
+                    All rows with this reference
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          emptyText={entries.length === 0 && !error ? 'No failures recorded — a quiet fleet.' : 'No entries match.'}
+          columns={[
+            { header: 'Time', mono: true, muted: true, render: (e) => e.at.slice(0, 19).replace('T', ' ') },
+            {
+              header: 'Operation',
+              mono: true,
+              render: (e) => (
+                <>
+                  {e.operation}
+                  {e.stage && <span style={{ color: 'var(--text-tertiary)' }}> · {e.stage}</span>}
+                </>
+              ),
+            },
+            { header: 'Vertical', render: (e) => (e.vertical ? <Tag mono>{e.vertical}</Tag> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>) },
+            {
+              header: 'Tenant',
+              mono: true,
+              muted: true,
+              render: (e) =>
+                e.tenantId ? (
+                  (tenants.get(e.tenantId)?.slug ?? e.tenantId.slice(0, 8))
+                ) : (
+                  <span style={{ color: 'var(--text-placeholder)' }}>platform</span>
+                ),
+            },
+            {
+              header: 'Status',
+              render: (e) => (e.status !== null ? <Badge status={e.status >= 500 ? 'danger' : 'warning'}>{e.status}</Badge> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>),
+            },
+            {
+              header: 'Reference',
+              mono: true,
+              render: (e) =>
+                e.reference ? (
+                  <button
+                    title="Copy for a Cloudflare support ticket"
+                    onClick={() => copyReference(e.reference!)}
+                    style={{
+                      background: 'none',
+                      border: '1px solid var(--border-default)',
+                      borderRadius: 4,
+                      padding: '2px 6px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 11.5,
+                      color: 'var(--text-secondary)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {copied === e.reference ? 'copied' : e.reference}
+                  </button>
+                ) : (
+                  <span style={{ color: 'var(--text-placeholder)' }}>—</span>
+                ),
+            },
+          ]}
+        />
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
             <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>

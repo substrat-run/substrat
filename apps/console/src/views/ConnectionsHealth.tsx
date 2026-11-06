@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   ConnectionHealthEntry,
   ConnectionHealthPage,
@@ -6,7 +6,7 @@ import type {
   Tenant,
   TenantId,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Input, Select, Stat, Tag } from '../components';
+import { Badge, Button, Card, Input, Select, Stat, Table, Tag } from '../components';
 import type { Api } from '../lib/api';
 import { runExclusive } from '../lib/exclusive';
 import { ConnectorCallsChart } from './ConnectorCallsChart';
@@ -137,27 +137,7 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
   const tenantLabel = (id: TenantId) => tenants.get(id)?.slug ?? id.slice(0, 8);
 
 
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = {
-    padding: '0 16px',
-    height: 40,
-    borderBottom: '1px solid var(--border-subtle)',
-    fontSize: 12.5,
-  };
   const muted = <span style={{ color: 'var(--text-placeholder)' }}>—</span>;
-  const COLUMNS = ['Provider', 'Tenant', 'Vertical', 'Account', 'Status', 'Last success', 'Last error', 'Grant expiry'];
 
   const summary = page?.summary;
   const staleDays = page?.staleAfterDays;
@@ -263,113 +243,92 @@ export function ConnectionsHealth({ api, tenants }: ConnectionsHealthProps) {
         padding={0}
         footer={`Health comes from each connection's last recorded outcome. Grant expiry reads "not reported" when the connector records none, which no shipped connector does yet. Row click shows the full error. Cursor-paginated.`}
       >
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-            <thead>
-              <tr>
-                {COLUMNS.map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((e) => (
-                <Fragment key={e.id}>
-                  <tr
-                    onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
-                    style={{ cursor: 'pointer', background: expanded === e.id ? 'var(--surface-hover)' : 'transparent' }}
-                  >
-                    <td style={td}>
-                      {/* The keyboard path into the detail row — the tr's onClick is pointer-only. */}
-                      <button
-                        type="button"
-                        aria-expanded={expanded === e.id}
-                        aria-controls={expanded === e.id ? `conn-detail-${e.id}` : undefined}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          setExpanded(expanded === e.id ? undefined : e.id);
-                        }}
-                        style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer' }}
-                      >
-                        <Tag mono>{e.provider}</Tag>
-                      </button>
-                    </td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{tenantLabel(e.tenantId)}</td>
-                    <td style={td}>
-                      <Tag mono>{e.vertical}</Tag>
-                    </td>
-                    <td style={{ ...td, color: 'var(--text-primary)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {e.label}
-                      {e.externalAccountRef && (
-                        <span style={{ marginLeft: 6, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{e.externalAccountRef}</span>
-                      )}
-                    </td>
-                    <td style={td}>
-                      <Badge status={HEALTH_BADGE[e.health]}>{HEALTH_LABEL[e.health]}</Badge>
-                    </td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                      {e.lastOkAt && page ? <span title={e.lastOkAt}>{ago(e.lastOkAt, page.asOf)}</span> : muted}
-                    </td>
-                    <td style={{ ...td, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {e.lastErrorAt && page ? (
-                        <>
-                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', marginRight: 8 }} title={e.lastErrorAt}>
-                            {ago(e.lastErrorAt, page.asOf)}
-                          </span>
-                          <span style={{ color: 'var(--status-danger-fg)' }}>{e.lastError}</span>
-                        </>
-                      ) : (
-                        muted
-                      )}
-                    </td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                      {e.expiresAt ? (
-                        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{stamp(e.expiresAt)}</span>
-                          {e.expiryWarning && (
-                            <Badge status={e.expiryWarning === 'expired' ? 'danger' : 'warning'}>{e.expiryWarning}</Badge>
-                          )}
-                        </span>
-                      ) : (
-                        // Not a blank: an empty cell reads as "no problem", and here it means nobody told us.
-                        <span style={{ color: 'var(--text-placeholder)' }}>not reported</span>
-                      )}
-                    </td>
-                  </tr>
-                  {expanded === e.id && (
-                    <tr id={`conn-detail-${e.id}`}>
-                      <td colSpan={COLUMNS.length} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
-                          {e.lastError && (
-                            <div style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--status-danger-fg)' }}>
-                              {e.lastError}
-                            </div>
-                          )}
-                          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                            <span>connection {e.id}</span>
-                            <span>stored status {e.status}</span>
-                            <span>created {stamp(e.createdAt)}</span>
-                            {e.lastOkAt && <span>last success {stamp(e.lastOkAt)}</span>}
-                            {e.lastErrorAt && <span>last error {stamp(e.lastErrorAt)}</span>}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-              {entries.length === 0 && (
-                <tr>
-                  <td colSpan={COLUMNS.length} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                    {error ? 'Could not load connections.' : 'No connections match.'}
-                  </td>
-                </tr>
+        <Table
+          label="Connections"
+          rows={entries}
+          rowKey={(e) => e.id}
+          expanded={expanded}
+          onRowClick={(e) => setExpanded(expanded === e.id ? undefined : e.id)}
+          detail={(e) => (
+            <div id={`conn-detail-${e.id}`} style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
+              {e.lastError && (
+                <div style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--status-danger-fg)' }}>
+                  {e.lastError}
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                <span>connection {e.id}</span>
+                <span>stored status {e.status}</span>
+                <span>created {stamp(e.createdAt)}</span>
+                {e.lastOkAt && <span>last success {stamp(e.lastOkAt)}</span>}
+                {e.lastErrorAt && <span>last error {stamp(e.lastErrorAt)}</span>}
+              </div>
+            </div>
+          )}
+          emptyText={error ? 'Could not load connections.' : 'No connections match.'}
+          columns={[
+            {
+              header: 'Provider',
+              render: (e) => (
+                // The keyboard path into the detail row — the row's click is pointer-only.
+                <button
+                  type="button"
+                  aria-expanded={expanded === e.id}
+                  aria-controls={expanded === e.id ? `conn-detail-${e.id}` : undefined}
+                  onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
+                  style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer' }}
+                >
+                  <Tag mono>{e.provider}</Tag>
+                </button>
+              ),
+            },
+            { header: 'Tenant', mono: true, muted: true, render: (e) => tenantLabel(e.tenantId) },
+            { header: 'Vertical', render: (e) => <Tag mono>{e.vertical}</Tag> },
+            {
+              header: 'Account',
+              render: (e) => (
+                <span style={{ display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {e.label}
+                  {e.externalAccountRef && <span style={{ marginLeft: 6, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{e.externalAccountRef}</span>}
+                </span>
+              ),
+            },
+            { header: 'Status', render: (e) => <Badge status={HEALTH_BADGE[e.health]}>{HEALTH_LABEL[e.health]}</Badge> },
+            {
+              header: 'Last success',
+              mono: true,
+              muted: true,
+              render: (e) => (e.lastOkAt && page ? <span title={e.lastOkAt}>{ago(e.lastOkAt, page.asOf)}</span> : muted),
+            },
+            {
+              header: 'Last error',
+              render: (e) =>
+                e.lastErrorAt && page ? (
+                  <span style={{ display: 'block', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', marginRight: 8 }} title={e.lastErrorAt}>
+                      {ago(e.lastErrorAt, page.asOf)}
+                    </span>
+                    <span style={{ color: 'var(--status-danger-fg)' }}>{e.lastError}</span>
+                  </span>
+                ) : (
+                  muted
+                ),
+            },
+            {
+              header: 'Grant expiry',
+              render: (e) =>
+                e.expiresAt ? (
+                  <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{stamp(e.expiresAt)}</span>
+                    {e.expiryWarning && <Badge status={e.expiryWarning === 'expired' ? 'danger' : 'warning'}>{e.expiryWarning}</Badge>}
+                  </span>
+                ) : (
+                  // Not a blank: an empty cell reads as "no problem", and here it means nobody told us.
+                  <span style={{ color: 'var(--text-placeholder)' }}>not reported</span>
+                ),
+            },
+          ]}
+        />
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
             <Button variant="ghost" size="sm" loading={loadingMore} onClick={() => void loadMore()}>

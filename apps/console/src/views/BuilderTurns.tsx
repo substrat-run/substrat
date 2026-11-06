@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { BuilderTurn, BuilderTurnDetail, BuilderTurnOutcome, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Select, Tag } from '../components';
+import { Badge, Button, Card, Select, Table, Tag, UNSET_BUTTON } from '../components';
 import type { Api } from '../lib/api';
 import { timelineOf } from '../lib/builder-turn';
 
@@ -154,20 +154,6 @@ export function BuilderTurns({ api, tenants }: BuilderTurnsProps) {
   // when a gate is added; the chosen one stays offered when a filter leaves no row naming it.
   const gates = [...new Set([...entries.flatMap((t) => t.redGates.map((g) => g.name)), ...(gateFilter === 'all' ? [] : [gateFilter])])].sort();
 
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = { padding: '0 16px', height: 40, borderBottom: '1px solid var(--border-subtle)', fontSize: 12.5 };
   const columns = ['Ended', 'Team', 'Project', 'Outcome', 'Red gates', 'Repairs', 'Tokens'];
 
   return (
@@ -225,92 +211,70 @@ export function BuilderTurns({ api, tenants }: BuilderTurnsProps) {
       )}
 
       <Card padding={0} footer="Turns recorded since the turn summaries shipped. Row click opens the turn. Cursor-paginated.">
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              {columns.map((h) => (
-                <th key={h} style={th}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((t) => (
-              <Fragment key={t.id}>
-                <tr
+        <Table
+          label="Builder turns"
+          rows={entries}
+          rowKey={(t) => t.id}
+          expanded={expanded}
+          onRowClick={(t) => setExpanded(expanded === t.id ? undefined : t.id)}
+          detail={(t) => (
+            <div id={`turn-detail-${t.id}`}>
+              {t.redGates.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+                  {t.redGates.map((g) => (
+                    <div key={g.name} style={{ ...mono, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+                      {g.name} ({g.status}): {g.line}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <TurnDetail api={api} turn={t} />
+            </div>
+          )}
+          emptyText={error ? 'The turns could not be read.' : troubled ? 'No turn went wrong. Switch to all turns to see the rest.' : 'No turns recorded yet.'}
+          columns={[
+            { header: 'Ended', mono: true, muted: true, render: (t) => t.endedAt.slice(0, 19).replace('T', ' ') },
+            { header: 'Team', mono: true, muted: true, render: (t) => tenants.get(t.tenantId as TenantId)?.slug ?? t.tenantId.slice(0, 8) },
+            {
+              header: 'Project',
+              render: (t) => (
+                // The keyboard path into the detail row — the row's click is pointer-only.
+                <button
+                  type="button"
+                  aria-expanded={expanded === t.id}
+                  aria-controls={expanded === t.id ? `turn-detail-${t.id}` : undefined}
                   onClick={() => setExpanded(expanded === t.id ? undefined : t.id)}
-                  style={{ cursor: 'pointer', background: expanded === t.id ? 'var(--surface-hover)' : 'transparent' }}
+                  style={{ ...UNSET_BUTTON, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 >
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {t.endedAt.slice(0, 19).replace('T', ' ')}
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                    {tenants.get(t.tenantId as TenantId)?.slug ?? t.tenantId.slice(0, 8)}
-                  </td>
-                  <td style={{ ...td, color: 'var(--text-primary)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {/* The keyboard path into the detail row — the tr's onClick is pointer-only. */}
-                    <button
-                      type="button"
-                      aria-expanded={expanded === t.id}
-                      aria-controls={expanded === t.id ? `turn-detail-${t.id}` : undefined}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setExpanded(expanded === t.id ? undefined : t.id);
-                      }}
-                      style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', textAlign: 'left' }}
-                    >
-                      {t.projectName || t.projectId}
-                    </button>
-                  </td>
-                  <td style={td}>
-                    <Badge status={OUTCOME_BADGE[t.outcome]}>{t.outcome}</Badge>
-                  </td>
-                  <td style={td}>
-                    {t.redGates.length > 0 ? (
-                      <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-                        {t.redGates.map((g) => (
-                          <Tag key={g.name} mono>
-                            {g.name}
-                          </Tag>
-                        ))}
-                      </span>
-                    ) : (
-                      <span style={{ color: 'var(--text-placeholder)' }}>{t.gatesOk === null ? '—' : 'none'}</span>
-                    )}
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)' }}>{t.repairs}</td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {(t.inputTokens / 1000).toFixed(1)}k / {(t.outputTokens / 1000).toFixed(1)}k
-                  </td>
-                </tr>
-                {expanded === t.id && (
-                  <tr id={`turn-detail-${t.id}`}>
-                    <td colSpan={columns.length} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
-                      {t.redGates.length > 0 && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
-                          {t.redGates.map((g) => (
-                            <div key={g.name} style={{ ...mono, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
-                              {g.name} ({g.status}): {g.line}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <TurnDetail api={api} turn={t} />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            ))}
-            {entries.length === 0 && (
-              <tr>
-                <td colSpan={columns.length} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                  {error ? 'The turns could not be read.' : troubled ? 'No turn went wrong. Switch to all turns to see the rest.' : 'No turns recorded yet.'}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                  {t.projectName || t.projectId}
+                </button>
+              ),
+            },
+            { header: 'Outcome', render: (t) => <Badge status={OUTCOME_BADGE[t.outcome]}>{t.outcome}</Badge> },
+            {
+              header: 'Red gates',
+              render: (t) =>
+                t.redGates.length > 0 ? (
+                  <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                    {t.redGates.map((g) => (
+                      <Tag key={g.name} mono>
+                        {g.name}
+                      </Tag>
+                    ))}
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--text-placeholder)' }}>{t.gatesOk === null ? '—' : 'none'}</span>
+                ),
+            },
+            { header: 'Repairs', mono: true, render: (t) => t.repairs },
+            {
+              header: 'Tokens in / out',
+              mono: true,
+              muted: true,
+              render: (t) => `${(t.inputTokens / 1000).toFixed(1)}k / ${(t.outputTokens / 1000).toFixed(1)}k`,
+            },
+          ]}
+        />
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
             <Button variant="ghost" size="sm" disabled={loadingOlder} onClick={() => void loadOlder()}>
