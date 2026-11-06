@@ -806,6 +806,14 @@ function keysetTail(
   return tail;
 }
 
+/** `directoryInventory`'s answer: counts only, never a row value (#1343). */
+export interface DirectoryInventory {
+  /** Every table of the directory, by name, with its row count. */
+  tables: Array<{ table: string; rows: number }>;
+  /** Tenants by lifecycle status (`active`, `deleting`, …): a status with none is absent. */
+  tenantsByStatus: Record<string, number>;
+}
+
 /** The shape the coordinator hands `recordAdmin`; before/after are arbitrary JSON. */
 /** One org membership as `listMembers` reads it (#2047: with its expiry). */
 export interface MemberTupleRow {
@@ -2501,6 +2509,32 @@ export class ControlPlaneDO extends DurableObject {
     return (this.sql.exec(sql, ...params).toArray() as unknown as TenantRow[]).map((r) =>
       this.mapTenant(r),
     );
+  }
+
+  /**
+   * How many rows each table of this directory holds, and its tenants by status (#1343).
+   * Counts only: no row value, id or name leaves this method, which is why it writes no
+   * access-log row (K-24 records reads of records, and this reads none).
+   *
+   * Every table the schema holds is counted, read off `sqlite_master` rather than a list
+   * here, so a table nobody remembered writing is counted too. That is the point: before a
+   * directory is retired, a table with rows and no owner is the thing to find. The
+   * platform's own `_cf_*` tables and SQLite's are not the directory's and are skipped.
+   */
+  directoryInventory(): DirectoryInventory {
+    const names = (this.sql
+      .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' ORDER BY name")
+      .toArray() as Array<{ name: string }>).map((r) => r.name);
+    const tables = names.map((table) => ({
+      table,
+      // The name is the schema's own, never input; quoted as an identifier all the same.
+      rows: Number((this.sql.exec(`SELECT COUNT(*) AS n FROM "${table.replaceAll('"', '""')}"`).one() as { n: number }).n),
+    }));
+    const tenantsByStatus = Object.fromEntries(
+      (this.sql.exec('SELECT status, COUNT(*) AS n FROM tenants GROUP BY status ORDER BY status').toArray() as Array<{ status: string; n: number }>)
+        .map((r) => [r.status, Number(r.n)]),
+    );
+    return { tables, tenantsByStatus };
   }
 
   // -- per-tenant relational stores (#301) ------------------------------------
