@@ -75,7 +75,7 @@ import {
 	type ProviderSecrets,
 } from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
-import { restoreMissing, snapshotDue } from './progress.js';
+import { restoreWork, snapshotDue, workIn } from './progress.js';
 import { readRecord, TurnRecord, type TurnOutcome } from './record.js';
 import { underProject, withinProject } from './project-path.js';
 import { projectStorageKeys, withoutProject } from './project-removal.js';
@@ -274,13 +274,26 @@ export class BuilderAgent extends DurableObject<Env> {
 	#tenantSlug = '';
 	#repoRoot(entry: ProjectEntry): string { return `${REPO}/${PROJECTS}/${entry.id}`; }
 
-	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
+	async #hasRepository(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<boolean> {
+		return (await pair.sb.exec(`test -d ${shellQuote(`${this.#repoRoot(entry)}/.git`)}`)).exitCode === 0;
+	}
+
+	/**
+	 * The repository on the sandbox's disk, and on a fresh checkout any uncommitted work the
+	 * last container took with it. Every route that reaches the sandbox comes through here, so
+	 * this is the one place that sees the loss: the next caller finds a repository. Returns how
+	 * many files that work changed.
+	 */
+	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<number> {
+		const fresh = !(await this.#hasRepository(pair, entry));
 		await checkoutRepository(pair.sb, await this.#access(entry, 'read', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
 		const head = await pair.sb.exec('git rev-parse --verify HEAD', { cwd: this.#repoRoot(entry) });
 		if (head.exitCode === 0 && entry.revision !== head.stdout.trim()) {
 			entry.revision = head.stdout.trim();
 			await this.#putEntry(entry);
 		}
+		const work = fresh ? workIn(await this.ctx.storage.get<string>(this.#snapshotKey(entry))) : null;
+		return work ? await restoreWork(this.#sourceWs(pair.sb, entry), entry.directory, work) : 0;
 	}
 
 	async #saveSource(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
@@ -292,30 +305,25 @@ export class BuilderAgent extends DurableObject<Env> {
 	#snapshotKey(entry: ProjectEntry): string { return `snapshot:${entry.id}`; }
 
 	/**
-	 * Cache the working tree for the browser. `work` marks a tree with uncommitted work in it:
-	 * the copy a lost container is restored from (progress.ts). A commit's snapshot clears it.
+	 * Cache the working tree for the browser. A `work` snapshot marks a tree with uncommitted
+	 * work in it, the copy a lost container is restored from (progress.ts), and only a
+	 * `commit` one clears that. A `fill` answers a cache miss, so it writes only into a miss.
 	 */
-	async #saveSnapshot(sb: SandboxLike, entry: ProjectEntry, work = false): Promise<boolean> {
+	async #saveSnapshot(sb: SandboxLike, entry: ProjectEntry, kind: 'work' | 'commit' | 'fill'): Promise<boolean> {
+		const key = this.#snapshotKey(entry);
 		try {
 			const snap = await snapshotWorkspace(this.#sourceWs(sb, entry), entry.directory);
-			await this.ctx.storage.put(this.#snapshotKey(entry), JSON.stringify({ dir: entry.dir, generatedAt: new Date().toISOString(), work, ...snap }));
+			// A turn may have stored its work while this one was reading the tree.
+			if (kind === 'fill' && (await this.ctx.storage.get(key))) return true;
+			await this.ctx.storage.put(key, JSON.stringify({ dir: entry.dir, generatedAt: new Date().toISOString(), work: kind === 'work', ...snap }));
 			return true;
 		} catch (err) {
 			// The file endpoints remain available, but a stale tree in the browser needs a trace.
 			console.error('snapshot.save.failed', { projectId: entry.id }, err);
+			// The work is committed, so the copy left behind must not be restored over it.
+			if (kind === 'commit') await this.ctx.storage.delete(key);
 			return false;
 		}
-	}
-
-	/** After a container loss: the repository back, then the turn's work on top of it. */
-	async #recoverWork(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<number> {
-		const repo = await pair.sb.exec(`test -d ${shellQuote(`${this.#repoRoot(entry)}/.git`)}`).catch(() => null);
-		const lost = repo?.exitCode !== 0;
-		if (lost) await this.#restoreProject(pair, entry);
-		const cached = await this.ctx.storage.get<string>(this.#snapshotKey(entry));
-		const snap = cached ? (JSON.parse(cached) as { work?: boolean; files?: Record<string, string> }) : null;
-		if (!snap?.work || !snap.files) return 0;
-		return await restoreMissing(this.#sourceWs(pair.sb, entry), entry.directory, snap.files);
 	}
 
 	/**
@@ -581,9 +589,8 @@ export class BuilderAgent extends DurableObject<Env> {
 					await this.ctx.storage.put(`record-turn-seq:${entry.id}`, record.firstSeq);
 				}
 				// A slept container reopens the authoritative Git branch.
-				await this.#restoreProject(pair, entry);
 				// A turn that died before committing left its work in the snapshot.
-				const carried = await this.#recoverWork(pair, entry);
+				const carried = await this.#restoreProject(pair, entry);
 				if (carried) record?.note('work-recovered', `${carried} files restored from the last snapshot`, { files: carried });
 				if (entry.directory === '.') {
 					const head = await sb.exec('git rev-parse HEAD', { cwd: this.#repoRoot(entry) });
@@ -613,14 +620,14 @@ export class BuilderAgent extends DurableObject<Env> {
 				/** The tree as it stands, where the browser reads it and a lost container restores from. */
 				const shareWork = async (): Promise<void> => {
 					lastSnapshot = Date.now();
-					if (await this.#saveSnapshot(sb, entry, true)) emit({ type: 'workspace-updated' });
+					if (await this.#saveSnapshot(sb, entry, 'work')) emit({ type: 'workspace-updated' });
 				};
 
 				const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 					let assistant = '';
 					let truncated = false;
 					// A continuation opens here too, and its container may not be the last pass's.
-					const recovered = await this.#recoverWork(pair, entry);
+					const recovered = (await this.#hasRepository(pair, entry)) ? 0 : await this.#restoreProject(pair, entry);
 					if (recovered) {
 						record?.note('work-recovered', `${recovered} files restored from the last snapshot`, { files: recovered });
 						emit({ type: 'workspace-updated' });
@@ -713,7 +720,7 @@ export class BuilderAgent extends DurableObject<Env> {
 						await this.#saveSource(pair, entry);
 						// The SPA's container-free read path — refresh it while the
 						// container is provably awake and at the commit it just made.
-						await this.#saveSnapshot(pair.sb, entry);
+						await this.#saveSnapshot(pair.sb, entry, 'commit');
 					}
 					return turn;
 				};
@@ -893,7 +900,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.#restoreProject(pair, entry);
 				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${this.#repoRoot(entry)}/.git`)}`);
 				if (probe.exitCode !== 0) return refuse(404, 'no snapshot yet');
-				await this.#saveSnapshot(pair.sb, entry);
+				await this.#saveSnapshot(pair.sb, entry, 'fill');
 				const built = await this.#cachedSnapshot(entry);
 				if (!built) return refuse(404, 'no snapshot yet');
 				return new Response(built.body, { headers: { 'content-type': 'application/json' } });
@@ -965,23 +972,24 @@ export class BuilderAgent extends DurableObject<Env> {
 					const sourcePath = entry.directory === '.' ? rel : `${entry.directory}/${rel}`;
 					await checkedExec(pair.sb, `git -c core.hooksPath=/dev/null add -- ${shellQuote(sourcePath)} && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=builder@substrat.invalid commit --allow-empty -m 'Save source'`, this.#repoRoot(entry));
 					await this.#saveSource(pair, entry);
-				} finally { this.#releaseStudio(); }
-				// Patch the stored snapshot so a reload before the next commit still
-				// shows this save. Best-effort: absent snapshot → next commit builds it.
-				try {
-					const key = this.#snapshotKey(entry);
-					const obj = await this.#cachedSnapshot(entry);
-					if (obj) {
-						const snap = (await obj.json()) as { files: Record<string, string> };
-						// `rel`, not a slice of the raw path: the slice of a traversal path
-						// keyed the snapshot under `../../…`, so the entry a reload read back
-						// was not the file that had been written.
-						snap.files[rel] = content;
-						await this.ctx.storage.put(key, JSON.stringify(snap));
+					// Patch the stored snapshot so a reload before the next commit still
+					// shows this save. Best-effort: absent snapshot → next commit builds it.
+					// Inside the claim, or a turn's newer snapshot could be written over.
+					try {
+						const key = this.#snapshotKey(entry);
+						const obj = await this.#cachedSnapshot(entry);
+						if (obj) {
+							const snap = (await obj.json()) as { files: Record<string, string> };
+							// `rel`, not a slice of the raw path: the slice of a traversal path
+							// keyed the snapshot under `../../…`, so the entry a reload read back
+							// was not the file that had been written.
+							snap.files[rel] = content;
+							await this.ctx.storage.put(key, JSON.stringify(snap));
+						}
+					} catch {
+						/* read path falls back to per-file endpoints */
 					}
-				} catch {
-					/* read path falls back to per-file endpoints */
-				}
+				} finally { this.#releaseStudio(); }
 				return json(200, { ok: true });
 			}
 			case 'GET /api/providers':
