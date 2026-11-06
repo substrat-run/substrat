@@ -1,5 +1,13 @@
 # @substrat-run/engine-protocol
 
+## 0.13.69
+
+### Patch Changes
+
+- Updated dependencies [f1bd46f]
+  - @substrat-run/contracts@0.184.0
+  - @substrat-run/kernel@0.184.0
+
 ## 0.13.68
 
 ### Patch Changes

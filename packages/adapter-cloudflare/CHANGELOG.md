@@ -1,5 +1,17 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.184.0
+
+### Minor Changes
+
+- 770654c: `ControlPlaneDO.directoryInventory()` counts the rows of every table the directory holds and its tenants by status, with no row values.
+
+### Patch Changes
+
+- Updated dependencies [f1bd46f]
+  - @substrat-run/contracts@0.184.0
+  - @substrat-run/kernel@0.184.0
+
 ## 0.183.0
 
 ### Patch Changes
