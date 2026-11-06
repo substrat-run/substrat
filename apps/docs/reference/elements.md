@@ -33,6 +33,7 @@ items, then "Switch user" and "Sign out".
   email }`), and signs in and out through `/api/auth/login` and `/api/auth/logout`. Each URL is
   an attribute (`session-url`, `login-url`, `logout-url`) for an app with other routes. An app
   that already knows who is signed in sets the `session` property instead, and nothing is fetched.
+  From React, also set `session-url=""`: React sets a property only after the element is connected.
 - Signed out, it shows a "Sign in" button. Before the first read it shows an empty circle, never
   "Sign in".
 - Every built-in part is a slot with a default: `trigger`, `header`, `teams`, `switch-user`,

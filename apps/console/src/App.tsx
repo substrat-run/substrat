@@ -146,6 +146,7 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset['theme'] = dark ? 'dark' : 'light';
+    document.documentElement.classList.toggle('wa-dark', dark);
   }, [dark]);
 
   // The drilled-in segment for the current view (each view carries at most one).

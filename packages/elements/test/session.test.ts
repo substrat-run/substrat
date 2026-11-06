@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SessionController } from '../src/internal/session-controller.js';
 import { SessionStore, hueOf, initialsOf, parseSession, switchUserHref, type SessionState } from '../src/session.js';
 
 const answer = (ok: boolean, body: unknown = {}) => async () => ({ ok, json: async () => body });
@@ -67,4 +68,16 @@ describe('SessionStore', () => {
     await store.refresh();
     expect(store.state.phase).toBe('signed-out');
   });
+});
+
+it('an empty session URL reads nothing, and stays loading until the host sets a session', async () => {
+  const read = vi.fn(answer(false));
+  vi.stubGlobal('fetch', read);
+  const host = { sessionUrl: '', session: undefined, addController() {}, requestUpdate() {} } as never;
+  const controller = new SessionController(host);
+  controller.hostConnected();
+  await controller.refresh();
+  expect(read).not.toHaveBeenCalled();
+  expect(controller.state).toEqual({ phase: 'loading' });
+  vi.unstubAllGlobals();
 });

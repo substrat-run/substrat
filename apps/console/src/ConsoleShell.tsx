@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { AccountMenu } from './AccountMenu';
 import { Breadcrumbs, IconButton, SideNav, SubIcon, SubIcons, useMediaQuery } from './components';
 import type { BreadcrumbItem } from './components';
 
@@ -175,66 +176,7 @@ export function ConsoleShell({
             ],
           },
         ]}
-        footer={
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 10px',
-              borderTop: '1px solid var(--border-subtle)',
-            }}
-          >
-            <span
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                background: 'var(--brand-100)',
-                color: 'var(--brand-700)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 11,
-                fontWeight: 600,
-              }}
-            >
-              DV
-            </span>
-            <span
-              style={{
-                fontSize: 12.5,
-                color: 'var(--text-secondary)',
-                flex: 1,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-              title={identityLabel}
-            >
-              {identityLabel ?? 'dev actor'}
-            </span>
-            {onSignOut && (
-              <button
-                onClick={onSignOut}
-                title="Sign out"
-                style={{
-                  background: 'none',
-                  border: 0,
-                  color: 'var(--text-tertiary)',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  padding: '2px 6px',
-                }}
-              >
-                Sign out
-              </button>
-            )}
-            <IconButton label="Toggle theme" size="sm" onClick={onToggleDark}>
-              <SubIcon d={SubIcons.moon} size={14} />
-            </IconButton>
-          </div>
-        }
+        footer={<AccountMenu email={identityLabel} onSignOut={onSignOut} onToggleDark={onToggleDark} />}
       />
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
