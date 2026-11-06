@@ -98,6 +98,8 @@ export function fitMessage(text: string): string {
 
 /** The most of a gate's output a `check` row keeps, leaving room for the rest of the event. */
 const GATE_OUTPUT_MAX = 12_000;
+/** Below this the output is not worth keeping over `fit`'s preview: only the rest of the event can get here. */
+const GATE_OUTPUT_MIN = 1_000;
 
 /**
  * Head and tail, since a compiler's verdict comes last. A gate's output is capped above what
@@ -110,9 +112,21 @@ export function clipMiddle(s: string, max: number): string {
 	return s.slice(0, side) + note + s.slice(-side);
 }
 
+/**
+ * A `check` with as much output as its row holds. `fit` judges serialized bytes, and multi-byte
+ * text or a terminal's escapes run to several of those per character, so the character cap alone
+ * still lost the output to the preview.
+ */
+function fittedCheck(e: Extract<BuildEvent, { type: 'check' }>): unknown {
+	const clipped = (max: number) => ({ ...e, result: { ...e.result, output: clipMiddle(e.result.output, max) } });
+	let max = GATE_OUTPUT_MAX;
+	while (max > GATE_OUTPUT_MIN && byteLength(JSON.stringify(clipped(max))) > DATA_BYTES_MAX) max = Math.floor(max * 0.9);
+	return clipped(max);
+}
+
 /** What an event keeps in its row. A `gates` run drops the outputs its `check` events hold. */
 function recorded(e: BuildEvent): unknown {
-	if (e.type === 'check') return { ...e, result: { ...e.result, output: clipMiddle(e.result.output, GATE_OUTPUT_MAX) } };
+	if (e.type === 'check') return fittedCheck(e);
 	if (e.type === 'gates') {
 		return { ...e, run: { ...e.run, results: e.run.results.map(({ output: _output, ...result }) => result) } };
 	}

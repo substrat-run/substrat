@@ -127,7 +127,7 @@ function normalizeQuestion(s: string): string {
 		.trim();
 }
 
-/** Each tool reports back as it finishes: `tool-call` says it began, this says how it went. */
+/** Each tool reports back as it finishes, a throw included: `tool-call` says it began, this says how it went. */
 function timed<T extends object>(emit: WorkspaceToolOptions['emit'], tools: T): T {
 	type Run = (...args: unknown[]) => Promise<unknown>;
 	for (const [name, t] of Object.entries(tools) as [string, { execute?: Run }][]) {
@@ -135,10 +135,14 @@ function timed<T extends object>(emit: WorkspaceToolOptions['emit'], tools: T): 
 		if (!run) continue;
 		t.execute = async (...args) => {
 			const started = Date.now();
-			const out = await run(...args);
-			const ok = !(typeof out === 'string' && /^(ERROR|REFUSED)\b/.test(out));
-			emit({ type: 'tool-result', tool: name, ms: Date.now() - started, ok });
-			return out;
+			let ok = false;
+			try {
+				const out = await run(...args);
+				ok = !(typeof out === 'string' && /^(ERROR|REFUSED)\b/.test(out));
+				return out;
+			} finally {
+				emit({ type: 'tool-result', tool: name, ms: Date.now() - started, ok });
+			}
 		};
 	}
 	return tools;

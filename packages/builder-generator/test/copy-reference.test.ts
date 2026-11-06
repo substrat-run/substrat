@@ -78,4 +78,18 @@ describe('tool-result', () => {
 			expect.objectContaining({ tool: 'write_file', ok: false }),
 		]);
 	});
+
+	it('reports a tool that throws as a failure, and lets the error through', async () => {
+		const project = await scratch();
+		project.exec = () => Promise.reject(new Error('sandbox gone'));
+		const events: BuildEvent[] = [];
+		const tools = workspaceTools({ workspace: project, emit: (e) => events.push(e) }) as unknown as Record<
+			string,
+			{ execute(i: unknown, o: unknown): Promise<string> }
+		>;
+
+		await expect(tools.run_command!.execute({ cmd: 'ls' }, { toolCallId: 't', messages: [] })).rejects.toThrow('sandbox gone');
+
+		expect(events.filter((e) => e.type === 'tool-result')).toEqual([expect.objectContaining({ tool: 'run_command', ok: false })]);
+	});
 });
