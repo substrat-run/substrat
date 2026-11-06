@@ -1,5 +1,16 @@
 # create-substrat
 
+## 0.13.23
+
+### Patch Changes
+
+- A new project now installs the package versions released alongside this one:
+  - `@substrat-run/kernel` and the runtime packages versioned with it: `^0.184.0`
+  - `@substrat-run/engine-workorder`: `^0.13.9`
+  - `@substrat-run/engine-invoicing`: `^0.11.68`
+  - `@substrat-run/dev-issuer`: `^0.3.4`
+  - `@substrat-run/attachment-extractors`: `^0.2.45`
+
 ## 0.13.22
 
 ### Patch Changes

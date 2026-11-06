@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-api
 
+## 0.184.0
+
+### Minor Changes
+
+- f1bd46f: Keep what stopped a platform build: an interrupted build's runtime error goes on a staff-only failure row, and staff can read a build's record by id.
+
+### Patch Changes
+
+- Updated dependencies [f1bd46f]
+  - @substrat-run/contracts@0.184.0
+  - @substrat-run/control-plane-client@0.6.6
+  - @substrat-run/kernel@0.184.0
+
 ## 0.183.0
 
 ### Minor Changes
