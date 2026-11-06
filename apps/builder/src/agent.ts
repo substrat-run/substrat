@@ -515,6 +515,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		// The turn's identity for metering: the dedupe key that makes a replayed
 		// usage report record nothing (#646).
 		const turnId = ulid();
+		const turnStartedAt = Date.now();
 		const actor = req.headers.get('x-substrat-actor');
 		// The conversation record (record.ts), opened first thing in run(). Every
 		// event the browser is sent is also written there, so a turn nobody
@@ -622,6 +623,7 @@ export class BuilderAgent extends DurableObject<Env> {
 							// record rides out past the stream close if it must.
 							this.ctx.waitUntil(
 								reportTurnUsage(this.env, {
+									tenantId: this.#tenant,
 									projectId: entry.id,
 									turnId,
 									model: modelSpec,
@@ -636,6 +638,7 @@ export class BuilderAgent extends DurableObject<Env> {
 									// The per-step split — required for tier-correct pricing
 									// (pricing.ts: tier selection is per request, not per turn).
 									...(event.stepUsage ? { stepUsage: event.stepUsage } : {}),
+									elapsedMs: Date.now() - turnStartedAt,
 								}),
 							);
 						}

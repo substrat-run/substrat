@@ -117,6 +117,7 @@ import {
   utcDay,
   storageShape,
   surfaceName,
+  modelUsageLine,
   tenantId as tenantIdSchema,
   tenantStatus,
   versionOrigin,
@@ -1595,6 +1596,12 @@ const modelUsageQuery = z.object({
 });
 
 /** The summary window: a half-open `[since, until)`; defaults to the current calendar month so far. */
+/**
+ * One line for a model call no drain carries (`POST /model-usage`). `requestId` is the ledger's
+ * dedupe key, so the caller names it from its own unit of work and a retry writes nothing.
+ */
+const modelUsageRecord = z.object({ requestId: z.string().min(1).max(128), line: modelUsageLine }).strict();
+
 const modelUsageSummaryQuery = z.object({
   tenantId: tenantIdSchema.optional(),
   since: z.string().optional(),
@@ -13167,6 +13174,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const entries = await c.var.admin.listModelUsage(c.get('actor'), filter as Parameters<typeof c.var.admin.listModelUsage>[1]);
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // The door for a model call that runs in no tenant's scope, so no intent can carry it to the
+  // drain: a builder turn runs in the studio's own scope and is spent on the tenant's behalf.
+  // Staff only, on neither allowlist: this writes a bill, so a tenant cannot reach it, and a
+  // line for a tenant the directory does not hold has nobody to reconcile against.
+  app.post('/model-usage', async (c) => {
+    if (c.get('principal').kind !== 'staff') return refuse(c, 'forbidden', 'forbidden');
+    const input = modelUsageRecord.parse(await c.req.json());
+    if (!(await c.var.admin.getTenant(c.get('actor'), input.line.attribution.tenant))) {
+      return refuse(c, 'not_found', 'no such tenant');
+    }
+    return c.json(await c.var.admin.recordModelUsage(input));
   });
 
   // Folded per (tenant, vertical, model) with the platform's margin applied at read

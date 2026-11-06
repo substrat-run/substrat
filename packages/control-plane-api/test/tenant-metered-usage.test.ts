@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ const actor = platformActorId.parse(ulid());
 const serviceActor = platformActorId.parse(ulid());
 const own = tenantId.parse(ulid());
 const other = tenantId.parse(ulid());
+const billed = tenantId.parse(ulid());
 const scope = scopeId.parse(ulid());
 const otherScope = scopeId.parse(ulid());
 let dir: string;
@@ -29,6 +30,7 @@ beforeAll(async () => {
   });
   await host.admin.createTenant(actor, { id: own, slug: 'own', name: 'Own' });
   await host.admin.createTenant(actor, { id: other, slug: 'other', name: 'Other' });
+  await host.admin.createTenant(actor, { id: billed, slug: 'billed', name: 'Billed' });
   await host.provisionScope(actor, { tenantId: own, scopeId: scope, vertical: null });
   await host.admin.activateScope(actor, own, scope);
   await host.provisionScope(actor, { tenantId: other, scopeId: otherScope, vertical: null });
@@ -245,4 +247,42 @@ it('caps model labels in the reader and omits long labels from the breakdown', a
   const body = await response.json();
   expect(body.models).toMatchObject({ calls: 2, breakdownTruncated: true });
   expect(body.models.byVerticalModel).toHaveLength(1);
+});
+
+describe('POST /model-usage', () => {
+  const staffHeaders = { [DEV_ACTOR_HEADER]: actor, 'content-type': 'application/json' };
+  const line = (tenant: string) => ({
+    attribution: { tenant, scope, vertical: '@substrat-run/builder', version: 'studio', operation: 'builder/turn' },
+    model: 'cloudflare:deepseek/deepseek-v4-pro',
+    provider: 'cloudflare',
+    modelId: 'deepseek/deepseek-v4-pro',
+    reported: true,
+    inputTokens: 1200,
+    outputTokens: 300,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    listUsd: null,
+    // The read's window ends at today's midnight, so a line from today is not in it yet.
+    at: new Date(Date.now() - 86_400_000).toISOString(),
+    elapsedMs: 10,
+  });
+  const post = (body: unknown, as: Record<string, string> = staffHeaders) =>
+    app.request('/model-usage', { method: 'POST', headers: as, body: JSON.stringify(body) });
+
+  it('lands a line on the team\'s metered usage, once however often it is sent', async () => {
+    const body = { requestId: 'builder:turn-1', line: line(billed) };
+    expect(await (await post(body)).json()).toEqual({ recorded: true });
+    expect(await (await post(body)).json()).toEqual({ recorded: false });
+
+    const usage = await (await app.request(`/tenants/${billed}/metered-usage`, { headers: staffHeaders })).json() as { models: { calls: number; byVerticalModel: unknown[] } };
+    expect(usage.models.calls).toBe(1);
+    expect(usage.models.byVerticalModel).toEqual([{ vertical: '@substrat-run/builder', model: 'cloudflare:deepseek/deepseek-v4-pro', calls: 1, reportedCalls: 1, inputTokens: 1200, outputTokens: 300 }]);
+  });
+
+  it('refuses a tenant credential, an unknown tenant and a line that is not one', async () => {
+    const asTenant = { ...headers, 'content-type': 'application/json' };
+    expect((await post({ requestId: 'builder:turn-2', line: line(own) }, asTenant)).status).toBe(403);
+    expect((await post({ requestId: 'builder:turn-3', line: line(ulid()) })).status).toBe(404);
+    expect((await post({ requestId: 'builder:turn-4', line: { ...line(own), reported: false } })).status).toBe(400);
+  });
 });

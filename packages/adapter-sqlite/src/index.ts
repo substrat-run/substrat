@@ -754,6 +754,7 @@ import {
   type ListIndexPlan,
   type PageParams,
   isSearchIndexTable,
+  rowCountTable,
   searchIndexMigrations,
   searchIndexPlans,
   searchLimit,
@@ -2144,12 +2145,13 @@ function scopeTablesOf(db: Database.Database): ScopeTable[] {
   const names = (
     db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all() as { name: string }[]
   ).map((r) => r.name);
+  const known = new Set(names);
   const count = (sql: string) => (db.prepare(sql).get() as { c: number }).c;
   const tombstones = (name: string) =>
     (db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as { name: string }[]).some((c) => c.name === 'revoked_at');
   return names.map((name) => ({
     name,
-    rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
+    rowCount: count(`SELECT COUNT(*) AS c FROM "${rowCountTable(name, known)}"`),
     system: isSystemTable(name),
     // #2531: rows whose `revoked_at` is null, for any table with that column (`ScopeTable.liveRowCount`; the Cloudflare adapter's twin).
     ...(tombstones(name) ? { liveRowCount: count(`SELECT COUNT(*) AS c FROM "${name}" WHERE revoked_at IS NULL`) } : {}),
