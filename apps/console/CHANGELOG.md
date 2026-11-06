@@ -1,5 +1,12 @@
 # @substrat-run/console
 
+## 0.14.99
+
+### Patch Changes
+
+- Updated dependencies [9735a33]
+  - @substrat-run/elements@0.4.0
+
 ## 0.14.98
 
 ### Patch Changes
