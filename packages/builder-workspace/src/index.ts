@@ -62,6 +62,7 @@ export {
 
 export {
 	SNAPSHOT_MAX_FILE_BYTES,
+	isDependencyPath,
 	snapshotWorkspace,
 	type WorkspaceSnapshot,
 } from './snapshot.js';

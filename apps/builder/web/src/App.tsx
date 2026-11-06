@@ -217,7 +217,14 @@ export function App() {
 					// turn start would be noise; the stepper is the visualization.
 					if (e.type === 'phase') {
 						setPhase(e.phase);
+						// The model is done and waits on the builder, so put it in front of them.
+						if (e.phase === 'scenario') setTab('model');
 						return;
+					}
+					// The panes re-read on this key; mid-turn is the point of the event.
+					if (e.type === 'workspace-updated' || e.type === 'commit') {
+						setRefreshKey((k) => k + 1);
+						if (e.type === 'workspace-updated') return;
 					}
 					if (e.type === 'gates') sawGates = true;
 					// The moment the interview lands the concept, show it — this is the
