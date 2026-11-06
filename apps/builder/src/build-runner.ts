@@ -1,9 +1,10 @@
 /** Runs as an unprivileged user inside a fresh build container; no platform credentials. */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { buildRelease, readVerticalMeta } from '@substrat-run/cli/dist/push.js';
 import { sourceBuildRequest } from '@substrat-run/contracts';
+import { writeRelease } from './release-write.js';
 
 const input = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as { root: string; slug: string; request: unknown };
 const request = sourceBuildRequest.parse(input.request);
@@ -19,8 +20,4 @@ const result = await buildRelease({
   allowUnservedUi: request.allowUnservedUi, allowUnsweptSchedules: request.allowUnsweptSchedules,
   requireDataLossCheck: request.requireDataLossCheck,
 });
-const parts = await Promise.all([...result.form.entries()].map(async ([name, value]) =>
-  typeof value === 'string' ? { name, text: value } : {
-    name, base64: Buffer.from(await value.arrayBuffer()).toString('base64'), type: value.type,
-  }));
-writeFileSync(process.argv[3]!, JSON.stringify({ parts, dataLoss: result.dataLoss }));
+await writeRelease(result.form, result.dataLoss, process.argv[3]!);
