@@ -5624,7 +5624,7 @@ const routeHandlers = {
     // the browser just because it was added to a staff meter record.
     return {
       readAt: raw.readAt,
-      retention: { storageMonths: raw.retention.storageMonths, modelDays: raw.retention.modelDays, requestMonths: raw.retention.requestMonths },
+      retention: { storageMonths: raw.retention.storageMonths, modelDays: raw.retention.modelDays, buildDays: raw.retention.buildDays, requestMonths: raw.retention.requestMonths },
       storage: {
         state: projectPlaneScalar(raw.storage.state), bytes: raw.storage.bytes, estimated: projectPlaneScalar(raw.storage.estimated),
         basis: projectPlaneScalar(raw.storage.basis), lowerBound: projectPlaneScalar(raw.storage.lowerBound), truncatedReason: projectPlaneScalar(raw.storage.truncatedReason),
@@ -5651,6 +5651,12 @@ const routeHandlers = {
           inputTokens: row.inputTokens, outputTokens: row.outputTokens,
         })),
         breakdownTruncated: raw.models.breakdownTruncated,
+      },
+      builds: raw.builds && {
+        state: projectPlaneScalar(raw.builds.state), builds: raw.builds.builds, ms: raw.builds.ms,
+        lowerBound: projectPlaneScalar(raw.builds.lowerBound), since: raw.builds.since, until: raw.builds.until,
+        byVertical: raw.builds.byVertical.map((row) => ({ vertical: row.vertical, builds: row.builds, ms: row.ms })),
+        breakdownTruncated: raw.builds.breakdownTruncated,
       },
       // A plane deployed before this field answers without it; the chart then says it has no days.
       days: (raw.days ?? []).map((row) => ({

@@ -30,6 +30,7 @@ export const INDEX_VALUE_EXPORTS = [
   'BACKFILL_MOVE_ID',
   'BILLING_ROLLUP_RETENTION_MONTHS',
   'BIND_EXPORT_BREAK_REFUSAL',
+  'BUILD_USAGE_RETENTION_DAYS',
   'CANCELLED_JOB_NOTE',
   'CAPABILITY_BECOME_MINT_OPERATION',
   // #2817: a principal's bind link mint — the pseudo-operation, the bound, and the write.

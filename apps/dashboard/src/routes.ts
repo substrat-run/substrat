@@ -865,7 +865,7 @@ const planeScalar = z.union([z.string(), z.number(), z.boolean()]).nullable().op
 const usageDayShare = z.object({ vertical: z.string().nullable(), value: z.number().int() });
 export const meteredUsageOut = z.object({
   readAt: z.string(),
-  retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
+  retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), buildDays: z.number().int().optional(), requestMonths: z.number().int().nullable() }),
   storage: z.object({
     // Plane-owned vocabulary: currently unavailable/empty/not-sampled/complete/partial/stale/failing/truncated.
     state: planeScalar,
@@ -893,6 +893,14 @@ export const meteredUsageOut = z.object({
     byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), reportedCalls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
     breakdownTruncated: z.boolean(),
   }),
+  // Absent from a plane deployed before this field. Only builds that produced a release, queue left out.
+  builds: z.object({
+    // Plane-owned coverage; currently unavailable/empty/complete/truncated.
+    state: planeScalar,
+    builds: z.number().int().nullable(), ms: z.number().int().nullable(), lowerBound: planeScalar, since: z.string(), until: z.string(),
+    byVertical: z.array(z.object({ vertical: z.string(), builds: z.number().int(), ms: z.number().int() })),
+    breakdownTruncated: z.boolean(),
+  }).optional(),
   // One row per closed UTC day. A null is a day with no reading behind it, never a day of no usage.
   days: z.array(z.object({
     day: z.string(),

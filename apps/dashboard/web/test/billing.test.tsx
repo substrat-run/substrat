@@ -255,3 +255,15 @@ it('draws a day with no reading as a gap, and never as a zero-height bar', async
   expect(container.querySelector('[title="2026-10-28: no reading"]')).not.toBeNull();
   expect(container.textContent).toContain('Hatched: no reading for that day');
 });
+
+it('shows build time in whole minutes, and says what it leaves out', async () => {
+  read.mockResolvedValue([]);
+  readUsage.mockResolvedValue({
+    ...modelUsagePayload({ state: 'empty', calls: null, reportedCalls: 0, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false }),
+    builds: { state: 'complete', builds: 2, ms: 90_001, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', builds: 2, ms: 90_001 }], breakdownTruncated: false },
+  });
+  await render();
+  expect(container.textContent).toContain('2 min');
+  expect(container.textContent).toContain('2 successful builds');
+  expect(container.textContent).toContain('Queue time and failed builds are not counted.');
+});

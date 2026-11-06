@@ -211,6 +211,7 @@ import {
   REQUEST_ROLLUP_LIMIT_MAX,
   STORAGE_HISTORY_LIMIT_MAX,
   STORAGE_GAUGE_RETENTION_MONTHS,
+  BUILD_USAGE_RETENTION_DAYS,
   MODEL_USAGE_RETENTION_DAYS,
   BILLING_ROLLUP_RETENTION_MONTHS,
   METER_DAYS_LIMIT_DEFAULT,
@@ -2922,12 +2923,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (rows.length < STORAGE_HISTORY_LIMIT_MAX) storageDays = { rows };
     }
     const hasModelLedger = typeof admin.listTenantModelUsageMeter === 'function' && !modelSkipped;
+    let builds: {
+      state: string; builds: number | null; ms: number | null; lowerBound: boolean; since: string; until: string;
+      byVertical: { vertical: string; builds: number; ms: number }[]; breakdownTruncated: boolean;
+    } = { state: 'unavailable', builds: null, ms: null, lowerBound: false, since: `${since}T00:00:00Z`, until: `${until}T00:00:00Z`, byVertical: [], breakdownTruncated: false };
+    if (usageNow() < deadline) {
+      const rows = await admin.listTenantBuildUsage(actor, { tenantId, since: builds.since, until: builds.until, limit: 501 });
+      const kept = rows.slice(0, 500);
+      const clipped = rows.length > 500;
+      builds = {
+        ...builds,
+        state: kept.length === 0 ? 'empty' : clipped ? 'truncated' : 'complete',
+        builds: kept.length > 0 ? kept.reduce((sum, row) => sum + row.builds, 0) : null,
+        ms: kept.length > 0 ? kept.reduce((sum, row) => sum + row.ms, 0) : null,
+        lowerBound: clipped,
+        byVertical: kept.slice(0, 50).map((row) => ({ vertical: row.vertical, builds: row.builds, ms: row.ms })),
+        breakdownTruncated: kept.length > 50,
+      };
+    }
     return c.json({
       readAt,
-      retention: { storageMonths: STORAGE_GAUGE_RETENTION_MONTHS, modelDays: MODEL_USAGE_RETENTION_DAYS, requestMonths: BILLING_ROLLUP_RETENTION_MONTHS },
+      retention: { storageMonths: STORAGE_GAUGE_RETENTION_MONTHS, modelDays: MODEL_USAGE_RETENTION_DAYS, buildDays: BUILD_USAGE_RETENTION_DAYS, requestMonths: BILLING_ROLLUP_RETENTION_MONTHS },
       storage,
       requests,
       models,
+      builds,
       days: usageDays(utcDaysBetween(since, through), {
         requests: requestDays,
         models: hasModelLedger ? { rows: modelDayRows, truncated } : null,
@@ -10396,6 +10416,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           );
         }
         throw e;
+      }
+      // A metering failure never fails the deploy: the release is built and the caller wants it.
+      if (built.usage && sourceTenant) {
+        try {
+          await c.var.admin.recordBuildUsage({ ...built.usage, tenantId: sourceTenant as TenantId, vertical: sourceSlug, at: new Date().toISOString() });
+        } catch (e) {
+          console.error('source-build.usage-unrecorded', { buildId: built.usage.buildId }, e);
+        }
       }
       form = built.form;
       // Addressing is the authenticated caller's, never a field emitted by project code.

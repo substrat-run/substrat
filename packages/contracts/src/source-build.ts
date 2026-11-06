@@ -77,6 +77,8 @@ export const sourceBuildResult = z.object({
     z.object({ status: z.literal('skipped'), why: z.string() }),
     z.object({ status: z.literal('incomplete'), authored: z.number().int().nonnegative(), notReplayed: z.number().int().nonnegative(), key: z.string(), message: z.string() }),
   ]),
+  /** What the build's meter records (#2946): the time it worked, queue left out. A builder older than this sends none. */
+  usage: z.object({ buildId: z.string().min(1), ms: z.number().int().nonnegative() }).optional(),
 });
 
 export interface ProjectRecord {
@@ -96,6 +98,7 @@ export interface BuiltSource {
   projectId: string;
   revision: string;
   dataLoss: z.infer<typeof sourceBuildResult>['dataLoss'];
+  usage?: z.infer<typeof sourceBuildResult>['usage'];
 }
 
 /**
