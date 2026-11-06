@@ -405,6 +405,7 @@ export {
   NotSearchable,
   SearchTermTooShort,
   isSearchIndexTable,
+  rowCountTable,
   searchIndexMigrations,
   searchIndexPlans,
   searchLimit,

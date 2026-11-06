@@ -728,6 +728,7 @@ export const INDEX_VALUE_EXPORTS = [
   'revokeFindingRule',
   'revokeScopeRoles',
   'revokeStoreDriverReleaseIn',
+  'rowCountTable',
   'rowlessAttachmentIds',
   'runAttachmentExtractor',
   'runCrossVerticalFrom',

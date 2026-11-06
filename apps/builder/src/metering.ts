@@ -14,9 +14,16 @@
  * Recording is BEST-EFFORT by design — the turn's value is the commit, and a
  * metering outage must never fail the turn; a miss is logged, and the dedupe
  * key makes any retry safe.
+ *
+ * That ledger is the studio's view, across every team. What a team is charged is
+ * the platform's: each turn also lands one line in the control plane's model
+ * usage ledger under the team's tenant, which is what the team's billing page
+ * and the console's meters read. The turn runs in the studio's scope, not the
+ * tenant's, so no intent can carry it there and the line goes by service call.
  */
-import { addDecimal, LIST_PAGE_MAX, type Page } from '@substrat-run/contracts';
-import { studioScope, type StudioEnv } from './studio.js';
+import { addDecimal, LIST_PAGE_MAX, modelUsageLine, type ModelUsageLine, type Page } from '@substrat-run/contracts';
+import { parseModelSpec } from '@substrat-run/model-providers';
+import { STUDIO_NODE, studioScope, type StudioEnv } from './studio.js';
 import {
 	MARKUP_PERCENT,
 	costOf,
@@ -81,6 +88,31 @@ export interface TurnUsage {
 	readonly stepUsage?: readonly StepTokens[];
 }
 
+/** A turn as the team's bill needs it. */
+export interface TenantTurnUsage extends TurnUsage {
+	/** The team (= tenant) the turn was spent for; the ledger line is filed under it. */
+	readonly tenantId: string;
+	/** Wall-clock length of the turn so far. */
+	readonly elapsedMs: number;
+}
+
+/** The turn's list cost, per request where the split exists. Null when the model is unpriced. */
+function turnCost(model: string, usage: TurnUsage) {
+	const steps: readonly StepTokens[] = usage.stepUsage?.length
+		? usage.stepUsage
+		: [
+				{
+					inputTokens: usage.inputTokens,
+					outputTokens: usage.outputTokens,
+					...(usage.cachedInputTokens != null
+						? { cachedInputTokens: usage.cachedInputTokens }
+						: {}),
+					...(usage.cacheWriteTokens != null ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+				},
+			];
+	return costOfSteps(model, steps);
+}
+
 /**
  * Record one turn's token usage — two counter entries under one dedupe key
  * (per-meter uniqueness is the engine's design). Throws on failure; use
@@ -116,19 +148,7 @@ export async function recordTurnUsage(env: StudioEnv, usage: TurnUsage): Promise
 	// token sums cannot be tier-priced after aggregation (pricing.ts header).
 	// An unpriced model records no cost entry: the read side reports its tokens
 	// as unpriced, never a guessed $0.
-	const steps: readonly StepTokens[] = usage.stepUsage?.length
-		? usage.stepUsage
-		: [
-				{
-					inputTokens: usage.inputTokens,
-					outputTokens: usage.outputTokens,
-					...(usage.cachedInputTokens != null
-						? { cachedInputTokens: usage.cachedInputTokens }
-						: {}),
-					...(usage.cacheWriteTokens != null ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
-				},
-			];
-	const cost = costOfSteps(model, steps);
+	const cost = turnCost(model, usage);
 	if (cost) {
 		const meter = costKey(model);
 		await scope.invoke('metering/configure-meter', { key: meter, kind: 'counter', unit: 'usd' });
@@ -141,15 +161,65 @@ export async function recordTurnUsage(env: StudioEnv, usage: TurnUsage): Promise
 	}
 }
 
+/** The studio ships from main and has no version identity, so its lines carry this label. */
+const STUDIO_VERSION = 'studio';
+
+/** The ledger line for a turn. Zero tokens both ways is the generator's "nothing reported". */
+export function turnUsageLine(usage: TenantTurnUsage, at: Date): ModelUsageLine {
+	const model = normalizeModelSpec(usage.model);
+	const { provider, modelId } = parseModelSpec(model);
+	const reported = usage.inputTokens > 0 || usage.outputTokens > 0;
+	return modelUsageLine.parse({
+		attribution: {
+			tenant: usage.tenantId,
+			scope: STUDIO_NODE.scopeId,
+			vertical: '@substrat-run/builder',
+			version: STUDIO_VERSION,
+			operation: 'builder/turn',
+		},
+		model,
+		provider,
+		modelId,
+		reported,
+		inputTokens: usage.inputTokens,
+		outputTokens: usage.outputTokens,
+		cachedInputTokens: usage.cachedInputTokens ?? 0,
+		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+		listUsd: reported ? (turnCost(model, usage)?.listUsd ?? null) : null,
+		at: at.toISOString(),
+		elapsedMs: usage.elapsedMs,
+	});
+}
+
+export interface LedgerEnv extends StudioEnv {
+	CONTROL_PLANE_SVC: Fetcher;
+	CP_SERVICE_TOKEN?: string;
+}
+
+/**
+ * File the turn on the team's bill. Keyed on the turn id, so a replay writes
+ * nothing. Throws on failure; use `reportTurnUsage` from the turn path.
+ */
+export async function recordTenantUsage(env: LedgerEnv, usage: TenantTurnUsage): Promise<void> {
+	const response = await env.CONTROL_PLANE_SVC.fetch('https://control-plane/api/model-usage', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', 'x-service-token': env.CP_SERVICE_TOKEN ?? '' },
+		body: JSON.stringify({ requestId: `builder:${usage.turnId}`, line: turnUsageLine(usage, new Date()) }),
+	});
+	if (!response.ok) throw new Error(`the control plane answered ${response.status}`);
+}
+
 /**
  * The turn-path wrapper: best-effort, never throws. The turn's product is the
  * commit; the meter must not be able to take it down. A miss is visible in the
- * worker log, and the per-turn dedupe key makes the next attempt safe.
+ * worker log, and the per-turn dedupe key makes the next attempt safe. The two
+ * ledgers fail apart: an outage of one still records the other.
  */
-export async function reportTurnUsage(env: StudioEnv, usage: TurnUsage): Promise<void> {
-	try {
-		await recordTurnUsage(env, usage);
-	} catch (err) {
+export async function reportTurnUsage(env: LedgerEnv, usage: TenantTurnUsage): Promise<void> {
+	const outcomes = await Promise.allSettled([recordTurnUsage(env, usage), recordTenantUsage(env, usage)]);
+	for (const outcome of outcomes) {
+		if (outcome.status === 'fulfilled') continue;
+		const err = outcome.reason;
 		console.error(
 			`metering: failed to record turn ${usage.turnId} (project ${usage.projectId}): ${
 				err instanceof Error ? err.message : String(err)

@@ -1328,8 +1328,10 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
  * terminal rather than retried: a payload that is not a line, and a line whose
  * attribution names a tenant or scope other than the one being drained — the platform
  * knows (tenant, scope, vertical) inherently from the DO it read, and a vertical does not
- * get to bill another. Idempotent on the intent id, so a replay settles `done` with
- * `recorded: false` instead of writing twice.
+ * get to bill another. The vertical is stamped rather than compared: a host labels a line
+ * with its package name, the directory knows the scope by its slug, and the two never
+ * match, so the comparison refused every hosted line. Idempotent on the intent id, so a
+ * replay settles `done` with `recorded: false` instead of writing twice.
  */
 /**
  * #1232: land a CP-less pass's batched schedule outcomes in `_substrat_sweep_runs`.
@@ -1386,21 +1388,16 @@ export function modelUsageHandler(deps: { host: ScopeHost }): PlatformRequestHan
     if (!parsed.success) {
       return { status: 'failed', error: `model-usage payload is not a usage line: ${parsed.error.message}` };
     }
-    const line = parsed.data;
-    if (line.attribution.tenant !== ctx.tenantId || line.attribution.scope !== ctx.scopeId) {
+    const { attribution } = parsed.data;
+    if (attribution.tenant !== ctx.tenantId || attribution.scope !== ctx.scopeId) {
       return {
         status: 'failed',
         error:
-          `usage line is attributed to (${line.attribution.tenant}, ${line.attribution.scope}), ` +
+          `usage line is attributed to (${attribution.tenant}, ${attribution.scope}), ` +
           `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
       };
     }
-    if (line.attribution.vertical !== ctx.vertical) {
-      return {
-        status: 'failed',
-        error: `usage line names vertical '${line.attribution.vertical}', but this scope runs '${ctx.vertical}'`,
-      };
-    }
+    const line = { ...parsed.data, attribution: { ...attribution, vertical: ctx.vertical } };
     const { recorded } = await deps.host.admin.recordModelUsage({ requestId: request.id, line });
     return { status: 'done', result: { recorded, model: line.model, listUsd: line.listUsd } };
   };

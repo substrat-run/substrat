@@ -163,6 +163,20 @@ export function isSearchIndexTable(name: string): boolean {
 }
 
 /**
+ * The table to `COUNT(*)` for `name`'s row count, given every table in the scope.
+ *
+ * A search index counts its `_docsize` shadow, one row per indexed document, because counting
+ * the index itself reads its external content table. A withdrawn searchable leaves the index
+ * behind when a migration drops that table, and the count then throws `no such table`, which
+ * failed the listing of the whole scope. `_substrat_search__attachment_text` shares the prefix
+ * and has no shadow, so it counts itself.
+ */
+export function rowCountTable(name: string, tables: ReadonlySet<string>): string {
+  const docsize = `${name}_docsize`;
+  return isSearchIndexTable(name) && tables.has(docsize) ? docsize : name;
+}
+
+/**
  * Resolve one module's declarations into plans.
  *
  * Refuses rather than skips. A `searchables` entry that cannot become an index is

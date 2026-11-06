@@ -1,5 +1,28 @@
 # @substrat-run/builder
 
+## 0.10.0
+
+### Minor Changes
+
+- cb080e6: The builder's model phase gets a `check_model` tool: the model gate's own compile and loader, every problem at once, while the model is still in its turn, so a declaration mistake is fixed in place instead of costing a repair turn. `pnpm builder evals` gains `--until model` (grade once the model-phase turn is done) and `--no-check-model` (the arm without the tool), and reports repairs by phase.
+
+### Patch Changes
+
+- f5bd62f: The studio moves through the build with buttons instead of a typed "build it": the concept proposal ends with **Create the concept**, then **Create the model**, **Write the tests** and **Build the app** appear between phases, and the phase stepper shows all five phases.
+- Updated dependencies [cb080e6]
+- Updated dependencies [f5bd62f]
+- Updated dependencies [ab2cbdd]
+  - @substrat-run/builder-generator@0.10.0
+  - @substrat-run/builder-workspace@0.10.0
+  - @substrat-run/contracts@0.182.0
+  - @substrat-run/engine-assistant@0.1.34
+  - @substrat-run/engine-metering@0.6.66
+  - @substrat-run/adapter-cloudflare@0.182.0
+  - @substrat-run/cli@0.57.4
+  - @substrat-run/control-plane-api@0.182.0
+  - @substrat-run/kernel@0.182.0
+  - @substrat-run/model-providers@0.5.72
+
 ## 0.9.0
 
 ### Minor Changes
