@@ -18,6 +18,7 @@ import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
 import { USER_DELEGATED_SCOPES } from './settings.js';
+import { isPlaceholderAddress } from './placeholder-address.js';
 import { basicCredentialsOf } from './token-exchange.js';
 import { diagnoseSignInCallback, recordRefusedCallback, recordSignInException } from './sign-in-diagnostics.js';
 import {
@@ -460,6 +461,36 @@ export function buildAuth(deps: AuthDeps) {
   return auth;
 }
 
+/**
+ * An account with no real address has no `email` claim (#2938). `/oauth2/userinfo` is the only
+ * place this issuer serves that claim, and `customUserInfoClaims` can add claims but not remove
+ * one, since the plugin drops an undefined value and keeps the standard claim under it. So it
+ * comes off the response: a placeholder tells a relying party nothing, and "this person has no
+ * address" is a state `identifyEmail` already answers.
+ */
+function withoutPlaceholderEmail(ctx: { context: { returned?: unknown } }) {
+  const claims = ctx.context.returned as { email?: unknown } | null | undefined;
+  if (typeof claims?.email !== 'string' || !isPlaceholderAddress(claims.email)) return undefined;
+  const { email: _email, email_verified: _verified, ...rest } = claims as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * Nobody can receive mail at a placeholder, so nobody can have verified it, and a relying party
+ * must never be told otherwise. Judged on the address the row will hold after this write.
+ */
+async function refuseVerifiedPlaceholder(ctx: {
+  body?: { userId?: unknown; data?: { email?: unknown; emailVerified?: unknown } };
+  context: { internalAdapter: { findUserById(id: string): Promise<{ email: string } | null> } };
+}): Promise<void> {
+  if (ctx.body?.data?.emailVerified !== true || typeof ctx.body.userId !== 'string') return;
+  const next = ctx.body.data.email;
+  const address = typeof next === 'string' ? next : (await ctx.context.internalAdapter.findUserById(ctx.body.userId))?.email;
+  if (address && isPlaceholderAddress(address)) {
+    throw new APIError('BAD_REQUEST', { message: 'This account has no real address to verify' });
+  }
+}
+
 function betterAuthFor(deps: AuthDeps) {
   const machineScopes = deps.machineScopes ?? [];
   return betterAuth({
@@ -760,6 +791,7 @@ function betterAuthFor(deps: AuthDeps) {
         if (deps.recordSignIn && callbackMethod) {
           diagnoseSignInCallback(ctx.context, callbackMethod, ctx.request, deps.fetchSignInDiagnostic);
         }
+        if (ctx.path === '/admin/update-user') await refuseVerifiedPlaceholder(ctx);
         if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
         if (ctx.path !== '/oauth2/authorize') return;
         const query = ctx.query as Record<string, string | undefined> | undefined;
@@ -799,6 +831,7 @@ function betterAuthFor(deps: AuthDeps) {
        * debugging aid must not be able to cost anyone a login.
        */
       after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === '/oauth2/userinfo') return withoutPlaceholderEmail(ctx);
         const record = deps.recordSignIn;
         if (!record) return;
         if (ctx.path === '/github-email/verify' && ctx.context.newSession) {

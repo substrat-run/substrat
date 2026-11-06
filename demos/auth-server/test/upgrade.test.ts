@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { upgradeLegacySchema } from '../db/upgrade.js';
+import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { introspectTable, REDACTED, type SqlExec } from '../src/introspect.js';
 
 /**
@@ -476,5 +476,27 @@ describe('upgrading a store that ran Better Auth 1.7.0–1.7.2', () => {
     const upgrade = upgradeLegacySchema(sql);
     expect(upgrade.dropped).toEqual(['account.issuer']);
     expect(columnsOf('account')).not.toContain('issuer');
+  });
+});
+
+describe('taking the personal number out of a placeholder address (#2938)', () => {
+  it('rewrites it once, keeps the sign-in row, and leaves every other address alone', () => {
+    const db = new Database(':memory:');
+    for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+    const exec = sqlExecOf(db);
+    const add = db.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, 'x', ?, 0, 1, 1)");
+    add.run('bankid-user', '190001019999@bankid.placeholder.invalid');
+    add.run('email-user', '190001019999@example.com');
+    db.prepare("INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) VALUES ('a', '190001019999', 'bankid', 'bankid-user', 1, 1)").run();
+
+    expect(rewritePlaceholderAddresses(exec, 2)).toBe(1);
+    const email = (id: string) => (db.prepare('SELECT email FROM user WHERE id = ?').get(id) as { email: string }).email;
+    const rewritten = email('bankid-user');
+    expect(rewritten).toMatch(/^bankid-[0-9a-f]{32}@bankid\.placeholder\.invalid$/);
+    expect(email('email-user')).toBe('190001019999@example.com');
+    expect(db.prepare("SELECT user_id FROM account WHERE provider_id = 'bankid'").get()).toEqual({ user_id: 'bankid-user' });
+
+    expect(rewritePlaceholderAddresses(exec, 3)).toBe(0);
+    expect(email('bankid-user')).toBe(rewritten);
   });
 });

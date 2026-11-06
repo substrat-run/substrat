@@ -17,6 +17,7 @@ import {
   type AdminSignInMethod,
   type AdminUser,
 } from '../api';
+import { isPlaceholderAddress } from '../../../src/placeholder-address.js';
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
 import { USERS_PATH, USER_TABS, userPath, type UserTab } from '../console/routes';
@@ -464,6 +465,7 @@ function DetailsTab({
   setBanning: (on: boolean) => void;
 }) {
   const isMe = user.id === me;
+  const placeholder = isPlaceholderAddress(user.email);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [reason, setReason] = useState('');
@@ -528,7 +530,11 @@ function DetailsTab({
             {/* Not decoration, and not a `title` either: a native tooltip on a badge is
                 unreachable by keyboard and by touch, and this sentence is the answer to a support
                 ticket that reads "I cannot sign in with Google". It is the visible text. */}
-            {!user.emailVerified && (
+            {placeholder ? (
+              <p className="muted note">
+                This is a placeholder: this person signed in without giving an address.
+              </p>
+            ) : !user.emailVerified && (
               <p className="muted note">
                 Until this address is verified, this person cannot join an upstream provider to
                 this account at sign-in.
@@ -542,7 +548,7 @@ function DetailsTab({
           <dt>Created</dt>
           <dd>{user.createdAt ? new Date(user.createdAt).toLocaleString() : '—'}</dd>
         </dl>
-        {!user.emailVerified && (
+        {!user.emailVerified && !placeholder && (
           <div className="row">
             <button className="btn" disabled={busy} onClick={() => void act(() => markEmailVerified(user.id))}>
               Mark address verified
