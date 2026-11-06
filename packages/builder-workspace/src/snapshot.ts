@@ -54,6 +54,8 @@ export async function snapshotWorkspace(
 		.split('\0')
 		.filter(Boolean)
 		.map((p) => (project ? p : p.startsWith(prefix) ? p.slice(prefix.length) : p))
+		// A project may not have its .gitignore yet, and a snapshot runs mid-turn, one read per file.
+		.filter((p) => !/(^|\/)node_modules\//.test(p))
 		.sort();
 
 	const files: Record<string, string> = {};
