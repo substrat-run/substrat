@@ -19,8 +19,8 @@ import {
  * `application/json` is not one. The deprecated `error` duplicate rides along (`toProblem`
  * and `problemForStatus` emit it), so a client that still reads `error` keeps working.
  */
-function problemResponse(body: Problem): Response {
-  return new Response(JSON.stringify(body), {
+function problemResponse(body: Problem, carried?: Readonly<Record<string, unknown>>): Response {
+  return new Response(JSON.stringify(carried ? { ...body, ...carried } : body), {
     status: body.status,
     headers: { 'content-type': PROBLEM_CONTENT_TYPE },
   });
@@ -33,9 +33,23 @@ export function refuse(code: ErrorCode, detail: string): Response {
 
 /**
  * A refusal answered by status alone, as `about:blank`: a status the closed taxonomy has no
- * code for (the 501 "no roster store bound").
+ * code for (the 501 "no roster store bound"), or one a relay's own error class carries
+ * (`ConnectionRelayError`, `TenantMailRefusal`, …), whose throw sites name a status and no code.
+ *
+ * `carried` is a member the route answered beside the sentence before #113 and a client
+ * still reads: the connection relay's `probe`, which the dashboard's connect form shows. It
+ * rides as `control-plane-api`'s `refuseStatus` carries it, outside the declared extensions.
  */
-export function refuseStatus(status: number, detail: string): Response {
-  return problemResponse(problemForStatus(status, detail));
+export function refuseStatus(status: number, detail: string, carried?: Readonly<Record<string, unknown>>): Response {
+  return problemResponse(problemForStatus(status, detail), carried);
+}
+
+/**
+ * What a throw no route caught is answered with: `toProblem`'s reading of it, so a typed
+ * `SubstratError` keeps its code and anything else is a bare `internal` with no detail —
+ * an unreviewed message never reaches the caller. Without it Hono answers a text 500.
+ */
+export function problemForThrow(err: unknown): Response {
+  return problemResponse(toProblem(err));
 }
 

@@ -1,10 +1,11 @@
-import { SELF, env } from 'cloudflare:test';
+import { SELF, createExecutionContext, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEV_ACTOR_HEADER } from '@substrat-run/control-plane-api';
 import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemTypeFor, type ErrorCode } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, SESSION_COOKIE, pkceS256, type OidcEnv } from '@substrat-run/oidc-rp';
-import worker from '../src/worker.js';
+import worker, { RelayGateway } from '../src/worker.js';
+import { refuseStatus } from '../src/problem.js';
 
 /**
  * #113: the worker's OWN routes (the staff roster, the builder lookup, the support identity,
@@ -113,6 +114,94 @@ describe('POST /internal/builder/identity-tenants refusals', () => {
     const ok = await lookup({ externalId: 'sub' }, token);
     expect(ok.status).toBe(200);
     expect(ok.headers.get('content-type')).not.toContain('problem');
+  });
+});
+
+/**
+ * The relay routes (#113 remainder, PR A): a refusal the route decided carries its code; one a
+ * relay's error class threw is `about:blank` by its status, since those classes name no code
+ * yet. `error` stays the sentence the vertical-host and email readers parse today.
+ */
+describe('the /internal relay routes answer problem documents', () => {
+  const SECRET = 'problem-refusals-relay-secret';
+  const relayEnv = (over: Record<string, unknown> = {}) => ({ ...env, PLATFORM_SECRET: SECRET, ...over }) as never;
+  const relay = (path: string, body: unknown, over: Record<string, unknown> = {}, headers: Record<string, string> = { 'x-substrat-platform': SECRET }) =>
+    worker.fetch(
+      new Request(`https://cp.test${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) }),
+      relayEnv(over),
+    );
+  const ids = { tenantId: ulid(), scopeId: ulid() };
+
+  it('403 forbidden on every relay without the platform credential', async () => {
+    for (const path of [
+      '/internal/drain-scope',
+      '/internal/email/send',
+      '/internal/connections/upsert',
+      '/internal/connections/bind',
+      '/internal/connections/connect-url',
+      '/internal/connections/connect-links',
+      '/internal/mail-in/address',
+    ]) {
+      const res = await relay(path, ids, {}, {});
+      expect(res.status, path).toBe(403);
+      expect(res.headers.get('content-type'), path).toBe(PROBLEM_CONTENT_TYPE);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.code, path).toBe('forbidden');
+      expect(body.error, path).toBe(body.detail);
+    }
+  });
+
+  it('a refusal the route decided carries its code; the drain twin stays plain JSON', async () => {
+    await expectProblem(await relay('/internal/drain-scope', {}), 400, 'tenantId and scopeId (ULIDs) are required', 'validation_failed');
+    await expectProblem(
+      await relay('/internal/email/send', ids),
+      400,
+      'tenantId, scopeId (ULIDs) and {to, subject, html, text} are required',
+      'validation_failed',
+    );
+    await expectProblem(
+      await relay('/internal/mail-in/address', { ...ids, action: 'get' }),
+      403,
+      "a mail-in address needs a proven caller — call the relay from the vertical's worker, not from inside a Durable Object",
+      'forbidden',
+    );
+    const ok = await relay('/internal/drain-scope', { ...ids, platformRequests: false });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-type')).not.toContain('problem');
+  });
+
+  it("a relay class's refusal is about:blank by its status, with the sentence it always had", async () => {
+    const res = await relay('/internal/connections/upsert', {});
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(problem.safeParse(body).success).toBe(true);
+    expect(body).toMatchObject({ type: PROBLEM_TYPE_BLANK, detail: expect.stringMatching(/^invalid connection relay request: /) });
+    expect(body.code).toBeUndefined();
+    expect(body.error).toBe(body.detail);
+  });
+
+  it("the probe a refused upsert answered rides beside the problem's members", async () => {
+    const probe = { ok: false, detail: 'the provider refused the token' };
+    const body = (await refuseStatus(422, 'the credential did not pass its probe', { probe }).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ type: PROBLEM_TYPE_BLANK, status: 422, error: 'the credential did not pass its probe', probe });
+  });
+
+  it('the relay gateway refuses an unreadable caller as validation_failed', async () => {
+    const res = await new RelayGateway(createExecutionContext(), relayEnv()).fetch(
+      new Request('https://cp.test/internal/email/send', { method: 'POST', headers: { 'x-substrat-platform': SECRET }, body: '{}' }),
+    );
+    await expectProblem(res, 400, 'relay gateway: the caller is missing or unreadable', 'validation_failed');
+  });
+
+  it('a throw no route caught is internal with no detail, never a text 500', async () => {
+    // No directory binding: the email relay's scope read throws something nobody typed.
+    const res = await relay('/internal/email/send', { ...ids, to: 'a@example.com', subject: 's', html: '<p>h</p>', text: 'h' }, { CONTROL_PLANE: undefined });
+    expect(res.status).toBe(500);
+    expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ type: problemTypeFor('internal'), code: 'internal' });
+    expect(body.detail).toBeUndefined();
   });
 });
 

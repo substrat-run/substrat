@@ -104,25 +104,25 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
   it('answers the uniform 404 for a malformed connection id', async () => {
     const res = await post(`/hooks/scrive/not-a-ulid/inst-1/${TOKEN}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'not found' });
+    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
   });
 
   it('answers the SAME 404 for an unknown connection', async () => {
     const res = await post(`/hooks/scrive/${ulid()}/inst-1/${TOKEN}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'not found' });
+    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
   });
 
   it('answers the SAME 404 for an unknown instance on a real connection', async () => {
     const res = await post(`/hooks/scrive/${conn}/no-such-instance/${TOKEN}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'not found' });
+    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
   });
 
   it('answers the SAME 404 on a token mismatch — and never touches the provider', async () => {
     const res = await post(`/hooks/scrive/${conn}/inst-1/${'b'.repeat(64)}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'not found' });
+    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
   });
 
   it('verifies the token and reconciles against the provider (200, body never read)', async () => {
@@ -150,6 +150,6 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
 
     const res = await post(`/hooks/scrive/${conn}/inst-2/${TOKEN}`);
     expect(res.status).toBe(500);
-    expect(await res.json()).toEqual({ error: 'reconcile failed' });
+    expect(await res.json()).toMatchObject({ error: 'reconcile failed', detail: 'reconcile failed' });
   });
 });

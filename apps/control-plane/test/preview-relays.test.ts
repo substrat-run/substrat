@@ -103,7 +103,7 @@ describe('previews and forks cannot send email or change connections (#2005)', (
         const before = sent.length;
         const res = await call('/internal/email/send', mail(scopes[shape]));
         expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: PREVIEW_EMAIL_REFUSAL });
+        expect(await res.json()).toMatchObject({ error: PREVIEW_EMAIL_REFUSAL, detail: PREVIEW_EMAIL_REFUSAL });
         expect(sent).toHaveLength(before);
       });
     }
@@ -121,7 +121,7 @@ describe('previews and forks cannot send email or change connections (#2005)', (
         const before = await connections();
         const res = await call('/internal/connections/upsert', upsert(scopes[shape], 'COPY'));
         expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: PREVIEW_CONNECTIONS_REFUSAL });
+        expect(await res.json()).toMatchObject({ error: PREVIEW_CONNECTIONS_REFUSAL, detail: PREVIEW_CONNECTIONS_REFUSAL });
         expect(await connections()).toEqual(before);
         expect((await hostFor().admin.openConnection(t, vertical, PROVIDER))?.secret).toEqual({ apiToken: 'INSTALL' });
       });
@@ -141,7 +141,7 @@ describe('previews and forks cannot send email or change connections (#2005)', (
       it(`${shape}: refused 403, and no URL is minted`, async () => {
         const res = await call('/internal/connections/connect-url', round(scopes[shape]));
         expect(res.status).toBe(403);
-        expect(await res.json()).toEqual({ error: PREVIEW_CONNECTIONS_REFUSAL });
+        expect(await res.json()).toMatchObject({ error: PREVIEW_CONNECTIONS_REFUSAL, detail: PREVIEW_CONNECTIONS_REFUSAL });
       });
     }
   });
