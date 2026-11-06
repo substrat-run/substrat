@@ -1,5 +1,12 @@
 # @substrat-run/model-providers
 
+## 0.5.73
+
+### Patch Changes
+
+- Updated dependencies [aa567d3]
+  - @substrat-run/contracts@0.183.0
+
 ## 0.5.72
 
 ### Patch Changes
