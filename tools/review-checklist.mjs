@@ -30,13 +30,26 @@
  * Exit 0: every item names real, running gates. 1: at least one does not (each printed).
  * 2: a file this reads is missing. Fixtures: `review-checklist.test.mjs`.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMainModule, repoRoot } from './repo-path.mjs';
 import { GATES } from './scaffold-gates.mjs';
 
 const CHECKLIST = 'plugin/substrat/review/checklist.md';
+const PROCEDURE = 'plugin/substrat/review/procedure.md';
 const CI = '.github/workflows/ci.yml';
+
+/**
+ * The rules digest every review report names: one SHA-256 over the checklist's bytes followed
+ * by the procedure's, as `procedure.md` defines it for every runner.
+ */
+export function rulesDigest(root = repoRoot(import.meta.url)) {
+  return createHash('sha256')
+    .update(readFileSync(join(root, CHECKLIST)))
+    .update(readFileSync(join(root, PROCEDURE)))
+    .digest('hex');
+}
 
 /** Each `### S<n>` item's heading line and its `gates:` lines. */
 export function itemsOf(markdown) {

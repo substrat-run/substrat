@@ -19,10 +19,11 @@ export interface ReviewReceipt {
 export class ReviewValidationError extends Error {}
 export class ReviewCollisionError extends Error {}
 
-// Pinned to the checklist bundled with this release. The test holds these values
-// to the source files, so a checklist or plugin bump cannot silently go unstamped.
-export const REVIEW_CHECKLIST_DIGEST = '9704ba1c0abdef09cec51a0b377ec48e678fdb7f577a8d57c86343cf66a98eab';
-export const REVIEW_PLUGIN_VERSION = '0.6.0';
+// The rules digest (checklist then procedure, plugin/substrat/review/procedure.md) and the
+// plugin version of this release. tools/review-checklist.test.mjs holds both to the source
+// files, so a rules or plugin change cannot silently go unstamped.
+export const REVIEW_CHECKLIST_DIGEST = 'b3071915682ac659f45208f8fbbb00dd773766fee62186c5c9f585dd6a580dde';
+export const REVIEW_PLUGIN_VERSION = '0.7.0';
 const REVIEW_DAYS = 30;
 
 const recordKey = (id: string) => `records/${id}.json`;
