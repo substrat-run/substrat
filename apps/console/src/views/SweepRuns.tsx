@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SweepRunEntry, SweepRunKind, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Input, Select, Tag } from '../components';
+import { Badge, Button, Card, Input, Select, Table, Tag, UNSET_BUTTON } from '../components';
 import type { Api } from '../lib/api';
 
 const PAGE = 20;
@@ -117,25 +117,6 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
     return hay.includes(q.toLowerCase());
   });
 
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = {
-    padding: '0 16px',
-    height: 40,
-    borderBottom: '1px solid var(--border-subtle)',
-    fontSize: 12.5,
-  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -201,94 +182,61 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
         padding={0}
         footer="Rows are pruned after the retention horizon (14 days — high-frequency telemetry). Row click shows the detail. Cursor-paginated."
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              {['Time', 'Kind', 'Unit', 'Outcome', 'Tenant', 'Vertical'].map((h) => (
-                <th key={h} style={th}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((e) => (
-              <Fragment key={e.id}>
-                <tr
-                  onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
-                  style={{ cursor: 'pointer', background: expanded === e.id ? 'var(--surface-hover)' : 'transparent' }}
-                >
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {e.at.slice(0, 19).replace('T', ' ')}
-                  </td>
-                  <td style={td}>
-                    <Tag mono>{e.kind}</Tag>
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {/* The keyboard path into the detail row — the tr's onClick is pointer-only. */}
-                    <button
-                      type="button"
-                      aria-expanded={expanded === e.id}
-                      aria-controls={expanded === e.id ? `sweep-detail-${e.id}` : undefined}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setExpanded(expanded === e.id ? undefined : e.id);
-                      }}
-                      // Not `all: unset` — that would also erase the focus ring this exists for.
-                      style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', textAlign: 'left' }}
-                    >
-                      {e.kind === 'schedule' ? (e.operation ?? e.unit) : e.kind === 'freshness' ? (e.eventType ?? e.unit) : e.unit}
-                    </button>
-                  </td>
-                  <td style={td}>
-                    <Badge status={OUTCOME_BADGE[e.outcome] ?? 'warning'}>{e.outcome}</Badge>
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                    {e.tenantId ? (
-                      (tenants.get(e.tenantId)?.slug ?? e.tenantId.slice(0, 8))
-                    ) : (
-                      <span style={{ color: 'var(--text-placeholder)' }}>—</span>
-                    )}
-                  </td>
-                  <td style={td}>
-                    {e.vertical ? <Tag mono>{e.vertical}</Tag> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>}
-                  </td>
-                </tr>
-                {expanded === e.id && (
-                  <tr id={`sweep-detail-${e.id}`}>
-                    <td colSpan={6} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
-                        <SweepRunDetail entry={e} />
-                        <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                          <span>unit {e.unit}</span>
-                          {e.scopeId && <span>scope {e.scopeId}</span>}
-                          {e.version && <span>version {e.version}</span>}
-                          {e.observedAt && <span>evidence {e.observedAt.slice(0, 19).replace('T', ' ')}</span>}
-                          {e.elapsedMs !== null && <span>{e.elapsedMs}ms</span>}
-                          {e.platformRequests && (
-                            <span>
-                              drained {e.platformRequests.drained} · done {e.platformRequests.done} · failed{' '}
-                              {e.platformRequests.failed} · pending {e.platformRequests.pending} · {e.platformRequests.scopes} scopes
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
+        <Table
+          label="Sweep runs"
+          rows={visible}
+          rowKey={(e) => e.id}
+          expanded={expanded}
+          onRowClick={(e) => setExpanded(expanded === e.id ? undefined : e.id)}
+          detail={(e) => (
+            <div id={`sweep-detail-${e.id}`} style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
+              <SweepRunDetail entry={e} />
+              <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                <span>unit {e.unit}</span>
+                {e.scopeId && <span>scope {e.scopeId}</span>}
+                {e.version && <span>version {e.version}</span>}
+                {e.observedAt && <span>evidence {e.observedAt.slice(0, 19).replace('T', ' ')}</span>}
+                {e.elapsedMs !== null && <span>{e.elapsedMs}ms</span>}
+                {e.platformRequests && (
+                  <span>
+                    drained {e.platformRequests.drained} · done {e.platformRequests.done} · failed {e.platformRequests.failed} · pending{' '}
+                    {e.platformRequests.pending} · {e.platformRequests.scopes} scopes
+                  </span>
                 )}
-              </Fragment>
-            ))}
-            {visible.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                  {entries.length === 0 && !error
-                    ? 'No sweep rows yet — the record fills as the platform cron passes.'
-                    : 'No entries match.'}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              </div>
+            </div>
+          )}
+          emptyText={entries.length === 0 && !error ? 'No sweep rows yet — the record fills as the platform cron passes.' : 'No entries match.'}
+          columns={[
+            { header: 'Time', mono: true, muted: true, render: (e) => e.at.slice(0, 19).replace('T', ' ') },
+            { header: 'Kind', render: (e) => <Tag mono>{e.kind}</Tag> },
+            {
+              header: 'Unit',
+              mono: true,
+              render: (e) => (
+                // The keyboard path into the detail row — the row's click is pointer-only.
+                <button
+                  type="button"
+                  aria-expanded={expanded === e.id}
+                  aria-controls={expanded === e.id ? `sweep-detail-${e.id}` : undefined}
+                  onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
+                  // Not `all: unset` — that would also erase the focus ring this exists for.
+                  style={{ ...UNSET_BUTTON, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {e.kind === 'schedule' ? (e.operation ?? e.unit) : e.kind === 'freshness' ? (e.eventType ?? e.unit) : e.unit}
+                </button>
+              ),
+            },
+            { header: 'Outcome', render: (e) => <Badge status={OUTCOME_BADGE[e.outcome] ?? 'warning'}>{e.outcome}</Badge> },
+            {
+              header: 'Tenant',
+              mono: true,
+              muted: true,
+              render: (e) => (e.tenantId ? (tenants.get(e.tenantId)?.slug ?? e.tenantId.slice(0, 8)) : <span style={{ color: 'var(--text-placeholder)' }}>—</span>),
+            },
+            { header: 'Vertical', render: (e) => (e.vertical ? <Tag mono>{e.vertical}</Tag> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>) },
+          ]}
+        />
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
             <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>

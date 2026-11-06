@@ -252,8 +252,10 @@ if (verdict.offences.length > 0) {
   console.error('  about an importer whose directory is absent, so nothing else here would notice.');
   for (const o of verdict.offences) console.error(`  ${o}`);
   console.error('');
-  console.error('  Drop the `.builder/projects/*` blocks from the lockfile — by hand is fine, they are');
-  console.error('  self-contained — or remove the scratch projects and re-run `pnpm install`.');
+  console.error('  Run `git restore pnpm-lock.yaml`, unless you meant to change a dependency. Do not just');
+  console.error('  delete the `.builder/projects/*` blocks: the install that wrote them can also re-resolve');
+  console.error('  real packages, and that stays behind with this gate green. To keep a real change, remove');
+  console.error('  the scratch projects and re-run `pnpm install`.');
   console.error('  Locally this reads the WORKING TREE: churn from a studio project you have open is');
   console.error('  expected and is only a problem once it is committed.');
   process.exit(1);

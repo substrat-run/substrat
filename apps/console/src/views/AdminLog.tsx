@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { adminAction } from '@substrat-run/contracts';
 import type { AdminAction, AdminLogEntry, Tenant, TenantId } from '@substrat-run/contracts';
-import { Button, Card, Input, Select, Tag } from '../components';
+import { Button, Card, Input, Select, Table, Tag } from '../components';
 import { ActorCell } from '../patterns/ActorCell';
 import { JsonDiff } from '../patterns/JsonDiff';
 import type { Api } from '../lib/api';
@@ -94,25 +94,6 @@ export function AdminLog({ api, tenants }: AdminLogProps) {
     return hay.includes(q.toLowerCase());
   });
 
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = {
-    padding: '0 16px',
-    height: 40,
-    borderBottom: '1px solid var(--border-subtle)',
-    fontSize: 12.5,
-  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -149,67 +130,50 @@ export function AdminLog({ api, tenants }: AdminLogProps) {
         padding={0}
         footer="Actors are PlatformActorIds — labels are console-side aliases, not platform identity. Cursor-paginated."
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-          <thead>
-            <tr>
-              {['Time', 'Actor', 'Action', 'Tenant', 'Scope', 'Vertical'].map((h) => (
-                <th key={h} style={th}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((e) => (
-              <Fragment key={e.id}>
-                <tr
-                  onClick={() => setExpanded(expanded === e.id ? undefined : e.id)}
-                  style={{ cursor: 'pointer', background: expanded === e.id ? 'var(--surface-hover)' : 'transparent' }}
-                >
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                    {e.at.slice(0, 19).replace('T', ' ')}
-                  </td>
-                  <td style={td}>
-                    <ActorCell actor={e.actor} />
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                    {e.action}
-                    <AuditedOutcome entry={e} />
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                    {/* A null tenant is not missing data — it is a platform-level
-                        action that targets no tenant (K-23), like registering a
-                        central identity pool. */}
-                    {e.tenantId ? (
-                      (tenants.get(e.tenantId)?.slug ?? e.tenantId.slice(0, 8))
-                    ) : (
-                      <span style={{ color: 'var(--text-placeholder)' }}>platform</span>
-                    )}
-                  </td>
-                  <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
-                    {/* A null scopeId is not missing data — it is a tenant-wide action. */}
-                    {e.scopeId ? e.scopeId.slice(0, 8) + '…' : <span style={{ color: 'var(--text-placeholder)' }}>tenant-wide</span>}
-                  </td>
-                  <td style={td}>{e.vertical ? <Tag mono>{e.vertical}</Tag> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>}</td>
-                </tr>
-                {expanded === e.id && (
-                  <tr>
-                    <td colSpan={6} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
-                      <JsonDiff before={e.before} after={e.after} />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            ))}
-            {visible.length === 0 && (
-              <tr>
-                <td colSpan={6} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 80 }}>
-                  No entries match.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <Table
+          label="Admin log"
+          rows={visible}
+          rowKey={(e) => e.id}
+          expanded={expanded}
+          onRowClick={(e) => setExpanded(expanded === e.id ? undefined : e.id)}
+          detail={(e) => <JsonDiff before={e.before} after={e.after} />}
+          emptyText="No entries match."
+          columns={[
+            { header: 'Time', mono: true, muted: true, render: (e) => e.at.slice(0, 19).replace('T', ' ') },
+            { header: 'Actor', render: (e) => <ActorCell actor={e.actor} /> },
+            {
+              header: 'Action',
+              mono: true,
+              render: (e) => (
+                <>
+                  {e.action}
+                  <AuditedOutcome entry={e} />
+                </>
+              ),
+            },
+            {
+              header: 'Tenant',
+              mono: true,
+              muted: true,
+              // A null tenant is not missing data — it is a platform-level action that
+              // targets no tenant (K-23), like registering a central identity pool.
+              render: (e) =>
+                e.tenantId ? (
+                  (tenants.get(e.tenantId)?.slug ?? e.tenantId.slice(0, 8))
+                ) : (
+                  <span style={{ color: 'var(--text-placeholder)' }}>platform</span>
+                ),
+            },
+            {
+              header: 'Scope',
+              mono: true,
+              muted: true,
+              // A null scopeId is not missing data — it is a tenant-wide action.
+              render: (e) => (e.scopeId ? e.scopeId.slice(0, 8) + '…' : <span style={{ color: 'var(--text-placeholder)' }}>tenant-wide</span>),
+            },
+            { header: 'Vertical', render: (e) => (e.vertical ? <Tag mono>{e.vertical}</Tag> : <span style={{ color: 'var(--text-placeholder)' }}>—</span>) },
+          ]}
+        />
         {cursor && (
           <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
             <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>

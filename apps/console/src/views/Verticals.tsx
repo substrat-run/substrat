@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Vertical, VerticalSource } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Pager, Select, Table, Tag, usePaged } from '../components';
+import { Badge, Button, Card, Dialog, Input, Select, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
@@ -52,7 +52,6 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
     if (!needle) return verticals;
     return verticals.filter((v) => `${v.slug} ${v.name} ${v.source}`.toLowerCase().includes(needle));
   }, [verticals, q]);
-  const paged = usePaged(filtered, q);
 
   // The opened vertical, resolved from the walked registry.
   const resolved = useMemo(
@@ -170,11 +169,12 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
       <Card padding={0}>
         <Table
           columns={verticalColumns}
-          rows={paged.rows}
+          rows={filtered}
+          paged
+          resetKey={q}
           onRowClick={(v) => onOpen(v.slug)}
           emptyText={verticals.length === 0 ? 'No verticals registered yet.' : 'No verticals match this filter.'}
         />
-        <Pager p={paged} />
       </Card>
 
       {/* Register a vertical — the only producer action on this surface; publishing a

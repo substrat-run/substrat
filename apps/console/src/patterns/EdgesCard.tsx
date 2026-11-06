@@ -11,7 +11,7 @@ import {
   type LeverMode,
   type Scope,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Table } from '../components';
+import { Badge, Button, Card, Checkbox, Dialog, Input, Table } from '../components';
 import type { Api } from '../lib/api';
 import { edgesCardState } from '../lib/edges';
 import { errorMessage, validReason } from '../lib/schedules';
@@ -201,10 +201,12 @@ export function EdgesCard({
           if (!moving.current) setDialog(null);
         }}
       >
-        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, margin: '0 0 10px' }}>
-          <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
-          <span>I understand: {dialog ? LEVER_EFFECT[dialog.kind] : ''}.</span>
-        </label>
+        <Checkbox
+          label={`I understand: ${dialog ? LEVER_EFFECT[dialog.kind] : ''}.`}
+          checked={agreed}
+          onChange={setAgreed}
+          style={{ marginBottom: 10 }}
+        />
         <Input label="Reason" placeholder="Why is this watermark moving?" value={reason} onChange={(e) => setReason(e.target.value)} />
       </Dialog>
     </Card>
