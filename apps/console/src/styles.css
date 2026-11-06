@@ -1,3 +1,7 @@
 /* Design tokens live in the shared @substrat-run/ui package (fonts, colors,
    typography, spacing, effects — light + dark). */
 @import "@substrat-run/ui/styles.css";
+
+/* The elements read --wa-* tokens: Web Awesome's theme, then those tokens from ours. */
+@import "@substrat-run/elements/themes/base.css";
+@import "@substrat-run/ui/elements-theme.css";

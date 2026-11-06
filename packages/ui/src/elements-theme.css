@@ -1,0 +1,93 @@
+/*
+ * The platform apps' look for @substrat-run/elements: Web Awesome's tokens, read from this
+ * package's own. Here rather than beside the elements' themes because it names tokens
+ * only this package defines, and the elements are published while this package is not.
+ *
+ * Import it after `@substrat-run/elements/themes/base.css`, and put `sub-theme-substrat`
+ * on <html>, where `data-theme` is: a value below follows `data-theme` by itself, and
+ * `wa-dark` goes on <html> with it for the tokens not named here. The layer is Web
+ * Awesome's last, so these win over its theme, in dark as in light.
+ */
+@layer wa-theme-overrides {
+  .sub-theme-substrat {
+    --wa-color-brand-95: var(--brand-50);
+    --wa-color-brand-90: var(--brand-100);
+    --wa-color-brand-80: var(--brand-200);
+    --wa-color-brand-70: var(--brand-300);
+    --wa-color-brand-60: var(--brand-400);
+    --wa-color-brand-50: var(--brand-500);
+    --wa-color-brand-40: var(--brand-600);
+    --wa-color-brand-30: var(--brand-700);
+    --wa-color-brand-20: var(--brand-800);
+    --wa-color-brand-10: var(--brand-900);
+    --wa-color-brand-05: var(--brand-950);
+    --wa-color-brand: var(--wa-color-brand-40);
+    --wa-color-brand-on: var(--action-primary-text);
+
+    --wa-color-neutral-95: var(--gray-50);
+    --wa-color-neutral-90: var(--gray-100);
+    --wa-color-neutral-80: var(--gray-200);
+    --wa-color-neutral-70: var(--gray-300);
+    --wa-color-neutral-60: var(--gray-400);
+    --wa-color-neutral-50: var(--gray-500);
+    --wa-color-neutral-40: var(--gray-600);
+    --wa-color-neutral-30: var(--gray-700);
+    --wa-color-neutral-20: var(--gray-800);
+    --wa-color-neutral-10: var(--gray-900);
+    --wa-color-neutral-05: var(--gray-950);
+    --wa-color-neutral: var(--wa-color-neutral-50);
+
+    --wa-color-surface-default: var(--surface-card);
+    --wa-color-surface-raised: var(--surface-raised);
+    --wa-color-surface-lowered: var(--surface-inset);
+    --wa-color-surface-border: var(--border-default);
+
+    --wa-color-text-normal: var(--text-primary);
+    --wa-color-text-quiet: var(--text-secondary);
+    --wa-color-text-link: var(--text-link);
+    --wa-color-focus: var(--brand-400);
+
+    --wa-color-brand-fill-quiet: var(--surface-brand-subtle);
+    --wa-color-brand-fill-loud: var(--action-primary-bg);
+    --wa-color-brand-on-quiet: var(--text-brand);
+    --wa-color-brand-on-loud: var(--action-primary-text);
+
+    --wa-color-neutral-fill-quiet: var(--surface-hover);
+    --wa-color-neutral-fill-normal: var(--surface-active);
+    --wa-color-neutral-fill-loud: var(--surface-inverse);
+    --wa-color-neutral-border-quiet: var(--border-subtle);
+    --wa-color-neutral-border-normal: var(--border-default);
+    --wa-color-neutral-border-loud: var(--border-strong);
+    --wa-color-neutral-on-quiet: var(--text-secondary);
+    --wa-color-neutral-on-normal: var(--text-primary);
+    --wa-color-neutral-on-loud: var(--text-inverse);
+
+    --wa-color-success-fill-quiet: var(--status-success-bg);
+    --wa-color-success-fill-loud: var(--status-success-dot);
+    --wa-color-success-on-quiet: var(--status-success-fg);
+    --wa-color-warning-fill-quiet: var(--status-warning-bg);
+    --wa-color-warning-fill-loud: var(--status-warning-dot);
+    --wa-color-warning-on-quiet: var(--status-warning-fg);
+    --wa-color-danger-fill-quiet: var(--status-danger-bg);
+    --wa-color-danger-fill-loud: var(--status-danger-dot);
+    --wa-color-danger-on-quiet: var(--status-danger-fg);
+
+    --wa-font-family-body: var(--font-sans);
+    --wa-font-family-code: var(--font-mono);
+    --wa-font-size-scale: 0.875;
+    --wa-form-control-height: var(--control-h-md);
+
+    --wa-border-radius-s: var(--radius-xs);
+    --wa-border-radius-m: var(--radius-sm);
+    --wa-border-radius-l: var(--radius-lg);
+
+    --wa-shadow-s: var(--shadow-sm);
+    --wa-shadow-m: var(--shadow-md);
+    --wa-shadow-l: var(--shadow-popover);
+
+    --wa-transition-easing: var(--ease-out);
+    --wa-transition-fast: var(--duration-fast);
+    --wa-transition-normal: var(--duration-base);
+    --wa-transition-slow: var(--duration-slow);
+  }
+}

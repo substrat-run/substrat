@@ -19,7 +19,7 @@
  *                   an empty `<span slot="signed-out">` shows nothing
  *
  * Attributes: `show` (`avatar` | `name` | `email`, default `avatar`), `size`,
- *   `session-url` (`/api/me`), `login-url` (`/api/auth/login`), `logout-url`
+ *   `session-url` (`/api/me`; empty reads nothing, for a host that sets `session`), `login-url` (`/api/auth/login`), `logout-url`
  *   (`/api/auth/logout`), `account-url` (adds "Manage account" when set),
  *   `hide-switch-user`, `placement` (default `bottom-end`).
  * Property: `session` — set it to draw a session the host already read.

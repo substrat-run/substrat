@@ -2,6 +2,10 @@
  * The session an element draws: its `session` property when the host set one, the
  * shared read at its `sessionUrl` otherwise. A Lit controller so `<sub-avatar>` and
  * `<sub-user-menu>` hold the same rule once.
+ *
+ * An empty `sessionUrl` reads nothing, and the element stays `loading` until `session` is
+ * set. React sets a property only after the element is connected, so a host that brings
+ * its own session needs this to keep the default URL from being asked first.
  */
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import { sessionAt, type Session, type SessionState } from '../session.js';
@@ -29,7 +33,9 @@ export class SessionController implements ReactiveController {
 
   /** Read again; a no-op while the host draws a `session` it was handed. */
   refresh(): Promise<void> {
-    return this.host.session === undefined ? sessionAt(this.host.sessionUrl).refresh() : Promise.resolve();
+    return this.host.session === undefined && this.host.sessionUrl
+      ? sessionAt(this.host.sessionUrl).refresh()
+      : Promise.resolve();
   }
 
   hostConnected(): void {
@@ -51,7 +57,7 @@ export class SessionController implements ReactiveController {
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     this.#bound = { url: this.host.sessionUrl, session: this.host.session };
-    if (this.host.session !== undefined) return;
+    if (this.host.session !== undefined || !this.host.sessionUrl) return;
     this.#unsubscribe = sessionAt(this.host.sessionUrl).subscribe((s) => {
       this.#read = s;
       this.host.requestUpdate();

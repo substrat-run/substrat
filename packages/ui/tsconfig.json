@@ -6,7 +6,7 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "noEmit": true,
-    "types": []
+    "types": ["node"]
   },
   "include": ["src", "test"]
 }
