@@ -3,8 +3,10 @@
 FROM rust:1.91-slim-bookworm@sha256:8514999d4786ef12efe89239e86b3d0a021b94b9d35108c8efe6c79ca7dc1a65
 # ring compiles C for the wasm target; Debian's clang carries the WebAssembly backend. Installed
 # from the dated snapshot the base image names in its own sources, not the moving archive, so a
-# Debian update cannot change the bytes a rebuild of unchanged source produces.
+# Debian update cannot change the bytes a rebuild of unchanged source produces. The snapshot
+# archive often answers 503 or 504, or stalls, so a fetch retries and gives up early.
 RUN sed -i 's|http://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/20251208T000000Z|; s|http://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/20251208T000000Z|' /etc/apt/sources.list.d/debian.sources \
+ && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/80snapshot \
  && apt-get -o Acquire::Check-Valid-Until=false update \
  && apt-get install -y --no-install-recommends clang llvm \
  && rm -rf /var/lib/apt/lists/*
