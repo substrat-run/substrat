@@ -862,6 +862,20 @@ Such a review has no tenant, vertical or version, so:
 *If wrong:* B puts unmeasured caps in front of a customer; skipping phase 2's advisory window makes
 Q4's threshold a guess.
 
+**Staff step before phase 1 runs (runbook).** The review intake (#2697) stores archives and
+records in one R2 bucket, `substrat-review-sources`, bound to the control plane as
+`REVIEW_SOURCES`. Deploys never provision buckets, so a person creates it once, in the
+platform's production account, with no public access and the default location (phase 1
+reviews only the platform's own code; a jurisdictional placement is phase 2's, Q3d):
+
+```
+wrangler r2 bucket create substrat-review-sources
+```
+
+Check: `wrangler r2 bucket list` names it, and after the next control-plane deploy a staff
+`substrat review list` answers with a (possibly empty) list rather than `501`. Until then every
+review route answers `501`, and nothing else in the control plane depends on the bucket.
+
 ### Q9 — Decided
 
 Where the reviewed change comes from is decided: §2, D5.

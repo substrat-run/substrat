@@ -2,7 +2,8 @@
 
 One rule set, any runner: the `review` skill (run it locally before you push) reads it
 today, and a runner the platform hosts is meant to read the same file. Edit the rules **here
-and nowhere else**. No runner carries its own copy.
+and nowhere else**. No runner carries its own copy. How a runner applies them is
+[`procedure.md`](procedure.md), beside this file.
 
 This checklist exists because the failures it names *look like success*: they compile, the
 tests pass and the page renders. Review that is already built into your editor catches
@@ -170,7 +171,9 @@ helpers.
 
 ## Report shape
 
-Open with one line: `Substrat review: <n> blocking, <m> advisory`. Then one entry per
+Open with one line: `Substrat review: <n> blocking, <m> advisory · rules <digest>`, where
+`<digest>` is the first 12 hex characters of the rules digest (`procedure.md` says how to
+compute it). Then one entry per
 finding, most severe first:
 
 ```

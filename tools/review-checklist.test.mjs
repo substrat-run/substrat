@@ -1,13 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { ciCommands, findOffences, parseGates } from './review-checklist.mjs';
+import { execFileSync } from 'node:child_process';
+import { ciCommands, findOffences, parseGates, rulesDigest } from './review-checklist.mjs';
 
-test('the hosted receipt stamps the bundled checklist and plugin version', () => {
+test('the rules digest is the one procedure.md tells a local runner to compute', () => {
+  const local = execFileSync('sh', ['-c', 'cat checklist.md procedure.md | shasum -a 256'], { cwd: 'plugin/substrat/review', encoding: 'utf8' });
+  assert.equal(local.split(/\s/)[0], rulesDigest());
+});
+
+test('the hosted receipt stamps the rules digest and plugin version', () => {
   const source = readFileSync('apps/control-plane/src/review-store.ts', 'utf8');
-  const checklist = readFileSync('plugin/substrat/review/checklist.md');
-  const digest = createHash('sha256').update(checklist).digest('hex');
+  const digest = rulesDigest();
   const version = JSON.parse(readFileSync('plugin/substrat/.claude-plugin/plugin.json', 'utf8')).version;
   assert.match(source, new RegExp(`REVIEW_CHECKLIST_DIGEST = '${digest}'`));
   assert.match(source, new RegExp(`REVIEW_PLUGIN_VERSION = '${version.replaceAll('.', '\\.')}'`));
