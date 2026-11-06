@@ -28,8 +28,10 @@ different digests were made under different rules.
    find the default branch (`git symbolic-ref refs/remotes/origin/HEAD`) and use that; if the
    merge-base command prints nothing, stop and say the base is unknown rather than reviewing a
    bare `git diff`. Add untracked files from
-   `git ls-files --others --exclude-standard`; they are in no diff, so open them. If the base
-   is not `main`, say which you used. If all of that is empty, say so and stop.
+   `git ls-files --others --exclude-standard`; they are in no diff, so open them. A file with
+   both staged and unstaged edits can land as either, so read its staged copy too
+   (`git show :<path>`). If the base is not `main`, say which you used. If all of that is
+   empty, say so and stop.
 2. **Run the gates the checklist names that exist here**, in the vertical's own project, in
    the read-only form the checklist gives each, and read their output. Which gates exist depends on
    whether this is a scaffolded project or the monorepo; the checklist says which. A gate that

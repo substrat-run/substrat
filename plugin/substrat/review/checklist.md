@@ -15,10 +15,11 @@ Substrat's rules can see.
 - Review **the change**, not the whole tree. A finding must point at a line the change adds
   or alters (`file:line`), quote it, and say how it fails. Pre-existing problems are out of
   scope unless the change makes them reachable.
-- **Run gates read-only.** A gate with a `--check` form runs only in that form: a bare
-  `lint:model`, `lint:permissions` or `lint:agent-rules` rewrites files, which a review must
-  not do. A gate that only reads and reports has no such form and runs as named. A gate that
-  would rewrite a tracked file and has no read-only form is not run.
+- **Run gates read-only.** A gate that can rewrite files runs only in the read-only forms
+  its `gates:` line names, `--check` or `--base <ref>`: a bare `lint:model`, `lint:permissions`
+  or `lint:agent-rules` rewrites files, which a review must not do. A gate that only reads and
+  reports runs as named. A gate that would rewrite a tracked file and has no read-only form
+  is not run.
 - **Gate invocation.** In the monorepo, pass `--check` through `pnpm run`
   (`pnpm run lint:migrations --check`). `pnpm lint:migration-fence` has no `--check` form but
   only replays and reports, so it is safe to run: its one write is the scaffold template
