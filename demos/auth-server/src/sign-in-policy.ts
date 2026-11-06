@@ -382,7 +382,7 @@ export function signInMethodOfPath(
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;
   // BankID's session is minted in `/bankid/collect` (`bankid-plugin.ts`), the poll that sees
   // the order complete — not in `/bankid/start`, which has nobody signed in yet.
-  if (path === '/bankid/collect') return BANKID_METHOD;
+  if (path === '/bankid/collect' || path === '/bankid/email/verify' || path === '/bankid/email/skip') return BANKID_METHOD;
   // The legacy-secret bridge (`supabase-plugin.ts`). Its sessions are Supabase's, so they
   // answer to the same id the catalogue's redirect-flow Supabase provider carries.
   if (path === '/supabase/session') return 'supabase';

@@ -13,6 +13,7 @@ import { introspectTables, introspectTable } from './introspect.js';
 import { exportDump } from './dump.js';
 import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
+import { mergeAccounts } from './account-merge.js';
 import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
@@ -254,6 +255,14 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Set by Cloudflare's edge on every request and not forgeable through it — the one
       // address this worker can honestly report to BankID as the end user's.
       clientIpHeader: 'cf-connecting-ip',
+      // The merge is the one half of this that is not the issuer's own config, and it runs
+      // here because a DO's writes commit one by one outside `transactionSync`.
+      ...(cfg.requireEmail ?? true ? {
+        requireEmail: {
+          merge: (placeholderId: string, otherId: string) =>
+            this.ctx.storage.transactionSync(() => mergeAccounts(this.ctx.storage.sql, placeholderId, otherId, Date.now())),
+        },
+      } : {}),
     };
   }
 

@@ -380,9 +380,20 @@ order, poll `collect` every two seconds — while the person approves in the Ban
 by an animated QR code (other device) or an `autostarttoken` URL (same device). A completed
 order carries the verified **personal number and name**; the personal number is the account
 key (`account` row, provider `bankid`), so signing in twice lands in the same account. BankID
-asserts identity, not an email address, so a first sign-in either creates an account (the
-panel's "create accounts" toggle) or is refused with instructions — there is no address to
-match an existing user by.
+asserts identity, not an email address, so with **Require a verified email** on (the default)
+a first sign-in makes no account: `collect` parks the verified identity and the person proves
+an address with an emailed code (`src/bankid-email-step.ts`). A free address creates the
+account (the panel's "create accounts" toggle). A taken one joins that account, unless the code
+is weaker than what the account already requires: an admin, an SMS factor, an unverified
+address, another BankID, or `ACCOUNT_LINKING=block` are refused, and connecting BankID from
+`/account` is the way in, the session being the proof of that side.
+
+An account from before this step has a placeholder address, which never carries the personal
+number and is never released as a claim. At its next sign-in it takes the same step, and may
+put it off three times. A taken address merges the two, as does connecting that BankID from
+`/account` (`src/account-merge.ts`): one `sub` retires, `place_member` picks the survivor, and
+two accounts bound in apps are refused, since joining their principals needs a rebind nothing
+offers yet.
 
 The pieces (`src/bankid.ts`, `src/bankid-plugin.ts`): the flow is a Better Auth **plugin**
 (`/bankid/start`, `/qr`, `/collect`, `/cancel` under `/api/auth`), because completion must end
@@ -394,7 +405,7 @@ reaches the browser — the issuer computes each one-second frame, per BankID's 
 and the recipe is pinned to BankID's documented example in `test/bankid.test.ts`.
 
 The **mTLS client certificate** is the runtime seam. Configuration is one JSON row in `config`
-(dashboard panel: environment, PEM cert + key, two toggles — redacted by introspection, carried
+(dashboard panel: environment, PEM cert + key, three toggles — redacted by introspection, carried
 by the dump). The Node dev server presents those PEMs directly (`src/bankid-transport-node.ts`,
 pinning BankID's own root CAs — their API servers are not publicly trusted); a standalone
 worker presents a `mtls_certificates` binding (`BANKID`, see wrangler.jsonc), workerd's fetch

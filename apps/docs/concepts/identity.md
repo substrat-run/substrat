@@ -227,7 +227,8 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   secret and are not people.
 - **Swedish BankID.** Not an OAuth redirect but the real relying-party flow: an animated
   QR code or same-device start, approval in the BankID app, and the verified personal
-  number as the account key. The mTLS client certificate is pasted in the dashboard;
+  number as the account key. A first sign-in proves an email address with an emailed
+  code, and joins the account already holding it. The mTLS client certificate is pasted in the dashboard;
   the test environment works with BankID's published test certificate, so you can try it
   before your bank issues a production one.
 - **Client registration for machines.** Dynamic registration

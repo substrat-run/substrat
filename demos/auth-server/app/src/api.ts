@@ -803,8 +803,17 @@ export interface BankIdStart {
   qr: string;
 }
 
+/** A completed order that has to prove an address before it becomes a session. */
+export interface BankIdEmailRequired {
+  status: 'email_required';
+  token: string;
+  /** May this person put it off? Only an existing placeholder account, and only a few times. */
+  canSkip: boolean;
+}
+
 export type BankIdCollectResult =
   | { status: 'pending' | 'failed' | 'complete'; hintCode: string | null }
+  | BankIdEmailRequired
   | { redirect: boolean; url: string };
 
 export async function bankidStart(link = false): Promise<BankIdStart> {
@@ -827,6 +836,21 @@ export async function verifyPhoneCode(code: string, oauthQuery?: string | null):
 export async function bankidQr(orderRef: string): Promise<string> {
   return (await authApi<{ qr: string }>('/bankid/qr', { method: 'POST', body: JSON.stringify({ orderRef }) })).qr;
 }
+
+export const bankidEmailSend = (token: string, email: string) =>
+  authApi<{ sent: boolean }>('/bankid/email/send', { method: 'POST', body: JSON.stringify({ token, email }) });
+
+const bankidEmailResume = (path: string, body: object, oauthQuery: string | null) =>
+  authApi<{ status: 'complete' } | { redirect: boolean; url: string }>(path, {
+    method: 'POST',
+    body: JSON.stringify({ ...body, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) }),
+  });
+
+export const bankidEmailVerify = (token: string, code: string, oauthQuery: string | null) =>
+  bankidEmailResume('/bankid/email/verify', { token, code }, oauthQuery);
+
+export const bankidEmailSkip = (token: string, oauthQuery: string | null) =>
+  bankidEmailResume('/bankid/email/skip', { token }, oauthQuery);
 
 export async function bankidCollect(orderRef: string, oauthQuery?: string | null): Promise<BankIdCollectResult> {
   return authApi('/bankid/collect', {
@@ -1117,6 +1141,7 @@ export interface BankIdSettings {
   certSet: boolean;
   caSet: boolean;
   allowSignup: boolean;
+  requireEmail: boolean;
   disabled: boolean;
   updatedAt: number;
   /** The last connection test, or null when none has run since the certificate was saved. */
@@ -1146,6 +1171,7 @@ export interface BankIdDraft {
   clientKey?: string;
   caCert?: string | null;
   allowSignup: boolean;
+  requireEmail: boolean;
   disabled: boolean;
 }
 

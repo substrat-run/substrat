@@ -60,6 +60,7 @@ function BankIdEditor({
   const [cert, setCert] = useState('');
   const [key, setKey] = useState('');
   const [allowSignup, setAllowSignup] = useState(settings?.allowSignup ?? true);
+  const [requireEmail, setRequireEmail] = useState(settings?.requireEmail ?? true);
   const [disabled, setDisabled] = useState(settings?.disabled ?? false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -80,6 +81,7 @@ function BankIdEditor({
         ...(cert.trim() ? { clientCert: cert.trim() } : {}),
         ...(key.trim() ? { clientKey: key.trim() } : {}),
         allowSignup,
+        requireEmail,
         disabled,
       });
       // Whatever was pasted is now stored, and the fields go back to meaning "keep it". Left
@@ -140,13 +142,23 @@ function BankIdEditor({
         </em>
       </label>
       <label className="toggle">
+        <input type="checkbox" checked={requireEmail} onChange={(e) => setRequireEmail(e.target.checked)} />
+        <span>
+          <strong>Require a verified email</strong>
+          <em className="hint">
+            On, a first BankID sign-in has to prove an address with an emailed code, and joins
+            the account that already holds it. Turn this off if this issuer cannot send mail.
+          </em>
+        </span>
+      </label>
+      <label className="toggle">
         <input type="checkbox" checked={allowSignup} onChange={(e) => setAllowSignup(e.target.checked)} />
         <span>
           <strong>Let BankID create accounts</strong>
           <em className="hint">
-            On, a first sign-in creates an account keyed by the verified personal number. Off,
-            only personal numbers an administrator already linked can get in — BankID carries no
-            email, so there is nothing else to match a person by.
+            On, a first sign-in can create an account. Off, only people who already have an
+            account here can get in: by a personal number an administrator linked, or, with a
+            verified email required, by proving the address on their account.
           </em>
         </span>
       </label>

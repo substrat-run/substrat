@@ -317,6 +317,7 @@ export const DEFAULT_HARNESS = [
   // reasoning that puts `auth-schema.ts` here — not a Substrat row's stamp.
   'bankid.ts',
   'bankid-plugin.ts',
+  'bankid-email-step.ts',
   'bankid-transport-node.ts',
   'bankid-transport-hop.ts',
   // Better Auth's account invitation, social email and SMS factor adapters. Their verification

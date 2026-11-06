@@ -11,7 +11,8 @@ import {
   BankIdApiError,
   type BankIdTransport,
 } from './bankid.js';
-import { bankidPlaceholderAddress } from './placeholder-address.js';
+import { bankidEmailEndpoints, parkIdentity, type BankIdEmailStepOptions } from './bankid-email-step.js';
+import { bankidPlaceholderAddress, isPlaceholderAddress } from './placeholder-address.js';
 
 /**
  * The BankID sign-in flow, as a Better Auth plugin — four endpoints under the issuer's own
@@ -44,6 +45,9 @@ import { bankidPlaceholderAddress } from './placeholder-address.js';
  * user only when the operator allowed it (`allowSignup` in the panel); otherwise it is
  * refused with a message that says an administrator has to link them, because BankID gives
  * us no email to match an existing account by.
+ *
+ * With `emailStep` set, an order that matches no account, or only a placeholder one, makes no
+ * session here: it is parked and has to prove an address first (`bankid-email-step.ts`).
  */
 
 export interface BankIdPluginOptions {
@@ -60,6 +64,8 @@ export interface BankIdPluginOptions {
    * the address this issuer reports to BankID.
    */
   clientIpHeader: string;
+  /** The required email step, and joining a placeholder account. Omit for neither. */
+  emailStep?: Omit<BankIdEmailStepOptions, 'allowSignup'>;
 }
 
 /**
@@ -113,6 +119,7 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
   return {
     id: PROVIDER_ID,
     endpoints: {
+      ...(opts.emailStep ? bankidEmailEndpoints({ ...opts.emailStep, allowSignup: opts.allowSignup }) : {}),
       bankidStart: createAuthEndpoint(
         '/bankid/start',
         { method: 'POST', body: z.object({ link: z.boolean().optional() }).optional(), requireRequest: true },
@@ -191,10 +198,25 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
           });
           let user = account ? await ctx.context.internalAdapter.findUserById(account.userId) : null;
           if (pending.linkUserId) {
-            if (account && account.userId !== pending.linkUserId) throw new APIError('CONFLICT', { message: 'This BankID is already connected to another account' });
-            user = await ctx.context.internalAdapter.findUserById(pending.linkUserId);
-            if (!user) throw new APIError('FORBIDDEN', { message: 'The invited account no longer exists' });
-            if (!account) await ctx.context.internalAdapter.linkAccount({ userId: user.id, providerId: PROVIDER_ID, accountId: who.personalNumber });
+            if (account && account.userId !== pending.linkUserId) {
+              // This session is proof of one side and the completed order of the other, so a
+              // placeholder holding this BankID is the same person's and joins this account.
+              if (!opts.emailStep || !user || !isPlaceholderAddress(user.email)) {
+                throw new APIError('CONFLICT', { message: 'This BankID is already connected to another account' });
+              }
+              const merged = opts.emailStep.merge(user.id, pending.linkUserId);
+              if ('refused' in merged) throw new APIError('CONFLICT', { message: merged.refused });
+              user = await ctx.context.internalAdapter.findUserById(merged.survivor);
+            } else {
+              user = await ctx.context.internalAdapter.findUserById(pending.linkUserId);
+              if (!user) throw new APIError('FORBIDDEN', { message: 'The invited account no longer exists' });
+              if (!account) await ctx.context.internalAdapter.linkAccount({ userId: user.id, providerId: PROVIDER_ID, accountId: who.personalNumber });
+            }
+          } else if (opts.emailStep && (!user || (isPlaceholderAddress(user.email) && !(user as Record<string, unknown>).banned))) {
+            // With nothing to create and nothing to join, there is no point asking for an address.
+            if (user || opts.allowSignup || opts.emailStep.autoLinkAccounts) {
+              return ctx.json(await parkIdentity(ctx.context.internalAdapter, { personalNumber: who.personalNumber, name: who.name, ...(user ? { userId: user.id } : {}) }));
+            }
           }
           if (!user) {
             if (!opts.allowSignup) {

@@ -132,6 +132,8 @@ const storedConfig = z.object({
   /** PEM override for the server trust anchor; absent ⇒ the embedded root above. */
   caCert: z.string().optional(),
   allowSignup: z.boolean(),
+  /** Must a first sign-in prove an address? Absent on a stored row ⇒ yes. */
+  requireEmail: z.boolean().optional(),
   disabled: z.boolean(),
   updatedAt: z.number(),
   /** The last connection test (`probeBankId`), recorded on save and on Test connection. */
@@ -173,6 +175,7 @@ export interface BankIdInput {
   clientKey?: string;
   caCert?: string | null;
   allowSignup: boolean;
+  requireEmail?: boolean;
   disabled: boolean;
 }
 
@@ -187,6 +190,7 @@ export function putBankIdConfig(sql: SqlExec, input: BankIdInput, existing?: Ban
     // `null` clears an override; `undefined` keeps whatever is stored.
     ...(input.caCert === null ? {} : (input.caCert ?? existing?.caCert) ? { caCert: input.caCert ?? existing?.caCert } : {}),
     allowSignup: input.allowSignup,
+    requireEmail: input.requireEmail ?? existing?.requireEmail ?? true,
     disabled: input.disabled,
     updatedAt: Date.now(),
   };
@@ -235,6 +239,7 @@ export function toWireBankId(cfg: BankIdConfig) {
     certSet: true,
     caSet: Boolean(cfg.caCert),
     allowSignup: cfg.allowSignup,
+    requireEmail: cfg.requireEmail ?? true,
     disabled: cfg.disabled,
     updatedAt: cfg.updatedAt,
     probe: cfg.probe ?? null,

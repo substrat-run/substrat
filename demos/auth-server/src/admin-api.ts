@@ -460,6 +460,7 @@ const bankidPut = z.object({
   clientKey: z.string().min(1).optional(),
   caCert: z.string().min(1).nullable().optional(),
   allowSignup: z.boolean(),
+  requireEmail: z.boolean().optional(),
   disabled: z.boolean(),
 });
 

@@ -15,6 +15,7 @@ import { githubEmailPlugin, withGithubEmailFallback } from './github-email-plugi
 import { phonePlugin } from './phone-plugin.js';
 import type { PhoneVerifier } from './twilio.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
+import type { BankIdEmailStepOptions } from './bankid-email-step.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
 import { USER_DELEGATED_SCOPES } from './settings.js';
@@ -140,7 +141,10 @@ export interface AuthDeps {
    * certificate — the Node dev server always, the worker only with an mTLS binding. Absent,
    * the endpoints do not exist, which is the honest version of a flow that could not finish.
    */
-  bankid?: BankIdPluginOptions;
+  bankid?: Omit<BankIdPluginOptions, 'emailStep'> & {
+    /** The required email step (#2939); absent ⇒ a first sign-in mints a placeholder account. */
+    requireEmail?: { merge: BankIdEmailStepOptions['merge'] };
+  };
   phoneVerifier?: PhoneVerifier;
   /**
    * One relying party's sign-in policy, by client id (`src/sign-in-policy.ts`) — read from
@@ -666,7 +670,14 @@ function betterAuthFor(deps: AuthDeps) {
       // mounted, and `supabase-token.ts` for what it refuses.
       ...(deps.supabase ? [supabasePlugin(deps.supabase)] : []),
       // BankID sign-in — see the `bankid` dep above for when this is (and is not) mounted.
-      ...(deps.bankid ? [bankidPlugin(deps.bankid)] : []),
+      ...(deps.bankid
+        ? [bankidPlugin({
+            ...deps.bankid,
+            ...(deps.bankid.requireEmail
+              ? { emailStep: { transport: deps.transport, sender: deps.sender, autoLinkAccounts: deps.autoLinkAccounts !== false, merge: deps.bankid.requireEmail.merge } }
+              : {}),
+          })]
+        : []),
       invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
       githubEmailPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
       phonePlugin(deps.phoneVerifier),
