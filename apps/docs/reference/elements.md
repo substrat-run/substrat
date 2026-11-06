@@ -101,13 +101,20 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
   `date`, `datetime`, `relative`, `badge` (with `tones`), `boolean` or `code`. `render(row)` returns a
   Lit template. `mount(cell, row)` hands you a light-DOM element for React, Vue or plain DOM, and
   your page's CSS applies inside it. It can return `{ update, unmount }`.
+- **Column width.** `width` takes a CSS width, for a column narrower than its share of the row.
+- **Row click.** `row-click` makes a whole row clickable: a click anywhere but a control in the row
+  fires `sub-row-click` with `{ row }`. It's a pointer shortcut, so what it opens should also be
+  reachable through a link or a button in the row.
+- **Row detail.** `detail(cell, row)` draws below a row, across the whole table, the way `mount`
+  draws a cell. `expanded` is the key of the open row, or null. The table never opens one itself,
+  so a screen keeps that state and decides what opens it.
 - **Narrow screens.** Columns with `priority` 3, then 2, are dropped while the table is wider than
   its frame.
 - **Styling** goes from the outside in. First the theme's `--wa-*` tokens. Then `--sub-table-*`:
   `row-height`, `cell-padding-inline`, `cell-padding-block`, `header-background`, `row-hover`,
   `row-selected` and `max-height` (setting a max height makes the header stick). Then
   `density="compact"`. Last, `::part()`: `frame`, `toolbar`, `bulk-bar`, `table`, `header-cell`,
-  `row` (plus `selected`), `cell`, `footer` and `empty`.
+  `row` (plus `selected`), `cell`, `detail`, `footer` and `empty`.
 - The `empty` slot replaces the empty text, for example with a "Create" button.
 - **Events.** `sub-query-change` fires with `{ query }` whenever the person changes the view,
   sort, filters or search, so a screen can keep the query in its URL and hand it back through the
