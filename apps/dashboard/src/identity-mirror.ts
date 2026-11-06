@@ -143,3 +143,82 @@ export async function mirrorIdentityLink(deps: MirrorDeps): Promise<MirrorOutcom
     return 'failed';
   }
 }
+
+/**
+ * Take one principal's mirrored link out of the shared directory, after the local unlink
+ * committed (#1343). The mirror's other half: best-effort for the same reason (the local
+ * unlink is what severs the login), and not silent, which it was. Member removal and
+ * leave each swallowed the shared failure whole, so a removed member could keep a
+ * shared-only link — their CLI still building for the team — and nothing said so.
+ *
+ * `plane()` is a factory for the reason `MirrorDeps.plane` is: building the narrowed plane
+ * throws on a deployment with no binding, and that throw used to escape the swallowing
+ * `.catch` it was written in front of, failing a removal that had already committed.
+ */
+export async function unmirrorIdentityLink(deps: {
+  readonly tenantId: string;
+  readonly principal: string;
+  plane(): { unlinkIdentity(principal: string): Promise<unknown> };
+  log(line: Record<string, unknown>): void;
+}): Promise<'unlinked' | 'failed'> {
+  try {
+    await deps.plane().unlinkIdentity(deps.principal);
+    return 'unlinked';
+  } catch (e) {
+    deps.log({
+      event: 'dashboard.identity-unmirror.failed',
+      tenantId: deps.tenantId,
+      detail: e instanceof Error ? e.message : String(e),
+    });
+    return 'failed';
+  }
+}
+
+/** One team's identity comparison in a fleet inventory page: counts, or why there are none. */
+export type TeamIdentityTally =
+  | { readonly kind: 'compared'; readonly local: number; readonly shared: number; readonly divergence: IdentityDivergence }
+  /** The shared side could not be read for this team: counted, never guessed as agreement. */
+  | { readonly kind: 'unreachable' }
+  /** Not active locally (deleting, reaped): its links are not expected to be mirrored. */
+  | { readonly kind: 'inactive' };
+
+/** The fleet inventory's identity totals for one page of teams (#1343). Counts only. */
+export interface IdentityInventoryTotals {
+  teams: number;
+  compared: number;
+  unreachable: number;
+  inactive: number;
+  /** Teams with at least one missing, extra or conflicting link. */
+  divergent: number;
+  local: number;
+  shared: number;
+  missing: number;
+  extra: number;
+  conflicting: number;
+}
+
+/**
+ * Sum one page of per-team comparisons. Pure, so the route and its test are the same code.
+ * An unreachable team is a count of its own and adds nothing to the link totals: summing it
+ * as zero divergence would make an outage read as agreement.
+ */
+export function tallyIdentityInventory(rows: readonly TeamIdentityTally[]): IdentityInventoryTotals {
+  const t: IdentityInventoryTotals = {
+    teams: rows.length, compared: 0, unreachable: 0, inactive: 0, divergent: 0,
+    local: 0, shared: 0, missing: 0, extra: 0, conflicting: 0,
+  };
+  for (const r of rows) {
+    if (r.kind !== 'compared') {
+      t[r.kind] += 1;
+      continue;
+    }
+    t.compared += 1;
+    t.local += r.local;
+    t.shared += r.shared;
+    t.missing += r.divergence.missing.length;
+    t.extra += r.divergence.extra.length;
+    t.conflicting += r.divergence.conflicting.length;
+    if (!r.divergence.inSync) t.divergent += 1;
+  }
+  return t;
+}

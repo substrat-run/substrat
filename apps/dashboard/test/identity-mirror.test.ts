@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { IdentityLink } from '@substrat-run/contracts';
-import { deriveIdentityDivergence, mirrorIdentityLink, type MirrorPlane } from '../src/identity-mirror.js';
+import {
+  deriveIdentityDivergence,
+  mirrorIdentityLink,
+  tallyIdentityInventory,
+  unmirrorIdentityLink,
+  type MirrorPlane,
+} from '../src/identity-mirror.js';
+import { inventoryCallerAllowed, inventoryPage } from '../src/directory-inventory.js';
 
 const T = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const link = (externalId: string, principal: string, over: Partial<IdentityLink> = {}): IdentityLink =>
@@ -170,5 +177,56 @@ describe('mirrorIdentityLink (#1343)', () => {
     const quiet: string[] = [];
     await mirrorIdentityLink(deps({ plane: () => plane({ setTenantName: async (n: string) => void quiet.push(n) }) }));
     expect(quiet).toEqual([]);
+  });
+});
+
+describe('unmirrorIdentityLink (#1343)', () => {
+  it('logs a shared unlink that failed, including a plane that could not be built', async () => {
+    // Member removal and leave used to swallow this whole, so a removed member could keep
+    // a shared-only link with nothing said. The factory throw is the missing-binding 503,
+    // which used to escape the `.catch` written after it.
+    for (const plane of [
+      () => ({ unlinkIdentity: async () => { throw new Error('plane down'); } }),
+      () => { throw new Error('not connected'); },
+    ]) {
+      const lines: Array<Record<string, unknown>> = [];
+      await expect(unmirrorIdentityLink({ tenantId: T, principal: 'p1', plane, log: (l) => lines.push(l) })).resolves.toBe('failed');
+      expect(lines).toEqual([expect.objectContaining({ event: 'dashboard.identity-unmirror.failed', tenantId: T })]);
+    }
+  });
+});
+
+describe('the directory inventory (#1343)', () => {
+  it('sums a page of teams, counting an unreachable team apart from agreement', () => {
+    const inSync = deriveIdentityDivergence([link('u1', 'p1')], [link('u1', 'p1')]);
+    const drifted = deriveIdentityDivergence([link('u1', 'p1'), link('u2', 'p2')], [link('u1', 'px'), link('u3', 'p3')]);
+    expect(tallyIdentityInventory([
+      { kind: 'compared', local: 1, shared: 1, divergence: inSync },
+      { kind: 'compared', local: 2, shared: 2, divergence: drifted },
+      { kind: 'unreachable' },
+      { kind: 'inactive' },
+    ])).toEqual({
+      teams: 4, compared: 2, unreachable: 1, inactive: 1, divergent: 1,
+      local: 3, shared: 3, missing: 1, extra: 1, conflicting: 1,
+    });
+  });
+
+  it('admits only the configured credential, and nobody while none is configured', async () => {
+    expect(await inventoryCallerAllowed('s3cret', 'Bearer s3cret')).toBe(true);
+    for (const [configured, header] of [
+      [undefined, 'Bearer anything'],
+      ['', 'Bearer '],
+      ['s3cret', 'Bearer s3cre'],
+      ['s3cret', 's3cret'],
+      ['s3cret', undefined],
+    ] as const) {
+      expect(await inventoryCallerAllowed(configured, header)).toBe(false);
+    }
+  });
+
+  it('pages 20 teams by default and never more than 50', () => {
+    expect(inventoryPage({})).toEqual({ limit: 20 });
+    expect(inventoryPage({ limit: '500', cursor: 'c' })).toEqual({ limit: 50, cursor: 'c' });
+    expect(inventoryPage({ limit: 'x' })).toEqual({ limit: 20 });
   });
 });

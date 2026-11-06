@@ -27,6 +27,7 @@ export type {
 } from './host.js';
 export { defineScopeDO } from './scope-do.js';
 export { ControlPlaneDO } from './control-plane-do.js';
+export type { DirectoryInventory } from './control-plane-do.js';
 export { OperationQueue } from './serialization.js';
 export { doScopedSql } from './sql.js';
 export { createDoTupleChecker } from './checker.js';

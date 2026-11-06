@@ -95,3 +95,24 @@ describe('tables named like the sqlite_ prefix, in the directory DO (#1881)', ()
     expect(await inCp(stub, (i) => i.exportDump())).toEqual(base);
   });
 });
+
+describe('the directory inventory counts every table it holds (#1343)', () => {
+  it('counts a table nobody wrote down, rows and tenants by status, and leaves SQLite and _cf_ tables out', async () => {
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`inventory-${ulid()}`));
+    const id = ulid();
+    await inCp(stub, (i) => i.createTenant(id, `inv-${id.toLowerCase()}`, 'Inventory', new Date().toISOString()));
+    // An alarm makes workerd write `_cf_METADATA`; the planted tables are the #1881 shapes.
+    await runInDurableObject(stub, async (_, state) => {
+      for (const t of [SQLITEDATA, AUTO]) {
+        state.storage.sql.exec(t.ddl);
+        for (const r of t.rows) state.storage.sql.exec(`INSERT INTO ${t.name} (${t.columns.join(', ')}) VALUES (?, ?)`, ...r);
+      }
+      await state.storage.setAlarm(Date.now() + 3_600_000);
+    });
+    const inv = await inCp(stub, (i) => i.directoryInventory());
+    const rows = Object.fromEntries(inv.tables.map((t) => [t.table, t.rows]));
+    expect(rows).toMatchObject({ tenants: 1, sqlitedata: 2, sqlitecounter: 1, _substrat_identities: 0 });
+    expect(inv.tables.map((t) => t.table).filter((n) => n.startsWith('sqlite_') || n.startsWith('_cf_'))).toEqual([]);
+    expect(inv.tenantsByStatus).toEqual({ active: 1 });
+  });
+});

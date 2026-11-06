@@ -25,7 +25,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type BindAcknowledgement, type ScopeDumpTable, type ScopeStoreDump, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
-import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
+import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type DirectoryInventory, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -79,7 +79,14 @@ import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveAppMetrics } from './app-metrics.js';
-import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
+import {
+  deriveIdentityDivergence,
+  mirrorIdentityLink,
+  tallyIdentityInventory,
+  unmirrorIdentityLink,
+  type TeamIdentityTally,
+} from './identity-mirror.js';
+import { inventoryCallerAllowed, inventoryPage } from './directory-inventory.js';
 import { BoundScopeError, moveBoundScopes, readBoundScopes, readMoveReview, retireBoundScopes } from './bound-scopes.js';
 import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
@@ -170,6 +177,12 @@ interface Env extends OidcEnv, EmailIdentityEnv {
    * tenant snapshot, so there is no window where a scope is flipped but unprojected.
    */
   SCOPE_LOCAL_PERMISSIONS?: string;
+  /**
+   * The credential `GET /api/internal/directory-inventory` asks for (#1343), a secret set
+   * per environment by the operator running the retirement's inventory. Unset ⇒ the route
+   * answers 404, as if it did not exist (`directory-inventory.ts`).
+   */
+  DIRECTORY_INVENTORY_TOKEN?: string;
   /**
    * REQUIRED: a service binding to `substrat-control-plane` — the shared directory
    * the router reads. Apps are provisioned there through the tenant-narrowed seam
@@ -5125,13 +5138,16 @@ async function deleteTeamIn(ctx: TeamContext, confirm: string): Promise<{ delete
   }
   await host.admin.setTenantStatus(STAFF, node.tenantId, 'deleting');
   for (const m of members) {
+    const principal = principalId.parse(m.principal);
     try {
-      await host.admin.unlinkIdentity(STAFF, node.tenantId, principalId.parse(m.principal));
-      // The shared plane's mirrored link goes with it (best-effort).
-      await cp.unlinkIdentity(principalId.parse(m.principal));
+      await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
     } catch {
       // an already-unlinked member (e.g. left earlier) is fine
     }
+    // The shared plane's mirrored link goes with it: best-effort, but logged (#1343). It is
+    // tried even when the local unlink found nothing, since a member who left earlier may
+    // be exactly the one whose shared unlink failed then.
+    await unmirrorIdentityLink({ tenantId: node.tenantId, principal, plane: () => cp, log: (line) => console.error(JSON.stringify(line)) });
   }
   forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
   deleteCookie(c, TEAM_COOKIE, { path: '/' });
@@ -5230,8 +5246,13 @@ async function removeMemberIn({ c, node }: TeamContext, memberId: string): Promi
   // Sever their login from the team, so it also disappears from their own switcher.
   await host.admin.unlinkIdentity(STAFF, node.tenantId, principal);
   // And the shared plane's mirrored link, so their CLI push loses the
-  // workspace too (best-effort — see mirrorBuilderIdentity).
-  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(principal).catch(() => {});
+  // workspace too (best-effort, and logged when it fails — #1343).
+  await unmirrorIdentityLink({
+    tenantId: node.tenantId,
+    principal,
+    plane: () => controlPlaneFor(c.env, node.tenantId, node.principal),
+    log: (line) => console.error(JSON.stringify(line)),
+  });
   forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
   const verdict = effectVerdict(outcomes, 'remove', principal);
   if (verdict.kind === 'refused') throw new HTTPException(409, { message: `the removal was refused: ${verdict.reason}` });
@@ -5250,8 +5271,13 @@ async function leaveTeamIn(ctx: TeamContext): Promise<{ left: true }> {
   const { c, host, node } = ctx;
   await (await teamScope(ctx)).invoke('dashboard/leave-self', {});
   await host.admin.unlinkIdentity(STAFF, node.tenantId, node.principal);
-  // Sever the shared plane's mirrored link too (best-effort — see mirrorBuilderIdentity).
-  await controlPlaneFor(c.env, node.tenantId, node.principal)?.unlinkIdentity(node.principal).catch(() => {});
+  // Sever the shared plane's mirrored link too (best-effort, and logged when it fails — #1343).
+  await unmirrorIdentityLink({
+    tenantId: node.tenantId,
+    principal: node.principal,
+    plane: () => controlPlaneFor(c.env, node.tenantId, node.principal),
+    log: (line) => console.error(JSON.stringify(line)),
+  });
   forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
   if (getCookie(c, TEAM_COOKIE) === node.tenantId) deleteCookie(c, TEAM_COOKIE, { path: '/' });
   return { left: true };
@@ -6103,6 +6129,54 @@ async function setupGithubCiIn(
  * doesn't) which tenant app the repo deploys. Everything else — other event types,
  * unlinked repos — is acknowledged and dropped: a webhook is a nudge, not a fact.
  */
+/**
+ * What the dashboard's own directory holds, across every team, in counts (#1343). The
+ * inventory the retirement plan starts from (`docs/briefs/dashboard-control-plane-retirement.md`,
+ * phase 0): read-only, and nothing in the answer names a team, a person, a login or an id.
+ *
+ * Two halves. `local` is one read of the local directory: every table's row count, and its
+ * teams by status. `identities` compares each team's identity links with the shared
+ * directory's, a page of teams at a time (the shared read mints a credential per team), and
+ * sums the comparisons; `nextCursor` walks the rest. A team whose shared side cannot be read
+ * is counted as `unreachable`, never as agreement.
+ *
+ * Gated on its own operator credential (`directory-inventory.ts`); without it the route is a 404.
+ */
+app.get('/api/internal/directory-inventory', async (c) => {
+  if (!(await inventoryCallerAllowed(c.env.DIRECTORY_INVENTORY_TOKEN, c.req.header('authorization')))) {
+    throw new HTTPException(404, { message: 'not found' });
+  }
+  const page = inventoryPage({ limit: c.req.query('limit'), cursor: c.req.query('cursor') });
+  const host = hostFor(c.env);
+  const ns = c.env.CONTROL_PLANE;
+  // Straight to the DO: counts are not a `HostAdmin` read, and nothing in them is a record.
+  const local = await (ns.get(ns.idFromName('control-plane')) as unknown as { directoryInventory(): Promise<DirectoryInventory> })
+    .directoryInventory();
+  const teams = await host.admin.listTenants(STAFF, page);
+  const rows: TeamIdentityTally[] = [];
+  for (const team of teams) {
+    if (team.status !== 'active') {
+      rows.push({ kind: 'inactive' });
+      continue;
+    }
+    const localLinks = await host.admin.listIdentityLinks(STAFF, team.id);
+    let shared: Awaited<ReturnType<TenantNarrowedControlPlane['listIdentityLinks']>>;
+    try {
+      shared = await controlPlaneFor(c.env, team.id).listIdentityLinks();
+    } catch (e) {
+      console.error(JSON.stringify({ event: 'dashboard.directory-inventory.unreachable', tenantId: team.id, detail: e instanceof Error ? e.message : String(e) }));
+      rows.push({ kind: 'unreachable' });
+      continue;
+    }
+    rows.push({ kind: 'compared', local: localLinks.length, shared: shared.length, divergence: deriveIdentityDivergence(localLinks, shared) });
+  }
+  return c.json({
+    local,
+    identities: tallyIdentityInventory(rows),
+    nextCursor: teams.length === page.limit ? teams[teams.length - 1]!.id : null,
+  });
+});
+
 app.post('/api/github/webhook', async (c) => {
   const secret = c.env.GITHUB_APP_WEBHOOK_SECRET;
   if (!secret) throw new HTTPException(503, { message: 'GitHub webhooks are not configured' });
