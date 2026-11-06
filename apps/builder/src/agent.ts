@@ -42,7 +42,7 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { BUILD_BUSY, BuildQueue, BuildWaitExpired } from './build-queue.js';
-import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, invalidFields, RECORD_INDEX, RECORD_PREFIX, retained, ulid } from './build-log.js';
+import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, interruptedRecord, invalidFields, RECORD_INDEX, RECORD_PREFIX, retained, ulid, type BuildRecord } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	orUnhandled,
@@ -743,6 +743,23 @@ export class BuilderAgent extends DurableObject<Env> {
 			const parsed = sourceBuildRequest.safeParse(request);
 			if (!parsed.success) return refuse(400, `invalid build request (${invalidFields(parsed.error.issues).join(', ')})`);
 			return this.#build(slug, parsed.data, buildIdFrom(req.headers.get(BUILD_ID_HEADER)));
+		}
+		// The worker's own call, on a new stub, after the one running the build threw: no route
+		// outside this object reaches it.
+		if (url.pathname === '/internal/build-interrupted' && req.method === 'POST') {
+			const { buildId, interruption } = await req.json() as { buildId: string; interruption: string };
+			const key = `${RECORD_PREFIX}${buildId}`;
+			const record = interruptedRecord(await this.ctx.storage.get<BuildRecord>(key), buildId, interruption);
+			if (record) {
+				await this.#keepBuildRecord(buildId);
+				await this.ctx.storage.put(key, record);
+			}
+			return new Response(null, { status: 204 });
+		}
+		const buildRead = req.method === 'GET' ? /^\/internal\/builds\/([^/]+)$/.exec(url.pathname) : null;
+		if (buildRead) {
+			const record = await this.ctx.storage.get<BuildRecord>(`${RECORD_PREFIX}${buildRead[1]}`);
+			return record ? Response.json(record) : refuse(404, 'no such build');
 		}
 		const route = `${req.method} ${url.pathname}`;
 

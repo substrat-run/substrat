@@ -5,6 +5,8 @@ contract:
   - A successful result is multipart, with manifest, module files and a buildResult JSON part.
   - The platform token and authenticated tenant context are required on every request.
   - Build failures return 422 problem JSON; unavailable capacity returns 503.
+  - A build the agent never answered for returns 502 problem JSON with the runtime's text in a diagnostic member.
+  - GET /internal/builds/:id answers a build's record, or 404 when the tenant's builder holds none.
 verified_by: node packages/control-plane-api/postman/check-source-builds.mjs http://127.0.0.1:4928/builder
 limits:
   - The mock exercises actual HTTP serialization, binary multipart parsing and error propagation.

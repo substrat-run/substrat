@@ -38,8 +38,8 @@ import { studioUsage } from './metering.js';
 import { listTurns, readTurn } from './record.js';
 import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
-import { BUILD_ID_HEADER, ulid } from './build-log.js';
-import { refuse, unhandledResponse } from './problem.js';
+import { BUILD_ID_HEADER, interruptionOf, isBuildId, ulid } from './build-log.js';
+import { interruptedResponse, refuse, unhandledResponse } from './problem.js';
 import { readStudioPreview, releaseRevision, runStudioPreview, type ControlPlaneCall, type StudioProject } from './studio-preview.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
@@ -174,7 +174,9 @@ app.all('/internal/*', async (c) => {
 	}
 	const tenant = c.req.header('x-substrat-tenant');
 	if (!tenant) return refuse(400, 'tenant context is required');
-	if (path !== '/internal/build' && path !== '/internal/projects') return refuse(404, 'not found');
+	const buildRead = c.req.method === 'GET' ? /^\/internal\/builds\/([^/]+)$/.exec(path) : null;
+	if (buildRead && !isBuildId(buildRead[1]!)) return refuse(400, 'invalid build id');
+	if (path !== '/internal/build' && path !== '/internal/projects' && !buildRead) return refuse(404, 'not found');
 	const url = new URL(c.req.url);
 	if (path === '/internal/projects') url.pathname = '/api/projects';
 	const request = new Request(url, c.req.raw);
@@ -189,8 +191,20 @@ app.all('/internal/*', async (c) => {
 	} catch (error) {
 		// The agent's isolate reset or its stub threw mid-build. Without this the throw
 		// reached `app.onError`, and the caller got a 500 with no sentence at all.
-		console.error('source.build.interrupted', { tenant, buildId }, error);
-		return refuse(502, `platform build failed: the build service stopped before it answered (build ${buildId}); retry the push`);
+		const interruption = interruptionOf(error);
+		console.error('source.build.interrupted', { tenant, buildId, interruption }, error);
+		// A new stub, since the one that threw stays broken. The answer does not wait on it: the
+		// caller's failure row carries the same text if the agent is still down (#2931).
+		c.executionCtx.waitUntil(
+			c.env.BUILDER_AGENT.get(c.env.BUILDER_AGENT.idFromName(tenant))
+				.fetch(new Request('https://builder/internal/build-interrupted', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', 'x-substrat-tenant': tenant },
+					body: JSON.stringify({ buildId, interruption }),
+				}))
+				.catch((unrecorded) => console.error('source.build.interrupted.unrecorded', { tenant, buildId }, unrecorded)),
+		);
+		return interruptedResponse(`platform build failed: the build service stopped before it answered (build ${buildId}); retry the push`, interruption);
 	}
 });
 

@@ -423,5 +423,5 @@ export {
 export type { VerticalConnectorDeps, VerticalConnectorReads, VerticalConnectorTarget } from './vertical-connectors.js';
 
 export { gh, appJwt, installationToken, githubConfig, installUrl, type GithubConfig } from './github-app.js';
-export { sourceBuildService } from './source-builds.js';
+export { SourceBuildInterrupted, sourceBuildService } from './source-builds.js';
 export { builderTurnsService, type BuilderTurnsService } from './builder-turns.js';

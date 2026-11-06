@@ -5,6 +5,8 @@ http.createServer(async (req, res) => {
   if (!req.headers['x-substrat-tenant']) return send(400, { detail: 'tenant context is required' });
   const path = new URL(req.url, 'http://mock.test').pathname;
   if (path === '/internal/projects') return send(200, { tenant: req.headers['x-substrat-tenant'], projects: [] });
+  if (path === '/internal/builds/01M6R10KTYPSD5MNDWBTFKEBK0') return send(200, { buildId: '01M6R10KTYPSD5MNDWBTFKEBK0', slug: null, outcome: 'interrupted', steps: [], interruption: 'Error: Network connection lost.' });
+  if (path.startsWith('/internal/builds/')) return send(404, { detail: 'no such build' });
   if (path !== '/internal/build' || req.method !== 'POST') return send(501, { detail: 'Endpoint not modeled' });
   let input = req.body;
   if (!input) { let body = ''; for await (const chunk of req) body += chunk; input = JSON.parse(body); }
@@ -12,6 +14,7 @@ http.createServer(async (req, res) => {
   const version = input.request?.version;
   if (version === 'failed') return send(422, { detail: 'dependency installation failed' });
   if (version === 'unavailable') return send(503, { detail: 'sandbox capacity unavailable' });
+  if (version === 'interrupted') return send(502, { detail: 'the build service stopped before it answered', diagnostic: 'Error: Network connection lost.' });
   const form = new FormData();
   if (version !== 'malformed') form.set('buildResult', JSON.stringify({
     projectId: `project-${req.headers['x-substrat-tenant']}`,

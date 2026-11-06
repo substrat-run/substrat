@@ -16,6 +16,7 @@ describe('platform source releases', () => {
   const secret = 'source-build-test';
   const build = vi.fn<SourceBuildService['build']>();
   const projects = vi.fn<SourceBuildService['projects']>();
+  const record = vi.fn<SourceBuildService['record']>();
   const deploy = vi.fn(async () => {});
   const revision = 'a'.repeat(40);
   let builderHeaders: Record<string, string>;
@@ -24,7 +25,7 @@ describe('platform source releases', () => {
     root = mkdtempSync(join(tmpdir(), 'source-release-'));
     host = new SqliteScopeHost({ dir: root });
     await host.admin.createTenant(staff, { id: tenant, slug: 'acme', name: 'Acme' });
-    build.mockReset(); projects.mockReset(); deploy.mockClear();
+    build.mockReset(); projects.mockReset(); record.mockReset(); deploy.mockClear();
     build.mockImplementation(async (_tenant, _slug, input) => {
       const form = new FormData();
       form.set('manifest', JSON.stringify({
@@ -39,7 +40,7 @@ describe('platform source releases', () => {
     });
     app = createControlPlaneApi({
       host, authenticate: UNSAFE_devPlatformActorAuth(), authenticateBuilder: pushTokenBuilderAuth(secret),
-      sourceBuilds: { build, projects }, deployVertical: deploy,
+      sourceBuilds: { build, projects, record }, deployVertical: deploy,
     });
     const token = await mintPushToken(secret, { actor: await pushActorFor(tenant), tenantId: tenant, tenantSlug: 'acme' });
     builderHeaders = { 'x-service-token': token, 'content-type': 'application/json' };
@@ -115,6 +116,52 @@ describe('platform source releases', () => {
     expect(await response.json()).toMatchObject({ detail: 'the build service connection failed before it answered' });
     expect(log).toHaveBeenCalledWith('source-build.connection-failed', { tenantId: tenant, detail: 'Network connection lost.' });
     log.mockRestore();
+  });
+
+  it('files what stopped a build for staff alone, under one reference, and answers the sentence (#2931)', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sentence = 'the build service stopped before it answered';
+    const service = sourceBuildService({
+      fetch: async () => Response.json({ detail: sentence, diagnostic: 'Error: Network connection lost. [retryable]' }, { status: 502 }),
+    }, 'token');
+    app = createControlPlaneApi({
+      host, authenticate: UNSAFE_devPlatformActorAuth(), authenticateBuilder: pushTokenBuilderAuth(secret),
+      sourceBuilds: service, deployVertical: deploy,
+    });
+    const response = await push({ version: '1.0.0', revision });
+    expect(response.status).toBe(502);
+    const answer = await response.text();
+    expect(answer).toContain(sentence);
+    expect(answer).not.toContain('Network connection lost');
+
+    const rows = (await host.admin.listOpsFailures(staff, {})).filter((r) => r.operation === 'deploy.build');
+    expect(rows).toHaveLength(2);
+    const tenantRow = rows.find((r) => r.tenantId === tenant)!;
+    const staffRow = rows.find((r) => r.tenantId === null)!;
+    expect(tenantRow).toMatchObject({ message: sentence, stage: 'interrupted', vertical: 'acme/demo', status: 502 });
+    expect(staffRow.message).toContain('Network connection lost. [retryable]');
+    expect(staffRow.reference).toBe(tenantRow.reference);
+    log.mockRestore();
+  });
+
+  it('reads a build record for staff, and for nobody else (#2931)', async () => {
+    const kept = { buildId: 'b1', slug: null, outcome: 'interrupted' as const, steps: [], interruption: 'why' };
+    record.mockImplementation(async (_tenant, id) => (id === 'b1' ? kept : null));
+    const read = (id: string, headers: Record<string, string>) => app.request(`/builder-builds/${tenant}/${id}`, { headers });
+    const asStaff = { [DEV_ACTOR_HEADER]: staff };
+
+    const found = await read('b1', asStaff);
+    expect(found.status).toBe(200);
+    expect(await found.json()).toEqual(kept);
+    expect(record).toHaveBeenCalledWith(tenant, 'b1');
+    expect((await read('b2', asStaff)).status).toBe(404);
+    expect((await read('b1', builderHeaders)).status).toBe(403);
+  });
+
+  it('holds what the builder answers for a record to the contract (#2931)', async () => {
+    const answer = (response: Response) => sourceBuildService({ fetch: async () => response }, 'token').record(tenant, 'a/b');
+    await expect(answer(Response.json({ outcome: 'lost' }))).rejects.toThrow(/shape this control plane does not know/);
+    await expect(answer(new Response(null, { status: 404 }))).resolves.toBeNull();
   });
 
   it('gives builders only their own project catalogue', async () => {

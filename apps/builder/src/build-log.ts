@@ -39,6 +39,9 @@ export const BUILD_ID_HEADER = 'x-substrat-build-id';
 
 const BUILD_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
+/** Whether `id` is shaped like a build id, for a route reading one out of a path. */
+export const isBuildId = (id: string): boolean => BUILD_ID.test(id);
+
 /** A build id the worker handed the agent, or a new one when it is absent or malformed. */
 export function buildIdFrom(header: string | null): string {
 	return header && BUILD_ID.test(header) ? header : ulid();
@@ -69,11 +72,14 @@ export interface BuildStep {
 
 export interface BuildRecord {
 	buildId: string;
-	slug: string;
-	outcome: 'building' | 'built' | 'failed';
+	/** Null on a build that stopped before it wrote a record of its own. */
+	slug: string | null;
+	outcome: 'building' | 'built' | 'failed' | 'interrupted';
 	steps: BuildStep[];
 	/** The failure as the caller was told it. */
 	detail?: string;
+	/** What the runtime threw when the agent never answered (`interruptionOf`). */
+	interruption?: string;
 }
 
 const tail = (s: string, n: number): string => (s.length > n ? `…${s.slice(-n)}` : s);
@@ -156,6 +162,29 @@ export function failureDetail(log: BuildLog, detail: string, opts: { withOutput:
 /** `failureDetail` for a thrown error: the retained tail is left out only when the error carries its own output. */
 export function errorDetail(log: BuildLog, message: string, error: unknown): string {
 	return failureDetail(log, message, { withOutput: !(error instanceof CommandFailedError) });
+}
+
+/** Characters of a runtime error kept: its message is the runtime's, of no length we set. */
+export const INTERRUPTION_MAX = 1000;
+
+/**
+ * What the agent's stub threw, as one line. `retryable` and `overloaded` are the flags workerd
+ * sets on a Durable Object error, and they separate a reset from an object refusing work.
+ */
+export function interruptionOf(error: unknown): string {
+	const e = error instanceof Error ? (error as Error & { retryable?: unknown; overloaded?: unknown }) : undefined;
+	const flags = [e?.retryable === true && 'retryable', e?.overloaded === true && 'overloaded'].filter(Boolean);
+	const text = e ? `${e.name}: ${e.message}` : String(error);
+	return `${text.slice(0, INTERRUPTION_MAX)}${flags.length ? ` [${flags.join(', ')}]` : ''}`;
+}
+
+/**
+ * The record of a build the agent never answered for, or null when it has one that already
+ * ended: a finished record is the truer account, and this must not overwrite it.
+ */
+export function interruptedRecord(kept: BuildRecord | undefined, buildId: string, interruption: string): BuildRecord | null {
+	if (kept && kept.outcome !== 'building') return null;
+	return { ...(kept ?? { buildId, slug: null, steps: [] }), outcome: 'interrupted', interruption };
 }
 
 /** The fields a rejected request names: zod puts an unrecognised key in `keys`, with `path` the container. */

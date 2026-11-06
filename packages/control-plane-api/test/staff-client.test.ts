@@ -112,6 +112,7 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   listSweepRuns: [(c) => c.listSweepRuns({ kind: 'connection' as never, outcome: 'failed' }), 'GET', '/sweep-runs?kind=connection&outcome=failed'],
   listBuilderTurns: [(c) => c.listBuilderTurns({ troubled: true, redGate: 'model-emit' }), 'GET', '/builder-turns?troubled=true&redGate=model-emit'],
   getBuilderTurn: [(c) => c.getBuilderTurn('a/b'), 'GET', '/builder-turns/a%2Fb'],
+  getBuilderBuild: [(c) => c.getBuilderBuild('a/b', 'c/d'), 'GET', '/builder-builds/a%2Fb/c%2Fd'],
   listSystemSwitches: [(c) => c.listSystemSwitches({ position: 'all' }), 'GET', '/system-switches?position=all'],
   listConnectionHealth: [(c) => c.listConnectionHealth({ q: 'a b' }), 'GET', '/connections/health?q=a+b'],
   connectorCalls: [(c) => c.connectorCalls({ hours: 24, provider: 'scrive' }), 'GET', '/connections/calls?hours=24&provider=scrive'],

@@ -1,5 +1,6 @@
 import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
 import type { BuilderTurnsService } from './builder-turns.js';
+import { SourceBuildInterrupted } from './source-builds.js';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
@@ -10380,7 +10381,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       requestedVersion = input.version;
       const building = options.sourceBuilds.build(sourceTenant ?? 'platform', sourceSlug, input);
       input = undefined;
-      built = await building;
+      try {
+        built = await building;
+      } catch (e) {
+        // #2931: the runtime's own text is the only record of why, and it is unreviewed, so it goes
+        // on staff's row under the request id the caller was shown. onError answers the throw.
+        if (e instanceof SourceBuildInterrupted) {
+          recordWithheld(
+            {
+              actor: c.get('actor'), operation: 'deploy.build', stage: 'interrupted', vertical: sourceSlug,
+              tenantId: sourceTenant as TenantId | null, scopeId: null, status: e.status, reference: referenceOf(c),
+            },
+            e.diagnostic, e.message, e,
+          );
+        }
+        throw e;
+      }
       form = built.form;
       // Addressing is the authenticated caller's, never a field emitted by project code.
       form.delete('tenant');
@@ -13026,6 +13042,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.builderTurns) return refuseStatus(c, 501, 'the builder studio is not configured');
     const turn = await options.builderTurns.get(c.req.param('turnId'));
     return turn ? c.json(turn) : refuse(c, 'not_found', 'no such turn');
+  });
+
+  // -- source build records (#2931): how far one build got, and what stopped it ---
+  // Staff only, as the turns above are: a record carries what a tenant's build printed.
+  app.get('/builder-builds/:tenantId/:buildId', async (c) => {
+    if (!staffCaller(c)) return refuse(c, 'forbidden', 'forbidden');
+    if (!options.sourceBuilds) return refuseStatus(c, 501, 'source builds are not configured');
+    const record = await options.sourceBuilds.record(c.req.param('tenantId'), c.req.param('buildId'));
+    return record ? c.json(record) : refuse(c, 'not_found', 'no such build');
   });
 
   // -- sweep runs (#1232): the durable record of what a sweep pass touched -------

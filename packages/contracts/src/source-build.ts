@@ -98,7 +98,27 @@ export interface BuiltSource {
   dataLoss: z.infer<typeof sourceBuildResult>['dataLoss'];
 }
 
+/**
+ * A hosted build's own record, as the builder stores it (#2931). `interrupted` is a build the
+ * agent never answered for; `slug` is null when it stopped before writing a record of its own.
+ */
+export const sourceBuildRecord = z.object({
+  buildId: z.string().min(1),
+  slug: z.string().nullable(),
+  outcome: z.enum(['building', 'built', 'failed', 'interrupted']),
+  steps: z.array(z.object({
+    step: z.string(),
+    startedAt: z.string(),
+    commands: z.array(z.object({ command: z.string(), exitCode: z.number(), ms: z.number(), output: z.string().optional() })),
+  })),
+  detail: z.string().optional(),
+  interruption: z.string().optional(),
+});
+export type SourceBuildRecord = z.infer<typeof sourceBuildRecord>;
+
 export interface SourceBuildService {
   build(tenantId: string, slug: string, request: SourceBuildRequest): Promise<BuiltSource>;
   projects(tenantId: string, request: Request): Promise<Response>;
+  /** Null when the tenant's builder holds no record of that build. */
+  record(tenantId: string, buildId: string): Promise<SourceBuildRecord | null>;
 }
