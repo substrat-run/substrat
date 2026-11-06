@@ -36,7 +36,7 @@ describe('platform source releases', () => {
         build: { id: 'build-1', projectId: 'project-1', revision, toolchain: 'pinned-toolchain' },
       }));
       form.set('worker.js', new Blob(['export default {fetch(){return new Response("built")}}'], { type: 'application/javascript+module' }), 'worker.js');
-      return { form, projectId: 'project-1', revision, dataLoss: { status: 'passed', authored: 0 } };
+      return { form, projectId: 'project-1', revision, dataLoss: { status: 'passed', authored: 0 }, usage: { buildId: 'build-1', ms: 90_000 } };
     });
     app = createControlPlaneApi({
       host, authenticate: UNSAFE_devPlatformActorAuth(), authenticateBuilder: pushTokenBuilderAuth(secret),
@@ -52,6 +52,19 @@ describe('platform source releases', () => {
     const response = await app.request('/verticals?limit=1', { headers: builderHeaders });
     expect(response.status).toBe(200);
     expect(response.headers.get('x-substrat-platform-features')?.split(',')).toContain('source-builds');
+  });
+
+  it('meters a built release under its tenant and vertical, and deploys when the meter cannot write (#2946)', async () => {
+    const window = { tenantId: tenant, since: '2000-01-01T00:00:00Z', until: '2100-01-01T00:00:00Z', limit: 10 };
+    expect((await push({ version: '1.0.0', revision })).status).toBe(201);
+    expect(await host.admin.listTenantBuildUsage(platformActorId.parse(ulid()), window)).toEqual([{ vertical: 'acme/demo', builds: 1, ms: 90_000 }]);
+
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const meter = vi.spyOn(host.admin, 'recordBuildUsage').mockRejectedValue(new Error('directory unavailable'));
+    expect((await push({ version: '1.0.1', revision })).status).toBe(201);
+    expect(meter).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('source-build.usage-unrecorded', { buildId: 'build-1' }, expect.any(Error));
+    log.mockRestore();
   });
 
   it('builds for the authenticated owner and publishes the resulting release through the existing admission path', async () => {

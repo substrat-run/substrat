@@ -355,6 +355,9 @@ import {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type BuildUsageInput,
+  type TenantBuildUsageFilter,
+  type TenantBuildUsageRow,
   type TenantModelUsageMeterFilter,
   type TenantModelUsageMeterRow,
   foldModelUsage,
@@ -1381,6 +1384,8 @@ interface ControlPlaneStub {
   recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
   listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]>;
+  recordBuildUsage(input: BuildUsageInput): Promise<{ recorded: boolean }>;
+  listTenantBuildUsage(query: TenantBuildUsageFilter): Promise<TenantBuildUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
   exportDumpPage(cursor: string | null, opts?: { maxBytes?: number }): Promise<DirectoryDumpPage & { copiedTables?: number }>;
@@ -11265,6 +11270,13 @@ export class CloudflareScopeHost implements ScopeHost {
       listTenantModelUsageMeter: async (actor, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]> => {
         const rows = await this.cp.listTenantModelUsageMeter(filter);
         await this.recordAccess(actor, 'listTenantModelUsageMeter', { tenantId: filter.tenantId },
+          { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
+        return rows;
+      },
+      recordBuildUsage: async (input: BuildUsageInput): Promise<{ recorded: boolean }> => this.cp.recordBuildUsage(input),
+      listTenantBuildUsage: async (actor, filter: TenantBuildUsageFilter): Promise<TenantBuildUsageRow[]> => {
+        const rows = await this.cp.listTenantBuildUsage(filter);
+        await this.recordAccess(actor, 'listTenantBuildUsage', { tenantId: filter.tenantId },
           { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
         return rows;
       },

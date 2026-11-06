@@ -22871,6 +22871,11 @@
                           "minimum": -9007199254740991,
                           "maximum": 9007199254740991
                         },
+                        "buildDays": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
                         "requestMonths": {
                           "anyOf": [
                             {
@@ -23451,6 +23456,120 @@
                         "oldestRecordedAt",
                         "newestRecordedAt",
                         "byVerticalModel",
+                        "breakdownTruncated"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "builds": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "builds": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "ms": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "lowerBound": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "since": {
+                          "type": "string"
+                        },
+                        "until": {
+                          "type": "string"
+                        },
+                        "byVertical": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "vertical": {
+                                "type": "string"
+                              },
+                              "builds": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "ms": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "vertical",
+                              "builds",
+                              "ms"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "breakdownTruncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "builds",
+                        "ms",
+                        "since",
+                        "until",
+                        "byVertical",
                         "breakdownTruncated"
                       ],
                       "additionalProperties": false

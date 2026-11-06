@@ -468,6 +468,10 @@ import {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  BUILD_USAGE_RETENTION_DAYS,
+  type BuildUsageInput,
+  type TenantBuildUsageFilter,
+  type TenantBuildUsageRow,
   type TenantModelUsageMeterFilter,
   type TenantModelUsageMeterRow,
   MODEL_USAGE_RETENTION_DAYS,
@@ -3198,6 +3202,16 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant_page ON _substrat_model_usage (tenant_id, at, id);
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
+      -- #2946: one row per successful source build, retention-bounded and pruned on write.
+      CREATE TABLE IF NOT EXISTS _substrat_build_usage (
+        build_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        vertical TEXT NOT NULL,
+        build_ms INTEGER NOT NULL,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS _substrat_build_usage_tenant ON _substrat_build_usage (tenant_id, at);
+      CREATE INDEX IF NOT EXISTS _substrat_build_usage_at ON _substrat_build_usage (at);
       -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
       ${SCOPE_STORAGE_DDL}
       -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
@@ -14126,6 +14140,25 @@ export class SqliteScopeHost implements ScopeHost {
         return rows.map((row) => ({ id: row.id, at: row.at, vertical: row.vertical, model: row.model,
           labelTruncated: row.label_truncated !== 0, reported: row.reported !== 0,
           inputTokens: row.input_tokens, outputTokens: row.output_tokens }));
+      },
+      recordBuildUsage: async (input: BuildUsageInput): Promise<{ recorded: boolean }> => {
+        const res = this.directory
+          .prepare('INSERT OR IGNORE INTO _substrat_build_usage (build_id, tenant_id, vertical, build_ms, at) VALUES (?, ?, ?, ?, ?)')
+          .run(input.buildId, input.tenantId, input.vertical, input.ms, input.at);
+        const horizon = new Date(Date.now() - BUILD_USAGE_RETENTION_DAYS * 86_400_000).toISOString();
+        this.directory.prepare('DELETE FROM _substrat_build_usage WHERE at < ?').run(horizon);
+        return { recorded: res.changes > 0 };
+      },
+      listTenantBuildUsage: async (actor, filter: TenantBuildUsageFilter): Promise<TenantBuildUsageRow[]> => {
+        const rows = this.directory.prepare(
+          `SELECT vertical, COUNT(*) AS builds, SUM(build_ms) AS ms
+             FROM _substrat_build_usage
+            WHERE tenant_id = ? AND at >= ? AND at < ?
+            GROUP BY vertical ORDER BY vertical LIMIT ?`,
+        ).all(filter.tenantId, canonicalInstant(filter.since), canonicalInstant(filter.until), assertRowLimit('limit', filter.limit)) as TenantBuildUsageRow[];
+        this.recordAccess(actor, 'listTenantBuildUsage', { tenantId: filter.tenantId },
+          { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
+        return rows;
       },
       summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
         const rows = this.selectModelUsage({ ...window, order: 'asc' });

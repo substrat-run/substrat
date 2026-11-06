@@ -354,6 +354,8 @@ export class BuilderAgent extends DurableObject<Env> {
 			}
 			await log.begin('wait for the build queue');
 			return await this.#builds.run(slug, () => this.#busy && this.#studioSlug === slug, async () => {
+				// What a build's meter counts starts here: the wait above is the platform's, not the tenant's.
+				const startedWork = Date.now();
 				await log.begin('check out the repository');
 				entry = (await this.#registry()).projects.find((p) => p.slug === slug);
 				if (!entry && submittedDirectory === undefined) {
@@ -419,7 +421,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				const manifest = JSON.parse(form.get('manifest') as string);
 				manifest.build = { id: buildId, projectId: entry.id, revision, toolchain };
 				form.set('manifest', JSON.stringify(manifest));
-				form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss }));
+				form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss, usage: { buildId, ms: Date.now() - startedWork } }));
 				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'built', completedAt: new Date().toISOString() });
 				await log.finish('built');
 				return new Response(form);

@@ -11,6 +11,7 @@ type Result = { teamId: string; grants: Grants; error: 'forbidden' | 'unavailabl
 type Usage = Awaited<ReturnType<ReturnType<typeof teamApi>['readMeteredUsage']>>;
 type UsageResult = { teamId: string; usage: Usage | null; error: 'forbidden' | 'unavailable' | null };
 const number = (value: number) => new Intl.NumberFormat('en-US').format(value);
+const minutes = (ms: number) => `${number(Math.ceil(ms / 60_000))} min`;
 const date = (value: string | null) => value ? value.slice(0, 10) : 'not available';
 const exclusions: Record<string, string> = { attachments: 'attachment files', 'tenant-stores': 'per-tenant databases', lake: 'event history in the lake' };
 const storageStates = new Set(['unavailable', 'empty', 'not-sampled', 'complete', 'partial', 'stale', 'failing', 'truncated']);
@@ -36,7 +37,7 @@ function Tile({ label, value, caption, badge, kind }: { label: string; value: st
 
 /** The three figures at a glance. The sentences behind each sit under Meter details. */
 function UsageSummary({ usage }: { usage: Usage }) {
-  const { storage, requests, models } = usage;
+  const { storage, requests, models, builds } = usage;
   const storageExact = isExactUsageFigure({ truncated: storage.lowerBound, reason: storage.truncatedReason, coverage: storage.state, estimated: storage.estimated, complete: storage.basis === 'scope-databases' && storage.sampled === storage.total && storage.failing === 0 });
   const tokens = models.inputTokens === null || models.outputTokens === null ? null : models.inputTokens + models.outputTokens;
   const tokensExact = isExactUsageFigure({ truncated: models.lowerBound, reason: models.truncatedReason, coverage: models.state, estimated: models.estimated, complete: models.calls !== null && models.reportedCalls === models.calls });
@@ -64,6 +65,15 @@ function UsageSummary({ usage }: { usage: Usage }) {
         badge={storageExact ? 'Sampled' : 'Lower bound'}
         kind={storageExact ? 'success' : 'warning'}
       />
+      {builds && (
+        <Tile
+          label="Build time"
+          value={builds.ms === null ? builds.state === 'empty' ? '0 min' : 'Not available' : `${builds.lowerBound === false ? '' : '≥ '}${minutes(builds.ms)}`}
+          caption={builds.builds === null ? 'No builds recorded' : `${number(builds.builds)} successful ${builds.builds === 1 ? 'build' : 'builds'}`}
+          badge="Measured"
+          kind="info"
+        />
+      )}
     </section>
   );
 }
@@ -112,6 +122,15 @@ function UsageCards({ usage }: { usage: Usage }) {
         {models.breakdownTruncated && <p>App and model breakdown truncated to 50 entries.</p>}
         <p>Model usage records are kept {usage.retention.modelDays} days.</p>
       </div>
+      {usage.builds && (
+        <div style={section}>
+          <h3>Build time</h3>
+          <p>{usage.builds.ms === null ? usage.builds.state === 'empty' ? 'No successful builds recorded in this window.' : 'not available' : `${usage.builds.lowerBound === false ? '' : 'At least '}${minutes(usage.builds.ms)} across ${number(usage.builds.builds ?? 0)} successful builds`}</p>
+          <p>Counts hosted builds that produced a release, from leaving the queue to the release being collected. Queue time and failed builds are not counted.</p>
+          {usage.builds.byVertical.length > 0 && <ul>{usage.builds.byVertical.map((row) => <li key={row.vertical}>{row.vertical}: {minutes(row.ms)} across {number(row.builds)} builds</li>)}</ul>}
+          {usage.builds.breakdownTruncated && <p>App breakdown truncated to 50 entries.</p>}
+        </div>
+      )}
     </>
   );
 }
