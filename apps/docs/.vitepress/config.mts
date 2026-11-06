@@ -102,6 +102,7 @@ export default withMermaid(defineConfig({
       { text: 'Engines', link: '/engines/', activeMatch: '/engines/' },
       { text: 'Connectors', link: '/connectors/', activeMatch: '/connectors/' },
       { text: 'Verticals', link: '/verticals/', activeMatch: '/verticals/' },
+      { text: 'Elements', link: '/elements/', activeMatch: '/elements/' },
       { text: 'Platform', link: '/platform/', activeMatch: '/platform/' },
       { text: 'Reference', link: '/reference/contracts', activeMatch: '/reference/' },
       // Last, and deliberately apart from the sections a reader takes in order: the
@@ -120,6 +121,7 @@ export default withMermaid(defineConfig({
       '/engines/': guideSidebar(),
       '/connectors/': guideSidebar(),
       '/verticals/': guideSidebar(),
+      '/elements/': guideSidebar(),
       '/platform/': guideSidebar(),
       '/reference/': guideSidebar(),
       '/changelog/': changelogSidebar(),
