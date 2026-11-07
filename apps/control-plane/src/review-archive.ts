@@ -26,9 +26,16 @@ function octal(block: Uint8Array, at: number, length: number, empty = false): nu
   return number;
 }
 
+/**
+ * Characters no stored path may hold: C0 and C1 controls with DEL, the bidi embeddings, overrides
+ * and isolates, and the line and paragraph separators. A path is printed in records, the CLI and
+ * the model's fence, so it must read as what it is.
+ */
+const UNPRINTABLE_PATH = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
 function portablePath(path: string): string {
   const checked = path.endsWith('/') ? path.slice(0, -1) : path;
-  if (!checked || /[\x00-\x1f\x7f]/.test(checked) || checked.includes('\\') ||
+  if (!checked || UNPRINTABLE_PATH.test(checked) || checked.includes('\\') ||
       checked.startsWith('/') || /^[a-zA-Z]:/.test(checked) ||
       checked.split('/').some((part) => !part || part === '.' || part === '..')) {
     throw new Error('archive path is not a portable relative path');
@@ -107,6 +114,26 @@ export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Arr
     pending = pending.slice(length);
     return out;
   };
+  // A file's bytes, read into one buffer of their size: each chunk is copied once, so a 16 MiB
+  // entry costs one pass. Growing `pending` chunk by chunk copied it again on every 4 KiB the
+  // inflater delivered, which was quadratic in the entry's size.
+  const readFile = async (length: number): Promise<Uint8Array> => {
+    const out = new Uint8Array(length);
+    let filled = Math.min(length, pending.byteLength);
+    out.set(pending.subarray(0, filled));
+    pending = pending.slice(filled);
+    while (filled < length) {
+      const next = await reader.read();
+      if (next.done) throw new Error('archive is truncated');
+      expanded += next.value.byteLength;
+      if (expanded > REVIEW_TREE_MAX_BYTES) throw new Error('archive exceeds the expanded size limit');
+      const take = Math.min(length - filled, next.value.byteLength);
+      out.set(next.value.subarray(0, take), filled);
+      filled += take;
+      if (take < next.value.byteLength) pending = next.value.slice(take);
+    }
+    return out;
+  };
   const discard = async (length: number): Promise<void> => {
     let left = length;
     while (left > 0) {
@@ -175,7 +202,7 @@ export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Arr
         await visit(path, size, async () => {
           if (consumed) throw new Error('an archive entry is read once');
           consumed = true;
-          return (await read(size)).slice();
+          return readFile(size);
         });
       }
       if (!consumed) await discard(size);

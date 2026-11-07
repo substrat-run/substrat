@@ -165,6 +165,16 @@ describe('phase-0 review intake', () => {
     }
   });
 
+  it.each([
+    ['DEL', '\u007f'], ['C1 NEL', '\u0085'], ['C1 CSI', '\u009b'], ['bidi override', '\u202e'],
+    ['bidi isolate', '\u2066'], ['line separator', '\u2028'], ['paragraph separator', '\u2029'],
+  ])('refuses a path holding %s, in the header and in a PAX record', async (_label, char) => {
+    for (const entries of [[{ path: `src/a${char}b.ts` }], [pax(paxRecord('path', `src/a${char}b.ts`)), regular()]]) {
+      const src = await archive(entries);
+      await expect(validateReviewArchive(src.file, src.sha256)).rejects.toThrow(/portable relative path/);
+    }
+  });
+
   it('rejects every unsupported PAX override and malformed extension', async () => {
     const longPath = 'docs/' + 'a'.repeat(120);
     const invalid = [
