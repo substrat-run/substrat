@@ -148,13 +148,18 @@ export function defaultGates(verticalDir: string): GateSpec[] {
  * would.
  */
 export async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
+	return typeof (await substratBlock(ws, projectDir)).permissions === 'string';
+}
+
+/** package.json's `substrat` block, empty when the file is unreadable or malformed. */
+async function substratBlock(ws: Workspace, projectDir: string): Promise<{ permissions?: string; sendsEmail?: boolean }> {
 	try {
 		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
-			substrat?: { permissions?: string };
+			substrat?: { permissions?: string; sendsEmail?: boolean };
 		};
-		return typeof pkg.substrat?.permissions === 'string';
+		return pkg.substrat ?? {};
 	} catch {
-		return false;
+		return {};
 	}
 }
 
@@ -232,8 +237,7 @@ async function noRealSignIn(ws: Workspace, projectDir: string): Promise<string |
 /** A hosted send is refused unless the project asked to send, and no suite sees that: a local host only queues. */
 async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<string | null> {
 	if (!/\brequestEmail\(/.test(withoutComments(await readTree(ws, `${projectDir}/src`)))) return null;
-	const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`).catch(() => '{}')) as { substrat?: { sendsEmail?: boolean } };
-	if (pkg.substrat?.sendsEmail === true) return null;
+	if ((await substratBlock(ws, projectDir)).sendsEmail === true) return null;
 	return 'src/ queues email with requestEmail, and a hosted send is refused unless the project asks for it. Set "sendsEmail": true under "substrat" in package.json.';
 }
 

@@ -157,6 +157,7 @@ describe('standaloneGates — when each gate applies', () => {
 		['app-starter', 'app/src/screens.ts', "invoke('acme/add-item')", "invoke('lists/add-item')", 'still the starter'],
 		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
 		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+		['sends-email', 'package.json', '{ not json', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
 	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');

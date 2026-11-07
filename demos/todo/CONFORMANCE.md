@@ -81,7 +81,7 @@ extra keys are here with the reason — the one place that gap is written down.
 
 | Operation | Also granted | Because |
 | --- | --- | --- |
-| `todo/invite` | `list:contribute` | inviting an address that has joined shares the list, which delegates list:contribute via ctx.grant, and delegation only narrows a permission the caller already holds |
+| `todo/invite` | `list:contribute` | an invitation becomes a share of list:contribute, and the consumer that makes it for an address yet to join re-checks nobody, so the handler checks the inviter holds that key |
 | `todo/share-list` | `list:contribute` | the handler delegates list:contribute to the invitee via ctx.grant, and delegation only narrows a permission the caller already holds |
 
 ## 4. The rest of the surface
