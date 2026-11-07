@@ -65,7 +65,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { TEST_RUNNER, TSCONFIG, VITEST_CONFIG } from '../packages/create-substrat/project-files.js';
+import { PACKAGE_MANAGER, TEST_RUNNER, TSCONFIG, VITEST_CONFIG } from '../packages/create-substrat/project-files.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TEMPLATE = join(ROOT, 'packages', 'create-substrat', 'template');
@@ -99,6 +99,7 @@ export function syncTemplate() {
   writeFileSync(join(CHECK_DIR, 'vitest.config.ts'), VITEST_CONFIG);
   writeFileSync(join(CHECK_DIR, 'GENERATED.md'), NOTE);
   assertSameTestRunner();
+  assertSamePackageManager();
 
   return CHECK_DIR;
 }
@@ -121,6 +122,18 @@ function assertSameTestRunner() {
       );
       process.exit(1);
     }
+  }
+}
+
+/** The platform builds a pushed project with this workspace's pnpm, so a scaffold pins the same one. */
+function assertSamePackageManager() {
+  const workspace = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).packageManager;
+  if (PACKAGE_MANAGER !== workspace) {
+    process.stderr.write(
+      `template-sync: a scaffold pins ${PACKAGE_MANAGER}, but this workspace, which the platform builds with, ` +
+        `pins ${workspace}. Move PACKAGE_MANAGER in packages/create-substrat/project-files.js with it.\n`,
+    );
+    process.exit(1);
   }
 }
 
