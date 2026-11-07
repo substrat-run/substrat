@@ -174,6 +174,8 @@ In the order we would try them:
 
 - **Three runs per arm, one fixture.** Strong signals, not guarantees. A change that wins on `todo`
   may not carry to another app.
+- **An eval does not continue a cut-off turn.** The studio does, through `runTurnLoop`. No Sonnet pass
+  reached the 40-step limit, so these results are unaffected, but a slower model's would be.
 - **The judge reads code.** Nobody ran these apps in a browser. It keeps saying it cannot see the
   owner's `list:manage` grant, which is unchecked.
 - **These ran on Claude Code's loop on a local disk.** They share prompts, tools and gates with the
