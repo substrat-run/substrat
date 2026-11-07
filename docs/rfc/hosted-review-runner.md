@@ -909,6 +909,18 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   credential.
 - **Long path lists are cut.** A record lists at most 200 files not sent and 200 deleted paths,
   with the full counts beside them; the headline counts from the full number.
+- **Redaction matches patterns, inside caps.** A stored quote is at most 200 characters. An
+  explanation is cut at a word break inside its first 1,000 characters before any mask reads it, so
+  no token reaches a mask in pieces, and at most 500 are stored; a longer one is cut, never refused.
+  Not every mask runs in linear time, so these caps are what bound the time redaction takes. A
+  secret in a shape no mask knows stays in the text.
+- **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
+  no model, and the review stays `received` until the prune removes it. A call that returned usage
+  has its ledger line written before anything decides whether its result is kept, so a result
+  dropped by this margin or by a prune still leaves the line. If that ledger write fails on the
+  job's last alarm, it is logged and not tried again, so a failed write with a pruned receipt leaves
+  no line. A timed-out call returns no usage, so it has no line though it may still be billed, and
+  with `REVIEW_PLATFORM_TENANT` unset no line is written at all.
 - **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
   call goes to the account's default gateway; naming another gateway is a later change.
 
