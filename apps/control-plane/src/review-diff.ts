@@ -1,4 +1,5 @@
 import { walkReviewArchive } from './review-archive.js';
+import { lineChanges } from './review-lines.js';
 
 /** The reader half's default budget for what it sends: the whole new text of each changed file. */
 export const REVIEW_MAX_DIFF_BYTES = 256 * 1024;
@@ -13,6 +14,13 @@ export type NotSentRule = 'lockfile' | 'generated' | 'emitted artifact' | 'binar
 export interface ChangedFile {
   readonly path: string;
   readonly text: string;
+  /**
+   * The new text's lines the change adds or alters (1-based), or `all` for a file that is new, or
+   * whose earlier text could not be compared (binary, over the per-file limit, or a diff too long).
+   */
+  readonly changed?: ReadonlySet<number> | 'all';
+  /** Where lines were removed: after new line n (0 is before line 1). Their old text is never sent. */
+  readonly removedAfter?: readonly number[];
 }
 
 export type ReviewDiff =
@@ -63,7 +71,8 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 class OverBudget extends Error {}
 
 export interface ArchiveSource {
-  stream(): ReadableStream<Uint8Array>;
+  /** A fresh stream of the archive's bytes each call: the base is walked twice. */
+  open(): Promise<ReadableStream<Uint8Array>>;
   readonly size: number;
   /** The SHA-256 intake recorded for these bytes; the walk is refused when they no longer match it. */
   readonly sha256: string;
@@ -86,7 +95,7 @@ export async function diffReview(
   const maxFileBytes = limits.maxFileBytes ?? REVIEW_SENT_FILE_MAX_BYTES;
   const baseFiles = new Map<string, string>();
   if (input.base) {
-    const sha256 = await walkReviewArchive({ stream: input.base.stream(), size: input.base.size }, async (path, _size, read) => {
+    const sha256 = await walkReviewArchive({ stream: await input.base.open(), size: input.base.size }, async (path, _size, read) => {
       baseFiles.set(path, await sha256Hex(await read()));
     });
     if (sha256 !== input.base.sha256) return { kind: 'archive changed' };
@@ -97,7 +106,7 @@ export async function diffReview(
   let bytes = 0;
   let sha256: string;
   try {
-    sha256 = await walkReviewArchive({ stream: input.source.stream(), size: input.source.size }, async (path, size, read) => {
+    sha256 = await walkReviewArchive({ stream: await input.source.open(), size: input.source.size }, async (path, size, read) => {
       seen.add(path);
       const content = await read();
       const before = baseFiles.get(path);
@@ -118,7 +127,7 @@ export async function diffReview(
       }
       bytes += content.byteLength;
       if (bytes > maxDiffBytes) throw new OverBudget();
-      files.push({ path, text });
+      files.push({ path, text, changed: before === undefined ? 'all' : new Set<number>(), removedAfter: [] });
     });
   } catch (error) {
     if (error instanceof OverBudget) return { kind: 'too large', bytes, limit: maxDiffBytes };
@@ -126,5 +135,29 @@ export async function diffReview(
   }
   if (sha256 !== input.source.sha256) return { kind: 'archive changed' };
   const deleted = [...baseFiles.keys()].filter((path) => !seen.has(path)).sort();
-  return { kind: 'diff', files, deleted, notSent, bytes, fullTree: input.base === null };
+  const compared = input.base ? await changedLines(input.base, files, maxFileBytes) : files;
+  if (compared === null) return { kind: 'archive changed' };
+  return { kind: 'diff', files: compared, deleted, notSent, bytes, fullTree: input.base === null };
+}
+
+/**
+ * Pass 3, only when a sent file existed in the base: walk the base again for those paths' earlier
+ * text and diff it line by line. Each earlier text is read under the per-file limit; one that is
+ * larger, binary, or too different to diff leaves its file `all`. Null when the base changed.
+ */
+async function changedLines(base: ArchiveSource, files: ChangedFile[], maxFileBytes: number): Promise<ChangedFile[] | null> {
+  const wanted = new Map(files.filter((f) => f.changed !== 'all').map((f) => [f.path, f]));
+  if (wanted.size === 0) return files;
+  const earlier = new Map<string, string | null>();
+  const sha256 = await walkReviewArchive({ stream: await base.open(), size: base.size }, async (path, size, read) => {
+    if (!wanted.has(path)) return;
+    earlier.set(path, size > maxFileBytes ? null : textOf(await read()));
+  });
+  if (sha256 !== base.sha256) return null;
+  return files.map((file) => {
+    if (file.changed === 'all') return file;
+    const before = earlier.get(file.path);
+    const diff = before === undefined || before === null ? null : lineChanges(before, file.text);
+    return diff ? { ...file, changed: diff.changed, removedAfter: diff.removedAfter } : { ...file, changed: 'all', removedAfter: [] };
+  });
 }
