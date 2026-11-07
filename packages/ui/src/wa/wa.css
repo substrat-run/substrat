@@ -17,11 +17,13 @@ wa-select::part(hint) {
 .ui-mono {
   font-family: var(--font-mono);
 }
-/* On an input the value is mono, and its label and hint are not. */
-wa-input.ui-mono {
+/* On a field the value is mono, and its label and hint are not. */
+wa-input.ui-mono,
+wa-textarea.ui-mono {
   font-family: var(--font-sans);
 }
-.ui-mono::part(input) {
+.ui-mono::part(input),
+.ui-mono::part(textarea) {
   font-family: var(--font-mono);
 }
 .ui-input-prefix {
@@ -67,6 +69,9 @@ wa-input.ui-mono {
   padding: 0;
   font-weight: inherit;
   font-size: inherit;
+  color: var(--text-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .ui-link::part(label) {
   padding: 0;
