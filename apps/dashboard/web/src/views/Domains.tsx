@@ -9,7 +9,7 @@ import { card, CopyButton, MonoTag, PageTitle, Pill, type PillKind } from '../co
 import { relativeTime } from '../lib/format';
 
 const COLS = '2.2fr 1.4fr 1.6fr 1fr 40px';
-const ROW_ICON = { width: 24, '--wa-form-control-height': '24px', '--wa-form-control-padding-inline': '0', '--wa-color-on-quiet': 'var(--text-tertiary)' } as CSSProperties;
+const ROW_ICON = { width: 24, flexShrink: 0, '--wa-form-control-height': '24px', '--wa-form-control-padding-inline': '0', '--wa-color-on-quiet': 'var(--text-tertiary)' } as CSSProperties;
 
 /** DEV_MOCK preview data — the real shape `GET /api/teams/:teamId/domains` returns, no backend. */
 const MOCK_DOMAINS: DomainRow[] = [
