@@ -75,7 +75,10 @@ export function Button({ variant = 'primary', size = 'md', icon, loading, disabl
 }
 
 export interface IconButtonProps {
-  /** Its accessible name. `title` is what reaches the button in the shadow root. */
+  /**
+   * Its accessible name. `title` is what reaches the button in the shadow root, and it only
+   * names a button with no text of its own, so what is drawn inside is hidden from the name.
+   */
   label: string;
   variant?: 'ghost' | 'outline';
   size?: Size;
@@ -101,7 +104,9 @@ export const IconButton = forwardRef<HTMLElement, IconButtonProps>(function Icon
       disabled={disabled || undefined}
       onClick={(disabled ? undefined : onClick) as never}
     >
-      {children}
+      <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+        {children}
+      </span>
     </wa-button>
   );
 });

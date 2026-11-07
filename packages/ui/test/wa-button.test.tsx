@@ -7,6 +7,14 @@ import { Button, IconButton } from '../src/wa';
  * `wa-button` colours the button in its shadow root, so a `color` left on the host draws
  * grey with no error, and a browser is the only other place that would show it.
  */
+describe('an icon button', () => {
+  it('is named by its label, not by a glyph drawn inside it', () => {
+    const html = renderToStaticMarkup(<IconButton label="Close">✕</IconButton>);
+    expect(html).toContain('title="Close"');
+    expect(html).toMatch(/<span aria-hidden="true"[^>]*>✕<\/span>/);
+  });
+});
+
 describe('a colour given to a button', () => {
   it.each([
     ['Button', <Button style={{ color: 'red', marginLeft: 4 }}>Delete</Button>],

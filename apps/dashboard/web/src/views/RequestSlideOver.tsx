@@ -226,7 +226,7 @@ export function RequestSlideOver({
             </Button>
           )}
           <IconButton label="Close" size="sm" onClick={onClose}>
-            <span aria-hidden>✕</span>
+            ✕
           </IconButton>
         </div>
 
