@@ -78,6 +78,13 @@ Both keep running in the default sweep. Dropping a fixture from the default set 
 irreversible half of the choice and it costs sweep budget either way, so it is a corpus
 decision made deliberately, never a side effect of adding a successor.
 
+## Grading what a run built
+
+Gates-green says a build compiles and its tests pass, not that it is the app the brief asked
+for. [`../quality/`](../quality/README.md) grades that, and
+[quality-runs.md](../../../docs/architecture/builder/quality-runs.md) records what each change
+to the skills and the harness did to it. Read that before trying a strategy again.
+
 ## Running the sweep
 
 ```

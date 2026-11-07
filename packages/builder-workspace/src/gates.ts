@@ -41,6 +41,7 @@ export type GateName =
 	| 'api'
 	| 'scenario'
 	| 'app-build'
+	| 'app-api'
 	| 'migration-replay';
 
 export type GateStatus = 'passed' | 'failed' | 'blocked' | 'skipped';
@@ -260,6 +261,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			note: 'no app/ yet',
 		},
 		{
+			// Both halves compile alone, so an app whose every action 404s passes every other gate.
+			name: 'app-api',
+			cmd: `! grep -rqF /api/invoke ${projectDir}/app/src || grep -rqF /api/invoke ${projectDir}/src || { echo "app/src calls POST /api/invoke and src/ never mounts it: copy that route from the template's src/routes.ts"; exit 1; }`,
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/app/package.json`),
+			note: 'no app/ yet',
+		},
+		{
 			name: 'migration-replay',
 			cmd: '',
 			appliesWhen: async () => false,
@@ -350,9 +358,12 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
  * GateResult so a genuinely failed install (bad version spec, registry down)
  * reaches the model with pnpm's own output instead of as type errors.
  */
-export async function runInstall(ws: Workspace): Promise<GateResult> {
+export async function runInstall(ws: Workspace, verticalDir = '.'): Promise<GateResult> {
 	const started = Date.now();
-	const { stdout, stderr, exitCode } = await ws.exec('pnpm install');
+	// A project with its own workspace file installs there: from an enclosing workspace pnpm
+	// would judge the wrong lockfile, and report one the project's install left correct.
+	const own = await ws.exists(`${verticalDir}/pnpm-workspace.yaml`);
+	const { stdout, stderr, exitCode } = await ws.exec('pnpm install', own ? { cwd: verticalDir } : {});
 	return {
 		name: 'install',
 		status: exitCode === 0 ? 'passed' : 'failed',

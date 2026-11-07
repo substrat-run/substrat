@@ -244,6 +244,12 @@ OWNER_GRANTS, bootstrap: true, holder: 'self' }` in `src/manifest.ts`); and ever
 list is `ctx.link`ed to its owner, so that grant reaches each list through the
 edge.
 
+**A grant cannot be listed.** The kernel answers whether one person holds a key on one
+record, never who holds it. So when anyone sees who a record is shared with, declare a
+`share` entity as `todo` does, and write its row in the same operation as `ctx.grant`.
+A model with a "who has access" read and no such entity cannot be built. If the concept
+says no such table, it is wrong on this point: declare the entity and say so.
+
 Two rules follow from `ctx.grant` delegating, and the build cannot repair a model
 that breaks them:
 

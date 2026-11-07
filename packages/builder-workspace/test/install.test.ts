@@ -20,10 +20,12 @@ const PROJECT = '.builder/projects/x';
 /** LocalWorkspace with `pnpm install` intercepted: counted, never executed. */
 class InstallSpyWorkspace extends LocalWorkspace {
 	installs = 0;
+	installCwd: string | undefined;
 	installExit = 0;
 	override async exec(cmd: string, opts?: ExecOptions): Promise<ExecResult> {
 		if (cmd === 'pnpm install') {
 			this.installs += 1;
+			this.installCwd = opts?.cwd;
 			return { stdout: 'stub install', stderr: '', exitCode: this.installExit };
 		}
 		return super.exec(cmd, opts);
@@ -51,6 +53,17 @@ describe('host-owned pnpm install (runTurn)', () => {
 		expect(ws.installs).toBe(1);
 		expect(turn.gates.results[0]).toMatchObject({ name: 'install', status: 'passed' });
 		expect(turn.gates.ok).toBe(true);
+		await ws.dispose();
+	});
+
+	it('installs in a project with its own workspace file, not in the enclosing one', async () => {
+		const ws = await repo();
+		await ws.writeFile(`${PROJECT}/package.json`, '{"name":"x","private":true}\n');
+		await ws.writeFile(`${PROJECT}/pnpm-workspace.yaml`, 'packages: []\n');
+
+		await runTurn(ws, { verticalDir: PROJECT, message: 't', gates: NO_GATES });
+
+		expect(ws.installCwd).toBe(PROJECT);
 		await ws.dispose();
 	});
 

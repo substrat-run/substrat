@@ -210,7 +210,7 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 		!(await ws.exists(`${opts.verticalDir}/node_modules`));
 	let install: GateResult | null = null;
 	if (touchedManifest || missingDeps) {
-		install = await runInstall(ws);
+		install = await runInstall(ws, opts.verticalDir);
 		opts.onGateResult?.(install);
 	}
 
