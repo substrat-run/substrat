@@ -21,6 +21,7 @@ import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi } from './reviews.js';
+import { ReviewJobDO } from './review-job.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv, type RelayScopeLookup } from './relay-caller.js';
 import { sendAsTenant, TenantMailRefusal } from './tenant-mail.js';
@@ -333,6 +334,7 @@ export async function kickCrossVertical(
 }
 export { ControlPlaneDO };
 export { ObservabilityCacheDO };
+export { ReviewJobDO };
 export { RelayGateway } from './relay-gateway.js';
 
 interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
@@ -528,6 +530,22 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * object per job. Absent, every copy runs inside its request, as before.
    */
   COPY_JOBS?: DurableObjectNamespace;
+  /**
+   * #2365 phase 1: the reader half, one object per review id, stepped by alarm. Absent, an upload
+   * stays `received` as in phase 0.
+   */
+  REVIEW_JOBS?: DurableObjectNamespace<ReviewJobDO>;
+  /**
+   * The model the reader half runs, `provider:model` on the gateway row. Not chosen yet: unset,
+   * every review ends `skipped: no model configured` and nothing else changes.
+   */
+  REVIEW_MODEL?: string;
+  /** The platform's own team tenant the reader half's usage lines are filed under. Unset: no line is written. */
+  REVIEW_PLATFORM_TENANT?: string;
+  /** Overrides for the reader half's caps (defaults 256 KiB of changed text, 120k input and 8k output tokens). */
+  REVIEW_MAX_DIFF_BYTES?: string;
+  REVIEW_MAX_INPUT_TOKENS?: string;
+  REVIEW_MAX_OUTPUT_TOKENS?: string;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -3036,6 +3054,7 @@ export default {
     app.route('/api', createReviewApi({
       bucket: () => env.REVIEW_SOURCES,
       authenticate: humanStaffActorFor(env) ?? (async () => null),
+      ...(env.REVIEW_JOBS ? { startReview: (id: string) => env.REVIEW_JOBS!.get(env.REVIEW_JOBS!.idFromName(id)).start(id) } : {}),
     }));
 
     // The members surface (console → Members): the staff roster (staff_actor) —

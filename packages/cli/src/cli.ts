@@ -61,6 +61,7 @@ import { approvalFromFiles, approvalLines, approvalStatusLines, revokeStoreDrive
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { assertCleanReviewTree, reviewArchive } from './review-archive.js';
+import { formatReview, type ReviewRecordView } from './review-report.js';
 import { failureMessage } from './problem.js';
 import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -150,10 +151,11 @@ Usage:
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
   substrat version                            print the CLI version (also --version, -v)
-  substrat review upload [dir] [--base <ref>]  upload a committed staff branch for a
-                                               phase-0 review receipt (no gates run)
-  substrat review <id>                         read your review receipt
-  substrat review list                         list your review receipts
+  substrat review upload [dir] [--base <ref>]  upload a committed staff branch; the plane's
+                                               reader half reads it (no gates run yet)
+  substrat review <id> [--wait]                print your review in the checklist's report
+                                               shape; --wait polls until it has run (10 min)
+  substrat review list                         list your reviews
   substrat dev      [dir] [--no-trace]         run the project's dev script with local request traces
   substrat push     [dir] [--promote prod]     push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
@@ -1598,33 +1600,44 @@ async function cmdReview(): Promise<void> {
     const body = await response.text();
     if (!response.ok) throw new Error(failureMessage('review upload failed', response.status, body));
     const record = JSON.parse(body) as { id: string; state: string; expiresAt: string };
-    console.log(`review ${record.id}: ${record.state} (no gates run; expires ${record.expiresAt})`);
+    console.log(`review ${record.id}: ${record.state} (expires ${record.expiresAt}); read it with \`substrat review ${record.id} --wait\``);
     return;
   }
-  const rows: Array<{ id: string; state: string; createdAt: string }> = [];
+  if (sub !== 'list') {
+    const read = async (): Promise<ReviewRecordView> => {
+      const response = await plane.request(`/reviews/${encodeURIComponent(sub)}`);
+      const body = await response.text();
+      if (!response.ok) throw new Error(failureMessage('review read failed', response.status, body));
+      return JSON.parse(body) as ReviewRecordView;
+    };
+    let record = await read();
+    const deadline = Date.now() + REVIEW_WAIT_MS;
+    while (argv.includes('--wait') && record.state === 'received' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      record = await read();
+    }
+    console.log(argv.includes('--json') ? JSON.stringify(record, null, 2) : formatReview(record));
+    return;
+  }
+  const rows: Array<{ id: string; state: string; createdAt: string; headline?: string }> = [];
   let cursor: string | null = null;
   do {
-    const path = sub === 'list'
-      ? `/reviews${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`
-      : `/reviews/${encodeURIComponent(sub)}`;
-    const response = await plane.request(path);
+    const response = await plane.request(`/reviews${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
     const body = await response.text();
     if (!response.ok) throw new Error(failureMessage('review read failed', response.status, body));
-    if (sub === 'list') {
-      const page = JSON.parse(body) as { entries: typeof rows; cursor: string | null };
-      rows.push(...page.entries);
-      cursor = page.cursor;
-    } else {
-      rows.push(JSON.parse(body) as (typeof rows)[number]);
-      cursor = null;
-    }
+    const page = JSON.parse(body) as { entries: typeof rows; cursor: string | null };
+    rows.push(...page.entries);
+    cursor = page.cursor;
   } while (cursor);
   if (argv.includes('--json')) {
-    console.log(JSON.stringify(sub === 'list' ? { entries: rows } : rows[0], null, 2));
+    console.log(JSON.stringify({ entries: rows }, null, 2));
     return;
   }
-  for (const record of rows) console.log(`${record.id}  ${record.state}  ${record.createdAt}  (no gates run)`);
+  for (const record of rows) console.log(`${record.id}  ${record.state}  ${record.createdAt}  ${record.headline ?? ''}`);
 }
+
+/** How long `substrat review <id> --wait` waits for the reader half. */
+const REVIEW_WAIT_MS = 10 * 60_000;
 
 async function main(): Promise<void> {
   // #386: in the monorepo the bin is a symlink into dist/ — say up front when that

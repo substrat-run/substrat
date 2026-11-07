@@ -25,13 +25,16 @@
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/model-providers": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
     "hono": "catalog:"
   },
   "devDependencies": {
     "@substrat-run/console": "workspace:*",
     "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
+    "ai": "7.0.159",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

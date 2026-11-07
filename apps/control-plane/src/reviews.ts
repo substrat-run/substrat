@@ -33,10 +33,12 @@ async function boundedForm(request: Request): Promise<FormData> {
   return new Response(new Blob(chunks), { headers: { 'content-type': contentType } }).formData();
 }
 
-/** The phase-0 review API. Authentication is supplied by the worker's human staff reader. */
+/** The review API: staff intake, then the reader half (phase 1). Authentication is supplied by the worker's human staff reader. */
 export function createReviewApi(deps: {
   bucket: () => R2Bucket | undefined;
   authenticate: (request: Request) => Promise<PlatformActorId | null>;
+  /** Starts the reader half for a stored review. The upload never waits for the review itself. */
+  startReview?: (id: string) => Promise<void>;
 }): Hono {
   const app = new Hono();
   const gate = async (request: Request): Promise<{ bucket: R2Bucket; actor: PlatformActorId } | Response> => {
@@ -88,6 +90,13 @@ export function createReviewApi(deps: {
         ...(base instanceof File ? { base } : {}),
         ...(typeof baseSha256 === 'string' ? { baseSha256 } : {}),
       });
+      if (deps.startReview) {
+        // Stored is stored: a job that fails to start leaves the review `received`, which the
+        // record says, and the upload still answers 201.
+        await deps.startReview(record.id).catch((error: unknown) => {
+          console.error('review.job.unstarted', { reviewId: record.id, message: error instanceof Error ? error.message : String(error) });
+        });
+      }
       return Response.json(record, { status: 201 });
     } catch (error) {
       if (error instanceof ReviewValidationError) return refuse('validation_failed', error.message);
