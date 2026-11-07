@@ -919,6 +919,9 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 - **Redaction can take more than the value.** In an explanation, a secret-named value inside a
   string or a code span (`` `password=hunter2` ``) takes the rest of its line with it, since the
   closing quote reads as an opening one.
+- **A sentence about a quoted check keeps its words.** When an explanation quotes a comparison or
+  a key and the sentence goes on after it (`` `token == null` lets any caller through ``), a quoted
+  string later in that sentence is kept as written.
 - **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
   no model, and the review stays `received` until the prune removes it. A call that returned usage
   has its ledger line written before anything decides whether its result is kept, so a result

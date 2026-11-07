@@ -348,11 +348,16 @@ function readsAsProse(text: string, { at, bare, after, header }: SecretHit): boo
 }
 
 /**
- * After a hit read as prose, the sentence going on: a contraction's tail (`it's`), then a word that
- * leads no value, or a code span. Anything else (`)`, `?`, `||`, a quote, `return`) is code, and the
- * quoted strings after it are read as values.
+ * After a hit read as prose, the sentence going on: a contraction's tail (`it's`), then a space and
+ * a word that leads no value, or a code span. Anything else (`)`, `?`, `||`, a quote, `return`) is
+ * code, and the quoted strings after it are read as values.
  */
 const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
+/**
+ * A quote closing the string a prose hit's name sits in, with a comma, stop, semicolon or colon
+ * after it: the sentence may go on after it, or end (`` `token == null` lets any caller through ``).
+ */
+const CLOSER = /[`"'][,.;:]?/y;
 
 /**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
@@ -362,16 +367,28 @@ const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
  * itself. Each other hit masks its own quoted string or unquoted value, with what a separator joins
  * to it, and a header its whole remainder. From the earliest of them, or the earliest prose hit the
  * sentence does not go on after (`if (token == null) return "V"`), to the end of the line every
- * quoted string is masked too (`password = "a" + "V"`, `token = Buffer.from("V")`), reading the
- * quotes from there and from the start of the line, since that value may itself sit inside a string
- * (`"password=abc" + "V"`). The ranges are collected and applied once, so one mask cannot use up
- * another.
+ * quoted string is masked too (`password = "a" + "V"`, `token = Buffer.from("V")`). The quotes are
+ * read from there, from the first value and from the start of the line, since either hit may itself
+ * sit inside a string (`"password=abc" + "V"`) or after a stray quote. The ranges are collected and
+ * applied once, so one mask cannot use up another.
  */
 function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   const hits = secretHits(text);
   if (mode === 'line') return hits[0] ? `${text.slice(0, hits[0].at)}[redacted]` : text;
   const values = hits.filter((hit) => !readsAsProse(text, hit));
-  const first = hits.find((hit) => values.includes(hit) || !stickyAt(PROSE_GOES_ON, text, hit.at + hit.bare.length));
+  let strings: RegExpExecArray[] | undefined;
+  /** The quote at `at` closes a string, read from the start of the line. */
+  const closes = (at: number): boolean => (strings ??= [...text.matchAll(QUOTED)]).some((m) => m.index + m[0].length === at + 1);
+  const goesOn = ({ at, bare }: SecretHit): boolean => {
+    let end = at + bare.length;
+    const closer = stickyAt(CLOSER, text, end);
+    if (closer && closes(end)) {
+      end += closer[0].length;
+      if (end === text.length) return true;
+    }
+    return stickyAt(PROSE_GOES_ON, text, end) !== null;
+  };
+  const first = hits.find((hit) => values.includes(hit) || !goesOn(hit));
   if (!first) return text;
   const ranges: Array<[number, number]> = [];
   for (const { at, bare, header } of values) {
@@ -384,7 +401,7 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
     if (LITERAL.test(bare)) end += stickyAt(NEXT_TOKEN, text, end)?.[0].length ?? 0;
     if (end > at) ranges.push([at, end]);
   }
-  for (const from of [0, first.at]) {
+  for (const from of new Set([0, first.at, values[0]?.at ?? first.at])) {
     for (const m of text.slice(from).matchAll(QUOTED)) {
       const end = from + m.index + m[0].length;
       if (end > first.at) ranges.push([Math.max(from + m.index, first.at), end]);

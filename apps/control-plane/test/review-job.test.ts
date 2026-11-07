@@ -598,6 +598,12 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ...['then', 'else', 'return'].map((word) => [`a string after a comparison and ${word}`, `if token == nil ${word} "s3cr3tVALUE"`]),
     ['a string after a key and a plain word', 'token: see "s3cr3tVALUE"'],
     ['a code span glued to a plain word', 'token: see`s3cr3tVALUE`'],
+    ['a stray quote after a plain word', 'token: see" the \'s3cr3tVALUE\''],
+    ['a string after a comparison and a capital keyword', 'password == null Return "s3cr3tVALUE"'],
+    ['a string after a capital Then', 'if token == nil Then "s3cr3tVALUE"'],
+    ['a string after a comparison and a capital word', 'password == null Fallback "s3cr3tVALUE"'],
+    ['a string after a plain word and a tab', 'token: see\tthe "s3cr3tVALUE"'],
+    ['a string after a plain word and a name character', 'token: see _x "s3cr3tVALUE"'],
     ['a string after a plain-word argument', 'read("API_KEY", value) then "s3cr3tVALUE"'],
     ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
     ['a long argument name', `read("${'x'.repeat(72)}_api_key", "s3cr3tVALUE")`],
@@ -700,6 +706,12 @@ describe('the assembler, the fence, the redaction and the headline', () => {
       'no authorization: add `assertAllowed(await ctx.check(PERMS.invoiceVoid))` as the first line',
       'no authorization: tokens are missing', 'the password or API key leaks', 'reads password || token from the config', 'reads password ?? token from the config', 'fn(password=)',
       "no authorization: it's never checked", 'no authorization: it returns "ok" to any caller',
+      '`authorization == null` lets any caller through, add a check first', 'the check `password == null` is skipped when the flag is off',
+      'with `token == null`, the guard returns early', '`secret: none` disables signing for the route', 'reads `token: abc` from the config file',
+      '"authorization == null" is the branch that skips the check', "the check 'password == null' is skipped",
+      ...['.', ';'].map((stop) => `the check \`token == null\`${stop} any caller can void it`), 'the branch that skips it is `token == null`.',
+      // Not a quoted name, as it holds a quote: the colon after it is the sentence's.
+      'the check `role == "guest" || token == null`: any caller can void it',
     ]) {
       expect(redact(prose, 500, 'value')).toBe(prose);
     }
@@ -741,6 +753,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a string holding a header’s name, then a plus', '"Authorization: " + "s3cr3tVALUE"'],
     ['a stray closing quote', 'password=abc" token="s3cr3tVALUE"'],
     ['an unclosed string', '"password=abc "s3cr3tVALUE"'],
+    ['a stray quote after a comparison with null', 'if (token == null") token = \'a\' "s3cr3tVALUE"'],
+    ['a stray quote after a comparison, then a key', 'when password === null") token: s3cr3tVALUE "s3cr3tVALUE"'],
   ])('masks a value after %s, in every stored field', (_label, line) => {
     const parsed = parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: line, fix: line }] }));
     const [kept] = assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings;
