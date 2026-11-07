@@ -136,7 +136,9 @@
 			// #1877: closed blocks of log counts, one object per deployed script.
 			{ "name": "OBS_CACHE", "class_name": "ObservabilityCacheDO" },
 			// #2450 step 2: one per background preview copy, stepped by alarm.
-			{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" }
+			{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" },
+			// #2365 phase 1: the review runner's reader half, one per review id, stepped by alarm.
+			{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" }
 		]
 	},
 	"migrations": [
@@ -158,6 +160,11 @@
 			// #2450 step 2: the background preview copy's job object.
 			"tag": "v4",
 			"new_sqlite_classes": ["ScopeCopyJobDO"]
+		},
+		{
+			// #2365 phase 1: the review runner's job object.
+			"tag": "v5",
+			"new_sqlite_classes": ["ReviewJobDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -339,14 +346,16 @@
 					{ "name": "SCOPE", "class_name": "ScopeDO" },
 					{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" },
 					{ "name": "OBS_CACHE", "class_name": "ObservabilityCacheDO" },
-					{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" }
+					{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" },
+					{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" }
 				]
 			},
 			"migrations": [
 				{ "tag": "v1", "new_sqlite_classes": ["ControlPlaneDO", "ScopeDO"] },
 				{ "tag": "v2", "new_sqlite_classes": ["CrossVerticalKickDO"] },
 				{ "tag": "v3", "new_sqlite_classes": ["ObservabilityCacheDO"] },
-				{ "tag": "v4", "new_sqlite_classes": ["ScopeCopyJobDO"] }
+				{ "tag": "v4", "new_sqlite_classes": ["ScopeCopyJobDO"] },
+				{ "tag": "v5", "new_sqlite_classes": ["ReviewJobDO"] }
 			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test

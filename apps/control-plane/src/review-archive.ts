@@ -61,13 +61,29 @@ function paxPath(payload: Uint8Array): string {
   return match[2]!;
 }
 
+/**
+ * One file entry the walk reached. `read` hands back its bytes; an entry whose bytes are not
+ * read is skipped without being held in memory. Throwing from the visitor stops the walk.
+ */
+export type ArchiveVisitor = (path: string, size: number, read: () => Promise<Uint8Array>) => Promise<void>;
+
 /** Read a gzip/USTAR archive with one optional PAX path per entry as data. No extraction or execution. */
 export async function validateReviewArchive(file: File, expectedSha256: string): Promise<void> {
   if (!/^[0-9a-f]{64}$/.test(expectedSha256)) throw new Error('archive digest must be a full SHA-256');
   if (file.size === 0 || file.size > REVIEW_ARCHIVE_MAX_BYTES) throw new Error('archive exceeds the compressed size limit');
+  const sha256 = await walkReviewArchive({ stream: file.stream(), size: file.size });
+  if (sha256 !== expectedSha256) throw new Error('archive digest differs');
+}
+
+/**
+ * Walk an archive under exactly the rules intake validates with, handing each file to `visit`.
+ * Returns the compressed bytes' SHA-256. The reader half walks the stored archives through this
+ * rather than a second parser, so what it reads is what intake admitted.
+ */
+export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Array>; size: number }, visit?: ArchiveVisitor): Promise<string> {
   const makeDigest = runtimeSha256();
   if (!makeDigest) throw new Error('streaming SHA-256 is unavailable');
-  const witnessed = witnessedStream({ stream: file.stream(), length: file.size }, makeDigest());
+  const witnessed = witnessedStream({ stream: input.stream, length: input.size }, makeDigest());
   const inflated = (witnessed.body.stream as ReadableStream<Uint8Array>).pipeThrough(new DecompressionStream('gzip'));
   const reader = inflated.getReader();
   let pending = new Uint8Array(0);
@@ -154,7 +170,15 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
       archivePath(path, type === 53, seen, files, impliedDirectories);
       extendedPath = undefined;
       if (++entries > REVIEW_ENTRY_MAX) throw new Error('archive has too many entries');
-      await discard(size);
+      let consumed = false;
+      if (visit && type !== 53) {
+        await visit(path, size, async () => {
+          if (consumed) throw new Error('an archive entry is read once');
+          consumed = true;
+          return (await read(size)).slice();
+        });
+      }
+      if (!consumed) await discard(size);
       const pad = await read((BLOCK - size % BLOCK) % BLOCK);
       if (pad.some((byte) => byte !== 0)) throw new Error('archive padding is not zero');
     }
@@ -176,5 +200,5 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
   } finally {
     reader.releaseLock();
   }
-  if (witnessed.witness().sha256 !== expectedSha256) throw new Error('archive digest differs');
+  return witnessed.witness().sha256;
 }

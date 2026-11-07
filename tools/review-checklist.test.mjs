@@ -2,19 +2,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { ciCommands, findOffences, parseGates, rulesDigest } from './review-checklist.mjs';
+import { ciCommands, findOffences, itemRules, parseGates, RULES_MODULE, rulesDigest, rulesModule } from './review-checklist.mjs';
 
 test('the rules digest is the one procedure.md tells a local runner to compute', () => {
   const local = execFileSync('sh', ['-c', 'cat checklist.md procedure.md | shasum -a 256'], { cwd: 'plugin/substrat/review', encoding: 'utf8' });
   assert.equal(local.split(/\s/)[0], rulesDigest());
 });
 
-test('the hosted receipt stamps the rules digest and plugin version', () => {
-  const source = readFileSync('apps/control-plane/src/review-store.ts', 'utf8');
-  const digest = rulesDigest();
+test("the runner's rules module carries the digest, the plugin version and each item's severity", () => {
+  const emitted = rulesModule();
   const version = JSON.parse(readFileSync('plugin/substrat/.claude-plugin/plugin.json', 'utf8')).version;
-  assert.match(source, new RegExp(`REVIEW_CHECKLIST_DIGEST = '${digest}'`));
-  assert.match(source, new RegExp(`REVIEW_PLUGIN_VERSION = '${version.replaceAll('.', '\\.')}'`));
+  assert.match(emitted, new RegExp(`REVIEW_RULES_DIGEST = '${rulesDigest()}'`));
+  assert.match(emitted, new RegExp(`REVIEW_PLUGIN_VERSION = '${version.replaceAll('.', '\\.')}'`));
+  assert.ok(emitted.includes(`{ id: 'S8', title: "A new operation has an acceptance test", severity: 'advisory', gates: ["pnpm lint:tests","pnpm lint:operation-tests --base <ref>"], judgement: true }`));
+  assert.equal(readFileSync(RULES_MODULE, 'utf8'), emitted);
+});
+
+test('an item heading without a severity is refused, not emitted as one', () => {
+  assert.throws(() => itemRules('### S1 · Scope isolation\ngates: judgement\n'), /blocking\|advisory/);
 });
 
 const ci = ciCommands(`

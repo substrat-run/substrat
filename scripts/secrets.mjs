@@ -175,6 +175,19 @@ const MANIFEST = {
       // Read-only on purpose. The catalog's write token is NOT interchangeable with
       // this and is never pushed to a worker (see STORE_ONLY below).
       R2_SQL_TOKEN: 'R2_LAKE_SQL_TOKEN',
+      // #2365 phase 1: the review runner's reader half. All optional and unset by default: with
+      // no REVIEW_MODEL every staff review ends `skipped: no model configured`. The model is a
+      // `cloudflare:<model>` spec on the gateway row, reached over HTTP with this worker's own
+      // gateway pair (the same values the builder holds, under the control plane's own keys).
+      // REVIEW_PLATFORM_TENANT is the platform team's tenant id the usage line is filed under.
+      REVIEW_MODEL: 'CP_REVIEW_MODEL',
+      REVIEW_PLATFORM_TENANT: 'CP_REVIEW_PLATFORM_TENANT',
+      // The caps, each optional (defaults in apps/control-plane/src/review-job.ts and review-diff.ts).
+      REVIEW_MAX_DIFF_BYTES: 'CP_REVIEW_MAX_DIFF_BYTES',
+      REVIEW_MAX_INPUT_TOKENS: 'CP_REVIEW_MAX_INPUT_TOKENS',
+      REVIEW_MAX_OUTPUT_TOKENS: 'CP_REVIEW_MAX_OUTPUT_TOKENS',
+      CLOUDFLARE_AI_BASE_URL: 'CP_CLOUDFLARE_AI_BASE_URL',
+      CLOUDFLARE_AI_API_TOKEN: 'CP_CLOUDFLARE_AI_API_TOKEN',
     },
   },
   builder: {
