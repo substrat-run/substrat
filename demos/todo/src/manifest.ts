@@ -66,20 +66,24 @@ export const ENTITY_GRANTS: EntityGrantShape[] = [
   { entityType: 'list', permissions: [TODO_PERM.listContribute] },
 ];
 
+const surface = manifestOperations(todoOperations, {
+  permissions: {
+    'list:create': 'Create lists of your own',
+    'list:manage': 'Rename, delete and share a list, and delete items on it',
+    'list:contribute': 'See a list, add items to it, and tick them off',
+    'list:archive': 'Archive a list, or bring it back from the archive',
+    'list:trash': 'Move a list to the trash, see what is in it, and restore it',
+  },
+  });
+
 export const todoManifest = moduleManifest.parse({
   id: '@substrat-run/demo-todo',
   version: '0.1.0',
   kernelContract: '^0.0.1',
   migrations: { journalDir: './migrations', compatibleFrom: '0.1.0' },
-  ...manifestOperations(todoOperations, {
-    permissions: {
-      'list:create': 'Create lists of your own',
-      'list:manage': 'Rename, delete and share a list, and delete items on it',
-      'list:contribute': 'See a list, add items to it, and tick them off',
-      'list:archive': 'Archive a list, or bring it back from the archive',
-      'list:trash': 'Move a list to the trash, see what is in it, and restore it',
-    },
-  }),
+  ...surface,
+  // Joining is what turns an open invitation into a share (`shareInvitedLists`).
+  events: { ...surface.events, consumes: [{ type: 'todo.owner-joined', schemaVersion: 1 }] },
   // #827. `item.text` and `list.name`. The kernel derives a per-scope FTS5 index and
   // its triggers from these; `table` and the id column come from `todoEntities`, so
   // nothing here restates where an item or a list lives.

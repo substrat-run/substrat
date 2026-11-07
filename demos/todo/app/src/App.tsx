@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
-import { api, ApiError, type Item, type List, type Paged, type Share } from './api.js';
+import { api, ApiError, type Invite, type Item, type List, type Paged, type Share } from './api.js';
 import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
 import { Settings } from './settings.js';
 
@@ -304,6 +304,7 @@ function ListView({ listId }: { listId: string }) {
   // bare array would render those twenty as though they were the list.
   const [page, setPage] = useState<Paged<Item> | null>(null);
   const [shares, setShares] = useState<Share[] | null>(null);
+  const [invites, setInvites] = useState<Invite[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [text, setText] = useState('');
   const [email, setEmail] = useState('');
@@ -345,6 +346,7 @@ function ListView({ listId }: { listId: string }) {
     // shared with, so it is not surfaced as an error.
     try {
       setShares((await api.listShares({ listId })).entries);
+      setInvites((await api.listInvites({ listId })).entries);
     } catch {
       setShares(null);
     }
@@ -455,11 +457,25 @@ function ListView({ listId }: { listId: string }) {
       {shares !== null && (
         <section className="share">
           <h3>Shared with</h3>
-          {shares.length === 0 ? (
+          {shares.length === 0 && invites.length === 0 ? (
             <div className="card">
               <p className="empty">Nobody yet — this list is private.</p>
             </div>
           ) : (
+            invites.map((i) => (
+              <div className="card" key={i.id}>
+                <div className="row">
+                  <span>{i.email}</span>
+                  <span className="meta">invited</span>
+                  <span className="spacer" />
+                  <wa-button size="s" appearance="plain" variant="danger" onClick={() => guard(() => api.cancelInvite({ inviteId: i.id }))}>
+                    cancel
+                  </wa-button>
+                </div>
+              </div>
+            ))
+          )}
+          {shares.length > 0 && (
             shares.map((s) => (
               <div className="card" key={s.id}>
                 <div className="row">
@@ -477,7 +493,7 @@ function ListView({ listId }: { listId: string }) {
             onSubmit={(e) => {
               e.preventDefault();
               const form = e.currentTarget;
-              void guard(() => api.shareList({ listId, email: email.trim() })).then(() => {
+              void guard(() => api.invite({ listId, email: email.trim() })).then(() => {
                 setEmail('');
                 form.reset();
               });
