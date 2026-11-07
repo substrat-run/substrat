@@ -701,6 +701,49 @@ describe('the platform surface', () => {
   });
 });
 
+describe('refusals outside the OAuth protocol', () => {
+  /**
+   * Each answers a problem document by taxonomy code (#113), and `error` stays the copy of
+   * `detail` a reader that still takes `error` reads. The sentence is held exactly.
+   */
+  const required = 'name and redirectUris are required';
+  const valid = { name: 'An install', redirectUris: ['https://acme.example/cb'] };
+  it.each<{ name: string; method: string; path: string; body?: unknown; status: number; code: string; detail: string }>([
+    { name: 'JWKS for an unknown provider', method: 'GET', path: '/facebook/jwks.json', status: 404, code: 'not_found', detail: 'unknown or unconfigured provider' },
+    { name: '/userinfo for an unknown provider', method: 'GET', path: '/facebook/userinfo', status: 404, code: 'not_found', detail: 'unknown provider' },
+    { name: 'a registration missing its input', method: 'POST', path: '/internal/clients', body: {}, status: 400, code: 'validation_failed', detail: required },
+    { name: 'an ensure under a bad ref', method: 'PUT', path: '/internal/clients/by-ref/has%20space', body: valid, status: 400, code: 'validation_failed', detail: 'ref must be 1-128 characters of [A-Za-z0-9:._-]' },
+    { name: 'an ensure missing its input', method: 'PUT', path: '/internal/clients/by-ref/scope:01', body: {}, status: 400, code: 'validation_failed', detail: required },
+    {
+      name: 'an ensure with a redirect URI that is not https',
+      method: 'PUT',
+      path: '/internal/clients/by-ref/scope:01',
+      body: { name: 'x', redirectUris: ['http://acme.example/cb'] },
+      status: 400,
+      code: 'validation_failed',
+      detail: 'redirect URIs must be https (or http on loopback) and carry no fragment: http://acme.example/cb',
+    },
+    { name: 'a secret rotation for no such client', method: 'POST', path: '/internal/clients/nobody/secret', status: 404, code: 'not_found', detail: 'no such client' },
+    { name: 'a suspension of no such client', method: 'POST', path: '/internal/clients/nobody/disabled', body: { disabled: true }, status: 404, code: 'not_found', detail: 'no such client' },
+    { name: 'a deletion of no such client', method: 'DELETE', path: '/internal/clients/nobody', status: 404, code: 'not_found', detail: 'no such client' },
+    // Hono's own answer here is a text 404.
+    { name: 'a path no route answers', method: 'GET', path: '/nothing/here', status: 404, code: 'not_found', detail: 'no such route' },
+  ])('answers $name as a problem document', async ({ method, path, body, status, code, detail }) => {
+    const res = await createApp({ now: () => NOW }).request(
+      `https://id.substrat.net${path}`,
+      {
+        method,
+        headers: { 'content-type': 'application/json', 'x-substrat-platform': 'platform-secret' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+      envWith(),
+    );
+    expect(res.status).toBe(status);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(await res.json()).toMatchObject({ code, status, detail, error: detail });
+  });
+});
+
 describe('a throw no route caught', () => {
   it('is a bare internal problem, carrying none of the thrown message', async () => {
     const failing = { ...store, signingKey: () => Promise.reject(new Error('storage exploded: secret detail')) };
@@ -804,24 +847,28 @@ describe('bad input at the token endpoint', () => {
 describe('bad input at /userinfo', () => {
   /**
    * `/userinfo` is the one surface an attacker-supplied string reaches the verifier
-   * through, so every way of being wrong has to answer the same 401. Two of them used to
-   * answer something else.
-   */
-  /**
-   * RFC 6750 §3: the OAuth error travels in `WWW-Authenticate`, and the body is a problem
-   * document (#113). §3.1: a request that carried no bearer gets the bare challenge.
+   * through, so every way of being wrong has to answer 401; two of them used to answer
+   * something else. RFC 6750 §3: the OAuth error travels in `WWW-Authenticate`, and the body
+   * is a problem document (#113). §3.1: a request that carried no bearer gets the bare
+   * challenge, and every bad token the same `invalid_token` one. The detail is held exactly,
+   * so nothing the caller sent rides into it.
    */
   it.each([
-    ['no bearer at all', {}, 'Bearer'],
+    ['no bearer at all', {}, 'Bearer', 'no bearer token was presented'],
     // `atob` throws `InvalidCharacterError` on these, which used to escape the handler.
-    ['a bearer token that is not base64', { authorization: 'Bearer ###.###.###' }, 'Bearer error="invalid_token"'],
-  ])('answers %s with 401 and the matching challenge, not 500', async (_name, headers, challenge) => {
+    [
+      'a bearer token that is not base64',
+      { authorization: 'Bearer ###.###.###' },
+      'Bearer error="invalid_token"',
+      'the bearer token is invalid or has expired',
+    ],
+  ])('answers %s with 401 and the matching challenge, not 500', async (_name, headers, challenge, detail) => {
     const app = createApp({ now: () => NOW });
     const res = await app.request('https://id.substrat.net/google/userinfo', { headers }, envWith());
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toBe(challenge);
     expect(res.headers.get('content-type')).toBe('application/problem+json');
-    expect(await res.json()).toMatchObject({ code: 'unauthenticated', status: 401 });
+    expect(await res.json()).toMatchObject({ code: 'unauthenticated', status: 401, detail, error: detail });
   });
 
   it('refuses a relay-signed token whose issuer is another provider', async () => {
@@ -845,7 +892,10 @@ describe('bad input at /userinfo', () => {
     );
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toBe('Bearer error="invalid_token"');
-    expect(await res.json()).toMatchObject({ code: 'unauthenticated' });
+    expect(await res.json()).toMatchObject({
+      code: 'unauthenticated',
+      detail: 'the bearer token is invalid or has expired',
+    });
   });
 });
 

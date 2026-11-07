@@ -775,6 +775,9 @@ export function createApp(options: AppOptions = {}) {
    */
   app.all('/internal/*', () => problemResponse(problemForStatus(501, 'not implemented')));
 
+  /** A path or method no route answers. Without this, Hono answers a text 404. */
+  app.notFound(() => refuse('not_found', 'no such route'));
+
   return app;
 }
 
