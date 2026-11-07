@@ -17,6 +17,17 @@ export const css = (s: CSSProperties | undefined) => s as Record<string, string 
 
 const WA_SIZE = { sm: 's', md: 'm', lg: 'l' } as const;
 
+/**
+ * `wa-button` sets `color` on the button in its shadow root, so a `color` on the host stops
+ * there and a red Remove goes grey with no error. It rides a custom property instead, which
+ * `wa.css` hands to that button.
+ */
+function buttonLook(style: CSSProperties | undefined, cls?: string) {
+  if (!style?.color) return { class: cls, style: css(style) };
+  const { color, ...rest } = style;
+  return { class: cls ? `${cls} ui-tinted` : 'ui-tinted', style: css({ ...rest, '--ui-button-color': color } as CSSProperties) };
+}
+
 export interface ButtonProps {
   /** `link` reads as text in a sentence: no box, no padding. */
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'link';
@@ -48,7 +59,7 @@ export function Button({ variant = 'primary', size = 'md', icon, loading, disabl
   return (
     <wa-button
       {...BUTTON[variant]}
-      class={variant === 'link' ? 'ui-link' : undefined}
+      {...buttonLook(style, variant === 'link' ? 'ui-link' : undefined)}
       size={WA_SIZE[size]}
       type={type}
       title={title}
@@ -56,7 +67,6 @@ export function Button({ variant = 'primary', size = 'md', icon, loading, disabl
       loading={loading || undefined}
       disabled={off || undefined}
       onClick={(off ? undefined : onClick) as never}
-      style={css(style)}
     >
       {icon && <span slot="start">{icon}</span>}
       {children}
@@ -86,10 +96,10 @@ export const IconButton = forwardRef<HTMLElement, IconButtonProps>(function Icon
       aria-label={label}
       variant="neutral"
       appearance={variant === 'ghost' ? 'plain' : 'outlined'}
+      {...buttonLook(style)}
       size={WA_SIZE[size]}
       disabled={disabled || undefined}
       onClick={(disabled ? undefined : onClick) as never}
-      style={css(style)}
     >
       {children}
     </wa-button>

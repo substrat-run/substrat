@@ -56,6 +56,10 @@ wa-input.ui-mono {
   padding-inline: 0;
   outline: none;
 }
+/* `color` given to a button: see `buttonLook`. */
+.ui-tinted::part(base) {
+  color: var(--ui-button-color);
+}
 /* A button that reads as text in a sentence. */
 .ui-link::part(base) {
   height: auto;
