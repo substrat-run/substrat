@@ -1,0 +1,166 @@
+{
+  "entities": {
+    "item": {
+      "table": "lists_items",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "list_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "done": {
+            "type": "number"
+          },
+          "done_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "list_id",
+          "text",
+          "done",
+          "done_by",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "list"
+      ]
+    },
+    "list": {
+      "table": "lists_lists",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "owner_id",
+          "name",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "person"
+      ]
+    },
+    "person": {
+      "table": "lists_people",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "email"
+      ],
+      "erasable": [
+        "display_name",
+        "email"
+      ]
+    },
+    "share": {
+      "table": "lists_shares",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "list_id": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "shared_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "list_id",
+          "principal",
+          "email",
+          "shared_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "list"
+      ],
+      "key": [
+        "list_id",
+        "principal"
+      ],
+      "erasable": [
+        "email"
+      ]
+    }
+  },
+  "handlers": {
+    "lists/list-items": {
+      "derive": "list"
+    },
+    "lists/list-shares": {
+      "derive": "list"
+    }
+  }
+}
