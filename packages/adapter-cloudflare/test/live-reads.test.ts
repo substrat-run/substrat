@@ -925,8 +925,9 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     ['a checked root', F1],
     ['an unnarrowed feed', null],
   ])('closes %s, unsent to, once the session that opened it has ended', async (_label, folderId) => {
-    const ends = await watchChecked(reader, folderId, new Date(Date.now() + 400).toISOString());
-    const stays = await watchChecked(reader, folderId, new Date(Date.now() + 60_000).toISOString());
+    const endingAt = new Date(Date.now() + 60_000).toISOString();
+    const ends = await watchChecked(reader, folderId, endingAt);
+    const stays = await watchChecked(reader, folderId, new Date(Date.now() + 120_000).toISOString());
     await as('live/touch', { noteId: IN_F1 });
     await settle();
     // Unnarrowed, `reader` hears a note only if it may read it, and it holds no note: so
@@ -934,11 +935,19 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     const heard = ends.frames.length;
     expect(stays.frames).toHaveLength(heard);
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // The session ends: its stored expiry moves into the past, rather than the test waiting for it.
+    await runInDurableObject(scopeDo(), (_i, state) => {
+      for (const ws of state.getWebSockets()) {
+        const attachment = ws.deserializeAttachment() as { expiresAt?: string };
+        if (attachment?.expiresAt === endingAt) {
+          ws.serializeAttachment({ ...attachment, expiresAt: new Date(Date.now() - 1_000).toISOString() });
+        }
+      }
+    });
     await as('live/touch', { noteId: IN_F1 });
+    await vi.waitFor(() => expect(ends.closedWith).toBe(1008));
     await settle();
     expect(ends.frames).toHaveLength(heard);
-    expect(ends.closedWith).toBe(1008);
     // The twin, from the same write: a session still current stays open, and hears it.
     expect(stays.closedWith).toBeNull();
     if (folderId !== null) expect(stays.frames).toHaveLength(heard + 1);

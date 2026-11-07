@@ -158,7 +158,7 @@ const printfFormat = (body: string): string => body.replace(/\n/g, '\\n');
  * Self-contained on purpose: a committed file is read by humans, so there is no
  * reusable-workflow indirection to chase. The install step is load-bearing — `substrat
  * push`/`preview` runs the repo's OWN build (a wrangler custom build), which needs the
- * repo's devDependencies on disk; corepack picks the package manager from the lockfile.
+ * repo's devDependencies on disk. It is pnpm because the platform's build is (#2959).
  * In a monorepo (`path`) a second step builds the workspace packages the vertical imports:
  * install only *links* a sibling, and its `exports` point at a `dist/` a fresh checkout
  * does not have, so without it the very first bundle dies with `Could not resolve
@@ -191,28 +191,17 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   // A workspace package reaches its siblings through their package.json `exports`, and those
   // point at dist/ — which install links but never builds. Build the vertical's dependency
   // closure and nothing else: pnpm's `^...` selector is "the dependencies of, not the package
-  // itself" (push runs ITS build), and a filtered `run` is in dependency order. Yarn Berry's
-  // `foreach --topological-dev` is the same shape minus the selector; Yarn Classic has neither
-  // `foreach` nor an order (a lockfile does not say which yarn it is, so the major is read at
-  // run time), and npm runs workspaces in the order package.json lists them. Rendered only
+  // itself" (push runs ITS build), and a filtered `run` is in dependency order. Rendered only
   // for a monorepo — a single-package repo depends on published packages, which install
   // already resolved.
   const buildDeps = path
     ? `
       - name: Build workspace dependencies
         # Sibling packages resolve through their package.json exports, which point at dist/ —
-        # a fresh checkout has none, and install links without building. pnpm and Yarn Berry
-        # build in dependency order and skip packages without a build script (pnpm only the
-        # closure this package imports). Yarn Classic and npm have no dependency order: Classic
-        # runs every workspace's build and fails on one that has none; npm follows the order
-        # package.json lists workspaces in, so list dependencies before dependents.
-        # Delete this step if the package imports no workspace packages.
-        run: |
-          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{${path}}^..." run --if-present build
-          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\\.'; then yarn workspaces foreach --all --topological-dev --exclude '${path}' run build
-          elif [ -f yarn.lock ]; then yarn workspaces run build
-          else npm run build --workspaces --if-present
-          fi`
+        # a fresh checkout has none, and install links without building. This builds the
+        # closure this package imports, in dependency order, skipping packages without a
+        # build script. Delete this step if the package imports no workspace packages.
+        run: pnpm --filter "{${path}}^..." run --if-present build`
     : '';
 
   // The gate, between the build and every push (#955).
@@ -245,14 +234,10 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
         # \`lint:boundaries\` is \`substrat-boundary-lint\` from @substrat-run/boundary-lint.
         run: |
           set -euo pipefail
-          if [ -f pnpm-lock.yaml ]; then PM=pnpm
-          elif [ -f yarn.lock ]; then PM=yarn
-          else PM=npm
-          fi
           declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" '${pkgRelRef}' "$1"; }
           RAN=''
           for s in typecheck test lint:boundaries; do
-            if declares "$s"; then ( cd ${dir} && $PM run "$s" ); RAN="$RAN $s"
+            if declares "$s"; then ( cd ${dir} && pnpm run "$s" ); RAN="$RAN $s"
             else echo "no '$s' script in ${pkgRelRef} — skipped"
             fi
           done
@@ -281,14 +266,10 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
           # needs Node >= 22.13 (node:sqlite).
           node-version: 22
       - name: Install dependencies
+        # The platform builds with pnpm, so the repo needs a pnpm-lock.yaml at its root.
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
-        run: |
-          if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile
-          elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
-          elif [ -f package-lock.json ]; then npm ci
-          else npm install
-          fi${buildDeps}${gate}`;
+        run: corepack enable && pnpm install --frozen-lockfile${buildDeps}${gate}`;
 
   const cpEnv = `        env:
           SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
@@ -472,9 +453,7 @@ ${cpEnv}
       - '${path}/**'
       - '.github/workflows/**'
       - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'yarn.lock'
-      - 'package-lock.json'`
+      - 'pnpm-lock.yaml'`
     : '';
 
   const releaseNote = release === 'changesets'

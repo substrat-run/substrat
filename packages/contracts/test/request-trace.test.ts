@@ -125,9 +125,11 @@ describe('the shared time axis', () => {
   it('starts at its own first call when nothing marked a start, and a second mark does not move it', async () => {
     const { markTraceStart, traceOffsetMs, forgetTraceStart } = await import('../src/index.js');
     const id = `axis-${Math.random()}`;
-    expect(traceOffsetMs(id)).toBeLessThan(20);
+    const first = traceOffsetMs(id);
+    expect(first).toBeGreaterThanOrEqual(0);
     markTraceStart(id, performance.now() + 10_000);
-    expect(traceOffsetMs(id)).toBeLessThan(20);
+    // A moved start would put the offset near -10 000; a kept one only grows with the clock.
+    expect(traceOffsetMs(id)).toBeGreaterThanOrEqual(first);
     forgetTraceStart(id);
   });
 

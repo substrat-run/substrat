@@ -65,6 +65,7 @@ describe('push judges scope stores by the plane registry (#2813)', () => {
       name: 'helpdesk',
       substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] } },
     }));
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
     return dir;
   };
   const opts = (dir: string) => ({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'https://cp.test', authHeader: {} });

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PNPM_LOCKFILE_REQUIRED } from '@substrat-run/contracts';
 import { installFakeWrangler } from './fake-wrangler.js';
 
 /** A Wrangler dry-run stub that performs the configured build and counts uploads. */
@@ -81,15 +82,16 @@ it('does not accept a caller-forged build receipt in place of the import check',
   expect(result.output).toContain('BUILDS:1 UPLOADS:0');
 });
 
-function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { status: number; output: string; networkCalled: boolean; builds: number } {
+function commandWithBuiltin(flags: string[], command: 'push' | 'preview', lockfile = 'pnpm-lock.yaml'): { status: number; output: string; uploaded: boolean; builds: number } {
   const dir = mkdtempSync(join(tmpdir(), 'worker-command-preflight-'));
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@acme/board', type: 'module', substrat: { slug: 'board', permissions: 'permissions.mjs' } }));
     writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
     writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ main: 'worker.js', compatibility_date: '2026-07-01', compatibility_flags: flags }));
     writeFileSync(join(dir, 'worker.js'), `import 'node:crypto'; export default { fetch: () => new Response('ok') };`);
+    writeFileSync(join(dir, lockfile), '');
     installFakeWrangler(dir);
-    const marker = join(dir, 'network-called');
+    const marker = join(dir, 'uploaded');
     const builds = join(dir, 'build-count');
     const cli = new URL('../dist/cli.js', import.meta.url).href;
     const result = spawnSync(process.execPath, ['--input-type=module'], {
@@ -110,14 +112,16 @@ function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { sta
         };
         syncBuiltinESMExports();
         globalThis.fetch = async (_url, init) => {
-          writeFileSync(${JSON.stringify(marker)}, 'called');
-          if (init?.method === 'POST' && String(_url).endsWith('/deploy')) return Response.json({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'board', dataLoss: { status: 'passed', authored: 0 } });
+          if (init?.method === 'POST' && String(_url).endsWith('/deploy')) {
+            writeFileSync(${JSON.stringify(marker)}, 'called');
+            return Response.json({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'board', dataLoss: { status: 'passed', authored: 0 } });
+          }
           return Response.json({ entries: [], nextCursor: null });
         };
         await import(${JSON.stringify(cli)});
       `,
     });
-    return { status: result.status ?? -1, output: result.stdout + result.stderr, networkCalled: existsSync(marker), builds: existsSync(builds) ? Number(readFileSync(builds, 'utf8')) : 0 };
+    return { status: result.status ?? -1, output: result.stdout + result.stderr, uploaded: existsSync(marker), builds: existsSync(builds) ? Number(readFileSync(builds, 'utf8')) : 0 };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -125,15 +129,22 @@ function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { sta
 
 it.each(['push', 'preview'] as const)('%s submits source and delegates builtin checks without a local build', (command) => {
   const result = commandWithBuiltin([], command);
-  expect(result.networkCalled, result.output).toBe(true);
+  expect(result.uploaded, result.output).toBe(true);
   expect(result.builds).toBe(0);
 });
 
 it('push with nodejs_compat also leaves the build to the platform', () => {
   const result = commandWithBuiltin(['nodejs_compat'], 'push');
-  expect(result.networkCalled, result.output).toBe(true);
+  expect(result.uploaded, result.output).toBe(true);
   expect(result.status, result.output).toBe(0);
   expect(result.builds).toBe(0);
+});
+
+it.each(['push', 'preview'] as const)('%s refuses a source with no pnpm lockfile before uploading it', (command) => {
+  const result = commandWithBuiltin([], command, 'package-lock.json');
+  expect(result.output).toContain(PNPM_LOCKFILE_REQUIRED);
+  expect(result.status).not.toBe(0);
+  expect(result.uploaded).toBe(false);
 });
 
 it.each([false, true])('push --check --json stays parseable with a configured build: %s', (withBuild) => {

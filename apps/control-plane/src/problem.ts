@@ -49,6 +49,20 @@ export function refuseStatus(status: number, detail: string, carried?: Readonly<
 }
 
 /**
+ * A relay error class's refusal (#113): by its `code` when its status carries one, else by
+ * the status alone. The status is the same either way (`codeForRefusalStatus` maps only a
+ * status the catalog answers with), and so is the sentence; only `type` and `code` differ.
+ */
+export function refuseRelayed(
+  err: { readonly status: number; readonly message: string; readonly code: ErrorCode | undefined },
+  carried?: Readonly<Record<string, unknown>>,
+): Response {
+  return err.code
+    ? problemResponse(toProblem(substratError(err.code, err.message)), carried)
+    : refuseStatus(err.status, err.message, carried);
+}
+
+/**
  * What a throw no route caught is answered with. A `SubstratError` (the kernel's
  * `PermissionDenied` and `SecretBoxUnconfiguredError` included, and one `fromWireFailure`
  * rebuilt) declared what it is, so it keeps its code, its status and its sentence. Anything

@@ -67,6 +67,7 @@ export function vertical(
   );
   mkdirSync(join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'src', 'worker.ts'), 'export default {};\n');
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
   installFakeWrangler(dir);
   const entries = modules.map((m) => ({
     manifest: {
