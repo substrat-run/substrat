@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppRow } from '../src/lib/api';
 import { AppMembers } from '../src/views/AppDetail';
+import { button as buttonReading } from './wa';
 
 const client = vi.hoisted(() => ({ appMembers: vi.fn(), appInviteMember: vi.fn() }));
 vi.mock('../src/lib/api', async (importOriginal) => ({
@@ -37,7 +38,7 @@ describe('AppMembers: a change whose audit row was lost', () => {
 
   const invite = async () => {
     await act(async () => root.render(<AppMembers teamId="team-a" app={app} />));
-    const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Create invite link')!;
+    const button = buttonReading('Create invite link', container)!;
     await act(async () => button.click());
   };
 
