@@ -368,6 +368,13 @@ already answer their expected refusal as a value.
      else as `internal` 500 with no `detail` — a `ZodError` included, since there it is the server failing to
      parse its own data. `test/problem-refusals.test.ts` holds the documents and that `worker.ts` and
      `relay-caller.ts` write no bare `{ error`.
+   - **The relay error classes' codes — built (#2968).** `ConnectionRelayError`, `ConnectUrlRelayError`,
+     `TenantMailRefusal` and mail-in's `MailInError` carry the code their status does (`codeForRefusalStatus`:
+     only the code the catalog answers at that status, 403 as `forbidden`), so their refusals answer with it;
+     413, 422, 501 and 502 stay `about:blank`, and so does the tenant send's 503 when a connection could not be
+     asked, since nothing proves the platform refused. A coded `TenantMailRefusal` is attributed to the platform
+     on the email drain. `vertical-host`'s four relay readers and `adapter-email`'s relay transport expose the
+     code as `problemCode` (never `code`, which `errorCodeOf` reads), `undefined` against an older control plane.
    - **`apps/builder` — built.** The node server (`server.ts`) and the worker plus the agent DO
      (`worker.ts`, `agent.ts`) refuse through `src/problem.ts`: `validation_failed`, `unauthenticated`,
      `forbidden`, `not_found` and `conflict` where the status fits the taxonomy, `about:blank` for the
@@ -380,8 +387,8 @@ already answer their expected refusal as a value.
      `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
      sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
      three files to writing no bare `{ error` and reading no throw's `.message` again.
-   - **Still open, surface by surface:** the social relay, the egress worker, and the codes the relay error
-     classes carry (#113's remainder). A repo-wide source gate waits until they are converted. `dev-issuer` is done where
+   - **Still open, surface by surface:** the social relay and the egress worker (#113's remainder). A repo-wide source gate
+     waits until they are converted. `dev-issuer` is done where
      it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
      `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which
      the clients of the protocol parse, so they are out of scope.

@@ -99,6 +99,15 @@ export interface Share {
   created_at: string;
 }
 
+/** `todo_invites` — declared in spec/model.ts. */
+export interface Invite {
+  id: string;
+  list_id: string;
+  email: string;
+  invited_by: string;
+  created_at: string;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface TodoClient {
   /**
@@ -114,6 +123,13 @@ export interface TodoClient {
    * `POST /lists/{listId}/archive` — `todo/archive-list`
    */
   archiveList(input: { listId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
+
+  /**
+   * Withdraw an invitation
+   *
+   * `DELETE /invites/{inviteId}` — `todo/cancel-invite`
+   */
+  cancelInvite(input: { inviteId: string }): Promise<{ id: string; cancelled: boolean }>;
 
   /**
    * Create a list
@@ -137,11 +153,28 @@ export interface TodoClient {
   deleteList(input: { listId: string }): Promise<{ id: string; deleted: boolean }>;
 
   /**
+   * Invite someone to a list by email
+   *
+   * `POST /lists/{listId}/invites` — `todo/invite`
+   */
+  invite(input: { listId: string; email: string }): Promise<{ status: "shared" | "invited"; id: string; email: string }>;
+
+  /**
    * Claim your account in this workspace
    *
    * `POST /join` — `todo/join`
    */
   join(input: { email: string; displayName: string }): Promise<Owner>;
+
+  /**
+   * Who is invited to this list and has not joined
+   *
+   * `GET /lists/{listId}/invites` — `todo/list-invites`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
+   */
+  listInvites(input: { listId: string; limit?: number; order?: "asc" | "desc"; sort?: "created_at" }): Promise<Paged<Invite>>;
 
   /**
    * The items on a list
@@ -364,14 +397,20 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       send(`/lists/${encodeURIComponent(String(input.listId))}/items`, "POST", omit(input, ["listId"]), undefined),
     archiveList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/archive`, "POST", omit(input, ["listId"]), undefined),
+    cancelInvite: (input: Args) =>
+      send(`/invites/${encodeURIComponent(String(input.inviteId))}`, "DELETE", undefined, omit(input, ["inviteId"])),
     createList: (input: Args) =>
       send("/lists", "POST", input, undefined),
     deleteItem: (input: Args) =>
       send(`/items/${encodeURIComponent(String(input.itemId))}`, "DELETE", undefined, omit(input, ["itemId"])),
     deleteList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}`, "DELETE", undefined, omit(input, ["listId"])),
+    invite: (input: Args) =>
+      send(`/lists/${encodeURIComponent(String(input.listId))}/invites`, "POST", omit(input, ["listId"]), undefined),
     join: (input: Args) =>
       send("/join", "POST", input, undefined),
+    listInvites: (input: Args) =>
+      page(`/lists/${encodeURIComponent(String(input.listId))}/invites`, "GET", undefined, omit(input, ["listId"])),
     listItems: (input: Args) =>
       page(`/lists/${encodeURIComponent(String(input.listId))}/items`, "GET", undefined, omit(input, ["listId"])),
     listShares: (input: Args) =>

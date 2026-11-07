@@ -71,10 +71,13 @@ shapes.
 | --- | --- | --- | --- |
 | `todo/add-item` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/archive-list` | `list:archive` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/cancel-invite` | `list:manage` | one `list`, resolved in the handler: the list the invite is on | `@substrat-run/demo-todo` |
 | `todo/create-list` | `list:create` | the scope | `@substrat-run/demo-todo` |
 | `todo/delete-item` | `list:manage` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
 | `todo/delete-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/invite` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/join` | `list:create` | the scope | `@substrat-run/demo-todo` |
+| `todo/list-invites` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/list-shares` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/my-lists` | `list:contribute` | each row, by a proof walk: Returns only lists the caller owns or has been shared | `@substrat-run/demo-todo` |

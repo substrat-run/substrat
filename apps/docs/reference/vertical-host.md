@@ -454,7 +454,8 @@ an https surface bound to this scope, `ttlSeconds` may not exceed 900 (a longer 
 refused with `400`, not clamped — 15 minutes is the ceiling, and the default when it is
 omitted), and a provider with no platform consent round is refused, naming the paste door.
 A refusal throws `ConnectUrlRequestError`, carrying the relay's status so a route can map
-it. An *unreachable* control plane is a different failure: the `fetch` itself rejects, and
+it, and the refusal's taxonomy code as `problemCode` (branch on that, not on the sentence),
+`undefined` when the platform named none. An *unreachable* control plane is a different failure: the `fetch` itself rejects, and
 that rejection is passed through as-is — a `TypeError` with no `status` — so a handler
 that wants to answer `502` for both catches the two separately. The call goes through
 `POST /internal/connections/connect-url` on the control plane, under the platform secret
@@ -515,7 +516,8 @@ bound to this scope), success and every refusal return there, as for `requestCon
 plus `link=<id>`; a spent, withdrawn, lapsed or unknown link arrives as
 `?error=link_used`, `link_revoked`, `link_expired` or `link_unknown`. A link is refused for a
 preview or a fork, and for a provider with no platform consent round. A refusal throws
-`ConnectLinkRequestError` with the relay's status. The calls go through
+`ConnectLinkRequestError` with the relay's status, and its taxonomy code as `problemCode` (`undefined`
+when the platform named none). The calls go through
 `POST /internal/connections/connect-links`, `…/list` and `…/revoke` under the platform
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
@@ -568,7 +570,8 @@ one answers `404`, as an unknown one does.
 
 Bind, unbind, the bindings read and an `owner: 'scope'` upsert need a **proven caller**: call them
 from the worker, on the request it is serving, never from inside a Durable Object. A refusal, or a
-`2xx` that is not the relay's answer, throws `ConnectionRequestError` with the relay's status. The
+`2xx` that is not the relay's answer, throws `ConnectionRequestError` with the relay's status and its taxonomy code as `problemCode`
+(`undefined` when the platform named none). The
 calls go through `POST /internal/connections/upsert`, `…/bind`, `…/unbind` and `…/bindings`.
 
 ### `listBindings(request)`
@@ -652,7 +655,8 @@ Unlike it, the platform requires a **proven caller** for every action, a read in
 address delivers into the scope it names — so call it from the worker, never from inside a
 Durable Object. Which operation and key the address lands through is read from the manifest
 the scope runs, never from this call; a vertical that declares none is refused with `409`. A
-refusal throws `MailInAddressError` with the relay's status. The call goes through
+refusal throws `MailInAddressError` with the relay's status, and its taxonomy code as `problemCode`
+(`undefined` when the platform named none). The call goes through
 `POST /internal/mail-in/address`.
 
 ## `mountUploadLinkRedeem(app, options)`

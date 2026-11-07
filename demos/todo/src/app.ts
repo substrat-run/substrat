@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { invocationLog } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import { substratError } from '@substrat-run/contracts';
-import type { AuthSubject, DevLogin } from '@substrat-run/dev-issuer';
+import type { AuthSubject, DevCaller, DevLogin } from '@substrat-run/dev-issuer';
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
 import { emailRefusalMessage, identifyEmail, type EmailIdentityEnv } from '@substrat-run/oidc-rp';
 import { API_DOCUMENT } from './api.js';
@@ -17,10 +17,13 @@ export interface AppOptions {
   login: Pick<DevLogin, 'handle' | 'subject' | 'caller'>;
   /** Where `OIDC_ALLOW_UNVERIFIED_EMAIL` is read from — `process.env` in the dev server. */
   env: EmailIdentityEnv;
+  /** After a person's first join here: what the host owes them, such as their owner grant. */
+  onJoined?: (caller: DevCaller) => Promise<void>;
 }
 
-export function createApp({ host, login, env }: AppOptions): Hono {
+export function createApp({ host, login, env, onJoined }: AppOptions): Hono {
   const app = new Hono();
+  const joined = new Set<string>();
   // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
   // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
   // purpose: no router fronts this server, so there is nothing to verify and no line to write.
@@ -34,6 +37,20 @@ export function createApp({ host, login, env }: AppOptions): Hono {
   app.get('/api/me', async (c) => {
     const caller = await login.caller(c.req.raw.headers);
     if (!caller) return c.json({ error: 'unauthorized' }, 401);
+    // Signing in is joining: nobody types an address, and an open invitation becomes a share here.
+    // An address the issuer did not verify stays out, so that person is signed in and not joined.
+    if (caller.email && !joined.has(caller.principal)) {
+      const stub = await host.getScope(caller.principal, caller.tenantId, caller.scopeId);
+      const own = joiningAsYourself(stub, env, () => login.subject(c.req.raw.headers));
+      const admitted = await own.invoke('todo/join', { email: caller.email, displayName: caller.display }).then(
+        () => true,
+        () => false,
+      );
+      if (admitted) {
+        await onJoined?.(caller);
+        joined.add(caller.principal);
+      }
+    }
     return c.json({ principal: caller.principal, display: caller.display, ...(caller.email ? { email: caller.email } : {}) });
   });
 

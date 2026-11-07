@@ -17,29 +17,39 @@ export interface ReviewRecordView {
   model?: { label: string } | null;
 }
 
+/** C0 and C1 control characters (tab kept): a record's text must not move the cursor, clear a line or write a clipboard. */
+export const printable = (value: unknown): string => String(value ?? '').replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, '');
+
+/**
+ * Every string here comes from the plane, and some of it from a model, so each value is cleaned
+ * before it is placed: an embedded newline cannot forge a line, nor an escape move the cursor.
+ */
 export function formatReview(record: ReviewRecordView): string {
-  const out: string[] = [record.headline ?? `review ${record.id}: ${record.state}`];
+  const p = printable;
+  const out: string[] = [record.headline ? p(record.headline) : `review ${p(record.id)}: ${p(record.state)}`];
   out.push("This checks Substrat's rules only and is not a general code review.");
-  if (record.state !== 'completed') out.push(`State: ${record.state}${record.reason ? ` (${record.reason})` : ''}`);
-  if (record.model) out.push(`Read by: ${record.model.label}`);
+  if (record.state !== 'completed') out.push(`State: ${p(record.state)}${record.reason ? ` (${p(record.reason)})` : ''}`);
+  if (record.model) out.push(`Read by: ${p(record.model.label)}`);
   const findings = record.findings ?? [];
   const inside = findings.filter((f) => f.item !== 'outside');
   const outside = findings.filter((f) => f.item === 'outside');
   for (const f of inside) {
-    const tag = f.unconfirmed ? `${f.item} unconfirmed` : `${f.item} ${f.severity}`;
-    out.push('', `[${tag}, ${f.confirmation}: advisory] ${f.file}:${f.line}`, `  quote: ${f.quote}`, `  fails when: ${f.failsWhen}`, `  fix: ${f.fix}`);
+    const tag = f.unconfirmed ? `${p(f.item)} unconfirmed` : `${p(f.item)} ${p(f.severity)}`;
+    out.push('', `[${tag}, ${p(f.confirmation)}: advisory] ${p(f.file)}:${p(f.line)}`);
+    if (f.quote) out.push(`  quote: ${p(f.quote)}`);
+    out.push(`  fails when: ${p(f.failsWhen)}`, `  fix: ${p(f.fix)}`);
   }
   if (outside.length) {
     out.push('', 'Outside this checklist:');
-    for (const f of outside) out.push(`  ${f.file}:${f.line} ${f.failsWhen}: ${f.quote}`);
+    for (const f of outside) out.push(`  ${p(f.file)}:${p(f.line)} ${p(f.failsWhen)}: ${p(f.quote)}`);
   }
-  if (record.dropped) out.push('', `Dropped: ${record.dropped} reader finding(s) that named no changed line or no judgement item.`);
-  if (record.notSent?.length) out.push('', `Not sent: ${record.notSent.map((n) => `${n.path} (${n.rule})`).join(', ')}`);
-  out.push('', `Checked clean: ${record.checkedClean?.length ? record.checkedClean.join(', ') : 'none'}`);
-  out.push(`Not applicable: ${record.notApplicable?.length ? record.notApplicable.join(', ') : 'none'}`);
+  if (record.dropped) out.push('', `Dropped: ${p(record.dropped)} reader finding(s) the runner could not hold to a changed line and a judgement item.`);
+  if (record.notSent?.length) out.push('', `Not sent: ${record.notSent.map((n) => `${p(n.path)} (${p(n.rule)})`).join(', ')}`);
+  out.push('', `Checked clean: ${record.checkedClean?.length ? record.checkedClean.map(p).join(', ') : 'none'}`);
+  out.push(`Not applicable: ${record.notApplicable?.length ? record.notApplicable.map(p).join(', ') : 'none'}`);
   out.push('Gates run:');
   for (const g of record.gates ?? []) {
-    out.push(`  ${g.name}: ${g.status}${g.exitCode !== undefined ? ` (exit ${g.exitCode})` : ''}${g.reason ? ` (${g.reason})` : ''}`);
+    out.push(`  ${p(g.name)}: ${p(g.status)}${g.exitCode !== undefined ? ` (exit ${p(g.exitCode)})` : ''}${g.reason ? ` (${p(g.reason)})` : ''}`);
   }
   return out.join('\n');
 }

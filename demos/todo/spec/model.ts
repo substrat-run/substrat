@@ -129,6 +129,24 @@ export const todoEntities = defineEntities({
     key: ['list_id', 'principal'],
     erasable: ['email'],
   },
+
+  /**
+   * An address invited to a list, until that person joins. Its own entity rather than a share
+   * with no principal, because a share IS a person's access and this is nobody's yet.
+   */
+  invite: {
+    table: 'todo_invites',
+    fields: z.object({
+      id: z.string(),
+      list_id: z.string(),
+      email: z.string(),
+      invited_by: z.string(),
+      created_at: z.string(),
+    }),
+    parents: ['list'],
+    key: ['list_id', 'email'],
+    erasable: ['email'],
+  },
 });
 
 /**
@@ -510,6 +528,54 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
       piiClass: 'pseudonymous',
       subjectId: 'principal',
       payload: ['id', 'list_id', 'principal'],
+    },
+  },
+
+  /**
+   * Invite an address to a list. Someone who has joined gets the share at once; anyone else gets
+   * an email, and the share when they join. `status` says which, because the sharing screen
+   * shows the two differently.
+   */
+  'todo/invite': {
+    summary: 'Invite someone to a list by email',
+    permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
+    input: z.object({ listId: z.string(), email: z.string().email() }),
+    output: z.object({ status: z.enum(['shared', 'invited']), id: z.string(), email: z.string() }),
+    http: { method: 'POST', path: '/lists/{listId}/invites' },
+    emits: {
+      entity: 'invite',
+      entityIdFrom: 'id',
+      type: 'todo.invite-sent',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id'],
+    },
+  },
+
+  /** Who is invited and has not joined yet. Owner-only, as `list-shares` is. */
+  'todo/list-invites': {
+    summary: 'Who is invited to this list and has not joined',
+    derive: 'list',
+    permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
+    input: z.object({ listId: z.string() }),
+    output: todoEntities.invite.fields,
+    paged: { over: { entity: 'invite', sortable: ['created_at'], filterable: ['list_id'] } },
+    http: { method: 'GET', path: '/lists/{listId}/invites' },
+  },
+
+  'todo/cancel-invite': {
+    summary: 'Withdraw an invitation',
+    permission: { key: 'list:manage', entity: 'list', resolved: 'the list the invite is on' },
+    input: z.object({ inviteId: z.string() }),
+    output: z.object({ id: z.string(), cancelled: z.boolean() }),
+    http: { method: 'DELETE', path: '/invites/{inviteId}' },
+    emits: {
+      entity: 'invite',
+      entityIdFrom: 'id',
+      type: 'todo.invite-cancelled',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id'],
     },
   },
 

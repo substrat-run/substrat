@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-todo
 
-20 operations · 14 narrowed checks · 11 conformance pairs driven
+23 operations · 17 narrowed checks · 13 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,14 +37,17 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**11 pairs driven** across 11 of this package's 14 narrowed checks.
+**13 pairs driven** across 13 of this package's 17 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
 | `todo/add-item` | `list:contribute` | `list`, id from `listId` | `list` |
 | `todo/archive-list` | `list:archive` | `list`, id from `listId` | `list` |
+| `todo/cancel-invite` | `list:manage` | `list`, resolved in the handler | — see §3 — |
 | `todo/delete-item` | `list:manage` | `list`, resolved in the handler | — see §3 — |
 | `todo/delete-list` | `list:manage` | `list`, id from `listId` | `list` |
+| `todo/invite` | `list:manage` | `list`, id from `listId` | `list` |
+| `todo/list-invites` | `list:manage` | `list`, id from `listId` | `list` |
 | `todo/list-items` | `list:contribute` | `list`, id from `listId` | `list` |
 | `todo/list-shares` | `list:manage` | `list`, id from `listId` | `list` |
 | `todo/rename-list` | `list:manage` | `list`, id from `listId` | `list` |
@@ -65,6 +68,7 @@ stops being, fails CI until this file is regenerated and the change is read.
 
 | Operation | Why it cannot be driven |
 | --- | --- |
+| `todo/cancel-invite` | declares 'resolved' (the list the invite is on) — the entity id is not in the input, so the harness cannot reach the entity |
 | `todo/delete-item` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
 | `todo/revoke-share` | declares 'resolved' (the list the share is on) — the entity id is not in the input, so the harness cannot reach the entity |
 | `todo/set-item-done` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
@@ -77,6 +81,7 @@ extra keys are here with the reason — the one place that gap is written down.
 
 | Operation | Also granted | Because |
 | --- | --- | --- |
+| `todo/invite` | `list:contribute` | inviting an address that has joined shares the list, which delegates list:contribute via ctx.grant, and delegation only narrows a permission the caller already holds |
 | `todo/share-list` | `list:contribute` | the handler delegates list:contribute to the invitee via ctx.grant, and delegation only narrows a permission the caller already holds |
 
 ## 4. The rest of the surface

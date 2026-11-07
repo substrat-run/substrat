@@ -35,8 +35,8 @@ import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 export class ConnectUrlRelayError extends Error {
   /**
    * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
-   * `toProblem` with the status unchanged; `undefined` for a status the catalog has no code
-   * at (413, 422, 501, 502), which stays `about:blank`. See `codeForRefusalStatus`.
+   * `toProblem` with the status unchanged. Every status this class takes has one. See
+   * `codeForRefusalStatus`.
    */
   readonly code: ErrorCode | undefined;
   constructor(

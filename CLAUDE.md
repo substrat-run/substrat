@@ -611,7 +611,8 @@ kernel's `migrationSteps` computes it; its `--base <ref>` half refuses a row the
 shipped that is now changed, missing or renumbered, since a scope that applied it fails closed on
 the edit at its next migration pass, #2066, and a new one placed or numbered before what the base
 shipped, which an existing scope would run out of order), plus `lint:decisions`, `lint:playbook`, `lint:docs`,
-`lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
+`lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`, `lint:review-checklist`
+(the hosted review runner's rules module, #2365),
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
 in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —
 and the scope sweeper it supplies beside it to a vertical that declares schedules and exports
@@ -807,7 +808,10 @@ below), the review checklist's mechanical half (#2365: `plugin/substrat/review/c
 gives each item a machine-read `gates:` line, and a review runner trusts what it names) —
 `lint:review-checklist` (`tools/review-checklist.mjs`: every command a `gates:` line names is a
 root script or file that exists AND that this workflow runs with those arguments, or a gate the
-scaffold ships; `judgement` marks what no script decides), `lint:secret-literals`
+scaffold ships; `judgement` marks what no script decides. It is also the re-emit gate of
+`apps/control-plane/src/review-rules.generated.ts`, the hosted runner's copy of the checklist, the
+procedure, the rules digest, the plugin version and each item's severity: `--write` re-emits it, and
+without the flag a stale copy is refused), `lint:secret-literals`
 (`tools/secret-literals.mjs`: no credential-shaped literal — a PEM, PGP or JWK private key, a
 provider token prefix, a chat webhook URL, a URL with `user:password@` — in any tracked file;
 prints `file:line` and the shape, never the value; an intended literal is an `ACCEPTED` entry

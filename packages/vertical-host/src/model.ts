@@ -87,6 +87,13 @@ export interface ModelRequest extends ModelIntent {
   readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
   readonly temperature?: number;
+  /**
+   * Aborts the call. A host with a deadline passes one so a late answer is never received, and so
+   * never billed with no line for it: an aborted call records nothing.
+   */
+  readonly abortSignal?: AbortSignal;
+  /** Retries the AI SDK makes on its own after a retryable failure. Default 2; 0 makes one request one HTTP call. */
+  readonly maxRetries?: number;
 }
 
 /** One model call inside a run, and the tool calls it made: what a turn record shows. */
@@ -287,6 +294,8 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
       ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
       ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: request.maxOutputTokens } : {}),
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+      ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
     });
     const finished = now();
 

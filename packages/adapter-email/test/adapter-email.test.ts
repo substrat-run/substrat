@@ -280,10 +280,10 @@ describe('the platform email relay transport (#303)', () => {
     await expect(mail.send(relayInvite())).rejects.toThrow(/relay refused \(403\).*email-sender capability/);
   });
 
-  it("exposes a problem refusal's code as problemCode, and its detail as the sentence (#113)", async () => {
+  it("exposes a problem refusal's code as problemCode, and its detail as the sentence, with no error duplicate (#113)", async () => {
     const said = "vertical 'auth-server' does not hold the email-sender capability";
     const coded = await new PlatformRelayEmailTransport(
-      opts(fakeFetch({ ok: false, status: 403, body: { type: 'https://substrat.net/errors/forbidden', status: 403, detail: said, error: said, code: 'forbidden' } }).fetchImpl),
+      opts(fakeFetch({ ok: false, status: 403, body: { type: 'https://substrat.net/errors/forbidden', status: 403, detail: said, code: 'forbidden' } }).fetchImpl),
     )
       .send(relayInvite())
       .catch((e: unknown) => e);

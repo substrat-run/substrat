@@ -23,7 +23,9 @@ import {
   assertAllowed,
   DEFAULT_SEARCH_LIMIT,
   MAX_SEARCH_LIMIT,
+  requestEmail,
   ulid,
+  type ConsumerHandler,
   type ModuleRegistration,
   type OperationContext,
   operationsFor,
@@ -36,6 +38,7 @@ type OwnerRow = EntityRow<typeof todoEntities, 'owner'>;
 type ListRow = EntityRow<typeof todoEntities, 'list'>;
 type ItemRow = EntityRow<typeof todoEntities, 'item'>;
 type ShareRow = EntityRow<typeof todoEntities, 'share'>;
+type InviteRow = EntityRow<typeof todoEntities, 'invite'>;
 const listRef = (id: string) => ({ entityType: 'list', entityId: id });
 
 /**
@@ -86,6 +89,64 @@ function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; li
   if (!item) throw substratError('not_found', `item not found: ${itemId}`);
   return { item, list: liveListOrThrow(ctx, item.list_id) };
 }
+
+const escapeHtml = (text: string): string =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const ownerByEmail = (ctx: OperationContext, email: string): OwnerRow | undefined =>
+  ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE email = ? COLLATE NOCASE', [email])[0];
+
+/** One person's access to one list: the row, the grant and the event, or the share they have. */
+async function shareWith(ctx: OperationContext, listId: string, invitee: OwnerRow): Promise<ShareRow> {
+  const existing = ctx.sql.query<ShareRow>('SELECT * FROM todo_shares WHERE list_id = ? AND principal = ?', [
+    listId,
+    invitee.id,
+  ])[0];
+  if (existing) return existing;
+
+  const id = ulid();
+  ctx.sql.exec('INSERT INTO todo_shares (id, list_id, principal, email, created_at) VALUES (?, ?, ?, ?, ?)', [
+    id,
+    listId,
+    invitee.id,
+    invitee.email,
+    ctx.now(),
+  ]);
+  await ctx.grant(invitee.id as PrincipalId, TODO_PERM.listContribute, listRef(listId));
+
+  const row = ctx.sql.query<ShareRow>('SELECT * FROM todo_shares WHERE id = ?', [id])[0]!;
+  ctx.emit({
+    type: 'todo.list-shared',
+    schemaVersion: 1,
+    entity: { entityType: 'share', entityId: row.id },
+    piiClass: 'pseudonymous',
+    subjectId: dataSubjectId.parse(row.principal),
+    // The address cannot ride along: `share.email` is erasable, and an
+    // immutable event is the one place an erasure cannot reach.
+    payload: { id: row.id, list_id: row.list_id, principal: row.principal },
+  });
+  return row;
+}
+
+/**
+ * Someone joined, so what they were invited to becomes theirs. A consumer, because a grant
+ * delegates: the person joining holds nothing on the list, and its owner decided this when they
+ * invited. An invitation to a binned list waits, as the list does.
+ */
+const shareInvitedLists: ConsumerHandler = async (ctx, event) => {
+  const { id } = z.object({ id: z.string() }).parse(event.payload);
+  const owner = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE id = ?', [id])[0];
+  if (!owner) return;
+  const invites = ctx.sql.query<InviteRow>(
+    `SELECT i.* FROM todo_invites i JOIN todo_lists l ON l.id = i.list_id
+     WHERE i.email = ? COLLATE NOCASE AND l._substrat_trashed_at IS NULL`,
+    [owner.email],
+  );
+  for (const invite of invites) {
+    await shareWith(ctx, invite.list_id, owner);
+    ctx.sql.exec('DELETE FROM todo_invites WHERE id = ?', [invite.id]);
+  }
+};
 
 const bound = operationsFor(todoOperations)({
   'todo/join': async (ctx, input) => {
@@ -191,6 +252,7 @@ const bound = operationsFor(todoOperations)({
     listOrThrow(ctx, input.listId);
     ctx.sql.exec('DELETE FROM todo_items WHERE list_id = ?', [input.listId]);
     ctx.sql.exec('DELETE FROM todo_shares WHERE list_id = ?', [input.listId]);
+    ctx.sql.exec('DELETE FROM todo_invites WHERE list_id = ?', [input.listId]);
     ctx.sql.exec('DELETE FROM todo_lists WHERE id = ?', [input.listId]);
     ctx.emit({
       type: 'todo.list-deleted',
@@ -376,36 +438,70 @@ const bound = operationsFor(todoOperations)({
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
     listOrThrow(ctx, input.listId);
 
-    const invitee = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE email = ?', [
+    const invitee = ownerByEmail(ctx, input.email);
+    if (!invitee) throw substratError('not_found', `nobody here with that address: ${input.email}`);
+    return await shareWith(ctx, input.listId, invitee);
+  },
+
+  /**
+   * An address nobody has joined with gets an email and a row that waits for them. The send is
+   * an intent in this transaction, so an operation that fails after it sends nothing.
+   */
+  'todo/invite': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
+    const list = listOrThrow(ctx, input.listId);
+
+    const invitee = ownerByEmail(ctx, input.email);
+    if (invitee) {
+      const share = await shareWith(ctx, input.listId, invitee);
+      return { status: 'shared' as const, id: share.id, email: share.email };
+    }
+    const open = ctx.sql.query<InviteRow>('SELECT * FROM todo_invites WHERE list_id = ? AND email = ?', [
+      input.listId,
       input.email,
     ])[0];
-    if (!invitee) throw substratError('not_found', `nobody here with that address: ${input.email}`);
-
-    const existing = ctx.sql.query<ShareRow>(
-      'SELECT * FROM todo_shares WHERE list_id = ? AND principal = ?',
-      [input.listId, invitee.id],
-    )[0];
-    if (existing) return existing;
+    if (open) return { status: 'invited' as const, id: open.id, email: open.email };
 
     const id = ulid();
-    ctx.sql.exec(
-      'INSERT INTO todo_shares (id, list_id, principal, email, created_at) VALUES (?, ?, ?, ?, ?)',
-      [id, input.listId, invitee.id, invitee.email, ctx.now()],
-    );
-    await ctx.grant(invitee.id as PrincipalId, TODO_PERM.listContribute, listRef(input.listId));
-
-    const row = ctx.sql.query<ShareRow>('SELECT * FROM todo_shares WHERE id = ?', [id])[0]!;
-    ctx.emit({
-      type: 'todo.list-shared',
-      schemaVersion: 1,
-      entity: { entityType: 'share', entityId: row.id },
-      piiClass: 'pseudonymous',
-      subjectId: dataSubjectId.parse(row.principal),
-      // The address cannot ride along: `share.email` is erasable, and an
-      // immutable event is the one place an erasure cannot reach.
-      payload: { id: row.id, list_id: row.list_id, principal: row.principal },
+    ctx.sql.exec('INSERT INTO todo_invites (id, list_id, email, invited_by, created_at) VALUES (?, ?, ?, ?, ?)', [
+      id,
+      input.listId,
+      input.email,
+      ctx.principal,
+      ctx.now(),
+    ]);
+    requestEmail(ctx, {
+      to: input.email,
+      subject: `You have been invited to the list ${list.name}`,
+      text: `You have been invited to the list ${list.name}. Sign in with this address to open it.`,
+      html: `<p>You have been invited to the list <strong>${escapeHtml(list.name)}</strong>.</p><p>Sign in with this address to open it.</p>`,
+      about: { entityType: 'invite', entityId: id },
     });
-    return row;
+    ctx.emit({
+      type: 'todo.invite-sent',
+      schemaVersion: 1,
+      entity: { entityType: 'invite', entityId: id },
+      piiClass: 'none',
+      payload: { id },
+    });
+    return { status: 'invited' as const, id, email: input.email };
+  },
+
+  'todo/cancel-invite': async (ctx, input) => {
+    const invite = ctx.sql.query<InviteRow>('SELECT * FROM todo_invites WHERE id = ?', [input.inviteId])[0];
+    if (!invite) throw substratError('not_found', `invite not found: ${input.inviteId}`);
+    assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(invite.list_id)));
+    liveListOrThrow(ctx, invite.list_id);
+
+    ctx.sql.exec('DELETE FROM todo_invites WHERE id = ?', [invite.id]);
+    ctx.emit({
+      type: 'todo.invite-cancelled',
+      schemaVersion: 1,
+      entity: { entityType: 'invite', entityId: invite.id },
+      piiClass: 'none',
+      payload: { id: invite.id },
+    });
+    return { id: invite.id, cancelled: true };
   },
 
   'todo/revoke-share': async (ctx, input) => {
@@ -437,4 +533,5 @@ export const todoModule: ModuleRegistration = {
   // The handlers above are bound to the declaration, and the host parses every
   // invocation against it, from one object — so neither can drift from the other (#953, #1835).
   ...bound,
+  consumers: { 'todo.owner-joined': shareInvitedLists },
 };

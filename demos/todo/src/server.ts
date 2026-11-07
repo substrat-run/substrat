@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { createApp } from './app.js';
-import { buildHost, linkDevPersonas, reconcileOwnerGrants, seed, type World } from './seed.js';
+import { buildHost, grantOwner, linkDevPersonas, reconcileOwnerGrants, seed, type World } from './seed.js';
 import { DEV_PROVIDER } from './personas.js';
 
 const DATA = process.env.DATA_DIR ?? '.data';
@@ -46,7 +46,12 @@ async function boot() {
   await reconcileOwnerGrants(host, { ...world, staff });
 
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
-  const app = createApp({ host, login, env: process.env });
+  const app = createApp({
+    host,
+    login,
+    env: process.env,
+    onJoined: (caller) => grantOwner(host, staff, { tenantId: caller.tenantId, scopeId: caller.scopeId }, caller.principal),
+  });
 
   const port = Number(process.env.PORT ?? 8878);
   serve({ fetch: app.fetch, port });

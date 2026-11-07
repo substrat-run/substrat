@@ -1,14 +1,28 @@
 import { SELF, createExecutionContext, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { DEV_ACTOR_HEADER } from '@substrat-run/control-plane-api';
-import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemTypeFor, substratError, z, type ErrorCode } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
+import { MailInError } from '@substrat-run/connector-mail-in';
+import { ConnectUrlRelayError, ConnectionRelayError, DEV_ACTOR_HEADER } from '@substrat-run/control-plane-api';
+import {
+  PROBLEM_CONTENT_TYPE,
+  PROBLEM_TYPE_BLANK,
+  platformActorId,
+  problem,
+  problemTypeFor,
+  scopeId,
+  substratError,
+  tenantId,
+  z,
+  type ErrorCode,
+} from '@substrat-run/contracts';
+import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { mintSession, SESSION_COOKIE, pkceS256, type OidcEnv } from '@substrat-run/oidc-rp';
 import worker, { RelayGateway } from '../src/worker.js';
-import { ConnectionRelayError } from '@substrat-run/control-plane-api';
 import { problemForThrow, refuseRelayed } from '../src/problem.js';
+import { TenantMailRefusal } from '../src/tenant-mail.js';
 import workerSource from '../src/worker.ts?raw';
 import relayCallerSource from '../src/relay-caller.ts?raw';
+import { warmControlPlane } from './do-warmup.js';
 
 /**
  * #113: the worker's OWN routes (the staff roster, the builder lookup, the support identity,
@@ -275,6 +289,94 @@ describe('worker.ts and relay-caller.ts answer no bare { error } again', () => {
   ])('%s', (_, src) => {
     expect(src.length).toBeGreaterThan(1000);
     expect(bareErrorCalls(src)).toEqual([]);
+  });
+});
+
+/**
+ * #113 PR B: the relay error classes carry the code their status does, and every catch site
+ * answers by it. The classes are held directly; each of the worker's six catch sites, and the
+ * tenant connection route under `/api`, through a real refusal of its class.
+ */
+describe("the relay classes' codes reach the wire", () => {
+  const SECRET = 'problem-refusals-codes-secret';
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const vertical = `codes-${t.slice(-8).toLowerCase()}`;
+  let s: string;
+  const codesEnv = { ...env, PLATFORM_SECRET: SECRET } as never;
+  const request = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    new Request(`https://cp.test${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': SECRET, ...headers },
+      body: JSON.stringify(body),
+    });
+  const direct = (path: string, body: unknown) => worker.fetch(request(path, body), codesEnv);
+  /** Through the gateway, as the egress worker sends it: a proven caller, for the scope it names. */
+  const proven = (path: string, body: unknown) =>
+    new RelayGateway(createExecutionContext(), codesEnv).fetch(
+      request(path, body, { 'x-substrat-relay-caller': JSON.stringify({ vertical, tenantId: t, scopeId: s }) }),
+    );
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('sb1', Uint8Array.from(atob(env.SECRET_BOX_KEY!), (ch) => ch.charCodeAt(0))),
+    });
+    await host.admin.registerVertical(staff, { slug: vertical, name: 'Codes', source: 'cli' });
+    await host.admin.setVerticalEmailSender(staff, vertical, true);
+    await host.admin.createTenant(staff, { id: t, slug: `codes-${t.toLowerCase()}`, name: 'Codes' });
+    s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s as never, vertical });
+    await host.admin.activateScope(staff, t, s as never);
+  });
+
+  it('every relay class carries the code its status does, and none where the catalog has none', () => {
+    expect(new ConnectionRelayError('x', 409).code).toBe('conflict');
+    expect(new ConnectionRelayError('x', 422).code).toBeUndefined();
+    expect(new ConnectUrlRelayError('x', 404).code).toBe('not_found');
+    expect(new MailInError('x', 409).code).toBe('conflict');
+    expect(new TenantMailRefusal(403, 'x').code).toBe('forbidden');
+    expect(new TenantMailRefusal(503, 'x', { code: null }).code).toBeUndefined();
+  });
+
+  it.each([
+    ['/internal/connections/upsert', 'invalid connection relay request: '],
+    ['/internal/connections/bind', 'invalid '],
+    ['/internal/connections/connect-url', 'invalid '],
+    ['/internal/connections/connect-links', 'invalid '],
+  ])("%s: a class refusal answers coded", async (path, prefix) => {
+    const res = await direct(path, {});
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ type: problemTypeFor('validation_failed'), code: 'validation_failed', detail: expect.stringMatching(new RegExp(`^${prefix}`)) });
+  });
+
+  it("/internal/email/send: a TenantMailRefusal answers coded", async () => {
+    const res = await proven('/internal/email/send', { tenantId: t, scopeId: s, to: 'c@example.com', subject: 's', html: '<p>h</p>', text: 'h', from: 'office@acme.example' });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'forbidden', detail: expect.stringMatching(/^no mail connection of this tenant may send as/) });
+  });
+
+  it('/internal/mail-in/address: a MailInError answers coded', async () => {
+    const res = await proven('/internal/mail-in/address', { tenantId: t, scopeId: s, action: 'request', createdBy: 'p' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      type: problemTypeFor('conflict'),
+      code: 'conflict',
+      detail: expect.stringMatching(/declares no mail-in landing/),
+    });
+  });
+
+  it('the tenant connection route under /api answers a relay refusal coded', async () => {
+    const res = await SELF.fetch(`https://cp.test/api/tenants/${t}/connections`, {
+      method: 'POST',
+      headers: authed,
+      body: JSON.stringify({ provider: 'acme-files' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'validation_failed', detail: expect.stringMatching(/^invalid connection relay request: /) });
   });
 });
 

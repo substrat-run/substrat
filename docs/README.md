@@ -144,6 +144,8 @@ How the platform works **today** — present tense. A document here may not open
 | [dashboard.md](architecture/dashboard.md) | `built` | The tenant-facing self-service surface. apps/dashboard. |
 | [dependency-policy.md](architecture/dependency-policy.md) | `built` | Peer vs direct dependencies, and the declared-deps gate. |
 | [error-model.md](architecture/error-model.md) | `built` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
+| [error-model.md](architecture/error-model.md) | `built` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
+| [error-model.md](architecture/error-model.md) | `built` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
 | [kernel-design.md](architecture/kernel-design.md) | `canonical` | Technical shape of the plan's decisions, and the K log. |
 | [marketplace-publish.md](architecture/marketplace-publish.md) | `built` | Push to your team, publish to everyone. |
 | [membership.md](architecture/membership.md) | `built` | Membership, invites, and the admin as first consumer. |

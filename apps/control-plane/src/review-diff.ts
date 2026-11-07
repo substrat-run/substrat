@@ -1,8 +1,9 @@
 import { walkReviewArchive } from './review-archive.js';
+import { lineChanges } from './review-lines.js';
 
 /** The reader half's default budget for what it sends: the whole new text of each changed file. */
 export const REVIEW_MAX_DIFF_BYTES = 256 * 1024;
-/** One file over this is never sent, whatever the budget left. */
+/** One file over this is never sent, whatever the budget left; a changed one is recorded in `notSent`. */
 export const REVIEW_SENT_FILE_MAX_BYTES = 64 * 1024;
 /** Binary means a NUL in this prefix, or text that is not UTF-8. */
 const BINARY_PROBE_BYTES = 8 * 1024;
@@ -13,6 +14,13 @@ export type NotSentRule = 'lockfile' | 'generated' | 'emitted artifact' | 'binar
 export interface ChangedFile {
   readonly path: string;
   readonly text: string;
+  /**
+   * The new text's lines the change adds or alters (1-based), or `all` for a file that is new, or
+   * whose earlier text could not be compared (binary, over the per-file limit, or a diff too long).
+   */
+  readonly changed?: ReadonlySet<number> | 'all';
+  /** Where lines were removed: after new line n (0 is before line 1). Their old text is never sent. */
+  readonly removedAfter?: readonly number[];
 }
 
 export type ReviewDiff =
@@ -24,7 +32,9 @@ export type ReviewDiff =
       readonly bytes: number;
       readonly fullTree: boolean;
     }
-  | { readonly kind: 'too large'; readonly bytes: number; readonly limit: number };
+  | { readonly kind: 'too large'; readonly bytes: number; readonly limit: number }
+  /** A stored archive whose bytes no longer hash to the digest intake recorded. Nothing is sent. */
+  | { readonly kind: 'archive changed' };
 
 const LOCKFILES = new Set([
   'pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
@@ -61,16 +71,21 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 class OverBudget extends Error {}
 
 export interface ArchiveSource {
-  stream(): ReadableStream<Uint8Array>;
+  /** A fresh stream of the archive's bytes each call: the base is walked twice. */
+  open(): Promise<ReadableStream<Uint8Array>>;
   readonly size: number;
+  /** The SHA-256 intake recorded for these bytes; the walk is refused when they no longer match it. */
+  readonly sha256: string;
 }
 
 /**
- * What changed between two stored archives, streamed and capped. Pass 1 hashes the base (a file
- * over the per-file limit is remembered by size alone, since it is never sent); pass 2 walks the
- * source and keeps each new or changed text file under the budget. No base is a full-tree review
- * under the same budget. Over the budget the walk stops: nothing is sent and the size so far is
- * reported, which is a lower bound.
+ * What changed between two stored archives, streamed and capped. Pass 1 hashes every base file;
+ * pass 2 hashes every source file, so an edit is seen whatever the file's size, and keeps each new
+ * or changed text file under the budget. A changed file is then sent or recorded in `notSent`,
+ * never silently passed over: a platform exclusion by name first (a large lockfile is a
+ * `lockfile`), then the per-file limit, then binary. No base is a full-tree review under the same
+ * budget. Over the budget the walk stops: nothing is sent and the size so far is reported, which is
+ * a lower bound. Each archive's digest is held to the receipt's before anything is sent.
  */
 export async function diffReview(
   input: { source: ArchiveSource; base: ArchiveSource | null },
@@ -80,27 +95,29 @@ export async function diffReview(
   const maxFileBytes = limits.maxFileBytes ?? REVIEW_SENT_FILE_MAX_BYTES;
   const baseFiles = new Map<string, string>();
   if (input.base) {
-    await walkReviewArchive({ stream: input.base.stream(), size: input.base.size }, async (path, size, read) => {
-      baseFiles.set(path, size > maxFileBytes ? `size:${size}` : await sha256Hex(await read()));
+    const sha256 = await walkReviewArchive({ stream: await input.base.open(), size: input.base.size }, async (path, _size, read) => {
+      baseFiles.set(path, await sha256Hex(await read()));
     });
+    if (sha256 !== input.base.sha256) return { kind: 'archive changed' };
   }
   const files: ChangedFile[] = [];
   const notSent: Array<{ path: string; rule: NotSentRule }> = [];
   const seen = new Set<string>();
   let bytes = 0;
+  let sha256: string;
   try {
-    await walkReviewArchive({ stream: input.source.stream(), size: input.source.size }, async (path, size, read) => {
+    sha256 = await walkReviewArchive({ stream: await input.source.open(), size: input.source.size }, async (path, size, read) => {
       seen.add(path);
-      const before = baseFiles.get(path);
-      if (size > maxFileBytes) {
-        if (before !== `size:${size}`) notSent.push({ path, rule: 'file too large' });
-        return;
-      }
       const content = await read();
+      const before = baseFiles.get(path);
       if (before !== undefined && before === await sha256Hex(content)) return;
       const named = excludedByName(path);
       if (named) {
         notSent.push({ path, rule: named });
+        return;
+      }
+      if (size > maxFileBytes) {
+        notSent.push({ path, rule: 'file too large' });
         return;
       }
       const text = textOf(content);
@@ -110,12 +127,37 @@ export async function diffReview(
       }
       bytes += content.byteLength;
       if (bytes > maxDiffBytes) throw new OverBudget();
-      files.push({ path, text });
+      files.push({ path, text, changed: before === undefined ? 'all' : new Set<number>(), removedAfter: [] });
     });
   } catch (error) {
     if (error instanceof OverBudget) return { kind: 'too large', bytes, limit: maxDiffBytes };
     throw error;
   }
+  if (sha256 !== input.source.sha256) return { kind: 'archive changed' };
   const deleted = [...baseFiles.keys()].filter((path) => !seen.has(path)).sort();
-  return { kind: 'diff', files, deleted, notSent, bytes, fullTree: input.base === null };
+  const compared = input.base ? await changedLines(input.base, files, maxFileBytes) : files;
+  if (compared === null) return { kind: 'archive changed' };
+  return { kind: 'diff', files: compared, deleted, notSent, bytes, fullTree: input.base === null };
+}
+
+/**
+ * Pass 3, only when a sent file existed in the base: walk the base again for those paths' earlier
+ * text and diff it line by line. Each earlier text is read under the per-file limit; one that is
+ * larger, binary, or too different to diff leaves its file `all`. Null when the base changed.
+ */
+async function changedLines(base: ArchiveSource, files: ChangedFile[], maxFileBytes: number): Promise<ChangedFile[] | null> {
+  const wanted = new Map(files.filter((f) => f.changed !== 'all').map((f) => [f.path, f]));
+  if (wanted.size === 0) return files;
+  const earlier = new Map<string, string | null>();
+  const sha256 = await walkReviewArchive({ stream: await base.open(), size: base.size }, async (path, size, read) => {
+    if (!wanted.has(path)) return;
+    earlier.set(path, size > maxFileBytes ? null : textOf(await read()));
+  });
+  if (sha256 !== base.sha256) return null;
+  return files.map((file) => {
+    if (file.changed === 'all') return file;
+    const before = earlier.get(file.path);
+    const diff = before === undefined || before === null ? null : lineChanges(before, file.text);
+    return diff ? { ...file, changed: diff.changed, removedAfter: diff.removedAfter } : { ...file, changed: 'all', removedAfter: [] };
+  });
 }

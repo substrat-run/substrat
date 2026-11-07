@@ -892,6 +892,21 @@ no ledger line. The caps default to 256 KiB of changed text and 8k output tokens
 setting (`REVIEW_MAX_DIFF_BYTES`, `REVIEW_MAX_OUTPUT_TOKENS`, and `REVIEW_MAX_INPUT_TOKENS`
 for the guard, default 120k estimated).
 
+What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
+
+- **Trust is the staff roster.** Once the model is set, any member of the staff roster can send
+  any tree they upload to the model provider. Nothing server-side ties an archive to this
+  repository; the clean-tree check runs in the CLI.
+- **Large files are never read.** A changed file over 64 KiB is recorded as not sent and never
+  read. About forty of this repository's own non-test sources are over that size today (the
+  scope hosts, the control-plane object, the API surface, the workers), so a change to one of
+  them is listed, never reviewed.
+- **TEST has the job object but no bucket.** The TEST environment declares `ReviewJobDO` and has
+  no `REVIEW_SOURCES` binding, so its review routes answer `501`. The first end-to-end run is in
+  production.
+- **The gateway pair is a separate key, not a separate credential.** The control plane holds it
+  under its own keys, with the same values the builder holds, until someone mints another.
+
 ### Q9 — Decided
 
 Where the reviewed change comes from is decided: §2, D5.
