@@ -10,7 +10,7 @@ description: The graph driver is registered by its id, on D-67, the decision rec
 `STORE_DRIVERS` by its id and its isolation basis, and nothing about a release:
 
 ```ts
-{ driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, dumpPageMaxBytes: 900_000 }
+{ driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, verticals: ['modeling-studio'], erasure: 'pending', dumpPageMaxBytes: 900_000 }
 ```
 
 This is step 5 of [store driver releases are uploaded and approved](./store-driver-release-approval.md#5-2394-and-the-rollout-order).
@@ -28,7 +28,7 @@ which lifts D-63's isolation sentence for it and is admitted in
 data outside the object it serves. It accepts that the tenants of one vertical share the
 driver's script, kept apart by the driver's per-object design and by the review of each
 release, and it limits the first use to synthetic data until the driver's `substrat.erase`
-erases. The registration holds both: it names the verticals the driver serves (none yet), so a
+erases. The registration holds both: it names the verticals the driver serves (`modeling-studio` alone, since #2977), so a
 push, serve or publish from any other is refused (403), and it marks the driver's erasure
 pending, so a subject erasure that would reach a graph store refuses (501) and keeps the key
 rather than record `{ erased: 0 }` as done. Under a decision-record basis an approval may name any repository; the review judges
