@@ -124,6 +124,7 @@ export default withMermaid(defineConfig({
       '/elements/': guideSidebar(),
       '/platform/': guideSidebar(),
       '/reference/': guideSidebar(),
+      '/errors/': guideSidebar(),
       '/changelog/': changelogSidebar(),
     },
 

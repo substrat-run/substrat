@@ -322,6 +322,11 @@ jobs:
       # anything. Unlike lint:playbook — which guards two documents that diverge on
       # purpose — these must read identically, so this re-emits and diffs.
       - run: pnpm lint:agent-rules --check
+      # The error-code pages (#113): one page per code in the closed taxonomy, at the `type` URI
+      # every problem document carries (substrat.net/errors/<code>). The codes, statuses, titles
+      # and members are read from contracts' errors.ts, and the emitter refuses a code it has no
+      # prose for, so a new code is red until somebody writes down what a client does about it.
+      - run: pnpm lint:problem-codes --check
       # The dev-server checkpoint (#752). `.claude/launch.json` is what lets an
       # agent start the API and the web app and verify its own change in the
       # Browser pane — the one part of a demo the scenario tests never touch,
@@ -405,6 +410,13 @@ jobs:
       # attachment-writers' function reading.
       - run: pnpm test:role-seat-paths
       - run: pnpm lint:role-seat-paths
+      # Every refusal a route builds with a literal status is a problem document (#113): it goes
+      # through a problem helper, or it is in ALLOWED (tools/problem-refusals.mjs) with its reason —
+      # a body another protocol owns (OAuth, JSON-RPC, a page for a person), or a site still to be
+      # converted. The count per file is exact, so the list can only shrink. A computed status is
+      # out of its sight; the per-package scans hold those. Held by its own fixtures first.
+      - run: pnpm test:problem-refusals
+      - run: pnpm lint:problem-refusals
       # Store-driver release approval (#2297): every public workspace manifest held to the platform
       # repository, which a `writtenInRepo` isolation basis admits approvals by. It reads the whole
       # workspace, so it runs here on every PR, not as a READS row: that would select contracts with

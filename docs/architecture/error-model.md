@@ -387,8 +387,18 @@ already answer their expected refusal as a value.
      `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
      sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
      three files to writing no bare `{ error` and reading no throw's `.message` again.
-   - **Still open, surface by surface:** the social relay and the egress worker (#113's remainder). A repo-wide source gate
-     waits until they are converted. `dev-issuer` is done where
+   - **The repo-wide gate — built.** `pnpm lint:problem-refusals` (`tools/problem-refusals.mjs`, in CI's checks
+     job) reads every route file under `apps/`, `packages/`, `demos/`, `connectors/` and `engines/`. A response built
+     with a literal status of 400 or more must serve `application/problem+json` in that same call, which is what
+     every problem helper's serializer does. A computed status is out of its sight; the per-package scans above
+     hold those where they exist. Its `ALLOWED` list names every file still answering a refusal outside the
+     helpers, with an exact count of sites, as one of two kinds. `protocol` is a body another specification owns:
+     OAuth's `/token` and `/userinfo`, MCP's JSON-RPC errors, the store driver wire, a third-party API's stand-in,
+     and pages written for a person. `pending` is a site not converted yet, grouped by owner area. A count that no
+     longer matches is red in either direction, so the PR that converts a site deletes its entry.
+   - **Still open, surface by surface:** the `pending` entries of that list: the social relay and the egress
+     worker (in flight), and the router's text/plain hostname refusals, the scaffold template, the demos and
+     two small vertical-host and vertical-auth routes, which no PR converts yet. `dev-issuer` is done where
      it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
      `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which
      the clients of the protocol parse, so they are out of scope.
@@ -414,8 +424,11 @@ code apart, and with that the regex table had nothing left to protect.
    [#811](https://github.com/substrat-run/substrat/issues/811). *Leaning: not in v1 — emit
    the full set per operation, narrow once the model layer owns it.*
 2. **Do we serve `/errors/{code}`?** The `type` URI is only worth a URI if it resolves.
-   *Leaning: yes, generated from the same registry into the docs site — otherwise use plain
-   slugs and drop the pretence.*
+   *Answered: yes.* `pnpm lint:problem-codes` (`tools/problem-codes-emit.mts`) writes one page per
+   code to `apps/docs/errors/`, served at exactly the `type` URI, plus an index at `/errors/`. The
+   facts on them (codes, statuses, titles, members, the example bodies) are read from `errors.ts`;
+   the prose is keyed by code in the emitter, which refuses a code it has none for. CI re-emits
+   with `--check`.
 3. **`conflict` splitting.** Uniqueness conflicts and state-machine conflicts are both 409
    but want different client handling. *Leaning: one code plus `reason` now; splitting later
    is additive, merging later is not.*
