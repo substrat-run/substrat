@@ -24,9 +24,9 @@ The table names and keys below are from `DIRECTORY_DDL` in `packages/adapter-clo
 | `_substrat_entitlements` (`tenant_id`, `entitlement_key`) | Team bootstrap grants the dashboard and invites entitlements; legacy roster healing can grant invites. | No mirror of these local grants. App entitlements in the shared directory are separate writes. |
 | `orgs` (`org_id`) | Team creation makes the `team` org; legacy roster healing may do the same. | No mirror. The dashboard roster itself is in `ScopeDO`; the org is a directory row. |
 | `verticals` (`slug`) | `ensureCatalog` registers current builtins and marks older local entries unlisted or blocked. Dashboard reads merge this local catalog with the shared catalog. | The shared catalog has its own entries; the two sets are not interchangeable. `vertical_versions` (`id`) and `vertical_channels` (`vertical_slug`, `channel`) may also contain historical embedded-mode rows; current connected app deployment writes go to the shared plane. |
-| `_substrat_connections` (`id`) and `_substrat_connection_secrets` (`connection_id`) | The GitHub callback creates/replaces a local connection; repository reads open its sealed installation reference. Revocation leaves historical metadata. | These connections are **not mirrored**. The shared plane's app connections are distinct. Moving a sealed value requires an explicit re-seal or reconnect decision. |
+| `_substrat_connections` (`id`) and `_substrat_connection_secrets` (`connection_id`) | The GitHub callback creates/replaces a local connection; repository reads open its sealed installation reference. Revocation leaves historical metadata. | These connections are **not mirrored**. The shared plane's app connections are distinct. Phase 4 moves them, sealed values copied sealed (Decisions). |
 | `hostnames`, `scope_*`, `tenant_stores`, `blob_stores`, `lifecycle_*` | Written only by the embedded-mode arms in `provision.ts`, which a deployment no longer reaches: `controlPlaneFor` refuses without the service binding (#978). | Not mirrored. Any rows are historical. |
-| `_substrat_admin_log` (`id`) and `_substrat_access_log` (`id`) | Local administrative writes and audited directory reads append history. | No mirror. These records describe the local directory's actions; copying them into the shared log would misstate their origin. Deletion needs a retention decision first. |
+| `_substrat_admin_log` (`id`) and `_substrat_access_log` (`id`) | Local administrative writes and audited directory reads append history. | No mirror. These records describe the local directory's actions; copying them into the shared log would misstate their origin. Exported privately and kept 90 days (Decisions). |
 
 `dashboard_apps`, `dashboard_members`, `dashboard_team`, `dashboard_app_events`, `dashboard_app_env`, `dashboard_install_steps` and `dashboard_connect_links` live in the dashboard **ScopeDO**, and nothing here moves them. `GithubRepoLinkDO` and `SweeperDO` are separate bindings, also untouched. Phase 0 counts every local directory table, including tables without an identified current writer, before any is treated as empty.
 
@@ -50,7 +50,7 @@ The local DO has three independent jobs today:
 
 The shared directory becomes the dashboard's only directory. Permissions are evaluated scope-locally (`scopeLocalPermissions` on), so no `ctx.check` reads the shared singleton per request. The remaining reads — which teams a login belongs to, scope admission, administration — go to the shared directory over a privileged path that only the platform's own dashboard holds, and builder-facing routes stay tenant-narrowed. The builtin catalog stops being written into a directory at all: it is already a deploy constant (`CATALOG`), merged at read.
 
-Which privileged path is open question 1: a direct Durable Object binding from the dashboard to the control plane's directory class, which needs no new HTTP routes and keeps the control-plane API's existing policy that identity resolution is not an HTTP route; or new service-only HTTP routes on the control plane, including a cross-tenant login read and role-definition writes. The phases below are the same either way; only the transport of phases 3 and 6 changes.
+The privileged path is a **direct Durable Object binding** from the dashboard to the control plane's directory class. It needs no new HTTP routes and keeps the control-plane API's existing policy that identity resolution is not an HTTP route. Service-only HTTP routes on the control plane (a cross-tenant login read, role-definition writes) were the alternative and are not pursued.
 
 ## Phases
 
@@ -88,7 +88,7 @@ Rollback: switch the shadow read off. Nothing reads its result.
 
 ### Phase 4 — continuous copy, local to shared
 
-Code: an idempotent per-team copy, keyed on the local ids, through the privileged path: the tenant with its status, the dashboard scope row (safe after phase 2), the identity pool and links, role definitions, tuples (a revocation is copied as a revocation and never resurrects a grant), entitlements, orgs, and the GitHub connection as open question 2 decides. It runs after every local tenant-level write, at the same hook as the fan-out, and as a paged staff sweep. It replaces the `/api/me` mirror. A row only the shared side holds is **reported, never deleted**: the builder plane writes some of them. A conflict is reported, never overwritten.
+Code: an idempotent per-team copy, keyed on the local ids, through the privileged path: the tenant with its status, the dashboard scope row (safe after phase 2), the identity pool and links, role definitions, tuples (a revocation is copied as a revocation and never resurrects a grant), entitlements, orgs, and the GitHub connections (below). It runs after every local tenant-level write, at the same hook as the fan-out, and as a paged staff sweep. It replaces the `/api/me` mirror. A row only the shared side holds is **reported, never deleted**: the builder plane writes some of them. A conflict is reported, never overwritten.
 
 Steps: run the sweep in the test environment and paste the phase-0 inventory totals; then production.
 
@@ -112,7 +112,7 @@ Code: remove the fallback, the reverse copy, the mirror (`identity-mirror.ts`'s 
 
 ### Phase 7b — delete the class
 
-Only after: 7a has run **at least 30 days** with no rollback; a final export of the local directory has been taken and verified readable, and kept privately under the retention decision (open question 3), never in the repository or a public artifact; GitHub connections have been moved or reconnected; and the retention decision is signed. Then a new migration tag, in **both** environments' migration lists:
+Only after: 7a has run **at least 30 days** with no rollback; a final export of the local directory has been taken and verified readable, and kept privately under the retention decision (below), never in the repository or a public artifact; and GitHub connections have been moved, or reconnected where a row could not move. Then a new migration tag, in **both** environments' migration lists:
 
 ```jsonc
 { "tag": "v4", "deleted_classes": ["ControlPlaneDO"] }
@@ -160,12 +160,12 @@ Settled with this revision:
 - Historical embedded-mode rows are discarded (above).
 - The observation windows are 7 days (phase 1), 14 days with no fallback (phase 6) and at least 30 days (7a to 7b).
 - Shadow reads are sampled as phase 3 states.
+- The privileged path is a direct Durable Object binding (Target shape).
+- **GitHub connections are moved** into the shared directory's connection model, not kept in a second store and not reconnected by default: a second store would keep the split alive, and reconnecting makes every team redo an integration that works. A sealed value is copied **sealed**, never opened or logged on the way. Phase 4's design first establishes what a connection row actually holds and which parts are secret; a row that cannot be moved safely is named there, and only that case is reconnected.
+- **The local admin and access logs** are exported privately, before 7b, to a staff-only storage location; the export is kept 90 days and then deleted. The rows themselves go with the class in 7b.
 
 Open, for a human:
 
-1. **The privileged path**: a direct Durable Object binding to the shared directory class, or service-only HTTP routes on the control plane.
-2. **GitHub connections**: copy the sealed values (which needs the dashboard's key to stay distinguishable from the control plane's), or ask each team to reconnect.
-3. **Retention of the local admin and access logs** before 7b: how long, where the private export lives, and who signs it.
-4. **Where the dashboard scope is admitted** once local is gone: a row in the shared `scopes` table (which phase 2's enumerator guard makes safe), or the shared tenant's status plus the scope's own provisioning receipt with no shared row (`scope-local-permissions.md` §9 question 4).
+1. **Where the dashboard scope is admitted** once local is gone: a row in the shared `scopes` table (which phase 2's enumerator guard makes safe), or the shared tenant's status plus the scope's own provisioning receipt with no shared row (`scope-local-permissions.md` §9 question 4).
 
 [#1343]: https://github.com/substrat-run/substrat/issues/1343
