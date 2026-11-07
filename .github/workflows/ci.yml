@@ -20,6 +20,7 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # Full history, not the default depth-1. Two checks read it: docs-drift
       # measures how far a page has fallen behind its source, and lint:changelog
@@ -509,6 +510,7 @@ jobs:
   test-shard:
     name: test (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -605,6 +607,7 @@ jobs:
   test-windows:
     name: test (windows, cli)
     runs-on: windows-latest
+    timeout-minutes: 15
     defaults:
       run:
         shell: bash
@@ -696,6 +699,7 @@ jobs:
     needs: [checks, test-shard, test-windows, mtls-wasm]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - env:
           CHECKS: ${{ needs.checks.result }}
@@ -727,6 +731,7 @@ jobs:
     needs: test
     if: ${{ github.ref == 'refs/heads/main' && vars.TEST_ENV_READY == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     concurrency: deploy-test # never overlap two test deploys
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

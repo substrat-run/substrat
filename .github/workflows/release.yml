@@ -14,6 +14,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     outputs:
       # The same signal the prod-deploy steps below gate on, exported so the scaffold
       # checkpoint can be its own job rather than another `if:` on every step.
