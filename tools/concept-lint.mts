@@ -45,11 +45,11 @@ export interface Offence {
   readonly detail: string;
 }
 
-/** Every directory with a tracked `spec/concept.md`, outside scratch projects and the scaffold. */
+/** Every directory with a tracked `spec/concept.md`, outside scratch projects, the scaffold and frozen eval fixtures. */
 export function conceptDirs(cwd: string): string[] {
   const files = execFileSync('git', ['ls-files', '--', '*spec/concept.md'], { cwd, encoding: 'utf8' }).split('\n');
   return files
-    .filter((f) => f.endsWith('/spec/concept.md') && !f.startsWith('.builder/') && !f.includes('node_modules/'))
+    .filter((f) => f.endsWith('/spec/concept.md') && !f.startsWith('.builder/') && !f.startsWith('apps/builder/evals/') && !f.includes('node_modules/'))
     .map((f) => f.slice(0, -'/spec/concept.md'.length))
     .sort();
 }
