@@ -32,16 +32,16 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { repoRoot } from './repo-path.mjs';
+import { isMainModule, repoRoot } from './repo-path.mjs';
 import {
   DOCUMENTED_ERROR_CODES,
   PROBLEM_CATALOG,
   PROBLEM_CONTENT_TYPE,
   PROBLEM_EXTENSIONS,
-  PROBLEM_REASON_MAX,
   PROBLEM_TYPE_BASE,
   PROBLEM_TYPE_BLANK,
   STORE_BODY_MAX_BYTES,
+  StoreError,
   errorCode,
   problem,
   problemForStatus,
@@ -51,19 +51,25 @@ import {
   type ErrorCode,
 } from '../packages/contracts/src/errors.ts';
 
-const ROOT = repoRoot(import.meta.url);
 const SOURCE = 'packages/contracts/src/errors.ts';
 const OUT_DIR = 'apps/docs/errors';
 /** Where the docs site is served. The pages are only at the `type` URIs if this is their base. */
 const SITE_ERRORS = 'https://substrat.net/errors';
-
-const check = process.argv.includes('--check');
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */
 function cannot(message: string): never {
   console.error(`problem-codes: ${message}\n`);
   process.exit(2);
 }
+
+/**
+ * Where a vertical's write may be retried without running twice. Only `mountOperations` honours
+ * `Idempotency-Key`, and its `/openapi.json` documents the header exactly where it does.
+ */
+const IDEMPOTENT_RETRY =
+  'A write is safe to repeat only when it was sent with an `Idempotency-Key` to an operation whose ' +
+  '`/openapi.json` documents that header, and the retry sends the same key. Not every surface ' +
+  'honours the header, so elsewhere check whether the first attempt took effect before sending it again.';
 
 interface Guidance {
   /** One sentence. The page's lede and its index line. */
@@ -130,8 +136,7 @@ const GUIDANCE: Readonly<Record<string, Guidance>> = {
       'Nothing answers at that address: no such record, route, operation or scope. On a ' +
       'multi-tenant surface this deliberately also covers two other cases. One is a thing that ' +
       'exists under another tenant. The other is an operation the install is not entitled to, where ' +
-      'a `403` would confirm the feature exists. A client cannot tell these cases apart, and should ' +
-      'not try to.',
+      'a `403` would confirm the feature exists. A client handles all of them the same way.',
     when: [
       'An id that names no record in this scope, or a record in the bin addressed by an operation that does not admit binned records.',
       'An operation the vertical does not declare, or one the install is not entitled to.',
@@ -217,9 +222,8 @@ const GUIDANCE: Readonly<Record<string, Guidance>> = {
       "A scope that kept restarting under a module's system door (`reason: system_door_wait`).",
     ],
     action:
-      'Retry later, with backoff. A write sent with an `Idempotency-Key` can be retried with the ' +
-      'same key without running twice. If it persists, it needs an operator: report it and quote ' +
-      '`requestId`.',
+      `Retry later, with backoff. A read is safe to repeat. ${IDEMPOTENT_RETRY} If it persists, it ` +
+      'needs an operator: report it and quote `requestId`.',
   },
   internal: {
     summary: 'The platform failed, and the reason is not sent.',
@@ -232,9 +236,8 @@ const GUIDANCE: Readonly<Record<string, Guidance>> = {
       'A throw that declared `internal` itself.',
     ],
     action:
-      'Retry once if the request is safe to repeat: a read, or a write sent with an ' +
-      '`Idempotency-Key`. Otherwise report it and quote `requestId`, which the dashboard\'s request ' +
-      'view opens.',
+      `Retry a read once. ${IDEMPOTENT_RETRY} If the retry fails too, or the request is not safe ` +
+      "to repeat, report it and quote `requestId`, which the dashboard's request view opens.",
   },
 };
 
@@ -250,7 +253,8 @@ const MEMBERS: Readonly<Record<string, string>> = {
   requestId: 'The id of the request that failed, the same as its `x-substrat-request-id` header. Quote it when reporting a failure.',
   permission: 'The permission key the check refused.',
   entity: 'The record the refusal is about, as an entity reference (`{ entityType, entityId }`).',
-  reason: `A slug the refusing module owns, narrowing the code: snake_case, at most ${PROBLEM_REASON_MAX} characters. Branch on it; never show it.`,
+  reason:
+    "A slug the refusing module owns, narrowing the code. The platform's own are snake_case, but the wire does not enforce a grammar, so compare it as an opaque string. Branch on it; never show it.",
   errors: 'One entry per field that failed to parse: `path`, dotted into the input, and `message`.',
   retryAfter: 'Seconds to wait before retrying, the same value as the `Retry-After` header.',
   storeCode: "The scope store's own error code, when the refusal came from a store. It is the store's vocabulary, not this taxonomy's.",
@@ -259,48 +263,73 @@ const MEMBERS: Readonly<Record<string, string>> = {
 
 // ── Hold the prose to the registry before anything is written ──────────────────────────────
 const CODES = errorCode.options as readonly ErrorCode[];
-const missingGuidance = CODES.filter((c) => !(c in GUIDANCE));
-const unknownGuidance = Object.keys(GUIDANCE).filter((c) => !(CODES as readonly string[]).includes(c));
-if (missingGuidance.length > 0 || unknownGuidance.length > 0) {
-  cannot(
-    `the prose and the taxonomy disagree.\n` +
-      (missingGuidance.length ? `  No prose for: ${missingGuidance.join(', ')}\n` : '') +
-      (unknownGuidance.length ? `  Prose for codes that do not exist: ${unknownGuidance.join(', ')}\n` : '') +
-      `  Edit GUIDANCE in tools/problem-codes-emit.mts so it has exactly one entry per code in ${SOURCE}.`,
-  );
-}
 const WIRE = Object.keys(problem.shape);
-const missingMembers = WIRE.filter((m) => !(m in MEMBERS));
-const unknownMembers = Object.keys(MEMBERS).filter((m) => !WIRE.includes(m));
-if (missingMembers.length > 0 || unknownMembers.length > 0) {
-  cannot(
-    `the member descriptions and the wire body disagree.\n` +
-      (missingMembers.length ? `  No description for: ${missingMembers.join(', ')}\n` : '') +
-      (unknownMembers.length ? `  Described but not on the wire: ${unknownMembers.join(', ')}\n` : '') +
-      `  Edit MEMBERS in tools/problem-codes-emit.mts so it describes exactly the members of \`problem\` in ${SOURCE}.`,
-  );
+
+/** What the registry is checked against, so a fixture can hand in a registry that disagrees. */
+export interface Registry {
+  readonly codes: readonly string[];
+  readonly guidance: Readonly<Record<string, Pick<Guidance, 'openapi'>>>;
+  readonly wire: readonly string[];
+  readonly members: Readonly<Record<string, string>>;
+  readonly documented: readonly string[];
+  readonly typeBase: string;
 }
-for (const code of CODES) {
-  const documented = DOCUMENTED_ERROR_CODES.includes(code);
-  if (documented === (GUIDANCE[code]!.openapi !== undefined)) {
-    cannot(
-      `${code}: \`openapi\` is written exactly when the code is NOT in DOCUMENTED_ERROR_CODES, and here it ` +
-        `${documented ? 'is documented on every operation but carries a note' : 'is not documented on every operation and says nowhere where it is'}.`,
+
+/** Every way the prose disagrees with the registry, each a message naming the remedy. Empty when they agree. */
+export function registryFaults(r: Registry): string[] {
+  const faults: string[] = [];
+  const missingGuidance = r.codes.filter((c) => !(c in r.guidance));
+  const unknownGuidance = Object.keys(r.guidance).filter((c) => !r.codes.includes(c));
+  if (missingGuidance.length > 0 || unknownGuidance.length > 0) {
+    faults.push(
+      `the prose and the taxonomy disagree.\n` +
+        (missingGuidance.length ? `  No prose for: ${missingGuidance.join(', ')}\n` : '') +
+        (unknownGuidance.length ? `  Prose for codes that do not exist: ${unknownGuidance.join(', ')}\n` : '') +
+        `  Edit GUIDANCE in tools/problem-codes-emit.mts so it has exactly one entry per code in ${SOURCE}.`,
     );
   }
-}
-if (PROBLEM_TYPE_BASE !== SITE_ERRORS) {
-  cannot(
-    `PROBLEM_TYPE_BASE is ${PROBLEM_TYPE_BASE}, but these pages are served at ${SITE_ERRORS}.\n` +
-      `  The pages must live where every problem document's \`type\` points. Move OUT_DIR, or move the base back.`,
-  );
+  const missingMembers = r.wire.filter((m) => !(m in r.members));
+  const unknownMembers = Object.keys(r.members).filter((m) => !r.wire.includes(m));
+  if (missingMembers.length > 0 || unknownMembers.length > 0) {
+    faults.push(
+      `the member descriptions and the wire body disagree.\n` +
+        (missingMembers.length ? `  No description for: ${missingMembers.join(', ')}\n` : '') +
+        (unknownMembers.length ? `  Described but not on the wire: ${unknownMembers.join(', ')}\n` : '') +
+        `  Edit MEMBERS in tools/problem-codes-emit.mts so it describes exactly the members of \`problem\` in ${SOURCE}.`,
+    );
+  }
+  for (const code of r.codes) {
+    if (!(code in r.guidance)) continue;
+    const documented = r.documented.includes(code);
+    if (documented === (r.guidance[code]!.openapi !== undefined)) {
+      faults.push(
+        `${code}: \`openapi\` is written exactly when the code is NOT in DOCUMENTED_ERROR_CODES, and here it ` +
+          `${documented ? 'is documented on every operation but carries a note' : 'is not documented on every operation and says nowhere where it is'}.`,
+      );
+    }
+  }
+  if (r.typeBase !== SITE_ERRORS) {
+    faults.push(
+      `PROBLEM_TYPE_BASE is ${r.typeBase}, but these pages are served at ${SITE_ERRORS}.\n` +
+        `  The pages must live where every problem document's \`type\` points. Move OUT_DIR, or move the base back.`,
+    );
+  }
+  return faults;
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────────────────────
 const slugOf = (code: ErrorCode): string => problemTypeFor(code).slice(`${PROBLEM_TYPE_BASE}/`.length);
-const membersOf = (code: ErrorCode): string[] => Object.keys(PROBLEM_EXTENSIONS[code].shape);
-/** Members every code may carry: listed once on the index, not on every page. */
-const COMMON = membersOf(CODES[0]!).filter((m) => CODES.every((c) => membersOf(c).includes(m)));
+/**
+ * The members a scope store's error puts on a problem, and the codes it can put them on, asked of
+ * `StoreError` itself for every failure status. Every code's schema admits the store members, but
+ * only these codes are ever built from a store's answer: `toProblem` builds `internal` bare.
+ */
+const STORE_MEMBERS = Object.keys(new StoreError({ code: 'x', status: 409, body: {} }).extensions);
+const STORE_CODES = new Set(Array.from({ length: 200 }, (_, i) => new StoreError({ code: 'x', status: 400 + i }).code));
+/** The extension members a problem with this code may carry, as it is actually built. */
+const membersOf = (code: ErrorCode): string[] =>
+  Object.keys(PROBLEM_EXTENSIONS[code].shape).filter((m) => !STORE_MEMBERS.includes(m) || STORE_CODES.has(code));
+const backtick = (ms: readonly string[]): string => ms.map((m) => `\`${m}\``).join(' and ');
 
 const MARKER =
   `<!-- GENERATED by tools/problem-codes-emit.mts from ${SOURCE} — do not edit by hand; ` +
@@ -314,10 +343,12 @@ const statusOf = (code: ErrorCode): number => PROBLEM_CATALOG[code].status;
 function codePage(code: ErrorCode): string {
   const g = GUIDANCE[code]!;
   const { status, title } = PROBLEM_CATALOG[code];
-  const own = membersOf(code).filter((m) => !COMMON.includes(m));
+  const own = membersOf(code).filter((m) => !STORE_MEMBERS.includes(m));
+  const store = membersOf(code).filter((m) => STORE_MEMBERS.includes(m));
   const carries = own.length
     ? own.map((m) => `- \`${m}\`: ${MEMBERS[m]}`).join('\n')
     : '- Nothing beyond the members every problem carries.';
+  const body = 'See [the body](/errors/#the-body) for the members any problem may carry.';
   const sharing = CODES.filter((c) => c !== code && statusOf(c) === status);
   return [
     frontmatter({ title: code, description: `The \`${code}\` problem code, ${status} ${title}: ${g.summary}` }),
@@ -344,7 +375,7 @@ function codePage(code: ErrorCode): string {
     '',
     carries,
     '',
-    `Like every problem, it may also carry ${COMMON.map((m) => `\`${m}\``).join(' and ')}, and the [members every problem has](/errors/#the-body).`,
+    store.length ? `Relayed from a scope store, it may also carry ${backtick(store)}. ${body}` : body,
     '',
     '## What to do',
     '',
@@ -428,39 +459,74 @@ function indexPage(): string {
   ].join('\n');
 }
 
-const emitted = new Map<string, string>([['index.md', indexPage()]]);
-for (const code of CODES) emitted.set(`${slugOf(code)}.md`, codePage(code));
-
-// ── Write, or compare ──────────────────────────────────────────────────────────────────────
-const dir = join(ROOT, OUT_DIR);
-const present = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.md')) : [];
-const stale = present.filter((f) => !emitted.has(f));
-const drifted = [...emitted].filter(([file, text]) => {
-  const path = join(dir, file);
-  return !existsSync(path) || readFileSync(path, 'utf8') !== text;
-});
-
-if (check) {
-  if (drifted.length === 0 && stale.length === 0) {
-    console.log(`problem-codes: ${emitted.size} page(s) in ${OUT_DIR} are in sync with ${SOURCE}.`);
-    process.exit(0);
-  }
-  console.error(
-    `problem-codes: ${OUT_DIR} has drifted from ${SOURCE}.\n` +
-      drifted.map(([f]) => `  ${OUT_DIR}/${f}: differs from what the registry renders, or is missing\n`).join('') +
-      stale.map((f) => `  ${OUT_DIR}/${f}: names no code in the taxonomy\n`).join('') +
-      `\n  Edit the registry or the prose in tools/problem-codes-emit.mts, then run:\n\n` +
-      `      pnpm lint:problem-codes\n\n` +
-      `  and commit the re-emitted pages.\n`,
-  );
-  process.exit(1);
+/** Every page, by file name in OUT_DIR. */
+export function renderPages(): Map<string, string> {
+  const emitted = new Map<string, string>([['index.md', indexPage()]]);
+  for (const code of CODES) emitted.set(`${slugOf(code)}.md`, codePage(code));
+  return emitted;
 }
 
-mkdirSync(dir, { recursive: true });
-for (const [file, text] of drifted) writeFileSync(join(dir, file), text);
-for (const file of stale) rmSync(join(dir, file));
-console.log(
-  drifted.length === 0 && stale.length === 0
-    ? `problem-codes: ${OUT_DIR} already in sync.`
-    : `problem-codes: wrote ${drifted.length} and removed ${stale.length} page(s) in ${OUT_DIR}.`,
-);
+// ── Write, or compare ──────────────────────────────────────────────────────────────────────
+/**
+ * The pages to write (`drifted`: missing, or differing from what renders) and the ones to remove
+ * (`stale`: a page in OUT_DIR that names no code). `read` answers a present page's text.
+ */
+export function pageDrift(
+  emitted: ReadonlyMap<string, string>,
+  present: readonly string[],
+  read: (file: string) => string,
+): { drifted: [string, string][]; stale: string[] } {
+  return {
+    drifted: [...emitted].filter(([file, text]) => !present.includes(file) || read(file) !== text),
+    stale: present.filter((f) => !emitted.has(f)),
+  };
+}
+
+/** What `--check` refuses with, or `undefined` when OUT_DIR is in sync. */
+export function driftReport({ drifted, stale }: ReturnType<typeof pageDrift>): string | undefined {
+  if (drifted.length === 0 && stale.length === 0) return undefined;
+  return (
+    `problem-codes: ${OUT_DIR} has drifted from ${SOURCE}.\n` +
+    drifted.map(([f]) => `  ${OUT_DIR}/${f}: differs from what the registry renders, or is missing\n`).join('') +
+    stale.map((f) => `  ${OUT_DIR}/${f}: names no code in the taxonomy\n`).join('') +
+    `\n  Edit the registry or the prose in tools/problem-codes-emit.mts, then run:\n\n` +
+    `      pnpm lint:problem-codes\n\n` +
+    `  and commit the re-emitted pages.\n`
+  );
+}
+
+if (isMainModule(import.meta.url)) {
+  const faults = registryFaults({
+    codes: CODES,
+    guidance: GUIDANCE,
+    wire: WIRE,
+    members: MEMBERS,
+    documented: DOCUMENTED_ERROR_CODES,
+    typeBase: PROBLEM_TYPE_BASE,
+  });
+  if (faults.length > 0) cannot(faults.join('\n\n'));
+
+  const emitted = renderPages();
+  const dir = join(repoRoot(import.meta.url), OUT_DIR);
+  const present = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.md')) : [];
+  const drift = pageDrift(emitted, present, (f) => readFileSync(join(dir, f), 'utf8'));
+
+  if (process.argv.includes('--check')) {
+    const report = driftReport(drift);
+    if (report === undefined) {
+      console.log(`problem-codes: ${emitted.size} page(s) in ${OUT_DIR} are in sync with ${SOURCE}.`);
+      process.exit(0);
+    }
+    console.error(report);
+    process.exit(1);
+  }
+
+  mkdirSync(dir, { recursive: true });
+  for (const [file, text] of drift.drifted) writeFileSync(join(dir, file), text);
+  for (const file of drift.stale) rmSync(join(dir, file));
+  console.log(
+    drift.drifted.length === 0 && drift.stale.length === 0
+      ? `problem-codes: ${OUT_DIR} already in sync.`
+      : `problem-codes: wrote ${drift.drifted.length} and removed ${drift.stale.length} page(s) in ${OUT_DIR}.`,
+  );
+}

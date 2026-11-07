@@ -614,7 +614,7 @@ shipped, which an existing scope would run out of order), plus `lint:decisions`,
 `lint:llms`, `lint:agent-rules`, `lint:problem-codes` (`tools/problem-codes-emit.mts`, #113: one page per
 problem code at `apps/docs/errors/`, served at the `type` URI each problem document carries; the facts
 read from contracts' `errors.ts`, the prose keyed by code in the emitter, which refuses a code it has
-none for), `lint:launch`, `lint:plugin`, `lint:pins`, `lint:review-checklist`
+none for; fixtures via `pnpm test:problem-codes`), `lint:launch`, `lint:plugin`, `lint:pins`, `lint:review-checklist`
 (the hosted review runner's rules module, #2365),
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
 in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —

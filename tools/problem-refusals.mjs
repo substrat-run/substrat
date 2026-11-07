@@ -14,7 +14,8 @@
  * A response built with a LITERAL status of 400 or more:
  *
  * - `c.json(…, 4xx)`, `c.text(…, 4xx)`, `c.body(…, 4xx)`, `c.html(…, 4xx)`, `c.newResponse(…, 4xx)`
- *   (a ternary with a refusal branch counts);
+ *   (a ternary with a refusal branch counts), and each of them with an inline `ResponseInit`,
+ *   `c.json(…, { status: 4xx })`;
  * - `c.status(4xx)`, which sets the status for a body written separately;
  * - `new Response(…, { status: 4xx })` and `Response.json(…, { status: 4xx })`.
  *
@@ -76,12 +77,28 @@ export function inScope(path) {
   return !TEST_SUPPORT.some((p) => path.startsWith(p));
 }
 
-/** Hono's response builders, whose second argument is the status. */
+/** Hono's response builders, whose second argument is the status or a `ResponseInit`. */
 const STATUS_SECOND = new Set(['json', 'text', 'body', 'html', 'newResponse']);
 const PROBLEM_MEDIA_TYPE = 'application/problem+json';
 
-const parse = (text) =>
-  parseTypeScript(text, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: true });
+/**
+ * A file that can build a response at all: the parse is skipped for the rest. A builder call may
+ * carry type arguments (`c.json<Body>(…)`), so `<` is as good as `(`.
+ */
+const MAY_RESPOND = /Response|\.(?:json|text|body|html|newResponse|status)\s*[<(]/;
+
+/**
+ * Parse as TypeScript, with JSX only where a file can hold it: under the `jsx` plugin a `.ts`
+ * file's `<T>x` assertion is a syntax error.
+ */
+function parse(text, path) {
+  const plugins = /\.[mc]?[jt]sx$/.test(path) ? ['typescript', 'jsx'] : ['typescript'];
+  try {
+    return parseTypeScript(text, { sourceType: 'module', plugins, errorRecovery: true });
+  } catch (err) {
+    throw new Error(`${path}: cannot be parsed, so its refusals cannot be judged (${err.message})`, { cause: err });
+  }
+}
 
 /** Every node under `node`, depth first. */
 function* walk(node) {
@@ -143,15 +160,22 @@ function refusalStatusOf(n) {
   if (name === 'json' && n.callee.object.type === 'Identifier' && n.callee.object.name === 'Response') {
     return statusOfInit(n.arguments[1]);
   }
-  if (STATUS_SECOND.has(name)) return n.arguments[1];
+  if (STATUS_SECOND.has(name)) {
+    // `c.json(body, { status: 404, headers })` is the same refusal as `c.json(body, 404)`.
+    const second = n.arguments[1];
+    return unwrap(second)?.type === 'ObjectExpression' ? statusOfInit(second) : second;
+  }
   if (name === 'status' && n.arguments.length === 1) return n.arguments[0];
   return undefined;
 }
 
-/** The refusals in `source` answered outside the problem helpers, as `{ line, what }`. */
-export function refusalsIn(source) {
+/**
+ * The refusals in `source` answered outside the problem helpers, as `{ line, what }`. `path`
+ * decides the parser's plugins and names the file when it cannot be parsed, which throws.
+ */
+export function refusalsIn(source, path = 'source.ts') {
   const found = [];
-  for (const n of walk(parse(source).program)) {
+  for (const n of walk(parse(source, path).program)) {
     const status = refusalStatusOf(n);
     if (status === undefined || !isRefusalStatus(status) || namesProblemType(n)) continue;
     found.push({ line: n.loc.start.line, what: source.slice(n.start, n.end).replace(/\s+/g, ' ').slice(0, 100) });
@@ -407,19 +431,36 @@ export const ALLOWED = [
  * and the allowlisted totals by kind.
  */
 export function judge(files, allowed = ALLOWED) {
-  const budget = new Map();
-  for (const e of allowed) budget.set(e.path, (budget.get(e.path) ?? 0) + e.sites);
   const offences = [];
+  const budget = new Map();
+  const totals = { protocol: 0, pending: 0 };
+  for (const e of allowed) {
+    const fault = entryFault(e);
+    if (fault) {
+      offences.push(`ALLOWED entry ${JSON.stringify(e.path ?? null)}: ${fault}`);
+      continue;
+    }
+    budget.set(e.path, (budget.get(e.path) ?? 0) + e.sites);
+    totals[e.kind] += e.sites;
+  }
   const seen = new Set();
   for (const { path, text } of files) {
     if (!inScope(path)) continue;
-    if (!/Response|\.(?:json|text|body|html|newResponse|status)\(/.test(text)) {
-      if (budget.has(path)) seen.add(path);
-      continue;
-    }
-    const found = refusalsIn(text);
-    const allowedHere = budget.get(path) ?? 0;
     if (budget.has(path)) seen.add(path);
+    let found = [];
+    // A file that builds no response has no refusal, and an entry for it is held to zero.
+    if (MAY_RESPOND.test(text)) {
+      try {
+        found = refusalsIn(text, path);
+      } catch (err) {
+        offences.push(
+          `${err.message}\n    Babel's TypeScript parser refuses some valid TypeScript, such as an arrow function with ` +
+            'a return type in a ternary branch: parenthesize that expression.',
+        );
+        continue;
+      }
+    }
+    const allowedHere = budget.get(path) ?? 0;
     if (found.length > allowedHere) {
       offences.push(
         allowedHere === 0
@@ -436,9 +477,17 @@ export function judge(files, allowed = ALLOWED) {
   for (const path of budget.keys()) {
     if (!seen.has(path)) offences.push(`${path}: an ALLOWED entry for a file that is gone or out of scope — delete it`);
   }
-  const totals = { protocol: 0, pending: 0 };
-  for (const e of allowed) totals[e.kind] += e.sites;
   return { offences, totals };
+}
+
+/** What is wrong with one ALLOWED entry, or `undefined`. */
+function entryFault(e) {
+  if (e.kind !== 'protocol' && e.kind !== 'pending') return `kind must be 'protocol' or 'pending', not ${JSON.stringify(e.kind)}`;
+  for (const field of ['path', 'area', 'reason']) {
+    if (typeof e[field] !== 'string' || e[field].trim() === '') return `\`${field}\` must be a non-empty string`;
+  }
+  if (!Number.isInteger(e.sites) || e.sites < 1) return '`sites` must be a whole number of at least 1 — delete an entry with none left';
+  return undefined;
 }
 
 /** The tracked and untracked (not ignored) files under the roots. */

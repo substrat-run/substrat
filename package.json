@@ -119,7 +119,8 @@
     "test:secret-literals": "node --test tools/secret-literals.test.mjs",
     "test:lifecycle-writes": "node --test tools/lifecycle-writes.test.mjs",
     "test:role-seat-paths": "node --test tools/role-seat-paths.test.mjs",
-    "test:problem-refusals": "node --test tools/problem-refusals.test.mjs"
+    "test:problem-refusals": "node --test tools/problem-refusals.test.mjs",
+    "test:problem-codes": "tsx --test tools/problem-codes-emit.test.mts"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.12",

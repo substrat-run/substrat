@@ -25,7 +25,7 @@ Too many requests were counted against one budget within its window. `retryAfter
 
 - `retryAfter`: Seconds to wait before retrying, the same value as the `Retry-After` header.
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+Relayed from a scope store, it may also carry `storeCode` and `storeBody`. See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 

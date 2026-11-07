@@ -26,7 +26,7 @@ The surface could not tell who is calling. There was no session cookie and no be
 
 - Nothing beyond the members every problem carries.
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+Relayed from a scope store, it may also carry `storeCode` and `storeBody`. See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 

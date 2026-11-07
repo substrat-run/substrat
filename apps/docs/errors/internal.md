@@ -25,11 +25,11 @@ A throw nobody declared a code for. The body never carries `detail`. A message n
 
 - Nothing beyond the members every problem carries.
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 
-Retry once if the request is safe to repeat: a read, or a write sent with an `Idempotency-Key`. Otherwise report it and quote `requestId`, which the dashboard's request view opens.
+Retry a read once. A write is safe to repeat only when it was sent with an `Idempotency-Key` to an operation whose `/openapi.json` documents that header, and the retry sends the same key. Not every surface honours the header, so elsewhere check whether the first attempt took effect before sending it again. If the retry fails too, or the request is not safe to repeat, report it and quote `requestId`, which the dashboard's request view opens.
 
 ## In `/openapi.json`
 

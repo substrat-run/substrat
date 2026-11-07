@@ -28,7 +28,7 @@ The caller is known, and `ctx.check` said no: no role or grant they hold carries
 - `permission`: The permission key the check refused.
 - `entity`: The record the refusal is about, as an entity reference (`{ entityType, entityId }`).
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 

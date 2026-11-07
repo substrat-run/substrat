@@ -25,9 +25,9 @@ The input is fine. The thing it addresses is in a state where this cannot happen
 
 ## What it carries
 
-- `reason`: A slug the refusing module owns, narrowing the code: snake_case, at most 64 characters. Branch on it; never show it.
+- `reason`: A slug the refusing module owns, narrowing the code. The platform's own are snake_case, but the wire does not enforce a grammar, so compare it as an opaque string. Branch on it; never show it.
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+Relayed from a scope store, it may also carry `storeCode` and `storeBody`. See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 

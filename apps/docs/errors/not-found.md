@@ -14,7 +14,7 @@ The addressed thing does not exist, or does not exist for this caller.
 
 ## What it means
 
-Nothing answers at that address: no such record, route, operation or scope. On a multi-tenant surface this deliberately also covers two other cases. One is a thing that exists under another tenant. The other is an operation the install is not entitled to, where a `403` would confirm the feature exists. A client cannot tell these cases apart, and should not try to.
+Nothing answers at that address: no such record, route, operation or scope. On a multi-tenant surface this deliberately also covers two other cases. One is a thing that exists under another tenant. The other is an operation the install is not entitled to, where a `403` would confirm the feature exists. A client handles all of them the same way.
 
 ## When it is returned
 
@@ -24,9 +24,9 @@ Nothing answers at that address: no such record, route, operation or scope. On a
 
 ## What it carries
 
-- `reason`: A slug the refusing module owns, narrowing the code: snake_case, at most 64 characters. Branch on it; never show it.
+- `reason`: A slug the refusing module owns, narrowing the code. The platform's own are snake_case, but the wire does not enforce a grammar, so compare it as an opaque string. Branch on it; never show it.
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+Relayed from a scope store, it may also carry `storeCode` and `storeBody`. See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 

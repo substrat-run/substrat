@@ -326,6 +326,8 @@ jobs:
       # every problem document carries (substrat.net/errors/<code>). The codes, statuses, titles
       # and members are read from contracts' errors.ts, and the emitter refuses a code it has no
       # prose for, so a new code is red until somebody writes down what a client does about it.
+      # Held by its own fixtures first.
+      - run: pnpm test:problem-codes
       - run: pnpm lint:problem-codes --check
       # The dev-server checkpoint (#752). `.claude/launch.json` is what lets an
       # agent start the API and the web app and verify its own change in the

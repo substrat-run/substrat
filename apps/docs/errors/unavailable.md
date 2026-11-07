@@ -24,13 +24,13 @@ The request may be fine. Something the platform needs in order to answer it is n
 
 ## What it carries
 
-- `reason`: A slug the refusing module owns, narrowing the code: snake_case, at most 64 characters. Branch on it; never show it.
+- `reason`: A slug the refusing module owns, narrowing the code. The platform's own are snake_case, but the wire does not enforce a grammar, so compare it as an opaque string. Branch on it; never show it.
 
-Like every problem, it may also carry `storeCode` and `storeBody`, and the [members every problem has](/errors/#the-body).
+Relayed from a scope store, it may also carry `storeCode` and `storeBody`. See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 
-Retry later, with backoff. A write sent with an `Idempotency-Key` can be retried with the same key without running twice. If it persists, it needs an operator: report it and quote `requestId`.
+Retry later, with backoff. A read is safe to repeat. A write is safe to repeat only when it was sent with an `Idempotency-Key` to an operation whose `/openapi.json` documents that header, and the retry sends the same key. Not every surface honours the header, so elsewhere check whether the first attempt took effect before sending it again. If it persists, it needs an operator: report it and quote `requestId`.
 
 ## In `/openapi.json`
 

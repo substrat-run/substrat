@@ -52,11 +52,11 @@ The members a problem may carry. A member with codes beside it appears only on t
 - `requestId`: The id of the request that failed, the same as its `x-substrat-request-id` header. Quote it when reporting a failure.
 - `permission` ([`permission_denied`](/errors/permission-denied)): The permission key the check refused.
 - `entity` ([`permission_denied`](/errors/permission-denied), [`precondition_failed`](/errors/precondition-failed)): The record the refusal is about, as an entity reference (`{ entityType, entityId }`).
-- `reason` ([`forbidden`](/errors/forbidden), [`not_found`](/errors/not-found), [`conflict`](/errors/conflict), [`validation_failed`](/errors/validation-failed), [`precondition_failed`](/errors/precondition-failed), [`unavailable`](/errors/unavailable)): A slug the refusing module owns, narrowing the code: snake_case, at most 64 characters. Branch on it; never show it.
+- `reason` ([`forbidden`](/errors/forbidden), [`not_found`](/errors/not-found), [`conflict`](/errors/conflict), [`validation_failed`](/errors/validation-failed), [`precondition_failed`](/errors/precondition-failed), [`unavailable`](/errors/unavailable)): A slug the refusing module owns, narrowing the code. The platform's own are snake_case, but the wire does not enforce a grammar, so compare it as an opaque string. Branch on it; never show it.
 - `errors` ([`validation_failed`](/errors/validation-failed)): One entry per field that failed to parse: `path`, dotted into the input, and `message`.
 - `retryAfter` ([`rate_limited`](/errors/rate-limited)): Seconds to wait before retrying, the same value as the `Retry-After` header.
-- `storeCode` (any code): The scope store's own error code, when the refusal came from a store. It is the store's vocabulary, not this taxonomy's.
-- `storeBody` (any code): The scope store's own error body: only a refusal's (a `4xx`), and only up to 1024 bytes of JSON.
+- `storeCode` ([`unauthenticated`](/errors/unauthenticated), [`forbidden`](/errors/forbidden), [`not_found`](/errors/not-found), [`conflict`](/errors/conflict), [`validation_failed`](/errors/validation-failed), [`precondition_failed`](/errors/precondition-failed), [`rate_limited`](/errors/rate-limited), [`unavailable`](/errors/unavailable)): The scope store's own error code, when the refusal came from a store. It is the store's vocabulary, not this taxonomy's.
+- `storeBody` ([`unauthenticated`](/errors/unauthenticated), [`forbidden`](/errors/forbidden), [`not_found`](/errors/not-found), [`conflict`](/errors/conflict), [`validation_failed`](/errors/validation-failed), [`precondition_failed`](/errors/precondition-failed), [`rate_limited`](/errors/rate-limited), [`unavailable`](/errors/unavailable)): The scope store's own error body: only a refusal's (a `4xx`), and only up to 1024 bytes of JSON.
 
 ## A body with no `code`
 
