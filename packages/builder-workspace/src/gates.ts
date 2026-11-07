@@ -173,6 +173,8 @@ function modelCompileCmd(projectDir: string): string {
 	);
 }
 
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+
 export function standaloneGates(projectDir: string): GateSpec[] {
 	const pkg = async (ws: Workspace): Promise<boolean> => await ws.exists(`${projectDir}/package.json`);
 	return [
@@ -262,8 +264,10 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 		},
 		{
 			// Both halves compile alone, so an app whose every action 404s passes every other gate.
+			// The route has to be registered: a comment naming the path mounts nothing. A path split
+			// on a space would fail the first grep, which `!` reads as an app that never calls it.
 			name: 'app-api',
-			cmd: `! grep -rqF /api/invoke ${projectDir}/app/src || grep -rqF /api/invoke ${projectDir}/src || { echo "app/src calls POST /api/invoke and src/ never mounts it: copy that route from the template's src/routes.ts"; exit 1; }`,
+			cmd: `! grep -rqF /api/invoke ${shellQuote(`${projectDir}/app/src`)} || grep -rhE '\\.post\\([[:punct:]]/api/invoke' ${shellQuote(`${projectDir}/src`)} | grep -qvE '^[[:space:]]*(//|\\*)' || { echo "app/src calls POST /api/invoke and src/ never mounts it: copy that route from the template's src/routes.ts"; exit 1; }`,
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/app/package.json`),
 			note: 'no app/ yet',
 		},

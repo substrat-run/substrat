@@ -6,7 +6,7 @@ description: What 50 graded todo builds taught us, and what to try next.
 
 # Builder quality runs
 
-**Status:** the first round is finished and its winners are shipped. The strategies not yet tried
+**Status:** the first round is finished and its changes shipped, all on evidence but one: the "grant cannot be listed" rule is unproven. The strategies not yet tried
 are listed in [§6](#6-what-to-try-next). · **Depends on:** [studio.md](./studio.md) §9.6, the evals
 this builds on. · **Touches:** `apps/builder/skills`, `apps/builder/src/reference.ts`,
 `packages/builder-workspace/src/gates.ts`, `packages/portal-starter`.

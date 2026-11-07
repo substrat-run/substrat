@@ -48,16 +48,23 @@ if (files.length > 3) {
 		let text = '';
 		child.stdout.on('data', (d) => { text += d; });
 		child.on('error', reject);
-		child.on('close', () => {
+		child.on('close', (code) => {
 			writeFileSync(join(runDir, `judge${n}.txt`), text);
+			if (code !== 0) { reject(new Error(`grading ${n} exited ${code}`)); return; }
 			try { resolve(JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1))); } catch (e) { reject(e); }
 		});
 		child.stdin.end(prompt);
 	});
 	try {
 		const grades = await Promise.all([grade(1), grade(2), grade(3)]);
-		const votes = (k) => grades.filter((g) => g.items[k]?.pass).length;
-		const items = Object.keys(grades[0].items).map((k) => [k, votes(k) >= 2]);
+		// A grading that skips an item would shrink the denominator and still look like a score.
+		const judged = [...read(join(here, 'rubric-todo.md')).matchAll(/^\d+ (\w+):/gm)].map((m) => m[1]);
+		for (const [i, g] of grades.entries()) {
+			const missing = judged.filter((k) => typeof g.items?.[k]?.pass !== 'boolean');
+			if (missing.length) throw new Error(`grading ${i + 1} left out ${missing.join(', ')}`);
+		}
+		const votes = (k) => grades.filter((g) => g.items[k].pass).length;
+		const items = judged.map((k) => [k, votes(k) >= 2]);
 		// Counted, not judged. A judge passed a copy with its permission checks removed, and these are yes or no in the source.
 		const server = walk(join(proj, 'src')).map(read).join('\n');
 		const module = read(join(proj, 'src/module.ts'));
@@ -69,9 +76,9 @@ if (files.length > 3) {
 		items.push(['invite_email', /\bsendInvite\b|mountInviteRoutes/.test(server)]);
 		record.quality = Math.round((100 * items.filter(([, v]) => v).length) / items.length);
 		record.failed = items.filter(([, v]) => !v).map(([k]) => k);
-		record.disagree = Object.keys(grades[0].items).filter((k) => votes(k) === 1 || votes(k) === 2);
+		record.disagree = judged.filter((k) => votes(k) === 1 || votes(k) === 2);
 		record.worst = grades[0].worst;
-	} catch { record.quality = null; record.judgeError = true; }
+	} catch (e) { record.quality = null; record.judgeError = e instanceof Error ? e.message : String(e); }
 } else { record.quality = 0; record.failed = ['no-app']; }
 // A run counts only if it tested what it claimed to: it finished, was judged, and the change under test really ran.
 const transcript = read(join(runDir, 'transcript.log'));

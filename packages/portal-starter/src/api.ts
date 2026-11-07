@@ -23,7 +23,7 @@ export class ApiError extends Error {
 export function loaded<T>(load: () => Promise<T>, view: (value: T) => TemplateResult): unknown {
   const failed = (err: unknown): TemplateResult =>
     html`<p role="alert">${err instanceof ApiError && err.status === 403 ? 'You do not have access to this.' : 'This could not be loaded.'}</p>`;
-  return until(load().then(view, failed), html`<p>Loading…</p>`);
+  return until(Promise.resolve().then(load).then(view).catch(failed), html`<p>Loading…</p>`);
 }
 
 /** The `rel="next"` URL out of an RFC 8288 `Link` header, or null. */

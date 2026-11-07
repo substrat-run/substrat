@@ -202,8 +202,9 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// Host-owned install (gates.ts runInstall): run it when this turn touched a
 	// package manifest, or when the vertical has one but its deps were never
 	// installed (a fresh workspace member — the warm image predates it). Runs at
-	// the WORKSPACE root so workspace:* deps link. Skipped entirely otherwise, so
-	// interview and chat-only turns never pay for it.
+	// the WORKSPACE root so workspace:* deps link, or in the vertical when it has
+	// its own workspace file. Skipped entirely otherwise, so interview and
+	// chat-only turns never pay for it.
 	const touchedManifest = written.some((f) => f === 'package.json' || f.endsWith('/package.json'));
 	const missingDeps =
 		(await ws.exists(`${opts.verticalDir}/package.json`)) &&

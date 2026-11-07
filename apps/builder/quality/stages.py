@@ -11,6 +11,7 @@ for l in open(H+'/runs.jsonl'):
     d=json.loads(l)
     if not d.get('valid'): continue
     D=f"{H}/runs/{d['id']}"
+    if not os.path.exists(D+'/report.json'): odd.append(d['id']); continue
     r=json.load(open(D+'/report.json'))['results'][0]
     st=r['stages']; su=r['usage']['stepUsage']; t=open(D+'/transcript.log').read() if os.path.exists(D+'/transcript.log') else ''
     proj=D+'/project'

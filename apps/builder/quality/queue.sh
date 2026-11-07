@@ -14,8 +14,8 @@ mkdir -p .builder
 mkdir $LOCK 2>/dev/null || { echo "another queue is running in this checkout: $LOCK"; exit 4; }
 trap 'rmdir $LOCK' EXIT
 for i in $(seq 1 $N); do
-  free=$(df -g "$PWD" | awk 'NR==2{print $4}')
-  [ "$free" -lt 8 ] && { echo "stop: ${free}G free"; exit 3; }
+  free=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
+  [ -n "$free" ] && [ "$free" -lt 8 ] && { echo "stop: ${free}G free"; exit 3; }
   ID=$S-$LABEL-$(date +%m%d-%H%M%S); D=$H/runs/$ID; mkdir -p $D
   echo "== $ID $(date +%T)"
   pnpm builder evals --eval todo --model $SPEC --quiet "$@" > $D/stdout.log 2>&1; code=$?
