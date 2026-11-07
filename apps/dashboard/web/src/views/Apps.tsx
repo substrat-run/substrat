@@ -1,6 +1,6 @@
 import { compareNamed } from '../lib/name-order';
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Input, Select } from '@substrat-run/ui/wa';
+import { Button, Input, Segmented, Select } from '@substrat-run/ui/wa';
 import type { AppRow, InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
 import { relativeTime } from '../lib/format';
@@ -108,10 +108,15 @@ export function Apps({
         <Input placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />
         <Select options={['All statuses', 'Active', 'Provisioning', 'Failed']} value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 150 }} />
         <div style={{ flex: 1 }} />
-        <div style={{ display: 'inline-flex', border: '1px solid var(--border-default)', borderRadius: 6, overflow: 'hidden' }}>
-          <SegBtn on={mode === 'health'} onClick={() => setMode('health')} label="Health table"><Ic name="list" size={14} /></SegBtn>
-          <SegBtn on={mode === 'grid'} onClick={() => setMode('grid')} label="Grid view" divider><Ic name="grid" size={14} /></SegBtn>
-        </div>
+        <Segmented
+          label="View"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: 'health', title: 'Health table', label: <Ic name="list" size={14} /> },
+            { value: 'grid', title: 'Grid view', label: <Ic name="grid" size={14} /> },
+          ]}
+        />
       </div>
 
       {filtered.length === 0 && !hasMore ? (
@@ -153,19 +158,6 @@ export function Apps({
         </div>
       )}
     </Page>
-  );
-}
-
-function SegBtn({ on, onClick, label, children, divider }: { on: boolean; onClick: () => void; label: string; children: React.ReactNode; divider?: boolean }) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 30, height: 30, border: 0, borderLeft: divider ? '1px solid var(--border-default)' : 0, background: on ? 'var(--surface-active)' : 'var(--surface-card)', color: on ? 'var(--text-primary)' : 'var(--text-tertiary)', cursor: 'pointer' }}
-    >
-      {children}
-    </button>
   );
 }
 

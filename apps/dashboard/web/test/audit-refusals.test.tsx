@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type AppRow, type AuditEntry } from '../src/lib/api';
 import { filterActivity, mergeActivity, refusalActorOf, refusalSentence, type Refusal } from '../src/lib/audit-activity';
 import { AuditLog } from '../src/views/Audit';
+import { choose } from './wa';
 
 /** #1828: refused permission checks beside the audited actions, with the Outcome filter. */
 
@@ -84,9 +85,10 @@ describe('Audit page with refusals', () => {
   const apps = [{ app_scope_id: 'a', name: 'Acme HR' } as AppRow];
   const render = (scopeId: string | null) => act(async () => root.render(<AuditLog teamId="team-a" apps={apps} appsComplete scopeId={scopeId} onScope={() => {}} />));
   const press = (label: string) =>
-    act(async () =>
-      [...container.querySelectorAll('[aria-label="Outcome"] button')].find((b) => b.textContent === label)!.dispatchEvent(new MouseEvent('click', { bubbles: true })),
-    );
+    act(async () => {
+      const group = container.querySelector('wa-radio-group[label="Outcome"]')!;
+      choose(group, [...group.querySelectorAll('wa-radio')].find((r) => r.textContent === label)!.getAttribute('value')!);
+    });
 
   it('shows an app’s refusals among its actions, and filters them by outcome', async () => {
     vi.spyOn(api, 'auditLogAll').mockResolvedValue({ entries: [action('A1', 1)], nextCursor: null });

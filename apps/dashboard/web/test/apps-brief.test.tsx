@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { AppRow } from '../src/lib/api';
 import { Apps, Onboarding } from '../src/views/Apps';
 import { setTeamSlug } from '../src/lib/router';
+import { button, choose, type } from './wa';
 
 const app = { app_scope_id: 'scope-a', name: 'Example', vertical_slug: 'protocol', status: 'active', hostname: null, created_at: '2026-10-01T00:00:00Z' } as AppRow;
 let container: HTMLDivElement;
@@ -22,18 +23,17 @@ afterEach(() => {
 
 it('keeps a responsive grid and a compact Create App action', () => {
   act(() => root.render(<Apps teamId="team-a" apps={[app]} onCreate={() => undefined} onOpen={() => undefined} onRetry={() => undefined} />));
-  act(() => [...container.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Grid view')!.click());
+  act(() => choose(container.querySelector('wa-radio[title="Grid view"]')!.closest('wa-radio-group')!, 'grid'));
   expect(container.querySelector('.apps-grid')).not.toBeNull();
   expect(container.querySelector('.apps-create-label')?.textContent).toBe('Create App');
 });
 
 it('shows a clearable no-match state without replacing first-app onboarding', () => {
   act(() => root.render(<Apps teamId="team-a" apps={[app]} onCreate={() => undefined} onOpen={() => undefined} onRetry={() => undefined} />));
-  const search = container.querySelector('input[placeholder="Search apps…"]')!;
-  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-  act(() => { set.call(search, 'missing'); search.dispatchEvent(new Event('input', { bubbles: true })); });
+  const search = container.querySelector('wa-input[placeholder="Search apps…"]')!;
+  act(() => type(search, 'missing'));
   expect(container.textContent).toContain('No apps match');
-  act(() => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Clear filters')!.click());
+  act(() => button('Clear filters', container)!.click());
   expect(container.textContent).not.toContain('No apps match');
   expect(container.textContent).not.toContain('Create your first app');
 });

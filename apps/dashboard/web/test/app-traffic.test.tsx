@@ -8,6 +8,7 @@ import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
 import { classTotals, rangeLabel, resolveClockRange, seriesWindow, surfaceRows } from '../src/lib/app-traffic';
 import { applyOverlayPrefs, OVERLAY_PREFS_KEY, parseOverlayPrefs, resetOverlayPrefs } from '../src/lib/overlay-prefs';
+import { buttons, type } from './wa';
 
 const day = { since: '2026-09-01T00:00:00.000Z', until: '2026-09-02T00:00:00.000Z' };
 const hourly = Array.from({ length: 24 }, (_, i) => ({
@@ -55,7 +56,7 @@ function pointer(target: Element, kind: string, x: number) {
     target.dispatchEvent(e);
   });
 }
-const buttonNamed = (text: string) => [...container.querySelectorAll('button')].find((b) => b.textContent?.includes(text));
+const buttonNamed = (text: string) => buttons(container).find((b) => b.textContent?.includes(text));
 const pushedGlyphs = () => [...container.querySelectorAll('svg[aria-label^="Overlay markers"] text')].filter((t) => t.textContent === '○');
 
 describe('app traffic derivations (#1767)', () => {
@@ -124,6 +125,17 @@ describe('App › Overview traffic card (#1767)', () => {
     await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />));
     return { traffic, metrics };
   };
+
+  // `wa-button` is `type="button"` unless told otherwise, and nothing else would say so.
+  it('Apply submits the range form, which reads the typed window', async () => {
+    const { traffic } = await mount();
+    const apply = buttonNamed('Apply')!;
+    expect(apply.getAttribute('type')).toBe('submit');
+    act(() => type(container.querySelector('wa-input[label="From (UTC, HH:MM)"]')!, 'nonsense'));
+    await act(async () => apply.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(traffic).toHaveBeenCalledTimes(1);
+  });
 
   it('a drag re-reads the narrower window, which the plane answers in finer bars; Undo steps back', async () => {
     const { traffic, metrics } = await mount();

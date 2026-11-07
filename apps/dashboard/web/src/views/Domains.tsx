@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui/wa';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { Button, Dialog, IconButton, Input, Select } from '@substrat-run/ui/wa';
 import { teamApi, type AppRow, type DnsRecord, type DomainRow } from '../lib/api';
 import { ApiError } from '../lib/api.generated';
 import { DEV_MOCK } from '../lib/mock';
@@ -9,6 +9,7 @@ import { card, CopyButton, MonoTag, PageTitle, Pill, type PillKind } from '../co
 import { relativeTime } from '../lib/format';
 
 const COLS = '2.2fr 1.4fr 1.6fr 1fr 40px';
+const ROW_ICON = { '--wa-form-control-height': '24px', '--wa-form-control-padding-inline': '0', '--wa-color-on-quiet': 'var(--text-tertiary)' } as CSSProperties;
 
 /** DEV_MOCK preview data — the real shape `GET /api/teams/:teamId/domains` returns, no backend. */
 const MOCK_DOMAINS: DomainRow[] = [
@@ -235,24 +236,13 @@ function DomainRowView({
         <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{relativeTime(d.createdAt)}</span>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
           {hasRecords && (
-            <button
-              type="button"
-              aria-label="Show DNS records"
-              onClick={() => setOpen((o) => !o)}
-              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, border: 0, borderRadius: 6, background: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', transform: open ? 'rotate(180deg)' : 'none' }}
-            >
+            <IconButton label="Show DNS records" size="sm" onClick={() => setOpen((o) => !o)} style={{ ...ROW_ICON, transform: open ? 'rotate(180deg)' : 'none' }}>
               <Ic name="chevronDown" size={16} />
-            </button>
+            </IconButton>
           )}
-          <button
-            type="button"
-            aria-label="Remove domain"
-            disabled={busy}
-            onClick={onRemove}
-            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 24, border: 0, borderRadius: 6, background: 'none', color: 'var(--text-tertiary)', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1 }}
-          >
+          <IconButton label="Remove domain" size="sm" disabled={busy} onClick={onRemove} style={ROW_ICON}>
             <Ic name="trash" size={15} />
-          </button>
+          </IconButton>
         </div>
       </div>
 

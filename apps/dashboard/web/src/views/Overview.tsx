@@ -143,13 +143,9 @@ export function Overview({
           {partial && (
             <div style={{ fontSize: 13, lineHeight: '20px', color: 'var(--status-warning-fg)' }}>
               Partial list: {apps.length} {apps.length === 1 ? 'app' : 'apps'} read; the rest could not be loaded.{' '}
-              <button
-                type="button"
-                onClick={() => setWalkFailed(false)}
-                style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', color: 'var(--text-link)', textDecoration: 'underline', cursor: 'pointer' }}
-              >
+              <Button variant="link" onClick={() => setWalkFailed(false)}>
                 Retry
-              </button>
+              </Button>
             </div>
           )}
         </div>

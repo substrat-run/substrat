@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Dialog, Input } from '@substrat-run/ui/wa';
+import { Button, Dialog, Input, Select } from '@substrat-run/ui/wa';
 import { showPeerDisclosure } from '../lib/peer-disclosure';
 import { changePeerAccess, validPeerReason } from '../lib/peer-switch';
 import { teamApi, type AppPeersView, type DeclaredCallRow, type PeerCallerRow } from '../lib/api';
@@ -242,13 +242,15 @@ export function AppPeers({ teamId, scopeId }: { teamId: string; scopeId: string 
                     {choice.boundScopeId && <span style={{ fontSize: 12.5 }}>
                       Calls {row.vertical} → {choice.invalidated ? 'invalidated choice' : boundName ?? 'unavailable instance'}
                     </span>}
-                    <select aria-label={`Target instance for ${row.vertical}`} value={selected} disabled={busy}
-                      onChange={(e) => setSelection((prior) => ({ ...prior, [row.vertical]: e.target.value }))}>
-                      <option value="">No explicit choice</option>
-                      {choice.boundScopeId && !choice.candidates.some((c) => c.scopeId === choice.boundScopeId) &&
-                        <option value={choice.boundScopeId}>Unavailable bound instance</option>}
-                      {choice.candidates.map((c) => <option key={c.scopeId} value={c.scopeId}>{c.name}</option>)}
-                    </select>
+                    <Select ariaLabel={`Target instance for ${row.vertical}`} size="sm" value={selected} disabled={busy} style={{ width: 220 }}
+                      onChange={(e) => setSelection((prior) => ({ ...prior, [row.vertical]: e.target.value }))}
+                      options={[
+                        { value: '', label: 'No explicit choice' },
+                        ...(choice.boundScopeId && !choice.candidates.some((c) => c.scopeId === choice.boundScopeId)
+                          ? [{ value: choice.boundScopeId, label: 'Unavailable bound instance' }]
+                          : []),
+                        ...choice.candidates.map((c) => ({ value: c.scopeId, label: c.name })),
+                      ]} />
                     <Button size="sm" disabled={busy || (selected !== '' && !choice.candidates.some((c) => c.scopeId === selected)) ||
                       (selected === (choice.boundScopeId ?? '') && !choice.invalidated)}
                       onClick={() => void saveBinding(row.vertical, selected || null)}>{choice.invalidated ? 'Rebind target' : 'Save target'}</Button>
