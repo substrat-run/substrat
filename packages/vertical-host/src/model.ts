@@ -88,8 +88,8 @@ export interface ModelRequest extends ModelIntent {
   readonly maxOutputTokens?: number;
   readonly temperature?: number;
   /**
-   * Aborts the call. A host with a deadline passes one so a late answer is never received, and so
-   * never billed with no line for it: an aborted call records nothing.
+   * Aborts the call. A host with a deadline passes one so a late answer is never received. An
+   * aborted call records nothing; what the provider consumed before the abort may still be billed.
    */
   readonly abortSignal?: AbortSignal;
   /** Retries the AI SDK makes on its own after a retryable failure. Default 2; 0 makes one request one HTTP call. */

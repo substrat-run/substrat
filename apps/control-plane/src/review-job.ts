@@ -54,16 +54,16 @@ export interface ReviewJobDeps {
 export type ReviewJobOutcome = { readonly done: true } | { readonly done: false; readonly retryInMs: number };
 
 /**
- * Worth another attempt: a 429 or 5xx, a call the AI SDK marked retryable (its network failures
- * included), and workerd's own `retryable` errors (a lost connection throws a plain `Error`,
- * "Network connection lost.", with `retryable: true`). A `TypeError` is a programming error and
- * is not retried; nor is anything else.
+ * Worth another attempt: a 408, 429 or 5xx, a call the AI SDK marked retryable (its network
+ * failures included), and workerd's own `retryable` errors (a lost connection throws a plain
+ * `Error`, "Network connection lost.", with `retryable: true`). A `TypeError` is a programming
+ * error and is not retried; nor is anything else. With `maxRetries: 0` the SDK never wraps a
+ * failure in its retry error, so there is no wrapper to look through.
  */
 export function transientModelError(error: unknown): boolean {
   if (!(error instanceof Error) || error instanceof TypeError) return false;
-  const e = error as Error & { statusCode?: unknown; isRetryable?: unknown; retryable?: unknown; lastError?: unknown };
-  if (e.name === 'AI_RetryError') return transientModelError(e.lastError);
-  if (typeof e.statusCode === 'number') return e.statusCode === 429 || e.statusCode >= 500;
+  const e = error as Error & { statusCode?: unknown; isRetryable?: unknown; retryable?: unknown };
+  if (typeof e.statusCode === 'number') return e.statusCode === 408 || e.statusCode === 429 || e.statusCode >= 500;
   return e.isRetryable === true || e.retryable === true;
 }
 
@@ -92,6 +92,28 @@ function emptyResult(receipt: ReviewReceipt, startedAt: string): Omit<ReviewResu
   };
 }
 
+/** A ledger line still to be written, deduplicated on the review id. */
+export interface UsageToRecord { readonly requestId: string; readonly line: ModelUsageLine }
+
+/** The most paths a record lists as not sent or deleted; the full counts are kept beside them. */
+export const REVIEW_LIST_MAX = 200;
+
+/** Cap the record's path lists so the held copy stays small whatever the change: the counts stay whole. */
+function capped(result: ReviewResult): ReviewResult {
+  const out = { ...result };
+  if (out.notSent.length > REVIEW_LIST_MAX) out.notSentCount = out.notSent.length;
+  if (out.deleted.length > REVIEW_LIST_MAX) out.deletedCount = out.deleted.length;
+  out.notSent = out.notSent.slice(0, REVIEW_LIST_MAX);
+  out.deleted = out.deleted.slice(0, REVIEW_LIST_MAX);
+  return out;
+}
+
+/** What one attempt decided: a result to store, a retry of the model call, or nothing left to do. */
+export type ReviewAttempt =
+  | { readonly kind: 'result'; readonly result: ReviewResult; readonly usage?: UsageToRecord }
+  | { readonly kind: 'retry'; readonly retryInMs: number }
+  | { readonly kind: 'gone' };
+
 /** The first open hands back the body already fetched; each later one fetches the archive again. */
 function archiveOpener(bucket: R2Bucket, reviewId: string, kind: 'source' | 'base', first: R2ObjectBody): () => Promise<ReadableStream<Uint8Array>> {
   let fetched: R2ObjectBody | null = first;
@@ -103,28 +125,22 @@ function archiveOpener(bucket: R2Bucket, reviewId: string, kind: 'source' | 'bas
   };
 }
 
-/** Thrown when the result could not be stored: the job keeps itself and tries again. */
-export class ReviewWriteFailed extends Error {}
-
 /**
- * One attempt at one review. Every path that finishes writes the result once, with a reason when
- * it is not `completed`, and none of them touches a push: the upload has already answered.
+ * One attempt at one review, writing nothing: the caller stores the result. `beforeCall` runs
+ * just before the model is called, so the job object can count the attempt before it is spent.
+ * No path touches a push: the upload has already answered.
  */
-export async function runReviewJob(reviewId: string, attempt: number, deps: ReviewJobDeps): Promise<ReviewJobOutcome> {
+export async function reviewOnce(
+  reviewId: string, attempt: number, deps: ReviewJobDeps, beforeCall: () => Promise<void> = async () => {},
+): Promise<ReviewAttempt> {
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? ((event, detail) => console.log(event, detail));
   const receipt = await readReceipt(deps.bucket, reviewId);
-  if (!receipt || await hasReviewResult(deps.bucket, reviewId)) return { done: true };
+  if (!receipt || await hasReviewResult(deps.bucket, reviewId)) return { kind: 'gone' };
   const empty = emptyResult(receipt, now().toISOString());
   const gates = empty.gates;
-  const finish = async (result: Omit<ReviewResult, 'finishedAt'>): Promise<ReviewJobOutcome> => {
-    try {
-      await writeReviewResult(deps.bucket, reviewId, { ...result, finishedAt: now().toISOString() });
-    } catch (error) {
-      throw new ReviewWriteFailed(error instanceof Error ? error.message : String(error));
-    }
-    return { done: true };
-  };
+  const finish = async (result: Omit<ReviewResult, 'finishedAt'>, usage?: UsageToRecord): Promise<ReviewAttempt> =>
+    ({ kind: 'result', result: capped({ ...result, finishedAt: now().toISOString() }), ...(usage ? { usage } : {}) });
   const skipped = (reason: string, extra: Partial<ReviewResult> = {}) => finish({ ...empty, ...extra, state: 'skipped', reason });
 
   const spec = deps.config.model?.trim();
@@ -167,8 +183,10 @@ export async function runReviewJob(reviewId: string, attempt: number, deps: Revi
     tenant: tenant.success ? tenant.data : UNSET_TENANT, scope: REVIEW_SENTINEL_SCOPE,
     vertical: REVIEW_RUNNER_VERTICAL, version: REVIEW_PLUGIN_VERSION, operation: REVIEW_OPERATION,
   });
-  // The deadline aborts the call itself, so a late answer is never received and never billed
-  // without a line; `maxRetries: 0` makes this attempt exactly one HTTP call.
+  // The deadline aborts the call itself, so a late answer is never received; what the provider
+  // consumed before the abort may still be billed, and has no ledger line. `maxRetries: 0` makes
+  // this attempt exactly one HTTP call.
+  await beforeCall();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new ModelTimeout()), positive(deps.config.modelTimeoutMs, REVIEW_MODEL_TIMEOUT_MS));
   let run: ModelRun;
@@ -180,7 +198,7 @@ export async function runReviewJob(reviewId: string, attempt: number, deps: Revi
   } catch (error) {
     if (controller.signal.aborted) return finish({ ...empty, ...sent, state: 'incomplete', reason: 'model timed out' });
     if (transientModelError(error) && attempt + 1 < REVIEW_MAX_ATTEMPTS) {
-      return { done: false, retryInMs: REVIEW_RETRY_DELAYS_MS[attempt] ?? REVIEW_RETRY_DELAYS_MS.at(-1)! };
+      return { kind: 'retry', retryInMs: REVIEW_RETRY_DELAYS_MS[attempt] ?? REVIEW_RETRY_DELAYS_MS.at(-1)! };
     }
     log('review.model.failed', { reviewId, attempt, ...failureFacts(error) });
     return finish({ ...empty, ...sent, state: 'incomplete', reason: transientModelError(error) ? 'model unavailable' : 'model call failed' });
@@ -189,22 +207,40 @@ export async function runReviewJob(reviewId: string, attempt: number, deps: Revi
   }
 
   const usage = { inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, reported: run.line.reported };
-  if (tenant.success) {
-    // A review never fails because of metering: a failed write is logged and the result still lands.
-    await deps.recordUsage({ requestId: reviewId, line: run.line }).catch(() => {
-      log('review.usage.unrecorded', { reviewId, reason: 'ledger write failed' });
-    });
-  } else {
-    log('review.usage.unrecorded', { reviewId, reason: 'no platform tenant configured' });
-  }
+  // The ledger line is returned, not written: the caller holds the result first, so an object
+  // reset during the ledger call cannot lose a paid reply.
+  const toRecord = tenant.success ? { requestId: reviewId, line: run.line } : undefined;
+  if (!toRecord) log('review.usage.unrecorded', { reviewId, reason: 'no platform tenant configured' });
   const reply = parseReply(run.text);
   const assembled = reply ? assemble(reply, diff.files) : { findings: [], dropped: 0, checkedClean: [], notApplicable: [] };
-  const capped = run.finishReason === 'length';
+  const cut = run.finishReason === 'length';
   return finish({
     ...empty, ...sent, ...assembled,
     model: { spec, label: run.label }, usage, parseFailures: reply ? 0 : 1,
-    state: capped || !reply ? 'incomplete' : 'completed',
-    reason: capped ? 'output cap' : reply ? null : 'unparseable reply',
+    state: cut || !reply ? 'incomplete' : 'completed',
+    reason: cut ? 'output cap' : reply ? null : 'unparseable reply',
+  }, toRecord);
+}
+
+/**
+ * One attempt, then its ledger line and its result written, with none of the object's
+ * bookkeeping. Production runs through `reviewAlarm`; this is the same attempt for the tests that
+ * exercise an attempt's own decisions.
+ */
+export async function runReviewJob(reviewId: string, attempt: number, deps: ReviewJobDeps): Promise<ReviewJobOutcome> {
+  const outcome = await reviewOnce(reviewId, attempt, deps);
+  if (outcome.kind === 'retry') return { done: false, retryInMs: outcome.retryInMs };
+  if (outcome.kind === 'result') {
+    if (outcome.usage) await recordLedger(deps, outcome.usage);
+    await writeReviewResult(deps.bucket, reviewId, outcome.result);
+  }
+  return { done: true };
+}
+
+/** A review never fails because of metering: a failed ledger write is logged and the result still lands. */
+async function recordLedger(deps: ReviewJobDeps, usage: UsageToRecord): Promise<void> {
+  await deps.recordUsage(usage).catch(() => {
+    (deps.log ?? ((event, detail) => console.log(event, detail)))('review.usage.unrecorded', { reviewId: usage.requestId, reason: 'ledger write failed' });
   });
 }
 
@@ -240,12 +276,25 @@ export function reviewJobDeps(env: ReviewJobEnv, bucket: R2Bucket): ReviewJobDep
   };
 }
 
-interface ReviewJobState { reviewId: string; attempt: number }
+interface ReviewJobState { reviewId: string; attempt: number; writes?: number }
+
+/** A finished attempt held in the object's storage until it is written: the result, and its ledger line until that is written. */
+interface HeldResult { result: ReviewResult; usage?: UsageToRecord }
+
+/** The longest wait between writes of a held result. Writes go on until the receipt expires. */
+export const REVIEW_WRITE_RETRY_MAX_MS = 60 * 60_000;
 
 /**
- * One alarm of one job, over the object's own storage. The job is forgotten only once a record is
- * written (or there is no receipt left to write one for); a transient model error re-arms it for
- * the next attempt, and a record that could not be stored re-arms it until one is.
+ * One alarm of one job, over the object's own storage.
+ *
+ * The model is called at most once per attempt and never again for a finished one: the attempt is
+ * counted in storage before the call, and the finished result is held in storage before anything
+ * else, its ledger line included. The ledger line is written next (deduplicated on the review id)
+ * and the result after it. A failed result write retries only the write, waiting from
+ * REVIEW_WRITE_RETRY_MS and doubling to at most REVIEW_WRITE_RETRY_MAX_MS, until the receipt
+ * expires. If the result cannot be held, it is written straight to R2. A transient model error
+ * re-arms the next attempt. The job is forgotten once the result is written, or nothing is left
+ * to write it for.
  */
 export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJobDeps | null, nowMs: () => number = Date.now): Promise<void> {
   const job = await storage.get<ReviewJobState>('job');
@@ -253,43 +302,78 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
     await storage.deleteAll();
     return;
   }
-  let outcome: ReviewJobOutcome;
-  try {
-    outcome = await runReviewJob(job.reviewId, job.attempt, deps);
-  } catch (error) {
-    console.error('review.job.failed', { reviewId: job.reviewId, reason: error instanceof ReviewWriteFailed ? 'record write failed' : 'runner error' });
-    // An unexpected throw still ends in a record, so a review never sits `received` for good.
-    const written = await writeRunnerError(deps.bucket, job.reviewId, error instanceof ReviewWriteFailed ? 'record write failed' : 'runner error');
-    if (!written) {
-      await storage.setAlarm(nowMs() + REVIEW_WRITE_RETRY_MS);
+  let held = await storage.get<HeldResult>('held');
+  if (!held) {
+    let outcome: ReviewAttempt;
+    try {
+      outcome = job.attempt >= REVIEW_MAX_ATTEMPTS
+        ? await stoppedResult(deps.bucket, job.reviewId, 'runner interrupted')
+        : await reviewOnce(job.reviewId, job.attempt, deps, () => storage.put('job', { ...job, attempt: job.attempt + 1 } satisfies ReviewJobState));
+    } catch {
+      console.error('review.job.failed', { reviewId: job.reviewId, reason: 'runner error' });
+      // An unexpected throw still ends in a record, so a review never sits `received` for good.
+      outcome = await stoppedResult(deps.bucket, job.reviewId, 'runner error').catch(() => ({ kind: 'retry', retryInMs: REVIEW_WRITE_RETRY_MS }) as const);
+    }
+    if (outcome.kind === 'gone') {
+      await storage.deleteAll();
       return;
     }
-    outcome = { done: true };
+    if (outcome.kind === 'retry') {
+      await storage.setAlarm(nowMs() + outcome.retryInMs);
+      return;
+    }
+    held = { result: outcome.result, ...(outcome.usage ? { usage: outcome.usage } : {}) };
+    try {
+      await storage.put('held', held);
+    } catch {
+      // Not holdable: write it now rather than lose it. A failure here re-arms the job, whose
+      // attempt is already counted.
+      console.error('review.job.failed', { reviewId: job.reviewId, reason: 'result not held' });
+      try {
+        if (held.usage) await recordLedger(deps, held.usage);
+        await writeReviewResult(deps.bucket, job.reviewId, held.result);
+        await storage.deleteAll();
+      } catch {
+        await storage.setAlarm(nowMs() + REVIEW_WRITE_RETRY_MS);
+      }
+      return;
+    }
   }
-  if (outcome.done) {
-    await storage.deleteAll();
+  if (held.usage) {
+    await recordLedger(deps, held.usage);
+    held = { result: held.result };
+    await storage.put('held', held);
+  }
+  try {
+    await writeReviewResult(deps.bucket, job.reviewId, held.result);
+  } catch {
+    const receipt = await readReceipt(deps.bucket, job.reviewId).catch(() => undefined);
+    if (receipt === null || (receipt && Date.parse(receipt.expiresAt) <= nowMs())) {
+      await storage.deleteAll();
+      return;
+    }
+    const writes = (job.writes ?? 0) + 1;
+    console.error('review.job.failed', { reviewId: job.reviewId, reason: 'record write failed', writes });
+    const current = (await storage.get<ReviewJobState>('job')) ?? job;
+    await storage.put('job', { ...current, writes } satisfies ReviewJobState);
+    await storage.setAlarm(nowMs() + Math.min(REVIEW_WRITE_RETRY_MS * 2 ** (writes - 1), REVIEW_WRITE_RETRY_MAX_MS));
     return;
   }
-  await storage.put('job', { ...job, attempt: job.attempt + 1 } satisfies ReviewJobState);
-  await storage.setAlarm(nowMs() + outcome.retryInMs);
+  await storage.deleteAll();
 }
 
-/** The fallback record. True when a record now exists (or no receipt is left to need one). */
-async function writeRunnerError(bucket: R2Bucket, reviewId: string, reason: string): Promise<boolean> {
-  try {
-    const receipt = await readReceipt(bucket, reviewId);
-    if (!receipt || await hasReviewResult(bucket, reviewId)) return true;
-    const at = new Date().toISOString();
-    await writeReviewResult(bucket, reviewId, { ...emptyResult(receipt, at), state: 'incomplete', reason, finishedAt: at });
-    return true;
-  } catch {
-    return false;
-  }
+/** A result for a job that stopped without one of its own: `incomplete` with the reason. Gone when no receipt is left. */
+async function stoppedResult(bucket: R2Bucket, reviewId: string, reason: string): Promise<ReviewAttempt> {
+  const receipt = await readReceipt(bucket, reviewId);
+  if (!receipt || await hasReviewResult(bucket, reviewId)) return { kind: 'gone' };
+  const at = new Date().toISOString();
+  return { kind: 'result', result: { ...emptyResult(receipt, at), state: 'incomplete', reason, finishedAt: at } };
 }
 
 /**
- * One object per review id, stepped by its alarm. It holds only the id and the attempt; the
- * record lives in R2, and once the result is written the object forgets everything.
+ * One object per review id, stepped by its alarm. It holds the id, the attempt and the write
+ * count, and a finished result until it is written; the record lives in R2, and once the result
+ * is written the object forgets everything.
  */
 export class ReviewJobDO extends DurableObject<ReviewJobEnv> {
   async start(reviewId: string): Promise<void> {

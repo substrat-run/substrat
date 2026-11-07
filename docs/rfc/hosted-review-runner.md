@@ -878,9 +878,9 @@ review route answers `501`, and nothing else in the control plane depends on the
 
 **The model and the ledger tenant (phase 1, runbook).** The reader half runs the model named by
 the control-plane setting `REVIEW_MODEL`, a `cloudflare:<model>` spec on the gateway row. The
-model is not chosen yet; a person picks it. Set it, and the model gateway's base URL and token
-(the same values the builder holds), in `secrets/platform.<env>.env` under the control plane's
-keys in `scripts/secrets.mjs`, then `node scripts/secrets.mjs push`. Check: a staff
+model is not chosen yet; a person picks it. Set it, and a gateway credential pair (base URL and
+token), in `secrets/platform.<env>.env` under the control plane's keys in `scripts/secrets.mjs`,
+then `node scripts/secrets.mjs push`. Check: a staff
 `substrat review upload --base origin/main` followed by `substrat review <id> --wait` ends
 `completed`, not `skipped: no model configured` or `skipped: model not configured on this
 plane`. Until it is set every review ends `skipped: no model configured` and nothing else
@@ -904,8 +904,11 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 - **TEST has the job object but no bucket.** The TEST environment declares `ReviewJobDO` and has
   no `REVIEW_SOURCES` binding, so its review routes answer `501`. The first end-to-end run is in
   production.
-- **The gateway pair is a separate key, not a separate credential.** The control plane holds it
-  under its own keys, with the same values the builder holds, until someone mints another.
+- **The gateway pair is a separate key, not a separate credential.** The control plane reads a
+  gateway credential pair under its own keys; a separate key does not by itself mean a separate
+  credential.
+- **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
+  call goes to the account's default gateway; naming another gateway is a later change.
 
 ### Q9 — Decided
 
