@@ -42,6 +42,11 @@ export type GateName =
 	| 'scenario'
 	| 'app-build'
 	| 'app-api'
+	| 'app-components'
+	| 'app-ports'
+	| 'app-starter'
+	| 'sign-in'
+	| 'sends-email'
 	| 'migration-replay';
 
 export type GateStatus = 'passed' | 'failed' | 'blocked' | 'skipped';
@@ -143,13 +148,18 @@ export function defaultGates(verticalDir: string): GateSpec[] {
  * would.
  */
 export async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
+	return typeof (await substratBlock(ws, projectDir)).permissions === 'string';
+}
+
+/** package.json's `substrat` block, empty when the file is unreadable or malformed. */
+async function substratBlock(ws: Workspace, projectDir: string): Promise<{ permissions?: string; sendsEmail?: boolean }> {
 	try {
 		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
-			substrat?: { permissions?: string };
+			substrat?: { permissions?: string; sendsEmail?: boolean };
 		};
-		return typeof pkg.substrat?.permissions === 'string';
+		return pkg.substrat ?? {};
 	} catch {
-		return false;
+		return {};
 	}
 }
 
@@ -173,10 +183,69 @@ function modelCompileCmd(projectDir: string): string {
 	);
 }
 
+/** Every file under `dir`, as one string; nothing when it does not exist. */
+async function readTree(ws: Workspace, dir: string): Promise<string> {
+	const entries = await ws.listFiles(dir).catch(() => [] as string[]);
+	const parts = await Promise.all(
+		entries.map(async (entry) => {
+			const path = `${dir}/${entry.replace(/\/$/, '')}`;
+			return entry.endsWith('/') ? await readTree(ws, path) : await ws.readFile(path);
+		}),
+	);
+	return parts.join('\n');
+}
+
+const withoutComments = (source: string): string => source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/.*$/gm, '$1');
+
+/** The API port a file falls back to. `ISSUER_PORT` and `WEB_PORT` are other ports. */
+const apiPortIn = (source: string): string | undefined => /(?<![A-Z_])PORT\s*\?\?\s*['"]?(\d+)/.exec(source)?.[1];
+
+/** A `<wa-*>` nobody registered renders its children inline, so a dialog sits open on the page. */
+async function unregisteredComponents(ws: Workspace, projectDir: string): Promise<string | null> {
+	const controls = await ws.readFile(`${projectDir}/app/node_modules/@substrat-run/elements/dist/controls.js`).catch(() => null);
+	if (controls === null) return null;
+	const app = await readTree(ws, `${projectDir}/app/src`);
+	const registered = new Set([...`${controls}\n${app}`.matchAll(/components\/([a-z-]+)\//g)].map((m) => m[1]));
+	const missing = [...new Set([...app.matchAll(/<wa-([a-z-]+)/g)].map((m) => m[1]!))].filter((tag) => !registered.has(tag));
+	if (missing.length === 0) return null;
+	const tags = missing.map((tag) => `<wa-${tag}>`).join(', ');
+	return `app/src uses ${tags}, which @substrat-run/elements/controls does not register, so it renders as plain text. Use a registered control or a native element such as <dialog>.`;
+}
+
+/** The app's dev proxy and the server each fall back to a port, and they have to be the same one. */
+async function portsDisagree(ws: Workspace, projectDir: string): Promise<string | null> {
+	const read = (file: string) => ws.readFile(`${projectDir}/${file}`).catch(() => '');
+	const server = apiPortIn(await read('src/server.ts'));
+	const proxy = apiPortIn(await read('app/vite.config.ts'));
+	if (!server || !proxy || server === proxy) return null;
+	return `src/server.ts listens on ${server} by default and app/vite.config.ts proxies to ${proxy}, so the app cannot reach the server. Use ${proxy} in src/server.ts.`;
+}
+
+async function starterLeft(ws: Workspace, projectDir: string): Promise<string | null> {
+	const screens = await ws.readFile(`${projectDir}/app/src/screens.ts`).catch(() => '');
+	return screens.includes('acme/') ? 'app/src/screens.ts is still the starter: rewrite it, one screen per line of the Screens section.' : null;
+}
+
+/** Who is calling comes from the login, never from a header the client sets. */
+async function noRealSignIn(ws: Workspace, projectDir: string): Promise<string | null> {
+	const server = withoutComments(await readTree(ws, `${projectDir}/src`));
+	const app = withoutComments(await readTree(ws, `${projectDir}/app/src`));
+	if (/x-principal/i.test(`${server}\n${app}`)) return 'The code identifies the caller from an x-principal header, which anyone can set. Use devLogin, as the template\'s src/server.ts does.';
+	return /devLogin|verticalAuth|oidcRp/.test(server) ? null : 'src/ has no sign-in. Use devLogin, as the template\'s src/server.ts does.';
+}
+
+/** A hosted send is refused unless the project asked to send, and no suite sees that: a local host only queues. */
+async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<string | null> {
+	if (!/\brequestEmail\(/.test(withoutComments(await readTree(ws, `${projectDir}/src`)))) return null;
+	if ((await substratBlock(ws, projectDir)).sendsEmail === true) return null;
+	return 'src/ queues email with requestEmail, and a hosted send is refused unless the project asks for it. Set "sendsEmail": true under "substrat" in package.json.';
+}
+
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export function standaloneGates(projectDir: string): GateSpec[] {
 	const pkg = async (ws: Workspace): Promise<boolean> => await ws.exists(`${projectDir}/package.json`);
+	const hasApp = async (ws: Workspace): Promise<boolean> => await ws.exists(`${projectDir}/app/package.json`);
 	return [
 		{
 			// The model phase's gate (#680). Typechecking `spec/model.ts` IS the
@@ -271,6 +340,43 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/app/package.json`),
 			note: 'no app/ yet',
 		},
+		// Each of these found real builds that passed every gate above. No command to run: the
+		// refusal is the check, so a pass is a `true` that costs nothing.
+		{
+			name: 'app-components',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => unregisteredComponents(ws, projectDir),
+		},
+		{
+			name: 'app-ports',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => portsDisagree(ws, projectDir),
+		},
+		{
+			name: 'app-starter',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => starterLeft(ws, projectDir),
+		},
+		{
+			name: 'sign-in',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/server.ts`),
+			note: 'no src/server.ts yet',
+			refuse: (ws) => noRealSignIn(ws, projectDir),
+		},
+		{
+			name: 'sends-email',
+			cmd: 'true',
+			appliesWhen: pkg,
+			note: 'no package.json yet',
+			refuse: (ws) => undeclaredEmail(ws, projectDir),
+		},
 		{
 			name: 'migration-replay',
 			cmd: '',
@@ -335,7 +441,11 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
 	}
 
 	const started = Date.now();
-	const refusal = await spec.refuse?.(ws, verticalDir);
+	// A check that cannot finish fails its gate: passing would vouch for what it never read, and a
+	// rejection here would take every other gate's result with it.
+	const refusal = await spec.refuse?.(ws, verticalDir).catch(
+		(cause: unknown) => `This check could not finish: ${cause instanceof Error ? cause.message : String(cause)}`,
+	);
 	if (refusal) {
 		return { name: spec.name, status: 'failed', exitCode: 1, durationMs: Date.now() - started, output: refusal };
 	}
@@ -367,7 +477,11 @@ export async function runInstall(ws: Workspace, verticalDir = '.'): Promise<Gate
 	// A project with its own workspace file installs there: from an enclosing workspace pnpm
 	// would judge the wrong lockfile, and report one the project's install left correct.
 	const own = await ws.exists(`${verticalDir}/pnpm-workspace.yaml`);
-	const { stdout, stderr, exitCode } = await ws.exec('pnpm install', own ? { cwd: verticalDir } : {});
+	// The turn may have just edited package.json, so its lockfile is expected to move: refusing it
+	// here costs a whole repair pass for a file the install itself writes.
+	const { stdout, stderr, exitCode } = await (own
+		? ws.exec('pnpm install --no-frozen-lockfile', { cwd: verticalDir })
+		: ws.exec('pnpm install'));
 	return {
 		name: 'install',
 		status: exitCode === 0 ? 'passed' : 'failed',

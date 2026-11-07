@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isPlatformRequest, principalId, type Page, type PrincipalId } from '@substrat-run/contracts';
+import { isPlatformRequest, permissionKey, principalId, type Page, type PrincipalId } from '@substrat-run/contracts';
 import type { DevCaller } from '@substrat-run/dev-issuer';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { createApp } from '../src/app.js';
@@ -76,6 +76,23 @@ describe('inviting someone to a list', () => {
     const noor = await member('noor@example.com');
     await noor.stub.invoke('todo/join', { displayName: 'Noor' });
     await expect(noor.stub.invoke('todo/list-items', { listId })).rejects.toThrow(/permission denied/i);
+  });
+
+  it('refuses to invite on behalf of someone who could not share the list themselves', async () => {
+    const listId = await newList('Delegated');
+    const manager = await member('manager@example.com');
+    await host.admin.grant(world.staff, {
+      principalId: manager.id,
+      permission: permissionKey.parse('list:manage'),
+      node: scope(),
+      entity: { entityType: 'list', entityId: listId },
+      grantedBy: world.ada.principal,
+    });
+
+    await expect(manager.stub.invoke('todo/invite', { listId, email: 'vera@example.com' })).rejects.toThrow(
+      /permission denied/i,
+    );
+    expect(await mailTo('vera@example.com')).toEqual([]);
   });
 
   it('keeps an invitation to a binned list waiting', async () => {

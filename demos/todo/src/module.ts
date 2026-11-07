@@ -454,6 +454,9 @@ const bound = operationsFor(todoOperations)({
    */
   'todo/invite': async (ctx, input) => {
     assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
+    // A grant delegates, but the share an invitation becomes is made by a consumer, where nothing
+    // re-checks the inviter. So what they hand on is asked here, whether or not the address has joined.
+    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
     const list = listOrThrow(ctx, input.listId);
 
     const invitee = ownerByEmail(ctx, input.email);

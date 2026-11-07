@@ -34,12 +34,12 @@ export const conformance = declareEntityChecks({
         'the handler delegates list:contribute to the invitee via ctx.grant, and delegation ' +
         'only narrows a permission the caller already holds',
     },
-    // Inviting someone who has joined shares at once, so it delegates the same way.
+    // An invitation hands on the same key, so the handler asks for it itself.
     'todo/invite': {
       permissions: ['list:contribute'],
       because:
-        'inviting an address that has joined shares the list, which delegates list:contribute ' +
-        'via ctx.grant, and delegation only narrows a permission the caller already holds',
+        'an invitation becomes a share of list:contribute, and the consumer that makes it for an ' +
+        'address yet to join re-checks nobody, so the handler checks the inviter holds that key',
     },
   },
   // The four the kit cannot generate, and why. Asserted exactly: turning one

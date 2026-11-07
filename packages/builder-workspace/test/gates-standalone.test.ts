@@ -20,12 +20,12 @@
  *      fixture project that is not a member of this workspace.
  */
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { checkModel, runGate, standaloneGates, type GateName, type GateSpec } from '../src/gates.js';
+import { checkModel, runGate, runGates, standaloneGates, type GateName, type GateSpec } from '../src/gates.js';
 import { LocalWorkspace } from '../src/local.js';
 import type { ExecOptions, ExecResult, Workspace } from '../src/workspace.js';
 
@@ -148,6 +148,47 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
 		expect(gate('app-build').cmd).toBe(`pnpm --dir ${PROJECT}/app build`);
 		expect((await runGate(w, gate('app-build'), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
+
+	it.each([
+		['app-components', 'app/src/screens.ts', 'html`<wa-dialog></wa-dialog>`', 'html`<wa-button></wa-button>`', '<wa-dialog>'],
+		['app-ports', 'src/server.ts', 'process.env.PORT ?? 8878', 'process.env.PORT ?? 8891', 'cannot reach'],
+		['app-starter', 'app/src/screens.ts', "invoke('acme/add-item')", "invoke('lists/add-item')", 'still the starter'],
+		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
+		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+		['sends-email', 'package.json', '{ not json', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
+		await w.writeFile(`${PROJECT}/app/vite.config.ts`, 'process.env.PORT ?? 8891');
+		await w.writeFile(`${PROJECT}/src/server.ts`, 'devLogin({}); process.env.PORT ?? 8891');
+		await w.writeFile(`${PROJECT}/src/module.ts`, 'requestEmail(ctx, message);');
+		await w.writeFile(`${PROJECT}/app/node_modules/@substrat-run/elements/dist/controls.js`, "import 'x/components/button/button.js';");
+
+		await w.writeFile(`${PROJECT}/${file}`, bad);
+		const refused = await runGate(w, gate(name), PROJECT);
+		expect(refused.status).toBe('failed');
+		expect(refused.output).toContain(says);
+
+		await w.writeFile(`${PROJECT}/${file}`, good);
+		expect((await runGate(w, gate(name), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
+
+	it('fails a gate whose check cannot finish, and keeps the result of every other gate', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'builder-unreadable-'));
+		const w = new LocalWorkspace({ root });
+		const project = '.builder/projects/todo';
+		await w.writeFile(`${project}/package.json`, '{"substrat":{"sendsEmail":true}}');
+		await w.writeFile(`${project}/src/server.ts`, 'devLogin({});');
+		await symlink(join(root, 'nowhere.ts'), join(root, project, 'src/broken.ts'));
+		const gates = standaloneGates(project).filter((g) => g.name === 'sign-in' || g.name === 'sends-email');
+
+		const run = await runGates(w, project, gates);
+
+		expect(run.results.map((r) => [r.name, r.status])).toEqual([['sign-in', 'failed'], ['sends-email', 'failed']]);
+		expect(run.results[0]!.output).toContain('could not finish');
 		await w.dispose();
 	});
 
