@@ -26,6 +26,8 @@ const record = {
 	id: basename(runDir), at: new Date().toISOString(), strategy, model, sha, exit: Number(exit),
 	passed: !!r?.passed, turns: r?.turns ?? null, repairs: r?.repairs ?? null, questions: r?.questions ?? null,
 	seconds: Math.round(ms / 1000), steps: u.steps ?? null,
+	// List price from the rate card, for a model that has one: a local Claude Code login has none.
+	costUsd: r?.listCostUsd ?? null,
 	inputTokens: u.inputTokens ?? null, cachedTokens: u.cachedInputTokens ?? null, cacheWrite: u.cacheWriteTokens ?? null, outputTokens: u.outputTokens ?? null,
 	uncachedTokens: u.inputTokens != null ? u.inputTokens - (u.cachedInputTokens ?? 0) : null,
 	stages: Object.fromEntries(Object.entries(st).map(([k, s]) => [k, { s: Math.round((s.durationMs + s.gateMs) / 1000), steps: s.steps, in: s.inputTokens, cached: s.cachedInputTokens, out: s.outputTokens }])),
