@@ -57,6 +57,7 @@ jobs:
     # and prod is self-serve, so the same run points prod at the new version.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # One promotion at a time, and every merge still gets one. Two merges landing together
     # would otherwise race, and the loser could point prod at the OLDER version — the channel
     # takes whichever push finishes last, not whichever commit is newer. Queued rather than
@@ -175,6 +176,7 @@ jobs:
   preview:
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Never overlap two runs for the same PR — a rapid re-push waits for the first.
     concurrency: substrat-preview-${{ github.event.number }}
     permissions:
@@ -283,6 +285,7 @@ jobs:
     # Reap only — no repo build needed, so skip checkout/install and just run the CLI.
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     concurrency: substrat-preview-${{ github.event.number }}
     steps:
       - uses: actions/setup-node@v6
