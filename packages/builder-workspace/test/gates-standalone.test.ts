@@ -151,6 +151,30 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.dispose();
 	});
 
+	it.each([
+		['app-components', 'app/src/screens.ts', 'html`<wa-dialog></wa-dialog>`', 'html`<wa-button></wa-button>`', '<wa-dialog>'],
+		['app-ports', 'src/server.ts', 'process.env.PORT ?? 8878', 'process.env.PORT ?? 8891', 'cannot reach'],
+		['app-starter', 'app/src/screens.ts', "invoke('acme/add-item')", "invoke('lists/add-item')", 'still the starter'],
+		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
+		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
+		await w.writeFile(`${PROJECT}/app/vite.config.ts`, 'process.env.PORT ?? 8891');
+		await w.writeFile(`${PROJECT}/src/server.ts`, 'devLogin({}); process.env.PORT ?? 8891');
+		await w.writeFile(`${PROJECT}/src/module.ts`, 'requestEmail(ctx, message);');
+		await w.writeFile(`${PROJECT}/app/node_modules/@substrat-run/elements/dist/controls.js`, "import 'x/components/button/button.js';");
+
+		await w.writeFile(`${PROJECT}/${file}`, bad);
+		const refused = await runGate(w, gate(name), PROJECT);
+		expect(refused.status).toBe('failed');
+		expect(refused.output).toContain(says);
+
+		await w.writeFile(`${PROJECT}/${file}`, good);
+		expect((await runGate(w, gate(name), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
+
 	it('refuses an app that calls /api/invoke until the server really mounts it', async () => {
 		// A real shell: the gate is its command, which the scripted workspace would answer for it.
 		const w = new LocalWorkspace({ root: await mkdtemp(join(tmpdir(), 'builder-app-api-')) });

@@ -261,9 +261,11 @@ that breaks them:
 - **Whoever holds a key shares it.** `ctx.grant` re-checks that the caller holds the
   key on that entity, which the owner does through the link. An operation called by
   the person being added can give them nothing. So when the concept says people are
-  invited and accept, declare one operation the *holder* calls, finding someone who
-  has already joined by their email (`todo/share-list`), and no pending invitation
-  whose accept step would have to grant.
+  invited and accept, declare one operation the *holder* calls (`todo/share-list`),
+  and no accept step that would have to grant. When the address may not have joined,
+  declare an `invite` entity beside it, as `todo` does: `todo/invite` shares at once
+  or records the invitation, `todo/list-invites` and `todo/cancel-invite` let the owner
+  see and withdraw it, and a consumer of the join event turns it into a share.
 
 Finding people by email makes the joined address a credential: a member who joins
 with someone else's address receives that person's shares. The operation cannot see
