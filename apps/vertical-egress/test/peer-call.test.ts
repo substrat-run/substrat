@@ -128,6 +128,9 @@ describe('a peer call through egress (#1706)', () => {
   // target's own refusal (`refused`) and `unavailable` at 502 keep their status as `about:blank`.
   it.each([
     [404, 'not_found', 'https://substrat.net/errors/not-found', 'not_found'],
+    [403, 'forbidden', 'https://substrat.net/errors/forbidden', 'forbidden'],
+    [409, 'conflict', 'https://substrat.net/errors/conflict', 'conflict'],
+    [503, 'unavailable', 'https://substrat.net/errors/unavailable', 'unavailable'],
     [403, 'refused', 'about:blank', undefined],
     [502, 'unavailable', 'about:blank', undefined],
   ])('the router’s %i %s refusal is passed through with its status and reason', async (status, routerCode, type, code) => {

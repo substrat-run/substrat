@@ -397,7 +397,7 @@ already answer their expected refusal as a value.
      strict `storeResponse` envelope, which the scope host reads into a `StoreError`. `test/worker.test.ts`
      and `test/peer-call.test.ts` hold the documents.
    - **Still open, surface by surface:** the social relay (#113's remainder). A repo-wide source gate
-     waits until they are converted. `dev-issuer` is done where
+     waits until it is converted. `dev-issuer` is done where
      it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
      `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which
      the clients of the protocol parse, so they are out of scope.

@@ -479,9 +479,10 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
  * them from its store's: the refusing rule's code (#2406), or else `substrat.refused` for a
  * 4xx and `substrat.unavailable` for a 5xx.
  *
- * Every answer here, refusals included, is the strict `storeResponse` envelope the scope host
- * reads with `storeAnswerOf` (#2209), never a problem document (#113): the host would answer a
- * problem body as `badEnvelope`. It reads the envelope into a `StoreError`, which is the problem.
+ * Every answer here, refusals included, is the strict `storeResponse` envelope (#2209), never a
+ * problem document (#113): the scope host reads this hop through the kernel's `callScopeStore`,
+ * which parses it with `storeResponse` and answers anything else as `badEnvelope`. It reads the
+ * envelope into a `StoreError`, which is the problem.
  */
 async function storeCall(request: Request, env: Env): Promise<Response> {
   const problem = (status: number, error: string, ruleCode?: string): Response => {
