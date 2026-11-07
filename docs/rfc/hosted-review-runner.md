@@ -915,11 +915,12 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   Not every mask runs in linear time, so these caps are what bound the time redaction takes. A
   secret in a shape no mask knows stays in the text.
 - **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
-  no model, and the review stays `received` until the prune removes it. A call already paid for
+  no model, and the review stays `received` until the prune removes it. A call that returned usage
   has its ledger line written before anything decides whether its result is kept, so a result
   dropped by this margin or by a prune still leaves the line. If that ledger write fails on the
   job's last alarm, it is logged and not tried again, so a failed write with a pruned receipt leaves
-  no line.
+  no line. A timed-out call returns no usage, so it has no line though it may still be billed, and
+  with `REVIEW_PLATFORM_TENANT` unset no line is written at all.
 - **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
   call goes to the account's default gateway; naming another gateway is a later change.
 
