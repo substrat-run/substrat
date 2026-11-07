@@ -1,5 +1,21 @@
 # @substrat-run/demo-todo
 
+## 1.0.0
+
+### Major Changes
+
+- c31c3d6: An operation reads the caller's verified address as `ctx.verifiedEmail` (K-61), passed to `getScope` by the door. A `join` or `sign-up` that takes `email` no longer loads: upgrading such a vertical means reading `ctx.verifiedEmail` instead.
+
+### Patch Changes
+
+- Updated dependencies [c31c3d6]
+- Updated dependencies [86f40c2]
+  - @substrat-run/contracts@0.187.0
+  - @substrat-run/kernel@0.187.0
+  - @substrat-run/adapter-sqlite@0.187.0
+  - @substrat-run/dev-issuer@0.4.0
+  - @substrat-run/vertical-host@0.187.0
+
 ## 0.4.0
 
 ### Minor Changes

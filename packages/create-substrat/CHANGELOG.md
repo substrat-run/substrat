@@ -1,5 +1,12 @@
 # create-substrat
 
+## 0.14.0
+
+### Minor Changes
+
+- c31c3d6: An operation reads the caller's verified address as `ctx.verifiedEmail` (K-61), passed to `getScope` by the door. A `join` or `sign-up` that takes `email` no longer loads: upgrading such a vertical means reading `ctx.verifiedEmail` instead.
+- 86f40c2: A generated app can sign people in once it is deployed. `workerDoor` in `@substrat-run/vertical-host/worker-door` owns the login round-trip, `/api/me`, the owner claim and the provisioning hooks, and hands every operation the caller's verified address. The template's worker uses it, and its `ConfigDO` store is replaced by the `IdentityDO` store `AUTH`. Member invites are not in it yet: a worker that wants them mounts `mountInviteRoutes` with its own admin gate.
+
 ## 0.13.25
 
 ### Patch Changes

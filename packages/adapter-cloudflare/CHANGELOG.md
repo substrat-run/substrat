@@ -1,5 +1,17 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.187.0
+
+### Minor Changes
+
+- c31c3d6: An operation reads the caller's verified address as `ctx.verifiedEmail` (K-61), passed to `getScope` by the door. A `join` or `sign-up` that takes `email` no longer loads: upgrading such a vertical means reading `ctx.verifiedEmail` instead.
+
+### Patch Changes
+
+- Updated dependencies [c31c3d6]
+  - @substrat-run/contracts@0.187.0
+  - @substrat-run/kernel@0.187.0
+
 ## 0.186.0
 
 ### Patch Changes
