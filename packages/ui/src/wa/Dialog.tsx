@@ -28,6 +28,7 @@ export interface DialogProps {
  * and handed to `onCancel`, and the dialog closes when `open` says so. A `wa-hide` from a
  * `wa-select` inside bubbles up here too, so only the dialog's own counts. The element
  * stays mounted while closed: its focus goes back to the opener only as it closes itself.
+ * A view that unmounts it while open skips that, so focus is handed back from here then.
  */
 export function Dialog({
   open,
@@ -58,9 +59,19 @@ export function Dialog({
     return () => el.removeEventListener('wa-hide', hide);
   }, []);
 
+  const opener = useRef<Element | null>(null);
   useEffect(() => {
+    if (open) opener.current = document.activeElement;
     dialog.current!.open = open;
   }, [open]);
+
+  useEffect(
+    () => () => {
+      const back = opener.current;
+      if (latest.current.open && back instanceof HTMLElement && back.isConnected) setTimeout(() => back.focus());
+    },
+    [],
+  );
 
   return (
     <wa-dialog ref={dialog as never} label={title} light-dismiss with-footer style={{ '--width': `${width}px` }}>

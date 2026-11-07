@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from
 import { api, teamApi, type AppRow, type ConnectionSweepRow, type ConnectionSweepView, type DeadLetter, type FlowFinding, type FlowFindingsView, type FlowGraph, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
 import { relativeTime, shortId } from '../lib/format';
-import { Button } from '@substrat-run/ui';
+import { Button } from '@substrat-run/ui/wa';
 import { navigate, obsPath, teamPath } from '../lib/router';
 import { callLogsButtonTitle, deadLetterCalls } from '../lib/history';
 import { DEV_MOCK } from '../lib/mock';

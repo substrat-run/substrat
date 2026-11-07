@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InviteBlocked } from '../src/views/SignIn';
+import { buttons } from './wa';
 
 /**
  * #1184: an accept the membership executor refused answers 409 with a sentence for the
@@ -43,7 +44,7 @@ describe('InviteBlocked', () => {
   it('offers email verification for a different email and invokes the fallback', async () => {
     const verify = vi.fn();
     await act(async () => root.render(<InviteBlocked invitedEmail="work@acme.test" signedInAs="personal@example.test" onVerifyEmail={verify} onSignOut={vi.fn()} onContinue={vi.fn()} />));
-    const button = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('verify email'))!;
+    const button = buttons(container).find((b) => b.textContent?.includes('verify email'))!;
     expect(button).toBeDefined();
     await act(async () => button.click());
     expect(verify).toHaveBeenCalledOnce();

@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AppIntegrations } from '../src/views/Integrations';
 import type { AppRow } from '../src/lib/api';
+import { buttons } from './wa';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -34,10 +35,10 @@ async function submitConnection(response: Response) {
     return response;
   }));
   await act(async () => root.render(<AppIntegrations teamId="team-a" app={{ app_scope_id: 'app-a' } as AppRow} />));
-  const button = [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Connect')!;
+  const button = buttons(container).find((b) => b.textContent?.trim() === 'Connect')!;
   await act(async () => button.click());
-  const dialog = container.querySelector('[role="dialog"]')!;
-  const confirm = [...dialog.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Connect')!;
+  const dialog = container.querySelector('wa-dialog')!;
+  const confirm = buttons(dialog).find((b) => b.textContent?.trim() === 'Connect')!;
   await act(async () => confirm.click());
   expect(requests).toContain('/api/teams/team-a/apps/app-a/integrations/acme.docbox');
   return dialog;

@@ -5,6 +5,7 @@ import { api, type AppDeployments, type AppRow } from '../src/lib/api';
 import { MOCK_APP_DEPLOYMENTS } from '../src/lib/mock-deployments';
 import { updatePlacement } from '../src/lib/release-ledger';
 import { Deployments } from '../src/views/AppDetail';
+import { buttons } from './wa';
 
 // The team client the cards reach through `teamApi(teamId)` (#2170); the wire is `deployments-client.test.ts`.
 const client = vi.hoisted(() => ({
@@ -67,7 +68,7 @@ describe('Deployments tab — the Update action', () => {
     vi.spyOn(api, 'appDeployments').mockResolvedValue(dep);
     await act(async () => root.render(<Deployments teamId="T1" app={app} canManageApp={canManageApp} />));
   };
-  const updateButtons = () => [...container.querySelectorAll('button')].filter((b) => /^Update (this app|to latest)$/.test(b.textContent ?? ''));
+  const updateButtons = () => buttons(container).filter((b) => /^Update (this app|to latest)$/.test(b.textContent ?? ''));
   const comparisonHeader = () => [...container.querySelectorAll('span')].find((s) => s.textContent === 'Release comparison')!.parentElement!;
   const runningBar = () => [...container.querySelectorAll('div')].find((d) => d.firstElementChild?.textContent === 'Running')!;
 
@@ -81,7 +82,7 @@ describe('Deployments tab — the Update action', () => {
   it('hides Update and Bind for a viewer', async () => {
     await render({ ...MOCK_APP_DEPLOYMENTS, versions: MOCK_APP_DEPLOYMENTS.versions.filter((v) => v.id !== V400) }, false);
     expect(updateButtons()).toHaveLength(0);
-    expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Bind')).toBe(false);
+    expect(buttons(container).some((b) => b.textContent === 'Bind')).toBe(false);
   });
 
   it('(b) update with prod beyond the loaded page: the button is in the Running bar', async () => {
@@ -107,7 +108,7 @@ describe('Deployments tab — the Update action', () => {
     const header = comparisonHeader();
     expect(header.textContent).toContain('0.4.0-beta.7');
     expect(header.textContent).toContain('not live');
-    expect([...header.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Promote on Verticals']);
+    expect(buttons(header).map((b) => b.textContent)).toEqual(['Promote on Verticals']);
     // A vertical the team does not promote itself says who does.
     act(() => root.unmount());
     root = createRoot(container);
@@ -126,7 +127,7 @@ describe('Deployments tab — the Update action', () => {
       expect(spy).toHaveBeenCalledTimes(2);
       const header = comparisonHeader();
       expect(header.textContent).toContain('0.4.0-beta.7');
-      expect([...header.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Promote on Verticals']);
+      expect(buttons(header).map((b) => b.textContent)).toEqual(['Promote on Verticals']);
     });
 
     it('when the look fails, says it does not know rather than claiming the latest', async () => {

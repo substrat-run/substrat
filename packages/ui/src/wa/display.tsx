@@ -1,28 +1,30 @@
-/** The console's display primitives, drawn by Web Awesome. See `controls.tsx`. */
+/** The display primitives, drawn by Web Awesome. See `controls.tsx`. */
 import type { CSSProperties, ReactNode } from 'react';
 import type {} from '@substrat-run/elements/jsx';
-import type { BreadcrumbItem } from '@substrat-run/ui';
+import type { BreadcrumbItem } from '../components';
 import { css } from './controls';
 
 export interface BadgeProps {
   status?: 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'brand';
   /** Show the leading status dot. Default true. */
   dot?: boolean;
+  /** The dot breathes, for a state still in flight. */
+  pulse?: boolean;
   children?: ReactNode;
   style?: CSSProperties;
 }
 
 /** Web Awesome has no `info`, so it is a neutral badge the stylesheet gives the info colours. */
-export function Badge({ status = 'neutral', dot = true, children, style }: BadgeProps) {
+export function Badge({ status = 'neutral', dot = true, pulse, children, style }: BadgeProps) {
   return (
     <wa-badge
-      class={status === 'info' ? 'console-badge-info' : undefined}
+      class={status === 'info' ? 'ui-badge-info' : undefined}
       variant={status === 'info' ? 'neutral' : status}
       appearance="filled"
       pill
       style={css(style)}
     >
-      {dot && <span slot="start" className="console-badge-dot" />}
+      {dot && <span slot="start" className={pulse ? 'ui-badge-dot ui-badge-pulse' : 'ui-badge-dot'} />}
       {children}
     </wa-badge>
   );
@@ -36,7 +38,7 @@ export interface TagProps {
 
 export function Tag({ mono, children, style }: TagProps) {
   return (
-    <wa-tag class={mono ? 'console-mono' : undefined} size="s" variant="neutral" appearance="filled-outlined" style={css(style)}>
+    <wa-tag class={mono ? 'ui-mono' : undefined} size="s" variant="neutral" appearance="filled-outlined" style={css(style)}>
       {children}
     </wa-tag>
   );
@@ -62,7 +64,7 @@ export interface CardProps {
 export function Card({ title, description, actions, footer, padding = 16, children, style }: CardProps) {
   const header = !!(title || actions);
   return (
-    <wa-card class="console-card" appearance="outlined" with-header={header || undefined} with-footer={footer ? true : undefined} style={css(style)}>
+    <wa-card class="ui-card" appearance="outlined" with-header={header || undefined} with-footer={footer ? true : undefined} style={css(style)}>
       {header && (
         <div slot="header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
           <div style={{ minWidth: 0, flex: '1 1 auto' }}>
@@ -88,7 +90,7 @@ export function Breadcrumbs({ items, style }: { items: BreadcrumbItem[]; style?:
   return (
     <wa-breadcrumb style={css(style)}>
       {items.map((it, i) => (
-        <wa-breadcrumb-item key={i} class={it.mono ? 'console-mono' : undefined} href={it.href} onClick={it.onClick}>
+        <wa-breadcrumb-item key={i} class={it.mono ? 'ui-mono' : undefined} href={it.href} onClick={it.onClick}>
           {it.label}
         </wa-breadcrumb-item>
       ))}

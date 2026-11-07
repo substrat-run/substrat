@@ -6,6 +6,7 @@ import { EntityTimeline } from '../src/views/EventHistory';
 import { api, type HistoryEntry } from '../src/lib/api';
 import { payloadText, payloadUndecodable } from '../src/lib/history';
 import { MOCK_HISTORY_ENTITY, mockEntityHistory } from '../src/lib/mock-timeline';
+import { buttons, disabled } from './wa';
 
 const entry = (id: string, over: Partial<Record<keyof HistoryEntry, unknown>> = {}) =>
   ({
@@ -149,14 +150,14 @@ describe('EntityTimeline', () => {
       if (cursor === 'c1') return pending; // the first record's page never comes back
       return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : 'c2' } as never;
     });
-    const later = () => [...container.querySelectorAll('button')].find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
+    const later = () => buttons(container).find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
     await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
     await click(later());
-    expect(later().disabled).toBe(true);
+    expect(disabled(later())).toBe(true);
 
     await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a2" onClose={() => undefined} />));
     expect(later().textContent).toBe('Read later events');
-    expect(later().disabled).toBe(false);
+    expect(disabled(later())).toBe(false);
     await click(later());
     expect(history).toHaveBeenLastCalledWith('team-a', 's', 'account', 'a2', 'c2');
   });
@@ -167,7 +168,7 @@ describe('EntityTimeline', () => {
       if (cursor === 'c1') return new Promise((res) => stale.push(res)) as never;
       return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : null } as never;
     });
-    const later = () => [...container.querySelectorAll('button')].find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
+    const later = () => buttons(container).find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
     const open = (id: string) => act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId={id} onClose={() => undefined} />));
     await open('a1');
     await click(later()); // the first walk's read, left in flight
@@ -180,7 +181,7 @@ describe('EntityTimeline', () => {
     await act(async () => stale[0]!({ entries: [entry('01X')], nextCursor: null }));
     expect(types()).toEqual(['01A']);
     // Nor may its `finally` re-enable the button while the new walk is still reading.
-    expect(later().disabled).toBe(true);
+    expect(disabled(later())).toBe(true);
 
     await act(async () => stale[1]!({ entries: [entry('01Y')], nextCursor: null }));
     expect(types()).toEqual(['01Y', '01A']);

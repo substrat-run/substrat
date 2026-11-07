@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
+import { Button, Checkbox, Dialog, Dropdown, IconButton, Input, Select, Switch, Table, Tabs, Textarea, type TableColumn } from '@substrat-run/ui/wa';
 import { ApiError as TeamApiError } from '../lib/api.generated';
 import { api, teamApi, isApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type DumpStore, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
 import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, RESERVED_KEY_MARK, reservationNote, roleHolderNote } from '../lib/registry-diff';
@@ -95,47 +95,30 @@ function deriveSurfaceUrls(hostnames: AppHostnamesView | null, fallbackHostname:
 
 /**
  * The header's "Visit" control: a plain button for a single-surface app, a dropdown of
- * every surface's public URL when the vertical fronts more than one. Follows the popover
- * pattern used elsewhere (a fixed backdrop closes on outside click; the menu is anchored
- * to the button).
+ * every surface's public URL when the vertical fronts more than one.
  */
 function VisitControl({ surfaces }: { surfaces: SurfaceUrl[] }) {
-  const [open, setOpen] = useState(false);
   if (surfaces.length === 0) return null;
   if (surfaces.length === 1) {
     const only = surfaces[0]!;
     return <Button size="sm" onClick={() => window.open(`https://${only.hostname}`, '_blank')}>Visit ↗</Button>;
   }
   return (
-    <div style={{ position: 'relative', display: 'inline-flex' }}>
-      <Button size="sm" onClick={() => setOpen((o) => !o)}>Visit ▾</Button>
-      {open && (
-        <>
-          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 150 }} />
-          <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 151, minWidth: 260, background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 10, boxShadow: 'var(--shadow-popover)', overflow: 'hidden', padding: 4 }}>
-            {surfaces.map((s) => (
-              <button
-                key={s.hostname}
-                type="button"
-                onClick={() => {
-                  window.open(`https://${s.hostname}`, '_blank');
-                  setOpen(false);
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', border: 0, borderRadius: 6, background: 'none', cursor: 'pointer', textAlign: 'left' }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-inset)')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: 1, minWidth: 0 }}>
-                  <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{s.label ?? s.surface}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{s.hostname}</span>
-                </div>
-                <Ic name="external" size={12} />
-              </button>
-            ))}
+    <Dropdown
+      trigger={<Button size="sm" slot="trigger">Visit ▾</Button>}
+      placement="bottom-end"
+      items={surfaces.map((s) => ({
+        value: s.hostname,
+        label: (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 200 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{s.label ?? s.surface}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{s.hostname}</span>
           </div>
-        </>
-      )}
-    </div>
+        ),
+        details: <Ic name="external" size={12} />,
+      }))}
+      onSelect={(hostname) => window.open(`https://${hostname}`, '_blank')}
+    />
   );
 }
 
@@ -993,10 +976,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
             beyond the loaded page — so the comparison has nothing to name — does it stay here. */}
         {updateIn === 'bar' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
-              Snapshot data first
-            </label>
+            <Checkbox label="Snapshot data first" checked={snapFirst} onChange={setSnapFirst} style={{ fontSize: 12, color: 'var(--text-secondary)' }} />
             {canManageApp && <Button onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update to latest'}</Button>}
           </div>
         )}
@@ -1014,10 +994,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
         actions={
           target?.state === 'update' ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
-                Snapshot data first
-              </label>
+              <Checkbox label="Snapshot data first" checked={snapFirst} onChange={setSnapFirst} style={{ fontSize: 12, color: 'var(--text-secondary)' }} />
               {canManageApp && <Button size="sm" onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update this app'}</Button>}
             </div>
           ) : target?.state === 'unpromoted' ? (
@@ -1915,18 +1892,18 @@ function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; a
                         )}
                         <div style={{ flex: 1 }} />
                         {hasRecords && (
-                          <button
-                            type="button"
-                            aria-label={`Show DNS records for ${h.hostname}`}
+                          <IconButton
+                            size="sm"
+                            label={`Show DNS records for ${h.hostname}`}
                             onClick={() => setOpenRecords((o) => (o === h.hostname ? null : h.hostname))}
-                            style={{ ...iconBtn, transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
+                            style={{ color: 'var(--text-tertiary)', transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
                           >
                             <Ic name="chevronDown" size={16} />
-                          </button>
+                          </IconButton>
                         )}
-                        <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => void removeDomain(h.hostname)} style={iconBtn}>
+                        <IconButton size="sm" label={`Remove ${h.hostname}`} onClick={() => void removeDomain(h.hostname)} style={{ color: 'var(--text-tertiary)' }}>
                           <Ic name="trash" size={14} />
-                        </button>
+                        </IconButton>
                       </div>
                       {h.status === 'failed' && h.statusNote && (
                         <div style={{ margin: '0 14px 12px', background: 'var(--status-danger-bg)', borderRadius: 6, padding: '10px 14px', fontSize: 12.5, color: 'var(--status-danger-fg)', lineHeight: 1.6 }}>
@@ -2493,13 +2470,9 @@ function SqlConsole({ teamId, scopeId }: { teamId: string; scopeId: string }) {
 
   if (!open) {
     return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        style={{ ...card, border: '1px dashed var(--border-default)', background: 'transparent', padding: '10px 14px', fontSize: 12.5, color: 'var(--text-secondary)', cursor: 'pointer', textAlign: 'left', fontFamily: 'var(--font-mono)' }}
-      >
+      <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
         &gt;_ SQL console — run a read-only SELECT…
-      </button>
+      </Button>
     );
   }
 
@@ -2509,10 +2482,11 @@ function SqlConsole({ teamId, scopeId }: { teamId: string; scopeId: string }) {
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)' }}>SQL console</span>
         <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>read-only · one SELECT · audited</span>
         <div style={{ flex: 1 }} />
-        <button type="button" onClick={() => setOpen(false)} style={pagerBtn(true)}>Hide</button>
+        <Button variant="secondary" size="sm" onClick={() => setOpen(false)}>Hide</Button>
       </div>
       <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <textarea
+        <Textarea
+          mono
           value={sql}
           onChange={(e) => setSql(e.target.value)}
           onKeyDown={(e) => {
@@ -2524,13 +2498,12 @@ function SqlConsole({ teamId, scopeId }: { teamId: string; scopeId: string }) {
           placeholder="SELECT … FROM … WHERE …"
           rows={3}
           spellCheck={false}
-          style={{ width: '100%', resize: 'vertical', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: 12.5, padding: '8px 10px', boxSizing: 'border-box' }}
         />
         <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Reads this app’s data as stored, including personal data. Every query is recorded in the access log.</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button type="button" onClick={run} disabled={!sql.trim() || running} style={{ ...pagerBtn(Boolean(sql.trim()) && !running), fontWeight: 600 }}>
+          <Button variant="secondary" size="sm" onClick={run} disabled={!sql.trim() || running}>
             {running ? 'Running…' : 'Run'}
-          </button>
+          </Button>
           <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>⌘⏎ to run</span>
           {result?.truncated && (
             <span style={{ fontSize: 11.5, color: 'var(--status-warning-fg, var(--text-secondary))' }}>Showing the first {result.rows.length} rows — narrow the query for the rest.</span>
@@ -2542,31 +2515,26 @@ function SqlConsole({ teamId, scopeId }: { teamId: string; scopeId: string }) {
         result.columns.length === 0 || result.rows.length === 0 ? (
           <div style={{ padding: '0 14px 14px', fontSize: 13, color: 'var(--text-tertiary)' }}>No rows.</div>
         ) : (
-          <div style={{ overflowX: 'auto', borderTop: '1px solid var(--border-subtle)' }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
-              <thead>
-                <tr>
-                  {result.columns.map((col, ci) => (
-                    <th key={ci} style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: 10.5, color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' }}>{col}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {result.rows.map((row, i) => (
-                  <tr key={i}>
-                    {row.map((cell, j) => (
-                      <td key={j} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={cell == null ? 'null' : String(cell)}>
-                        {cell == null ? 'null' : String(cell)}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+            <Table
+              label="Query result"
+              columns={result.columns.map((col, ci): TableColumn<unknown[]> => ({ header: col, mono: true, render: (row) => <DataCell cell={row[ci]} /> }))}
+              rows={result.rows}
+            />
           </div>
         )
       )}
     </div>
+  );
+}
+
+/** One stored value in a table of rows: a `null` says so, and a long value clips with its whole text on hover. */
+function DataCell({ cell, children }: { cell: unknown; children?: React.ReactNode }) {
+  const text = cell == null ? 'null' : String(cell);
+  return (
+    <span title={text} style={{ display: 'block', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      {children ?? text}
+    </span>
   );
 }
 
@@ -2618,69 +2586,52 @@ function TablePage({
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)' }}>{page.table}</span>
         <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>{from}–{to} of {page.rowCount}</span>
         <div style={{ flex: 1 }} />
-        <button type="button" onClick={onPrev} disabled={!hasPrev} style={pagerBtn(hasPrev)}>← Prev</button>
-        <button type="button" onClick={onNext} disabled={!hasNext} style={pagerBtn(hasNext)}>Next →</button>
+        <Button variant="secondary" size="sm" onClick={onPrev} disabled={!hasPrev}>← Prev</Button>
+        <Button variant="secondary" size="sm" onClick={onNext} disabled={!hasNext}>Next →</Button>
       </div>
       {page.columns.length === 0 ? (
         <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>This table is empty.</div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
-            <thead>
-              <tr>
-                {page.columns.map((col) => (
-                  <th key={col} style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: 10.5, color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)', whiteSpace: 'nowrap' }}>{col}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {page.rows.map((row, i) => (
-                <tr key={i}>
-                  {row.map((cell, j) => {
-                    // The record's declared key column is the way into its story (#1235,
-                    // #1398), and only when the model says which entity this table holds —
-                    // guessing either would render "nothing ever happened" for a wrong
-                    // guess. Which column that is comes from `primaryKey`, not from the
-                    // name `id`: an entity keyed on anything else has a history too.
-                    const opens =
-                      onOpenHistory !== undefined &&
-                      target !== undefined &&
-                      page.columns[j] === target.idColumn &&
-                      cell != null;
-                    return (
-                      <td key={j} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={cell == null ? 'null' : String(cell)}>
-                        {opens ? (
-                          <button
-                            type="button"
-                            onClick={() => onOpenHistory!(target!.entityType, String(cell))}
-                            title="show this record's history"
-                            style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--text-brand)', cursor: 'pointer', textDecoration: 'underline' }}
-                          >
-                            {String(cell)}
-                          </button>
-                        ) : cell == null ? (
-                          'null'
-                        ) : (
-                          String(cell)
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table
+          label={page.table}
+          emptyText="This table is empty."
+          columns={page.columns.map((col, j): TableColumn<unknown[]> => ({
+            header: col,
+            mono: true,
+            render: (row) => {
+              const cell = row[j];
+              // The record's declared key column is the way into its story (#1235,
+              // #1398), and only when the model says which entity this table holds —
+              // guessing either would render "nothing ever happened" for a wrong
+              // guess. Which column that is comes from `primaryKey`, not from the
+              // name `id`: an entity keyed on anything else has a history too.
+              const opens =
+                onOpenHistory !== undefined &&
+                target !== undefined &&
+                page.columns[j] === target.idColumn &&
+                cell != null;
+              return (
+                <DataCell cell={cell}>
+                  {opens ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenHistory!(target!.entityType, String(cell))}
+                      title="show this record's history"
+                      style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--text-brand)', cursor: 'pointer', textDecoration: 'underline' }}
+                    >
+                      {String(cell)}
+                    </button>
+                  ) : undefined}
+                </DataCell>
+              );
+            },
+          }))}
+          rows={page.rows}
+        />
       )}
     </div>
   );
 }
-
-const pagerBtn = (enabled: boolean): React.CSSProperties => ({
-  border: '1px solid var(--border-default)', background: 'var(--surface-card)', borderRadius: 6,
-  padding: '4px 10px', fontSize: 12, cursor: enabled ? 'pointer' : 'default',
-  color: enabled ? 'var(--text-secondary)' : 'var(--text-tertiary)', opacity: enabled ? 1 : 0.5,
-});
 
 /**
  * The Environment section (under Settings) — a REAL settings form driven by the vertical's declared env-spec
@@ -2790,20 +2741,17 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
         {opts.secret && <Pill kind={opts.hasValue ? 'success' : 'neutral'}>{opts.hasValue ? 'secret · set' : 'secret'}</Pill>}
         <div style={{ flex: 1 }} />
         {opts.hasValue && (
-          <button type="button" aria-label="Remove" onClick={() => remove(key)} style={iconBtn}><Ic name="trash" size={14} /></button>
+          <IconButton size="sm" label="Remove" onClick={() => remove(key)} style={{ color: 'var(--text-tertiary)' }}><Ic name="trash" size={14} /></IconButton>
         )}
       </div>
       {opts.description && <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 8, lineHeight: 1.5 }}>{opts.description}</div>}
-      {opts.kind === 'model' ? <ModelSettingPicker value={inputs[key] ?? ''} catalog={view.modelCatalog} onChange={(value) => set(key, value)} /> : <input
+      {opts.kind === 'model' ? <ModelSettingPicker value={inputs[key] ?? ''} catalog={view.modelCatalog} onChange={(value) => set(key, value)} /> : <Input
         type={opts.secret ? 'password' : 'text'}
+        mono={!opts.secret}
         value={inputs[key] ?? ''}
         onChange={(e) => set(key, e.target.value)}
         placeholder={opts.secret && opts.hasValue ? '•••••••• (set — leave blank to keep)' : opts.placeholder ?? ''}
-        style={{
-          width: '100%', maxWidth: 460, height: 34, padding: '0 11px', fontSize: 13,
-          fontFamily: opts.secret ? 'inherit' : 'var(--font-mono)',
-          background: 'var(--surface-inset)', border: '1px solid var(--border-default)', borderRadius: 6, color: 'var(--text-primary)',
-        }}
+        style={{ maxWidth: 460 }}
       />}
     </div>
   );
@@ -3039,19 +2987,19 @@ function AppDomains({ teamId, app, authServers }: { teamId: string; app: AppRow;
                 <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>{h.createdAt ? shortDate(h.createdAt) : '—'}</span>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}>
                   {hasRecords && (
-                    <button
-                      type="button"
-                      aria-label={`Show DNS records for ${h.hostname}`}
+                    <IconButton
+                      size="sm"
+                      label={`Show DNS records for ${h.hostname}`}
                       onClick={() => setOpenRecords((o) => (o === h.hostname ? null : h.hostname))}
-                      style={{ ...iconBtn, transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
+                      style={{ color: 'var(--text-tertiary)', transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
                     >
                       <Ic name="chevronDown" size={16} />
-                    </button>
+                    </IconButton>
                   )}
                   {isDefault ? null : (
-                    <button type="button" aria-label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={iconBtn}>
+                    <IconButton size="sm" label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={{ color: 'var(--text-tertiary)' }}>
                       <Ic name="trash" size={14} />
-                    </button>
+                    </IconButton>
                   )}
                 </div>
               </div>
@@ -3229,10 +3177,12 @@ export function EmailSenderPermission({ teamId, app }: { teamId: string; app: Ap
         <div>Send email</div>
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 6 }}>Allow transactional emails through Substrat. Applies to every installation of this vertical. Managed by the team that owns it.</div>
       </div>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <input type="checkbox" role="switch" aria-label="Send email" checked={enabled ?? false} disabled={enabled === null || busy} onChange={toggle} />
-        {busy ? 'Saving…' : enabled === null ? 'Unavailable' : enabled ? 'Enabled' : 'Disabled'}
-      </label>
+      <Switch
+        label={<><span className="wa-visually-hidden">Send email: </span>{busy ? 'Saving…' : enabled === null ? 'Unavailable' : enabled ? 'Enabled' : 'Disabled'}</>}
+        checked={enabled ?? false}
+        disabled={enabled === null || busy}
+        onChange={toggle}
+      />
     </div>
     {error && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{error}</div>}
   </div>;
@@ -3641,7 +3591,6 @@ function IdentityCard({ teamId, app, authServers }: { teamId: string; app: AppRo
   );
 }
 
-const iconBtn = { border: 0, background: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-tertiary)', display: 'inline-flex' } as const;
 function IconBox({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <span aria-label={label} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)' }}>{children}</span>

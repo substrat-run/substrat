@@ -1,6 +1,7 @@
 import { sortApps } from './lib/name-order';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
+import { SupportWidget, useAutoRefresh } from '@substrat-run/ui';
+import { Toast, Dialog, Input } from '@substrat-run/ui/wa';
 import { api, signIn, signOut, teamApi, isApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { removalRefusalDetail } from './lib/bound-scopes';
@@ -180,6 +181,7 @@ export function App() {
   // Theme → data-theme on the root (every token flips; no per-theme overrides).
   useEffect(() => {
     document.documentElement.dataset['theme'] = dark ? 'dark' : 'light';
+    document.documentElement.classList.toggle('wa-dark', dark);
     localStorage.setItem('substrat.dash.theme', dark ? 'dark' : 'light');
   }, [dark]);
 

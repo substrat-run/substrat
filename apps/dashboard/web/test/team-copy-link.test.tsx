@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Member } from '../src/lib/api';
 import { Team } from '../src/views/Team';
+import { buttons, type } from './wa';
 
 const member = (over: Partial<Member>): Member => ({
   id: 'm',
@@ -58,7 +59,7 @@ describe('Team: Copy link on a pending invite', () => {
         />,
       );
     });
-  const copyButtons = () => [...document.querySelectorAll('button')].filter((b) => b.textContent === 'Copy link');
+  const copyButtons = () => buttons().filter((b) => b.textContent === 'Copy link');
 
   it('shows once, on the invited row only, and clicking it shows and copies the link', async () => {
     const onCopyLink = vi.fn(async () => link('https://x.test/invite/tok'));
@@ -67,7 +68,7 @@ describe('Team: Copy link on a pending invite', () => {
     await act(async () => copyButtons()[0]!.click());
     expect(onCopyLink).toHaveBeenCalledWith('inv-1');
     expect(writeText).toHaveBeenCalledWith('https://x.test/invite/tok');
-    const input = document.querySelector('input[value="https://x.test/invite/tok"]');
+    const input = document.querySelector('wa-input[value="https://x.test/invite/tok"]');
     expect(input).not.toBeNull();
     expect(document.body.textContent).toContain('No email was sent');
     expect(document.body.textContent).toContain('Copied.');
@@ -100,11 +101,11 @@ describe('Team: Copy link on a pending invite', () => {
     writeText.mockRejectedValueOnce(new Error('denied'));
     render({ canManage: true, onCopyLink: async () => link('https://x.test/invite/tok') });
     await act(async () => copyButtons()[0]!.click());
-    expect(document.querySelector('input[value="https://x.test/invite/tok"]')).not.toBeNull();
+    expect(document.querySelector('wa-input[value="https://x.test/invite/tok"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain('Copied');
     // The dialog's own Copy button: a refused write is not "Copied" either …
     writeText.mockRejectedValueOnce(new Error('denied'));
-    const copy = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Copy')!;
+    const copy = buttons().find((b) => b.textContent === 'Copy')!;
     await act(async () => copy.click());
     expect(document.body.textContent).not.toContain('Copied');
     // … and its twin: a working one is.
@@ -117,10 +118,10 @@ describe('Team: Copy link on a pending invite', () => {
     const onCopyLink = vi.fn(() => new Promise<Link>((r) => (resolve = r)));
     render({ canManage: true, onCopyLink });
     await act(async () => copyButtons()[0]!.click());
-    const done = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Done')!;
+    const done = buttons().find((b) => b.textContent === 'Done')!;
     await act(async () => done.click());
     await act(async () => resolve(link('https://x.test/invite/late')));
-    expect(document.querySelector('input[value="https://x.test/invite/late"]')).toBeNull();
+    expect(document.querySelector('wa-input[value="https://x.test/invite/late"]')).toBeNull();
     expect(document.body.textContent).not.toContain('Invite link');
     expect(writeText).not.toHaveBeenCalled();
   });
@@ -134,8 +135,8 @@ describe('Team: Copy link on a pending invite', () => {
     await act(async () => copyButtons()[1]!.click());
     await act(async () => pending['inv-2']!(link('https://x.test/invite/lee')));
     await act(async () => pending['inv-1']!(link('https://x.test/invite/rae')));
-    expect(document.querySelector('input[value="https://x.test/invite/lee"]')).not.toBeNull();
-    expect(document.querySelector('input[value="https://x.test/invite/rae"]')).toBeNull();
+    expect(document.querySelector('wa-input[value="https://x.test/invite/lee"]')).not.toBeNull();
+    expect(document.querySelector('wa-input[value="https://x.test/invite/rae"]')).toBeNull();
     expect(writeText).toHaveBeenCalledTimes(1);
   });
 
@@ -152,8 +153,8 @@ describe('Team: Copy link on a pending invite', () => {
   it('the link field has an accessible name, in the roster dialog and the create dialog', async () => {
     render({ canManage: true, onCopyLink: async () => link('https://x.test/invite/tok') });
     await act(async () => copyButtons()[0]!.click());
-    expect(document.querySelector('input[aria-label="Invite link"][value="https://x.test/invite/tok"]')).not.toBeNull();
-    await act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent === 'Done')!.click());
+    expect(document.querySelector('wa-input[label="Invite link"][value="https://x.test/invite/tok"]')).not.toBeNull();
+    await act(async () => buttons().find((b) => b.textContent === 'Done')!.click());
 
     // The create dialog: invite someone and read the link it hands back.
     act(() => {
@@ -169,15 +170,11 @@ describe('Team: Copy link on a pending invite', () => {
         />,
       );
     });
-    await act(async () => [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Invite')!.click());
-    const email = document.querySelector('input[placeholder="colleague@company.com"]') as HTMLInputElement;
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      set.call(email, 'new@acme.test');
-      email.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const send = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Create invite')!;
+    await act(async () => buttons().find((b) => b.textContent?.trim() === 'Invite')!.click());
+    const email = document.querySelector('wa-input[placeholder="colleague@company.com"]')!;
+    await act(async () => type(email, 'new@acme.test'));
+    const send = buttons().find((b) => b.textContent?.trim() === 'Create invite')!;
     await act(async () => send.click());
-    expect(document.querySelector('input[aria-label="Invite link"][value="https://x.test/invite/new"]')).not.toBeNull();
+    expect(document.querySelector('wa-input[label="Invite link"][value="https://x.test/invite/new"]')).not.toBeNull();
   });
 });

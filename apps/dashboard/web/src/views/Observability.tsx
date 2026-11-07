@@ -1,6 +1,6 @@
 import { readObsQuery, queryWindow, type ObsQuery } from '../lib/observability-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Select } from '@substrat-run/ui';
+import { Button, Select } from '@substrat-run/ui/wa';
 import { api, type AppMetricsView, type AppRow, type OverlayMarker } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_METRICS } from '../lib/mock';
 import { navigate } from '../lib/router';
@@ -14,7 +14,7 @@ import { ProcessMap } from './ProcessMap';
 import { RequestSlideOver } from './RequestSlideOver';
 import { closeRecordInUrl, closeRequestInUrl, openRequestInUrl, recordInUrl, requestInUrl } from '../lib/request-url';
 import { RecordPanel } from './RecordPanel';
-import { Tabs } from '@substrat-run/ui';
+import { Tabs } from '@substrat-run/ui/wa';
 import { Pulse } from './Pulse';
 import { AppFailures } from './AppFailures';
 import { EventExplorer, TenantLogs } from './ObservabilityPanels';
@@ -196,7 +196,7 @@ export function Observability({
     onNav({ app: scopeId, view: 'failures', ...windowAround(m.at) });
   };
 
-  if (resolved.error) return <Page><p role="alert">{resolved.error}</p><button onClick={() => navigateQuery({ ...q, hours: '24', from: undefined, to: undefined })}>Reset time</button></Page>;
+  if (resolved.error) return <Page><p role="alert">{resolved.error}</p><Button onClick={() => navigateQuery({ ...q, hours: '24', from: undefined, to: undefined })}>Reset time</Button></Page>;
 
   const refresh = (
     <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>

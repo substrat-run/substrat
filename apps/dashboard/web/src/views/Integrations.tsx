@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
+import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui/wa';
 import {
   api,
   teamApi,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Badge, Button } from '@substrat-run/ui';
+import { Badge, Button } from '@substrat-run/ui/wa';
 import type { ExplanationView } from '../lib/api.generated';
 import { aiState, provenanceLine, sourceLabel, spentNote } from '../lib/explanations';
 import { isPlainClick, navigate, teamPath } from '../lib/router';

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Button, Checkbox, Dialog, Input, Select, Table, type TableColumn } from '@substrat-run/ui/wa';
 import { teamApi, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
 import {
   boundScopesSummary,
@@ -14,8 +14,7 @@ import {
 } from '../lib/bound-scopes';
 import { PromoteMigrations } from '../components/PromoteMigrations';
 import { DEV_MOCK, MOCK_BOUND_SCOPES } from '../lib/mock';
-import { GridTable, Row } from '../components/layout';
-import { MonoTag, Pill, type PillKind } from '../components/ui';
+import { card, MonoTag, Pill, type PillKind } from '../components/ui';
 
 /**
  * The installs a vertical still backs (#1592).
@@ -48,7 +47,8 @@ const STATUS_PILL = new Map<string, PillKind>([
   ['archived', 'neutral'],
 ]);
 
-const COLUMNS = '2.2fr 0.9fr 1.1fr 2fr';
+// Taller than the default row: the install cell is two lines and the names wrap.
+const TALL_ROWS = { '--sub-table-cell-padding-block': '10px' } as CSSProperties;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -104,6 +104,8 @@ export function BoundScopes({
   }, [load]);
 
   const scopes = view?.scopes ?? [];
+  // Memoised: a new `rows` array is the table's cue to read its rows again, and every tick renders.
+  const { installs, forks } = useMemo(() => partitionBoundScopes(view?.scopes ?? []), [view]);
   const chosen = scopes.filter((s) => selected.has(s.id));
   const movable = chosen.filter((s) => s.movable);
   const targets = useMemo(() => moveTargets(d, all), [d, all]);
@@ -247,41 +249,45 @@ export function BoundScopes({
     );
   }
 
-  const { installs, forks } = partitionBoundScopes(scopes);
   const visible = showForks ? scopes : installs;
   const allSelected = visible.length > 0 && visible.every((s) => selected.has(s.id));
   const versionLabel = (s: BoundScopeRow) =>
     s.verticalVersionId === null ? 'follows prod' : (d.versions.find((v) => v.id === s.verticalVersionId)?.version ?? 'another vertical’s version');
 
-  const row = (s: BoundScopeRow, i: number, list: readonly BoundScopeRow[]) => (
-    // Taller than the default row: the install cell is two lines and the names wrap.
-    <Row key={s.id} columns={COLUMNS} last={i === list.length - 1} style={{ height: 'auto', minHeight: 56, padding: '10px 16px' }}>
-      <Checkbox
-        label={s.name}
-        description={s.fork ? `${s.slug} · snapshot fork` : s.slug}
-        checked={selected.has(s.id)}
-        onChange={(on) =>
-          setSelected((sel) => {
-            const next = new Set(sel);
-            if (on) next.add(s.id);
-            else next.delete(s.id);
-            return next;
-          })
-        }
-      />
-      <span>
-        <Pill kind={STATUS_PILL.get(s.status) ?? 'neutral'}>{s.status}</Pill>
-      </span>
-      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{versionLabel(s)}</span>
-      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
-        {s.hostnames.length === 0 ? (
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>none</span>
-        ) : (
-          s.hostnames.map((h) => <MonoTag key={h}>{h}</MonoTag>)
-        )}
-      </span>
-    </Row>
-  );
+  const columns = (first: string): TableColumn<BoundScopeRow>[] => [
+    {
+      header: first,
+      render: (s) => (
+        <Checkbox
+          label={s.name}
+          description={s.fork ? `${s.slug} · snapshot fork` : s.slug}
+          checked={selected.has(s.id)}
+          onChange={(on) =>
+            setSelected((sel) => {
+              const next = new Set(sel);
+              if (on) next.add(s.id);
+              else next.delete(s.id);
+              return next;
+            })
+          }
+        />
+      ),
+    },
+    { header: 'Status', render: (s) => <Pill kind={STATUS_PILL.get(s.status) ?? 'neutral'}>{s.status}</Pill> },
+    { header: 'Pinned to', render: (s) => <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{versionLabel(s)}</span> },
+    {
+      header: 'Names',
+      render: (s) => (
+        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
+          {s.hostnames.length === 0 ? (
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>none</span>
+          ) : (
+            s.hostnames.map((h) => <MonoTag key={h}>{h}</MonoTag>)
+          )}
+        </span>
+      ),
+    },
+  ];
 
   return (
     <section id="bound-scopes" style={{ display: 'grid', gap: 10 }}>
@@ -326,9 +332,9 @@ export function BoundScopes({
       )}
 
       {installs.length > 0 && (
-        <GridTable columns={COLUMNS} header={['Install', 'Status', 'Pinned to', 'Names']}>
-          {installs.map(row)}
-        </GridTable>
+        <div style={{ ...card, overflow: 'hidden' }}>
+          <Table label="Installs" columns={columns('Install')} rows={installs} rowKey={(s) => s.id} style={TALL_ROWS} />
+        </div>
       )}
       {forks.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
@@ -349,9 +355,9 @@ export function BoundScopes({
         </div>
       )}
       {showForks && forks.length > 0 && (
-        <GridTable columns={COLUMNS} header={['Snapshot fork', 'Status', 'Pinned to', 'Names']}>
-          {forks.map(row)}
-        </GridTable>
+        <div style={{ ...card, overflow: 'hidden' }}>
+          <Table label="Snapshot forks" columns={columns('Snapshot fork')} rows={forks} rowKey={(s) => s.id} style={TALL_ROWS} />
+        </div>
       )}
 
       <Dialog

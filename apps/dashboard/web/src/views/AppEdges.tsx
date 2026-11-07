@@ -11,7 +11,7 @@ import {
   type EdgeHealthReport,
   type LeverMode,
 } from '@substrat-run/contracts';
-import { Button, Dialog, Input } from '@substrat-run/ui';
+import { Button, Checkbox, Dialog, Input } from '@substrat-run/ui/wa';
 import { teamApi } from '../lib/api';
 import { validPeerReason } from '../lib/peer-switch';
 import { Pill, card } from '../components/ui';
@@ -186,10 +186,7 @@ export function AppEdges({ teamId, scopeId }: { teamId: string; scopeId: string 
         danger confirmLabel={dialog?.kind === 'replay' ? 'Replay' : 'Skip'}
         busy={busy} confirmDisabled={!agreed || !validPeerReason(reason)} onConfirm={confirmMove}
         onCancel={() => { if (!moving.current) setDialog(null); }}>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, margin: '0 0 10px' }}>
-          <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
-          <span>I understand: {dialog ? LEVER_EFFECT[dialog.kind] : ''}.</span>
-        </label>
+        <Checkbox label={`I understand: ${dialog ? LEVER_EFFECT[dialog.kind] : ''}.`} checked={agreed} onChange={setAgreed} style={{ fontSize: 13, margin: '0 0 10px' }} />
         <Input label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
         {notice && <p role="alert">{notice}</p>}
       </Dialog>

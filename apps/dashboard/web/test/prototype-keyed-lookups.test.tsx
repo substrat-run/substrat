@@ -2,13 +2,14 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoundScopesView, Deployment, DeploymentVersion, Member, ObservabilityLogEvent } from '../src/lib/api';
+import { Table } from '@substrat-run/ui/wa';
 import { actorOf, entryVia } from '../src/lib/audit-activity';
 import { InstallSteps } from '../src/components/InstallSteps';
 import { LogList } from '../src/components/LogList';
 import { resolveTab } from '../src/views/AppDetail';
 import { BoundScopes } from '../src/views/BoundScopes';
 import { Team } from '../src/views/Team';
-import { VersionRow } from '../src/views/Verticals';
+import { versionColumns } from '../src/views/Verticals';
 
 const client = vi.hoisted(() => ({ listBoundScopes: vi.fn() }));
 vi.mock('../src/lib/api', async (importOriginal) => ({
@@ -63,12 +64,12 @@ describe('plane-owned pill vocabularies (#2427)', () => {
     ({ slug: 'acme/courses', displaySlug: 'courses', name: 'Courses', source: 'cli', owned: true, versions: [], channels: [{ channel, versionId: 'V1' }] }) as unknown as Deployment;
 
   it.each(PROTOTYPE_NAMES)('a version whose admission is %s shows as named', async (admission) => {
-    await act(async () => root.render(<VersionRow d={dep('prod')} v={version({ admission })} last busy={false} onPromote={() => {}} />));
+    await act(async () => root.render(<Table columns={versionColumns(dep('prod'), false, () => {})} rows={[version({ admission })]} />));
     expect(container.textContent).toContain(admission);
   });
 
   it.each(PROTOTYPE_NAMES)('a channel named %s shows as named', async (channel) => {
-    await act(async () => root.render(<VersionRow d={dep(channel)} v={version({})} last busy={false} onPromote={() => {}} />));
+    await act(async () => root.render(<Table columns={versionColumns(dep(channel), false, () => {})} rows={[version({})]} />));
     expect(container.textContent).toContain(channel);
   });
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Dialog } from '@substrat-run/ui';
+import { Dialog, Textarea } from '@substrat-run/ui/wa';
 import type { AppEnvValue, EnvVarSpec } from '../lib/api';
 
 export type EnvEntry = { key: string; value: string; secret: boolean };
@@ -62,10 +62,7 @@ export function EnvImport({ spec, values, onSave, onClose }: {
   };
   return (
     <Dialog open title="Add from .env" description="Paste KEY=value lines. Saved secret values cannot be read back." confirmLabel="Save" confirmDisabled={parsed.errors.length > 0 || parsed.entries.length === 0} busy={busy} onConfirm={() => void save()} onCancel={onClose} width={560}>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
-        .env contents
-        <textarea value={paste} onChange={(e) => setPaste(e.target.value)} rows={8} spellCheck={false} style={{ width: '100%', padding: 10, fontFamily: 'var(--font-mono)', fontSize: 12, background: 'var(--surface-inset)', color: 'var(--text-primary)', border: '1px solid var(--border-default)', borderRadius: 6 }} />
-      </label>
+      <Textarea label=".env contents" mono value={paste} onChange={(e) => setPaste(e.target.value)} rows={8} spellCheck={false} />
       {parsed.entries.length > 0 && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-secondary)' }}>{parsed.entries.length} valid {parsed.entries.length === 1 ? 'entry' : 'entries'}</div>}
       {parsed.errors.map((message) => <div key={message} role="alert" style={{ marginTop: 6, fontSize: 12, color: 'var(--status-danger-fg)' }}>{message}</div>)}
       {error && <div role="alert" style={{ marginTop: 8, fontSize: 12, color: 'var(--status-danger-fg)' }}>{error}</div>}

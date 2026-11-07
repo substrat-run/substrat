@@ -8,6 +8,7 @@ import { ApiError as ClientError } from '../src/lib/api.generated';
 import { api, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
 import { parseRequestId, requestLookup, REQUEST_WINDOW_MS } from '../src/lib/request-url';
 import { recordFromLogs, relatedRequests } from '../src/lib/request-detail';
+import { buttons, type as typeInto } from './wa';
 
 /** #2192: finding a request by the id a caller was given, and the requests that share its cause. */
 
@@ -187,12 +188,9 @@ describe('the request-finding surfaces', () => {
     return onOpenCall;
   };
   const type = async (text: string) => {
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="Find a request by id"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    const input = container.querySelector('wa-input[label="Find a request by id"]')!;
+    await act(async () => typeInto(input, text));
+    await act(async () => input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   };
 
   it('opens a pasted id at the instant the id was minted', async () => {
@@ -255,7 +253,7 @@ describe('the request-finding surfaces', () => {
     const childLine = (source: Record<string, unknown>) =>
       [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: child, method: 'POST', parentInvocationId: parent, ...source } } }] as never;
     const parentLine = [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: parent, method: 'GET', path: '/api/board' } } }] as never;
-    const openButton = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Open');
+    const openButton = () => buttons(container).find((b) => b.textContent === 'Open');
     const render = async (id: string, scope: string, teamApps: string[]) => {
       await act(async () => root.render(<RequestSlideOver teamId="team-a" scopeId={scope} invocationId={id} atMs={at} onClose={vi.fn()} teamApps={teamApps} />));
       await settle();

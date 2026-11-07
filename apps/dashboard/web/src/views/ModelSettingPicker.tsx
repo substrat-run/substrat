@@ -1,3 +1,4 @@
+import { Select } from '@substrat-run/ui/wa';
 import type { ModelCatalogOption } from '../lib/api';
 
 interface Props {
@@ -31,22 +32,18 @@ export function ModelSettingPicker({ value, catalog, onChange }: Props) {
 
   return (
     <>
-      <select
-        aria-label="Model"
+      <Select
+        ariaLabel="Model"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        style={{ width: '100%', maxWidth: 460, height: 34, padding: '0 11px', fontSize: 13,
-          background: 'var(--surface-inset)', border: '1px solid var(--border-default)',
-          borderRadius: 6, color: 'var(--text-primary)' }}
-      >
-        {!value && <option value="">Choose a model</option>}
-        {value && !current && <option value={value}>Unlisted: {value}</option>}
-        {[...groups.entries()].map(([servedBy, entries]) => (
-          <optgroup key={servedBy} label={servedBy}>
-            {entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
-          </optgroup>
-        ))}
-      </select>
+        style={{ width: '100%', maxWidth: 460 }}
+        options={[
+          ...(!value ? [{ value: '', label: 'Choose a model' }] : []),
+          ...(value && !current ? [{ value, label: `Unlisted: ${value}` }] : []),
+          ...[...groups.entries()].flatMap(([servedBy, entries]) =>
+            entries.map((entry) => ({ value: entry.id, label: entry.label, group: servedBy }))),
+        ]}
+      />
       {current ? (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
           {current.servedBy} · {current.tiers.length === 1

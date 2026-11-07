@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Badge } from '@substrat-run/ui';
+import { Badge, Button } from '@substrat-run/ui/wa';
 import { isPlainClick, navigate, obsPath, teamPath } from '../lib/router';
 import { api, type AppHealthRow, type AppMetricsView, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_METRICS, MOCK_FLEET_HEALTH } from '../lib/mock';
@@ -169,13 +169,9 @@ function FleetTableRow({ row, last, loading, onOpen, onRetry }: { row: FleetRow;
         {row.verdict === 'install-failed' && onRetry && (
           <>
             {' '}
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); onRetry(); }}
-              style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', color: 'var(--text-link)', textDecoration: 'underline', cursor: 'pointer' }}
-            >
+            <Button variant="link" onClick={(e) => { e.stopPropagation(); onRetry(); }}>
               Retry
-            </button>
+            </Button>
           </>
         )}
       </span>

@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Member } from '../src/lib/api';
 import { Team } from '../src/views/Team';
+import { buttons } from './wa';
 
 /**
  * #1184: an accepted invite is 'joining' until the membership executor has applied it, and
@@ -41,7 +42,7 @@ describe('Team: a membership still being applied, or refused', () => {
         <Team members={rows} meEmail="owner@acme.test" canManage onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />,
       );
     });
-  const removeButtons = () => [...container.querySelectorAll('button')].filter((b) => b.textContent === 'Remove');
+  const removeButtons = () => buttons(container).filter((b) => b.textContent === 'Remove');
 
   it('shows a refused row as not applied, with its reason, and lets an admin remove it', () => {
     render([member({ id: 'r', status: 'refused', refusal: 'the inviter p0 no longer holds dashboard:manage-members' })]);

@@ -18,6 +18,7 @@ import {
 import { logChips, parseBarText } from '../src/lib/logs-chips';
 import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { sectionOf } from '../src/lib/obs-sections';
+import { buttons } from './wa';
 
 /** #1746: the Requests mode — its URL rules, and the three reads it makes and draws. */
 
@@ -298,7 +299,7 @@ describe('RequestsMode', () => {
     await render({ zoomed: true, onResetZoom });
     expect(goLives).toHaveBeenCalledWith('team-a', 'app-a', { since: window.from, until: window.to });
     expect([...container.querySelectorAll('[data-deploy]')].map((m) => m.getAttribute('data-deploy'))).toEqual(['0.4.0']);
-    const reset = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Reset zoom')!;
+    const reset = buttons(container).find((b) => b.textContent === 'Reset zoom')!;
     await act(async () => reset.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(onResetZoom).toHaveBeenCalledOnce();
   });
@@ -306,7 +307,7 @@ describe('RequestsMode', () => {
   it('#2762: no "Reset zoom" on the range itself', async () => {
     reads();
     await render({ onResetZoom: vi.fn() });
-    expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Reset zoom')).toBe(false);
+    expect(buttons(container).some((b) => b.textContent === 'Reset zoom')).toBe(false);
   });
 
   it('#2762: hovering a bar opens a popover with its counts', async () => {

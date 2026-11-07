@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Button } from '@substrat-run/ui/wa';
 import { NOTIFICATIONS } from '../lib/demo';
 import { DEV_MOCK } from '../lib/mock';
 
@@ -28,7 +29,7 @@ export function NotificationsPopover({ onClose, onMarkRead }: { onClose: () => v
         <div style={{ display: 'flex', alignItems: 'center', height: 44, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Notifications</span>
           <div style={{ flex: 1 }} />
-          {DEV_MOCK && <button type="button" onClick={onMarkRead} style={{ border: 0, background: 'transparent', fontSize: 12, color: 'var(--text-brand)', cursor: 'pointer' }}>Mark all read</button>}
+          {DEV_MOCK && <Button variant="link" onClick={onMarkRead} style={{ fontSize: 12 }}>Mark all read</Button>}
         </div>
         {!DEV_MOCK && <div style={{ padding: 16, fontSize: 12.5, color: 'var(--text-secondary)' }}>Notifications are not available yet.</div>}
         {DEV_MOCK && NOTIFICATIONS.map((n, i) => (

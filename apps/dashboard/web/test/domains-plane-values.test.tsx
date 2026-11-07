@@ -60,7 +60,7 @@ describe('Domains: values from a newer plane (#2401)', () => {
     });
     expect(container.textContent).toContain('quarantined');
     expect(container.textContent).toContain('Active');
-    const show = container.querySelector('button[aria-label="Show DNS records"]');
+    const show = container.querySelector('wa-button[aria-label="Show DNS records"]');
     expect(show).toBeTruthy();
     await act(async () => {
       show!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -96,7 +96,7 @@ describe('Domains: values from a newer plane (#2401)', () => {
     });
     expect(container.textContent).toContain('constructor');
     await act(async () => {
-      container.querySelector('button[aria-label="Show DNS records"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector('wa-button[aria-label="Show DNS records"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.textContent).toContain('toString');
   });

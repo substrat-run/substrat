@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Button } from '@substrat-run/ui';
+import { Button } from '@substrat-run/ui/wa';
 import { api, type CauseChain, type CauseTerminal, type EffectsTree, type EffectsTerminal, type EventEffects, type HistoryEntry, type InvocationEvents } from '../lib/api';
 import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, payloadUndecodable } from '../lib/history';
 import { causeChips, deliveryStatus, eventSummary, eventTime, newestFirst, payloadRows, stateChangingIds, type CauseChip, type Tone } from '../lib/event-history';

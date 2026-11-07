@@ -7,6 +7,7 @@ import { Settings } from '../src/views/Settings';
 import { NotificationsPopover } from '../src/components/NotificationsPopover';
 import { Team } from '../src/views/Team';
 import { AppDetail } from '../src/views/AppDetail';
+import { buttons } from './wa';
 
 vi.mock('../src/lib/version', () => ({ APP_VERSION: 'test', APP_SHA: 'test' }));
 vi.mock('../src/lib/mock', async () => ({
@@ -35,16 +36,16 @@ it('shows the selected team name and slug without offering a save that cannot ac
   expect(slugValue.style.overflowWrap).toBe('anywhere');
   expect(slugValue.parentElement?.style.overflow).not.toBe('hidden');
   expect(container.textContent).not.toContain('Stockholm');
-  expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Save')).toBe(false);
+  expect(buttons(container).some((b) => b.textContent === 'Save')).toBe(false);
 });
 
 it('shows the signed-in identity on Profile without an inert save', () => {
   act(() => root.render(<Settings org="Example Team" teamId="team-a" slug="example-team-abc" name="Avery" email="avery@example.test" />));
-  act(() => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Profile')!.click());
+  act(() => void container.querySelector('wa-tab-group')!.dispatchEvent(new CustomEvent('wa-tab-show', { detail: { name: 'profile' } })));
   expect(container.textContent).toContain('Avery');
   expect(container.textContent).toContain('avery@example.test');
   expect(container.textContent).not.toContain('Dana Vogel');
-  expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Save')).toBe(false);
+  expect(buttons(container).some((b) => b.textContent === 'Save')).toBe(false);
 });
 
 it('does not present fixture notifications as a live feed', () => {

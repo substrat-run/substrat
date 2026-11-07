@@ -5,3 +5,8 @@
  * Awesome's native-element styles — so an app's own <button> and <input> keep its look.
  */
 @import '@awesome.me/webawesome/dist/styles/themes/default.css';
+
+/* `wa-visually-hidden-label`: a control whose label is read but not shown. A `wa-*`
+   control is named by its `label` attribute — `aria-label` on the host does not reach
+   the input inside its shadow root. */
+@import '@awesome.me/webawesome/dist/styles/utilities/visually-hidden.css';

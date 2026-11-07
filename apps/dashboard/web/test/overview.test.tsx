@@ -6,6 +6,7 @@ import { fleetRows } from '../src/lib/fleet-rows';
 import { actionWords, attentionRows, errorWords, filterApps, integrationRows, statusSentence } from '../src/lib/overview-status';
 import { Overview } from '../src/views/Overview';
 import { AppCard } from '../src/components/AppCard';
+import { buttons, choose } from './wa';
 
 const app = (id: string, status: AppRow['status'] = 'active') =>
   ({ id, app_scope_id: id, name: `App ${id}`, vertical_slug: 'todo', status, hostname: null, created_by: 'a@acme.com', created_at: new Date().toISOString() }) as AppRow;
@@ -228,7 +229,7 @@ describe('Overview page', () => {
     expect(status()).toContain('All 2 apps read are working.');
     expect(status()).toContain('2 apps read; the rest could not be loaded.');
     expect(section('Needs attention')).toContain('Nothing needs attention.');
-    const retry = [...container.querySelectorAll('[role="status"] button')].find((b) => b.textContent === 'Retry')!;
+    const retry = buttons(container.querySelector('[role="status"]')!).find((b) => b.textContent === 'Retry')!;
     await act(async () => retry.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(onLoadMore).toHaveBeenCalledTimes(2);
   });
@@ -238,16 +239,10 @@ describe('Overview page', () => {
     vi.spyOn(api, 'integrations').mockResolvedValue({ providers: [] });
     vi.spyOn(api, 'auditLogAll').mockResolvedValue({ entries: [], nextCursor: null });
     await render();
-    const select = container.querySelector('select[aria-label="Status"]') as HTMLSelectElement;
-    await act(async () => {
-      select.value = 'working';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    const select = container.querySelector('wa-select[label="Status"]')!;
+    await act(async () => choose(select, 'working'));
     expect(cards()).toEqual(['/observability?app=b']);
-    await act(async () => {
-      select.value = 'attention';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await act(async () => choose(select, 'attention'));
     expect(cards()).toEqual(['/observability?app=a&view=failures&hours=24']);
   });
 });

@@ -1,12 +1,14 @@
-import { useRef, useState } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui';
+import { useRef, useState, type CSSProperties } from 'react';
+import { Button, Dialog, Input, Select } from '@substrat-run/ui/wa';
 import type { InviteRole, Member } from '../lib/api';
 import { Ic } from '../lib/icons';
 import { Avatar } from '../components/DashShell';
 import { Page } from '../components/layout';
 import { card, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
 
-const COLS = '2.4fr 1fr 1fr 1fr 140px';
+const COLS = '2.4fr 1fr 1fr 1fr 190px';
+const ROW_ACTION = { '--wa-form-control-padding-inline': '4px', color: 'var(--text-secondary)' } as CSSProperties;
+const ROW_ACTION_DANGER = { ...ROW_ACTION, color: 'var(--status-danger-fg)' };
 // A Map, not an object literal: a status named like an Object.prototype key must not find one.
 const STATUS = new Map<string, { kind: PillKind; label: string }>([
   ['active', { kind: 'success', label: 'Active' }],
@@ -181,38 +183,22 @@ export function Team({
                 {canManage && m.status === 'invited' && m.invitation_id && (
                   <span style={{ display: 'inline-flex', gap: 4, justifyContent: 'flex-end' }}>
                     {onCopyLink && (
-                      <button
-                        type="button"
-                        onClick={() => void copyLink(m)}
-                        style={{ border: 0, background: 'transparent', color: 'var(--text-secondary)', fontSize: 12.5, cursor: 'pointer', padding: 4 }}
-                      >
+                      <Button variant="ghost" size="sm" onClick={() => void copyLink(m)} style={ROW_ACTION}>
                         Copy link
-                      </button>
+                      </Button>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => onResend(m.invitation_id!)}
-                      style={{ border: 0, background: 'transparent', color: 'var(--text-secondary)', fontSize: 12.5, cursor: 'pointer', padding: 4 }}
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => onResend(m.invitation_id!)} style={ROW_ACTION}>
                       Resend
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRevoke(m.invitation_id!)}
-                      style={{ border: 0, background: 'transparent', color: 'var(--status-danger-fg)', fontSize: 12.5, cursor: 'pointer', padding: 4 }}
-                    >
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => onRevoke(m.invitation_id!)} style={ROW_ACTION_DANGER}>
                       Revoke
-                    </button>
+                    </Button>
                   </span>
                 )}
                 {canManage && m.status !== 'invited' && m.role_key !== 'owner' && !you && (
-                  <button
-                    type="button"
-                    onClick={() => onRemove(m.id)}
-                    style={{ border: 0, background: 'transparent', color: 'var(--status-danger-fg)', fontSize: 12.5, cursor: 'pointer', padding: 4 }}
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => onRemove(m.id)} style={ROW_ACTION_DANGER}>
                     Remove
-                  </button>
+                  </Button>
                 )}
               </span>
             </div>

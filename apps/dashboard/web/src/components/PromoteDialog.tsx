@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { Checkbox, Dialog } from '@substrat-run/ui';
+import { Checkbox, Dialog } from '@substrat-run/ui/wa';
 import { grantShapeHolderNotes, registryDirection, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
 import { outstanding, readyToPromote, type Acks, type Checkpoint, type PermissionSection, type Unverifiable } from '../lib/promote-review';
 import { ExportBreakAck } from './ExportBreakAck';

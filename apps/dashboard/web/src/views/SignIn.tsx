@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { Button, Input } from '@substrat-run/ui';
+import { Button, Input } from '@substrat-run/ui/wa';
 import { StrataGlyph } from '../lib/icons';
 import { signIn } from '../lib/api';
 

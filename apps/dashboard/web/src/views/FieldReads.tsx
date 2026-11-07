@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Table } from '@substrat-run/ui/wa';
 import { teamApi, type FieldReadsView } from '../lib/api';
 import { card } from '../components/ui';
 
@@ -24,14 +25,14 @@ export function FieldReads({ teamId, scopeId, hours = 24 }: { teamId: string; sc
     : view.groups.length === 0 ? <p>No requests were armed for field coverage in this window.</p>
     : null;
 
-  return <div style={{ ...card, padding: 14, display: 'grid', gap: 12 }}>
+  return <div style={{ ...card, padding: 14, display: 'grid', gap: 12, minWidth: 0 }}>
     <h3 style={{ margin: 0, fontSize: 15 }}>Sampled field counts</h3>
     {body ?? <Groups view={view!} />}
   </div>;
 }
 
 function Groups({ view }: { view: FieldReadsView }) {
-  return <div style={{ display: 'grid', gap: 12 }}>
+  return <div style={{ display: 'grid', gap: 12, minWidth: 0 }}>
     <p style={{ margin: 0, fontSize: 13 }}>
       Vertical-asserted counts of fields this installed app returned in sampled response
       serialisations, from requests the router sent to it. A zero means
@@ -48,7 +49,7 @@ function Groups({ view }: { view: FieldReadsView }) {
       }));
       const largelyUnreturned = operations.filter((op) =>
         op.responses > 0 && op.notObserved.length * 2 > op.fields.length);
-      return <div key={`${group.sampleRate ?? 'unknown'}-${i}`} style={{ display: 'grid' }}>
+      return <div key={`${group.sampleRate ?? 'unknown'}-${i}`} style={{ display: 'grid', minWidth: 0 }}>
         <h4 style={{ margin: '0 0 6px' }}>Vertical-asserted field counts · {rate} · {window}</h4>
         <p style={{ margin: '0 0 10px', fontSize: 12 }}>
           {group.armedRequests} armed requests; {group.refused} malformed reports refused. {rate}; {window}.
@@ -59,13 +60,16 @@ function Groups({ view }: { view: FieldReadsView }) {
         </p>}
         {group.operations.every((op) => op.responses === 0) &&
           <p>Armed requests, but no walked responses were observed in this sample ({rate}; {window}).</p>}
-        {operations.map((op) => <div key={op.operation} style={{ marginBottom: 12 }}>
+        {operations.map((op) => <div key={op.operation} style={{ marginBottom: 12, minWidth: 0 }}>
           <strong>{op.operation}</strong> <span style={{ fontSize: 12 }}>({op.responses} sampled responses; {rate}; {window})</span>
-          <table><thead><tr><th>Field</th><th>Present</th><th>Null</th><th>Absent</th><th>Eligible</th><th>Sample and window</th></tr></thead>
-            <tbody>{op.fields.map((field) => <tr key={field.field}>
-              <td><code>{field.field}</code></td><td>{field.present}</td><td>{field.empty}</td>
-              <td>{field.absent}</td><td>{field.eligible}</td><td>{rate}; {window}</td>
-            </tr>)}</tbody></table>
+          <Table label={`Fields of ${op.operation}`} rows={op.fields} rowKey={(field) => field.field} columns={[
+            { header: 'Field', render: (field) => <code>{field.field}</code> },
+            { header: 'Present', key: 'present' },
+            { header: 'Null', key: 'empty' },
+            { header: 'Absent', key: 'absent' },
+            { header: 'Eligible', key: 'eligible' },
+            { header: 'Sample and window', render: () => `${rate}; ${window}` },
+          ]} />
           {op.notObserved.length > 0 && <p style={{ fontSize: 12, margin: '6px 0 0' }}>
             Not observed returned in this sampled operation: {op.notObserved.map((field) => field.field).join(', ')}.
           </p>}

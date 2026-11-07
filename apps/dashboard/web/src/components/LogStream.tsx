@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Tabs } from '@substrat-run/ui';
+import { Tabs } from '@substrat-run/ui/wa';
 import { modeHint, modeTabs, type LogMode } from '../lib/log-stream';
 
 /**

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
-import { Button } from '@substrat-run/ui';
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
+import { Button, Input } from '@substrat-run/ui/wa';
 import { api, isApiError, teamApi, type AppOverlays, type TenantMetricsRow, type TrafficSeries } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import type { MetricsState } from '../lib/use-tenant-metrics';
@@ -201,18 +201,7 @@ export function AppTraffic({
   };
 
   const mono = { fontFamily: 'var(--font-mono)' } as const;
-  const inputStyle = {
-    width: 52,
-    height: 26,
-    padding: '0 6px',
-    border: '1px solid var(--border-default)',
-    borderRadius: 6,
-    background: 'var(--surface-card)',
-    color: 'var(--text-primary)',
-    fontFamily: 'var(--font-mono)',
-    fontSize: 12,
-    outline: 'none',
-  } as const;
+  const inputStyle = { width: 58, '--wa-form-control-padding-inline': '6px', '--wa-form-control-height': '26px' } as CSSProperties;
   const legend = [
     { label: '2xx/3xx ok', color: 'var(--text-tertiary)', n: totals?.ok ?? null },
     { label: '4xx refused', color: 'var(--status-warning-fg)', n: totals?.refused ?? null },
@@ -267,10 +256,10 @@ export function AppTraffic({
             }}
             style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-tertiary)' }}
           >
-            <input aria-label="From (UTC, HH:MM)" value={fromText ?? (window ? clockOf(window.since) : '')} onChange={(e) => setFromText(e.target.value)} style={inputStyle} />
+            <Input size="sm" mono ariaLabel="From (UTC, HH:MM)" value={fromText ?? (window ? clockOf(window.since) : '')} onChange={(e) => setFromText(e.target.value)} style={inputStyle} />
             <span aria-hidden>→</span>
-            <input aria-label="To (UTC, HH:MM)" value={toText ?? (window ? clockOf(window.until) : '')} onChange={(e) => setToText(e.target.value)} style={inputStyle} />
-            <Button variant="secondary" size="sm" disabled={!window}>
+            <Input size="sm" mono ariaLabel="To (UTC, HH:MM)" value={toText ?? (window ? clockOf(window.until) : '')} onChange={(e) => setToText(e.target.value)} style={inputStyle} />
+            <Button variant="secondary" size="sm" type="submit" disabled={!window}>
               Apply
             </Button>
           </form>
