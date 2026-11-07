@@ -3,7 +3,7 @@ id: K-59
 date: 2026-11-04
 layer: kernel
 title: "A store object admits each envelope once"
-status: proposed
+status: accepted
 aliases: []
 amends: ["K-52"]
 tracking: ["#2830"]
@@ -11,7 +11,7 @@ tracking: ["#2830"]
 
 # K-59 — A store object admits each envelope once
 
-> **Proposed 2026-11-04.** It amends one sentence of [K-52](./K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md), "a store remembers no nonces", and answers the scope-stores RFC's Q2 the other way. Everything else in K-52 stands.
+> **Ratified 2026-11-07.** It amends one sentence of [K-52](./K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md), "a store remembers no nonces", and answers the scope-stores RFC's Q2 the other way. Everything else in K-52 stands.
 
 **A store object spends the nonce of every envelope it admits, and refuses the same envelope again.** The check runs in the platform's store entry, in the object, after the envelope has verified and the object's id has matched the signed name, and before the driver is reached. The refusal is `401 unauthorized: nonce`, outside the store envelope, like the entry's other refusals. The nonces live in the object's own synchronous KV storage (`ctx.storage.kv`, which a SQLite-backed object has), under the `substrat.store-nonce/` prefix, keyed by the issue time and the nonce. They are not in a SQL table, so they are none of the tables a driver creates, exports or wipes by name. A key is kept while its envelope is fresh, and the freshness check refuses a replay after that by itself, so the key is forgotten then: a bounded batch of expired keys per call. The entry judges freshness again at the clock it forgets by, so a key is never forgotten while its envelope would still be admitted. One function does it, `spendStoreNonce` in `store-entry/verify.ts`, and both entries call it: the JavaScript entry directly, the Python entry through the verifier module it already imports.
 

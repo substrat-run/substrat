@@ -3,7 +3,7 @@ id: D-69
 date: 2026-11-03
 layer: plan
 title: "A store driver moves in pages, not in one call"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-63", "K-49"]
 tracking: ["#2854", "#2811", "#2450"]
@@ -11,9 +11,9 @@ tracking: ["#2854", "#2811", "#2450"]
 
 # D-69 — A store driver moves in pages, not in one call
 
-> **Proposed 2026-11-03, not ratified.** This step changes the contract a driver is written
-> against, and it removes two reserved operations outright. It is written so that the choice can
-> be made, and the code in this change follows it.
+> **Ratified 2026-11-07.** This step changes the contract a driver is written against, and it
+> removes two reserved operations outright. The code follows it ([#2865](https://github.com/substrat-run/substrat/pull/2865),
+> [#2872](https://github.com/substrat-run/substrat/pull/2872)).
 
 **A store's dump crosses the platform in pages. The reserved operations `substrat.export` and
 `substrat.import` are removed, with no compatibility form, and four take their place:
@@ -154,7 +154,7 @@ These moves run in the request, within one budget of 300 pages or 20 s, and past
 nothing changed, so a restore that reaches its commits has room to finish them and its replay. Still
 open: a store past that budget cannot be backed up, restored or snapshotted (no job runs the rest), a
 reaped scope's backup cannot be restored into another scope, and a pull or a tenant export still reads
-a store whole into one body (question 1).
+a store whole into one body (question 1 on [#2854](https://github.com/substrat-run/substrat/issues/2854)).
 
 ## Revisit
 

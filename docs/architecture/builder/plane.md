@@ -65,8 +65,8 @@ evolution for the *listed* tier.
 
 ## 3. Ownership & the claim
 
-The `verticals` registry row gains an **`owner_tenant`** (nullable → a reserved
-platform-owned sentinel for first-party verticals; see §6).
+The `verticals` registry row gains an **`owner_tenant`** (nullable: a first-party vertical has
+none; see §6).
 
 - **First push of `<tenant>/<name>` claims it** for that tenant (the pushing builder's selected
   tenant). Recorded on `registerVertical`, alongside the existing `source`.
@@ -109,11 +109,10 @@ purely additive — a request that isn't staff and isn't an owning tenant is ref
 
 ## 6. Migration — the existing platform verticals
 
-`callout` (and any first-party vertical) is platform-owned. Reserve a platform tenant (e.g.
-`platform/`), and migrate the existing bare `callout` → `platform/callout` — or grandfather bare
-slugs as "owner_tenant = platform" and render them without a prefix. Either way the deployed
-`callout` keeps working; the prefix is what *customer* verticals get. Decide the exact reserved
-name + whether platform slugs render bare in the console.
+A first-party vertical is platform-owned, and it keeps its bare slug: no `platform/` tenant was
+reserved, and nothing was migrated. Its registry row names no owning tenant, and it renders
+without a prefix. The prefix is what *customer* verticals get: a builder credential always lands
+in its workspace's namespace, so only platform staff address a bare slug.
 
 ## 7. Phased plan
 
@@ -135,7 +134,8 @@ the endpoints are builder-scoped.
 
 ## 8. Open questions
 
-- **Reserved platform prefix** — name, and whether platform verticals render bare (§6).
+- ~~**Reserved platform prefix**~~ — resolved in §6: there is none, and platform verticals
+  render bare.
 - **Tenant slug source** — the prefix is the tenant's slug; is it stable/unique enough, or do we
   mint a separate publisher handle?
 - ~~**Prod promotion request**~~ — resolved by §4-revised: a private vertical's owner promotes
