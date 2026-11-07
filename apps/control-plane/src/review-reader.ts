@@ -151,12 +151,16 @@ export function parseReply(text: string): ReviewReply | null {
   };
 }
 
-// Masked before any cut, so a value the cut would split is still masked whole: credential shapes
-// `lint:secret-literals` refuses in the repo (tools/secret-literals.mjs SHAPES), a JWT, a long
-// base64 run (a PEM or PGP body line), a password-like assignment's value, an email, a phone-like run.
+// Masked after control characters are stripped (so a token split by one is masked whole) and
+// before any cut (so a value the cut would split is masked whole): credential shapes
+// `lint:secret-literals` refuses in the repo (tools/secret-literals.mjs SHAPES), a single-line PEM
+// with its body, JWK private members, a JWT, a long base64 run (a PEM or PGP body line), any
+// secret-like name's assigned value, quoted or not (over-masking `token: string` is accepted), an
+// email and a phone-like run.
+const SECRET_NAME = String.raw`\b\w*(?:pass(?:word|wd)?|pwd|secret|token|key|credential|auth)\w*["']?\s*[:=]\s*`;
 const MASKS: ReadonlyArray<[RegExp, string]> = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----/g, '[redacted]'],
-  [/(["']?\bd["']?\s*:\s*["'])[A-Za-z0-9_-]{20,}(["'])/g, '$1[redacted]$2'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----.*/g, '[redacted]'],
+  [/(["']?\b(?:d|p|q|dp|dq|qi|k)["']?\s*:\s*["'])[A-Za-z0-9_-]{20,}(["'])/g, '$1[redacted]$2'],
   [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[redacted]'],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})\b/g, '[redacted]'],
   [/\bsk-[A-Za-z0-9_-]{20,}/g, '[redacted]'],
@@ -167,17 +171,18 @@ const MASKS: ReadonlyArray<[RegExp, string]> = [
   [/https:\/\/hooks\.slack\.com\/\S+|https:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/\S+|https:\/\/[a-z0-9-]+\.webhook\.office\.com\/\S+/g, '[redacted]'],
   [/\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"`]+:[^\s@/'"`]{3,}@/g, '[redacted]@'],
   [/\b(?:eyJ[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b/g, '[redacted]'],
-  [/((?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|private[_-]?key|credential)s?["']?\s*[:=]\s*)(["']?)[^\s"',;]{3,}\2/gi, '$1$2[redacted]$2'],
+  [new RegExp(`(${SECRET_NAME})(["'\`])(?:(?!\\2).)+\\2`, 'gi'), '$1$2[redacted]$2'],
+  [new RegExp(`(${SECRET_NAME})(?!["'\`]|\\[redacted\\])[^\\s,;"'\`]{3,}`, 'gi'), '$1[redacted]'],
   [/[A-Za-z0-9+/]{40,}={0,2}/g, '[redacted]'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted]'],
   [/\+?\d[\d ().-]{7,}\d/g, '[redacted]'],
 ];
 
-/** Mask every shape, strip control characters, then keep the first line and at most `max` characters. */
+/** Keep the first line, strip control characters, mask every shape, then cut to at most `max` characters. */
 export function redact(text: string, max = QUOTE_MAX): string {
-  let out = text;
+  let out = stripControl(text.split(/\r?\n/)[0]!);
   for (const [mask, replacement] of MASKS) out = out.replace(mask, replacement);
-  return stripControl(out.split(/\r?\n/)[0]!).slice(0, max);
+  return out.slice(0, max);
 }
 
 export interface Assembled {
@@ -187,15 +192,22 @@ export interface Assembled {
   readonly notApplicable: string[];
 }
 
-/** The item whose findings never store a quote: a secret's line is evidence enough as `file:line`. */
+/**
+ * The item whose findings store no model text at all: a secret's line is evidence enough as
+ * `file:line`, and the model's own words about it may repeat the secret.
+ */
 const NO_QUOTE_ITEM = 'S7';
+const S7_FAILS_WHEN = 'a secret appears in the change on this line';
+const S7_FIX = 'remove it from the source and keep it in a secret binding; rotate it if it was ever pushed';
 
 /**
  * The assembler's drop rule. A finding is kept only when its file was sent, its line exists and
- * is one the change adds or alters, its trimmed quote is on that line, its item is judgement-marked, it is not a duplicate of one already
- * kept, and its item is not also claimed clean or not applicable; anything else, and every off-spec
- * entry, is dropped and counted. Severity comes from the checklist and every kept finding is
- * `reader`-confirmed. Every stored model string is redacted; an S7 finding keeps no quote.
+ * is one the change adds or alters, its trimmed quote is on that line, its item is
+ * judgement-marked, and it is not a duplicate of one already kept; anything else, and every
+ * off-spec entry, is dropped and counted. A kept finding outranks the reply's claim that its item
+ * is clean or not applicable: the claim is removed. Severity comes from the checklist and every
+ * kept finding is `reader`-confirmed. Every stored model string is redacted; an S7 finding keeps
+ * no model text, only fixed text and `file:line`.
  */
 export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Assembled {
   const sent = new Map(files.map((file) => [file.path, { lines: file.text.split('\n'), changed: file.changed ?? 'all' }]));
@@ -207,9 +219,6 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
     return text !== undefined && altered && wanted.length > 0 && text.includes(wanted);
   };
   const known = (ids: string[]) => [...new Set(ids)].filter((id) => REVIEW_ITEMS.some((item) => item.id === id)).sort();
-  const checkedClean = known(reply.checkedClean);
-  const notApplicable = known(reply.notApplicable);
-  const claimed = new Set([...checkedClean, ...notApplicable]);
   const seen = new Set<string>();
   const findings: ReviewFinding[] = [];
   let dropped = reply.offSpec;
@@ -224,14 +233,15 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
   };
   for (const f of reply.findings) {
     const rule = JUDGEMENT.get(f.item);
-    if (!rule || claimed.has(rule.id) || !onLine(f.file, f.line, f.quote)) {
+    if (!rule || !onLine(f.file, f.line, f.quote)) {
       dropped++;
       continue;
     }
     keep({
-      item: rule.id, severity: rule.severity, confirmation: 'reader', file: stripControl(f.file), line: f.line,
+      item: rule.id, severity: rule.severity, confirmation: 'reader', file: f.file, line: f.line,
       quote: rule.id === NO_QUOTE_ITEM ? '' : redact(f.quote.trim()),
-      failsWhen: redact(f.failsWhen, 500), fix: redact(f.fix, 500), unconfirmed: f.unconfirmed === true,
+      failsWhen: rule.id === NO_QUOTE_ITEM ? S7_FAILS_WHEN : redact(f.failsWhen, 500),
+      fix: rule.id === NO_QUOTE_ITEM ? S7_FIX : redact(f.fix, 500), unconfirmed: f.unconfirmed === true,
     });
   }
   for (const a of reply.addressedToReviewer) {
@@ -240,12 +250,14 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
       continue;
     }
     keep({
-      item: 'outside', severity: 'advisory', confirmation: 'reader', file: stripControl(a.file), line: a.line,
+      item: 'outside', severity: 'advisory', confirmation: 'reader', file: a.file, line: a.line,
       quote: redact(a.quote.trim()), failsWhen: 'text in the change addresses the reviewer', fix: 'remove it, or say why it belongs in the change',
       unconfirmed: false,
     });
   }
   const order = (f: ReviewFinding) => (f.item === 'outside' ? 2 : f.severity === 'blocking' ? 0 : 1);
   findings.sort((a, b) => order(a) - order(b) || a.item.localeCompare(b.item) || a.file.localeCompare(b.file) || a.line - b.line);
-  return { findings, dropped, checkedClean, notApplicable };
+  const found = new Set(findings.map((f) => f.item));
+  const unclaimed = (ids: string[]) => known(ids).filter((id) => !found.has(id));
+  return { findings, dropped, checkedClean: unclaimed(reply.checkedClean), notApplicable: unclaimed(reply.notApplicable) };
 }

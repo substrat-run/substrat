@@ -177,8 +177,8 @@ const MANIFEST = {
       R2_SQL_TOKEN: 'R2_LAKE_SQL_TOKEN',
       // #2365 phase 1: the review runner's reader half. All optional and unset by default: with
       // no REVIEW_MODEL every staff review ends `skipped: no model configured`. The model is a
-      // `cloudflare:<model>` spec on the gateway row, reached over HTTP with this worker's own
-      // gateway pair (the same values the builder holds, under the control plane's own keys).
+      // `cloudflare:<model>` spec on the gateway row, reached over HTTP with a gateway credential
+      // pair under this worker's own keys.
       // REVIEW_PLATFORM_TENANT is the platform team's tenant id the usage line is filed under.
       REVIEW_MODEL: 'CP_REVIEW_MODEL',
       REVIEW_PLATFORM_TENANT: 'CP_REVIEW_PLATFORM_TENANT',
