@@ -598,7 +598,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a fallback after ??', 'process.env.DB_PASSWORD ?? "s3cr3tVALUE"'],
     ['a fallback after or', 'conf.get("password") or "s3cr3tVALUE"'],
     ['an unquoted fallback', 'password || s3cr3tVALUE'],
-    ...['||=', '??=', '&&=', '+=', '<-'].map((op) => [`the operator ${op}`, `password ${op} "s3cr3tVALUE"`]),
+    ...['||=', '??=', '&&=', '+=', '<-'].map((op) => [`the operator ${op}`, `password ${op} s3cr3tVALUE`]),
     ['a name in a bare index', '$_POST[password] = "s3cr3tVALUE"'],
     ['a bracketed name', '[password]=s3cr3tVALUE'],
     ['a bold name', '**password**: s3cr3tVALUE'],
@@ -620,9 +620,11 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a later cookie after a word', 'it sends Cookie: a=b; session=s3cr3tVALUE'],
     ['a later value in a plural name', 'cookies: a=b; session=s3cr3tVALUE'],
     ['a later value after a header’s `=`', 'cookie=abc; session=s3cr3tVALUE'],
+    ['a later word after a header’s `=`', 'authorization = abc s3cr3tVALUE'],
     ['a count’s number with more after it', 'maxTokens = 1 + "s3cr3tVALUE"'],
     ['a value after a second secret', 'run --password hunter22 and token=s3cr3tVALUE'],
     ['a value after twenty plain-word hits', `${'token: a '.repeat(20)}password=s3cr3tVALUE`],
+    ['a value after twenty other values', `${'token=a1 '.repeat(20)}password=s3cr3tVALUE`],
     ['an assigned flag', 'run --password=s3cr3tVALUE'],
     ['a single-dash flag', 'run -password s3cr3tVALUE'],
     ['a flag starting with a digit', 'run --2fa-secret s3cr3tVALUE'],
@@ -687,7 +689,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
       'when authorization == null any caller can void it', 'if (token === undefined) return',
       'reads `token`, then logs it and returns `done` to the caller',
       'no authorization: add `assertAllowed(await ctx.check(PERMS.invoiceVoid))` as the first line',
-      'no authorization: tokens are missing', 'the password or API key leaks', 'reads password || token from the config', 'fn(password=)',
+      'no authorization: tokens are missing', 'the password or API key leaks', 'reads password || token from the config', 'reads password ?? token from the config', 'fn(password=)',
     ]) {
       expect(redact(prose, 500, 'value')).toBe(prose);
     }
@@ -703,6 +705,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(redact('"password=abc" is set', 500, 'value')).toBe('"password=[redacted]');
     expect(redact('read("API_KEY", "V") is called', 500, 'value')).toBe('read("API_KEY", [redacted]) is called');
     expect(redact('cookie_name=abc def', 500, 'value')).toBe('cookie_name=[redacted] def');
+    expect(redact('when authorization == expected it logs', 500, 'value')).toBe('when authorization == [redacted] it logs');
+    expect(redact('the cookie or "abc" is logged', 500, 'value')).toBe('the cookie or [redacted] is logged');
     expect(redact('sets password=abc, then logs', 500, 'value')).toBe('sets password=[redacted], then logs');
     expect(redact(`token=${'gh' + 'p_' + 'a1'.repeat(18)} is set`, 500, 'value')).toBe('token=[redacted] is set');
     // A second name inside the value: its own mask ends first, and must not bring the tail back.
