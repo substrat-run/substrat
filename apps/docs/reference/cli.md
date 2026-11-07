@@ -367,7 +367,7 @@ substrat push --check           # layer rules + the declared permission surface
 substrat push --check --json    # the same surface as data, for a CI diff
 ```
 
-Runs a push's local checks and stops there: the layer rules, then your declared
+Checks the tree **locally** and stops there: the layer rules, then your declared
 permission surface — resolve `"substrat": { "permissions" }`, import the entry, derive the
 registry, print every key with the module that declares it and its description, every role,
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
@@ -413,7 +413,8 @@ not found. See [declared outbound hosts](/guide/deploying#declared-outbound-host
 
 The CLI POSTs a source snapshot to `{cp}/verticals/{slug}/deploy`, and refuses before that if
 the snapshot has no `pnpm-lock.yaml` at its root. The platform persists its revision, runs
-`pnpm install --frozen-lockfile`, runs your configured build command and bundles the Worker. It reads the declared surface and computes the release digests. The slug is
+`pnpm install --frozen-lockfile`, runs your configured build command and bundles the Worker.
+It reads the declared surface and computes the release digests. The slug is
 **bare** — the control plane forms the registry id `<workspace>/<slug>` from the workspace you
 push as (see [the prefix](/guide/deploying#the-workspace-prefix)). The version lands
 **pending**; admission is a separate, human step.
