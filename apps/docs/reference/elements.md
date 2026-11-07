@@ -147,6 +147,27 @@ so the page reads `/api/me` once. It reads again when the tab comes back into vi
 that fails keeps the last answer: going offline does not look like signing out. Subscribe to it
 for your own sign-in gate, so it and the header agree.
 
+## Importing one element
+
+`import '@substrat-run/elements'` registers every element, and your bundler cannot remove the ones
+you do not use. If your app needs only some of them, import those instead:
+
+```ts
+import '@substrat-run/elements/user-menu';
+```
+
+| Subpath | What it brings |
+|---|---|
+| `/avatar` | `<sub-avatar>` |
+| `/user-menu` | `<sub-user-menu>`, and the `<sub-avatar>` it draws |
+| `/entity-table` | `<sub-entity-table>` |
+| `/entity-table-model` | `EntityTableModel` and the table's helpers, with no element |
+| `/session` | `sessionAt` and the session helpers, with no element |
+
+Each of these exports what its own module declares. `import type` from the package root is always
+free, because a type never reaches the bundle, so `import type { Session } from
+'@substrat-run/elements'` is fine beside any of them.
+
 ## Themes
 
 `themes/base.css` is Web Awesome's default theme. `themes/ledger.css` (dense, flat, cool) and
