@@ -87,7 +87,11 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
  * Returns the compressed bytes' SHA-256. The reader half walks the stored archives through this
  * rather than a second parser, so what it reads is what intake admitted.
  */
-export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Array>; size: number }, visit?: ArchiveVisitor): Promise<string> {
+export async function walkReviewArchive(
+  input: { stream: ReadableStream<Uint8Array>; size: number }, visit?: ArchiveVisitor,
+  limits: { maxExpandedBytes?: number } = {},
+): Promise<string> {
+  const maxExpanded = limits.maxExpandedBytes ?? REVIEW_TREE_MAX_BYTES;
   const makeDigest = runtimeSha256();
   if (!makeDigest) throw new Error('streaming SHA-256 is unavailable');
   const witnessed = witnessedStream({ stream: input.stream, length: input.size }, makeDigest());
@@ -99,7 +103,7 @@ export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Arr
     const next = await reader.read();
     if (next.done) return false;
     expanded += next.value.byteLength;
-    if (expanded > REVIEW_TREE_MAX_BYTES) throw new Error('archive exceeds the expanded size limit');
+    if (expanded > maxExpanded) throw new Error('archive exceeds the expanded size limit');
     const joined = new Uint8Array(pending.byteLength + next.value.byteLength);
     joined.set(pending);
     joined.set(next.value, pending.byteLength);
@@ -126,7 +130,7 @@ export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Arr
       const next = await reader.read();
       if (next.done) throw new Error('archive is truncated');
       expanded += next.value.byteLength;
-      if (expanded > REVIEW_TREE_MAX_BYTES) throw new Error('archive exceeds the expanded size limit');
+      if (expanded > maxExpanded) throw new Error('archive exceeds the expanded size limit');
       const take = Math.min(length - filled, next.value.byteLength);
       out.set(next.value.subarray(0, take), filled);
       filled += take;
@@ -217,7 +221,7 @@ export async function walkReviewArchive(input: { stream: ReadableStream<Uint8Arr
       const tail = await reader.read();
       if (tail.done) break;
       expanded += tail.value.byteLength;
-      if (expanded > REVIEW_TREE_MAX_BYTES) throw new Error('archive exceeds the expanded size limit');
+      if (expanded > maxExpanded) throw new Error('archive exceeds the expanded size limit');
       if (tail.value.some((byte) => byte !== 0)) throw new Error('archive has data after its end');
     }
     if (files.size === 0) throw new Error('archive has no files');

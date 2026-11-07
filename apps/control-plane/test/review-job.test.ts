@@ -5,10 +5,11 @@ import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createModelHost } from '@substrat-run/vertical-host/model';
+import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_RETRY_DELAYS_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_RETRY_DELAYS_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -301,9 +302,9 @@ describe('the job object and the upload', () => {
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'runner error' });
   });
 
-  it('a failed result write retries only the write, with backoff: the model is called once and the finished review lands', async () => {
+  it('a failed result write retries only the write, its wait doubling to a cap, past the old eight-write limit: one model call, and the review lands', async () => {
     const { id, actor } = await stored(CHANGED.source, CHANGED.base);
-    let failures = 2;
+    let failures = 10;
     const flaky = {
       get: (...a: Parameters<R2Bucket['get']>) => bucket.get(...a),
       head: (...a: Parameters<R2Bucket['head']>) => bucket.head(...a),
@@ -319,16 +320,63 @@ describe('the job object and the upload', () => {
       await state.storage.deleteAlarm();
       await state.storage.put('job', { reviewId: id, attempt: 0 });
       const at = Date.now() + 86_400_000;
+      const waits: number[] = [];
+      for (let i = 0; i < 10; i++) {
+        await reviewAlarm(state.storage, deps(model, {}, { bucket: flaky }), () => at);
+        waits.push((await state.storage.getAlarm())! - at);
+      }
+      expect(await state.storage.get('held')).toBeDefined();
       await reviewAlarm(state.storage, deps(model, {}, { bucket: flaky }), () => at);
-      expect(await state.storage.get('job')).toEqual({ reviewId: id, attempt: 1, writes: 1 });
-      expect(await state.storage.getAlarm()).toBe(at + REVIEW_WRITE_RETRY_MS);
-      await reviewAlarm(state.storage, deps(model, {}, { bucket: flaky }), () => at);
-      expect(await state.storage.getAlarm()).toBe(at + 2 * REVIEW_WRITE_RETRY_MS);
-      await reviewAlarm(state.storage, deps(model, {}, { bucket: flaky }), () => at);
+      expect(waits).toEqual([1, 2, 4, 8, 16, 32, 60, 60, 60, 60].map((m) => m * 60_000));
+      expect(waits.at(-1)).toBe(REVIEW_WRITE_RETRY_MAX_MS);
       expect(await state.storage.get('job')).toBeUndefined();
     });
     expect(model.calls.n).toBe(1);
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', findings: [{ item: 'S2' }], usage: { inputTokens: 1200 } });
+  });
+
+  it('a reset during the ledger call loses nothing: the next alarm writes the ledger line and the result, with one model call', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const model = double([{ text: reply({ findings: [finding] }) }]);
+    const lines: string[] = [];
+    const stub = testEnv.REVIEW_JOBS.get(testEnv.REVIEW_JOBS.idFromName(`ledger-${id}`));
+    await runInDurableObject(stub as never, async (_instance, state: DurableObjectState) => {
+      await state.storage.deleteAlarm();
+      await state.storage.put('job', { reviewId: id, attempt: 0 });
+      // The first alarm stops inside the ledger call, as a reset would leave it.
+      void reviewAlarm(state.storage, deps(model, {}, { recordUsage: () => new Promise(() => {}) }));
+      for (let i = 0; i < 40 && !(await state.storage.get('held')); i++) await scheduler.wait(10);
+      await reviewAlarm(state.storage, deps(model, {}, { recordUsage: async (u) => { lines.push(u.requestId); return { recorded: true }; } }));
+      expect(await state.storage.get('job')).toBeUndefined();
+    });
+    expect(model.calls.n).toBe(1);
+    expect(lines).toEqual([id]);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', findings: [{ item: 'S2' }] });
+  });
+
+  it('a record with long path lists is held capped, with the full counts; a result that cannot be held is written straight away', async () => {
+    const gone = Array.from({ length: REVIEW_LIST_MAX + 50 }, (_, i) => file(`old/f${i}.ts`, 'x'));
+    const { id, actor } = await stored(CHANGED.source, [...CHANGED.base, ...gone]);
+    const other = await stored(CHANGED.source, CHANGED.base);
+    const stub = testEnv.REVIEW_JOBS.get(testEnv.REVIEW_JOBS.idFromName(`cap-${id}`));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await runInDurableObject(stub as never, async (_instance, state: DurableObjectState) => {
+      await state.storage.deleteAlarm();
+      await state.storage.put('job', { reviewId: id, attempt: 0 });
+      await reviewAlarm(state.storage, deps(double([{ text: reply({ findings: [] }) }])));
+      await state.storage.put('job', { reviewId: other.id, attempt: 0 });
+      const refusing = new Proxy(state.storage, {
+        get: (target, key) => (key === 'put'
+          ? async (k: string, v: unknown) => { if (k === 'held') throw new Error('string or blob too big: SQLITE_TOOBIG'); return target.put(k, v); }
+          : (Reflect.get(target, key, target) as { bind?: (t: unknown) => unknown }).bind?.(target) ?? Reflect.get(target, key, target)),
+      }) as DurableObjectStorage;
+      await reviewAlarm(refusing, deps(double([{ text: reply({ findings: [finding] }) }])));
+      expect(await state.storage.get('job')).toBeUndefined();
+    });
+    const record = (await readReview(bucket, actor, id))!;
+    expect(record).toMatchObject({ state: 'completed', deletedCount: REVIEW_LIST_MAX + 50 });
+    expect(record.deleted).toHaveLength(REVIEW_LIST_MAX);
+    expect(await readReview(bucket, other.actor, other.id)).toMatchObject({ state: 'completed', findings: [{ item: 'S2' }] });
   });
 
   it('the attempt is counted before the model is called, and a job whose attempts ran out with no result is `incomplete: runner interrupted`', async () => {
@@ -428,18 +476,45 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(redact(`call +46 70 123 45 67 or a@b.se, key ${token}\nsecond line`)).toBe('call [redacted] or [redacted], key [redacted]');
     expect(redact('{"d": "' + 'Q'.repeat(43) + '"}')).toBe('{"d": "[redacted]"}');
     expect(redact('MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7')).toBe('[redacted]');
-    expect(redact("const password = 'hunter22';")).toBe("const password = '[redacted]';");
+    expect(redact("const password = 'hunter22';")).toBe('const password = [redacted]');
     expect(redact('a\u001b[2Kb\u009bc\rd')).toBe('a[2Kbcd');
     expect(redact(`key ${token.slice(0, 10)}\u001b${token.slice(10)}`)).toBe('key [redacted]');
-    expect(redact('password = "correct horse battery"')).toBe('password = "[redacted]"');
-    expect(redact("secret: 'hunter2;x'")).toBe("secret: '[redacted]'");
+    expect(redact('password = "correct horse battery"')).toBe('password = [redacted]');
+    expect(redact("secret: 'hunter2;x'")).toBe('secret: [redacted]');
     expect(redact('SECRET_KEY=abc123def')).toBe('SECRET_KEY=[redacted]');
-    expect(redact("secretKey: 'zz9zz9'")).toBe("secretKey: '[redacted]'");
+    expect(redact("secretKey: 'zz9zz9'")).toBe('secretKey: [redacted]');
     expect(redact('-----BEGIN PRIVATE KEY-----MIIBshort-----END PRIVATE KEY-----')).toBe('[redacted]');
     expect(redact('"-----BEGIN RSA PRIVATE KEY-----\\nMIIEtail\\n-----END RSA PRIVATE KEY-----"')).toBe('"[redacted]');
-    expect(redact('{"p": "' + 'P'.repeat(43) + '", "k": "' + 'K'.repeat(43) + '"}')).toBe('{"p": "[redacted]", "k": "[redacted]"}');
+    // base64url values with `-` and `_` every few characters, so no generic base64 run is long enough: the key-name rule alone masks them.
+    const url64 = 'aB3-x_Q9'.repeat(4);
+    for (const k of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k']) expect(redact(`{"kty": "RSA", "${k}": "${url64}"}`), k).toBe(`{"kty": "RSA", "${k}": "[redacted]"}`);
     expect(redact('ab '.repeat(100))).toHaveLength(200);
   });
+
+  it.each([
+    ['a typed declaration', 'const secret: string = "s3cr3tVALUE"'],
+    ['a typed Python declaration', 'password: str = "s3cr3tVALUE"'],
+    ['a := assignment', 'token := s3cr3tVALUE'],
+    ['a => assignment', 'password => "s3cr3tVALUE"'],
+    ['a bearer header', 'Authorization: Bearer s3cr3tVALUE'],
+    ['a basic header', 'headers.set("x", "Basic s3cr3tVALUE")'],
+    ['an unclosed quote', 'password = "s3cr3tVALUE'],
+    ['JSON-escaped keys', '{\\"password\\":\\"s3cr3tVALUE\\"}'],
+    ['an escaped inner quote', 'secret = "a\\"s3cr3tVALUE"'],
+    ['a wrapped call', "secret: Buffer.from('s3cr3tVALUE')"],
+    ['URL userinfo with no user', 'redis://:s3cr3tVALUE@cache:6379'],
+    ['a zero-width character inside a value', 'password = s3cr\u200b3tVALUE'],
+    ['a soft hyphen inside a token shape', `x = ${'gh' + 'p_' + 'a1'.repeat(9)}\u00ad${'a1'.repeat(9)}`],
+  ])('masks %s', (_label, line) => {
+    const out = redact(line);
+    expect(out).not.toContain('s3cr3tVALUE');
+    expect(out).not.toContain('a1a1a1a1a1a1a1a1a1');
+    expect(out).toContain('[redacted]');
+  });
+
+  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1'])(
+    'leaves %s as it is', (line) => expect(redact(line)).toBe(line),
+  );
 
   it('never reads clean with a failed or blocked gate, and counts dropped findings and files not sent', () => {
     const base = { state: 'completed' as const, reason: null, findings: [], checklistDigest: REVIEW_RULES_DIGEST, dropped: 2, notSent: [{ path: 'a', rule: 'binary' as const }] };
@@ -502,6 +577,22 @@ describe('the diff walker', () => {
     ] });
     expect(lineChanges('a\nb', 'a\nb')).toEqual({ changed: new Set(), removedAfter: [] });
     expect(lineChanges('a\nb\nc', 'x\ny\nz', 2)).toBeNull();
+  });
+
+  it('a base that is not the receipt’s is refused on the first pass, even when no earlier text is needed', async () => {
+    const s1 = await archive([file('src/new.ts', 'x')]);
+    const b1 = await archive([file('src/old.ts', 'a')]);
+    const b2 = await archive([file('src/old.ts', 'b')]);
+    expect(await diffReview({
+      source: { open: async () => s1.file.stream(), size: s1.file.size, sha256: s1.sha256 },
+      base: { open: async () => b2.file.stream(), size: b2.file.size, sha256: b1.sha256 },
+    })).toEqual({ kind: 'archive changed' });
+  });
+
+  it('a file read past the expanded-size limit is refused', async () => {
+    const src = await archive([file('big.txt', 'z'.repeat(100_000))]);
+    await expect(walkReviewArchive({ stream: src.file.stream(), size: src.file.size }, async (_p, _s, read) => { await read(); }, { maxExpandedBytes: 64 * 1024 }))
+      .rejects.toThrow(/expanded size limit/);
   });
 
   it('a same-size edit to a file over the per-file limit is recorded, never read as unchanged', async () => {

@@ -904,6 +904,9 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 - **TEST has the job object but no bucket.** The TEST environment declares `ReviewJobDO` and has
   no `REVIEW_SOURCES` binding, so its review routes answer `501`. The first end-to-end run is in
   production.
+- **The gateway pair is a separate key, not a separate credential.** The control plane reads a
+  gateway credential pair under its own keys; a separate key does not by itself mean a separate
+  credential.
 - **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
   call goes to the account's default gateway; naming another gateway is a later change.
 

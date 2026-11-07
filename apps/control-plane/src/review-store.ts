@@ -15,8 +15,12 @@ export interface ReviewResult {
   findings: ReviewFinding[];
   checkedClean: string[];
   notApplicable: string[];
+  /** At most REVIEW_LIST_MAX entries; `notSentCount` is the full count when the list was cut. */
   notSent: Array<{ path: string; rule: NotSentRule }>;
+  notSentCount?: number;
+  /** At most REVIEW_LIST_MAX entries; `deletedCount` is the full count when the list was cut. */
   deleted: string[];
+  deletedCount?: number;
   fullTree: boolean;
   model: { spec: string; label: string } | null;
   runner: { version: string };
@@ -73,7 +77,7 @@ export interface ReviewReceipt {
  * reader finding is advisory (D4). The line never reads clean while any gate is `not run`,
  * `failed` or `blocked`, and it counts dropped reader findings and changed files not sent.
  */
-export function reviewHeadline(record: Pick<ReviewRecord, 'state' | 'reason' | 'findings' | 'gates' | 'checklistDigest' | 'dropped' | 'notSent'>): string {
+export function reviewHeadline(record: Pick<ReviewRecord, 'state' | 'reason' | 'findings' | 'gates' | 'checklistDigest' | 'dropped' | 'notSent'> & { notSentCount?: number }): string {
   const blocking = record.findings.filter((f) => f.severity === 'blocking' && (f.confirmation as string) === 'script').length;
   const advisory = record.findings.length - blocking;
   const parts = [`Substrat review: ${blocking} blocking, ${advisory} advisory`, `rules ${record.checklistDigest.slice(0, 12)}`];
@@ -82,7 +86,8 @@ export function reviewHeadline(record: Pick<ReviewRecord, 'state' | 'reason' | '
   }
   if (record.gates.length === 0) parts.push('gates not run');
   if (record.dropped > 0) parts.push(`${record.dropped} dropped`);
-  if (record.notSent.length > 0) parts.push(`${record.notSent.length} not sent`);
+  const notSent = record.notSentCount ?? record.notSent.length;
+  if (notSent > 0) parts.push(`${notSent} not sent`);
   if (record.state !== 'completed') parts.push(record.reason ? `${record.state}: ${record.reason}` : record.state);
   return parts.join(' · ');
 }

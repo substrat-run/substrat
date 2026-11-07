@@ -151,13 +151,12 @@ export function parseReply(text: string): ReviewReply | null {
   };
 }
 
-// Masked after control characters are stripped (so a token split by one is masked whole) and
-// before any cut (so a value the cut would split is masked whole): credential shapes
-// `lint:secret-literals` refuses in the repo (tools/secret-literals.mjs SHAPES), a single-line PEM
-// with its body, JWK private members, a JWT, a long base64 run (a PEM or PGP body line), any
-// secret-like name's assigned value, quoted or not (over-masking `token: string` is accepted), an
-// email and a phone-like run.
-const SECRET_NAME = String.raw`\b\w*(?:pass(?:word|wd)?|pwd|secret|token|key|credential|auth)\w*["']?\s*[:=]\s*`;
+// Masked after control and invisible format characters are stripped (so a token split by one is
+// masked whole) and before any cut (so a value the cut would split is masked whole): credential
+// shapes `lint:secret-literals` refuses in the repo (tools/secret-literals.mjs SHAPES), a
+// single-line PEM with its body, JWK private members, a JWT, URL userinfo, a long base64 run (a
+// PEM or PGP body line), an email and a phone-like run. A secret-named assignment is masked from
+// its value to the end of the line (see `maskSecretAssignment`).
 const MASKS: ReadonlyArray<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----.*/g, '[redacted]'],
   [/(["']?\b(?:d|p|q|dp|dq|qi|k)["']?\s*:\s*["'])[A-Za-z0-9_-]{20,}(["'])/g, '$1[redacted]$2'],
@@ -169,20 +168,47 @@ const MASKS: ReadonlyArray<[RegExp, string]> = [
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, '[redacted]'],
   [/\bnpm_[A-Za-z0-9]{36}\b/g, '[redacted]'],
   [/https:\/\/hooks\.slack\.com\/\S+|https:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/\S+|https:\/\/[a-z0-9-]+\.webhook\.office\.com\/\S+/g, '[redacted]'],
-  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"`]+:[^\s@/'"`]{3,}@/g, '[redacted]@'],
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/@'"`]*:[^\s@/'"`]+@/g, '$1[redacted]@'],
   [/\b(?:eyJ[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b/g, '[redacted]'],
-  [new RegExp(`(${SECRET_NAME})(["'\`])(?:(?!\\2).)+\\2`, 'gi'), '$1$2[redacted]$2'],
-  [new RegExp(`(${SECRET_NAME})(?!["'\`]|\\[redacted\\])[^\\s,;"'\`]{3,}`, 'gi'), '$1[redacted]'],
+  [/(\b(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[redacted]'],
   [/[A-Za-z0-9+/]{40,}={0,2}/g, '[redacted]'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted]'],
   [/\+?\d[\d ().-]{7,}\d/g, '[redacted]'],
 ];
 
-/** Keep the first line, strip control characters, mask every shape, then cut to at most `max` characters. */
+/** Invisible format characters (soft hyphen, zero-width and joiner characters, BOM), stripped before any match. */
+const FORMAT_CHARS = /[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]/g;
+
+/** Whole words that name a secret, and the word pairs that do; `key`, `auth` or `pass` alone do not. */
+const SECRET_WORDS = new Set(['secret', 'secrets', 'password', 'passwords', 'passwd', 'pwd', 'token', 'credential', 'credentials', 'authorization', 'apikey', 'privatekey']);
+const SECRET_PAIRS = new Set(['api key', 'private key', 'access key', 'secret key']);
+
+/** An identifier's words: `clientSecret`, `SECRET_KEY`, `api-key` and `"password"` all split. */
+function namesSecret(name: string): boolean {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.some((w, i) => SECRET_WORDS.has(w) || SECRET_PAIRS.has(`${w} ${words[i + 1] ?? ''}`));
+}
+
+/**
+ * A name (bare, quoted, or JSON-escaped), then an assignment or a key's colon (`=`, `:=`, `=>`,
+ * `:`), then a value. When the name is a secret's, everything from the value to the end of the line
+ * is masked: a typed declaration, an unclosed quote, an escaped inner quote and a wrapped call
+ * (`Buffer.from('…')`) all fall inside it.
+ */
+const ASSIGNMENT = /(\\?["'`]?)([A-Za-z_$][\w$-]*)\1\s*(?::=|=>|=(?!=)|:(?!:))\s*(?=\S)/g;
+
+function maskSecretAssignment(text: string): string {
+  for (const m of text.matchAll(ASSIGNMENT)) {
+    if (namesSecret(m[2]!)) return `${text.slice(0, m.index! + m[0].length)}[redacted]`;
+  }
+  return text;
+}
+
+/** Keep the first line, strip control and format characters, mask every shape, then cut to at most `max` characters. */
 export function redact(text: string, max = QUOTE_MAX): string {
-  let out = stripControl(text.split(/\r?\n/)[0]!);
+  let out = stripControl(text.split(/\r?\n/)[0]!).replace(FORMAT_CHARS, '');
   for (const [mask, replacement] of MASKS) out = out.replace(mask, replacement);
-  return out.slice(0, max);
+  return maskSecretAssignment(out).slice(0, max);
 }
 
 export interface Assembled {
