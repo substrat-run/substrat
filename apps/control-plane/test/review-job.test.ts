@@ -9,7 +9,7 @@ import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview, type ChangedFile } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -555,7 +555,52 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a soft hyphen inside a token shape', `x = ${'gh' + 'p_' + 'a1'.repeat(9)}\u00ad${'a1'.repeat(9)}`],
     ...['DB_PASS', 'SMTP_PASS', 'PGPASSWORD', 'passphrase', 'passcode', 'userpass', 'DBPassword', 'APIToken', 'JWTSecret', 'AWSSecretKey',
       'clientsecret', 'accesstoken', 'authtoken', 'apitoken', 'api_keys', 'tokens', 'signing_key', 'encryption_key', 'HMAC_KEY', 'master_key',
-      'ssh_key', 'AUTH_KEY', 'client_key', 'password1', 'secret2', 'passwd', 'access_key'].map((name) => [`the name ${name}`, `${name} = "s3cr3tVALUE"`]),
+      'ssh_key', 'AUTH_KEY', 'client_key', 'password1', 'secret2', 'passwd', 'access_key', 'credential', 'pwd', 'private_key', 'dbPassValue'].map((name) => [`the name ${name}`, `${name} = "s3cr3tVALUE"`]),
+    ['a line separator inside a quoted value', 'password="abc s3cr3tVALUE"'],
+    ['an escaped line separator inside a quoted value', 'password="abc\\ s3cr3tVALUE"'],
+    ['an unclosed value ending in a backslash', 'password = "s3cr3tVALUE\\'],
+    ['a name after a call', 'getConfig().password = "s3cr3tVALUE"'],
+    ['a name after an index', 'arr[0].secret = "s3cr3tVALUE"'],
+    ['a name after a variable index', 'users[i].password = "s3cr3tVALUE"'],
+    ['a name after a non-null assertion', 'config!.password = "s3cr3tVALUE"'],
+    ['a name with a leading dot', '.password = "s3cr3tVALUE"'],
+    ['a dotted bare name', 'db.password = s3cr3tVALUE'],
+    ['a name starting with a digit', '2FA_SECRET=s3cr3tVALUE'],
+    ['a key starting with a digit', '2fa_secret: "s3cr3tVALUE"'],
+    ['a digit before the word', '1password_token = "s3cr3tVALUE"'],
+    ['an ordinal before the key', '3rd_party_api_key = "s3cr3tVALUE"'],
+    ['a key with a leading dash', '-password: s3cr3tVALUE'],
+    ['a quoted name after a letter', 'x"password": "s3cr3tVALUE"'],
+    ['a not-equal comparison', 'if (password != "s3cr3tVALUE") {'],
+    ['a value with a number before it', 'PASSWORD=2024!s3cr3tVALUE'],
+    ['a value with a number and a symbol before it', 'password=123$s3cr3tVALUE'],
+    ['a value after a number and an at sign', 'password=1@s3cr3tVALUE'],
+    ['a value after a number and a colon', 'token = 12:s3cr3tVALUE'],
+    ['a value after a null word', 'secret=none/s3cr3tVALUE'],
+    ['a value after a boolean', 'password=true s3cr3tVALUE'],
+    ['a value after a number and a plus', 'secret = 1 + "s3cr3tVALUE"'],
+    ['a value after null and an or', 'password = null || "s3cr3tVALUE"'],
+    ['a flag before an assignment', 'mysql --password s3cr3tVALUE -e token=abc1'],
+    ['a typed const with a type word', 'const password: string = "s3cr3tVALUE"'],
+    ['a typed let', "let token: string = 's3cr3tVALUE'"],
+    ['a value inside a call', 'token = Buffer.from("s3cr3tVALUE")'],
+    ['a value inside a constructor', 'password = new Secret("s3cr3tVALUE")'],
+    ['a value inside a call after a key', "secret: getSecret('s3cr3tVALUE')"],
+    ...['os.getenv', 'os.environ.get', 'Env.get', 'ENV.fetch', 'env'].map((call) => [`a default in ${call}`, `${call}("KEY", "s3cr3tVALUE")`]),
+    ['a secret-named argument', 'read("API_KEY", "s3cr3tVALUE")'],
+    ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
+    ...['token', 'bearer', 'basic', 'digest', 'negotiate', 'ntlm'].map((scheme) => [`the header scheme ${scheme}`, `Authorization: ${scheme} s3cr3tVALUE`]),
+    ['a header after a word', 'the request sends Authorization: token s3cr3tVALUE'],
+    ['a later cookie', 'Cookie: a=b; session=s3cr3tVALUE'],
+    ['a later cookie after a word', 'it sends Cookie: a=b; session=s3cr3tVALUE'],
+    ['a later value in a plural name', 'cookies: a=b; session=s3cr3tVALUE'],
+    ['a later value after a header’s `=`', 'cookie=abc; session=s3cr3tVALUE'],
+    ['a count’s number with more after it', 'maxTokens = 1 + "s3cr3tVALUE"'],
+    ['a value after a second secret', 'run --password hunter22 and token=s3cr3tVALUE'],
+    ['a value after twenty plain-word hits', `${'token: a '.repeat(20)}password=s3cr3tVALUE`],
+    ['an assigned flag', 'run --password=s3cr3tVALUE'],
+    ['a single-dash flag', 'run -password s3cr3tVALUE'],
+    ['a flag starting with a digit', 'run --2fa-secret s3cr3tVALUE'],
     ['a quoted dotted name', '"db.password": "s3cr3tVALUE"'],
     ['a quoted config path', "'spring.datasource.password': 's3cr3tVALUE'"],
     ['a quoted name with a space', '"my password": "s3cr3tVALUE"'],
@@ -568,15 +613,41 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a comparison', 'if (password == "s3cr3tVALUE") {'],
     ['a lower-case bearer scheme', 'authorization: bearer s3cr3tVALUE-9z'],
     ['a lower-case scheme with no secret name', 'the header carries bearer s3cr3tVALUE-9z'],
-  ])('masks %s', (_label, line) => {
-    const out = redact(line);
-    expect(out).not.toContain('s3cr3tVALUE');
-    expect(out).not.toContain('a1a1a1a1a1a1a1a1a1');
-    expect(out).toContain('[redacted]');
+  ])('masks %s, in a quote and in an explanation', (_label, line) => {
+    for (const mode of ['line', 'value'] as const) {
+      const out = redact(line, 500, mode);
+      expect(out, mode).not.toContain('s3cr3tVALUE');
+      expect(out, mode).not.toContain('a1a1a1a1a1a1a1a1a1');
+      expect(out, mode).toContain('[redacted]');
+    }
   });
 
-  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
-    'leaves %s as it is', (line) => expect(redact(line)).toBe(line),
+  const userinfo = 'u:s3cr3tVALUE';
+  it.each([
+    ['(212) 555-1234', '([redacted]'],
+    ['call (555) 123-4567', 'call ([redacted]'],
+    ['-555-123-4567', '-[redacted]'],
+    ['id-5551234567', 'id-[redacted]'],
+    [`-postgres://${userinfo}@h`, '-postgres://[redacted]@h'],
+    ['.redis://:s3cr3tVALUE@h', '.redis://[redacted]@h'],
+    [`1postgres://${userinfo}@h`, '1postgres://[redacted]@h'],
+    ['+redis://:s3cr3tVALUE@h', '+redis://[redacted]@h'],
+    [`POSTGRES://${userinfo}@h`, 'POSTGRES://[redacted]@h'],
+  ])('masks %s whatever comes before it', (line, masked) => expect(redact(line)).toBe(masked));
+
+  it.each([
+    'password = 123456', 'DB_PASSWORD=12345678', 'pwd: 654321',
+    ...['password', 'passwd', 'pwd', 'secret', 'credential', 'private_key'].map((name) => `${name}_tokens = 13579`),
+  ])('masks a number after a credential’s name: %s', (line) => {
+    for (const mode of ['line', 'value'] as const) expect(redact(line, 500, mode), mode).toBe(`${line.replace(/\d+$/, '')}[redacted]`);
+  });
+
+  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'inputTokens = 1200', 'max_tokens: 4096,', 'count(outputTokens: 0)', 'tokenCount: 12', 'token_limit = 4096', 'tokenBudget: 100',
+    ...['-1', '1.5', 'true', 'false', 'null', 'undefined', 'none', 'nil'].map((value) => `tokens: ${value}`), 'password::hash(input)', 'the anti-token check runs', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
+    'leaves %s as it is, in a quote and in an explanation', (line) => {
+      expect(redact(line)).toBe(line);
+      expect(redact(line, 500, 'value')).toBe(line);
+    },
   );
 
   it.each(['password=correcthorsebatterystaple', 'token := hunter', 'secret => hunter', 'run --password hunter', 'if (password == hunter)'])(
@@ -586,16 +657,69 @@ describe('the assembler, the fence, the redaction and the headline', () => {
   );
 
   it('masks only the value in an explanation, so its words survive', () => {
-    expect(redact('reads the token: it never calls ctx.check', 500, 'value')).toBe('reads the token: it never calls ctx.check');
+    for (const prose of ['reads the token: it never calls ctx.check', 'no authorization: any caller can void it', 'the cookie: it is not HttpOnly']) {
+      expect(redact(prose, 500, 'value')).toBe(prose);
+    }
     expect(redact('drop password=hunter22 from the source', 500, 'value')).toBe('drop password=[redacted] from the source');
     expect(redact('the line sets secret: "s3cr3t VALUE" and logs it', 500, 'value')).toBe('the line sets secret: [redacted] and logs it');
+    expect(redact('secret = "a\\"s3cr3tVALUE" then logs it', 500, 'value')).toBe('secret = [redacted] then logs it');
+    expect(redact('password = "a" + "b" is logged', 500, 'value')).toBe('password = [redacted] + [redacted] is logged');
+    expect(redact('token = Buffer.from("V") is logged', 500, 'value')).toBe('token = [redacted]) is logged');
+    expect(redact('run --password hunter22 and token=abc1 here', 500, 'value')).toBe('run --password [redacted] and token=[redacted] here');
+    expect(redact('log("done") then password=hunter22 is set', 500, 'value')).toBe('log("done") then password=[redacted] is set');
+    // A second name inside the value: its own mask ends first, and must not bring the tail back.
+    expect(redact('password = "token=abc def" is set', 500, 'value')).toBe('password = [redacted] is set');
   });
 
-  // Every mask starts only where no character of its own run precedes it, so a long run is scanned
-  // once: unanchored, a 64K run of name characters took seconds. The bound is generous.
+  it('masks a quote to the end of its line and an explanation only at its value', () => {
+    const line = 'const password = "s3cr3tVALUE"; log(x);';
+    const parsed = parseReply(JSON.stringify({
+      findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: 'password = "s3cr3tVALUE" is logged', fix: 'move password = "s3cr3tVALUE" to a binding' }],
+      addressedToReviewer: [{ file: 'src/a.ts', line: 1, quote: line }],
+    }));
+    expect(assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings).toMatchObject([
+      { item: 'S2', quote: 'const password = [redacted]', failsWhen: 'password = [redacted] is logged', fix: 'move password = [redacted] to a binding' },
+      { item: 'outside', quote: 'const password = [redacted]' },
+    ]);
+  });
+
+  it('refuses a quote past 200 characters, and cuts an explanation to the 1,000 it reads, storing 500', () => {
+    const at = (quote: string, rest: { failsWhen?: string; fix?: string } = {}) => ({ item: 'S2', file: 'src/a.ts', line: 1, quote, failsWhen: 'x', fix: 'y', ...rest });
+    const assembled = (entry: ReturnType<typeof at>, text: string) => assemble(parseReply(JSON.stringify({ findings: [entry] }))!, [{ path: 'src/a.ts', text }]);
+    const wide = 'x'.repeat(201);
+    expect(assembled(at(wide), wide)).toMatchObject({ findings: [], dropped: 1 });
+    expect(assembled(at(wide.slice(1)), wide)).toMatchObject({ findings: [{ item: 'S2' }], dropped: 0 });
+    const long = 'ab '.repeat(334);
+    const kept = assembled(at('x', { failsWhen: long, fix: long }), 'x');
+    expect(kept.dropped).toBe(0);
+    expect(kept.findings[0]!.failsWhen).toHaveLength(500);
+    expect(kept.findings[0]!.fix).toHaveLength(500);
+    // A mask shrinks what it covers, so text past the cut would otherwise reach the stored 500.
+    const past = `${'A'.repeat(1_000)} past the cut`;
+    expect(assembled(at('x', { failsWhen: past, fix: past }), 'x').findings).toMatchObject([{ failsWhen: '[redacted]', fix: '[redacted]' }]);
+  });
+
+  // Not every mask is linear, so the cut is what bounds them: uncut, each of these takes seconds.
+  it('the cut bounds the masks that are not linear', () => {
+    const started = Date.now();
+    for (const run of ['eyJ-'.repeat(16_384), `Bearer ${'a'.repeat(65_536)}`]) {
+      assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]);
+    }
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  // A loop whose alternatives can both take a backslash is exponential on this; the cap does not help.
+  it('reads a run of backslashes in a quoted value once, and masks it', () => {
+    const started = Date.now();
+    expect(redact(`password="${'\\'.repeat(900)}\u2028s3cr3tVALUE"`, 500, 'value')).toBe('password=[redacted]');
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  // The bare name and the email keep a left boundary, and a URL scheme takes no `.` or `-`, so a long
+  // run of name characters is not rescanned from every character. The bound is generous.
   it('redacts a long run of name characters in linear time', () => {
     const started = Date.now();
-    for (const run of ['a_', 'a.', 'a-', 'a%']) {
+    for (const run of ['a_', 'a.', 'a-', 'a%', 'ab']) {
       redact(`${run.repeat(32_768)}: x`);
       redact(`${run.repeat(32_768)}@`, 500, 'value');
       redact(`${run.repeat(32_768)}://`, 500, 'value');
@@ -686,19 +810,56 @@ describe('the job object: held results', () => {
     }
   });
 
-  it('a result that cannot be held is not written, nor its ledger line, when the receipt is within the expiry margin', async () => {
+  it.each([
+    ['a fresh job', 0],
+    ['a job whose attempts ran out', REVIEW_MAX_ATTEMPTS],
+  ])('%s inside the expiry margin calls no model and writes nothing', async (_label, attempt) => {
     const { id } = await stored(CHANGED.source, CHANGED.base);
     const receipt = await (await bucket.get(`records/${id}.json`))!.json<Record<string, unknown>>();
     await bucket.put(`records/${id}.json`, JSON.stringify({ ...receipt, expiresAt: new Date(Date.now() + REVIEW_WRITE_EXPIRY_MARGIN_MS / 2).toISOString() }));
+    const model = double([{ text: reply({ findings: [] }) }]);
     const recordUsage = vi.fn(async () => ({ recorded: true }));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    await inObject(`fallback-expiry-${id}`, async (storage) => {
-      await storage.put('job', { reviewId: id, attempt: 0 });
-      await reviewAlarm(refusingHold(storage), deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage }));
+    await inObject(`margin-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt });
+      await reviewAlarm(storage, deps(model, {}, { recordUsage }));
       expect(await storage.get('job')).toBeUndefined();
     });
+    expect(model.calls.n).toBe(0);
     expect(recordUsage).not.toHaveBeenCalled();
     expect(await bucket.head(`results/${id}.json`)).toBeNull();
+  });
+
+  it('a paid call has its ledger line when its result is no longer wanted: held past expiry, or pruned during the call, held or not', async () => {
+    const pastExpiry = await stored(CHANGED.source, CHANGED.base);
+    const pruned = await stored(CHANGED.source, CHANGED.base);
+    const prunedUnheld = await stored(CHANGED.source, CHANGED.base);
+    const lines: string[] = [];
+    const recordUsage = async (u: { requestId: string }) => { lines.push(u.requestId); return { recorded: true }; };
+    const pruning = (id: string) => {
+      const real = double([{ text: reply({ findings: [] }) }]).host();
+      return () => ({ status: real.status, run: async (input: Parameters<typeof real.run>[0]) => { await bucket.delete(`records/${id}.json`); return real.run(input); } }) as never;
+    };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await inObject(`ledger-expired-${pastExpiry.id}`, async (storage) => {
+      await storage.put('job', { reviewId: pastExpiry.id, attempt: 1 });
+      const { headline: _h, ...rest } = (await readReview(bucket, pastExpiry.actor, pastExpiry.id))!;
+      const usage = { requestId: pastExpiry.id, line: {} };
+      await storage.put('held', { result: { ...rest, state: 'completed', startedAt: 'a', finishedAt: 'b' }, expiresAt: new Date(Date.now() - 1_000).toISOString(), usage });
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    await inObject(`ledger-pruned-${pruned.id}`, async (storage) => {
+      await storage.put('job', { reviewId: pruned.id, attempt: 0 });
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage, modelHost: pruning(pruned.id) }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    await inObject(`ledger-unheld-${prunedUnheld.id}`, async (storage) => {
+      await storage.put('job', { reviewId: prunedUnheld.id, attempt: 0 });
+      await reviewAlarm(refusingHold(storage), deps(double([]), {}, { recordUsage, modelHost: pruning(prunedUnheld.id) }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    expect(lines).toEqual([pastExpiry.id, pruned.id, prunedUnheld.id]);
+    for (const { id } of [pastExpiry, pruned, prunedUnheld]) expect(await bucket.head(`results/${id}.json`)).toBeNull();
   });
 
   it('a receipt that cannot be read does not stop the write; a rejected ledger line stays held and is written on the next alarm; a sync throw is caught', async () => {

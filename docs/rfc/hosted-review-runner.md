@@ -909,6 +909,14 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   credential.
 - **Long path lists are cut.** A record lists at most 200 files not sent and 200 deleted paths,
   with the full counts beside them; the headline counts from the full number.
+- **Redaction matches patterns, inside caps.** A stored quote is at most 200 characters. An
+  explanation is cut to its first 1,000 characters before any mask reads it, and at most 500 are
+  stored; a longer one is cut, never refused. Not every mask runs in linear time, so these caps are
+  what bound the time redaction takes. A secret in a shape no mask knows stays in the text.
+- **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
+  no model, and the review stays `received` until the prune removes it. A call already paid for
+  has its ledger line written before anything decides whether its result is kept, so a result
+  dropped by this margin or by a prune still leaves the line.
 - **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
   call goes to the account's default gateway; naming another gateway is a later change.
 
