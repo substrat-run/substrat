@@ -110,7 +110,7 @@ function capped(result: ReviewResult): ReviewResult {
 
 /** What one attempt decided: a result to store, a retry of the model call, or nothing left to do. */
 export type ReviewAttempt =
-  | { readonly kind: 'result'; readonly result: ReviewResult; readonly usage?: UsageToRecord }
+  | { readonly kind: 'result'; readonly result: ReviewResult; readonly expiresAt: string; readonly usage?: UsageToRecord }
   | { readonly kind: 'retry'; readonly retryInMs: number }
   | { readonly kind: 'gone' };
 
@@ -140,7 +140,7 @@ export async function reviewOnce(
   const empty = emptyResult(receipt, now().toISOString());
   const gates = empty.gates;
   const finish = async (result: Omit<ReviewResult, 'finishedAt'>, usage?: UsageToRecord): Promise<ReviewAttempt> =>
-    ({ kind: 'result', result: capped({ ...result, finishedAt: now().toISOString() }), ...(usage ? { usage } : {}) });
+    ({ kind: 'result', result: capped({ ...result, finishedAt: now().toISOString() }), expiresAt: receipt.expiresAt, ...(usage ? { usage } : {}) });
   const skipped = (reason: string, extra: Partial<ReviewResult> = {}) => finish({ ...empty, ...extra, state: 'skipped', reason });
 
   const spec = deps.config.model?.trim();
@@ -239,10 +239,14 @@ export async function runReviewJob(reviewId: string, attempt: number, deps: Revi
 }
 
 /** A review never fails because of metering: a failed ledger write is logged and the result still lands. */
-async function recordLedger(deps: ReviewJobDeps, usage: UsageToRecord): Promise<void> {
-  await deps.recordUsage(usage).catch(() => {
+async function recordLedger(deps: ReviewJobDeps, usage: UsageToRecord): Promise<boolean> {
+  try {
+    await deps.recordUsage(usage);
+    return true;
+  } catch {
     (deps.log ?? ((event, detail) => console.log(event, detail)))('review.usage.unrecorded', { reviewId: usage.requestId, reason: 'ledger write failed' });
-  });
+    return false;
+  }
 }
 
 /** The review settings and the two gateway keys: everything the reader half is given of the plane's env (§2.2). */
@@ -280,7 +284,14 @@ export function reviewJobDeps(env: ReviewJobEnv, bucket: R2Bucket): ReviewJobDep
 interface ReviewJobState { reviewId: string; attempt: number; writes?: number }
 
 /** A finished attempt held in the object's storage until it is written: the result, and its ledger line until that is written. */
-interface HeldResult { result: ReviewResult; usage?: UsageToRecord }
+interface HeldResult { result: ReviewResult; expiresAt?: string; usage?: UsageToRecord }
+
+/**
+ * No result is written this close to the receipt's expiry. The daily prune removes only expired
+ * receipts with their results, so a write that starts before this margin cannot land after the
+ * prune has run and leave a result with nothing to expire it.
+ */
+export const REVIEW_WRITE_EXPIRY_MARGIN_MS = 60 * 60_000;
 
 /** The longest wait between writes of a held result. Writes go on until the receipt expires. */
 export const REVIEW_WRITE_RETRY_MAX_MS = 60 * 60_000;
@@ -290,12 +301,15 @@ export const REVIEW_WRITE_RETRY_MAX_MS = 60 * 60_000;
  *
  * The model is called at most once per attempt and never again for a finished one: the attempt is
  * counted in storage before the call, and the finished result is held in storage before anything
- * else, its ledger line included. The ledger line is written next (deduplicated on the review id)
- * and the result after it. A failed result write retries only the write, waiting from
- * REVIEW_WRITE_RETRY_MS and doubling to at most REVIEW_WRITE_RETRY_MAX_MS, until the receipt
- * expires. If the result cannot be held, it is written straight to R2. A transient model error
- * re-arms the next attempt. The job is forgotten once the result is written, or nothing is left
- * to write it for.
+ * else, with its ledger line and the receipt's expiry. Before each write the job checks the held
+ * expiry and that the receipt is still there: past expiry, or with the receipt pruned, it writes
+ * nothing and forgets the job. The ledger line is written next (deduplicated on the review id) and
+ * kept held until that write succeeds, so a rejected one is tried again on the next alarm while the
+ * result is still unwritten; once the result is written the job ends, and a ledger write that
+ * failed on that last alarm is logged and not retried. A failed result write retries only the
+ * write, waiting from REVIEW_WRITE_RETRY_MS and doubling to at most REVIEW_WRITE_RETRY_MAX_MS. If
+ * the result cannot be held, it is written straight to R2. A transient model error re-arms the
+ * next attempt. The job is forgotten once the result is written, or nothing is left to write it for.
  */
 export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJobDeps | null, nowMs: () => number = Date.now): Promise<void> {
   const job = await storage.get<ReviewJobState>('job');
@@ -323,13 +337,17 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
       await storage.setAlarm(nowMs() + outcome.retryInMs);
       return;
     }
-    held = { result: outcome.result, ...(outcome.usage ? { usage: outcome.usage } : {}) };
+    held = { result: outcome.result, expiresAt: outcome.expiresAt, ...(outcome.usage ? { usage: outcome.usage } : {}) };
     try {
       await storage.put('held', held);
     } catch {
-      // Not holdable: write it now rather than lose it. A failure here re-arms the job, whose
-      // attempt is already counted.
+      // Not holdable: write it now rather than lose it, unless nothing is left to write it for. A
+      // failure here re-arms the job, whose attempt is already counted.
       console.error('review.job.failed', { reviewId: job.reviewId, reason: 'result not held' });
+      if (!(await stillWanted(deps, job.reviewId, held.expiresAt, nowMs))) {
+        await storage.deleteAll();
+        return;
+      }
       try {
         if (held.usage) await recordLedger(deps, held.usage);
         await writeReviewResult(deps.bucket, job.reviewId, held.result);
@@ -340,19 +358,18 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
       return;
     }
   }
-  if (held.usage) {
-    await recordLedger(deps, held.usage);
-    held = { result: held.result };
+  if (!(await stillWanted(deps, job.reviewId, held.expiresAt, nowMs))) {
+    await storage.deleteAll();
+    return;
+  }
+  if (held.usage && await recordLedger(deps, held.usage)) {
+    const { usage: _written, ...rest } = held;
+    held = rest;
     await storage.put('held', held);
   }
   try {
     await writeReviewResult(deps.bucket, job.reviewId, held.result);
   } catch {
-    const receipt = await readReceipt(deps.bucket, job.reviewId).catch(() => undefined);
-    if (receipt === null || (receipt && Date.parse(receipt.expiresAt) <= nowMs())) {
-      await storage.deleteAll();
-      return;
-    }
     const writes = (job.writes ?? 0) + 1;
     console.error('review.job.failed', { reviewId: job.reviewId, reason: 'record write failed', writes });
     const current = (await storage.get<ReviewJobState>('job')) ?? job;
@@ -363,12 +380,23 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
   await storage.deleteAll();
 }
 
+/**
+ * Whether a result is still worth writing: not within REVIEW_WRITE_EXPIRY_MARGIN_MS of the
+ * receipt's expiry, and the receipt not pruned. A receipt that cannot be read is no answer: the
+ * write is tried, and retried if it fails.
+ */
+async function stillWanted(deps: ReviewJobDeps, reviewId: string, expiresAt: string | undefined, nowMs: () => number): Promise<boolean> {
+  if (expiresAt && Date.parse(expiresAt) - REVIEW_WRITE_EXPIRY_MARGIN_MS <= nowMs()) return false;
+  const receipt = await readReceipt(deps.bucket, reviewId).catch(() => undefined);
+  return receipt !== null;
+}
+
 /** A result for a job that stopped without one of its own: `incomplete` with the reason. Gone when no receipt is left. */
 async function stoppedResult(bucket: R2Bucket, reviewId: string, reason: string): Promise<ReviewAttempt> {
   const receipt = await readReceipt(bucket, reviewId);
   if (!receipt || await hasReviewResult(bucket, reviewId)) return { kind: 'gone' };
   const at = new Date().toISOString();
-  return { kind: 'result', result: { ...emptyResult(receipt, at), state: 'incomplete', reason, finishedAt: at } };
+  return { kind: 'result', result: { ...emptyResult(receipt, at), state: 'incomplete', reason, finishedAt: at }, expiresAt: receipt.expiresAt };
 }
 
 /**

@@ -13,6 +13,10 @@ export interface ReviewRecordView {
   notApplicable?: string[];
   gates?: Array<{ name: string; status: string; reason?: string; exitCode?: number }>;
   notSent?: Array<{ path: string; rule: string }>;
+  /** The full count when the plane cut the list. */
+  notSentCount?: number;
+  deleted?: string[];
+  deletedCount?: number;
   dropped?: number;
   model?: { label: string } | null;
 }
@@ -44,7 +48,9 @@ export function formatReview(record: ReviewRecordView): string {
     for (const f of outside) out.push(`  ${p(f.file)}:${p(f.line)} ${p(f.failsWhen)}: ${p(f.quote)}`);
   }
   if (record.dropped) out.push('', `Dropped: ${p(record.dropped)} reader finding(s) the runner could not hold to a changed line and a judgement item.`);
-  if (record.notSent?.length) out.push('', `Not sent: ${record.notSent.map((n) => `${p(n.path)} (${p(n.rule)})`).join(', ')}`);
+  const more = (shown: number, total: number | undefined) => (total !== undefined && total > shown ? `, and ${p(total - shown)} more` : '');
+  if (record.notSent?.length) out.push('', `Not sent: ${record.notSent.map((n) => `${p(n.path)} (${p(n.rule)})`).join(', ')}${more(record.notSent.length, record.notSentCount)}`);
+  if (record.deleted?.length) out.push(`Deleted: ${record.deleted.map(p).join(', ')}${more(record.deleted.length, record.deletedCount)}`);
   out.push('', `Checked clean: ${record.checkedClean?.length ? record.checkedClean.map(p).join(', ') : 'none'}`);
   out.push(`Not applicable: ${record.notApplicable?.length ? record.notApplicable.map(p).join(', ') : 'none'}`);
   out.push('Gates run:');
