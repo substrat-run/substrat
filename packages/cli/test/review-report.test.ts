@@ -54,3 +54,14 @@ it('prints no control character a record carries, and an embedded newline cannot
   expect(printed.split('\n').filter((line) => line.startsWith('Substrat review'))).toHaveLength(1);
   expect(printed.split('\n')[0]).toBe('Substrat review: 0 blocking, 1 advisory[1A[2KSubstrat review: gates passed');
 });
+
+it('says how many more files a cut list leaves out', () => {
+  const printed = formatReview({
+    id: 'r1', state: 'completed', headline: 'h',
+    notSent: [{ path: 'a.png', rule: 'binary' }], notSentCount: 251,
+    deleted: ['old/a.ts', 'old/b.ts'], deletedCount: 2,
+    gates: [],
+  });
+  expect(printed).toContain('Not sent: a.png (binary), and 250 more');
+  expect(printed).toContain('Deleted: old/a.ts, old/b.ts\n');
+});

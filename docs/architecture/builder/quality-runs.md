@@ -187,3 +187,23 @@ In the order we would try them:
 - **These ran on Claude Code's loop on a local disk.** They share prompts, tools and gates with the
   hosted path, not its agent loop. Only the deployed test studio runs identical code, and it has no
   eval driver yet.
+
+## 8. How the second round measures
+
+The first round graded whole builds, which is slow and noisy. The second round changes how a run is
+set up, and these are in `apps/builder/quality` and the evals.
+
+- **A golden set.** `apps/builder/evals/todo/golden` is a reviewed concept, model, tests and project.
+  `pnpm builder evals --eval todo --from scaffold` starts a run at that stage, so a change to coding
+  is not measured through a design that differs every time.
+- **Spec versions.** A golden version hands a run more or less to build, so scores and times compare
+  only within one version. A change to it is a new version.
+- **Lanes.** Runs of the same code do not depend on each other, so `queue-par.sh` runs a whole arm at
+  once, each in its own project. Eight at once took about as long per run as one. A row records how
+  many ran, because a time compares only with runs at the same number.
+- **Real runs.** The score reads code. A batch is also run against the app it built, through the
+  app's own proxy, because that has found defects no gate or judge saw.
+- **Unreleased packages.** A generated project installs from npm, so a run never meets code that is
+  not released. `pack.sh` packs the checkout, and `BUILDER_EVAL_WORKSPACE` lays the overrides into the
+  project. Give the tarballs a version npm does not have: a build that installs with
+  `--ignore-workspace` skips the overrides, and then meets the published package under the same number.

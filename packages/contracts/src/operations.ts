@@ -873,6 +873,7 @@ export function defineOperations<
       assertPatchInputs,
       (ops) => assertTrashedDeclarations(ops, entities),
       (ops) => assertHandlersDeclared(ops, entities),
+      assertJoinTakesNoAddress,
     ]);
     return operations;
   };
@@ -1489,6 +1490,32 @@ function isStringNormalizer(checkDef: unknown): boolean {
 }
 
 /** Check the effective HTTP method, both on local operations and bound engine routes. */
+/**
+ * A join must not take the caller's own address (K-61).
+ *
+ * Sharing finds people by the address they joined with, so a join that stores what it is
+ * given lets one person claim an address and receive what was shared with it. The kernel
+ * cannot see this for itself: a vertical's table holds any string. So it is refused here,
+ * where `check_model`, `substrat push` and every test load the model, and it arrives with
+ * the release that gives an operation `ctx.verifiedEmail`, so an upgrade brings the remedy
+ * with the refusal and a vertical on its old pins is not stopped mid-hotfix.
+ *
+ * Names and one field, deliberately: `customer/register` taking `email` is staff recording
+ * somebody else, and only the operation's own name says this address is the caller's.
+ */
+function assertJoinTakesNoAddress(operations: Record<string, unknown>): void {
+  for (const [name, value] of Object.entries(operations)) {
+    if (!/\/(join|sign-?up)$/.test(name)) continue;
+    const shape = (value as { input?: z.ZodObject<z.ZodRawShape> }).input?.shape ?? {};
+    if (!('email' in shape)) continue;
+    throw new Error(
+      `model: '${name}' takes the caller's own address as input, so anyone can claim an address ` +
+        'and receive what was shared with it; drop `email` and read `ctx.verifiedEmail`, or if ' +
+        'the address is somebody else\'s, name the operation for what it does',
+    );
+  }
+}
+
 function assertPatchInputs(operations: Record<string, unknown>): void {
   for (const [name, value] of Object.entries(operations)) {
     const op = value as {

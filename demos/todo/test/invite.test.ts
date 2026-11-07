@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isPlatformRequest, principalId, type Page, type PrincipalId } from '@substrat-run/contracts';
-import type { AuthSubject, DevCaller } from '@substrat-run/dev-issuer';
+import type { DevCaller } from '@substrat-run/dev-issuer';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { createApp } from '../src/app.js';
 import { buildHost, grantOwner, seed, type World } from '../src/seed.js';
@@ -21,10 +21,10 @@ let ada: ScopeStub;
 const scope = () => ({ tenantId: world.tenant, scopeId: world.scope });
 
 /** A member of the workspace who has not joined the app. */
-async function member(): Promise<{ id: PrincipalId; stub: ScopeStub }> {
+async function member(verifiedEmail: string): Promise<{ id: PrincipalId; stub: ScopeStub }> {
   const id = principalId.parse(ulid());
   await host.admin.assignRole(world.staff, { principalId: id, roleKey: 'member', node: scope() });
-  return { id, stub: await host.getScope(id, world.tenant, world.scope) };
+  return { id, stub: await host.getScope(id, world.tenant, world.scope, { verifiedEmail }) };
 }
 
 const newList = async (name: string) => (await ada.invoke<{ id: string }>('todo/create-list', { name })).id;
@@ -52,10 +52,10 @@ describe('inviting someone to a list', () => {
     expect(sent.status).toBe('invited');
     expect(await mailTo('elin@example.com')).toHaveLength(1);
 
-    const elin = await member();
+    const elin = await member('elin@example.com');
     await expect(elin.stub.invoke('todo/list-items', { listId })).rejects.toThrow(/permission denied/i);
 
-    await elin.stub.invoke('todo/join', { email: 'elin@example.com', displayName: 'Elin' });
+    await elin.stub.invoke('todo/join', { displayName: 'Elin' });
     const items = await elin.stub.invoke<Page<{ text: string }>>('todo/list-items', { listId });
     expect(items.entries.map((i) => i.text)).toEqual(['Passports']);
     expect((await ada.invoke<Page<unknown>>('todo/list-invites', { listId })).entries).toEqual([]);
@@ -73,8 +73,8 @@ describe('inviting someone to a list', () => {
     const { id } = await ada.invoke<{ id: string }>('todo/invite', { listId, email: 'noor@example.com' });
     await ada.invoke('todo/cancel-invite', { inviteId: id });
 
-    const noor = await member();
-    await noor.stub.invoke('todo/join', { email: 'noor@example.com', displayName: 'Noor' });
+    const noor = await member('noor@example.com');
+    await noor.stub.invoke('todo/join', { displayName: 'Noor' });
     await expect(noor.stub.invoke('todo/list-items', { listId })).rejects.toThrow(/permission denied/i);
   });
 
@@ -83,8 +83,8 @@ describe('inviting someone to a list', () => {
     await ada.invoke('todo/invite', { listId, email: 'sami@example.com' });
     await ada.invoke('todo/trash-list', { listId });
 
-    const sami = await member();
-    await sami.stub.invoke('todo/join', { email: 'sami@example.com', displayName: 'Sami' });
+    const sami = await member('sami@example.com');
+    await sami.stub.invoke('todo/join', { displayName: 'Sami' });
     await ada.invoke('todo/restore-list', { listId });
     expect((await ada.invoke<Page<unknown>>('todo/list-invites', { listId })).entries).toHaveLength(1);
   });
@@ -92,7 +92,7 @@ describe('inviting someone to a list', () => {
   it('joins a person when they sign in, with the address the issuer verified', async () => {
     const listId = await newList('Signed in');
     await ada.invoke('todo/invite', { listId, email: 'tove@example.com' });
-    const tove = await member();
+    const tove = await member('tove@example.com');
     const caller: DevCaller = {
       principal: tove.id,
       tenantId: world.tenant,
@@ -100,12 +100,11 @@ describe('inviting someone to a list', () => {
       sub: 'dev|tove',
       display: 'Tove',
       email: 'tove@example.com',
+      verifiedEmail: 'tove@example.com',
     };
-    const subject = { sub: caller.sub, email: caller.email, emailVerified: true } as unknown as AuthSubject;
     const app = createApp({
       host,
-      login: { handle: async () => new Response(), caller: async () => caller, subject: async () => subject },
-      env: {},
+      login: { handle: async () => new Response(), caller: async () => caller },
       onJoined: (who) => grantOwner(host, world.staff, scope(), who.principal),
     });
 

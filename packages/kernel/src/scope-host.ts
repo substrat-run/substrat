@@ -330,6 +330,16 @@ export interface OperationContext {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
+  /**
+   * The address the issuer verified for the person making this call, or null (K-61). An
+   * operation that needs the caller's address reads it here and never takes it as input.
+   *
+   * Only `getScope` carries one, and only from a door that passes it, so a door that forgets
+   * gets null and leaving it out fails closed. It is null for a schedule, a consumer, a
+   * connection, a peer, a capability, and acting as a person (K-42): none of those is the
+   * person proving this address.
+   */
+  readonly verifiedEmail: string | null;
   /** Seal positions for one filtered list under this scope, caller and operation. */
   pageContinuation(list: string, query: unknown): {
     /** Read-only and copy walks cannot persist a hidden budget-stop position. */
@@ -1069,6 +1079,16 @@ export interface ScopeStub {
  * around an operation can react to what the operation did without the module
  * carrying a new surface.
  */
+/** `getScope`'s options: the person's door is the only one an address may arrive through. */
+export interface PersonScopeOptions extends ScopeStubOptions {
+  /**
+   * What the door's sign-in says is this person's verified address (K-61), through
+   * `verifiedEmailOf`. Carried on the same trust as the `principal` beside it, which the door
+   * also names. Leaving it out is safe: `ctx.verifiedEmail` is then null.
+   */
+  verifiedEmail?: string | null;
+}
+
 export interface ScopeStubOptions {
   /**
    * Fired after an invoke through this stub COMMITS having enqueued platform
@@ -5339,7 +5359,7 @@ export interface ScopeHost {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    options?: ScopeStubOptions,
+    options?: PersonScopeOptions,
   ): Promise<ScopeStub>;
 
   /**

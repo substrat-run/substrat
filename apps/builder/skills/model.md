@@ -268,10 +268,10 @@ that breaks them:
   see and withdraw it, and a consumer of the join event turns it into a share.
 
 Finding people by email makes the joined address a credential: a member who joins
-with someone else's address receives that person's shares. The operation cannot see
-the session, so host code holds this. Before the join operation runs, it compares
-the claimed email with the session's issuer-verified one, refuses a mismatch, and
-passes on the verified spelling (`joiningAsYourself` in `todo` `src/app.ts`).
+with someone else's address receives that person's shares. So a join never takes the
+caller's address as input, and a model that declares one does not load. The operation
+reads `ctx.verifiedEmail`, which the door passes to `getScope`, and refuses when it is
+null (`todo/join` in `todo` `src/module.ts`).
 
 ## Not every table is an entity
 

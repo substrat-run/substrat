@@ -1,0 +1,21 @@
+{
+  "name": "shared-lists-app",
+  "version": "0.0.2",
+  "private": true,
+  "description": "The app shell a generated vertical starts from: Web Awesome themes, the user menu, hash routing and an entity table. The builder copies it to app/ with copy_reference",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@substrat-run/elements": "latest",
+    "lit": "^3.3.0"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}

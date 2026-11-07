@@ -1,0 +1,6 @@
+packages:
+  - "."
+  - app
+allowBuilds:
+  esbuild: false
+  workerd: false

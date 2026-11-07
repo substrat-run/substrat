@@ -1,0 +1,62 @@
+{
+  "name": "shared-lists",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "substrat": {
+    "slug": "shared-lists",
+    "name": "Shared Lists",
+    "sendsEmail": true,
+    "permissions": "src/provision.ts",
+    "devServers": [
+      {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "src/server.ts"
+      },
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      }
+    ]
+  },
+  "scripts": {
+    "dev": "concurrently -n issuer,api -c magenta,blue \"pnpm run issuer\" \"tsx watch src/server.ts\"",
+    "issuer": "substrat-dev-issuer --personas src/personas.ts",
+    "server": "tsx src/server.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint:boundaries": "substrat-boundary-lint"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@substrat-run/adapter-cloudflare": "^0.185.0",
+    "@substrat-run/adapter-sqlite": "^0.185.0",
+    "@substrat-run/attachment-extractors": "^0.2.46",
+    "@substrat-run/contracts": "^0.185.0",
+    "@substrat-run/engine-invoicing": "^0.11.69",
+    "@substrat-run/engine-workorder": "^0.13.10",
+    "@substrat-run/kernel": "^0.185.0",
+    "@substrat-run/oidc-rp": "^0.13.0",
+    "@substrat-run/vertical-host": "^0.185.0",
+    "better-sqlite3": "^13.0.3",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261023.1",
+    "@substrat-run/boundary-lint": "^0.8.2",
+    "@substrat-run/dev-issuer": "^0.3.5",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.0.0",
+    "@vitest/ui": "^5.0.0",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.151.0"
+  },
+  "packageManager": "pnpm@10.10.0"
+}

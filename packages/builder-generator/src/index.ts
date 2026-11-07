@@ -18,6 +18,7 @@ export {
 	defaultDenyCommand,
 	type WorkspaceToolOptions,
 	type WorkspaceTools,
+	standalonePackageJson,
 } from './tools.js';
 
 export { AiSdkGenerator, generatorPrompt, type AiSdkGeneratorOptions } from './ai-sdk.js';

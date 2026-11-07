@@ -65,6 +65,7 @@ interface Args {
 	readonly quiet: boolean;
 	readonly lanes: boolean;
 	readonly untilModel: boolean;
+	readonly from: GoldenStart | undefined;
 	readonly checkModel: boolean;
 	readonly help: boolean;
 }
@@ -91,6 +92,7 @@ function parseArgs(argv: readonly string[]): Args {
 		quiet: argv.includes('--quiet'),
 		lanes: argv.includes('--lanes'),
 		untilModel: get('--until') === 'model',
+		from: goldenStart(get('--from')),
 		checkModel: !argv.includes('--no-check-model'),
 		help: argv.includes('--help') || argv.includes('-h'),
 	};
@@ -103,6 +105,7 @@ const USAGE = `pnpm builder evals [options]
                       claude-code:<sonnet|haiku|id> runs on your local Claude Code
                       login instead of an API key
   --max-steps <n>     tool-loop ceiling per pass (default 40)
+  --from <stage>      start at model, scenario or scaffold, from the fixture's golden/ files
   --max-turns <n>     turn ceiling per fixture (fixture expect.json wins)
   --root <path>       monorepo root (default cwd)
   --max-tokens <n>    per-turn uncached-equivalent token ceiling (default 400000)
@@ -121,6 +124,27 @@ green + pinned operations exist + pinned roles hold their permissions. Results
 land in .builder/evals/ as JSON; compare two runs to judge a harness change.
 
 Mode A has NO isolation — the model gets shell access, once per fixture.`;
+
+/** What a stage test starts from: what the stages before it produce, frozen. */
+const GOLDEN_START = {
+	model: [],
+	scenario: ['spec/model.ts'],
+	scaffold: ['spec/model.ts', 'test/scenario.test.ts', 'test/invite.test.ts'],
+} as const;
+type GoldenStart = keyof typeof GOLDEN_START;
+
+function goldenStart(stage: string | undefined): GoldenStart | undefined {
+	if (stage === undefined) return undefined;
+	if (stage in GOLDEN_START) return stage as GoldenStart;
+	throw new Error(`--from takes ${Object.keys(GOLDEN_START).join(', ')}, not ${stage}`);
+}
+
+/** The fixture restarted at `stage`: the run measures that stage on, with the same input every time. */
+async function fromGolden(fixture: EvalFixture, dir: string, stage: GoldenStart): Promise<EvalFixture> {
+	const read = (file: string) => readFile(join(dir, file), 'utf8');
+	const seed = Object.fromEntries(await Promise.all(GOLDEN_START[stage].map(async (f) => [f, await read(f)])));
+	return { name: fixture.name, expect: fixture.expect, concept: await read('spec/concept.md'), seed };
+}
 
 /**
  * Fixture discovery: every `apps/builder/evals/<name>/` with an expect.json and
@@ -171,7 +195,11 @@ async function main(): Promise<number> {
 
 	// The fixtures live beside this file's package, not under --root.
 	const studioDir = join(import.meta.dirname, '..');
-	const fixtures = await loadFixtures(join(studioDir, 'evals'), args.only);
+	const loaded = await loadFixtures(join(studioDir, 'evals'), args.only);
+	const { from } = args;
+	const fixtures = from
+		? await Promise.all(loaded.map((f) => fromGolden(f, join(studioDir, 'evals', f.name, 'golden'), from)))
+		: loaded;
 	if (fixtures.length === 0) {
 		process.stderr.write('no fixtures found under apps/builder/evals/\n');
 		return 2;
@@ -261,8 +289,10 @@ async function main(): Promise<number> {
 
 	const results: EvalResult[] = [];
 	const transcripts = new Map<string, string>();
+	const lane = process.env.BUILDER_EVAL_LANE ?? '';
 	for (const fixture of fixtures) {
-		const projectDir = `${EVAL_PROJECT_PREFIX}${fixture.name}`;
+		// A lane is one of several runs at once from this checkout: its own project, its own reports.
+		const projectDir = `${EVAL_PROJECT_PREFIX}${lane ? `${lane}-` : ''}${fixture.name}`;
 		currentProjectDir = projectDir;
 		process.stdout.write(`── ${fixture.name} → ${projectDir}\n`);
 		await prepareProject(ws, projectDir, fixture);
@@ -317,7 +347,7 @@ async function main(): Promise<number> {
 		// forks, and it reads as the better model).
 		results: results.map((r) => ({ ...r, forkScore: forkScore(r), listCostUsd: cost(r) })),
 	};
-	const outDir = join(ws.root, '.builder', 'evals');
+	const outDir = join(ws.root, '.builder', 'evals', lane);
 	await mkdir(outDir, { recursive: true });
 	const stamp = report.ranAt.replace(/[:.]/g, '-');
 	const outFile = join(outDir, `run-${stamp}.json`);

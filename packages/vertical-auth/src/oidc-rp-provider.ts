@@ -1,5 +1,6 @@
 import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
 import {
+  identifyEmail,
   beginLogin,
   completeLogin,
   federatedLogout,
@@ -189,6 +190,17 @@ function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
     bearerCache.set(key, p);
   }
   return p;
+}
+
+/**
+ * The address a door hands `getScope` as `verifiedEmail` (K-61): the one `identifyEmail` admits,
+ * or null. The break-glass is deliberately not read: it keeps a person signed in, and an address
+ * nobody verified must not claim anything. A delegated token is another app acting for the
+ * person, so it proves nothing about the address either.
+ */
+export function verifiedEmailOf(subject: AuthSubject | null): string | null {
+  if (subject === null || subject.delegation !== undefined) return null;
+  return identifyEmail({}, { id: subject.sub, email: subject.email ?? undefined, emailVerified: subject.emailVerified }).email;
 }
 
 export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {

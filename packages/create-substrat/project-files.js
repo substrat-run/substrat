@@ -56,7 +56,7 @@ export const TSCONFIG = `${JSON.stringify(
     // under their own config (tsconfig.worker.json) — the node config must not
     // see them. `src/routes.ts` is deliberately NOT excluded: the shared route
     // table must typecheck under both, which is what keeps it host-agnostic.
-    exclude: ['src/worker.ts', 'src/config-do.ts'],
+    exclude: ['src/worker.ts'],
   },
   null,
   2,
@@ -104,10 +104,10 @@ export function packageJson(name) {
             { binding: 'SCOPE', class: 'ScopeDO' },
             // The scope-local sweep singleton — the deployment's own timer (#461).
             { binding: 'SWEEPER', class: 'SweeperDO' },
-            // Per-instance config delivered by the platform (/internal/configure) —
-            // one DO per tenant, rows per scope. Without it the app cannot receive
-            // the settings the dashboard offers its users.
-            { binding: 'CONFIG', class: 'ConfigDO' },
+            // The tenant's identity directory: who is bound to what, the owner seat,
+            // and the settings the platform delivers (/internal/configure). One DO per
+            // tenant, rows per scope.
+            { binding: 'AUTH', class: 'IdentityDO' },
           ],
         },
         // No envSpec copy here (#1206): the declared per-instance settings live in

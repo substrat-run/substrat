@@ -41,6 +41,8 @@ export const stripControl = (text: string): string => text.replace(/[\u0000-\u00
 const fencedPath = (path: string): string => stripControl(path);
 
 export const QUOTE_MAX = 200;
+/** The most a finding's `failsWhen` or `fix` may hold, as the model writes it. */
+export const EXPLANATION_MAX = 1_000;
 
 /**
  * The system text for one run. The fence markers carry `nonce`, fresh per run, so a change cannot
@@ -134,7 +136,7 @@ function nearRemovals(file: ChangedFile): Set<number> {
 export const estimateTokens = (text: string): number => Math.ceil(text.length / 3);
 
 const located = { file: z.string().min(1), line: z.number().int().min(1), quote: z.string().min(1).max(QUOTE_MAX) };
-const findingShape = z.object({ item: z.string().min(1), ...located, failsWhen: z.string().min(1), fix: z.string().min(1), unconfirmed: z.boolean().optional() }).strict();
+const findingShape = z.object({ item: z.string().min(1), ...located, failsWhen: z.string().min(1).max(EXPLANATION_MAX), fix: z.string().min(1).max(EXPLANATION_MAX), unconfirmed: z.boolean().optional() }).strict();
 const addressedShape = z.object(located).strict();
 const envelope = z.object({
   findings: z.array(z.unknown()),
@@ -200,47 +202,99 @@ const MASKS: ReadonlyArray<[RegExp, string]> = [
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, '[redacted]'],
   [/\bnpm_[A-Za-z0-9]{36}\b/g, '[redacted]'],
   [/https:\/\/hooks\.slack\.com\/\S+|https:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/\S+|https:\/\/[a-z0-9-]+\.webhook\.office\.com\/\S+/g, '[redacted]'],
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/@'"`]*:[^\s@/'"`]+@/g, '$1[redacted]@'],
+  [/(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^\s:/@'"`]*:[^\s@/'"`]+@/g, '$1[redacted]@'],
   [/\b(?:eyJ[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b/g, '[redacted]'],
-  [/(\b(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[redacted]'],
-  [/[A-Za-z0-9+/]{40,}={0,2}/g, '[redacted]'],
-  [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted]'],
-  [/\+?\d[\d ().-]{7,}\d/g, '[redacted]'],
+  // A token after the scheme, only when it looks like one (12+ characters with a digit, a symbol,
+  // or a lower-case letter before an upper-case one, as base64 has), so prose such as "Basic
+  // validation is missing" keeps its words.
+  // Case-sensitive on purpose, so the lower-before-upper check means what it says; the scheme is
+  // spelled in both casings instead.
+  [/(\b(?:Bearer|Basic|bearer|basic|BEARER|BASIC)\s+)(?=[A-Za-z0-9._~+/=-]{12,})(?=[A-Za-z._~+/=-]*[0-9._~+/=-]|[A-Za-z]*[a-z][A-Za-z]*[A-Z])[A-Za-z0-9._~+/=-]+/g, '$1[redacted]'],
+  [/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g, '[redacted]'],
+  [/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted]'],
+  [/(?<![\d().-])\+?\d[\d ().-]{7,}\d/g, '[redacted]'],
 ];
 
 /** Invisible format characters (soft hyphen, zero-width and joiner characters, BOM), stripped before any match. */
 const FORMAT_CHARS = /[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]/g;
 
-/** Whole words that name a secret, and the word pairs that do; `key`, `auth` or `pass` alone do not. */
-const SECRET_WORDS = new Set(['secret', 'secrets', 'password', 'passwords', 'passwd', 'pwd', 'token', 'credential', 'credentials', 'authorization', 'apikey', 'privatekey']);
-const SECRET_PAIRS = new Set(['api key', 'private key', 'access key', 'secret key']);
+/** Substrings that name a secret wherever they sit in a name. */
+const SECRET_PARTS = /password|passwd|passphrase|passcode|secret|token|credential|pwd|cookie|authorization/;
+/** The key names that are a secret's: `api_key`, `signingKey`, `HMAC_KEY`, `ssh-keys`. */
+const SECRET_KEYS = /(?:api|private|access|secret|signing|encryption|master|ssh|client|auth|hmac)keys?/;
 
-/** An identifier's words: `clientSecret`, `SECRET_KEY`, `api-key` and `"password"` all split. */
-function namesSecret(name: string): boolean {
+/** A name (an identifier, a quoted config path, or two words) that names a secret. */
+export function namesSecret(name: string): boolean {
+  const lower = name.toLowerCase();
+  const joined = lower.replace(/[^a-z0-9]/g, '');
+  if (SECRET_PARTS.test(joined) || SECRET_KEYS.test(joined)) return true;
+  // `pass` as a word of its own, or ending one (`DB_PASS`, `userpass`), but not `passed` or `bypass`.
   const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  return words.some((w, i) => SECRET_WORDS.has(w) || SECRET_PAIRS.has(`${w} ${words[i + 1] ?? ''}`));
+  return words.some((w) => w === 'pass' || (w.endsWith('pass') && !['bypass', 'compass', 'surpass', 'overpass', 'underpass'].includes(w)));
+}
+
+/** A value that is a number, boolean or null, which no secret is: `maxTokens: 8000`, `passed: true`. */
+const PLAIN_VALUE = /^(?:-?\d+(?:\.\d+)?|true|false|null|undefined|none|nil)\b(?![-.\w])/i;
+
+/**
+ * A name, then an assignment, comparison or key colon, then a value. The name is a bare
+ * identifier (dots allowed), one of two words (`api key:`), or a quoted name with dots or spaces,
+ * also inside brackets or JSON-escaped (`config["db.password"]`, `{\"password\":`). The left
+ * boundary keeps the scan linear: a name starts only where no name character precedes it.
+ */
+const ASSIGNMENT = /(?<![\w$.-])(?:(\\?["'`])([^"'`\\\n]{1,80})\1\]?|([A-Za-z_$][\w$.-]*(?: [A-Za-z_$][\w$-]*)?))\s*(?:===?|!==?|:=|=>|=|:(?!:))\s*(?=\S)/g;
+/** A command-line flag and its value: `--password V`, `--api-key=V`. */
+const FLAG = /(?<![\w-])--?([A-Za-z][\w-]*)(?:=|\s+)(?=[^\s-])/g;
+
+/** Where a secret-named assignment's value starts in `text`, or -1. A plain value is no secret. */
+function secretValueAt(text: string): { at: number; colon: boolean } | null {
+  for (const re of [ASSIGNMENT, FLAG]) {
+    for (const m of text.matchAll(re)) {
+      const name = m[2] ?? m[3] ?? m[1]!;
+      const at = m.index! + m[0].length;
+      // A key's colon reads as prose too ("reads the token: it never calls"); an `=`, `:=`, `=>`,
+      // a comparison or a flag does not.
+      const colon = re === ASSIGNMENT && /:\s*$/.test(m[0]) && !/:=\s*$/.test(m[0]);
+      if (namesSecret(name) && !PLAIN_VALUE.test(text.slice(at))) return { at, colon };
+    }
+  }
+  return null;
 }
 
 /**
- * A name (bare, quoted, or JSON-escaped), then an assignment or a key's colon (`=`, `:=`, `=>`,
- * `:`), then a value. When the name is a secret's, everything from the value to the end of the line
- * is masked: a typed declaration, an unclosed quote, an escaped inner quote and a wrapped call
- * (`Buffer.from('…')`) all fall inside it.
+ * `line`: mask from the secret-named value to the end of the line (a quote from the change, where
+ * a typed declaration, an unclosed or escaped quote or a wrapped call all fall inside it).
+ * `value`: mask the value alone: a quoted string, any unquoted value after `=`, `:=`, `=>`, a
+ * comparison or a flag, and after a key's colon an unquoted value that is not a plain word, so an
+ * explanation keeps its words ("reads the token: it never calls ctx.check").
  */
-const ASSIGNMENT = /(\\?["'`]?)([A-Za-z_$][\w$-]*)\1\s*(?::=|=>|=(?!=)|:(?!:))\s*(?=\S)/g;
-
-function maskSecretAssignment(text: string): string {
-  for (const m of text.matchAll(ASSIGNMENT)) {
-    if (namesSecret(m[2]!)) return `${text.slice(0, m.index! + m[0].length)}[redacted]`;
+function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
+  let out = text;
+  let from = 0;
+  for (let guard = 0; guard < 20; guard++) {
+    const found = secretValueAt(out.slice(from));
+    if (!found) return out;
+    const start = from + found.at;
+    if (mode === 'line') return `${out.slice(0, start)}[redacted]`;
+    const rest = out.slice(start);
+    const quoted = /^(["'`])(?:\\.|(?!\1).)*(?:\1|$)/.exec(rest);
+    const bare = /^[^\s,;)\]}"'`]+/.exec(rest)?.[0] ?? '';
+    const length = quoted ? quoted[0].length : !found.colon || /[^a-z]/.test(bare) ? bare.length : 0;
+    if (length > 0) out = `${out.slice(0, start)}[redacted]${out.slice(start + length)}`;
+    from = start + (length > 0 ? '[redacted]'.length : Math.max(bare.length, 1));
   }
-  return text;
+  return out;
 }
 
-/** Keep the first line, strip control and format characters, mask every shape, then cut to at most `max` characters. */
-export function redact(text: string, max = QUOTE_MAX): string {
+/**
+ * Keep the first line, strip control and format characters, mask every shape, then cut to at
+ * most `max` characters. A quote is masked to the end of the line after a secret-named value; an
+ * explanation has the value alone masked.
+ */
+export function redact(text: string, max = QUOTE_MAX, mode: 'line' | 'value' = 'line'): string {
   let out = stripControl(text.split(/\r?\n/)[0]!).replace(FORMAT_CHARS, '');
   for (const [mask, replacement] of MASKS) out = out.replace(mask, replacement);
-  return maskSecretAssignment(out).slice(0, max);
+  return maskSecretAssignment(out, mode).slice(0, max);
 }
 
 export interface Assembled {
@@ -303,8 +357,8 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
     keep({
       item: rule.id, severity: rule.severity, confirmation: 'reader', file: f.file, line: f.line,
       quote: rule.id === NO_QUOTE_ITEM ? '' : redact(f.quote.trim()),
-      failsWhen: rule.id === NO_QUOTE_ITEM ? S7_FAILS_WHEN : redact(f.failsWhen, 500),
-      fix: rule.id === NO_QUOTE_ITEM ? S7_FIX : redact(f.fix, 500), unconfirmed: f.unconfirmed === true,
+      failsWhen: rule.id === NO_QUOTE_ITEM ? S7_FAILS_WHEN : redact(f.failsWhen, 500, 'value'),
+      fix: rule.id === NO_QUOTE_ITEM ? S7_FIX : redact(f.fix, 500, 'value'), unconfirmed: f.unconfirmed === true,
     });
   }
   // Text addressed to the reviewer is a tripwire wherever it sits: one an earlier push landed on a

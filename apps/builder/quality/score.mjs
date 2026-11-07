@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { emitsUnchecked } from './checks.mjs';
 
 const [runDir, strategy, model, sha, exit] = process.argv.slice(2);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -43,7 +44,11 @@ if (files.length > 3) {
 	const prompt = `${read(join(here, 'rubric-todo.md'))}\n\nThe files:\n\n${body}`;
 	writeFileSync(join(runDir, 'judge-prompt.txt'), prompt);
 	// Three independent gradings and a majority: on the same code one grading flips single items.
+	// A judge that corrects itself writes a second object: its last answer is the one it stands by.
+	const lastObject = (text) => JSON.parse(text.slice([...text.matchAll(/\{\s*"items"/g)].at(-1)?.index ?? text.indexOf('{'), text.lastIndexOf('}') + 1));
 	const grade = (n) => new Promise((resolve, reject) => {
+		// REGRADE reads the gradings a run already has, for a run the scorer failed on.
+		if (process.env.REGRADE) { resolve(lastObject(read(join(runDir, `judge${n}.txt`)))); return; }
 		const child = spawn('claude', ['-p', '--model', 'sonnet', '--output-format', 'text', '--disallowedTools', 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Task']);
 		let text = '';
 		child.stdout.on('data', (d) => { text += d; });
@@ -51,7 +56,7 @@ if (files.length > 3) {
 		child.on('close', (code) => {
 			writeFileSync(join(runDir, `judge${n}.txt`), text);
 			if (code !== 0) { reject(new Error(`grading ${n} exited ${code}`)); return; }
-			try { resolve(JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1))); } catch (e) { reject(e); }
+			try { resolve(lastObject(text)); } catch (e) { reject(e); }
 		});
 		child.stdin.end(prompt);
 	});
@@ -68,12 +73,15 @@ if (files.length > 3) {
 		// Counted, not judged. A judge passed a copy with its permission checks removed, and these are yes or no in the source.
 		const server = walk(join(proj, 'src')).map(read).join('\n');
 		const module = read(join(proj, 'src/module.ts'));
-		const checks = count(module, /ctx\.check\(/g), emits = count(module, /ctx\.emit\(/g);
+		const emits = count(module, /ctx\.emit\(/g);
 		items.push(['ui_reaches_api', !/['"`]\/api\/invoke/.test(app) || /\/api\/invoke|\/invoke['"`]/.test(server)]);
-		items.push(['deployable', existsSync(join(proj, 'src/worker.ts'))]);
-		items.push(['engine_rules', emits > 0 && checks >= emits]);
+		// A worker that does not pass the address fails closed: it deploys, and nobody can join it.
+		const worker = read(join(proj, 'src/worker.ts'));
+		items.push(['deployable', worker !== '' && (!/ctx\.verifiedEmail/.test(module) || /verifiedEmail/.test(worker))]);
+		items.push(['engine_rules', emits > 0 && emitsUnchecked(module).length === 0]);
 		items.push(['real_signin', /devLogin|verticalAuth|oidcRp/.test(server) && !/x-principal/i.test(`${server}\n${app}`.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))]);
-		items.push(['invite_email', /\bsendInvite\b|mountInviteRoutes/.test(server)]);
+		// An email really has to be queued from an invite: naming an invite helper proves nothing, as neither sends mail.
+		items.push(['invite_email', /\brequestEmail\b|\bnotify\(/.test(server) && /invit/i.test(server)]);
 		record.quality = Math.round((100 * items.filter(([, v]) => v).length) / items.length);
 		record.failed = items.filter(([, v]) => !v).map(([k]) => k);
 		record.disagree = judged.filter((k) => votes(k) === 1 || votes(k) === 2);
@@ -86,12 +94,14 @@ const evidence = process.env.EVIDENCE;
 const invalid = [
 	!r && 'no report',
 	record.quality == null && 'judge failed',
-	/rate.?limit|overloaded|ENOSPC|ECONNRESET|credit balance/i.test(read(join(runDir, 'stdout.log'))) && 'infrastructure error in the log',
+	/rate.?limit|overloaded|ENOSPC|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|fetch failed|socket hang up|Failed to process successful response|credit balance/i.test(read(join(runDir, 'stdout.log'))) && 'infrastructure error in the log',
 	evidence && !new RegExp(evidence).test(transcript + read(join(runDir, 'stdout.log'))) && `change not seen: ${evidence}`,
 ].filter(Boolean);
 record.valid = invalid.length === 0;
 record.invalid = invalid;
 record.hypothesis = process.env.HYPOTHESIS ?? null;
-record.rubric = 6;
+record.rubric = 9;
+// Runs at once share the machine, so a time compares only with runs at the same number.
+record.lanes = Number(process.env.LANES ?? 1);
 appendFileSync(process.env.LEDGER ?? join(dirname(dirname(runDir)), 'runs.jsonl'), `${JSON.stringify(record)}\n`);
 console.log(JSON.stringify({ id: record.id, passed: record.passed, quality: record.quality, seconds: record.seconds, steps: record.steps, failed: record.failed }));

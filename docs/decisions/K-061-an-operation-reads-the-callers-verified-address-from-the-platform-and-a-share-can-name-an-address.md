@@ -3,7 +3,7 @@ id: K-61
 date: 2026-11-07
 layer: kernel
 title: "An operation reads the caller's verified address from the platform, and a share can name an address"
-status: proposed
+status: accepted
 aliases: []
 amends: []
 tracking: ["#1359"]
@@ -16,6 +16,8 @@ tracking: ["#1359"]
 **`ctx.addressGrants` shares an entity with an address.** The kernel holds the row in the scope's own storage and, at the start of an invocation carrying that verified address, turns it into a grant for the caller, in that invocation's transaction. It delegates and refuses reserved keys as `ctx.grant` does. The granter is re-checked at claim, and a row whose granter no longer holds the keys lapses. The row stays after a claim, so it can be listed and withdrawn. The events carry no address, and erasure (#37) covers the row.
 
 **The email stays the vertical's**, sent with `requestEmail`.
+
+**A `join` that takes the caller's own address is refused**, at `check_model` and at `substrat push`, so it cannot be deployed. The kernel cannot see this for itself: a vertical can keep any string in its own table and look a principal up by it, and a grant made from that lookup looks like any other. So the kernel gives the right way, and the refusal, the template and the skills take away the wrong one.
 
 ## Why
 

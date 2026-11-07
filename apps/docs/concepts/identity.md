@@ -313,3 +313,24 @@ credentials.
 Signing in as Gustav and watching *Invoice basis* disappear from the nav — and 403 if you
 ask for it directly — is the whole thesis in one click: **the issuer authenticated you, the
 kernel authorized you.**
+
+## The caller's verified address
+
+An operation reads the address the issuer verified as `ctx.verifiedEmail`, and never takes the
+caller's own address as input. Anything keyed on an address trusts it, so a typed one would let a
+person claim someone else's. A declaration whose `join` or `sign-up` takes `email` does not load.
+
+The door passes it to `getScope`, beside the principal:
+
+```ts
+const caller = await login.caller(headers);
+const stub = await host.getScope(caller.principal, caller.tenantId, caller.scopeId, {
+  verifiedEmail: caller.verifiedEmail,
+});
+```
+
+A door using `@substrat-run/vertical-auth` directly gets the value from `verifiedEmailOf(subject)`.
+Leaving it out is safe: `ctx.verifiedEmail` is then `null`, so a person joins nothing. It is also
+`null` for a schedule, a consumer, a connection, a peer, a capability, someone acting as a person,
+and a delegated token, because none of those is the person proving the address.
+`OIDC_ALLOW_UNVERIFIED_EMAIL` keeps a person signed in, and does not reach this field.
