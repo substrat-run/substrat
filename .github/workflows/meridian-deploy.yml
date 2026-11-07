@@ -15,11 +15,12 @@ name: Deploy Meridian to Substrat
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push
 #
-# EDITED AFTER GENERATION, in four respects. It lives here, not at the generated path: that
-# path is the ticket0 deploy, and the dashboard's one-click setup writes over whatever is there.
-# Its jobs share the platform's build queue. A push that lands pending ends green, see the
-# release step. And the test-environment step is removed: a pending version cannot be bound, so
-# on a listed vertical that step could only fail.
+# EDITED AFTER GENERATION. It lives here, not at the generated path: that path is the ticket0
+# deploy, and the dashboard's one-click setup writes over whatever is there. Its jobs share the
+# platform's build queue. A push that lands pending ends green, see the release step. The
+# test-environment step is removed: a pending version cannot be bound, so on a listed vertical
+# that step could only fail. The preview jobs skip Dependabot PRs, and the preview comment has
+# its own marker, because ticket0's preview comments on the same PRs.
 
 # The default GITHUB_TOKEN, narrowed to what these jobs actually use. A repository whose
 # default is read/write would otherwise hand every job below write access to issues, packages
@@ -283,6 +284,8 @@ jobs:
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
+        # Its own marker: a change under `.github/workflows/**` previews ticket0 too, and with a
+        # shared one each workflow would overwrite the other's URL.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -291,13 +294,13 @@ jobs:
           [ -z "$URL" ] && exit 0
           BUILD=$(cat build.url 2>/dev/null || true)
           if [ -n "$BUILD" ]; then
-            BODY=$(printf '<!-- substrat-preview -->\n🔎 **Substrat preview:** %s\n📌 **This build:** %s\n\n_The preview URL follows the PR — every push rebinds it, so it always serves the latest code. The build URL is frozen to this one build and never moves. Both are reaped when the PR closes._' "$URL" "$BUILD")
+            BODY=$(printf '<!-- substrat-preview-meridian -->\n🔎 **Substrat preview:** %s\n📌 **This build:** %s\n\n_The preview URL follows the PR — every push rebinds it, so it always serves the latest code. The build URL is frozen to this one build and never moves. Both are reaped when the PR closes._' "$URL" "$BUILD")
           else
-            BODY=$(printf '<!-- substrat-preview -->\n🔎 **Substrat preview:** %s\n\n_Runs the code in this PR against a fork of prod, and follows the PR — every push rebinds it. Reaped when the PR closes._' "$URL")
+            BODY=$(printf '<!-- substrat-preview-meridian -->\n🔎 **Substrat preview:** %s\n\n_Runs the code in this PR against a fork of prod, and follows the PR — every push rebinds it. Reaped when the PR closes._' "$URL")
           fi
           REPO=${{ github.repository }}
           PR=${{ github.event.number }}
-          ID=$(gh api "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.body | startswith("<!-- substrat-preview -->")) | .id' | head -1)
+          ID=$(gh api "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.body | startswith("<!-- substrat-preview-meridian -->")) | .id' | head -1)
           if [ -n "$ID" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$ID" -f body="$BODY" >/dev/null
           else
@@ -306,7 +309,13 @@ jobs:
 
   preview_cleanup:
     # Reap only — no repo build needed, so skip checkout/install and just run the CLI.
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    #
+    # Not for a Dependabot PR either: it never had a preview to reap (see `preview`), and the
+    # CLI has no token in that secret store either.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     # Named for meridian: ticket0's cleanup holds the unprefixed group for the same PR.
     concurrency: substrat-preview-meridian-${{ github.event.number }}
