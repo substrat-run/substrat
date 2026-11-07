@@ -7,10 +7,15 @@
  * caller then counts every line as changed, which over-admits rather than drops a real finding.
  */
 
-/** Changed lines of the new text (1-based), and where lines were removed (after new line n; 0 is before line 1). */
+/**
+ * Changed lines of the new text (1-based), and where lines were removed outright (after new line
+ * n; 0 is before the first line). A removal an insertion replaces is a change of that line, not a
+ * removal, so it is not listed. `edits` is the diff's size, what its work is counted by.
+ */
 export interface LineChanges {
   readonly changed: ReadonlySet<number>;
   readonly removedAfter: readonly number[];
+  readonly edits: number;
 }
 
 export const LINE_DIFF_MAX_EDITS = 2_000;
@@ -55,5 +60,6 @@ export function lineChanges(before: string, after: string, maxEdits = LINE_DIFF_
     x = prevX;
     y = prevY;
   }
-  return { changed, removedAfter: [...removed].sort((p, q) => p - q) };
+  const removedAfter = [...removed].filter((p) => !changed.has(p + 1)).sort((p, q) => p - q);
+  return { changed, removedAfter, edits: found };
 }

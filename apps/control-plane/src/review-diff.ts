@@ -1,5 +1,5 @@
 import { walkReviewArchive } from './review-archive.js';
-import { lineChanges } from './review-lines.js';
+import { LINE_DIFF_MAX_EDITS, lineChanges } from './review-lines.js';
 
 /** The reader half's default budget for what it sends: the whole new text of each changed file. */
 export const REVIEW_MAX_DIFF_BYTES = 256 * 1024;
@@ -34,7 +34,16 @@ export type ReviewDiff =
     }
   | { readonly kind: 'too large'; readonly bytes: number; readonly limit: number }
   /** A stored archive whose bytes no longer hash to the digest intake recorded. Nothing is sent. */
-  | { readonly kind: 'archive changed' };
+  | { readonly kind: 'archive changed' }
+  /** The base could not be read again for the earlier texts (gone, or not the archive it was). */
+  | { readonly kind: 'base unavailable' };
+
+/**
+ * The line diffs' shared work budget across a review's files: the sum of each diff's lines (old and
+ * new) times its edits. Past it, a file counts every line as changed, so the CPU a review spends on
+ * diffs is bounded however many files it changes.
+ */
+export const REVIEW_LINE_DIFF_WORK = 20_000_000;
 
 const LOCKFILES = new Set([
   'pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb',
@@ -89,7 +98,7 @@ export interface ArchiveSource {
  */
 export async function diffReview(
   input: { source: ArchiveSource; base: ArchiveSource | null },
-  limits: { maxDiffBytes?: number; maxFileBytes?: number } = {},
+  limits: { maxDiffBytes?: number; maxFileBytes?: number; lineDiffWork?: number } = {},
 ): Promise<ReviewDiff> {
   const maxDiffBytes = limits.maxDiffBytes ?? REVIEW_MAX_DIFF_BYTES;
   const maxFileBytes = limits.maxFileBytes ?? REVIEW_SENT_FILE_MAX_BYTES;
@@ -135,29 +144,41 @@ export async function diffReview(
   }
   if (sha256 !== input.source.sha256) return { kind: 'archive changed' };
   const deleted = [...baseFiles.keys()].filter((path) => !seen.has(path)).sort();
-  const compared = input.base ? await changedLines(input.base, files, maxFileBytes) : files;
-  if (compared === null) return { kind: 'archive changed' };
+  const compared = input.base ? await changedLines(input.base, files, maxFileBytes, limits.lineDiffWork ?? REVIEW_LINE_DIFF_WORK) : files;
+  if (compared === 'changed') return { kind: 'archive changed' };
+  if (compared === 'unavailable') return { kind: 'base unavailable' };
   return { kind: 'diff', files: compared, deleted, notSent, bytes, fullTree: input.base === null };
 }
 
 /**
- * Pass 3, only when a sent file existed in the base: walk the base again for those paths' earlier
- * text and diff it line by line. Each earlier text is read under the per-file limit; one that is
- * larger, binary, or too different to diff leaves its file `all`. Null when the base changed.
+ * Pass 3, only when a sent file existed in the base: walk the base again and diff each such file
+ * against its earlier text inside the walk, one earlier text at a time, so none is held past its
+ * own diff. Each earlier text is read under the per-file limit; one that is larger, binary, or too
+ * different to diff within what is left of the shared work budget leaves its file `all`.
  */
-async function changedLines(base: ArchiveSource, files: ChangedFile[], maxFileBytes: number): Promise<ChangedFile[] | null> {
+async function changedLines(base: ArchiveSource, files: ChangedFile[], maxFileBytes: number, work: number): Promise<ChangedFile[] | 'changed' | 'unavailable'> {
   const wanted = new Map(files.filter((f) => f.changed !== 'all').map((f) => [f.path, f]));
   if (wanted.size === 0) return files;
-  const earlier = new Map<string, string | null>();
-  const sha256 = await walkReviewArchive({ stream: await base.open(), size: base.size }, async (path, size, read) => {
-    if (!wanted.has(path)) return;
-    earlier.set(path, size > maxFileBytes ? null : textOf(await read()));
-  });
-  if (sha256 !== base.sha256) return null;
-  return files.map((file) => {
-    if (file.changed === 'all') return file;
-    const before = earlier.get(file.path);
-    const diff = before === undefined || before === null ? null : lineChanges(before, file.text);
-    return diff ? { ...file, changed: diff.changed, removedAfter: diff.removedAfter } : { ...file, changed: 'all', removedAfter: [] };
-  });
+  const compared = new Map<string, ChangedFile>();
+  let left = work;
+  let sha256: string;
+  try {
+    sha256 = await walkReviewArchive({ stream: await base.open(), size: base.size }, async (path, size, read) => {
+      const file = wanted.get(path);
+      if (!file) return;
+      const before = size > maxFileBytes ? null : textOf(await read());
+      let diff = null;
+      if (before !== null) {
+        const lines = before.split('\n').length + file.text.split('\n').length;
+        const maxEdits = Math.min(LINE_DIFF_MAX_EDITS, Math.floor(left / lines));
+        diff = maxEdits > 0 ? lineChanges(before, file.text, maxEdits) : null;
+        left -= lines * ((diff?.edits ?? maxEdits) + 1);
+      }
+      compared.set(path, diff ? { ...file, changed: diff.changed, removedAfter: diff.removedAfter } : { ...file, changed: 'all', removedAfter: [] });
+    });
+  } catch {
+    return 'unavailable';
+  }
+  if (sha256 !== base.sha256) return 'changed';
+  return files.map((file) => compared.get(file.path) ?? (file.changed === 'all' ? file : { ...file, changed: 'all', removedAfter: [] }));
 }

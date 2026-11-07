@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-130 decisions · 70 plan · 60 kernel
+131 decisions · 70 plan · 61 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -142,3 +142,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-70](decisions/D-070-a-store-driver-s-code-runs-in-its-own-loaded-isolate-outside-the-verifier-with-no-network.md) | 2026-11-04 | plan | A store driver's code runs in its own loaded isolate, outside the verifier, with no network <br>*awaiting ratification* <br>*amends D-63, D-67* | #2830 |
 | [K-59](decisions/K-059-a-store-object-admits-each-envelope-once.md) | 2026-11-04 | kernel | A store object admits each envelope once <br>*amends K-52* | #2830 |
 | [K-60](decisions/K-060-a-bind-link-binds-the-existing-member-it-names-when-their-own-session-presents-it.md) | 2026-11-04 | kernel | A bind link binds the existing member it names, when their own session presents it | #2817, #1686 |
+| [K-61](decisions/K-061-an-operation-reads-the-callers-verified-address-from-the-platform-and-a-share-can-name-an-address.md) | 2026-11-07 | kernel | An operation reads the caller's verified address from the platform, and a share can name an address <br>*awaiting ratification* | #1359 |
