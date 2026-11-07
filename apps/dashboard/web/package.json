@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/elements": "workspace:^",
     "@substrat-run/model-view": "workspace:^",
     "@substrat-run/ui": "workspace:^",
     "react": "^18.3.0",

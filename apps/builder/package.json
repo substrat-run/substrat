@@ -31,6 +31,7 @@
     "@substrat-run/model-providers": "workspace:*",
     "@substrat-run/oidc-rp": "workspace:*",
     "ai": "7.0.159",
+    "create-substrat": "workspace:*",
     "hono": "catalog:",
     "zod": "catalog:"
   },

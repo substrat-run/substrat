@@ -64,6 +64,7 @@ jobs:
     # vertical's lands pending for a staff admit and promote, and meridian is listed.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # One build submit at a time across the platform: this group is shared with the ticket0
     # deploy and previews (substrat-deploy.yml) and the auth-server deploy, because the builder
     # agent serves ONE build per tenant and answers `409 project operation already in progress`
@@ -196,6 +197,7 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Never overlap two builds at the builder, whichever PR or deploy they belong to: the same
     # group (and the same `queue: max`, no cancelling) as the `deploy` job, whose comment gives
     # the reasons. A rapid re-push of one PR waits for the first, as it did before.
@@ -317,6 +319,7 @@ jobs:
       github.event.action == 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Named for meridian: ticket0's cleanup holds the unprefixed group for the same PR.
     concurrency: substrat-preview-meridian-${{ github.event.number }}
     steps:

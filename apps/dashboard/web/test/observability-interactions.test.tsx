@@ -8,6 +8,7 @@ import { Observability } from '../src/views/Observability';
 import { api, teamApi, type ObservabilityLogEvent, type AppRow, type AppHealthRow } from '../src/lib/api';
 import { obsPath } from '../src/lib/router';
 import { readObsQuery } from '../src/lib/observability-query';
+import { buttons, type as typeInto } from './wa';
 
 const windowRange = { since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z' };
 const buckets = [0, 15, 30, 45].map((minute) => ({
@@ -48,7 +49,7 @@ const click = (element: Element) =>
   act(() => {
     element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
-const button = (text: string) => [...container.querySelectorAll('button')].find((b) => b.textContent === text)!;
+const button = (text: string) => buttons(container).find((b) => b.textContent === text)!;
 function pointer(target: Element, kind: string, x: number, pointerType = 'mouse') {
   act(() => {
     const e = new MouseEvent(kind, { bubbles: true, clientX: x, button: 0 });
@@ -125,7 +126,7 @@ it('an open stamped line links each record it touched to that record’s history
   };
   await act(async () => root.render(<LogList events={[event]} />));
   click(container.querySelector('[role="row"][aria-expanded]')!);
-  const links = [...container.querySelectorAll('[aria-label="Log details"] button')].filter((b) => b.textContent!.endsWith('history →'));
+  const links = buttons(container.querySelector('[aria-label="Log details"]')!).filter((b) => b.textContent!.endsWith('history →'));
   expect(links.map((b) => b.textContent)).toEqual(['order:01ARZ3…5FAW history →', 'customer:c1 history →']);
   click(links[0]!);
   expect(new URLSearchParams(window.location.search).get('rec')).toBe('order:01ARZ3NDEKTSV4RRFFQ69G5FAW');
@@ -249,13 +250,9 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
   vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
   window.history.replaceState(null, '', obsPath({ app: 'app-a', view: 'logs', hours: '1' }));
   await act(async () => root.render(<UrlPage />));
-  const input = () => container.querySelector<HTMLInputElement>('[aria-label="Search logs"]')!;
+  const input = () => container.querySelector('wa-input[label="Search logs"]')!;
   const type = async (text: string) => {
-    await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(input(), text);
-      input().dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await act(async () => typeInto(input(), text));
     await act(async () => key(input(), 'Enter'));
   };
   await type('timeout');
@@ -313,7 +310,7 @@ it('preserves URL event grouping and type through refresh without remounting con
     'app-a',
     expect.objectContaining({ groupBy: 'operation', type: 'receipt.sent', ...windowRange }),
   );
-  expect(container.querySelector('[aria-label="Group by"] [aria-pressed="true"]')!.textContent).toBe('Operation');
+  expect((container.querySelector('wa-radio-group[label="Group by"]') as HTMLElement & { value: string }).value).toBe('operation');
   expect(container.querySelector('[aria-label="Clear event type"]')!.parentElement!.textContent).toContain(
     'receipt.sent',
   );
@@ -441,14 +438,14 @@ it('Pulse draws the business outcomes by default — today, yesterday, the chang
   // An app whose code predates the read is named, not silently missing.
   expect(container.textContent).toContain('Business volumes need a re-push of App B.');
   // The twin: the toggle shows every countable move, the edge written as one.
-  const toggle = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show all moves (1 more)')!;
+  const toggle = buttons(container).find((b) => b.textContent === 'Show all moves (1 more)')!;
   click(toggle);
   expect(cells()).toEqual([
     ['order closedApp A', '6', '4', '+50%'],
     ['order shippedApp A', '2', '0', 'new'],
     ['order → on holdApp A', '1', '1', '±0%'],
   ]);
-  click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Show outcomes only')!);
+  click(buttons(container).find((b) => b.textContent === 'Show outcomes only')!);
   expect(cells()).toHaveLength(2);
 });
 
@@ -502,7 +499,7 @@ describe('menu children (#1767)', () => {
     return onNav;
   };
   const heading = () => container.querySelector('h1')!.textContent;
-  const modes = () => [...container.querySelectorAll('[data-log-modes] button')].map((b) => b.textContent);
+  const modes = () => [...container.querySelectorAll('[data-log-modes] wa-tab')].map((b) => b.textContent);
 
   it('titles the page by the child and draws its sub-views as the stream card’s modes', async () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue({ buckets: [], total: 0, erased: 0, truncated: false });
@@ -510,7 +507,7 @@ describe('menu children (#1767)', () => {
     expect(heading()).toBe('Logs');
     expect(modes()).toEqual(['Lines', 'Requests', 'Patterns', 'Events']);
     expect(container.querySelector('[aria-label="Sub-view"]')).toBeNull();
-    click(button('Lines'));
+    act(() => void container.querySelector('[data-log-modes] wa-tab-group')!.dispatchEvent(new CustomEvent('wa-tab-show', { detail: { name: 'logs' } })));
     expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a', view: 'logs' }));
   });
 
@@ -568,7 +565,7 @@ describe('menu children (#1767)', () => {
       const card = container.querySelector('[data-log-modes]')!.parentElement!;
       const sidebar = container.querySelector('[aria-label="Request filters"]')!;
       expect(card.contains(sidebar)).toBe(false);
-      expect(card.querySelector('input[aria-label="Find a request by id"]')).not.toBeNull();
+      expect(card.querySelector('wa-input[label="Find a request by id"]')).not.toBeNull();
       expect(button('● Live').getAttribute('aria-pressed')).toBe('true');
       const before = list.mock.calls.length;
       await act(async () => vi.advanceTimersByTime(15_000));

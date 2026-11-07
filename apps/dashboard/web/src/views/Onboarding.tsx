@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Input } from '@substrat-run/ui';
+import { Button, Input } from '@substrat-run/ui/wa';
 import { StrataGlyph } from '../lib/icons';
 
 /**

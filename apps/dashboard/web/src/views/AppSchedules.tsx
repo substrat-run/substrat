@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { Badge } from '@substrat-run/ui';
+import { Badge } from '@substrat-run/ui/wa';
 import { api, type AppSchedulesView } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_SCHEDULES_VIEW } from '../lib/mock-schedules';

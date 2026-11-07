@@ -172,6 +172,7 @@ The builder subsystem — one plane, three documents.
 |---|---|---|
 | [harness.md](architecture/builder/harness.md) | `building` | Model catalog and harness efficiency. Row 7 open (#663). |
 | [plane.md](architecture/builder/plane.md) | `built` | Tenant-owned verticals, self-serve. |
+| [quality-runs.md](architecture/builder/quality-runs.md) | `building` | What 50 graded todo builds taught us, and what to try next. |
 | [studio.md](architecture/builder/studio.md) | `built` | Chat to vertical, hosted. Its nine proposals landed as D-48..D-56. |
 
 ### `engines/`

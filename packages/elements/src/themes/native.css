@@ -4,8 +4,3 @@
  * theme. In Web Awesome's `wa-native` layer: an app's unlayered CSS still wins.
  */
 @import '@awesome.me/webawesome/dist/styles/native.css';
-
-/* `wa-visually-hidden-label`: a control whose label is read but not shown. A `wa-*`
-   control is named by its `label` attribute — `aria-label` on the host does not reach
-   the input inside its shadow root. */
-@import '@awesome.me/webawesome/dist/styles/utilities/visually-hidden.css';

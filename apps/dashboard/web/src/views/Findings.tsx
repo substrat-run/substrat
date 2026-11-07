@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
+import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui/wa';
 import { ApiError, type FindingEntry, type FindingRuleEntry } from '../lib/api.generated';
 import { relativeTime, untilTime } from '../lib/format';
 import { card } from '../components/ui';
@@ -406,9 +406,9 @@ function SuppressDialog({
     setError('');
   }, [finding?.id]);
 
-  if (!finding) return null;
   const set = (patch: Partial<SuppressDraft>) => setDraft((d) => ({ ...d, ...patch }));
   const submit = async () => {
+    if (!finding) return;
     setBusy(true);
     setError('');
     try {
@@ -421,7 +421,7 @@ function SuppressDialog({
   };
   return (
     <Dialog
-      open
+      open={finding !== null}
       title="Suppress matching anomalies"
       description="Matching anomalies are still recorded, but no finding opens for them until the rule expires."
       confirmLabel={busy ? 'Suppressing…' : 'Suppress'}
@@ -430,7 +430,7 @@ function SuppressDialog({
       onConfirm={() => void submit()}
       onCancel={onCancel}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {finding && <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <Select
           label="Kind"
           options={[{ value: '', label: 'Any kind' }, { value: finding.kind, label: kindLabel(finding.kind) }]}
@@ -466,7 +466,7 @@ function SuppressDialog({
           <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Pick at least one of kind, operation, code or subject, or the rule would match everything.</div>
         )}
         {error && <div role="alert" style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
-      </div>
+      </div>}
     </Dialog>
   );
 }

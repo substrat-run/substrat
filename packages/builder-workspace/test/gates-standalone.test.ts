@@ -150,6 +150,26 @@ describe('standaloneGates — when each gate applies', () => {
 		expect((await runGate(w, gate('app-build'), PROJECT)).status).toBe('passed');
 		await w.dispose();
 	});
+
+	it('refuses an app that calls /api/invoke until the server really mounts it', async () => {
+		// A real shell: the gate is its command, which the scripted workspace would answer for it.
+		const w = new LocalWorkspace({ root: await mkdtemp(join(tmpdir(), 'builder-app-api-')) });
+		// A space in the path: split, the first grep fails and `!` would pass the gate.
+		const project = '.builder/projects/my project';
+		const appApi = standaloneGates(project).find((g) => g.name === 'app-api')!;
+		await w.writeFile(`${project}/app/package.json`, '{}');
+		await w.writeFile(`${project}/app/src/api.ts`, "fetch('/api/invoke');");
+		for (const server of ['export {};', "// the app calls /api/invoke, see routes", "// app.post('/api/invoke', handler);"]) {
+			await w.writeFile(`${project}/src/routes.ts`, server);
+			const refused = await runGate(w, appApi, project);
+			expect(refused.status).toBe('failed');
+			expect(refused.output).toContain('src/routes.ts');
+		}
+
+		await w.writeFile(`${project}/src/routes.ts`, "  app.post('/api/invoke', handler);");
+		expect((await runGate(w, appApi, project)).status).toBe('passed');
+		await w.dispose();
+	});
 });
 
 // ---------------------------------------------------------------------------

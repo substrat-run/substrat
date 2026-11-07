@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoundScopesView, Deployment, MoveReviewRow } from '../src/lib/api';
 import { BoundScopes } from '../src/views/BoundScopes';
+import { buttons, check, disabled } from './wa';
 
 // The team client the dialog reaches through `teamApi(teamId)` (#2170): the calls, not the wire, are
 // what these cases are about, and the wire is `deployments-client.test.ts`.
@@ -65,17 +66,18 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     vi.restoreAllMocks();
   });
 
-  const button = (name: RegExp) => [...container.querySelectorAll('button')].find((b) => name.test(b.textContent ?? ''))!;
+  const button = (name: RegExp) => buttons(container).find((b) => name.test(b.textContent ?? ''))!;
   // The dialog may render outside the container (a portal), so it is found in the document.
-  const dialog = () => document.querySelector('[role="dialog"]')!;
-  const tick = (label: RegExp) => [...dialog().querySelectorAll('label')].find((l) => label.test(l.textContent ?? ''));
+  const dialog = () => document.querySelector('wa-dialog')!;
+  const tick = (label: RegExp) => [...dialog().querySelectorAll('wa-checkbox')].find((l) => label.test(l.textContent ?? ''));
   const click = async (el: Element) => act(async () => (el as HTMLElement).click());
+  const tickBox = async (el: Element) => act(async () => check(el, true));
   const open = async () => {
     await act(async () => root.render(<BoundScopes teamId="T1" d={FROM} all={[FROM, TO]} expanded onChanged={() => {}} />));
-    await click([...container.querySelectorAll('label')].find((l) => /^HR/.test(l.textContent ?? ''))!);
+    await tickBox([...container.querySelectorAll('wa-checkbox')].find((l) => /^HR/.test(l.textContent ?? ''))!);
     await click(button(/^Move… \(1\)$/));
   };
-  const moveButton = () => [...dialog().querySelectorAll('button')].find((b) => b.textContent === 'Move')!;
+  const moveButton = () => buttons(dialog()).find((b) => b.textContent === 'Move')!;
 
   it('reads the review first, shows its migrations, and moves only once they are acknowledged, sending the binding', async () => {
     const read = client.reviewScopeMove.mockResolvedValue({ scopes: [review()] });
@@ -85,9 +87,9 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     expect(read).toHaveBeenCalledWith({ slug: 'acme/courses', scopeIds: ['S1'], target: 'acme/coaching' });
     expect(move).not.toHaveBeenCalled();
     expect(dialog().textContent).toContain('ALTER TABLE t ADD COLUMN a TEXT;');
-    expect(moveButton().disabled).toBe(true);
-    await click(tick(/I have read the migrations above/)!);
-    expect(moveButton().disabled).toBe(false);
+    expect(disabled(moveButton())).toBe(true);
+    await tickBox(tick(/I have read the migrations above/)!);
+    expect(disabled(moveButton())).toBe(false);
     await click(moveButton());
     expect(move).toHaveBeenCalledWith({ slug: 'acme/courses',
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },
@@ -102,14 +104,14 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
       .mockResolvedValueOnce({ moved: ['S1'], refusal: null });
     await open();
     await click(moveButton());
-    await click(tick(/I have read the migrations above/)!);
+    await tickBox(tick(/I have read the migrations above/)!);
     await click(moveButton());
     expect(read).toHaveBeenCalledTimes(2);
     expect(dialog().textContent).toContain('A version changed while you were reviewing this move');
     expect(dialog().textContent).toContain('DROP TABLE legacy;');
     // The earlier tick does not carry over.
-    expect(moveButton().disabled).toBe(true);
-    await click(tick(/I have read the migrations above/)!);
+    expect(disabled(moveButton())).toBe(true);
+    await tickBox(tick(/I have read the migrations above/)!);
     await click(moveButton());
     expect(move).toHaveBeenLastCalledWith({ slug: 'acme/courses',
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'b'.repeat(64) } },
@@ -123,8 +125,8 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     await click(moveButton());
     expect(dialog().textContent).toContain('Their SQL is shown only to the team that owns both verticals.');
     expect(dialog().textContent).not.toContain('SQL not available');
-    expect(moveButton().disabled).toBe(true);
-    await click(tick(/I have read the migrations above/)!);
+    expect(disabled(moveButton())).toBe(true);
+    await tickBox(tick(/I have read the migrations above/)!);
     await click(moveButton());
     expect(move).toHaveBeenCalledWith({ slug: 'acme/courses',
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },
@@ -138,10 +140,10 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     await open();
     await click(moveButton());
     expect(dialog().textContent).toContain('SQL not available');
-    expect(moveButton().disabled).toBe(true);
+    expect(disabled(moveButton())).toBe(true);
     expect(move).not.toHaveBeenCalled();
-    await click(tick(/I have read the migrations above/)!);
-    expect(moveButton().disabled).toBe(false);
+    await tickBox(tick(/I have read the migrations above/)!);
+    expect(disabled(moveButton())).toBe(false);
     await click(moveButton());
     expect(move).toHaveBeenCalledWith({
       slug: 'acme/courses', scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },

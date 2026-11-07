@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { Badge, Button, Input, Select } from '@substrat-run/ui';
+import { Badge, Button, Input, Select } from '@substrat-run/ui/wa';
 import { api, isApiError, type AccountIntegration, type AppHealthRow, type AppRow, type AuditEntry, type InstallStep } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';
@@ -143,13 +143,9 @@ export function Overview({
           {partial && (
             <div style={{ fontSize: 13, lineHeight: '20px', color: 'var(--status-warning-fg)' }}>
               Partial list: {apps.length} {apps.length === 1 ? 'app' : 'apps'} read; the rest could not be loaded.{' '}
-              <button
-                type="button"
-                onClick={() => setWalkFailed(false)}
-                style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', color: 'var(--text-link)', textDecoration: 'underline', cursor: 'pointer' }}
-              >
+              <Button variant="link" onClick={() => setWalkFailed(false)}>
                 Retry
-              </button>
+              </Button>
             </div>
           )}
         </div>

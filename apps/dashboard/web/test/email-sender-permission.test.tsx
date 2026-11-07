@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AppRow } from '../src/lib/api';
 import { EmailSenderPermission } from '../src/views/AppDetail';
+import { check } from './wa';
 
 const client = vi.hoisted(() => ({ appEmailSender: vi.fn(), setAppEmailSender: vi.fn() }));
 vi.mock('../src/lib/api', async (original) => ({
@@ -22,13 +23,14 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 const render = () => act(async () => root.render(<EmailSenderPermission teamId="team" app={{ app_scope_id: 'scope' } as AppRow} />));
-const toggle = () => container.querySelector<HTMLInputElement>('input[role="switch"]')!;
+const toggle = () => container.querySelector<HTMLElement & { checked: boolean }>('wa-switch')!;
 it('enables and revokes email sending using the returned grant', async () => {
   await render();
+  expect(toggle().textContent).toContain('Send email');
   expect(toggle().checked).toBe(false);
   for (const granted of [true, false]) {
     client.setAppEmailSender.mockResolvedValue({ slug: 'acme/app', emailSender: granted });
-    await act(async () => toggle().click());
+    await act(async () => check(toggle(), granted));
     expect(client.setAppEmailSender).toHaveBeenLastCalledWith({ scopeId: 'scope', granted });
     expect(toggle().checked).toBe(granted);
   }
@@ -37,7 +39,7 @@ it('enables and revokes email sending using the returned grant', async () => {
 it('keeps the grant unchanged and displays a refused change', async () => {
   await render();
   client.setAppEmailSender.mockRejectedValue(new Error('permission denied'));
-  await act(async () => toggle().click());
+  await act(async () => check(toggle(), true));
   expect(toggle().checked).toBe(false);
   expect(container.querySelector('[role="alert"]')?.textContent).toBe('permission denied');
 });

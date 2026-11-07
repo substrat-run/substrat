@@ -8,5 +8,6 @@ export default defineConfig({
     ...nodeTestTimeout,
     environment: 'jsdom',
     include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
+    setupFiles: ['test/setup.tsx'],
   },
 });

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { Button, KeyValue, Select } from '@substrat-run/ui';
+import { KeyValue } from '@substrat-run/ui';
+import { Button, Input, Segmented, Select } from '@substrat-run/ui/wa';
 import { api, isApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
 import { requestIdOf } from '../components/RequestIdNote';
 import { DEV_MOCK } from '../lib/mock';
@@ -265,33 +266,21 @@ export function AuditLog({
       ) : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: 300, maxWidth: '100%', height: 32, padding: '0 10px', boxSizing: 'border-box', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)' }}>
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.3-4.3" />
-              </svg>
-              <input
-                aria-label="Search the audit log"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                placeholder="Search people, apps, actions…"
-                style={{ flex: 1, minWidth: 0, border: 0, outline: 'none', background: 'transparent', color: 'var(--text-primary)', font: 'inherit', fontSize: 13 }}
-              />
-            </div>
-            <div role="group" aria-label="Who acted" style={{ display: 'flex', gap: 2, padding: 2, border: '1px solid var(--border-default)', borderRadius: 8, background: 'var(--surface-inset)' }}>
-              {KINDS.map(([v, label]) => (
-                <button key={v} type="button" aria-pressed={kind === v} onClick={() => setKind(v)} style={seg(kind === v)}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div role="group" aria-label="Outcome" style={{ display: 'flex', gap: 2, padding: 2, border: '1px solid var(--border-default)', borderRadius: 8, background: 'var(--surface-inset)' }}>
-              {OUTCOMES.map(([v, label]) => (
-                <button key={v} type="button" aria-pressed={outcome === v} onClick={() => setOutcome(v)} style={seg(outcome === v)}>
-                  {label}
-                </button>
-              ))}
-            </div>
+            <Input
+              ariaLabel="Search the audit log"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Search people, apps, actions…"
+              icon={
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+              }
+              style={{ width: 300, maxWidth: '100%' }}
+            />
+            <Segmented label="Who acted" options={KINDS.map(([v, label]) => ({ value: v, label }))} value={kind} onChange={setKind} />
+            <Segmented label="Outcome" options={OUTCOMES.map(([v, label]) => ({ value: v, label }))} value={outcome} onChange={setOutcome} />
             <span style={{ flex: 1 }} />
             {entries !== null && !refusalsPending && (
               <span data-testid="audit-count" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
@@ -381,18 +370,6 @@ const KINDS: [KindFilter, string][] = [
   ['job', 'Jobs & integrations'],
 ];
 
-const seg = (on: boolean): CSSProperties => ({
-  height: 26,
-  padding: '0 10px',
-  border: 0,
-  borderRadius: 6,
-  font: 'inherit',
-  fontSize: 12.5,
-  cursor: 'pointer',
-  color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
-  background: on ? 'var(--surface-card)' : 'transparent',
-  boxShadow: on ? 'var(--shadow-xs)' : 'none',
-});
 
 /** A person solid, a job dashed, so the two read apart without colour. */
 const avatar = (k: ActorKind): CSSProperties => ({

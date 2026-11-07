@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Dialog, Input, Tabs } from '@substrat-run/ui';
+import { Button, Dialog, Input, Tabs } from '@substrat-run/ui/wa';
 import { Page } from '../components/layout';
 import { card } from '../components/ui';
 import { isApiError, teamApi } from '../lib/api';

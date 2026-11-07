@@ -47,11 +47,12 @@ const SWEEPER_INTERVAL_MS = 120_000;
 /** Refuse a bundle past its ceiling: it would mean a runtime dependency crept in. */
 const SWEEPER_CEILING_BYTES = 32_000;
 /**
- * The entry's, raised from the 32 000 both bundles shared, for the wire-signing verifier (about
- * 23 KB with the envelope's own checks): still an order of magnitude below what a schema library
- * would add.
+ * The entry's: the invocation-log stamp, the routed-node check and the wire-signing verifier
+ * with its nonce store, about 52 KB today. ~8% above that, so an ordinary addition fits and a
+ * runtime dependency (a schema library alone would add several times the headroom) still
+ * fails. Raise it deliberately, with the measured size, when the entry legitimately grows.
  */
-const ENTRY_CEILING_BYTES = 52_000;
+const ENTRY_CEILING_BYTES = 56_000;
 
 const check = process.argv.includes('--check');
 

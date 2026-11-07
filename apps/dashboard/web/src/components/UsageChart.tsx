@@ -1,34 +1,17 @@
 import { useState, type CSSProperties } from 'react';
+import { Segmented } from '@substrat-run/ui/wa';
 import { LINE_COLORS } from './TrafficChart';
 import { card } from './ui';
 import { ALL_APPS, appsOf, shortBytes, shortNumber, usageChart, type UsageDay, type UsageMetric } from '../lib/usage-days';
 
 const HEIGHT = 220;
-const METRICS: { key: UsageMetric; label: string }[] = [
-  { key: 'requests', label: 'Requests' },
-  { key: 'tokens', label: 'Model tokens' },
-  { key: 'stored', label: 'Stored' },
+const METRICS: { value: UsageMetric; label: string }[] = [
+  { value: 'requests', label: 'Requests' },
+  { value: 'tokens', label: 'Model tokens' },
+  { value: 'stored', label: 'Stored' },
 ];
 const GAP = 'repeating-linear-gradient(135deg, var(--border-default) 0 3px, transparent 3px 7px)';
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' };
-
-function Choices<T extends string>({ label, options, value, onPick }: { label: string; options: { key: T; label: string }[]; value: T; onPick: (key: T) => void }) {
-  return (
-    <div role="group" aria-label={label} style={{ display: 'flex', gap: 2, padding: 2, background: 'var(--surface-active)', borderRadius: 8 }}>
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          aria-pressed={option.key === value}
-          onClick={() => onPick(option.key)}
-          style={{ border: 0, padding: '5px 10px', borderRadius: 6, font: 'inherit', fontSize: 12.5, cursor: 'pointer', background: option.key === value ? 'var(--surface-card)' : 'transparent', color: option.key === value ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /** One bar per closed day, stacked by app. A day with no reading is hatched, never a zero. */
 export function UsageChart({ days }: { days: readonly UsageDay[] }) {
@@ -51,8 +34,15 @@ export function UsageChart({ days }: { days: readonly UsageDay[] }) {
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 12px 8px 20px', background: 'var(--surface-inset)', borderBottom: '1px solid var(--border-default)' }}>
         <h2 style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>Daily usage</h2>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <Choices label="Meter" options={METRICS} value={metric} onPick={setMetric} />
-          {apps.length > 1 && <Choices label="App" options={[{ key: ALL_APPS, label: 'All apps' }, ...apps.slice(0, 4)]} value={app} onPick={setPicked} />}
+          <Segmented label="Meter" options={METRICS} value={metric} onChange={setMetric} />
+          {apps.length > 1 && (
+            <Segmented
+              label="App"
+              options={[{ value: ALL_APPS, label: 'All apps' }, ...apps.slice(0, 4).map((row) => ({ value: row.key, label: row.label }))]}
+              value={app}
+              onChange={setPicked}
+            />
+          )}
         </div>
       </div>
       <div style={{ padding: 20 }}>

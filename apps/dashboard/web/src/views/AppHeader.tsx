@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
-import { Badge, Button } from '@substrat-run/ui';
+import { Badge, Button, IconButton } from '@substrat-run/ui/wa';
 import { api, type AppHealthRow, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { VERDICTS, appVerdict } from '../lib/fleet-rows';
@@ -70,9 +70,9 @@ export function AppHeader({
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <h1 style={{ margin: 0, fontSize: 22, lineHeight: '29px', fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>{app.name}</h1>
-          <button type="button" aria-label="Rename" style={{ border: 0, background: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex', padding: 0 }}>
+          <IconButton label="Rename" size="sm" style={{ color: 'var(--text-tertiary)' }}>
             <Ic name="pencil" size={14} />
-          </button>
+          </IconButton>
           {judged ? (
             <VerdictReason verdict={judged.verdict} why={judged.why} path={judged.verdict === 'failing' ? obsPath({ app: app.app_scope_id, view: 'failures', hours: '24' }) : undefined}>
               <Badge status={VERDICTS[judged.verdict].status}>{VERDICTS[judged.verdict].label}</Badge>

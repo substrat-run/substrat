@@ -7,6 +7,7 @@ import { api, type AppHealthRow, type AppRow, type AppSchedulesView } from '../s
 import { SchedulesAbsent } from '../src/views/AppDetail';
 import type { SchedulesState } from '../src/lib/use-app-schedules';
 import { obsPath } from '../src/lib/router';
+import { buttons } from './wa';
 
 const app = (status: AppRow['status'] = 'active') =>
   ({ app_scope_id: 'scope-a', name: 'Acme HR', vertical_slug: 'protocol', status, hostname: 'acme-hr.substrat.run' }) as AppRow;
@@ -40,7 +41,7 @@ describe('App page header', () => {
   const verdict = () => container.querySelector('[data-verdict]');
   // The verdict's word; the reason sits beside it inside the same trigger.
   const label = () => verdict()?.firstElementChild?.textContent;
-  const button = (label: string) => [...container.querySelectorAll('button')].find((b) => b.textContent === label)!;
+  const button = (label: string) => buttons(container).find((b) => b.textContent === label)!;
 
   it("shows this app's fleet verdict, with the sentence behind it", async () => {
     vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [health('other', 'ok'), health('scope-a', 'failing', '3 operation failures recorded.')] });

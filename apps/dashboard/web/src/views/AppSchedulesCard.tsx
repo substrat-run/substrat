@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from 'react';
-import { Badge } from '@substrat-run/ui';
+import { Badge } from '@substrat-run/ui/wa';
 import type { SchedulesState } from '../lib/use-app-schedules';
 import { card } from '../components/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';

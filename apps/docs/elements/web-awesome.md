@@ -16,8 +16,9 @@ import '@substrat-run/elements/controls';
 | Group | Controls |
 |---|---|
 | Actions | `wa-button`, `wa-dropdown`, `wa-dropdown-item` |
-| Forms | `wa-input`, `wa-select`, `wa-option`, `wa-checkbox`, `wa-switch`, `wa-radio`, `wa-radio-group` |
-| Feedback | `wa-callout`, `wa-spinner`, `wa-tag` |
+| Forms | `wa-input`, `wa-textarea`, `wa-select`, `wa-option`, `wa-checkbox`, `wa-switch`, `wa-radio`, `wa-radio-group` |
+| Feedback | `wa-callout`, `wa-spinner`, `wa-tag`, `wa-badge` |
+| Layout | `wa-card`, `wa-dialog`, `wa-divider`, `wa-tab-group`, `wa-tab`, `wa-breadcrumb`, `wa-breadcrumb-item` |
 
 ```html
 <wa-input label="Name" required></wa-input>

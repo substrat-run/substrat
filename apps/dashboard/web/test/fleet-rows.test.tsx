@@ -5,6 +5,7 @@ import { compact, duration, errorRate, fleetRows } from '../src/lib/fleet-rows';
 import { FleetHealth } from '../src/views/FleetHealth';
 import { Apps } from '../src/views/Apps';
 import { api, type AppHealthRow, type AppRow } from '../src/lib/api';
+import { button } from './wa';
 
 const app = (id: string, status: AppRow['status'] = 'active') => ({ app_scope_id: id, name: `App ${id}`, vertical_slug: 'todo', status }) as AppRow;
 const health = (scopeId: string, state: AppHealthRow['state']) =>
@@ -134,7 +135,7 @@ describe('FleetHealth table', () => {
     const onRetry = vi.fn();
     await act(async () => root.render(<FleetHealth apps={[app('f', 'failed')]} onOpen={onOpen} onRetry={onRetry} />));
     const row = container.querySelectorAll('[role="row"]')[1]!;
-    const retry = [...row.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!;
+    const retry = button('Retry', row)!;
     await key(retry, 'Enter');
     await key(retry, ' ');
     expect(onOpen).not.toHaveBeenCalled();

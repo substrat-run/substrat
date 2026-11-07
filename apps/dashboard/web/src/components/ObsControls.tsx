@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Select } from '@substrat-run/ui';
+import { Select } from '@substrat-run/ui/wa';
 import type { AppRow } from '../lib/api';
 
 /**

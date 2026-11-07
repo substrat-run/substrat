@@ -59,6 +59,9 @@ jobs:
     # and prod is self-serve, so the same run points prod at the new version.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Past the 25 minutes the source-protocol wait below may take on its own, for a release
+    # racing this deploy. A deploy that does not wait takes about 5.
+    timeout-minutes: 35
     # One build submit at a time across the platform: this group is shared with the auth-server
     # deploy and with every ticket0 preview, because the builder agent serves ONE build per
     # tenant and answers `409 project operation already in progress` to a second concurrent
@@ -207,6 +210,7 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Never overlap two builds at the builder, whichever PR or deploy they belong to: the same
     # group (and the same `queue: max`, no cancelling) as the `deploy` job, whose comment gives
     # the reasons. A rapid re-push of one PR waits for the first, as it did before.
@@ -357,6 +361,7 @@ jobs:
       github.event.action == 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     concurrency: substrat-preview-${{ github.event.number }}
     permissions:
       contents: read

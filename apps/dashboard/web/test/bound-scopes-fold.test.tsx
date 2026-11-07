@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoundScopeRow, BoundScopesView, Deployment } from '../src/lib/api';
 import { BoundScopes } from '../src/views/BoundScopes';
+import { buttons } from './wa';
 
 const client = vi.hoisted(() => ({ listBoundScopes: vi.fn() }));
 vi.mock('../src/lib/api', async (importOriginal) => ({
@@ -43,7 +44,7 @@ describe('Bound scopes — folded unless there is something to do', () => {
     container.remove();
   });
 
-  const button = (name: RegExp) => [...container.querySelectorAll('button')].find((b) => name.test(b.textContent ?? ''));
+  const button = (name: RegExp) => buttons(container).find((b) => name.test(b.textContent ?? ''));
   const render = (props: { expanded?: boolean; onExpand?: () => void }) =>
     act(async () => root.render(<BoundScopes teamId="T1" d={D} all={[D]} onChanged={() => {}} {...props} />));
 
@@ -51,7 +52,7 @@ describe('Bound scopes — folded unless there is something to do', () => {
     const onExpand = vi.fn();
     await render({ onExpand });
     expect(container.textContent).toContain('1 install · 2 snapshot forks');
-    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container.querySelector('wa-checkbox')).toBeNull();
     await act(async () => button(/^Manage/)!.click());
     expect(onExpand).toHaveBeenCalledOnce();
   });

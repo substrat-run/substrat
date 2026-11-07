@@ -1,6 +1,6 @@
-import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { AccountMenu, AppShell, AppShellChildRow, Avatar, IconTile, SearchPill, SubIcon, SubIcons } from '@substrat-run/ui';
+import { AppShell, AppShellChildRow, Avatar, IconTile, SearchPill, SubIcon, SubIcons } from '@substrat-run/ui';
+import { AccountMenu, Button, Dropdown } from '@substrat-run/ui/wa';
 import { Ic, StrataGlyph, type IconName } from '../lib/icons';
 import { obsPath, teamPath } from '../lib/router';
 import type { Team } from '../lib/api';
@@ -142,11 +142,21 @@ export function DashShell(props: DashShellProps) {
         <AccountMenu
           name={props.userName}
           email={props.userEmail}
+          trigger={
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, textAlign: 'left' }}>
+              <Avatar seed={props.userName} tone="brand" size={24} />
+              <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, lineHeight: 1.25 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{props.userName}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{props.userEmail}</span>
+              </span>
+            </span>
+          }
           items={[
-            { label: 'Account settings', icon: <Ic name="settings" size={15} />, onSelect: () => props.onNav('settings') },
-            { label: 'Toggle theme', icon: <SubIcon d={SubIcons.moon} size={15} />, onSelect: props.onToggleTheme },
-            { label: 'Sign out', icon: <Ic name="arrowLeft" size={15} />, onSelect: props.onSignOut, danger: true, separated: true },
+            { value: 'settings', label: 'Account settings', icon: <Ic name="settings" size={15} /> },
+            { value: 'theme', label: 'Toggle theme', icon: <SubIcon d={SubIcons.moon} size={15} /> },
           ]}
+          onSelect={(v) => (v === 'theme' ? props.onToggleTheme() : props.onNav('settings'))}
+          onSignOut={props.onSignOut}
         />
       }
       crumbs={props.crumbs}
@@ -163,6 +173,8 @@ export function DashShell(props: DashShellProps) {
     </AppShell>
   );
 }
+
+const NEW_TEAM = 'new-team';
 
 /**
  * The team switcher under the wordmark. Shows the current team; the dropdown lists
@@ -182,107 +194,30 @@ function TeamSwitcher({
   onSwitch: (teamId: string) => void;
   onNewTeam: () => void;
 }) {
-  // `?teams=1` opens it on load (a demo/screenshot aid, like `?menu=1`).
-  const [open, setOpen] = useState(() => new URLSearchParams(window.location.search).get('teams') === '1');
   return (
-    <div style={{ position: 'relative', marginLeft: 26 }}>
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Switch team"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-          maxWidth: '100%',
-          padding: '2px 6px',
-          margin: '0 -6px',
-          borderRadius: 6,
-          border: 0,
-          background: open ? 'var(--surface-hover)' : 'transparent',
-          color: 'var(--text-secondary)',
-          fontSize: 12.5,
-          cursor: 'pointer',
-        }}
-      >
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{org}</span>
-        <span style={{ display: 'inline-flex', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 120ms' }}>
-          <Ic name="chevronDown" size={11} color="var(--text-tertiary)" />
-        </span>
-      </button>
-      {open && (
-        <>
-          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-          <div
-            role="menu"
-            style={{
-              position: 'absolute',
-              top: 28,
-              left: -6,
-              zIndex: 41,
-              width: 224,
-              background: 'var(--surface-card)',
-              border: '1px solid var(--border-default)',
-              borderRadius: 10,
-              boxShadow: 'var(--shadow-popover)',
-              overflow: 'hidden',
-            }}
-          >
-            <div style={{ padding: '8px 12px 4px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
-              Teams
-            </div>
-            {teams.map((t) => (
-              <TeamRow key={t.id} team={t} active={t.id === currentTeamId} onClick={() => { setOpen(false); onSwitch(t.id); }} />
-            ))}
-            <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 0' }} />
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => { setOpen(false); onNewTeam(); }}
-              style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', height: 36, padding: '0 12px', border: 0, background: 'transparent', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer', textAlign: 'left' }}
-            >
-              <span style={{ display: 'inline-flex', width: 22, justifyContent: 'center', color: 'var(--text-tertiary)' }}>
-                <Ic name="plus" size={15} />
-              </span>
-              New team
-            </button>
-          </div>
-        </>
-      )}
+    <div style={{ marginLeft: 20 }}>
+      <Dropdown
+        heading="Teams"
+        trigger={
+          <Button slot="trigger" variant="ghost" size="sm" title="Switch team" style={{ maxWidth: '100%', color: 'var(--text-secondary)' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 400, fontSize: 12.5 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{org}</span>
+              <Ic name="chevronDown" size={11} color="var(--text-tertiary)" />
+            </span>
+          </Button>
+        }
+        items={[
+          ...teams.map((t) => ({
+            value: t.id,
+            label: t.name,
+            icon: <Avatar seed={t.name} tone="brand" size={22} />,
+            details: t.id === currentTeamId ? <Ic name="check" size={15} color="var(--text-brand)" /> : undefined,
+          })),
+          { value: NEW_TEAM, label: 'New team', icon: <Ic name="plus" size={15} />, separated: true },
+        ]}
+        onSelect={(v) => (v === NEW_TEAM ? onNewTeam() : onSwitch(v))}
+      />
     </div>
-  );
-}
-
-function TeamRow({ team, active, onClick }: { team: Team; active: boolean; onClick: () => void }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 9,
-        width: '100%',
-        height: 38,
-        padding: '0 12px',
-        border: 0,
-        background: hover ? 'var(--surface-hover)' : 'transparent',
-        color: 'var(--text-primary)',
-        fontSize: 13,
-        cursor: 'pointer',
-        textAlign: 'left',
-      }}
-    >
-      <Avatar seed={team.name} tone="brand" size={22} />
-      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{team.name}</span>
-      {active && <Ic name="check" size={15} color="var(--text-brand)" />}
-    </button>
   );
 }
 

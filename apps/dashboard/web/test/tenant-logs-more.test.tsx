@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TenantLogs } from '../src/views/ObservabilityPanels';
 import { api, type ObservabilityLogEvent } from '../src/lib/api';
+import { buttons } from './wa';
 
 /** #2762: the Lines mode's "Load more" — the next page ends at the oldest line on screen. */
 
@@ -25,7 +26,7 @@ describe('TenantLogs › Load more', () => {
   });
 
   const window = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-01T13:00:00.000Z' };
-  const button = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Load more');
+  const button = () => buttons(container).find((b) => b.textContent === 'Load more');
 
   it('reads the page before the oldest line, appends only what is new, and stops when nothing is', async () => {
     const read = vi

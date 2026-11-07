@@ -5,6 +5,7 @@ import { EventExplorer } from '../src/views/ObservabilityPanels';
 import { api, type EventFacetAnswer, type EventFacetResult } from '../src/lib/api';
 import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { bucketNarrow, bucketRows, dimensionLabel, emptyGroupingText, modeTabs, withheldOf } from '../src/lib/log-stream';
+import { buttons, choose, type } from './wa';
 
 const cursor = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-01T11:00:00.000Z' };
 const result = (over: Partial<EventFacetResult> = {}): EventFacetResult => ({
@@ -80,7 +81,12 @@ describe('Events mode', () => {
   });
   const click = (el: Element) => act(async () => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const byText = (text: string) =>
-    [...container.querySelectorAll('button')].find((b) => b.textContent === text || b.textContent?.startsWith(text))!;
+    buttons(container).find((b) => b.textContent === text || b.textContent?.startsWith(text))!;
+  /** The Group by choice, as it reads on the control. */
+  const grouped = () => {
+    const group = container.querySelector('wa-radio-group[label="Group by"]') as HTMLElement & { value: string };
+    return group.querySelector(`wa-radio[value="${group.value}"]`)!.textContent;
+  };
 
   it('shows the unavailable state when the generated facet client receives 501', async () => {
     vi.spyOn(api, 'appFacets').mockRejectedValue(new GeneratedApiError(501, 'facets unavailable', null));
@@ -101,7 +107,7 @@ describe('Events mode', () => {
       'app-a',
       expect.objectContaining({ groupBy: 'operation', type: 'invoice.sent', since: cursor.from, until: cursor.to }),
     );
-    expect(container.querySelector('[aria-label="Group by"] [aria-pressed="true"]')!.textContent).toBe('Operation');
+    expect(grouped()).toBe('Operation');
   });
 
   it('a bucket nothing can narrow to is not a button', async () => {
@@ -114,26 +120,24 @@ describe('Events mode', () => {
   it('narrowing from a half-chosen Payload field leaves field mode, so the control matches the rows', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
     await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
-    await click(byText('Payload field'));
-    expect(container.querySelector('[aria-label="Group by payload field"]')).not.toBeNull();
+    await act(async () => choose(container.querySelector('wa-radio-group[label="Group by"]')!, 'field'));
+    expect(container.querySelector('wa-input[label="Group by payload field"]')).not.toBeNull();
     await click(byText('invoice.sent'));
     expect(facets).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ groupBy: 'operation', type: 'invoice.sent' }));
-    expect(container.querySelector('[aria-label="Group by"] [aria-pressed="true"]')!.textContent).toBe('Operation');
-    expect(container.querySelector('[aria-label="Group by payload field"]')).toBeNull();
+    expect(grouped()).toBe('Operation');
+    expect(container.querySelector('wa-input[label="Group by payload field"]')).toBeNull();
   });
 
   it('picking Payload field asks nothing until a field is named', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
     await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
     expect(facets).toHaveBeenCalledTimes(1);
-    await click(byText('Payload field'));
+    await act(async () => choose(container.querySelector('wa-radio-group[label="Group by"]')!, 'field'));
     expect(facets).toHaveBeenCalledTimes(1);
-    const input = container.querySelector<HTMLInputElement>('[aria-label="Group by payload field"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'currency');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await click(byText('Group'));
+    const input = container.querySelector('wa-input[label="Group by payload field"]')!;
+    await act(async () => type(input, 'currency'));
+    expect(byText('Group').getAttribute('type')).toBe('submit');
+    await act(async () => input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     expect(facets).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ field: 'currency', groupBy: undefined }));
   });
 

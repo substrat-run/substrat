@@ -159,6 +159,9 @@ importers:
       ai:
         specifier: 7.0.159
         version: 7.0.159(zod@4.4.3)
+      create-substrat:
+        specifier: workspace:*
+        version: link:../../packages/create-substrat
       hono:
         specifier: ^4.13.13
         version: 4.13.16
@@ -254,9 +257,6 @@ importers:
 
   apps/console:
     dependencies:
-      '@awesome.me/webawesome':
-        specifier: 3.14.0
-        version: 3.14.0(@floating-ui/utils@0.2.12)(@types/node@24.19.2)(@types/react@18.3.31)
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
@@ -287,16 +287,16 @@ importers:
         version: 18.3.7(@types/react@18.3.31)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
-        version: 6.2.1(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+        version: 6.2.1(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
       vite:
         specifier: 'catalog:'
-        version: 8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
+        version: 8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
-        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@24.19.2)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
   apps/control-plane:
     dependencies:
@@ -333,9 +333,15 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/model-providers':
+        specifier: workspace:^
+        version: link:../../packages/model-providers
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../../packages/oidc-rp
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
       hono:
         specifier: ^4.13.13
         version: 4.13.16
@@ -349,6 +355,9 @@ importers:
       '@substrat-run/console':
         specifier: workspace:*
         version: link:../console
+      ai:
+        specifier: 7.0.159
+        version: 7.0.159(zod@4.6.7)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -446,6 +455,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../../packages/contracts
+      '@substrat-run/elements':
+        specifier: workspace:^
+        version: link:../../../packages/elements
       '@substrat-run/model-view':
         specifier: workspace:^
         version: link:../../../packages/model-view
@@ -2467,6 +2479,10 @@ importers:
         version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/ui:
+    dependencies:
+      '@substrat-run/elements':
+        specifier: workspace:^
+        version: link:../elements
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -10345,11 +10361,6 @@ snapshots:
 
   '@vercel/oidc@3.2.0': {}
 
-  '@vitejs/plugin-react@6.2.1(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))':
-    dependencies:
-      '@rolldown/pluginutils': 1.0.1
-      vite: 8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1)
-
   '@vitejs/plugin-react@6.2.1(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
@@ -10407,7 +10418,7 @@ snapshots:
       pathe: 2.0.3
       sirv: 3.0.2
       tinyrainbow: 3.2.0
-      vitest: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+      vitest: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
   '@vitest/utils@5.0.5':
     dependencies:

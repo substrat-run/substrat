@@ -6,6 +6,7 @@ import { adminAction } from '@substrat-run/contracts';
 import { actionKeyWords, actionWords, actorOf, entryActorOf, entryDiff, entrySentence, entryVia, filterActivity, filterEntries, groupByDay } from '../src/lib/audit-activity';
 import { actionWords as overviewActionWords, activityRows } from '../src/lib/overview-status';
 import { AuditLog, DEEP_LINK_PAGES } from '../src/views/Audit';
+import { button, choose } from './wa';
 
 const at = (y: number, m: number, d: number, h = 12) => new Date(y, m - 1, d, h).toISOString();
 // One instant for every fixture that does not set its own. Stamping each entry with the
@@ -168,7 +169,7 @@ describe('Audit page', () => {
     expect(container.textContent).toContain('Substrat bound scope version');
     expect(container.textContent).toContain('Team');
     expect(container.querySelector('[data-testid="audit-count"]')!.textContent).toBe('2 of 2 entries');
-    await click([...container.querySelectorAll('button')].find((b) => b.textContent === 'Jobs & integrations')!);
+    await act(async () => choose(container.querySelector('wa-radio-group[label="Who acted"]')!, 'job'));
     expect(rows()).toEqual(['2']);
     expect(container.querySelector('[data-testid="audit-count"]')!.textContent).toBe('1 of 2 entries');
   });
@@ -234,7 +235,7 @@ describe('Audit page', () => {
       const i = Number(o?.cursor ?? 0);
       return { entries: [entry(`e-${i}`)], nextCursor: i + 1 < pages ? `${i + 1}` : null };
     });
-    const loadOlder = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Load older entries');
+    const loadOlder = () => button('Load older entries', container);
     const notice = () => container.querySelector('[role="status"]')?.textContent ?? null;
 
     await render(`e-${DEEP_LINK_PAGES + 1}`);

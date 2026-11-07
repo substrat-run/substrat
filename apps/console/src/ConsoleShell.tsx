@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { AccountMenu } from './AccountMenu';
+import { AccountMenu } from '@substrat-run/ui/wa';
 import { Breadcrumbs, IconButton, SideNav, SubIcon, SubIcons, useMediaQuery } from './components';
 import type { BreadcrumbItem } from './components';
 
@@ -176,7 +176,11 @@ export function ConsoleShell({
             ],
           },
         ]}
-        footer={<AccountMenu email={identityLabel} onSignOut={onSignOut} onToggleDark={onToggleDark} />}
+        footer={
+          <div style={{ padding: '6px 8px', borderTop: '1px solid var(--border-subtle)' }}>
+            <AccountMenu name={identityLabel ?? 'dev actor'} email={identityLabel} items={[{ value: 'theme', label: 'Toggle theme' }]} onSelect={onToggleDark} onSignOut={onSignOut} />
+          </div>
+        }
       />
 
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

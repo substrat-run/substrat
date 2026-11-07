@@ -9,14 +9,21 @@
     ".": "./src/index.ts",
     "./styles.css": "./src/styles.css",
     "./elements-theme.css": "./src/elements-theme.css",
+    "./wa": "./src/wa/index.ts",
+    "./wa/register": "./src/wa/register.ts",
+    "./wa.css": "./src/wa/wa.css",
     "./tokens/*": "./src/tokens/*"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@substrat-run/elements": "workspace:^"
+  },
   "peerDependencies": {
-    "react": "^18.3.0"
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",

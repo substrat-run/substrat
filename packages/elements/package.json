@@ -17,6 +17,26 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./avatar": {
+      "types": "./dist/avatar.d.ts",
+      "default": "./dist/avatar.js"
+    },
+    "./user-menu": {
+      "types": "./dist/user-menu.d.ts",
+      "default": "./dist/user-menu.js"
+    },
+    "./entity-table": {
+      "types": "./dist/entity-table.d.ts",
+      "default": "./dist/entity-table.js"
+    },
+    "./entity-table-model": {
+      "types": "./dist/entity-table-model.d.ts",
+      "default": "./dist/entity-table-model.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "default": "./dist/session.js"
+    },
     "./controls": {
       "types": "./dist/controls.d.ts",
       "default": "./dist/controls.js"

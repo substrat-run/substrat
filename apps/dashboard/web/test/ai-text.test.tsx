@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExplanationView } from '../src/lib/api.generated';
 import { AiText } from '../src/components/AiText';
 import { aiState, provenanceLine } from '../src/lib/explanations';
+import { buttons, disabled } from './wa';
 
 /**
  * AI-written text on the page (#1749): what the block draws for each answer, that it writes
@@ -77,7 +78,7 @@ describe('<AiText>', () => {
   const render = async (load: () => Promise<ExplanationView>, write: () => Promise<ExplanationView>) => {
     await act(async () => root.render(<AiText load={load} write={write} writeLabel="Explain this finding" />));
   };
-  const button = (label: string) => [...container.querySelectorAll('button')].find((b) => b.textContent?.includes(label));
+  const button = (label: string) => buttons(container).find((b) => b.textContent?.includes(label));
 
   it('reads on open and writes only when asked, then shows the marker, the text and the provenance', async () => {
     const write = vi.fn(async () => view({ explanation: written(), budget: { person: { used: 1, limit: 20 }, team: { used: 1, limit: 100 } } }));
@@ -110,7 +111,7 @@ describe('<AiText>', () => {
 
   it('a spent budget disables the button and says which ceiling it hit', async () => {
     await render(async () => view({ budget: { person: { used: 20, limit: 20 }, team: { used: 20, limit: 100 } } }), async () => view());
-    expect(button('Explain this finding')!.disabled).toBe(true);
+    expect(disabled(button('Explain this finding')!)).toBe(true);
     expect(container.textContent).toContain('You have used today’s 20 AI explanations');
   });
 });

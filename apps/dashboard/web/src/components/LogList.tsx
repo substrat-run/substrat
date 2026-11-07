@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { Button } from '@substrat-run/ui';
+import { Button } from '@substrat-run/ui/wa';
 import type { ObservabilityLogEvent } from '../lib/api';
 import { ULID, shortId } from '../lib/logs-chips';
 import { parseEntity, recordFromLogs } from '../lib/request-detail';

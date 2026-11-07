@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Button } from '@substrat-run/ui/wa';
 import { ULID } from '../lib/palette';
 
 /**
@@ -36,9 +37,9 @@ export function RequestIdNote({ id }: { id: string | undefined }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
       <span>Request id:</span>
       <span style={{ fontFamily: 'var(--font-mono)', userSelect: 'all' }}>{id}</span>
-      <button type="button" onClick={copy} style={{ fontSize: 12 }}>
+      <Button size="sm" variant="secondary" onClick={copy}>
         {copied ? 'Copied' : 'Copy'}
-      </button>
+      </Button>
     </div>
   );
 }
