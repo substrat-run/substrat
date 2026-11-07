@@ -290,13 +290,15 @@ export function Select({ label, ariaLabel, options, size = 'md', value, disabled
       disabled={disabled || undefined}
       onInput={(e) => {
         const picked = (e.target as unknown as { value: string }).value;
-        onChange?.({ target: { value: picked === BLANK ? '' : picked } } as ChangeEvent<HTMLSelectElement>);
+        // `wa-select` says so on a re-pick of the current option too, which a `<select>` does not.
+        if (picked !== shown) onChange?.({ target: { value: picked === BLANK ? '' : picked } } as ChangeEvent<HTMLSelectElement>);
       }}
       style={css(style)}
     >
       {opts.flatMap((o, i) => [
         ...(o.group && o.group !== opts[i - 1]?.group ? [<small key={`group:${o.group}`}>{o.group}</small>] : []),
-        <wa-option key={o.value} value={toOption(o.value)} disabled={o.disabled || undefined}>
+        // `wa-select` draws nothing for a disabled value, so the current one is never drawn disabled.
+        <wa-option key={o.value} value={toOption(o.value)} disabled={(o.disabled && o.value !== value) || undefined}>
           {o.label}
         </wa-option>,
       ])}
