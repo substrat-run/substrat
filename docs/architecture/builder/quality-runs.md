@@ -15,10 +15,10 @@ this builds on. · **Touches:** `apps/builder/skills`, `apps/builder/src/referen
 every time, as fast and as cheaply as possible? We ran 50 graded builds in November 2026 to find
 out, on Haiku and Sonnet, changing one thing per arm.
 
-**The answer:** on Sonnet the todo app now scores 89 of 100 on three runs out of three, with no
-repairs and no red gates, in 14% less time and 26% fewer steps. The last 11 points are invites and
-deploying, which the template does not offer yet. Most defects were ours: stale skills and a wrong
-setup, rather than the model.
+**The answer:** on Sonnet the todo app now scores 89 of 100 on six runs out of six, with no repairs
+and no red gates. The baseline scored 79 to 84 with a repair in every run. Time and tokens improved
+less reliably: see [§2](#2-results). The last 11 points are invites and deploying, which the template
+does not offer yet. Most defects were ours: stale skills and a wrong setup, rather than the model.
 
 ## 1. How a run was graded
 
@@ -65,14 +65,38 @@ ended without green gates. Each arm is one change on top of what had been adopte
 | adopted so far | Haiku | 79, 89, 89 | 385 | 39 | 0.3 | 2.57 | 204 | 81 | 0 |
 | lanes | Sonnet | 74, 84, 84 | 285 | 41 | 1.3 | 1.42 | 185 | 39 | 1 |
 | low effort | Sonnet | 68–89 (6 runs) | 228 | 32 | 0.2 | 1.39 | 138 | 32 | 1 |
-| **final candidate** | **Sonnet** | **89, 89, 89** | **258** | **32** | **0** | **1.53** | **156** | **37** | **0** |
+| final candidate | Sonnet | 89, 89, 89 | 258 | 32 | 0 | 1.53 | 156 | 37 | 0 |
+| **as shipped, on current `main`** | **Sonnet** | **89, 89, 89** | **292** | **39** | **0** | **2.12** | **162** | **40** | **0** |
 
-A score of 0 is a run that stalled before building an app. All three stalls were on Haiku. A
-contradiction in the model or scenario left them waiting on a question, because the build may
-change neither.
+**Quality and repairs held from the candidate to what shipped. Time and tokens did not.** The skills
+are the same in both, and the shipped runs made about as many reference calls. They took more coding
+steps (22 to 29 against 18 to 21) on debugging detours, and input grows with every step. Three runs
+cannot say whether that is variation or a cause we have not found. Over all six, the average is 275
+seconds, 36 steps and 1.83M input, against the Sonnet baseline's 300, 43 and 2.06M.
 
-Sonnet was faster and used fewer tokens than Haiku on every comparison. It also never stalled. Cost
+A score of 0 is a run that stalled before building an app, and both were on Haiku. A contradiction
+in the model or scenario left them waiting on a question, because the build may change neither.
+
+Sonnet was faster and used fewer tokens than Haiku in every matching arm. It also never stalled. Cost
 per run is missing: this path does not record a price.
+
+### Per stage
+
+One shipped run's six stages, averaged over the three. All 29 repairs in the ledger happened in
+scaffolding and coding, and none in the stages before them.
+
+| Stage | Produced | Steps | Seconds | Input (k) | Uncached (k) | Output (k) |
+|---|---|---|---|---|---|---|
+| Interview | 3 questions asked | 2 | 29 | 25 | 5 | 0.5 |
+| Concept | 54 concept lines | 4 |  | 53 | 6 | 2.4 |
+| Model | 276 model lines | 4 | 35 | 101 | 26 | 5.2 |
+| Scenario | 16 scenario tests | 3 | 38 | 88 | 34 | 5.9 |
+| Scaffolding | 29 references read or copied |  |  |  |  |  |
+| Coding | 18 files written | 26 | 191 | 1856 | 91 | 26.2 |
+
+Seconds exist per recorded stage, so Interview's include concept. Scaffolding and coding are one
+recorded stage, and on the Claude Code path output tokens land late, on the last step of a pass, so
+their usage cannot be split. `stages.py` reads this from each run's report and transcript.
 
 ## 3. What shipped
 
@@ -142,7 +166,7 @@ In the order we would try them:
 - **Invites and deploying.** No run has built either, and they are the last two items. Adding a
   worker with invite routes to the template is the likely answer.
 - **A way back from a contradiction.** The build cannot change the model or the scenario, which is
-  what stalled all three Haiku runs.
+  what stalled the Haiku runs.
 - **Blocked gates that state a remedy.** The repair loop skips them on purpose, which left two
   otherwise working runs red.
 
