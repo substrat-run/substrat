@@ -35,7 +35,10 @@ export type ReviewDiff =
   | { readonly kind: 'too large'; readonly bytes: number; readonly limit: number }
   /** A stored archive whose bytes no longer hash to the digest intake recorded. Nothing is sent. */
   | { readonly kind: 'archive changed' }
-  /** The base could not be read again for the earlier texts (gone, or not the archive it was). */
+  /**
+   * The base could not be read again for the earlier texts (gone, or failing to read). A base that
+   * reads but is not the archive it was is `archive changed`.
+   */
   | { readonly kind: 'base unavailable' };
 
 /**
@@ -176,7 +179,8 @@ async function changedLines(base: ArchiveSource, files: ChangedFile[], maxFileBy
       }
       compared.set(path, diff ? { ...file, changed: diff.changed, removedAfter: diff.removedAfter } : { ...file, changed: 'all', removedAfter: [] });
     });
-  } catch {
+  } catch (error) {
+    console.error('review.diff.base-pass-failed', { error: error instanceof Error ? error.name : typeof error });
     return 'unavailable';
   }
   if (sha256 !== base.sha256) return 'changed';
