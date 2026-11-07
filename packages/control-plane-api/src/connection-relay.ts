@@ -41,8 +41,8 @@ import {
 export class ConnectionRelayError extends Error {
   /**
    * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
-   * `toProblem` with the status unchanged; `undefined` for a status the catalog has no code
-   * at (413, 422, 501, 502), which stays `about:blank`. See `codeForRefusalStatus`.
+   * `toProblem` with the status unchanged; `undefined` for 422 and 501, which the catalog has
+   * no code at, and which stay `about:blank`. See `codeForRefusalStatus`.
    */
   readonly code: ErrorCode | undefined;
   constructor(

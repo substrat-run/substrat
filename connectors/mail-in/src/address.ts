@@ -56,8 +56,8 @@ export const LOCAL_PART = /^[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?-[a-z2-7]{16}$/;
 export class MailInError extends Error {
   /**
    * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
-   * `toProblem` with the status unchanged; `undefined` for a status the catalog has no code
-   * at (413, 422, 501, 502), which stays `about:blank`. See `codeForRefusalStatus`.
+   * `toProblem` with the status unchanged. Every status this class takes has one. See
+   * `codeForRefusalStatus`.
    */
   readonly code: ErrorCode | undefined;
   constructor(

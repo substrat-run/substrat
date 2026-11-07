@@ -3,6 +3,7 @@ import { AUTO_ADMISSION_NOTE, SCOPE_GATE_REASONS, substratError, type ErrorCode 
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { autoAdmittedProdRefusal } from '@substrat-run/kernel';
 import { mapError } from '../src/errors.js';
+import { ConnectionRelayError } from '../src/connection-relay.js';
 
 /**
  * The message→status table is this package's weakest seam (errors.ts says so itself), and
@@ -209,6 +210,14 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(body.type).toBe('about:blank');
     expect(body.code).toBeUndefined();
     expect(body.error).toBe('not implemented');
+  });
+
+  it("answers a connection relay refusal by the code its status carries, and a codeless one by status (#113)", () => {
+    const coded = mapError(new ConnectionRelayError('unknown connection', 404));
+    expect(coded).toMatchObject({ status: 404, body: { code: 'not_found', detail: 'unknown connection', error: 'unknown connection' } });
+    const codeless = mapError(new ConnectionRelayError("no scope binding registered for provider 'x'", 501));
+    expect(codeless).toMatchObject({ status: 501, body: { type: 'about:blank' } });
+    expect(codeless.body.code).toBeUndefined();
   });
 });
 
