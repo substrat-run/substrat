@@ -1,13 +1,13 @@
 ---
-status: proposed
+status: accepted
 layer: kernel
 description: An operation reads the caller's verified address from the platform instead of taking it as input, and a share can name an address, claimed by whoever proves it. A vertical stops writing a join, a guard, an invite table and a consumer.
 ---
 
 # RFC: a verified address comes from the platform
 
-**Status:** proposed · **Decision:** [K-61](../decisions/K-061-an-operation-reads-the-callers-verified-address-from-the-platform-and-a-share-can-name-an-address.md)
-proposed · **Tracking:** #1359 · **Touches:** `OperationContext`, both scope hosts, `vertical-auth`,
+**Status:** accepted; phase 1 in progress · **Decision:** [K-61](../decisions/K-061-an-operation-reads-the-callers-verified-address-from-the-platform-and-a-share-can-name-an-address.md)
+accepted · **Tracking:** #1359 · **Touches:** `OperationContext`, both scope hosts, `vertical-auth`,
 the spine, `demos/todo`, the scaffold template and the builder skills
 
 ## 1. The problem
@@ -199,14 +199,17 @@ new build never meets `join` at all.
 
 ## 8. Phases
 
-1. **`ctx.verifiedEmail`.** Both hosts, the door, a contract suite. `demos/todo`'s `join` loses its
-   `email` input and `joiningAsYourself` goes. This alone closes the hole.
+1. **`ctx.verifiedEmail`, and the refusal.** Both hosts, the door, a contract suite. `demos/todo`'s
+   `join` loses its `email` input and `joiningAsYourself` goes. A `join` that takes the caller's own
+   address is refused at `check_model` and at `substrat push`. The field closes the hole for a
+   project that uses it, and only the refusal stops one that does not: the kernel cannot judge a
+   vertical's own tables, so a typed address looked up there still reaches `ctx.grant`.
 2. **Address grants.** The spine table on both adapters, the verbs, erasure, a contract suite.
    `demos/todo` moves over, then the template and skills.
 3. **Admission by address** (§4), once the first two have run in a real vertical.
 
 Until phase 1 lands, the builder keeps a gate that refuses a project whose join trusts its input. It
-sits in the builder, not in the project, and is deleted after phase 2.
+sits in the builder, not in the project, and the refusal in phase 1 replaces it.
 
 ## 9. How we will know
 
@@ -225,4 +228,4 @@ sits in the builder, not in the project, and is deleted after phase 2.
 | 2 | Is a principal admitted by address (§4) a seat? | No role means no seat, until it is given one |
 | 3 | Several issuers in a tenant (§5): all trusted, or a named list? | A named list in the tenant's auth settings, defaulting to all of them |
 | 4 | Does a vertical need an event when a share is claimed, to tell the owner? | Yes, it is one of the spine events in §2.2, and a consumer is optional |
-| 5 | Should a `join` that takes the caller's address become a `check_model` error? | Yes, after phase 2 |
+| 5 | Should a `join` that takes the caller's address become a `check_model` error? | Decided: yes, in phase 1, and at `substrat push` too |
