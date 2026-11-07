@@ -18,7 +18,6 @@ import { sourceBuildService, builderTurnsService, githubConfig, installationToke
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono, type Context } from 'hono';
-import { HTTPException } from 'hono/http-exception';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi } from './reviews.js';
 import { ReviewJobDO } from './review-job.js';
@@ -2968,11 +2967,11 @@ export default {
     const app = new Hono<{ Bindings: Env }>();
 
     // #113: a throw no route caught is a problem document, not Hono's text 500. A typed
-    // `SubstratError` keeps its code and sentence; anything else is `internal` with no detail,
-    // and the throw itself goes to the log only. `/api` keeps its own handler (the API router's).
-    // An `HTTPException` (a Hono middleware's own refusal) is answered as it chose.
+    // `SubstratError` keeps its code, status and sentence (so a typed 409 or 503 is answered as
+    // one, where Hono answered 500); anything else is `internal` with no detail, and the throw
+    // itself goes to the log only. The API router mounted under `/api` answers its own throws
+    // with its own handler; the routes this worker mounts itself, `/api/*` ones included, land here.
     app.onError((err) => {
-      if (err instanceof HTTPException) return err.getResponse();
       console.error('control-plane: unhandled throw', err);
       return problemForThrow(err);
     });

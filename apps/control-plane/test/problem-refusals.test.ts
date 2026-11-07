@@ -1,11 +1,13 @@
 import { SELF, createExecutionContext, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEV_ACTOR_HEADER } from '@substrat-run/control-plane-api';
-import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemTypeFor, type ErrorCode } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemTypeFor, substratError, z, type ErrorCode } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, SESSION_COOKIE, pkceS256, type OidcEnv } from '@substrat-run/oidc-rp';
 import worker, { RelayGateway } from '../src/worker.js';
-import { refuseStatus } from '../src/problem.js';
+import { problemForThrow, refuseStatus } from '../src/problem.js';
+import workerSource from '../src/worker.ts?raw';
+import relayCallerSource from '../src/relay-caller.ts?raw';
 
 /**
  * #113: the worker's OWN routes (the staff roster, the builder lookup, the support identity,
@@ -194,14 +196,78 @@ describe('the /internal relay routes answer problem documents', () => {
     await expectProblem(res, 400, 'relay gateway: the caller is missing or unreadable', 'validation_failed');
   });
 
-  it('a throw no route caught is internal with no detail, never a text 500', async () => {
+  it('a throw no route caught is internal with no detail; a typed one keeps its code and status', async () => {
+    const mail = { ...ids, to: 'a@example.com', subject: 's', html: '<p>h</p>', text: 'h' };
     // No directory binding: the email relay's scope read throws something nobody typed.
-    const res = await relay('/internal/email/send', { ...ids, to: 'a@example.com', subject: 's', html: '<p>h</p>', text: 'h' }, { CONTROL_PLANE: undefined });
-    expect(res.status).toBe(500);
-    expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
-    const body = (await res.json()) as Record<string, unknown>;
+    const untyped = await relay('/internal/email/send', mail, { CONTROL_PLANE: undefined });
+    expect(untyped.status).toBe(500);
+    expect(untyped.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    const body = (await untyped.json()) as Record<string, unknown>;
     expect(body).toMatchObject({ type: problemTypeFor('internal'), code: 'internal' });
     expect(body.detail).toBeUndefined();
+
+    // A directory whose every call throws a typed refusal: the onError answers it as itself.
+    const stub = new Proxy({}, {
+      get: (_, key) => (key === 'then' ? undefined : () => { throw substratError('unavailable', 'directory unreachable'); }),
+    });
+    const refusing = { idFromName: () => ({}), idFromString: () => ({}), get: () => stub };
+    await expectProblem(await relay('/internal/email/send', mail, { CONTROL_PLANE: refusing }), 503, 'directory unreachable', 'unavailable');
+  });
+
+  it("a ZodError or a plain error carrying a code is the server's own failure: internal, message withheld", async () => {
+    const zod = z.object({ folder: z.string() }).safeParse({ folder: 1 }).error!;
+    const coded = Object.assign(new Error('a sentence nobody reviewed'), { code: 'conflict' });
+    for (const err of [zod, coded]) {
+      const res = problemForThrow(err);
+      expect(res.status).toBe(500);
+      const out = (await res.json()) as Record<string, unknown>;
+      expect(out).toMatchObject({ code: 'internal' });
+      expect(out.detail).toBeUndefined();
+      expect(out.errors).toBeUndefined();
+    }
+  });
+});
+
+/**
+ * Every call in these files that could put a body on the wire holds no bare `{ error }` object:
+ * a refusal goes through `refuse` / `refuseStatus` / `refuseRelayed`. Same scan as
+ * `apps/builder/test/refusals-problem.test.ts`.
+ */
+describe('worker.ts and relay-caller.ts answer no bare { error } again', () => {
+  function callArgs(src: string, open: number): string {
+    let depth = 1;
+    for (let i = open; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "'" || ch === '"' || ch === '`') {
+        const close = src.indexOf(ch, i + 1);
+        if (close === -1) break;
+        i = close;
+      } else if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) return src.slice(open, i);
+    }
+    return src.slice(open);
+  }
+  const bareErrorCalls = (src: string): string[] => {
+    const flat = src.replace(/\s+/g, ' ');
+    return [...flat.matchAll(/(?:\bjson|\.json|\.body|\.text|\bstringify)\(/g)]
+      .map((m) => `${m[0]}${callArgs(flat, (m.index ?? 0) + m[0].length)})`)
+      .filter((call) => /[{,]\s*error\s*[:,}]/.test(call));
+  };
+
+  it('sees the forms a route would write', () => {
+    expect(bareErrorCalls("return c.json({ error: e.message }, 403);")).toHaveLength(1);
+    expect(bareErrorCalls("return Response.json({ error: 'x' }, { status: 400 });")).toHaveLength(1);
+    expect(bareErrorCalls("return c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, e.status);")).toHaveLength(1);
+    expect(bareErrorCalls("return refuse('forbidden', e.message);")).toEqual([]);
+    expect(bareErrorCalls('return c.json({ sent: true, ...result });')).toEqual([]);
+  });
+
+  it.each([
+    ['worker.ts', workerSource],
+    ['relay-caller.ts', relayCallerSource],
+  ])('%s', (_, src) => {
+    expect(src.length).toBeGreaterThan(1000);
+    expect(bareErrorCalls(src)).toEqual([]);
   });
 });
 

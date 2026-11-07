@@ -357,9 +357,17 @@ already answer their expected refusal as a value.
      `requestId`. Statuses and the `error` sentence are unchanged. `test/problem-refusals.test.ts` (control
      plane) and `test/request-id-route.test.ts` (dashboard) hold the media type, the schema, `code` and
      `error === detail`, each refusal beside the success of the same route. Left alone on purpose: the
-     excluded relay, email and connection routes (`/internal/drain-scope`, `/internal/email/*`,
-     `/internal/connections/*`, the connector callbacks, `relay-caller.ts`, the dashboard's connection probe), and
-     the CLI broker's browser-facing `GET` (a `text/plain` page for a person, not an API answer).
+     CLI broker's browser-facing `GET` (a `text/plain` page for a person, not an API answer).
+   - **`apps/control-plane` worker relay routes — built (#2928).** `/internal/drain-scope`, `/internal/email/*`,
+     `/internal/connections/*`, `/internal/mail-in/address`, the connector callbacks and the relay gateway
+     (`relay-caller.ts`) answer `application/problem+json`: a refusal the route decided by its code
+     (`forbidden`, `validation_failed`, `not_found`), one a relay error class threw by its status, and the
+     connection relay's `probe` beside the problem's members. Statuses and sentences are unchanged. The worker's
+     `app.onError` answers a throw no route caught: a `SubstratError` by its own code and status (a typed 409 or
+     503 is answered as one, where Hono answered a text 500, matching control-plane-api's `mapError`), anything
+     else as `internal` 500 with no `detail` — a `ZodError` included, since there it is the server failing to
+     parse its own data. `test/problem-refusals.test.ts` holds the documents and that `worker.ts` and
+     `relay-caller.ts` write no bare `{ error`.
    - **`apps/builder` — built.** The node server (`server.ts`) and the worker plus the agent DO
      (`worker.ts`, `agent.ts`) refuse through `src/problem.ts`: `validation_failed`, `unauthenticated`,
      `forbidden`, `not_found` and `conflict` where the status fits the taxonomy, `about:blank` for the
@@ -372,8 +380,8 @@ already answer their expected refusal as a value.
      `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
      sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
      three files to writing no bare `{ error` and reading no throw's `.message` again.
-   - **Still open, surface by surface:** those excluded relay, email and connection routes. A
-     repo-wide source gate waits until a second surface is converted. `dev-issuer` is done where
+   - **Still open, surface by surface:** the social relay, the egress worker, and the codes the relay error
+     classes carry (#113's remainder). A repo-wide source gate waits until they are converted. `dev-issuer` is done where
      it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
      `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which
      the clients of the protocol parse, so they are out of scope.
