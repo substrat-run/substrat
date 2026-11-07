@@ -910,10 +910,15 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 - **Long path lists are cut.** A record lists at most 200 files not sent and 200 deleted paths,
   with the full counts beside them; the headline counts from the full number.
 - **Redaction matches patterns, inside caps.** A stored quote is at most 200 characters. An
-  explanation is cut at a word break inside its first 1,000 characters before any mask reads it, so
-  no token reaches a mask in pieces, and at most 500 are stored; a longer one is cut, never refused.
-  Not every mask runs in linear time, so these caps are what bound the time redaction takes. A
-  secret in a shape no mask knows stays in the text.
+  explanation is cut at a word break inside its first 1,000 characters before any mask reads it,
+  and at most 500 are stored; a longer one is cut, never refused. Keeping the word whole means no
+  one-word token reaches a mask in pieces; a value of several words, such as a phone number, can
+  keep its first words when the cut falls inside it. Not every mask runs in linear time, so these
+  caps are what bound the time redaction takes. A secret in a shape no mask knows stays in the
+  text.
+- **Redaction can take more than the value.** In an explanation, a secret-named value inside a
+  string or a code span (`` `password=hunter2` ``) takes the rest of its line with it, since the
+  closing quote reads as an opening one.
 - **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
   no model, and the review stays `received` until the prune removes it. A call that returned usage
   has its ledger line written before anything decides whether its result is kept, so a result

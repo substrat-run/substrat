@@ -193,7 +193,8 @@ export function parseReply(text: string): ReviewReply | null {
 // PEM or PGP body line), an email and a phone-like run. A secret-named assignment is masked from
 // its value to the end of the line (see `maskSecretAssignment`).
 // Not every mask here is linear in its input, so the caps are what bound their cost: the schema
-// holds a quote to QUOTE_MAX and the assembler reads EXPLANATION_MAX of an explanation.
+// holds a quote to QUOTE_MAX and the assembler reads EXPLANATION_MAX of an explanation. After any
+// edit here, run the cost probe too: SUBSTRAT_PROBE_REDACTION_COST=1 (test/review-job.test.ts).
 const MASKS: ReadonlyArray<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----[^]*/g, '[redacted]'],
   [/(["']?\b(?:d|p|q|dp|dq|qi|k)["']?\s*:\s*["'])[A-Za-z0-9_-]{20,}(["'])/g, '$1[redacted]$2'],
@@ -221,10 +222,11 @@ const MASKS: ReadonlyArray<[RegExp, string]> = [
 ];
 
 /**
- * Invisible format characters, stripped before any match: soft hyphen, grapheme joiner, zero-width,
- * joiner and bidi controls, Hangul filler, variation selectors, BOM, tag characters.
+ * Invisible characters, stripped before any match: every default-ignorable code point and every
+ * format character, among them the soft hyphen, zero-width, joiner and bidi controls, the fillers,
+ * variation selectors, the BOM and tag characters.
  */
-const FORMAT_CHARS = /[\u00ad\u034f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu;
+const FORMAT_CHARS = /[\p{Default_Ignorable_Code_Point}\p{Cf}]/gu;
 
 /** Substrings that name a secret wherever they sit in a name. */
 const SECRET_PARTS = /password|passwd|passphrase|passcode|secret|token|credential|pwd|cookie|authorization/;
@@ -281,6 +283,7 @@ function stickyAt(re: RegExp, text: string, at: number): RegExpExecArray | null 
  * words (`api key:`), with what may close it (`$_POST[password]`, `**password**`, `password?`,
  * curly quotes). The left boundary is on the bare name alone: without it a long run is rescanned
  * from every character. `or` is a fallback only before a quoted string, so prose keeps its "or".
+ * After any edit here, run the cost probe too: SUBSTRAT_PROBE_REDACTION_COST=1.
  */
 const ASSIGNMENT = /(?:(\\?["'`])([^"'`\\\n]{1,80})\1[\])]?|(?<![\w$.-])([\w$.-]+(?: [A-Za-z_$][\w$-]*)?)[\]*?”’]{0,3})\s*(===?|!==?|:=|=>|\|\|=?|\?\?=?|&&=|\+=|<-|=|:(?!:)|(?<=\s)or(?=\s+["'`]))\s*(?=\S)/g;
 /**
@@ -345,14 +348,22 @@ function readsAsProse(text: string, { at, bare, after, header }: SecretHit): boo
 }
 
 /**
+ * After a hit read as prose, the sentence going on: a contraction's tail (`it's`), then a word that
+ * leads no value, or a code span. Anything else (`)`, `?`, `||`, a quote, `return`) is code, and the
+ * quoted strings after it are read as values.
+ */
+const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
+
+/**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
  * change, where a typed declaration, an unclosed or escaped quote or a wrapped call all fall
  * inside it).
- * `value`: for an explanation, so it keeps its words. A hit that reads as prose is left out. Each
- * other hit masks its own quoted string or unquoted value, with what a separator joins to it, and
- * a header its whole remainder. From the earliest of them to the end of the line every quoted
- * string is masked too (`password = "a" + "V"`, `token = Buffer.from("V")`), reading the quotes from
- * there and from the start of the line, since that value may itself sit inside a string
+ * `value`: for an explanation, so it keeps its words. A hit that reads as prose masks nothing
+ * itself. Each other hit masks its own quoted string or unquoted value, with what a separator joins
+ * to it, and a header its whole remainder. From the earliest of them, or the earliest prose hit the
+ * sentence does not go on after (`if (token == null) return "V"`), to the end of the line every
+ * quoted string is masked too (`password = "a" + "V"`, `token = Buffer.from("V")`), reading the
+ * quotes from there and from the start of the line, since that value may itself sit inside a string
  * (`"password=abc" + "V"`). The ranges are collected and applied once, so one mask cannot use up
  * another.
  */
@@ -360,7 +371,7 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   const hits = secretHits(text);
   if (mode === 'line') return hits[0] ? `${text.slice(0, hits[0].at)}[redacted]` : text;
   const values = hits.filter((hit) => !readsAsProse(text, hit));
-  const first = values[0];
+  const first = hits.find((hit) => values.includes(hit) || !stickyAt(PROSE_GOES_ON, text, hit.at + hit.bare.length));
   if (!first) return text;
   const ranges: Array<[number, number]> = [];
   for (const { at, bare, header } of values) {
