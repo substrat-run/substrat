@@ -286,6 +286,13 @@ interface ReviewJobState { reviewId: string; attempt: number; writes?: number }
 /** A finished attempt held in the object's storage until it is written: the result, and its ledger line until that is written. */
 interface HeldResult { result: ReviewResult; expiresAt?: string; usage?: UsageToRecord }
 
+/**
+ * No result is written this close to the receipt's expiry. The daily prune removes only expired
+ * receipts with their results, so a write that starts before this margin cannot land after the
+ * prune has run and leave a result with nothing to expire it.
+ */
+export const REVIEW_WRITE_EXPIRY_MARGIN_MS = 60 * 60_000;
+
 /** The longest wait between writes of a held result. Writes go on until the receipt expires. */
 export const REVIEW_WRITE_RETRY_MAX_MS = 60 * 60_000;
 
@@ -334,9 +341,13 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
     try {
       await storage.put('held', held);
     } catch {
-      // Not holdable: write it now rather than lose it. A failure here re-arms the job, whose
-      // attempt is already counted.
+      // Not holdable: write it now rather than lose it, unless nothing is left to write it for. A
+      // failure here re-arms the job, whose attempt is already counted.
       console.error('review.job.failed', { reviewId: job.reviewId, reason: 'result not held' });
+      if (!(await stillWanted(deps, job.reviewId, held.expiresAt, nowMs))) {
+        await storage.deleteAll();
+        return;
+      }
       try {
         if (held.usage) await recordLedger(deps, held.usage);
         await writeReviewResult(deps.bucket, job.reviewId, held.result);
@@ -347,10 +358,7 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
       return;
     }
   }
-  // Past the receipt's expiry, or with the receipt pruned, there is nothing left to write for.
-  // A receipt that cannot be read is no answer: the write is tried, and retried if it fails.
-  const receipt = await readReceipt(deps.bucket, job.reviewId).catch(() => undefined);
-  if ((held.expiresAt && Date.parse(held.expiresAt) <= nowMs()) || receipt === null) {
+  if (!(await stillWanted(deps, job.reviewId, held.expiresAt, nowMs))) {
     await storage.deleteAll();
     return;
   }
@@ -370,6 +378,17 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
     return;
   }
   await storage.deleteAll();
+}
+
+/**
+ * Whether a result is still worth writing: not within REVIEW_WRITE_EXPIRY_MARGIN_MS of the
+ * receipt's expiry, and the receipt not pruned. A receipt that cannot be read is no answer: the
+ * write is tried, and retried if it fails.
+ */
+async function stillWanted(deps: ReviewJobDeps, reviewId: string, expiresAt: string | undefined, nowMs: () => number): Promise<boolean> {
+  if (expiresAt && Date.parse(expiresAt) - REVIEW_WRITE_EXPIRY_MARGIN_MS <= nowMs()) return false;
+  const receipt = await readReceipt(deps.bucket, reviewId).catch(() => undefined);
+  return receipt !== null;
 }
 
 /** A result for a job that stopped without one of its own: `incomplete` with the reason. Gone when no receipt is left. */

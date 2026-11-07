@@ -9,7 +9,7 @@ import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_RETRY_DELAYS_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -570,8 +570,14 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(out).toContain('[redacted]');
   });
 
-  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged'])(
+  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
     'leaves %s as it is', (line) => expect(redact(line)).toBe(line),
+  );
+
+  it.each(['password=correcthorsebatterystaple', 'token := hunter', 'secret => hunter', 'run --password hunter', 'if (password == hunter)'])(
+    'masks a plain-word value after an assignment, comparison or flag in an explanation: %s', (line) => {
+      expect(redact(`the change sets ${line} here`, 500, 'value')).not.toMatch(/correcthorse|hunter/);
+    },
   );
 
   it('masks only the value in an explanation, so its words survive', () => {
@@ -652,17 +658,20 @@ describe('the job object: held results', () => {
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed' });
   });
 
-  it('a held result past the receipt’s expiry, or whose receipt was pruned, writes nothing and forgets the job', async () => {
+  it('a held result past the receipt’s expiry, within the expiry margin, or whose receipt was pruned, writes nothing and forgets the job', async () => {
     const expired = await stored(CHANGED.source, CHANGED.base);
+    const closing = await stored(CHANGED.source, CHANGED.base);
     const pruned = await stored(CHANGED.source, CHANGED.base);
+    const expiry = new Map([[expired.id, -1_000], [closing.id, REVIEW_WRITE_EXPIRY_MARGIN_MS / 2]]);
     for (const [review, prepare] of [
       [expired, async () => {}],
+      [closing, async () => {}],
       [pruned, async () => bucket.delete(`records/${pruned.id}.json`)],
     ] as const) {
       await inObject(`expiry-${review.id}`, async (storage) => {
         await storage.put('job', { reviewId: review.id, attempt: 1 });
         const { headline: _h, ...rest } = (await readReview(bucket, review.actor, review.id))!;
-        const expiresAt = review === expired ? new Date(Date.now() - 1_000).toISOString() : rest.expiresAt;
+        const expiresAt = expiry.has(review.id) ? new Date(Date.now() + expiry.get(review.id)!).toISOString() : rest.expiresAt;
         await storage.put('held', { result: { ...rest, state: 'completed', startedAt: 'a', finishedAt: 'b' }, expiresAt });
         await prepare();
         await reviewAlarm(storage, deps(double([])));
@@ -670,6 +679,21 @@ describe('the job object: held results', () => {
       });
       expect(await bucket.head(`results/${review.id}.json`)).toBeNull();
     }
+  });
+
+  it('a result that cannot be held is not written, nor its ledger line, when the receipt is within the expiry margin', async () => {
+    const { id } = await stored(CHANGED.source, CHANGED.base);
+    const receipt = await (await bucket.get(`records/${id}.json`))!.json<Record<string, unknown>>();
+    await bucket.put(`records/${id}.json`, JSON.stringify({ ...receipt, expiresAt: new Date(Date.now() + REVIEW_WRITE_EXPIRY_MARGIN_MS / 2).toISOString() }));
+    const recordUsage = vi.fn(async () => ({ recorded: true }));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await inObject(`fallback-expiry-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt: 0 });
+      await reviewAlarm(refusingHold(storage), deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    expect(recordUsage).not.toHaveBeenCalled();
+    expect(await bucket.head(`results/${id}.json`)).toBeNull();
   });
 
   it('a receipt that cannot be read does not stop the write; a rejected ledger line stays held and is written on the next alarm; a sync throw is caught', async () => {

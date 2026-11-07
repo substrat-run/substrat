@@ -189,7 +189,9 @@ const MASKS: ReadonlyArray<[RegExp, string]> = [
   // A token after the scheme, only when it looks like one (12+ characters with a digit, a symbol,
   // or a lower-case letter before an upper-case one, as base64 has), so prose such as "Basic
   // validation is missing" keeps its words.
-  [/(\b(?:Bearer|Basic)\s+)(?=[A-Za-z0-9._~+/=-]{12,})(?=[A-Za-z._~+/=-]*[0-9._~+/=-]|[A-Za-z]*[a-z][A-Za-z]*[A-Z])[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]'],
+  // Case-sensitive on purpose, so the lower-before-upper check means what it says; the scheme is
+  // spelled in both casings instead.
+  [/(\b(?:Bearer|Basic|bearer|basic|BEARER|BASIC)\s+)(?=[A-Za-z0-9._~+/=-]{12,})(?=[A-Za-z._~+/=-]*[0-9._~+/=-]|[A-Za-z]*[a-z][A-Za-z]*[A-Z])[A-Za-z0-9._~+/=-]+/g, '$1[redacted]'],
   [/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g, '[redacted]'],
   [/(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted]'],
   [/(?<![\d().-])\+?\d[\d ().-]{7,}\d/g, '[redacted]'],
@@ -227,35 +229,39 @@ const ASSIGNMENT = /(?<![\w$.-])(?:(\\?["'`])([^"'`\\\n]{1,80})\1\]?|([A-Za-z_$]
 const FLAG = /(?<![\w-])--?([A-Za-z][\w-]*)(?:=|\s+)(?=[^\s-])/g;
 
 /** Where a secret-named assignment's value starts in `text`, or -1. A plain value is no secret. */
-function secretValueAt(text: string): number {
+function secretValueAt(text: string): { at: number; colon: boolean } | null {
   for (const re of [ASSIGNMENT, FLAG]) {
     for (const m of text.matchAll(re)) {
       const name = m[2] ?? m[3] ?? m[1]!;
       const at = m.index! + m[0].length;
-      if (namesSecret(name) && !PLAIN_VALUE.test(text.slice(at))) return at;
+      // A key's colon reads as prose too ("reads the token: it never calls"); an `=`, `:=`, `=>`,
+      // a comparison or a flag does not.
+      const colon = re === ASSIGNMENT && /:\s*$/.test(m[0]) && !/:=\s*$/.test(m[0]);
+      if (namesSecret(name) && !PLAIN_VALUE.test(text.slice(at))) return { at, colon };
     }
   }
-  return -1;
+  return null;
 }
 
 /**
  * `line`: mask from the secret-named value to the end of the line (a quote from the change, where
  * a typed declaration, an unclosed or escaped quote or a wrapped call all fall inside it).
- * `value`: mask the value alone, a quoted string or an unquoted token that is not a plain word, so
- * an explanation keeps its words ("reads the token: it never calls ctx.check").
+ * `value`: mask the value alone: a quoted string, any unquoted value after `=`, `:=`, `=>`, a
+ * comparison or a flag, and after a key's colon an unquoted value that is not a plain word, so an
+ * explanation keeps its words ("reads the token: it never calls ctx.check").
  */
 function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   let out = text;
   let from = 0;
   for (let guard = 0; guard < 20; guard++) {
-    const at = secretValueAt(out.slice(from));
-    if (at < 0) return out;
-    const start = from + at;
+    const found = secretValueAt(out.slice(from));
+    if (!found) return out;
+    const start = from + found.at;
     if (mode === 'line') return `${out.slice(0, start)}[redacted]`;
     const rest = out.slice(start);
     const quoted = /^(["'`])(?:\\.|(?!\1).)*(?:\1|$)/.exec(rest);
     const bare = /^[^\s,;)\]}"'`]+/.exec(rest)?.[0] ?? '';
-    const length = quoted ? quoted[0].length : /[^a-z]/.test(bare) ? bare.length : 0;
+    const length = quoted ? quoted[0].length : !found.colon || /[^a-z]/.test(bare) ? bare.length : 0;
     if (length > 0) out = `${out.slice(0, start)}[redacted]${out.slice(start + length)}`;
     from = start + (length > 0 ? '[redacted]'.length : Math.max(bare.length, 1));
   }
