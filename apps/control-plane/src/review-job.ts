@@ -92,6 +92,17 @@ function emptyResult(receipt: ReviewReceipt, startedAt: string): Omit<ReviewResu
   };
 }
 
+/** The first open hands back the body already fetched; each later one fetches the archive again. */
+function archiveOpener(bucket: R2Bucket, reviewId: string, kind: 'source' | 'base', first: R2ObjectBody): () => Promise<ReadableStream<Uint8Array>> {
+  let fetched: R2ObjectBody | null = first;
+  return async () => {
+    const body = fetched ?? await readReviewArchive(bucket, reviewId, kind);
+    fetched = null;
+    if (!body) throw new Error('archive missing on re-read');
+    return body.body;
+  };
+}
+
 /** Thrown when the result could not be stored: the job keeps itself and tries again. */
 export class ReviewWriteFailed extends Error {}
 
@@ -134,8 +145,8 @@ export async function runReviewJob(reviewId: string, attempt: number, deps: Revi
   if (!source || (receipt.baseSha256 && !base)) return finish({ ...empty, state: 'incomplete', reason: 'archive missing' });
   const diff = await diffReview(
     {
-      source: { stream: () => source.body, size: source.size, sha256: receipt.sourceSha256 },
-      base: base && receipt.baseSha256 ? { stream: () => base.body, size: base.size, sha256: receipt.baseSha256 } : null,
+      source: { open: archiveOpener(deps.bucket, reviewId, 'source', source), size: source.size, sha256: receipt.sourceSha256 },
+      base: base && receipt.baseSha256 ? { open: archiveOpener(deps.bucket, reviewId, 'base', base), size: base.size, sha256: receipt.baseSha256 } : null,
     },
     { maxDiffBytes: positive(deps.config.maxDiffBytes, REVIEW_MAX_DIFF_BYTES) },
   );

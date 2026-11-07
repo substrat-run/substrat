@@ -6,6 +6,7 @@ import { platformActorId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createModelHost } from '@substrat-run/vertical-host/model';
 import { diffReview } from '../src/review-diff.js';
+import { lineChanges } from '../src/review-lines.js';
 import {
   REVIEW_RETRY_DELAYS_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
@@ -98,6 +99,16 @@ describe('review job: the reader half with a model double', () => {
     expect(lines.filter((l) => l.attribution.tenant === platformTenant)).toMatchObject([
       { requestId: id, inputTokens: 1200, attribution: { operation: 'review/read', vertical: '@substrat-run/review-runner' } },
     ]);
+  });
+
+  it('(a2) marks changed lines in the prompt and drops a finding on an unchanged line', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const unchanged = { ...finding, line: 2, quote: "'invoice/void': async (ctx, input) => voidInvoice(ctx, input.id)" };
+    const model = double([{ text: reply({ findings: [finding, unchanged] }) }]);
+    await runReviewJob(id, 0, deps(model));
+    expect(model.calls.prompts[0]).toContain("2 \\t  'invoice/void'");
+    expect(model.calls.prompts[0]).toContain("3+\\t  'invoice/drop'");
+    expect(await readReview(bucket, actor, id)).toMatchObject({ findings: [{ line: 3 }], dropped: 1 });
   });
 
   it('(b) keeps text addressed to the reviewer, redacts every stored model string, and stores no quote for S7', async () => {
@@ -339,7 +350,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
       notSent: [{ path: 'big.ts', rule: 'file too large' }], gates: [], fullTree: false, nonce: 'n-1',
     });
     const inside = prompt.slice(prompt.indexOf('===== BEGIN UNTRUSTED n-1 ====='), prompt.indexOf('===== END UNTRUSTED n-1 ====='));
-    for (const s of ['gone.ts', 'big.ts (file too large)', 'file: src/a.ts', '1\tx']) expect(inside).toContain(s);
+    for (const s of ['gone.ts', 'big.ts (file too large)', 'file: src/a.ts', '1+\tx']) expect(inside).toContain(s);
     expect(prompt.split('\n').filter((l) => l === '===== END UNTRUSTED n-1 =====')).toHaveLength(1);
     expect(reviewSystem('n-1')).toContain('"===== END UNTRUSTED n-1 ====="');
   });
@@ -367,8 +378,8 @@ describe('the diff walker', () => {
     const s = await archive(source);
     const b = base ? await archive(base) : null;
     return diffReview({
-      source: { stream: () => s.file.stream(), size: s.file.size, sha256: s.sha256 },
-      base: b ? { stream: () => b.file.stream(), size: b.file.size, sha256: b.sha256 } : null,
+      source: { open: async () => s.file.stream(), size: s.file.size, sha256: s.sha256 },
+      base: b ? { open: async () => b.file.stream(), size: b.file.size, sha256: b.sha256 } : null,
     });
   };
 
@@ -381,13 +392,29 @@ describe('the diff walker', () => {
     ], [file('src/changed.ts', 'a'), file('src/same.ts', 'same'), file('src/gone.ts', 'old'), file('same-big.txt', big)]);
     expect(diff).toEqual({
       kind: 'diff', fullTree: false, bytes: 4,
-      files: [{ path: 'src/changed.ts', text: 'b' }, { path: 'src/added.ts', text: 'new' }],
+      files: [
+        { path: 'src/changed.ts', text: 'b', changed: new Set([1]), removedAfter: [0] },
+        { path: 'src/added.ts', text: 'new', changed: 'all', removedAfter: [] },
+      ],
       deleted: ['src/gone.ts'],
       notSent: [
         { path: 'pnpm-lock.yaml', rule: 'lockfile' }, { path: 'src/api.generated.ts', rule: 'generated' },
         { path: 'demos/x/model.json', rule: 'emitted artifact' }, { path: 'img/logo.png', rule: 'binary' },
       ],
     });
+  });
+
+  it('marks the lines a modification adds or alters and where lines were removed; an earlier text it cannot compare leaves every line changed', async () => {
+    const diff = await walk(
+      [file('src/m.ts', 'a\nB\nc\nd\ne\nf'), file('src/was-big.ts', 'small now')],
+      [file('src/m.ts', 'a\nb\nc\nx\nd\ne'), file('src/was-big.ts', 'q'.repeat(70_000))],
+    );
+    expect(diff).toMatchObject({ kind: 'diff', files: [
+      { path: 'src/m.ts', changed: new Set([2, 6]), removedAfter: [1, 3] },
+      { path: 'src/was-big.ts', changed: 'all' },
+    ] });
+    expect(lineChanges('a\nb', 'a\nb')).toEqual({ changed: new Set(), removedAfter: [] });
+    expect(lineChanges('a\nb\nc', 'x\ny\nz', 2)).toBeNull();
   });
 
   it('a same-size edit to a file over the per-file limit is recorded, never read as unchanged', async () => {
