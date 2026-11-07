@@ -2563,6 +2563,9 @@ importers:
       '@substrat-run/model-providers':
         specifier: workspace:^
         version: link:../model-providers
+      '@substrat-run/vertical-auth':
+        specifier: workspace:^
+        version: link:../vertical-auth
       ai:
         specifier: 7.0.159
         version: 7.0.159(zod@4.6.7)
@@ -2582,9 +2585,6 @@ importers:
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../contract-tests
-      '@substrat-run/vertical-auth':
-        specifier: workspace:^
-        version: link:../vertical-auth
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -10418,7 +10418,7 @@ snapshots:
       pathe: 2.0.3
       sirv: 3.0.2
       tinyrainbow: 3.2.0
-      vitest: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+      vitest: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@22.20.5)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
 
   '@vitest/utils@5.0.5':
     dependencies:

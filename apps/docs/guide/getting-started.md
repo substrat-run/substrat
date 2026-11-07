@@ -58,7 +58,6 @@ src/personas.ts     the local dev cast you sign in as
 src/routes.ts       the HTTP API — operation routes derived from operations.ts
 src/server.ts       a Node dev server (SQLite adapter)
 src/worker.ts       the Cloudflare entry, via @substrat-run/vertical-host
-src/config-do.ts    per-instance settings (Cloudflare only)
 spec/concept.md     the design document you approve before any code
 test/scenario.test.ts · test/entities.test.ts · test/setup.ts (and the suites that guard it)
 AGENTS.md · .substrat/playbook.md · .claude/ · .cursor/ · .opencode/

@@ -21,11 +21,13 @@ const PROJECT = '.builder/projects/x';
 class InstallSpyWorkspace extends LocalWorkspace {
 	installs = 0;
 	installCwd: string | undefined;
+	installCmd: string | undefined;
 	installExit = 0;
 	override async exec(cmd: string, opts?: ExecOptions): Promise<ExecResult> {
-		if (cmd === 'pnpm install') {
+		if (cmd.startsWith('pnpm install')) {
 			this.installs += 1;
 			this.installCwd = opts?.cwd;
+			this.installCmd = cmd;
 			return { stdout: 'stub install', stderr: '', exitCode: this.installExit };
 		}
 		return super.exec(cmd, opts);
@@ -64,6 +66,8 @@ describe('host-owned pnpm install (runTurn)', () => {
 		await runTurn(ws, { verticalDir: PROJECT, message: 't', gates: NO_GATES });
 
 		expect(ws.installCwd).toBe(PROJECT);
+		// The turn edited package.json, so the lockfile has to be allowed to move.
+		expect(ws.installCmd).toBe('pnpm install --no-frozen-lockfile');
 		await ws.dispose();
 	});
 
