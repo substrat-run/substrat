@@ -33,15 +33,32 @@ export function refuse(code: ErrorCode, detail: string): Response {
 
 /**
  * A refusal answered by status alone, as `about:blank`: a status the closed taxonomy has no
- * code for (the 501 "no roster store bound"), or one a relay's own error class carries
- * (`ConnectionRelayError`, `TenantMailRefusal`, …), whose throw sites name a status and no code.
+ * code for (the 501 "no roster store bound"), or a relay error class's refusal that carries
+ * no code (`refuseRelayed`: a 413, 422, 501 or 502, or one constructed without a code).
  *
- * `carried` is a member the route answered beside the sentence before #113 and a client
- * still reads: the connection relay's `probe`, which the dashboard's connect form shows. It
- * rides as `control-plane-api`'s `refuseStatus` carries it, outside the declared extensions.
+ * `carried` is a member the route answered beside the sentence before #113: the connection
+ * relay's `probe`. No in-repo reader of the relay takes it (the dashboard's connect form reads
+ * its probe through `/api`), but the body stays a superset of what it was, so it rides as
+ * `control-plane-api`'s `refuseStatus` carries it, outside the declared extensions.
  */
 export function refuseStatus(status: number, detail: string, carried?: Readonly<Record<string, unknown>>): Response {
   return problemResponse(problemForStatus(status, detail), carried);
+}
+
+/**
+ * A relay error class's refusal (#113): by its `code` when it carries one, else by the status
+ * alone. The status is the same either way (`codeForRefusalStatus` maps only a status the
+ * catalog answers with), and so are the sentence and its `error` duplicate. What differs is
+ * `type`, `code` and `title`: the catalog's title replaces the status phrase (400 'Bad request'
+ * becomes 'Validation failed', 429 'Too many requests' becomes 'Rate limited').
+ */
+export function refuseRelayed(
+  err: { readonly status: number; readonly message: string; readonly code: ErrorCode | undefined },
+  carried?: Readonly<Record<string, unknown>>,
+): Response {
+  return err.code
+    ? problemResponse(toProblem(substratError(err.code, err.message)), carried)
+    : refuseStatus(err.status, err.message, carried);
 }
 
 /**

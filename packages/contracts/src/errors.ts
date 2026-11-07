@@ -313,6 +313,48 @@ export function problemDetail(body: unknown): string | undefined {
 }
 
 /**
+ * The taxonomy `code` a failed response's PARSED body declared (#113), or `undefined`.
+ *
+ * `undefined` for a body naming none — `about:blank`, the pre-#113 `{ error }` an older control
+ * plane still answers, anything that is not JSON — and for a value outside the closed taxonomy,
+ * so a client reading it never acts on a code it does not know. Beside `problemDetail`, and
+ * read the same way: a client exposes it as `problemCode`, never `code`, because `errorCodeOf`
+ * reads a `code` property and a refusal relayed from the plane did not declare itself here.
+ */
+export function problemCodeOf(body: unknown): ErrorCode | undefined {
+  const code = errorCode.safeParse((body as { code?: unknown } | null)?.code);
+  return code.success ? code.data : undefined;
+}
+
+/**
+ * The code a refusal that names only a status carries (#113): the relay error classes
+ * (`ConnectionRelayError`, `ConnectUrlRelayError`, the control plane's `TenantMailRefusal`,
+ * mail-in's `MailInError`) each choose a status per throw site, and this reads the code off it.
+ *
+ * A status maps only to the code the catalog answers with THAT status, so rendering the code
+ * never moves the status a caller sees. 403 is `forbidden`, not `permission_denied`: a relay's
+ * 403 is its own refusal (a preview scope, an unproven caller, a capability not held). The one
+ * that rewraps a permission key's check, a tenant send's attachment read, keeps that check as
+ * its `cause`, where the drain's attribution reads the key. Statuses with no such entry — 413, 422, 501,
+ * 502 — have no code and stay `about:blank`; so does 500, because `internal` withholds the
+ * detail and these sentences are reviewed and ours.
+ */
+export function codeForRefusalStatus(status: number): ErrorCode | undefined {
+  return REFUSAL_CODE_BY_STATUS[status];
+}
+
+const REFUSAL_CODE_BY_STATUS: Readonly<Partial<Record<number, ErrorCode>>> = {
+  400: 'validation_failed',
+  401: 'unauthenticated',
+  403: 'forbidden',
+  404: 'not_found',
+  409: 'conflict',
+  412: 'precondition_failed',
+  429: 'rate_limited',
+  503: 'unavailable',
+};
+
+/**
  * Where a `SubstratError` keeps its code when the class itself is unavailable.
  *
  * `name` is a SECOND reading of the code, not a transport for it. Phase 2 proposed it

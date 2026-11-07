@@ -91,9 +91,7 @@ describe('resolveWrangler — the project’s own wrangler, never one npx would 
 
   it('refuses a project without wrangler, saying how to add it', () => {
     const dir = awkwardDir('substrat-no-wrangler');
-    expect(() => resolveWrangler(dir)).toThrow(/wrangler is not installed in this project[\s\S]*devDependency[\s\S]*npm install --save-dev wrangler/);
-    // Yarn Plug'n'Play installs no node_modules: said, rather than left to look like a missing install.
-    expect(() => resolveWrangler(dir)).toThrow(/nodeLinker: node-modules/);
+    expect(() => resolveWrangler(dir)).toThrow(/wrangler is not installed in this project[\s\S]*devDependency[\s\S]*pnpm add -D wrangler/);
   });
 });
 
@@ -146,7 +144,7 @@ describe.runIf(built)('push --check builds through the project’s wrangler, on 
 
     expect(r.status).not.toBe(0);
     expect(r.stderr).toContain('wrangler is not installed in this project');
-    expect(r.stderr).toContain('npm install --save-dev wrangler');
+    expect(r.stderr).toContain('pnpm add -D wrangler');
     expect(readdirSync(temp)).toEqual([]);
     expect(existsSync(join(dir, '.wrangler.substrat.json'))).toBe(false);
   });

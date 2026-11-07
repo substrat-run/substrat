@@ -106,7 +106,8 @@ export function mapError(err: unknown): ApiError {
   // a 503 reaches here because the route rethrows it, so that the platform's own
   // inability lands an ops-failure row (#559) instead of vanishing into the operator's
   // screen alone.
-  if (err instanceof ConnectionRelayError) return relayed(err.status, err.message);
+  // #113: by the code its status carries when it carries one; the status is the same either way.
+  if (err instanceof ConnectionRelayError) return err.code ? coded(err.code, err.message) : relayed(err.status, err.message);
 
   // THE CODE (#113). A throw that declared what it is renders from its own declaration —
   // extensions included, so a `conflict` arrives carrying the `reason` the engine narrowed

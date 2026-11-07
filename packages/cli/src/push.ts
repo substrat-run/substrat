@@ -34,6 +34,7 @@ import {
   RUNTIME_BASELINE,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
+  PNPM_LOCKFILE_REQUIRED,
   type AssetEntry,
   type AssetsNeed,
   type DeclaredBinding,
@@ -776,8 +777,9 @@ export async function checkPermissionSurface(
     ...(vertical ? { vertical } : {}),
     ...(drivers ? { drivers } : {}),
   });
-  // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses exactly what a
-  // push would. The duplicate-copy note is push-time chatter, not part of the check artifact.
+  // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses the drift a push
+  // would. It is not every push refusal: the lockfile one (#2959) reads a snapshot only a push
+  // collects. The duplicate-copy note is push-time chatter, not part of the check artifact.
   const envSpec = resolveDeclaredEnvSpec(derived, readVerticalMeta(dir).envSpec, () => {});
   return {
     registry,
@@ -1802,9 +1804,7 @@ export function resolveWrangler(dir: string): { bin: string; version: string } {
         `wrangler is not installed in this project (${root}).`,
         '  substrat push builds the Worker with the wrangler your project pins, and never downloads one.',
         '  Add it as a devDependency, then push again:',
-        '    npm install --save-dev wrangler    (or: pnpm add -D wrangler, yarn add -D wrangler)',
-        '  Yarn Plug\'n\'Play installs no node_modules, which the push reads: set `nodeLinker: node-modules`',
-        '  in .yarnrc.yml and run `yarn install`.',
+        '    pnpm add -D wrangler',
       ].join('\n'),
     );
   }
@@ -1892,6 +1892,9 @@ export async function push(opts: PushOptions): Promise<{ id: string; admission: 
     assertDeclaredScopeStores({ scopeStores, vertical: opts.slug, ...(drivers ? { drivers } : {}) });
   }
   const snapshot = collectSourceSnapshot(opts.dir);
+  // The snapshot, not the disk: it replaces the tree the platform builds, and its paths start at
+  // the workspace root, which is where a member's lockfile lives.
+  if (!snapshot.files.some((file) => file.path === 'pnpm-lock.yaml')) throw new Error(PNPM_LOCKFILE_REQUIRED);
   return uploadSource(opts, {
     version: opts.version, name: opts.name, tenant: opts.tenant, snapshot, origin: pushOrigin(),
     allowFork: Boolean(opts.allowFork), allowUnservedUi: Boolean(opts.allowUnservedUi),

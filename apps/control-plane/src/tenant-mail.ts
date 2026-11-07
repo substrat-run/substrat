@@ -1,5 +1,5 @@
 import { prepareMessage, EmailError } from '@substrat-run/adapter-email';
-import { isSubstratError, type Connection, type PlatformActorId } from '@substrat-run/contracts';
+import { codeForRefusalStatus, isSubstratError, type Connection, type ErrorCode, type PlatformActorId } from '@substrat-run/contracts';
 import type {
   MailSendResult,
   MailSender,
@@ -25,14 +25,35 @@ import type {
 
 /** A refusal the relay answers with, carrying its HTTP status. */
 export class TenantMailRefusal extends Error {
+  /**
+   * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
+   * `toProblem` with the status unchanged; `undefined` for 413 and 502, which the catalog has no
+   * code at, and for a refusal constructed with `code: null`. Those stay `about:blank`.
+   *
+   * The code is also what `attributeFailure` reads as "the platform refused": a refusal carrying
+   * one is attributed to the platform, one without to whoever its status came from.
+   */
+  readonly code: ErrorCode | undefined;
   constructor(
     readonly status: 400 | 403 | 409 | 413 | 502 | 503,
     message: string,
-    /** The provider's own failure behind a 502 — its status decides a retry (#2102). */
-    options?: { cause?: unknown },
+    options?: {
+      /**
+       * The failure behind this refusal: the provider's behind a 502, whose status decides a
+       * retry (#2102), and the kernel's `permission_denied` behind a 403, whose code and key the
+       * drain's attribution recovers from it.
+       */
+      cause?: unknown;
+      /**
+       * `null` when nothing proves the platform is the one refusing (a connection that could not
+       * be asked): the refusal then carries no code, and is attributed as it was before #113.
+       */
+      code?: null;
+    },
   ) {
-    super(message, options);
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'TenantMailRefusal';
+    this.code = options?.code === null ? undefined : codeForRefusalStatus(this.status);
   }
 }
 
@@ -104,6 +125,9 @@ export async function resolveTenantSender(
       503,
       `no mail connection that answered may send as '${input.from}', and ${unanswered.length} could ` +
         `not be asked (${unanswered.join(', ')}) — try again, or check those connections`,
+      // The senders' read failed (a secret that will not open, a provider that is down), and that
+      // throw is swallowed above, so nothing here proves the platform refused: no code.
+      { code: null },
     );
   }
   if (!only) {
@@ -192,6 +216,9 @@ async function openAs(deps: TenantMailDeps, connection: Connection, attachmentId
         403,
         `connection ${connection.id} may not read attachment '${attachmentId}' — grant it the read ` +
           `permission of the attachment's target`,
+        // The kernel's refusal rides as `cause`, so the drain's attribution reads its code and
+        // permission key (`innermost`); the relay still answers `forbidden`.
+        { cause: e },
       );
     }
     throw e;

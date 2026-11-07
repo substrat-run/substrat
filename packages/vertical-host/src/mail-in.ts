@@ -1,5 +1,5 @@
-import { PLATFORM_SECRET_HEADER, mailInRelayResult } from '@substrat-run/contracts';
-import type { MailInAddress, MailInRelayRequest } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, mailInRelayResult, problemCodeOf, problemDetail } from '@substrat-run/contracts';
+import type { ErrorCode, MailInAddress, MailInRelayRequest } from '@substrat-run/contracts';
 
 /**
  * This scope's inbound mail address, from a VERTICAL's worker (#2611).
@@ -47,6 +47,14 @@ export class MailInAddressError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * The taxonomy code the platform's refusal declared (#113), or `undefined` for one that named
+     * none: an `about:blank` refusal, a control plane older than the codes, a body that is not
+     * JSON. Never `code`: `errorCodeOf` reads that, and this refusal is the platform's answer
+     * relayed, not a throw that declared itself here, so a vertical's own `onError` keeps
+     * answering it as it did.
+     */
+    readonly problemCode?: ErrorCode,
   ) {
     super(message);
     this.name = 'MailInAddressError';
@@ -68,9 +76,13 @@ export async function mailInAddress(request: MailInAddressRequest): Promise<Mail
       ...(request.allowlist ? { allowlist: request.allowlist } : {}),
     }),
   });
-  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  const body: unknown = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new MailInAddressError(`the platform refused the mail-in ${request.action} (${res.status}): ${body.error ?? 'unknown error'}`, res.status);
+    throw new MailInAddressError(
+      `the platform refused the mail-in ${request.action} (${res.status}): ${problemDetail(body) ?? 'unknown error'}`,
+      res.status,
+      problemCodeOf(body),
+    );
   }
   return mailInRelayResult.parse(body).address;
 }

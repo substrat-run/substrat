@@ -9,7 +9,7 @@ description: One chat in every product — a thread with an AI, and sometimes a 
 **Status: proposed. Nothing here is agreed.** It recommends; a human decides. The decisions it
 asks for are collected in §16, where the ones taken as working decisions for P1 are marked. Written against `origin/main` at `c95e6d73a` and against the
 outside world as of 2026-10-14; revised on 2026-10-15 after three review rounds, mainly to
-add the actor and its ceiling (§6.0), which the first draft lacked. Claims about the repo carry a file or an issue; claims about
+add the actor and its ceiling (§6.0), which the first draft lacked; §5.5 and Q8 revised on 2026-11-07, once `packages/elements` existed to hold the element. Claims about the repo carry a file or an issue; claims about
 the outside world carry a source in the Sources section at the end; anything I could not check says so in §15.
 
 Related: [#1824](https://github.com/substrat-run/substrat/issues/1824) (delegated MCP access),
@@ -72,8 +72,8 @@ These are the parts of the design that are not up for trade during implementatio
    joining is a participant joining, not a different product.
 3. **The thread is the product's data.** It lives in the product's own scope, under its
    permissions, audit trail and erasure. It is not a vendor's log.
-4. **Protocol first, UI second.** The stream protocol is the contract. The element, a React
-   wrapper and a bespoke native chat are all clients of it.
+4. **Protocol first, UI second.** The stream protocol is the contract. The element and a
+   bespoke native chat are both clients of it.
 5. **Context is assembled, memory is owned by the user.** What reaches the model each turn is
    built deliberately. What we remember about a person is small, visible, editable and
    deletable, and we can say where each item came from.
@@ -213,9 +213,9 @@ issue threads; §10 requires testing with real screen readers rather than trusti
 ## 4. The shape
 
 ```
-<substrat-assistant>            UI only. No logic.
+<sub-assistant>                 UI only. No logic.
         │   stream protocol (schema in contracts; SSE, resumable)
-assistant-client                headless: connection, state, resume, approvals
+AssistantModel, AssistantSource headless: connection, state, resume, approvals
         │
 assistant host                  host code in vertical-host; the loop; one per thread
    ├── context assembly ───────► §7
@@ -393,24 +393,48 @@ Route by task: a small, fast model for classification, small talk and context su
 the larger model for the tool loop. AI Gateway's Auto Router or dynamic routing may do this
 without code; evaluate before building our own.
 
-### 5.5 The UI: client, element, wrapper
+### 5.5 The UI: model, source, element
 
-Three layers, the first being the one that matters most:
+The UI is part of `@substrat-run/elements` (§16 Q8), built the way `<sub-entity-table>` is, and
+tracked in [#2970](https://github.com/substrat-run/substrat/issues/2970). Three layers, the first
+being the one that matters most:
 
-1. **`assistant-client`** (headless): connection, resume, message tree state, optimistic send,
+1. **`AssistantModel`** (headless, at `/assistant-model`): message tree state, optimistic send,
    approvals, derived UI state (idle, thinking, streaming, awaiting-approval, handed-off,
-   offline). Framework-free TypeScript. A mobile app or a bespoke chat tab uses this directly.
-2. **`<substrat-assistant>`**, a custom element over the client. One artifact serves the
-   in-app case and the embedded case (ticket0's widget today). Shadow DOM isolates it from
-   host CSS; CSS custom properties from the vertical's tokens theme it.
-3. **A thin React wrapper.** React 19 passes props and events to custom elements, so the
-   wrapper exists for typed events and ergonomics, not for correctness.
+   offline). Framework-free TypeScript, as `EntityTableModel` is. A mobile app or a bespoke chat
+   tab uses this directly.
+2. **`AssistantSource`**, what the model reads from, injected the way a `TableSource` is. It sends
+   a turn, yields events, and owns the connection and resume. The stateless POST behind the
+   dashboard's Ask and the resumable thread of §5.3 are then two sources for one model, so the
+   element does not wait for the thread object or `mountAssistant`.
+3. **`<sub-assistant>`** (at `/assistant`), a custom element over the model. It draws the
+   transcript and the composer and no chrome: the host supplies the palette, drawer or panel
+   around it, because Ask already lives inside a ⌘K overlay. Shadow DOM isolates it from host CSS,
+   and the `--wa-*` tokens theme it, as they do every element.
 
-**Tooling: Lit**, unless the set of components outgrows it. Stencil's strength is generated
-Angular/Vue/React wrappers and lazy loading for large sets; with two to four components and
-consumers that are React apps and a script-tag embed, it adds a toolchain and generated
-files that each need the repo's three generated-file marks. Switching later rewrites a thin
-shell, not the product, because the logic is in the client.
+There is no React wrapper. The package has no React in it, and a custom element in React is
+handled the same way for every element (`apps/docs/elements/frameworks.md`).
+
+**Tooling: Lit on Web Awesome's free core**, which the package already runs on, unless the set of
+components outgrows it. Stencil's strength is generated Angular/Vue/React wrappers and lazy
+loading for large sets; with a handful of components it adds a toolchain and generated files that
+each need the repo's three generated-file marks. Switching later rewrites a thin shell, not the
+product, because the logic is in the model.
+
+**Weight** (JS, minified and gzipped, each piece bundled alone; Web Awesome 3.14.0, zod 4.4.3,
+2026-11-07). The spike's 7.5 KB floor had no Web Awesome, markdown or zod in it. A likely Web
+Awesome set is 37.9 KB; `marked` and DOMPurify, which the builder renders model text with, are
+23.1 KB; `readAssistantStreamEvent` is 64.6 KB, of which zod is 63.1 KB. That is 125.7 KB
+together and 61.0 KB without the reader. So the element should not import the reader: a source
+hands the model events it has already read, and the model takes only types from `contracts`. How
+a vertical's source reads without zod, while an unknown event stays skipped rather than fatal
+(§5.1), is open in the issue above.
+
+**The embedded case waits.** An earlier draft had one artifact serve the in-app case and the
+embedded case. ticket0's widget is 13.2 KB and has no framework on purpose, because it runs on
+somebody else's page. Even 61.0 KB is more than four times that, and in an app the cost is shared
+with the rest of the page, which on somebody else's page it is not. The element serves the in-app
+case; whether the widget moves onto it is weighed at P5.
 
 **Rich results.** A workout card or a customer summary needs a vertical's own rendering.
 Provide a renderer registry keyed by tool name, and named slots. The default renderer is a
@@ -421,12 +445,12 @@ K-15); these renderers are first-party and build-time.
 **Platform components beyond the assistant.** The account menu with avatar, a notifications
 bell and the impersonation strip are platform-owned in the same sense. The rule for a shared
 component: the platform owns its behaviour end to end **and** two verticals need it. The
-assistant and the account menu qualify now; build the assistant first, extract what the two
-share, and record K-15's boundary in a short decision so this is not read as a precedent for
-third-party extensions.
+assistant and the account menu qualify now. The account menu came first, as `<sub-user-menu>`;
+record K-15's boundary in a short decision so this is not read as a precedent for third-party
+extensions.
 
-Licence: `packages/ui` is AGPL and private. An element embedded in a customer's page, or
-imported by a builder's vertical, cannot be. §16 Q8.
+Licence: `packages/ui` is AGPL and private, which an element imported by a builder's vertical
+cannot be. `@substrat-run/elements` is Apache-2.0 and published. §16 Q8.
 
 ### 5.6 The support handoff
 
@@ -868,8 +892,8 @@ Numbers are **targets to validate in the spike, not measurements.**
   controls.
 
 **Weight**
-- A bundle budget for the element (set in the spike; it loads lazily and does not delay the
-  host app's first paint).
+- A bundle budget for the element, set from §5.5's measurements (it loads lazily and does not
+  delay the host app's first paint).
 
 **How it is checked.** A scripted acceptance run (as `docs/acceptance/` does for other
 features) covering: a flaky network, a very long thread, a screen reader, a phone, a denied
@@ -889,7 +913,7 @@ What they write:
 3. Add a small `spec/assistant.ts` with the persona, the locale default, the
    "where the user is" function, memory kinds, and the budget.
 4. Mount the host (`mountAssistant`) beside `mountMcp`.
-5. Drop `<substrat-assistant>` (or the React wrapper) into the app and set the theme tokens.
+5. Drop `<sub-assistant>` into the app and set the theme tokens.
 
 What they get without writing it:
 
@@ -943,9 +967,8 @@ What that buys:
 - **#1073's concern does not apply.** That issue is about a *pushed vertical* holding the model
   capability. The dashboard is platform code, so it holds the model binding itself, with the
   platform's own metering and a per-user budget. #1073 stays the path for verticals (P6).
-- **Two open questions get cheap answers.** The element ships inside the dashboard's own web
-  app, so its licence and package home (Q8) can wait. The dashboard declares its own Durable
-  Object classes, so "how is a vertical given the thread object" (Q2, the second half) can wait.
+- **An open question gets a cheap answer.** The dashboard declares its own Durable Object
+  classes, so "how is a vertical given the thread object" (Q2, the second half) can wait.
 - **The deployed measurements (P0b) ride on it.** A preview deploy of the thread object, with
   a real model, is how the 30 s `waitUntil` cap, eviction, first-token time and idle cost get
   measured, instead of a separate exercise.
@@ -1085,10 +1108,10 @@ is the real critical path.
    declared to relax it.
 7. **Handoff contract.** Summary-only with user consent (recommended) versus a fuller
    transcript option for products whose users agree to it.
-8. **Licence and package home** for the element and client, given `packages/ui` is AGPL and
-   private and the element is embedded in pages we do not control. **Deferred:** the dashboard
-   bundles it inside its own web app, so this blocks nothing until the first consumer outside
-   this repository (P3).
+8. **Licence and package home** for the element and client. **Confirmed by the maintainer
+   (2026-11-07):** `@substrat-run/elements`, Apache-2.0 and published, at `/assistant` and
+   `/assistant-model` (§5.5). The package did not exist when this was asked. `packages/ui` stays
+   AGPL and private.
 9. **A K-15 amendment** stating that first-party, build-time platform components do not open
    the door to runtime third-party UI.
 10. **Order of the consumers** in §12. **Working decision:** the dashboard first and read-only,
@@ -1163,9 +1186,9 @@ is the real critical path.
 |---|---|---|
 | P0 | **Done locally** (`spikes/assistant-thread`): the loop, stream and resume on both placements, with a scripted model on local workerd | Q2 answered for correctness |
 | Prerequisites | **Before P1:** the model-provider and residency position (Q13). **Before P2's gated write:** the actor stamp (§6.0 (b)), the host-side ceiling and `act` on the chain (§6.0 (a), #1824 part 2), and approvals on a user-presence route bound as §6.0 point 3 says. **Before any hosted streaming for a vertical:** #1073's relay. **Only if the offered list is filtered:** a `ScopeStub` read of a principal's keys (§6.0 (c)) | Each lands as its own change, with its own decision record where it needs one |
-| P1 | **Dashboard, read-only.** `contracts` event schema; `engine-assistant`; the thread object in the dashboard worker, pinned to one team; the loop with a fake model first, then a real model through the platform's model host with a per-user budget; read tools that call the routes' guarded functions, never the bare helpers (§12.1), with the actor on the dashboard's request record; the headless client and a first `<substrat-assistant>` inside the dashboard web app; provenance. A preview deploy for **P0b**: the 30 s cap, eviction, first-token time, the real append, idle cost | ⌘K Ask answers "why is this failing" with provenance, behind a flag; the §10 acceptance run passes; the P0b numbers are written into the spike's findings |
+| P1 | **Dashboard, read-only.** `contracts` event schema; `engine-assistant`; the thread object in the dashboard worker, pinned to one team; the loop with a fake model first, then a real model through the platform's model host with a per-user budget; read tools that call the routes' guarded functions, never the bare helpers (§12.1), with the actor on the dashboard's request record; `AssistantModel` and a first `<sub-assistant>` inside the dashboard web app; provenance. A preview deploy for **P0b**: the 30 s cap, eviction, first-token time, the real append, idle cost | ⌘K Ask answers "why is this failing" with provenance, behind a flag; the §10 acceptance run passes; the P0b numbers are written into the spike's findings |
 | P2 | **`demos/todo`.** `assistant.expose` and `mountAssistant` for declared operations; the generated tool manifest with `--check`; the assistant-reach section of `PERMISSIONS.md`; `assistantScenario()` with a fake model; the first evals; a gated write with an approval bound as §6.0 point 3 says, once the §6.0 prerequisites have landed (until then P2 ships reads only) | A scripted conversation passes in the demo's suite, including permission, ceiling, approval-binding, revocation and injection cases, and history shows the actor |
-| P3 | Training-plan app (first consumer outside this repo; the first release cycle). Memory, opt-in, with the view-and-delete UI. Settle the licence and package home (Q8) | Acceptance run passes; erasure removes memory and derived summaries |
+| P3 | Training-plan app (first consumer outside this repo; the first release cycle). Memory, opt-in, with the view-and-delete UI | Acceptance run passes; erasure removes memory and derived summaries |
 | P4 | Internal CRM | Acceptance run passes; approve-always writes hold under the injection fixtures |
 | P5 | ticket0 onto the loop; participants and the handoff contract and mirror | A thread escalates, a person replies in the user's chat, the user sees what was sent |
 | P6 | Dashboard writes (roll back, redeploy) behind approvals; delegated reads (#1824); platform-side inference and streaming relay for verticals (#1073) | A write from the dashboard assistant needs a recorded approval bound to the approving user (§6.0 point 3), and the control plane records the actor |

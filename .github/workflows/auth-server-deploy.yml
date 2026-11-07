@@ -56,11 +56,11 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # One build submit at a time across the platform: this group is shared with the ticket0
-    # deploy and previews (substrat-deploy.yml), because the builder agent serves ONE build per
-    # tenant and answers `409 project operation already in progress` to a second concurrent
-    # submit. A push touching `.github/workflows/**` matches both workflows' path filters. The
-    # price: a job holds the group for its whole duration, so deploys now run one at a time
-    # across verticals.
+    # deploy and previews (substrat-deploy.yml) and the meridian ones (meridian-deploy.yml),
+    # because the builder agent serves ONE build per tenant and answers `409 project operation
+    # already in progress` to a second concurrent submit. A push touching `.github/workflows/**`
+    # matches all three workflows' path filters. The price: a job holds the group for its whole
+    # duration, so deploys now run one at a time across verticals.
     #
     # One promotion at a time, and every merge still gets one. Two merges landing together
     # would otherwise race, and the loser could point prod at the OLDER version — the channel

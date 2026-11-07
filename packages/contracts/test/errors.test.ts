@@ -15,6 +15,8 @@ import {
   PROBLEM_EXTENSIONS,
   problem,
   problemDetail,
+  problemCodeOf,
+  codeForRefusalStatus,
   problemReason,
   problemTypeFor,
   SubstratError,
@@ -430,6 +432,29 @@ describe('problemForStatus — the about:blank form', () => {
 
   it('serves under the RFC media type, never application/json', () => {
     expect(PROBLEM_CONTENT_TYPE).toBe('application/problem+json');
+  });
+});
+
+describe('codeForRefusalStatus (#113)', () => {
+  // The relay classes render the code this returns, so it must never move the status a caller
+  // sees: every code it answers is the one the catalog answers at that exact status.
+  it('answers only the code the catalog answers at that status, and none where it has none', () => {
+    for (const status of [400, 401, 403, 404, 409, 412, 429, 503]) {
+      const code = codeForRefusalStatus(status);
+      expect(code, String(status)).toBeDefined();
+      expect(PROBLEM_CATALOG[code!].status, String(status)).toBe(status);
+    }
+    expect(codeForRefusalStatus(403)).toBe('forbidden');
+    for (const status of [413, 422, 500, 501, 502]) expect(codeForRefusalStatus(status), String(status)).toBeUndefined();
+  });
+});
+
+describe('problemCodeOf (#113)', () => {
+  it("reads a body's taxonomy code, and nothing from a body naming none or an unknown one", () => {
+    expect(problemCodeOf(toProblem(substratError('conflict', 'x')))).toBe('conflict');
+    expect(problemCodeOf({ error: 'scope is suspended' })).toBeUndefined();
+    expect(problemCodeOf({ code: 'not_a_code' })).toBeUndefined();
+    expect(problemCodeOf(null)).toBeUndefined();
   });
 });
 

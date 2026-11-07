@@ -1,4 +1,4 @@
-import type { ProjectRepository } from '@substrat-run/contracts';
+import { PNPM_LOCKFILE_REQUIRED, type ProjectRepository } from '@substrat-run/contracts';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
 import { CommandFailedError, SourceBuildError } from './problem.js';
 
@@ -60,6 +60,12 @@ export async function checkedExec(sb: SandboxLike, command: string, cwd?: string
   const r = await sb.exec(command, cwd ? { cwd } : undefined);
   if (r.exitCode !== 0) throw new CommandFailedError(`command failed: ${(r.stderr || r.stdout).slice(-6000)}`);
   return r.stdout.trim();
+}
+
+/** The push refuses this first; a studio revision and an older CLI reach only this one. */
+export async function assertPnpmLockfile(sb: SandboxLike, root: string): Promise<void> {
+  const r = await sb.exec('test -f pnpm-lock.yaml', { cwd: root });
+  if (r.exitCode !== 0) throw new SourceBuildError(PNPM_LOCKFILE_REQUIRED);
 }
 
 /**

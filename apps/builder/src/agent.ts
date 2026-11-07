@@ -82,7 +82,7 @@ import { underProject, withinProject } from './project-path.js';
 import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { collectRelease, RELEASE_DIR } from './release-files.js';
-import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
+import { assertPnpmLockfile, checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
 
 const REPO = '/workspace';
 const TOOLCHAIN = '/workspace/substrat';
@@ -393,6 +393,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					entry.revision = revision;
 				}
 				await log.begin('prepare the build');
+				await assertPnpmLockfile(sb, root);
 				const directory = submittedDirectory ?? entry.directory;
 				entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
 				await this.#putEntry(entry);

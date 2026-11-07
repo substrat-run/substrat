@@ -1,9 +1,11 @@
 import { isPrimaryScope, type ScopeHost } from '@substrat-run/kernel';
 import { signConnectState } from './connect-state.js';
 import {
+  codeForRefusalStatus,
   connectUrlRelayRequest,
   instant,
   type ConnectUrlRelayResult,
+  type ErrorCode,
   type PlatformActorId,
   type ScopeId,
   type TenantId,
@@ -31,6 +33,12 @@ import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
  * stamped on the connection as `createdBy` (§3.5.1).
  */
 export class ConnectUrlRelayError extends Error {
+  /**
+   * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
+   * `toProblem` with the status unchanged. Every status this class takes has one. See
+   * `codeForRefusalStatus`.
+   */
+  readonly code: ErrorCode | undefined;
   constructor(
     message: string,
     /** `503` when the DEPLOYMENT cannot run a round at all, the same distinction #603 drew. */
@@ -38,6 +46,7 @@ export class ConnectUrlRelayError extends Error {
   ) {
     super(message);
     this.name = 'ConnectUrlRelayError';
+    this.code = codeForRefusalStatus(this.status);
   }
 }
 
