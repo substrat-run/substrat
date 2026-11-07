@@ -2,8 +2,8 @@
 /**
  * The scaffold-pin checkpoint — `create-substrat` asks npm for what we actually ship.
  *
- * `packages/create-substrat/index.js` writes dependency ranges into every scaffolded
- * project. Those ranges are hand-typed copies of numbers that already live in each
+ * `packages/create-substrat/project-files.js` holds the dependency ranges every scaffolded
+ * project gets. Those ranges are hand-typed copies of numbers that already live in each
  * package's own `package.json`, and changesets moves the originals on every release
  * without telling the copies. So they go stale, and they have twice:
  *
@@ -61,7 +61,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const check = process.argv.includes('--check');
 
-const SCAFFOLDER = 'packages/create-substrat/index.js';
+const SCAFFOLDER = 'packages/create-substrat/project-files.js';
 const CHANGESETS = '.changeset/config.json';
 
 /**
@@ -194,7 +194,7 @@ console.log(`pins: updated ${SCAFFOLDER}\n${wrong.join('\n')}`);
 
 // ── The new pins have to ship ────────────────────────────────────────────────
 //
-// Rewriting index.js is half the job: npm serves the create-substrat that was last
+// Rewriting the pins is half the job: npm serves the create-substrat that was last
 // PUBLISHED, and changesets only publishes a package whose version moved. No changeset
 // names create-substrat when the runtime packages release, so the Version-packages PR
 // carried fresh pins in a package it never bumped — #1876 moved every pin to ^0.126.0

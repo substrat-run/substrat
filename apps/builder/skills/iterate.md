@@ -101,12 +101,15 @@ anything:
 The scenario bypasses HTTP, so this file is the only thing standing between
 "gates green" and a server that does not actually serve. Build the same host +
 seed the scenario uses (temp dir), construct the Hono app via `mountApi` with
-the real `resolveStub`, and drive it with `app.request(path, { headers })` — no
-port, no process spawn. Minimum coverage, one assertion each:
+a `resolveStub` defined in the test file, standing in for the login, and drive it
+with `app.request(path, { headers })` — no port, no process spawn. That stand-in
+stays in the test: `src/` has only the real login. Minimum coverage, one assertion
+each:
 
-- happy path: a seeded persona's `x-principal` on one real route → 200 with a
-  body from the operation (proves boot wiring: host, seed, cast, stub);
-- no header → 401; unknown principal → 401; wrong-role persona on a guarded
+- happy path: a seeded persona on `POST /api/invoke`, the route the app's `invoke`
+  calls, → 200 with a body from the operation (proves boot wiring: host, seed, cast,
+  stub, and that the app reaches the server);
+- no caller → 401; unknown caller → 401; wrong-role persona on a guarded
   route → 403 (proves the error mapping, not just the kernel);
 - a second request sees the first one's write (proves the host is built once
   and persistent — a per-request or `:memory:` host fails exactly here).

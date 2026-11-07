@@ -43,6 +43,11 @@ Projects are standalone source repositories. Use published, pinned versions of
 `@substrat-run/*` packages; platform dependencies must not use `workspace:`, `catalog:`,
 `file:` or links to the platform checkout. `pnpm add --save-exact` resolves the available package version.
 Typical dependencies: `contracts`, `kernel`, `adapter-sqlite`, plus the engines composed.
+**Start from the template's project files.** First call `copy_reference` on `template` for
+`package.json`, `tsconfig.json`, `vitest.config.ts` and `test/setup.ts`, each to the same
+path. Then edit `package.json`: the name and `substrat` block, and drop the engines you
+do not use. Keep its versions: never look a version up or write one from memory.
+
 Declare the vertical: `"substrat": { "slug": "<slug>", "name": "<Name>", "permissions":
 "src/provision.ts" }` — the file exporting `MODULES` and `ROLES`. The studio renders
 `PERMISSIONS.md` from it after every turn (the permission review a person signs off),
@@ -161,19 +166,25 @@ source: 'vertical' }`, the same table `defineRole` is fed) so the permission
 surface is a build-time fact tooling can read, not something buried in seed
 calls.
 
+Do not add `src/api.ts`: it opts the project into an API catalog this build does not emit.
+
 **src/routes.ts + src/server.ts** — the HTTP surface, split so tests can drive
 it:
 
-- `routes.ts` exports `mountApi(app: Hono, resolveStub: (c) => Promise<ScopeStub>)`
-  — one explicit route per operation (`POST /api/<noun>`, never a generic
-  `/api/:op` passthrough), each a thin wrapper over one `stub.invoke`. Shared
+- `routes.ts` exports `mountApi(app: Hono, resolveStub: (c) => Promise<ScopeStub>)`.
+  Copy `template`'s `src/routes.ts`: its `POST /api/invoke` is the route the app's
+  `invoke` calls, and the app does not work without it. Add a `GET` route for each
+  paged read the app's tables use, as a thin wrapper over one `stub.invoke`. Shared
   `app.onError`: `PermissionDenied` → 403, refused transitions/guards → 409,
   unknown entity/scope/operation → 404, else 400. No business logic in routes.
 - `server.ts` is only the boot harness: build the host ONCE at startup on a
   persistent `.data/` dir (never `:memory:`, never per request — data must
-  survive between requests), run the seed, load the persisted cast, then
-  `resolveStub` = `x-principal` header → cast entry → `getScope`. Missing or
-  unknown header → 401. Serve with `serve` from `@hono/node-server` (Hono's
+  survive between requests), run the seed, link the personas, then sign people in
+  with `devLogin` from `@substrat-run/dev-issuer`, exactly as `template`'s
+  `src/server.ts` and `src/personas.ts` do: `/api/auth/*`, `/api/me`, and
+  `resolveStub` = `login.caller(headers)` → `getScope`. No caller → 401. Never
+  identify a caller from a header, cookie or picker the client sets: that is an
+  impersonation bypass, and the app has no "switch person" control. Serve with `serve` from `@hono/node-server` (Hono's
   `app.fetch` takes a web `Request` — do not hand-wire `node:http` to it). Read
   `PORT` from env (the studio sets it).
 

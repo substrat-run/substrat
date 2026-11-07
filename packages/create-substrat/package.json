@@ -26,6 +26,7 @@
     "index.js",
     "dev-servers.js",
     "project-files.js",
+    "project-files.d.ts",
     "windows.js",
     "template"
   ],

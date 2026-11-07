@@ -56,7 +56,7 @@ import {
 	diagnosedResponse,
 } from './problem.js';
 import type { BuildPhase } from './phase.js';
-import { REFERENCE_DIRS } from './reference.js';
+import { openReferences } from './reference.js';
 import {
 	buildWriteGuard,
 	buildContext,
@@ -652,12 +652,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					}
 					for await (const event of generator.run({
 						workspace: projectWs,
-						references: Object.fromEntries(
-							Object.entries(REFERENCE_DIRS).map(([name, dir]) => [
-								name,
-								new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${dir}`, id: `reference:${name}` }),
-							]),
-						),
+						references: openReferences((dir, id) => new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${dir}`, id })),
 						checkModel: () => checkModel(this.#sourceWs(sb, entry), entry.directory),
 						verticalDir: '.',
 						concept,
