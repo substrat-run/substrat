@@ -332,8 +332,10 @@ export function problemCodeOf(body: unknown): ErrorCode | undefined {
  * mail-in's `MailInError`) each choose a status per throw site, and this reads the code off it.
  *
  * A status maps only to the code the catalog answers with THAT status, so rendering the code
- * never moves the status a caller sees. 403 is `forbidden`, not `permission_denied`: none of
- * these refusals is a permission key's check. Statuses with no such entry — 413, 422, 501,
+ * never moves the status a caller sees. 403 is `forbidden`, not `permission_denied`: a relay's
+ * 403 is its own refusal (a preview scope, an unproven caller, a capability not held). The one
+ * that rewraps a permission key's check, a tenant send's attachment read, keeps that check as
+ * its `cause`, where the drain's attribution reads the key. Statuses with no such entry — 413, 422, 501,
  * 502 — have no code and stay `about:blank`; so does 500, because `internal` withholds the
  * detail and these sentences are reviewed and ours.
  */

@@ -435,14 +435,6 @@ describe('problemForStatus — the about:blank form', () => {
   });
 });
 
-/**
- * The one reading of a failed response body (#971).
- *
- * Four control-plane clients restated `detail ?? error` separately and they did not
- * agree — the dashboard read the deprecated duplicate ALONE, so a plane answering a
- * pure RFC 9457 document would have shown it a status line in place of the sentence.
- * These cases pin what every caller is now entitled to assume.
- */
 describe('codeForRefusalStatus (#113)', () => {
   // The relay classes render the code this returns, so it must never move the status a caller
   // sees: every code it answers is the one the catalog answers at that exact status.
@@ -466,6 +458,14 @@ describe('problemCodeOf (#113)', () => {
   });
 });
 
+/**
+ * The one reading of a failed response body (#971).
+ *
+ * Four control-plane clients restated `detail ?? error` separately and they did not
+ * agree — the dashboard read the deprecated duplicate ALONE, so a plane answering a
+ * pure RFC 9457 document would have shown it a status line in place of the sentence.
+ * These cases pin what every caller is now entitled to assume.
+ */
 describe('problemDetail', () => {
   it('prefers the sentence written for this occurrence', () => {
     const body = toProblem(

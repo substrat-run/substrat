@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, substratError, type Connection } from '@substrat-run/contracts';
+import { ConnectionRelayError, sendEmailHandler } from '@substrat-run/control-plane-api';
 import { ulid, type MailSender, type OpenedAttachment, type OutboundMail, type ScopeHost } from '@substrat-run/kernel';
 import {
   sendAsTenant,
@@ -240,5 +241,51 @@ describe('sending as a tenant address (#2098)', () => {
       expect(e.status).toBe(413);
       expect(m365.sent).toHaveLength(0);
     });
+  });
+
+  /**
+   * #113: a refusal carrying a taxonomy code is attributed to the platform on the email drain
+   * (`attributeFailure`'s rule 2), and one without to whoever its status came from (rule 3). So
+   * the relay classes' codes move these refusals from `provider` to `platform` — corrections,
+   * since the platform refused before anything was sent — except where nothing proves it was the
+   * platform: a connection that could not be asked keeps its old attribution.
+   */
+  it('the email drain attributes each tenant-send refusal by the code it carries', async () => {
+    const attributed = async (refuse: () => Promise<unknown>) => {
+      const err = await refuse().then(() => expect.fail('expected a refusal'), (e: unknown) => e);
+      const handler = sendEmailHandler({
+        mayEmail: async () => true,
+        sendAsPlatform: async () => ({}),
+        sendAsTenant: async () => {
+          throw err;
+        },
+      });
+      const out = await handler(
+        { tenantId, scopeId: ulid(), vertical: 'desk' } as never,
+        { id: ulid(), attempts: 0, payload: { to: 'customer@example.com', subject: 's', html: '<p>h</p>', text: 'h', from: 'office@acme.example' } } as never,
+      );
+      return out.failure;
+    };
+    const covering = recordingSender(['office@acme.example']).sender;
+    const broken: MailSender = { senders: async () => { throw new Error('secret will not open'); }, send: async () => ({}) as never };
+    const cases: [string, () => Promise<unknown>, unknown][] = [
+      ['403 no covering connection', () => sendAsTenant(deps([], {}), input()), { origin: 'platform', code: 'forbidden', permission: null }],
+      ['409 two connections claim it', () => sendAsTenant(deps([connection('m365'), connection('gws')], { m365: covering, gws: covering }), input()), { origin: 'platform', code: 'conflict', permission: null }],
+      ['400 attachment missing', () => sendAsTenant(deps([connection('m365')], { m365: covering }), input({ attachmentIds: ['01GONE'] })), { origin: 'platform', code: 'validation_failed', permission: null }],
+      [
+        '403 attachment not granted: the kernel refusal is the cause, key and all',
+        () =>
+        sendAsTenant(
+          deps([connection('m365')], { m365: covering }, async () => {
+            throw substratError('permission_denied', 'nope', { permission: 'desk:read' });
+          }),
+          input({ attachmentIds: ['01SECRET'] }),
+        ),
+        { origin: 'platform', code: 'permission_denied', permission: 'desk:read' },
+      ],
+      ['503 a connection could not be asked: unchanged', () => sendAsTenant(deps([connection('gws')], { gws: broken }), input()), { origin: 'provider', code: null, permission: null }],
+      ['a connection relay 503 is the platform failing', async () => Promise.reject(new ConnectionRelayError('no SecretBox', 503)), { origin: 'platform', code: 'unavailable', permission: null }],
+    ];
+    for (const [name, refused, expected] of cases) expect(await attributed(refused), name).toEqual(expected);
   });
 });
