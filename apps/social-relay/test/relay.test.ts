@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, rateLimitOf, type Env } from '../src/routes.js';
 import { b64url, b64urlDecode, sha256b64url, signJwt } from '../src/jwt.js';
 import { namespaceOf, pkcs8Pem, testStore, type TestStore } from './support.js';
@@ -94,10 +94,12 @@ describe('discovery', () => {
     expect(res.status).toBe(404);
   });
 
-  it('404s a provider it has never heard of', async () => {
+  it('404s a provider it has never heard of, as a problem document', async () => {
     const app = createApp({ now: () => NOW });
     const res = await app.request('https://id.substrat.net/facebook/.well-known/openid-configuration', {}, envWith());
     expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(await res.json()).toMatchObject({ code: 'not_found', status: 404, detail: 'unknown or unconfigured provider' });
   });
 });
 
@@ -567,6 +569,8 @@ describe('the platform surface', () => {
       envWith(),
     );
     expect(anonymous.status).toBe(403);
+    expect(anonymous.headers.get('content-type')).toBe('application/problem+json');
+    expect(await anonymous.json()).toMatchObject({ code: 'forbidden', status: 403 });
 
     const authorized = await app.request(
       'https://id.substrat.net/internal/clients',
@@ -596,6 +600,8 @@ describe('the platform surface', () => {
         envWith(),
       );
       expect(res.status).toBe(400);
+      expect(res.headers.get('content-type')).toBe('application/problem+json');
+      expect(await res.json()).toMatchObject({ code: 'validation_failed', detail: expect.stringContaining(uri) });
     }
   });
 
@@ -679,7 +685,7 @@ describe('the platform surface', () => {
     expect(unknown.status).toBe(404);
   });
 
-  it('answers an unknown /internal path with JSON, never a page', async () => {
+  it('answers an unknown /internal path with a problem document by status alone, never a page', async () => {
     const app = createApp({ now: () => NOW });
     const res = await app.request(
       'https://id.substrat.net/internal/nothing',
@@ -687,7 +693,33 @@ describe('the platform surface', () => {
       envWith(),
     );
     expect(res.status).toBe(501);
-    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    // The closed taxonomy has no code for a 501, so the body claims none.
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ type: 'about:blank', status: 501, detail: 'not implemented' });
+    expect(body).not.toHaveProperty('code');
+  });
+});
+
+describe('a throw no route caught', () => {
+  it('is a bare internal problem, carrying none of the thrown message', async () => {
+    const failing = { ...store, signingKey: () => Promise.reject(new Error('storage exploded: secret detail')) };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await createApp({ now: () => NOW }).request(
+        'https://id.substrat.net/google/jwks.json',
+        {},
+        envWith({ RELAY: namespaceOf(failing) as unknown as Env['RELAY'] }),
+      );
+      expect(res.status).toBe(500);
+      expect(res.headers.get('content-type')).toBe('application/problem+json');
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({ code: 'internal', status: 500 });
+      expect(JSON.stringify(body)).not.toContain('secret detail');
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 
@@ -775,16 +807,21 @@ describe('bad input at /userinfo', () => {
    * through, so every way of being wrong has to answer the same 401. Two of them used to
    * answer something else.
    */
-  it('answers a bearer token that is not base64 with 401, not 500', async () => {
+  /**
+   * RFC 6750 §3: the OAuth error travels in `WWW-Authenticate`, and the body is a problem
+   * document (#113). §3.1: a request that carried no bearer gets the bare challenge.
+   */
+  it.each([
+    ['no bearer at all', {}, 'Bearer'],
+    // `atob` throws `InvalidCharacterError` on these, which used to escape the handler.
+    ['a bearer token that is not base64', { authorization: 'Bearer ###.###.###' }, 'Bearer error="invalid_token"'],
+  ])('answers %s with 401 and the matching challenge, not 500', async (_name, headers, challenge) => {
     const app = createApp({ now: () => NOW });
-    const res = await app.request(
-      'https://id.substrat.net/google/userinfo',
-      // `atob` throws `InvalidCharacterError` on these, which used to escape the handler.
-      { headers: { authorization: 'Bearer ###.###.###' } },
-      envWith(),
-    );
+    const res = await app.request('https://id.substrat.net/google/userinfo', { headers }, envWith());
     expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: 'invalid_token' });
+    expect(res.headers.get('www-authenticate')).toBe(challenge);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(await res.json()).toMatchObject({ code: 'unauthenticated', status: 401 });
   });
 
   it('refuses a relay-signed token whose issuer is another provider', async () => {
@@ -807,7 +844,8 @@ describe('bad input at /userinfo', () => {
       envWith(),
     );
     expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ error: 'invalid_token' });
+    expect(res.headers.get('www-authenticate')).toBe('Bearer error="invalid_token"');
+    expect(await res.json()).toMatchObject({ code: 'unauthenticated' });
   });
 });
 
