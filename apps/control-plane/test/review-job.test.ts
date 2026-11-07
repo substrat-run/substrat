@@ -18,6 +18,8 @@ import { readReview, receiveReview, reviewHeadline, writeReviewResult } from '..
 import { createReviewApi } from '../src/reviews.js';
 import { archive } from './review-fixtures.js';
 
+declare const __PROBE_REDACTION_COST__: boolean;
+
 const testEnv = env as unknown as Parameters<typeof reviewJobDeps>[0] & { REVIEW_SOURCES: R2Bucket; REVIEW_JOBS: DurableObjectNamespace };
 const bucket = testEnv.REVIEW_SOURCES;
 const SPEC = 'cloudflare:@cf/test/reviewer';
@@ -556,8 +558,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ...['DB_PASS', 'SMTP_PASS', 'PGPASSWORD', 'passphrase', 'passcode', 'userpass', 'DBPassword', 'APIToken', 'JWTSecret', 'AWSSecretKey',
       'clientsecret', 'accesstoken', 'authtoken', 'apitoken', 'api_keys', 'tokens', 'signing_key', 'encryption_key', 'HMAC_KEY', 'master_key',
       'ssh_key', 'AUTH_KEY', 'client_key', 'password1', 'secret2', 'passwd', 'access_key', 'credential', 'pwd', 'private_key', 'dbPassValue'].map((name) => [`the name ${name}`, `${name} = "s3cr3tVALUE"`]),
-    ['a line separator inside a quoted value', 'password="abc s3cr3tVALUE"'],
-    ['an escaped line separator inside a quoted value', 'password="abc\\ s3cr3tVALUE"'],
+    ['a line separator inside a quoted value', 'password="abc\u2028s3cr3tVALUE"'],
+    ['an escaped line separator inside a quoted value', 'password="abc\\\u2028s3cr3tVALUE"'],
     ['an unclosed value ending in a backslash', 'password = "s3cr3tVALUE\\'],
     ['a name after a call', 'getConfig().password = "s3cr3tVALUE"'],
     ['a name after an index', 'arr[0].secret = "s3cr3tVALUE"'],
@@ -589,9 +591,32 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ...['os.getenv', 'os.environ.get', 'Env.get', 'ENV.fetch', 'env'].map((call) => [`a default in ${call}`, `${call}("KEY", "s3cr3tVALUE")`]),
     ['a secret-named argument', 'read("API_KEY", "s3cr3tVALUE")'],
     ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
-    ...['token', 'bearer', 'basic', 'digest', 'negotiate', 'ntlm'].map((scheme) => [`the header scheme ${scheme}`, `Authorization: ${scheme} s3cr3tVALUE`]),
+    ['a long argument name', `read("${'x'.repeat(72)}_api_key", "s3cr3tVALUE")`],
+    ['a space before an argument’s comma', '"API_KEY" , "s3cr3tVALUE"'],
+    ['a space inside a lookup', 'getenv( "KEY", "s3cr3tVALUE")'],
+    ['a fallback after ||', 'process.env.DB_PASSWORD || "s3cr3tVALUE"'],
+    ['a fallback after ??', 'process.env.DB_PASSWORD ?? "s3cr3tVALUE"'],
+    ['a fallback after or', 'conf.get("password") or "s3cr3tVALUE"'],
+    ['an unquoted fallback', 'password || s3cr3tVALUE'],
+    ...['||=', '??=', '&&=', '+=', '<-'].map((op) => [`the operator ${op}`, `password ${op} "s3cr3tVALUE"`]),
+    ['a name in a bare index', '$_POST[password] = "s3cr3tVALUE"'],
+    ['a bracketed name', '[password]=s3cr3tVALUE'],
+    ['a bold name', '**password**: s3cr3tVALUE'],
+    ['an optional key', 'password?: "s3cr3tVALUE"'],
+    ['a curly-quoted name', '“password”: "s3cr3tVALUE"'],
+    ['a name in curly single quotes', '‘password’: "s3cr3tVALUE"'],
+    ['a type with a union', 'password: string | null = "s3cr3tVALUE"'],
+    ...[',', ';', ')', ']', '}'].map((separator) => [`more of a value after ${separator}`, `password=abc${separator}s3cr3tVALUE`]),
+    ['a value starting with a separator', 'password=,s3cr3tVALUE'],
+    ['a value after a boolean and a tab', 'password=true\ts3cr3tVALUE'],
+    ['a PEM body past a line separator', '-----BEGIN PRIVATE KEY-----abc\u2028s3cr3tVALUE'],
+    ...[0x034f, 0x202a, 0x202e, 0x2066, 0x2069, 0x3164, 0xfe00, 0xfe0f, 0xe0000, 0xe007f].map((code) => [
+      `U+${code.toString(16)} inside a token shape`, `x = ${'gh' + 'p_' + 'a1'.repeat(9)}${String.fromCodePoint(code)}${'a1'.repeat(9)}`,
+    ]),
+    ...['token', 'bearer', 'basic', 'digest', 'negotiate', 'ntlm', 'OAuth', 'Bot', 'SSWS', 'ApiKey'].map((scheme) => [`the header scheme ${scheme}`, `Authorization: ${scheme} s3cr3tVALUE`]),
     ['a header after a word', 'the request sends Authorization: token s3cr3tVALUE'],
     ['a later cookie', 'Cookie: a=b; session=s3cr3tVALUE'],
+    ['a later cookie after a bare first value', 'Cookie: a; session=s3cr3tVALUE'],
     ['a later cookie after a word', 'it sends Cookie: a=b; session=s3cr3tVALUE'],
     ['a later value in a plural name', 'cookies: a=b; session=s3cr3tVALUE'],
     ['a later value after a header’s `=`', 'cookie=abc; session=s3cr3tVALUE'],
@@ -636,14 +661,14 @@ describe('the assembler, the fence, the redaction and the headline', () => {
   ])('masks %s whatever comes before it', (line, masked) => expect(redact(line)).toBe(masked));
 
   it.each([
-    'password = 123456', 'DB_PASSWORD=12345678', 'pwd: 654321',
+    'password = 123456', 'DB_PASSWORD=12345678', 'pwd: 654321', 'password == 12345678',
     ...['password', 'passwd', 'pwd', 'secret', 'credential', 'private_key'].map((name) => `${name}_tokens = 13579`),
   ])('masks a number after a credential’s name: %s', (line) => {
     for (const mode of ['line', 'value'] as const) expect(redact(line, 500, mode), mode).toBe(`${line.replace(/\d+$/, '')}[redacted]`);
   });
 
-  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'inputTokens = 1200', 'max_tokens: 4096,', 'count(outputTokens: 0)', 'tokenCount: 12', 'token_limit = 4096', 'tokenBudget: 100',
-    ...['-1', '1.5', 'true', 'false', 'null', 'undefined', 'none', 'nil'].map((value) => `tokens: ${value}`), 'password::hash(input)', 'the anti-token check runs', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
+  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'inputTokens = 1200', 'max_tokens: 4096,', 'maxTokens: 8000;', '[maxTokens: 8000]', '{maxTokens: 8000}', 'count(outputTokens: 0)', 'tokenCount: 12', 'token_limit = 4096', 'tokenBudget: 100',
+    ...['-1', '1.5', 'true', 'false', 'null', 'undefined', 'none', 'nil'].map((value) => `tokens: ${value}`), 'password::hash(input)', 'the anti-token check runs', 'the token_factor "x"', 'run --password --verbose', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
     'leaves %s as it is, in a quote and in an explanation', (line) => {
       expect(redact(line)).toBe(line);
       expect(redact(line, 500, 'value')).toBe(line);
@@ -657,7 +682,13 @@ describe('the assembler, the fence, the redaction and the headline', () => {
   );
 
   it('masks only the value in an explanation, so its words survive', () => {
-    for (const prose of ['reads the token: it never calls ctx.check', 'no authorization: any caller can void it', 'the cookie: it is not HttpOnly']) {
+    for (const prose of [
+      'reads the token: it never calls ctx.check', 'no authorization: any caller can void it', 'the cookie: it is not HttpOnly',
+      'when authorization == null any caller can void it', 'if (token === undefined) return',
+      'reads `token`, then logs it and returns `done` to the caller',
+      'no authorization: add `assertAllowed(await ctx.check(PERMS.invoiceVoid))` as the first line',
+      'no authorization: tokens are missing', 'the password or API key leaks', 'reads password || token from the config', 'fn(password=)',
+    ]) {
       expect(redact(prose, 500, 'value')).toBe(prose);
     }
     expect(redact('drop password=hunter22 from the source', 500, 'value')).toBe('drop password=[redacted] from the source');
@@ -667,8 +698,30 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(redact('token = Buffer.from("V") is logged', 500, 'value')).toBe('token = [redacted]) is logged');
     expect(redact('run --password hunter22 and token=abc1 here', 500, 'value')).toBe('run --password [redacted] and token=[redacted] here');
     expect(redact('log("done") then password=hunter22 is set', 500, 'value')).toBe('log("done") then password=[redacted] is set');
+    expect(redact('password: Hunterabc is stored', 500, 'value')).toBe('password: [redacted] is stored');
+    expect(redact('"password=abc" is set', 500, 'value')).toBe('"password=[redacted] is set');
+    expect(redact('read("API_KEY", "V") is called', 500, 'value')).toBe('read("API_KEY", [redacted]) is called');
+    expect(redact('cookie_name=abc def', 500, 'value')).toBe('cookie_name=[redacted] def');
+    expect(redact('sets password=abc, then logs', 500, 'value')).toBe('sets password=[redacted], then logs');
+    expect(redact(`token=${'gh' + 'p_' + 'a1'.repeat(18)} is set`, 500, 'value')).toBe('token=[redacted] is set');
     // A second name inside the value: its own mask ends first, and must not bring the tail back.
     expect(redact('password = "token=abc def" is set', 500, 'value')).toBe('password = [redacted] is set');
+  });
+
+  // The earliest value may sit inside a string, so no one reading of the quotes is right on every line.
+  it.each([
+    ['a JSON object holding an earlier value', '{"dsn":"password=abc","secret":"s3cr3tVALUE"}'],
+    ['a string before an assignment', '"password=abc" token="s3cr3tVALUE"'],
+    ['a string in a sentence', 'say "password=abc" and token="s3cr3tVALUE" here'],
+    ['a flag inside a string', '"--password=abc" --token "s3cr3tVALUE"'],
+    ['a string holding a value, then a plus', '"password=abc" + "s3cr3tVALUE"'],
+    ['a string holding a header’s name, then a plus', '"Authorization: " + "s3cr3tVALUE"'],
+    ['a stray closing quote', 'password=abc" token="s3cr3tVALUE"'],
+    ['an unclosed string', '"password=abc "s3cr3tVALUE"'],
+  ])('masks a value after %s, in every stored field', (_label, line) => {
+    const parsed = parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: line, fix: line }] }));
+    const [kept] = assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings;
+    for (const field of ['quote', 'failsWhen', 'fix'] as const) expect(kept![field], field).not.toContain('s3cr3tVALUE');
   });
 
   it('masks a quote to the end of its line and an explanation only at its value', () => {
@@ -683,9 +736,10 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ]);
   });
 
+  const at = (quote: string, rest: { failsWhen?: string; fix?: string } = {}) => ({ item: 'S2', file: 'src/a.ts', line: 1, quote, failsWhen: 'x', fix: 'y', ...rest });
+  const assembled = (entry: ReturnType<typeof at>, text: string) => assemble(parseReply(JSON.stringify({ findings: [entry] }))!, [{ path: 'src/a.ts', text }]);
+
   it('refuses a quote past 200 characters, and cuts an explanation to the 1,000 it reads, storing 500', () => {
-    const at = (quote: string, rest: { failsWhen?: string; fix?: string } = {}) => ({ item: 'S2', file: 'src/a.ts', line: 1, quote, failsWhen: 'x', fix: 'y', ...rest });
-    const assembled = (entry: ReturnType<typeof at>, text: string) => assemble(parseReply(JSON.stringify({ findings: [entry] }))!, [{ path: 'src/a.ts', text }]);
     const wide = 'x'.repeat(201);
     expect(assembled(at(wide), wide)).toMatchObject({ findings: [], dropped: 1 });
     expect(assembled(at(wide.slice(1)), wide)).toMatchObject({ findings: [{ item: 'S2' }], dropped: 0 });
@@ -699,32 +753,34 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(assembled(at('x', { failsWhen: past, fix: past }), 'x').findings).toMatchObject([{ failsWhen: '[redacted]', fix: '[redacted]' }]);
   });
 
-  // Not every mask is linear, so the cut is what bounds them: uncut, each of these takes seconds.
-  it('the cut bounds the masks that are not linear', () => {
-    const started = Date.now();
-    for (const run of ['eyJ-'.repeat(16_384), `Bearer ${'a'.repeat(65_536)}`]) {
-      assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]);
-    }
-    expect(Date.now() - started).toBeLessThan(500);
+  it.each([
+    ['exactly at the cut, kept', `${'A'.repeat(994)} abcde`, '[redacted] abcde'],
+    ['split by the cut, dropped', `${'A'.repeat(994)} abcdef`, '[redacted]'],
+    ['after a tab, dropped alone', `keep ${'A'.repeat(989)}\tabcdef`, 'keep [redacted]'],
+    ['with no break to cut at', 'a-'.repeat(600), '[redacted]'],
+    ['on a later line, which goes anyway', `a-a\n${'a-'.repeat(600)}`, 'a-a'],
+  ])('a word %s', (_label, text, stored) => {
+    expect(assembled(at('x', { failsWhen: text, fix: text }), 'x').findings).toMatchObject([{ failsWhen: stored, fix: stored }]);
   });
 
-  // A loop whose alternatives can both take a backslash is exponential on this; the cap does not help.
-  it('reads a run of backslashes in a quoted value once, and masks it', () => {
-    const started = Date.now();
+  // What the cut would leave of each fits no shape, so only keeping the word whole hides it.
+  it.each([
+    ['a GitHub token', 'gh' + 'p_' + 'a'.repeat(36), 39],
+    ['an npm token', 'np' + 'm_' + 'a'.repeat(36), 39],
+    ['an AWS key id', 'AK' + 'IA' + 'A'.repeat(16), 19],
+    ['a Google key', 'AI' + 'za' + 'a'.repeat(35), 38],
+    ['a Stripe key', 'sk' + '_live_' + 'a'.repeat(27), 27],
+    ['a JWT', `${'ey' + 'J'}${'a'.repeat(8)}.${'ey' + 'J'}${'a'.repeat(8)}.${'a'.repeat(14)}`, 31],
+    ['URL userinfo', `postgres://${'u:'}s3cr3tVALUE@h`, 24],
+    ['an email', 'someone@example.com', 10],
+  ])('stores nothing of %s split by the cut', (_label, token, kept) => {
+    const text = `${'A'.repeat(999 - kept)} ${token} tail`;
+    expect(assembled(at('x', { failsWhen: text, fix: text }), 'x').findings).toMatchObject([{ failsWhen: '[redacted]', fix: '[redacted]' }]);
+  });
+
+  // A loop whose alternatives can both take a backslash is exponential on this, and the test then never ends.
+  it('masks a quoted value after a run of backslashes', () => {
     expect(redact(`password="${'\\'.repeat(900)}\u2028s3cr3tVALUE"`, 500, 'value')).toBe('password=[redacted]');
-    expect(Date.now() - started).toBeLessThan(500);
-  });
-
-  // The bare name and the email keep a left boundary, and a URL scheme takes no `.` or `-`, so a long
-  // run of name characters is not rescanned from every character. The bound is generous.
-  it('redacts a long run of name characters in linear time', () => {
-    const started = Date.now();
-    for (const run of ['a_', 'a.', 'a-', 'a%', 'ab']) {
-      redact(`${run.repeat(32_768)}: x`);
-      redact(`${run.repeat(32_768)}@`, 500, 'value');
-      redact(`${run.repeat(32_768)}://`, 500, 'value');
-    }
-    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   it('never reads clean with a failed or blocked gate, and counts dropped findings and files not sent', () => {
@@ -732,6 +788,36 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(reviewHeadline({ ...base, gates: [{ name: 'g', status: 'failed' }, { name: 'h', status: 'blocked' }] }))
       .toBe(`Substrat review: 0 blocking, 0 advisory · rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · gates failed · gates blocked · 2 dropped · 1 not sent`);
     expect(reviewHeadline({ ...base, dropped: 0, notSent: [], gates: [] })).toBe(`Substrat review: 0 blocking, 0 advisory · rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · gates not run`);
+  });
+});
+
+// What redaction costs. Opt in with SUBSTRAT_PROBE_REDACTION_COST=1: a measurement, never part of the gate.
+describe.skipIf(!__PROBE_REDACTION_COST__)('redaction: what it costs (opt in, #2365)', () => {
+  const millis = (body: () => void): number => {
+    const started = Date.now();
+    body();
+    return Date.now() - started;
+  };
+
+  // Not every mask is linear, so the cut is what bounds them: uncut, each of these takes seconds.
+  it('the cut bounds the masks that are not linear', () => {
+    expect(millis(() => {
+      for (const run of ['eyJ-'.repeat(16_384), `Bearer ${'a'.repeat(65_536)}`]) {
+        assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]);
+      }
+    })).toBeLessThan(500);
+  });
+
+  // The bare name and the email keep a left boundary and a URL scheme reads its run once, so a long
+  // run of name characters is not rescanned from every character. The bound is generous.
+  it('a long run of name characters stays inside a generous bound', () => {
+    expect(millis(() => {
+      for (const run of ['a_', 'a.', 'a-', 'a%', 'ab']) {
+        redact(`${run.repeat(32_768)}: x`);
+        redact(`${run.repeat(32_768)}@`, 500, 'value');
+        redact(`${run.repeat(32_768)}://`, 500, 'value');
+      }
+    })).toBeLessThan(1_000);
   });
 });
 

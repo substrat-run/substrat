@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 export default defineConfig({
+  define: { __PROBE_REDACTION_COST__: JSON.stringify(process.env.SUBSTRAT_PROBE_REDACTION_COST === '1') },
   // The directory persists across requests within a run — a tenant written
   // by one request must be readable by the next, which is the durability
   // this slice exists to prove. Do NOT roll storage back per test.
