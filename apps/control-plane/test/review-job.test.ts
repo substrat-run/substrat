@@ -597,6 +597,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a string after a comparison with undefined and ||', 'token === undefined || "s3cr3tVALUE"'],
     ...['then', 'else', 'return'].map((word) => [`a string after a comparison and ${word}`, `if token == nil ${word} "s3cr3tVALUE"`]),
     ['a string after a key and a plain word', 'token: see "s3cr3tVALUE"'],
+    ['a code span glued to a plain word', 'token: see`s3cr3tVALUE`'],
     ['a string after a plain-word argument', 'read("API_KEY", value) then "s3cr3tVALUE"'],
     ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
     ['a long argument name', `read("${'x'.repeat(72)}_api_key", "s3cr3tVALUE")`],
