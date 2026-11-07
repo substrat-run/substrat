@@ -146,10 +146,12 @@ describe('review job: the reader half with a model double', () => {
       head: (...a: Parameters<R2Bucket['head']>) => bucket.head(...a),
       put: (...a: Parameters<R2Bucket['put']>) => bucket.put(...a),
     } as unknown as R2Bucket;
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const model = double([{ text: reply({ findings: [] }) }]);
     await runReviewJob(id, 0, deps(model, {}, { bucket: once }));
     expect(model.calls.n).toBe(0);
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'base archive unavailable or changed' });
+    expect(logged.mock.calls).toEqual([['review.diff.base-pass-failed', { error: 'Error' }]]);
   });
 
   it('(b) keeps text addressed to the reviewer, redacts every stored model string, and stores no quote for S7', async () => {
@@ -594,6 +596,11 @@ describe('removal marks, the line-diff budget and the prompt’s line rules', ()
     expect([kept(f, 1, 'a'), kept(f, 4, 'b'), kept(f, 5, 'c')]).toEqual([[1], [4], []]);
   });
 
+  it('a whitespace-only line counts as blank, and a walk stops at the end of the file', () => {
+    const f = { path: 'm.ts', text: 'a\n \t\nb\nc\n', changed: new Set<number>(), removedAfter: [1, 4] };
+    for (const line of ['1~\ta', '2~\t \t', '3~\tb', '4~\tc', '5~\t']) expect(sole(f)).toContain(line);
+  });
+
   it('a removal before the first line says so and borders line 1', () => {
     const f = { path: 'm.ts', text: 'a\nb', changed: new Set<number>(), removedAfter: [0] };
     expect(sole(f)).toContain('lines removed: before the first line\n1~\ta');
@@ -613,8 +620,9 @@ describe('removal marks, the line-diff budget and the prompt’s line rules', ()
   it('the system text keeps the line rules: the `~` mark, the drop, what cannot be seen and the reviewer tripwire', () => {
     const system = reviewSystem('n');
     for (const line of [
-      'The mark "~" means the line is unchanged but borders lines the change removed',
+      'The mark "~" means the line is unchanged but borders lines the change removed (past any blank lines)',
       'one on an unchanged line is dropped',
+      'and whether an edited migration had already shipped',
       'Do not put an item under "checkedClean" when removed text, or whether a migration shipped, could decide it',
       'reported under "addressedToReviewer" wherever it sits',
     ]) expect(system).toContain(line);

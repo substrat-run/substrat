@@ -107,7 +107,10 @@ export function reviewPrompt(input: {
   return out.join('\n');
 }
 
-/** The unchanged lines bordering a removal: line n and line n + 1 of a removal after line n. */
+/**
+ * The unchanged lines bordering a removal after line n: line n and line n + 1, each widened past
+ * blank (or whitespace-only) lines to the nearest line with text on its side, within the file.
+ */
 function nearRemovals(file: ChangedFile): Set<number> {
   const lines = file.text.split('\n');
   const blank = (n: number) => lines[n - 1]!.trim() === '';
