@@ -340,7 +340,7 @@ export function Pulse({
             <IconButton
               label="Clear custom time interval"
               onClick={() => onPreset(null)}
-              style={{ '--wa-form-control-height': '20px', '--wa-form-control-padding-inline': '6px', color: 'var(--text-tertiary)', fontSize: 14 } as CSSProperties}
+              style={{ '--wa-form-control-height': '20px', '--wa-form-control-padding-inline': '6px', display: 'flex', color: 'var(--text-tertiary)', fontSize: 14 } as CSSProperties}
             >
               ×
             </IconButton>

@@ -81,7 +81,7 @@ export function LogQueryBar({
               <IconButton
                 label={`Remove ${c.key} filter`}
                 onClick={() => onQuery(without(query, c.clears))}
-                style={{ '--wa-form-control-height': '16px', '--wa-form-control-padding-inline': 0, color: 'var(--text-tertiary)', flexShrink: 0 } as CSSProperties}
+                style={{ '--wa-form-control-height': '16px', '--wa-form-control-padding-inline': 0, display: 'flex', color: 'var(--text-tertiary)', flexShrink: 0 } as CSSProperties}
               >
                 <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
                   <path d="M18 6 6 18" />
@@ -108,7 +108,7 @@ export function LogQueryBar({
                 onQuery(without(query, chips[chips.length - 1]!.clears));
               }
             }}
-            style={{ flex: 1, minWidth: 180, fontSize: 13 }}
+            style={{ '--wa-form-control-height': '26px', flex: 1, minWidth: 180, fontSize: 13 } as CSSProperties}
           />
           {chips.length > 0 && (
             <Button variant="link" onClick={() => onQuery(without(query, chips.flatMap((c) => c.clears)))} style={{ fontSize: 12 }}>

@@ -333,9 +333,10 @@ export function Observability({
           size="sm"
           // A custom window is not one of the presets; it shows as the `time` chip, and
           // the select says so rather than claiming a range the read is not using.
-          options={[...(cursor ? [{ value: '', label: 'Custom window', disabled: true }] : []), ...RANGE_OPTIONS]}
+          // Not `disabled`: `wa-select` draws nothing for a disabled value, so choosing it is what is refused.
+          options={[...(cursor ? [{ value: '', label: 'Custom window' }] : []), ...RANGE_OPTIONS]}
           value={cursor ? '' : String(hours)}
-          onChange={(e) => preset(Number(e.target.value))}
+          onChange={(e) => e.target.value && preset(Number(e.target.value))}
           style={{ width: 150 }}
         />
         {/* A native toggle: the kit's Button carries no pressed state, and a toggle a screen
