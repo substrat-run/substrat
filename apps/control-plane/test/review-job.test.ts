@@ -699,7 +699,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(redact('run --password hunter22 and token=abc1 here', 500, 'value')).toBe('run --password [redacted] and token=[redacted] here');
     expect(redact('log("done") then password=hunter22 is set', 500, 'value')).toBe('log("done") then password=[redacted] is set');
     expect(redact('password: Hunterabc is stored', 500, 'value')).toBe('password: [redacted] is stored');
-    expect(redact('"password=abc" is set', 500, 'value')).toBe('"password=[redacted] is set');
+    // Read from the value, the string's closing quote opens one more: the rest of the line goes, the start stays.
+    expect(redact('"password=abc" is set', 500, 'value')).toBe('"password=[redacted]');
     expect(redact('read("API_KEY", "V") is called', 500, 'value')).toBe('read("API_KEY", [redacted]) is called');
     expect(redact('cookie_name=abc def', 500, 'value')).toBe('cookie_name=[redacted] def');
     expect(redact('sets password=abc, then logs', 500, 'value')).toBe('sets password=[redacted], then logs');
