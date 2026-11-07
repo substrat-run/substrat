@@ -64,4 +64,6 @@ it('says how many more files a cut list leaves out', () => {
   });
   expect(printed).toContain('Not sent: a.png (binary), and 250 more');
   expect(printed).toContain('Deleted: old/a.ts, old/b.ts\n');
+  const cut = formatReview({ id: 'r1', state: 'completed', headline: 'h', deleted: ['old/a.ts'], deletedCount: 251, gates: [] });
+  expect(cut).toContain('Deleted: old/a.ts, and 250 more');
 });
