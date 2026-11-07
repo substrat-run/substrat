@@ -1,5 +1,11 @@
 # @substrat-run/demo-shop-app
 
+## 0.0.7
+
+### Patch Changes
+
+- @substrat-run/ui@0.4.1
+
 ## 0.0.6
 
 ### Patch Changes

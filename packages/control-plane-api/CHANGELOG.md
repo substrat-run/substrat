@@ -1,5 +1,24 @@
 # @substrat-run/control-plane-api
 
+## 0.186.0
+
+### Minor Changes
+
+- 6a3b322: contracts: `codeForRefusalStatus` (the code a status-only refusal carries, never moving its status) and `problemCodeOf` (the taxonomy code a parsed refusal body declared).
+  control-plane-api: `ConnectionRelayError` and `ConnectUrlRelayError` carry the `code` their status does, and their refusals answer with it.
+  vertical-host: the connection, connect-url, connect-link and mail-in errors expose the platform refusal's code as `problemCode`, and read its sentence with `problemDetail`.
+
+### Patch Changes
+
+- aba7e34: contracts and control-plane-api: the relay refusal codes' doc comments say which statuses carry none, and why a 403 is `forbidden`.
+- Updated dependencies [589ae99]
+- Updated dependencies [179b4ae]
+- Updated dependencies [aba7e34]
+- Updated dependencies [6a3b322]
+  - @substrat-run/contracts@0.186.0
+  - @substrat-run/control-plane-client@0.6.8
+  - @substrat-run/kernel@0.186.0
+
 ## 0.185.0
 
 ### Minor Changes

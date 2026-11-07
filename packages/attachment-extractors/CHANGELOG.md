@@ -1,5 +1,11 @@
 # @substrat-run/attachment-extractors
 
+## 0.2.47
+
+### Patch Changes
+
+- @substrat-run/kernel@0.186.0
+
 ## 0.2.46
 
 ### Patch Changes
