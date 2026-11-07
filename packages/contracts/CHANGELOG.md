@@ -1,5 +1,19 @@
 # @substrat-run/contracts
 
+## 0.186.0
+
+### Minor Changes
+
+- 589ae99: The graph store driver serves one vertical, the platform's own `modeling-studio` (D-67's narrow first use). Every other vertical that declares `graph` is still refused at deploy.
+- 6a3b322: contracts: `codeForRefusalStatus` (the code a status-only refusal carries, never moving its status) and `problemCodeOf` (the taxonomy code a parsed refusal body declared).
+  control-plane-api: `ConnectionRelayError` and `ConnectUrlRelayError` carry the `code` their status does, and their refusals answer with it.
+  vertical-host: the connection, connect-url, connect-link and mail-in errors expose the platform refusal's code as `problemCode`, and read its sentence with `problemDetail`.
+
+### Patch Changes
+
+- 179b4ae: `substrat push` and `substrat preview create` refuse a source with no `pnpm-lock.yaml` before uploading, and the generated deploy workflow installs with pnpm alone, because the platform's build does.
+- aba7e34: contracts and control-plane-api: the relay refusal codes' doc comments say which statuses carry none, and why a 403 is `forbidden`.
+
 ## 0.185.0
 
 ### Minor Changes

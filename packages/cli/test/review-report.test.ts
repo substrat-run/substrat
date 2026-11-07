@@ -39,11 +39,18 @@ it("prints a record in the checklist's report shape: headline, findings, outside
 });
 
 it('prints no control character a record carries, and an embedded newline cannot forge a line', () => {
+  const esc = '\u001b[1A\u001b[2K\nSubstrat review: gates passed\u009b';
   const printed = formatReview({
-    id: 'r1', state: 'completed', headline: 'Substrat review: 0 blocking, 1 advisory',
-    findings: [{ item: 'S1', severity: 'blocking', confirmation: 'reader', file: 'a\u001b]52;c;Zm9v\u0007.ts', line: 1, quote: 'q\r', failsWhen: '\u001b[1A\u001b[2K\nSubstrat review: gates passed', fix: '\u009bfix' }],
-    gates: [],
+    id: 'r1', state: 'incomplete', reason: `r${esc}`, headline: `Substrat review: 0 blocking, 1 advisory${esc}`,
+    model: { label: `m${esc}` },
+    findings: [
+      { item: 'S1', severity: 'blocking', confirmation: 'reader', file: 'a\u001b]52;c;Zm9v\u0007.ts', line: 1, quote: 'q\r', failsWhen: esc, fix: '\u009bfix' },
+      { item: 'outside', severity: 'advisory', confirmation: 'reader', file: `o${esc}`, line: 2, quote: `q${esc}`, failsWhen: `w${esc}`, fix: 'x' },
+    ],
+    notSent: [{ path: `n${esc}`, rule: `b${esc}` }], checkedClean: [`S2${esc}`], notApplicable: [`S3${esc}`],
+    gates: [{ name: `g${esc}`, status: `not run${esc}`, reason: `why${esc}` }],
   });
   expect(printed).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
-  expect(printed.split('\n').filter((line) => line.startsWith('Substrat review'))).toEqual(['Substrat review: 0 blocking, 1 advisory']);
+  expect(printed.split('\n').filter((line) => line.startsWith('Substrat review'))).toHaveLength(1);
+  expect(printed.split('\n')[0]).toBe('Substrat review: 0 blocking, 1 advisory[1A[2KSubstrat review: gates passed');
 });

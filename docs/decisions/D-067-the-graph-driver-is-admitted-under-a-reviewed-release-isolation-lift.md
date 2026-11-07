@@ -3,7 +3,7 @@ id: D-67
 date: 2026-10-31
 layer: plan
 title: "The graph driver is admitted under a reviewed-release isolation lift"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-63"]
 tracking: ["#2210", "#2394", "#2830"]
@@ -11,11 +11,10 @@ tracking: ["#2210", "#2394", "#2830"]
 
 # D-67 — The graph driver is admitted under a reviewed-release isolation lift
 
-> **Proposed 2026-10-31, not ratified.** This is the decision record that step 5 of the
+> **Ratified 2026-11-07.** This is the decision record that step 5 of the
 > [store-driver release approval RFC](../rfc/store-driver-release-approval.md) and
-> [graph store registration](../rfc/graph-store-registration.md) wait for. Ratifying it is a
-> policy choice about tenant isolation; it is written so that the choice can be made, not to
-> make it.
+> [graph store registration](../rfc/graph-store-registration.md) rest on. It is a policy choice
+> about tenant isolation, and it admits this driver alone.
 >
 > **Amended 2026-11-04 ([#2830](https://github.com/substrat-run/substrat/issues/2830)).** The revisit
 > clause named either route as enough to withdraw the lift. It now names all three of D-63's

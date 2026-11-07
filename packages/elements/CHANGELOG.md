@@ -1,5 +1,12 @@
 # @substrat-run/elements
 
+## 0.5.0
+
+### Minor Changes
+
+- 42b800b: `@substrat-run/elements/controls` registers `wa-badge`, `wa-breadcrumb`, `wa-card`, `wa-dialog`, `wa-divider`, `wa-tab-group` and `wa-textarea` too, and `themes/base.css` carries `wa-visually-hidden-label`, so an app reaches Web Awesome through this package alone.
+- f6ca1e8: Add a subpath per module (`/avatar`, `/user-menu`, `/entity-table`, `/entity-table-model`, `/session`), so an app using one element no longer ships them all.
+
 ## 0.4.0
 
 ### Minor Changes

@@ -165,12 +165,15 @@ export function parseReply(text: string): ReviewReply | null {
   };
 }
 
-// Masked before any cut, so a value the cut would split is still masked whole: credential shapes
-// `lint:secret-literals` refuses in the repo (tools/secret-literals.mjs SHAPES), a JWT, a long
-// base64 run (a PEM or PGP body line), a password-like assignment's value, an email, a phone-like run.
+// Masked after control and invisible format characters are stripped (so a token split by one is
+// masked whole) and before any cut (so a value the cut would split is masked whole): credential
+// shapes `lint:secret-literals` refuses in the repo (tools/secret-literals.mjs SHAPES), a
+// single-line PEM with its body, JWK private members, a JWT, URL userinfo, a long base64 run (a
+// PEM or PGP body line), an email and a phone-like run. A secret-named assignment is masked from
+// its value to the end of the line (see `maskSecretAssignment`).
 const MASKS: ReadonlyArray<[RegExp, string]> = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----/g, '[redacted]'],
-  [/(["']?\bd["']?\s*:\s*["'])[A-Za-z0-9_-]{20,}(["'])/g, '$1[redacted]$2'],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY[A-Z ]*-----.*/g, '[redacted]'],
+  [/(["']?\b(?:d|p|q|dp|dq|qi|k)["']?\s*:\s*["'])[A-Za-z0-9_-]{20,}(["'])/g, '$1[redacted]$2'],
   [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[redacted]'],
   [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})\b/g, '[redacted]'],
   [/\bsk-[A-Za-z0-9_-]{20,}/g, '[redacted]'],
@@ -179,19 +182,47 @@ const MASKS: ReadonlyArray<[RegExp, string]> = [
   [/\bAIza[0-9A-Za-z_-]{35}\b/g, '[redacted]'],
   [/\bnpm_[A-Za-z0-9]{36}\b/g, '[redacted]'],
   [/https:\/\/hooks\.slack\.com\/\S+|https:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/\S+|https:\/\/[a-z0-9-]+\.webhook\.office\.com\/\S+/g, '[redacted]'],
-  [/\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"`]+:[^\s@/'"`]{3,}@/g, '[redacted]@'],
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s:/@'"`]*:[^\s@/'"`]+@/g, '$1[redacted]@'],
   [/\b(?:eyJ[A-Za-z0-9_-]{8,}\.){2}[A-Za-z0-9_-]{8,}\b/g, '[redacted]'],
-  [/((?:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|private[_-]?key|credential)s?["']?\s*[:=]\s*)(["']?)[^\s"',;]{3,}\2/gi, '$1$2[redacted]$2'],
+  [/(\b(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[redacted]'],
   [/[A-Za-z0-9+/]{40,}={0,2}/g, '[redacted]'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[redacted]'],
   [/\+?\d[\d ().-]{7,}\d/g, '[redacted]'],
 ];
 
-/** Mask every shape, strip control characters, then keep the first line and at most `max` characters. */
+/** Invisible format characters (soft hyphen, zero-width and joiner characters, BOM), stripped before any match. */
+const FORMAT_CHARS = /[\u00ad\u200b-\u200f\u2060-\u2064\ufeff]/g;
+
+/** Whole words that name a secret, and the word pairs that do; `key`, `auth` or `pass` alone do not. */
+const SECRET_WORDS = new Set(['secret', 'secrets', 'password', 'passwords', 'passwd', 'pwd', 'token', 'credential', 'credentials', 'authorization', 'apikey', 'privatekey']);
+const SECRET_PAIRS = new Set(['api key', 'private key', 'access key', 'secret key']);
+
+/** An identifier's words: `clientSecret`, `SECRET_KEY`, `api-key` and `"password"` all split. */
+function namesSecret(name: string): boolean {
+  const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.some((w, i) => SECRET_WORDS.has(w) || SECRET_PAIRS.has(`${w} ${words[i + 1] ?? ''}`));
+}
+
+/**
+ * A name (bare, quoted, or JSON-escaped), then an assignment or a key's colon (`=`, `:=`, `=>`,
+ * `:`), then a value. When the name is a secret's, everything from the value to the end of the line
+ * is masked: a typed declaration, an unclosed quote, an escaped inner quote and a wrapped call
+ * (`Buffer.from('…')`) all fall inside it.
+ */
+const ASSIGNMENT = /(\\?["'`]?)([A-Za-z_$][\w$-]*)\1\s*(?::=|=>|=(?!=)|:(?!:))\s*(?=\S)/g;
+
+function maskSecretAssignment(text: string): string {
+  for (const m of text.matchAll(ASSIGNMENT)) {
+    if (namesSecret(m[2]!)) return `${text.slice(0, m.index! + m[0].length)}[redacted]`;
+  }
+  return text;
+}
+
+/** Keep the first line, strip control and format characters, mask every shape, then cut to at most `max` characters. */
 export function redact(text: string, max = QUOTE_MAX): string {
-  let out = text;
+  let out = stripControl(text.split(/\r?\n/)[0]!).replace(FORMAT_CHARS, '');
   for (const [mask, replacement] of MASKS) out = out.replace(mask, replacement);
-  return stripControl(out.split(/\r?\n/)[0]!).slice(0, max);
+  return maskSecretAssignment(out).slice(0, max);
 }
 
 export interface Assembled {
@@ -201,15 +232,22 @@ export interface Assembled {
   readonly notApplicable: string[];
 }
 
-/** The item whose findings never store a quote: a secret's line is evidence enough as `file:line`. */
+/**
+ * The item whose findings store no model text at all: a secret's line is evidence enough as
+ * `file:line`, and the model's own words about it may repeat the secret.
+ */
 const NO_QUOTE_ITEM = 'S7';
+const S7_FAILS_WHEN = 'a secret appears in the change on this line';
+const S7_FIX = 'remove it from the source and keep it in a secret binding; rotate it if it was ever pushed';
 
 /**
  * The assembler's drop rule. A finding is kept only when its file was sent, its line exists and
- * is one the change adds or alters or one bordering a removal, its trimmed quote is on that line, its item is judgement-marked, it is not a duplicate of one already
- * kept, and its item is not also claimed clean or not applicable; anything else, and every off-spec
- * entry, is dropped and counted. Severity comes from the checklist and every kept finding is
- * `reader`-confirmed. Every stored model string is redacted; an S7 finding keeps no quote.
+ * is one the change adds or alters or one bordering a removal, its trimmed quote is on that line,
+ * its item is judgement-marked, and it is not a duplicate of one already kept; anything else, and
+ * every off-spec entry, is dropped and counted. A kept finding outranks the reply's claim that its
+ * item is clean or not applicable: the claim is removed. Severity comes from the checklist and
+ * every kept finding is `reader`-confirmed. Every stored model string is redacted; an S7 finding
+ * keeps no model text, only fixed text and `file:line`.
  */
 export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Assembled {
   const sent = new Map(files.map((file) => [file.path, { lines: file.text.split('\n'), changed: file.changed ?? 'all', near: nearRemovals(file) }]));
@@ -226,9 +264,6 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
     return altered && quoted(file, line, quote);
   };
   const known = (ids: string[]) => [...new Set(ids)].filter((id) => REVIEW_ITEMS.some((item) => item.id === id)).sort();
-  const checkedClean = known(reply.checkedClean);
-  const notApplicable = known(reply.notApplicable);
-  const claimed = new Set([...checkedClean, ...notApplicable]);
   const seen = new Set<string>();
   const findings: ReviewFinding[] = [];
   let dropped = reply.offSpec;
@@ -243,14 +278,15 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
   };
   for (const f of reply.findings) {
     const rule = JUDGEMENT.get(f.item);
-    if (!rule || claimed.has(rule.id) || !onLine(f.file, f.line, f.quote)) {
+    if (!rule || !onLine(f.file, f.line, f.quote)) {
       dropped++;
       continue;
     }
     keep({
-      item: rule.id, severity: rule.severity, confirmation: 'reader', file: stripControl(f.file), line: f.line,
+      item: rule.id, severity: rule.severity, confirmation: 'reader', file: f.file, line: f.line,
       quote: rule.id === NO_QUOTE_ITEM ? '' : redact(f.quote.trim()),
-      failsWhen: redact(f.failsWhen, 500), fix: redact(f.fix, 500), unconfirmed: f.unconfirmed === true,
+      failsWhen: rule.id === NO_QUOTE_ITEM ? S7_FAILS_WHEN : redact(f.failsWhen, 500),
+      fix: rule.id === NO_QUOTE_ITEM ? S7_FIX : redact(f.fix, 500), unconfirmed: f.unconfirmed === true,
     });
   }
   // Text addressed to the reviewer is a tripwire wherever it sits: one an earlier push landed on a
@@ -261,12 +297,14 @@ export function assemble(reply: ReviewReply, files: readonly ChangedFile[]): Ass
       continue;
     }
     keep({
-      item: 'outside', severity: 'advisory', confirmation: 'reader', file: stripControl(a.file), line: a.line,
+      item: 'outside', severity: 'advisory', confirmation: 'reader', file: a.file, line: a.line,
       quote: redact(a.quote.trim()), failsWhen: 'text in the change addresses the reviewer', fix: 'remove it, or say why it belongs in the change',
       unconfirmed: false,
     });
   }
   const order = (f: ReviewFinding) => (f.item === 'outside' ? 2 : f.severity === 'blocking' ? 0 : 1);
   findings.sort((a, b) => order(a) - order(b) || a.item.localeCompare(b.item) || a.file.localeCompare(b.file) || a.line - b.line);
-  return { findings, dropped, checkedClean, notApplicable };
+  const found = new Set(findings.map((f) => f.item));
+  const unclaimed = (ids: string[]) => known(ids).filter((id) => !found.has(id));
+  return { findings, dropped, checkedClean: unclaimed(reply.checkedClean), notApplicable: unclaimed(reply.notApplicable) };
 }

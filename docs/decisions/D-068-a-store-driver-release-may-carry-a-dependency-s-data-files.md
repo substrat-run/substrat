@@ -3,7 +3,7 @@ id: D-68
 date: 2026-11-01
 layer: plan
 title: "A store-driver release may carry a dependency's data files beside its modules"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-63"]
 tracking: ["#2300", "#2390"]
@@ -11,9 +11,8 @@ tracking: ["#2300", "#2390"]
 
 # D-68 — A store-driver release may carry a dependency's data files beside its modules
 
-> **Proposed 2026-11-01, not ratified.** Written with the graph driver's first release, which does not
-> fit the 1000-module limit without hiding files in an archive. It asks for a choice between the options
-> below; the proposers prefer the first.
+> **Ratified 2026-11-07, choosing option 1.** Written with the graph driver's first release, which does
+> not fit the 1000-module limit without hiding files in an archive.
 
 **A store-driver release counts only Python code toward its module limit, and carries a dependency's
 data files beside its modules (option 1 below).** Every file still counts toward the byte limit and a
@@ -35,7 +34,7 @@ release is 1 318 files and 7.4 MB, well under 10 MiB.
 
 ## Options
 
-1. **Count only Python code toward the module limit (preferred).** A file Python can import counts as a
+1. **Count only Python code toward the module limit (chosen).** A file Python can import counts as a
    module: source (`.py`), bytecode (`.pyc`), and a compiled extension or a shared library it links
    (`.so`, also `.so.1.2`). Bytecode counts because Pyodide imports a `.pyc` without its source, so
    counting `.py` alone would let code pass as data. Any other file in `python_modules/` counts toward
@@ -58,8 +57,7 @@ release is 1 318 files and 7.4 MB, well under 10 MiB.
   can put a data file on `sys.path` or `exec` it, whatever its name. A plain file can be listed and compared
   by name where an archive cannot, which is the difference from option 3, and the review of a release still
   covers its data files.
-- With option 1, `isPythonCodeModule` decides what counts, and both the upload's schema
+- `isPythonCodeModule` decides what counts, and both the upload's schema
   (`storeDriverReleaseUpload`) and the CLI's walk count with it. D-63's sentence on the limits is
-  amended. The branch that proposes this record implements option 1, so option 2 would replace that
-  count rather than add to it.
+  amended. [#2809](https://github.com/substrat-run/substrat/pull/2809) implements this.
 - The graph driver's release then ships `tzdata` as plain files, and its packer writes no archive.

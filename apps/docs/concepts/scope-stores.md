@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope, declared by the vertical and called through getScopeStore. The graph driver is registered; no release is approved and it serves no vertical yet."
+description: "A platform-run object per scope, declared by the vertical and called through getScopeStore. The graph driver is registered; no release is approved yet, and the one vertical it names is not deployed."
 ---
 
 # Scope stores
@@ -151,15 +151,15 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first release of a driver is approved, since only an approved release can hold data. The second can follow.
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before a release of a driver is approved in production, since only an approved release can hold data. A test environment holds synthetic data, so a release may be approved there first. The second group can follow.
 
-Before the first approved release:
+Before the first approved release in production:
 
-- **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
+- **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come ([#2285](https://github.com/substrat-run/substrat/issues/2285)).
 
 Later:
 
-- **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so the platform refuses a subject erasure that would reach a graph store (501) and keeps the key, rather than record an erasure that removed nothing. Until it does, a graph store is meant for synthetic data only, and the driver serves only the verticals its registration names, none yet.
+- **The graph driver does not erase a subject yet.** Its `substrat.erase` answers `{ erased: 0 }`, so the platform refuses a subject erasure that would reach a graph store (501) and keeps the key, rather than record an erasure that removed nothing. Until it does, a graph store is meant for synthetic data only, and the driver serves only the verticals its registration names, `modeling-studio` alone so far.
 - **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another driver. The explicit retire step is still to come.
 - **A store past one request.** A store of more than 300 pages cannot be backed up, restored or snapshotted yet: nothing moves the rest outside the request. A full pull or a tenant export still reads a store whole into its one answer.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
