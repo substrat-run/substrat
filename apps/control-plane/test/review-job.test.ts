@@ -497,7 +497,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a := assignment', 'token := s3cr3tVALUE'],
     ['a => assignment', 'password => "s3cr3tVALUE"'],
     ['a bearer header', 'Authorization: Bearer s3cr3tVALUE'],
-    ['a basic header', 'headers.set("x", "Basic s3cr3tVALUE")'],
+    ['a basic header', 'headers.set("x", "Basic s3cr3tVALUE42")'],
+    ['a letters-only basic credential', 'Basic dXNlcjpzM2NyM3R' + 'WQUxVRQs3cr3tVALUE'],
     ['an unclosed quote', 'password = "s3cr3tVALUE'],
     ['JSON-escaped keys', '{\\"password\\":\\"s3cr3tVALUE\\"}'],
     ['an escaped inner quote', 'secret = "a\\"s3cr3tVALUE"'],
@@ -505,6 +506,21 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['URL userinfo with no user', 'redis://:s3cr3tVALUE@cache:6379'],
     ['a zero-width character inside a value', 'password = s3cr\u200b3tVALUE'],
     ['a soft hyphen inside a token shape', `x = ${'gh' + 'p_' + 'a1'.repeat(9)}\u00ad${'a1'.repeat(9)}`],
+    ...['DB_PASS', 'SMTP_PASS', 'PGPASSWORD', 'passphrase', 'passcode', 'userpass', 'DBPassword', 'APIToken', 'JWTSecret', 'AWSSecretKey',
+      'clientsecret', 'accesstoken', 'authtoken', 'apitoken', 'api_keys', 'tokens', 'signing_key', 'encryption_key', 'HMAC_KEY', 'master_key',
+      'ssh_key', 'AUTH_KEY', 'client_key', 'password1', 'secret2', 'passwd', 'access_key'].map((name) => [`the name ${name}`, `${name} = "s3cr3tVALUE"`]),
+    ['a quoted dotted name', '"db.password": "s3cr3tVALUE"'],
+    ['a quoted config path', "'spring.datasource.password': 's3cr3tVALUE'"],
+    ['a quoted name with a space', '"my password": "s3cr3tVALUE"'],
+    ['a quoted dotted token name', '"auth.token" = s3cr3tVALUE'],
+    ['a two-word name', 'api key: s3cr3tVALUE'],
+    ['a bracketed key', 'config["password"] = "s3cr3tVALUE"'],
+    ['an environment lookup', 'os.environ["API_KEY"] = "s3cr3tVALUE"'],
+    ['a cookie header', 'Cookie: session=s3cr3tVALUE'],
+    ['a command-line flag', 'run --password s3cr3tVALUE'],
+    ['a comparison', 'if (password == "s3cr3tVALUE") {'],
+    ['a lower-case bearer scheme', 'authorization: bearer s3cr3tVALUE-9z'],
+    ['a lower-case scheme with no secret name', 'the header carries bearer s3cr3tVALUE-9z'],
   ])('masks %s', (_label, line) => {
     const out = redact(line);
     expect(out).not.toContain('s3cr3tVALUE');
@@ -512,15 +528,137 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(out).toContain('[redacted]');
   });
 
-  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1'])(
+  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged'])(
     'leaves %s as it is', (line) => expect(redact(line)).toBe(line),
   );
+
+  it('masks only the value in an explanation, so its words survive', () => {
+    expect(redact('reads the token: it never calls ctx.check', 500, 'value')).toBe('reads the token: it never calls ctx.check');
+    expect(redact('drop password=hunter22 from the source', 500, 'value')).toBe('drop password=[redacted] from the source');
+    expect(redact('the line sets secret: "s3cr3t VALUE" and logs it', 500, 'value')).toBe('the line sets secret: [redacted] and logs it');
+  });
+
+  // Every mask starts only where no character of its own run precedes it, so a long run is scanned
+  // once: unanchored, a 64K run of name characters took seconds. The bound is generous.
+  it('redacts a long run of name characters in linear time', () => {
+    const started = Date.now();
+    for (const run of ['a_', 'a.', 'a-', 'a%']) {
+      redact(`${run.repeat(32_768)}: x`);
+      redact(`${run.repeat(32_768)}@`, 500, 'value');
+      redact(`${run.repeat(32_768)}://`, 500, 'value');
+    }
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
 
   it('never reads clean with a failed or blocked gate, and counts dropped findings and files not sent', () => {
     const base = { state: 'completed' as const, reason: null, findings: [], checklistDigest: REVIEW_RULES_DIGEST, dropped: 2, notSent: [{ path: 'a', rule: 'binary' as const }] };
     expect(reviewHeadline({ ...base, gates: [{ name: 'g', status: 'failed' }, { name: 'h', status: 'blocked' }] }))
       .toBe(`Substrat review: 0 blocking, 0 advisory · rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · gates failed · gates blocked · 2 dropped · 1 not sent`);
     expect(reviewHeadline({ ...base, dropped: 0, notSent: [], gates: [] })).toBe(`Substrat review: 0 blocking, 0 advisory · rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · gates not run`);
+  });
+});
+
+describe('the job object: held results', () => {
+  const inObject = async (name: string, body: (storage: DurableObjectStorage) => Promise<void>) => {
+    const stub = testEnv.REVIEW_JOBS.get(testEnv.REVIEW_JOBS.idFromName(name));
+    await runInDurableObject(stub as never, async (_instance, state: DurableObjectState) => {
+      await state.storage.deleteAlarm();
+      await state.storage.deleteAll();
+      await body(state.storage);
+    });
+  };
+  const failingPut = (failures: { n: number }) => ({
+    get: (...a: Parameters<R2Bucket['get']>) => bucket.get(...a),
+    head: (...a: Parameters<R2Bucket['head']>) => bucket.head(...a),
+    put: async (...a: Parameters<R2Bucket['put']>) => { if (failures.n-- > 0) throw new Error('R2 down'); return bucket.put(...a); },
+  }) as unknown as R2Bucket;
+  const refusingHold = (storage: DurableObjectStorage) => new Proxy(storage, {
+    get: (target, key) => (key === 'put'
+      ? async (k: string, v: unknown) => { if (k === 'held') throw new Error('string or blob too big: SQLITE_TOOBIG'); return target.put(k, v); }
+      : (Reflect.get(target, key, target) as { bind?: (t: unknown) => unknown }).bind?.(target) ?? Reflect.get(target, key, target)),
+  }) as DurableObjectStorage;
+
+  it('a long not-sent list is held capped, its full count kept, and the headline counts from it', async () => {
+    const binaries = Array.from({ length: REVIEW_LIST_MAX + 50 }, (_, i) => ({ path: `img/f${i}.png`, bytes: new Uint8Array([i % 250, 0, 1]) }));
+    const { id, actor } = await stored([...CHANGED.source, ...binaries], CHANGED.base);
+    await inObject(`notsent-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt: 0 });
+      await reviewAlarm(storage, deps(double([{ text: reply({ findings: [] }) }])));
+    });
+    const record = (await readReview(bucket, actor, id))!;
+    expect(record.notSent).toHaveLength(REVIEW_LIST_MAX);
+    expect(record.notSentCount).toBe(REVIEW_LIST_MAX + 50);
+    expect(record.headline).toContain(`· ${REVIEW_LIST_MAX + 50} not sent`);
+  });
+
+  it('a result that cannot be held is written straight away with its ledger line; if that write fails too, the job re-arms', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const second = await stored(CHANGED.source, CHANGED.base);
+    const lines: string[] = [];
+    const recordUsage = async (u: { requestId: string }) => { lines.push(u.requestId); return { recorded: true }; };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await inObject(`fallback-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt: 0 });
+      await reviewAlarm(refusingHold(storage), deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage }));
+      expect(await storage.get('job')).toBeUndefined();
+      await storage.put('job', { reviewId: second.id, attempt: 0 });
+      const at = Date.now() + 86_400_000;
+      await reviewAlarm(refusingHold(storage), deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage, bucket: failingPut({ n: 1 }) }), () => at);
+      expect(await storage.getAlarm()).toBe(at + REVIEW_WRITE_RETRY_MS);
+    });
+    expect(lines).toEqual([id, second.id]);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed' });
+  });
+
+  it('a held result past the receipt’s expiry, or whose receipt was pruned, writes nothing and forgets the job', async () => {
+    const expired = await stored(CHANGED.source, CHANGED.base);
+    const pruned = await stored(CHANGED.source, CHANGED.base);
+    for (const [review, prepare] of [
+      [expired, async () => {}],
+      [pruned, async () => bucket.delete(`records/${pruned.id}.json`)],
+    ] as const) {
+      await inObject(`expiry-${review.id}`, async (storage) => {
+        await storage.put('job', { reviewId: review.id, attempt: 1 });
+        const { headline: _h, ...rest } = (await readReview(bucket, review.actor, review.id))!;
+        const expiresAt = review === expired ? new Date(Date.now() - 1_000).toISOString() : rest.expiresAt;
+        await storage.put('held', { result: { ...rest, state: 'completed', startedAt: 'a', finishedAt: 'b' }, expiresAt });
+        await prepare();
+        await reviewAlarm(storage, deps(double([])));
+        expect(await storage.get('job')).toBeUndefined();
+      });
+      expect(await bucket.head(`results/${review.id}.json`)).toBeNull();
+    }
+  });
+
+  it('a receipt that cannot be read does not stop the write; a rejected ledger line stays held and is written on the next alarm; a sync throw is caught', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const lines: string[] = [];
+    let ledger: 'reject' | 'throw' | 'ok' = 'reject';
+    const recordUsage = (u: { requestId: string }) => {
+      if (ledger === 'throw') throw new Error('sync');
+      if (ledger === 'reject') return Promise.reject(new Error('directory down'));
+      lines.push(u.requestId);
+      return Promise.resolve({ recorded: true });
+    };
+    const unreadableReceipt = {
+      get: async (...a: Parameters<R2Bucket['get']>) => { if (String(a[0]).startsWith('records/')) throw new Error('R2 read failed'); return bucket.get(...a); },
+      head: (...a: Parameters<R2Bucket['head']>) => bucket.head(...a),
+      put: async () => { throw new Error('R2 down'); },
+    } as unknown as R2Bucket;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await inObject(`ledger-held-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt: 0 });
+      await reviewAlarm(storage, deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage, bucket: failingPut({ n: 1 }) }));
+      expect(await storage.get<{ usage?: unknown }>('held')).toMatchObject({ usage: { requestId: id } });
+      ledger = 'throw';
+      await expect(reviewAlarm(storage, deps(double([]), {}, { recordUsage, bucket: unreadableReceipt }))).resolves.toBeUndefined();
+      expect(await storage.get<{ usage?: unknown }>('held')).toMatchObject({ usage: { requestId: id } });
+      ledger = 'ok';
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    expect(lines).toEqual([id]);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed' });
   });
 });
 

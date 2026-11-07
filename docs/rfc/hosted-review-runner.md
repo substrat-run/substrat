@@ -907,6 +907,8 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 - **The gateway pair is a separate key, not a separate credential.** The control plane reads a
   gateway credential pair under its own keys; a separate key does not by itself mean a separate
   credential.
+- **Long path lists are cut.** A record lists at most 200 files not sent and 200 deleted paths,
+  with the full counts beside them; the headline counts from the full number.
 - **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
   call goes to the account's default gateway; naming another gateway is a later change.
 
