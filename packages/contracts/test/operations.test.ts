@@ -851,3 +851,23 @@ describe('operationInputsOf: a paged read’s declared order', () => {
     expect(() => parse('acme/newest', { order: 'sideways' })).toThrow();
   });
 });
+
+describe('a join that takes the caller\'s own address (K-61)', () => {
+  const declared = (name: string, input: z.ZodObject<z.ZodRawShape>) => () =>
+    defineOperations({}, ['x:use'] as const)({
+      [name]: { summary: 'x', permission: 'x:use', input, output: z.object({ id: z.string() }) },
+    } as never);
+
+  it.each(['todo/join', 'shop/sign-up', 'shop/signup'])('refuses %s taking an email', (name) => {
+    expect(declared(name, z.object({ email: z.string(), displayName: z.string() }))).toThrow(/ctx\.verifiedEmail/);
+  });
+
+  it.each([
+    ['a join with no address', 'todo/join', z.object({ displayName: z.string() })],
+    ['a join naming somebody else by id', 'booking/join', z.object({ partyRef: z.string() })],
+    ['staff recording someone', 'customer/register', z.object({ email: z.string() })],
+    ['sharing with an address', 'todo/share-list', z.object({ email: z.string() })],
+  ])('leaves %s alone', (_label, name, input) => {
+    expect(declared(name, input)).not.toThrow();
+  });
+});

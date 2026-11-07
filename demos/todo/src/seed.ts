@@ -84,8 +84,8 @@ export async function seed(host: ScopeHost): Promise<World> {
         node: { tenantId: t, scopeId: s },
       });
       // Claim the account through the operation — never a raw INSERT from here.
-      const stub = await host.getScope(p.principal, t, s);
-      await stub.invoke('todo/join', { email: p.email, displayName: p.name });
+      const stub = await host.getScope(p.principal, t, s, { verifiedEmail: p.email });
+      await stub.invoke('todo/join', { displayName: p.name });
 
       await grantOwner(host, world.staff, { tenantId: t, scopeId: s }, p.principal);
     }

@@ -179,7 +179,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   'todo/join': {
     summary: 'Claim your account in this workspace',
     permission: 'list:create',
-    input: z.object({ email: z.string().email(), displayName: z.string().min(1) }),
+    input: z.object({ displayName: z.string().min(1) }),
     output: todoEntities.owner.fields,
     http: { method: 'POST', path: '/join' },
     emits: {

@@ -37,8 +37,8 @@ beforeAll(async () => {
   const danaId = principalId.parse(ulid());
   const node = { tenantId: world.tenant, scopeId: world.scope };
   await host.admin.assignRole(world.staff, { principalId: danaId, roleKey: 'member', node });
-  dana = await host.getScope(danaId, world.tenant, world.scope);
-  await dana.invoke('todo/join', { email: 'dana@example.com', displayName: 'Dana' });
+  dana = await host.getScope(danaId, world.tenant, world.scope, { verifiedEmail: 'dana@example.com' });
+  await dana.invoke('todo/join', { displayName: 'Dana' });
   await grantOwner(host, world.staff, node, danaId);
 
   holiday = (await dana.invoke<List>('todo/create-list', { name: 'Holiday' })).id;

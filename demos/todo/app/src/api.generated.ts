@@ -164,7 +164,7 @@ export interface TodoClient {
    *
    * `POST /join` — `todo/join`
    */
-  join(input: { email: string; displayName: string }): Promise<Owner>;
+  join(input: { displayName: string }): Promise<Owner>;
 
   /**
    * Who is invited to this list and has not joined

@@ -91,7 +91,7 @@ app.get('/api/me', async (c) => {
 async function stub(c: Context): Promise<ScopeStub> {
   const caller = await login.caller(c.req.raw.headers);
   if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
-  return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
+  return host.getScope(caller.principal, caller.tenantId, caller.scopeId, { verifiedEmail: caller.verifiedEmail });
 }
 
 // Everything else — including `/api/invoke` and the shared error envelope.
