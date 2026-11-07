@@ -762,7 +762,7 @@ function IssuesPanel({ teamId, d }: { teamId: string; d: Deployment }) {
           rows={rows}
           rowKey={(g) => g.fingerprint}
           columns={[
-            { header: 'Count', render: (g) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{g.count}×</span> },
+            { header: 'Count', width: 64, render: (g) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{g.count}×</span> },
             {
               header: 'Shape',
               render: (g) => (
@@ -833,7 +833,7 @@ function FailuresPanel({ teamId, d }: { teamId: string; d: Deployment }) {
           rows={rows}
           rowKey={(f) => f.id}
           columns={[
-            { header: 'When', render: (f) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(f.at).toLocaleString()}</span> },
+            { header: 'When', render: (f) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, whiteSpace: 'nowrap' }}>{new Date(f.at).toLocaleString()}</span> },
             {
               header: 'Operation',
               render: (f) => (
@@ -850,7 +850,7 @@ function FailuresPanel({ teamId, d }: { teamId: string; d: Deployment }) {
             {
               header: 'Detail',
               render: (f) => (
-                <span title={f.message} style={{ ...ellipsis, maxWidth: 320, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                <span title={f.message} style={{ ...ellipsis, maxWidth: 240, fontSize: 12.5, color: 'var(--text-secondary)' }}>
                   {f.message}
                 </span>
               ),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Button, Checkbox, Dialog, Input, Select, Table, type TableColumn } from '@substrat-run/ui/wa';
 import { teamApi, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
 import {
@@ -46,6 +46,9 @@ const STATUS_PILL = new Map<string, PillKind>([
   ['archiving', 'warning'],
   ['archived', 'neutral'],
 ]);
+
+// Taller than the default row: the install cell is two lines and the names wrap.
+const TALL_ROWS = { '--sub-table-cell-padding-block': '10px' } as CSSProperties;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -330,7 +333,7 @@ export function BoundScopes({
 
       {installs.length > 0 && (
         <div style={{ ...card, overflow: 'hidden' }}>
-          <Table label="Installs" columns={columns('Install')} rows={installs} rowKey={(s) => s.id} />
+          <Table label="Installs" columns={columns('Install')} rows={installs} rowKey={(s) => s.id} style={TALL_ROWS} />
         </div>
       )}
       {forks.length > 0 && (
@@ -353,7 +356,7 @@ export function BoundScopes({
       )}
       {showForks && forks.length > 0 && (
         <div style={{ ...card, overflow: 'hidden' }}>
-          <Table label="Snapshot forks" columns={columns('Snapshot fork')} rows={forks} rowKey={(s) => s.id} />
+          <Table label="Snapshot forks" columns={columns('Snapshot fork')} rows={forks} rowKey={(s) => s.id} style={TALL_ROWS} />
         </div>
       )}
 
