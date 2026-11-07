@@ -1,6 +1,6 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useRef, useState } from 'react';
-import { Button, Input } from '@substrat-run/ui';
+import { Button, Input } from '@substrat-run/ui/wa';
 import { type EventFacetAnswer, api, isApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';

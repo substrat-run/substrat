@@ -1,4 +1,4 @@
-import { Checkbox } from '@substrat-run/ui';
+import { Checkbox } from '@substrat-run/ui/wa';
 import type { ExportBreakSection } from '../lib/promote-review';
 import { MonoTag, Pill } from './ui';
 

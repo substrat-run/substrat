@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
-import { Button, Select, Tabs } from '@substrat-run/ui';
+import { Button, Select, Tabs } from '@substrat-run/ui/wa';
 import { api, teamApi, type AppRow, type LifecycleFlowResult, type ProcessMapView, type ProcessPeriod } from '../lib/api';
 import { AiText, useAiOffered } from '../components/AiText';
 import { mockExplanations } from '../lib/explanations';

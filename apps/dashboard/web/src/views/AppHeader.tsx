@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type ReactNode } from 'react';
-import { Badge, Button } from '@substrat-run/ui';
+import { Badge, Button } from '@substrat-run/ui/wa';
 import { api, type AppHealthRow, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { VERDICTS, appVerdict } from '../lib/fleet-rows';

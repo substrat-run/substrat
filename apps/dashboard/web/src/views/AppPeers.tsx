@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Dialog, Input } from '@substrat-run/ui';
+import { Button, Dialog, Input } from '@substrat-run/ui/wa';
 import { showPeerDisclosure } from '../lib/peer-disclosure';
 import { changePeerAccess, validPeerReason } from '../lib/peer-switch';
 import { teamApi, type AppPeersView, type DeclaredCallRow, type PeerCallerRow } from '../lib/api';

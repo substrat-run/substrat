@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Dialog } from '@substrat-run/ui';
+import { Dialog } from '@substrat-run/ui/wa';
 import type { AppEnvValue, EnvVarSpec } from '../lib/api';
 
 export type EnvEntry = { key: string; value: string; secret: boolean };

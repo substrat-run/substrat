@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RequestIdNote, requestIdOf } from '../components/RequestIdNote';
-import { Button, Input, Select } from '@substrat-run/ui';
+import { Button, Input, Select } from '@substrat-run/ui/wa';
 import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec } from '../lib/api';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';

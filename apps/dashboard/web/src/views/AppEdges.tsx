@@ -11,7 +11,7 @@ import {
   type EdgeHealthReport,
   type LeverMode,
 } from '@substrat-run/contracts';
-import { Button, Dialog, Input } from '@substrat-run/ui';
+import { Button, Dialog, Input } from '@substrat-run/ui/wa';
 import { teamApi } from '../lib/api';
 import { validPeerReason } from '../lib/peer-switch';
 import { Pill, card } from '../components/ui';

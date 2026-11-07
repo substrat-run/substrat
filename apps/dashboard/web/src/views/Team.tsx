@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui';
+import { Button, Dialog, Input, Select } from '@substrat-run/ui/wa';
 import type { InviteRole, Member } from '../lib/api';
 import { Ic } from '../lib/icons';
 import { Avatar } from '../components/DashShell';

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
+import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui/wa';
 import { ApiError, type FindingEntry, type FindingRuleEntry } from '../lib/api.generated';
 import { relativeTime, untilTime } from '../lib/format';
 import { card } from '../components/ui';

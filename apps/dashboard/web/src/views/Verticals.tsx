@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Select } from '@substrat-run/ui';
+import { Button, Input, Select } from '@substrat-run/ui/wa';
 import {
   api,
   connectGithub,

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { Button, KeyValue, Select } from '@substrat-run/ui';
+import { KeyValue } from '@substrat-run/ui';
+import { Button, Select } from '@substrat-run/ui/wa';
 import { api, isApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
 import { requestIdOf } from '../components/RequestIdNote';
 import { DEV_MOCK } from '../lib/mock';

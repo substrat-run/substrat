@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui';
+import { Button, Dialog, Input, Select } from '@substrat-run/ui/wa';
 import { teamApi, type AppRow, type DnsRecord, type DomainRow } from '../lib/api';
 import { ApiError } from '../lib/api.generated';
 import { DEV_MOCK } from '../lib/mock';

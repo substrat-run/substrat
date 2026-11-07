@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Badge, Button, Tabs } from '@substrat-run/ui';
+import { Badge, Button, Tabs } from '@substrat-run/ui/wa';
 import {
   api,
   isApiError,

@@ -1,6 +1,6 @@
 import { compareNamed } from '../lib/name-order';
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Input, Select } from '@substrat-run/ui';
+import { Button, Input, Select } from '@substrat-run/ui/wa';
 import type { AppRow, InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
 import { relativeTime } from '../lib/format';

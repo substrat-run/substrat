@@ -19,7 +19,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@awesome.me/webawesome": "3.14.0",
     "@substrat-run/elements": "workspace:^"
   },
   "peerDependencies": {

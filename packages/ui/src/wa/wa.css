@@ -2,7 +2,6 @@
    theme, then those tokens from ours. */
 @import "@substrat-run/elements/themes/base.css";
 @import "../elements-theme.css";
-@import "@awesome.me/webawesome/dist/styles/utilities/visually-hidden.css";
 
 /* Web Awesome's parts, at the density of our screens. */
 wa-input::part(hint),

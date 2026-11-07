@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
+import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui/wa';
 import { teamApi, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
 import {
   boundScopesSummary,

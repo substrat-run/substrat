@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Badge, Button, openSupport } from '@substrat-run/ui';
+import { openSupport } from '@substrat-run/ui';
+import { Badge, Button } from '@substrat-run/ui/wa';
 import { foldTurn, historyFor, type AskTurn } from '../lib/ask';
 import { writtenAtLabel } from '../lib/explanations';
 import { Ic, type IconName } from '../lib/icons';

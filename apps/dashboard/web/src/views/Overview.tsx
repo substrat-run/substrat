@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { Badge, Button, Input, Select } from '@substrat-run/ui';
+import { Badge, Button, Input, Select } from '@substrat-run/ui/wa';
 import { api, isApiError, type AccountIntegration, type AppHealthRow, type AppRow, type AuditEntry, type InstallStep } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';

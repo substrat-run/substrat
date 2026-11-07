@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Badge } from '@substrat-run/ui';
+import { Badge } from '@substrat-run/ui/wa';
 import { isPlainClick, navigate, obsPath, teamPath } from '../lib/router';
 import { api, type AppHealthRow, type AppMetricsView, type AppRow } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_METRICS, MOCK_FLEET_HEALTH } from '../lib/mock';

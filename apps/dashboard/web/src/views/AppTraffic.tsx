@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
-import { Button } from '@substrat-run/ui';
+import { Button } from '@substrat-run/ui/wa';
 import { api, isApiError, teamApi, type AppOverlays, type TenantMetricsRow, type TrafficSeries } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import type { MetricsState } from '../lib/use-tenant-metrics';
