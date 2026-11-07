@@ -170,14 +170,15 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
   it('registers graph on the hosted registry, on the decision record that lifts its isolation (D-67)', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
     expect(STORE_DRIVERS).toEqual([
-      { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, verticals: [], erasure: 'pending', dumpPageMaxBytes: 900_000 },
+      { driver: 'graph', isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' }, verticals: ['modeling-studio'], erasure: 'pending', dumpPageMaxBytes: 900_000 },
     ]);
     expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
   });
 
-  it('serves only the verticals a registration names (D-67): graph serves none yet', () => {
+  it('serves only the verticals a registration names (D-67): graph serves modeling-studio alone', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores, vertical: 'modeling-studio' })).not.toThrow();
     const named: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, verticals: ['notes'], dumpPageMaxBytes: 1000 };
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, vertical: 'notes' })).toThrow(
       "deploy refused: scope store 'GRAPH' declares driver 'graph', which does not serve vertical 'notes'.",
