@@ -1,5 +1,24 @@
 # @substrat-run/vertical-host
 
+## 0.186.0
+
+### Minor Changes
+
+- 5ece1dc: A model request takes `abortSignal` and `maxRetries`, so a host with a deadline can abort a call and make one request one HTTP call.
+- 6a3b322: contracts: `codeForRefusalStatus` (the code a status-only refusal carries, never moving its status) and `problemCodeOf` (the taxonomy code a parsed refusal body declared).
+  control-plane-api: `ConnectionRelayError` and `ConnectUrlRelayError` carry the `code` their status does, and their refusals answer with it.
+  vertical-host: the connection, connect-url, connect-link and mail-in errors expose the platform refusal's code as `problemCode`, and read its sentence with `problemDetail`.
+
+### Patch Changes
+
+- Updated dependencies [589ae99]
+- Updated dependencies [179b4ae]
+- Updated dependencies [aba7e34]
+- Updated dependencies [6a3b322]
+  - @substrat-run/contracts@0.186.0
+  - @substrat-run/kernel@0.186.0
+  - @substrat-run/model-providers@0.5.76
+
 ## 0.185.0
 
 ### Patch Changes

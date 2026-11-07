@@ -1,5 +1,25 @@
 # @substrat-run/dashboard
 
+## 0.49.4
+
+### Patch Changes
+
+- Updated dependencies [589ae99]
+- Updated dependencies [5ece1dc]
+- Updated dependencies [179b4ae]
+- Updated dependencies [aba7e34]
+- Updated dependencies [6a3b322]
+  - @substrat-run/contracts@0.186.0
+  - @substrat-run/vertical-host@0.186.0
+  - @substrat-run/control-plane-api@0.186.0
+  - @substrat-run/connector-fortnox@0.7.9
+  - @substrat-run/engine-invites@0.9.63
+  - @substrat-run/engine-protocol@0.13.71
+  - @substrat-run/adapter-cloudflare@0.186.0
+  - @substrat-run/control-plane-client@0.6.8
+  - @substrat-run/kernel@0.186.0
+  - @substrat-run/model-providers@0.5.76
+
 ## 0.49.3
 
 ### Patch Changes
