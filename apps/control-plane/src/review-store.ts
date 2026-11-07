@@ -25,6 +25,13 @@ export interface ReviewResult {
   parseFailures: number;
   startedAt: string;
   finishedAt: string;
+  /**
+   * The rules digest and plugin version the reader half read under, stamped when it read. They
+   * replace intake's stamp on the record, so a deploy between upload and read never names rules
+   * the review was not read against.
+   */
+  checklistDigest: string;
+  pluginVersion: string;
 }
 
 /**
@@ -63,13 +70,19 @@ export interface ReviewReceipt {
 
 /**
  * The report's first line. A finding counts as blocking only when a script confirmed it, so every
- * reader finding is advisory (D4); while any gate is `not run` the line says so and never reads clean.
+ * reader finding is advisory (D4). The line never reads clean while any gate is `not run`,
+ * `failed` or `blocked`, and it counts dropped reader findings and changed files not sent.
  */
-export function reviewHeadline(record: Pick<ReviewRecord, 'state' | 'reason' | 'findings' | 'gates' | 'checklistDigest'>): string {
+export function reviewHeadline(record: Pick<ReviewRecord, 'state' | 'reason' | 'findings' | 'gates' | 'checklistDigest' | 'dropped' | 'notSent'>): string {
   const blocking = record.findings.filter((f) => f.severity === 'blocking' && (f.confirmation as string) === 'script').length;
   const advisory = record.findings.length - blocking;
   const parts = [`Substrat review: ${blocking} blocking, ${advisory} advisory`, `rules ${record.checklistDigest.slice(0, 12)}`];
-  if (record.gates.length === 0 || record.gates.some((g) => g.status === 'not run')) parts.push('gates not run');
+  for (const status of ['failed', 'blocked', 'not run'] as const) {
+    if (record.gates.some((g) => g.status === status)) parts.push(`gates ${status}`);
+  }
+  if (record.gates.length === 0) parts.push('gates not run');
+  if (record.dropped > 0) parts.push(`${record.dropped} dropped`);
+  if (record.notSent.length > 0) parts.push(`${record.notSent.length} not sent`);
   if (record.state !== 'completed') parts.push(record.reason ? `${record.state}: ${record.reason}` : record.state);
   return parts.join(' · ');
 }
