@@ -387,7 +387,16 @@ already answer their expected refusal as a value.
      `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
      sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
      three files to writing no bare `{ error` and reading no throw's `.message` again.
-   - **Still open, surface by surface:** the social relay and the egress worker (#113's remainder). A repo-wide source gate
+   - **`apps/vertical-egress` — built.** The egress worker's own refusals answer `application/problem+json`.
+     An undeclared host and a preview or fork's subrequest are `forbidden`. Their `error` keeps the
+     `outbound refused` label the body always carried, beside `detail`, `host` and `vertical`. A peer call's
+     refusals are `unavailable` (no `PEER_CALLS` binding), `forbidden` (no caller identity) and
+     `validation_failed` (a body that does not parse). The router's peer refusal is relayed by its code only
+     where the catalog answers that code at the router's status, so a target's own refusal is `about:blank`.
+     Statuses, sentences and the `x-substrat-egress: refused` mark are unchanged. A store call keeps the
+     strict `storeResponse` envelope, which the scope host reads into a `StoreError`. `test/worker.test.ts`
+     and `test/peer-call.test.ts` hold the documents.
+   - **Still open, surface by surface:** the social relay (#113's remainder). A repo-wide source gate
      waits until they are converted. `dev-issuer` is done where
      it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
      `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which

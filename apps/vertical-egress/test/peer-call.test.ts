@@ -80,6 +80,8 @@ describe('a peer call through egress (#1706)', () => {
       { vertical: 'acme/crm', operation: 'customer/list', caller: 'acme/somebody-else' },
     );
     expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(await res.json()).toMatchObject({ code: 'validation_failed', status: 400 });
     expect(peer.calls).toHaveLength(0);
   });
 
@@ -97,7 +99,11 @@ describe('a peer call through egress (#1706)', () => {
       expect(res.headers.get('x-substrat-egress')).toBe('refused');
       expect(warn).toHaveBeenCalledTimes(1);
       expect(JSON.parse(warn.mock.calls[0]![0] as string)).toMatchObject({ event: 'egress.refused', verdict: 'peer' });
-      expect((await res.json<{ error: string }>()).error).toMatch(/carries no caller identity/);
+      expect(res.headers.get('content-type')).toBe('application/problem+json');
+      const body = await res.json<{ code: string; detail: string; error: string }>();
+      expect(body.code).toBe('forbidden');
+      expect(body.detail).toMatch(/carries no caller identity/);
+      expect(body.error).toBe(body.detail);
     }
     expect(peer.calls).toHaveLength(0);
     expect(internet).not.toHaveBeenCalled();
@@ -109,22 +115,34 @@ describe('a peer call through egress (#1706)', () => {
     const res = await call(envWith({ OUTBOUND_POLICY: policy() }));
     expect(res.status).toBe(503);
     expect(internet).not.toHaveBeenCalled();
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
     // The refusal NAMES the missing binding and the worker it belongs on: this is a
     // deployment step, and the developer reading it is looking at a vertical's code.
-    const { error } = await res.json<{ error: string }>();
+    const { code, error } = await res.json<{ code: string; error: string }>();
+    expect(code).toBe('unavailable');
     expect(error).toContain('PEER_CALLS');
     expect(error).toContain('substrat-vertical-egress');
   });
 
-  it('the router’s refusal is passed through with its status and reason', async () => {
-    const peer = peerCalls({ ok: false, status: 404, code: 'not_found', message: "vertical 'acme/crm' is not installed in this tenant" });
+  // #113: by the router's code only where the catalog answers it at the router's status. A
+  // target's own refusal (`refused`) and `unavailable` at 502 keep their status as `about:blank`.
+  it.each([
+    [404, 'not_found', 'https://substrat.net/errors/not-found', 'not_found'],
+    [403, 'refused', 'about:blank', undefined],
+    [502, 'unavailable', 'about:blank', undefined],
+  ])('the router’s %i %s refusal is passed through with its status and reason', async (status, routerCode, type, code) => {
+    const message = "vertical 'acme/crm' is not installed in this tenant";
+    const peer = peerCalls({ ok: false, status, code: routerCode, message });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const res = await call(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }));
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(status);
     // Twin: a status the router chose is not the egress worker's refusal, so it is neither marked nor logged.
     expect(res.headers.get('x-substrat-egress')).toBeNull();
     expect(warn).not.toHaveBeenCalled();
-    expect((await res.json<{ error: string }>()).error).toMatch(/not installed in this tenant/);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    const body = await res.json<Record<string, unknown>>();
+    expect(body).toMatchObject({ type, status, detail: message, error: message });
+    expect(body.code).toBe(code);
   });
 
   it('carries the chain depth, so the router can bound A→B→A', async () => {
