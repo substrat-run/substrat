@@ -76,7 +76,7 @@ Exit check: every active dashboard scope reads locally, the matrix passes, and n
 
 ### Phase 2 — guards before any shared write
 
-Code only, no data: fan-out and projection address only scopes of the verticals the host serves; every shared-plane `scopes` enumerator skips the dashboard's own scopes; `ensureCatalog` writes nothing to a directory. Tests cover each (see below). Rollback: revert the PR.
+Code only, no data: fan-out and projection address only scopes of the verticals the host serves; every shared-plane `scopes` enumerator skips the dashboard's own scopes (a backstop: no dashboard scope row is ever written there); `ensureCatalog` writes nothing to a directory. Tests cover each (see below). Rollback: revert the PR.
 
 ### Phase 3 — shadow read
 
@@ -88,7 +88,7 @@ Rollback: switch the shadow read off. Nothing reads its result.
 
 ### Phase 4 — continuous copy, local to shared
 
-Code: an idempotent per-team copy, keyed on the local ids, through the privileged path: the tenant with its status, the dashboard scope row (safe after phase 2), the identity pool and links, role definitions, tuples (a revocation is copied as a revocation and never resurrects a grant), entitlements, orgs, and the GitHub connections (below). It runs after every local tenant-level write, at the same hook as the fan-out, and as a paged staff sweep. It replaces the `/api/me` mirror. A row only the shared side holds is **reported, never deleted**: the builder plane writes some of them. A conflict is reported, never overwritten.
+Code: an idempotent per-team copy, keyed on the local ids, through the privileged path: the tenant with its status (the dashboard scope row is **not** copied; see Decisions), the identity pool and links, role definitions, tuples (a revocation is copied as a revocation and never resurrects a grant), entitlements, orgs, and the GitHub connections (below). It runs after every local tenant-level write, at the same hook as the fan-out, and as a paged staff sweep. It replaces the `/api/me` mirror. A row only the shared side holds is **reported, never deleted**: the builder plane writes some of them. A conflict is reported, never overwritten.
 
 Steps: run the sweep in the test environment and paste the phase-0 inventory totals; then production.
 
@@ -100,7 +100,7 @@ A person reviews every conflicting identity link. The truth is the principal on 
 
 ### Phase 6 — cut over, with a fallback and a reverse copy
 
-Code: a deployment variable selects the shared directory for the dashboard's host. Login reads shared; **when shared has no active membership for a login and local does, the local answer is used and `dashboard.directory-fallback` is logged.** That is what keeps every signed-in user resolving. Writes go to the shared directory, and the phase-4 copy runs in reverse, shared to local, so the local directory stays a valid rollback target.
+Code: a deployment variable selects the shared directory for the dashboard's host. Login reads shared; **when shared has no active membership for a login and local does, the local answer is used and `dashboard.directory-fallback` is logged.** That is what keeps every signed-in user resolving. Scope admission reads the shared tenant status and the scope's own receipt, the status cached 60 seconds (Decisions). Writes go to the shared directory, and the phase-4 copy runs in reverse, shared to local, so the local directory stays a valid rollback target.
 
 Steps: in the test environment, sign in as an existing member, switch team, create a team, invite and accept, remove a member, leave, delete a team, list GitHub repositories, create and update an app; paste pass or fail per step. The same in production on a team staff own. Daily, paste the fallback count and the inventory in both directions.
 
@@ -163,9 +163,8 @@ Settled with this revision:
 - The privileged path is a direct Durable Object binding (Target shape).
 - **GitHub connections are moved** into the shared directory's connection model, not kept in a second store and not reconnected by default: a second store would keep the split alive, and reconnecting makes every team redo an integration that works. A sealed value is copied **sealed**, never opened or logged on the way. Phase 4's design first establishes what a connection row actually holds and which parts are secret; a row that cannot be moved safely is named there, and only that case is reconnected.
 - **The local admin and access logs** are exported privately, before 7b, to a staff-only storage location; the export is kept 90 days and then deleted. The rows themselves go with the class in 7b.
+- **The dashboard scope has no row in the shared `scopes` table** (`scope-local-permissions.md` §9 question 4). It is admitted on the team's tenant status in the shared directory plus the scope's own `provisioned_for` receipt, which names its tenant and refuses any other. A team has exactly one dashboard scope, created and removed with it, so the tenant's status carries its whole lifecycle. With no row, no shared enumerator ever meets a scope that no dispatched script serves, and phase 2's enumerator guard is a backstop rather than a rule every future enumerator must remember. Nothing in front of the dashboard checks lifecycle, so the dashboard reads the tenant's status itself, once per sign-in and team switch, cached for **60 seconds**: suspending or deleting a team takes effect within that window, not on the very next request. Staff tools that need the dashboard scopes derive them from the team list, one per team.
 
-Open, for a human:
-
-1. **Where the dashboard scope is admitted** once local is gone: a row in the shared `scopes` table (which phase 2's enumerator guard makes safe), or the shared tenant's status plus the scope's own provisioning receipt with no shared row (`scope-local-permissions.md` §9 question 4).
+No question is open.
 
 [#1343]: https://github.com/substrat-run/substrat/issues/1343
