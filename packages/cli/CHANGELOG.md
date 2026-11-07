@@ -1,5 +1,23 @@
 # @substrat-run/cli
 
+## 0.58.0
+
+### Minor Changes
+
+- 65c1174: `substrat review <id>` prints a hosted review in the checklist's report shape, and `--wait` polls until the plane's reader half has run.
+
+### Patch Changes
+
+- 179b4ae: `substrat push` and `substrat preview create` refuse a source with no `pnpm-lock.yaml` before uploading, and the generated deploy workflow installs with pnpm alone, because the platform's build does.
+- 5ece1dc: `substrat review <id>` strips terminal control characters from everything it prints.
+- Updated dependencies [589ae99]
+- Updated dependencies [179b4ae]
+- Updated dependencies [aba7e34]
+- Updated dependencies [6a3b322]
+  - @substrat-run/contracts@0.186.0
+  - @substrat-run/control-plane-client@0.6.8
+  - @substrat-run/model-view@0.6.34
+
 ## 0.57.7
 
 ### Patch Changes
