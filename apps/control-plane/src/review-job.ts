@@ -151,6 +151,7 @@ export async function runReviewJob(reviewId: string, attempt: number, deps: Revi
     { maxDiffBytes: positive(deps.config.maxDiffBytes, REVIEW_MAX_DIFF_BYTES) },
   );
   if (diff.kind === 'archive changed') return finish({ ...empty, state: 'incomplete', reason: 'archive changed since intake' });
+  if (diff.kind === 'base unavailable') return finish({ ...empty, state: 'incomplete', reason: 'base archive unavailable or changed' });
   if (diff.kind === 'too large') return skipped(`too large: over ${diff.limit} bytes of changed text`);
   const sent = { notSent: diff.notSent.map((n) => ({ ...n })), deleted: [...diff.deleted], fullTree: diff.fullTree };
   if (diff.files.length === 0 && diff.deleted.length === 0) return skipped('no changed text to read', sent);
