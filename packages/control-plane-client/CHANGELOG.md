@@ -1,5 +1,12 @@
 # @substrat-run/control-plane-client
 
+## 0.6.9
+
+### Patch Changes
+
+- Updated dependencies [c31c3d6]
+  - @substrat-run/contracts@0.187.0
+
 ## 0.6.8
 
 ### Patch Changes

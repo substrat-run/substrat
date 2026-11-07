@@ -1,5 +1,19 @@
 # @substrat-run/vertical-host
 
+## 0.187.0
+
+### Minor Changes
+
+- 86f40c2: A generated app can sign people in once it is deployed. `workerDoor` in `@substrat-run/vertical-host/worker-door` owns the login round-trip, `/api/me`, the owner claim and the provisioning hooks, and hands every operation the caller's verified address. The template's worker uses it, and its `ConfigDO` store is replaced by the `IdentityDO` store `AUTH`. Member invites are not in it yet: a worker that wants them mounts `mountInviteRoutes` with its own admin gate.
+
+### Patch Changes
+
+- Updated dependencies [c31c3d6]
+  - @substrat-run/contracts@0.187.0
+  - @substrat-run/kernel@0.187.0
+  - @substrat-run/vertical-auth@0.32.0
+  - @substrat-run/model-providers@0.5.77
+
 ## 0.186.0
 
 ### Minor Changes

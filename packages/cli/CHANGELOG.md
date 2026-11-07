@@ -1,5 +1,15 @@
 # @substrat-run/cli
 
+## 0.58.1
+
+### Patch Changes
+
+- 96f8f4d: `substrat review <id>` says how many more files a cut not-sent or deleted list leaves out.
+- Updated dependencies [c31c3d6]
+  - @substrat-run/contracts@0.187.0
+  - @substrat-run/control-plane-client@0.6.9
+  - @substrat-run/model-view@0.6.35
+
 ## 0.58.0
 
 ### Minor Changes

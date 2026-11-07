@@ -1,5 +1,13 @@
 # @substrat-run/engine-workorder
 
+## 0.13.12
+
+### Patch Changes
+
+- Updated dependencies [c31c3d6]
+  - @substrat-run/contracts@0.187.0
+  - @substrat-run/kernel@0.187.0
+
 ## 0.13.11
 
 ### Patch Changes
