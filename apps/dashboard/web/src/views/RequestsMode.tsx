@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
+import { Button, Input } from '@substrat-run/ui/wa';
 import { api, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestFacets, mockRequestVolume, mockRequests } from '../lib/mock-requests';
@@ -296,13 +297,9 @@ export function Histogram({
           {volume.estimated && ' · estimated from a sample'}
         </span>
         {onResetZoom && (
-          <button
-            type="button"
-            onClick={onResetZoom}
-            style={{ border: 0, padding: '2px 4px', background: 'transparent', font: 'inherit', fontSize: 12.5, color: 'var(--text-link)', cursor: 'pointer' }}
-          >
+          <Button variant="link" onClick={onResetZoom} style={{ fontSize: 12.5 }}>
             Reset zoom
-          </button>
+          </Button>
         )}
         <span style={{ flex: 1 }} />
         {stack.map((l) =>
@@ -673,7 +670,8 @@ function FindRequest({ onOpenCall }: { onOpenCall: (invocationId: string, atMs: 
   };
   return (
     <form onSubmit={submit} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', flexWrap: 'wrap' }}>
-      <input
+      <Input
+        mono
         type="search"
         value={text}
         onChange={(e) => {
@@ -681,11 +679,12 @@ function FindRequest({ onOpenCall }: { onOpenCall: (invocationId: string, atMs: 
           setProblem(null);
         }}
         placeholder="Find a request by id"
-        aria-label="Find a request by id"
+        ariaLabel="Find a request by id"
         spellCheck={false}
-        style={{ width: 340, maxWidth: '100%', fontFamily: 'var(--font-mono)', fontSize: 13, padding: '6px 10px', border: '1px solid var(--border-default)', borderRadius: 6, background: 'var(--surface-card)', color: 'var(--text-primary)' }}
+        size="sm"
+        style={{ width: 340, maxWidth: '100%' }}
       />
-      <button type="submit" style={{ fontSize: 13, padding: '6px 12px' }}>Open</button>
+      <Button type="submit" size="sm" variant="secondary">Open</Button>
       {problem && <span role="alert" style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{problem}</span>}
     </form>
   );

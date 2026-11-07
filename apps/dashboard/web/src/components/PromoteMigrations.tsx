@@ -1,4 +1,5 @@
 import { useState, type CSSProperties } from 'react';
+import { Button } from '@substrat-run/ui/wa';
 import { clipReviewText, discardTally, reviewLine, reviewSql, type MigrationEntry } from '@substrat-run/contracts';
 import type { MigrationSection } from '../lib/promote-review';
 import { Pill } from './ui';
@@ -152,13 +153,9 @@ function Reason({ text }: { text: string }) {
     <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
       — {open || !clipped ? full : `${shown}…`}
       {clipped && (
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          style={{ marginLeft: 6, border: 'none', background: 'none', padding: 0, color: 'var(--text-link)', cursor: 'pointer', font: 'inherit' }}
-        >
+        <Button variant="link" onClick={() => setOpen((o) => !o)} style={{ marginLeft: 6 }}>
           {open ? 'Show less' : 'Show all'}
-        </button>
+        </Button>
       )}
     </span>
   );

@@ -196,7 +196,7 @@ export function Observability({
     onNav({ app: scopeId, view: 'failures', ...windowAround(m.at) });
   };
 
-  if (resolved.error) return <Page><p role="alert">{resolved.error}</p><button onClick={() => navigateQuery({ ...q, hours: '24', from: undefined, to: undefined })}>Reset time</button></Page>;
+  if (resolved.error) return <Page><p role="alert">{resolved.error}</p><Button onClick={() => navigateQuery({ ...q, hours: '24', from: undefined, to: undefined })}>Reset time</Button></Page>;
 
   const refresh = (
     <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Badge, Button, Tabs } from '@substrat-run/ui/wa';
+import { Badge, Button, IconButton, Tabs } from '@substrat-run/ui/wa';
 import {
   api,
   isApiError,
@@ -337,15 +337,13 @@ export function Pulse({
         {cursor && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, padding: '0 4px 0 10px', fontSize: 12.5, color: 'var(--text-secondary)', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 8 }}>
             Custom interval
-            <button
-              type="button"
-              aria-label="Clear custom time interval"
-              title="Back to the whole range"
+            <IconButton
+              label="Clear custom time interval"
               onClick={() => onPreset(null)}
-              style={{ appearance: 'none', border: 0, background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 6px' }}
+              style={{ '--wa-form-control-height': '20px', '--wa-form-control-padding-inline': '6px', color: 'var(--text-tertiary)', fontSize: 14 } as CSSProperties}
             >
               ×
-            </button>
+            </IconButton>
           </span>
         )}
         <div role="group" aria-label="Time range">
@@ -423,7 +421,7 @@ export function Pulse({
         ) : <Note>{business.rows.length ? 'No app declares a move that opens or ends a record.' : 'No app declares a lifecycle whose moves can be counted yet.'}</Note>}
         {hiddenMoves > 0 && (
           <div style={{ padding: '6px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-            <Button variant="ghost" size="sm" aria-pressed={allMoves} onClick={() => setAllMoves((v) => !v)}>
+            <Button variant="ghost" size="sm" onClick={() => setAllMoves((v) => !v)}>
               {allMoves ? 'Show outcomes only' : `Show all moves (${hiddenMoves} more)`}
             </Button>
           </div>

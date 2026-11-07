@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
+import { Button, IconButton, Input } from '@substrat-run/ui/wa';
 import type { ObsQuery } from '../lib/observability-query';
 import type { LogMode } from '../lib/log-stream';
 import { logChips, parseBarText, windowLabel, without, type LogChip } from '../lib/logs-chips';
@@ -77,22 +78,21 @@ export function LogQueryBar({
               <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.value}>
                 {c.value}
               </span>
-              <button
-                type="button"
-                title="Remove filter"
-                aria-label={`Remove ${c.key} filter`}
+              <IconButton
+                label={`Remove ${c.key} filter`}
                 onClick={() => onQuery(without(query, c.clears))}
-                style={{ width: 16, height: 16, border: 0, background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                style={{ '--wa-form-control-height': '16px', '--wa-form-control-padding-inline': 0, color: 'var(--text-tertiary)', flexShrink: 0 } as CSSProperties}
               >
                 <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
                   <path d="M18 6 6 18" />
                   <path d="m6 6 12 12" />
                 </svg>
-              </button>
+              </IconButton>
             </span>
           ))}
-          <input
-            aria-label={mode === 'events' ? 'Filter event type' : mode === 'requests' ? 'Filter requests' : 'Search logs'}
+          <Input
+            bare
+            ariaLabel={mode === 'events' ? 'Filter event type' : mode === 'requests' ? 'Filter requests' : 'Search logs'}
             value={text}
             placeholder={placeholder}
             onChange={(e) => {
@@ -108,16 +108,12 @@ export function LogQueryBar({
                 onQuery(without(query, chips[chips.length - 1]!.clears));
               }
             }}
-            style={{ flex: 1, minWidth: 180, height: 26, border: 0, outline: 'none', background: 'transparent', color: 'var(--text-primary)', font: 'inherit', fontSize: 13 }}
+            style={{ flex: 1, minWidth: 180, fontSize: 13 }}
           />
           {chips.length > 0 && (
-            <button
-              type="button"
-              onClick={() => onQuery(without(query, chips.flatMap((c) => c.clears)))}
-              style={{ appearance: 'none', border: 0, background: 'none', padding: 0, font: 'inherit', fontSize: 12, color: 'var(--text-link)', cursor: 'pointer' }}
-            >
+            <Button variant="link" onClick={() => onQuery(without(query, chips.flatMap((c) => c.clears)))} style={{ fontSize: 12 }}>
               Clear
-            </button>
+            </Button>
           )}
         </div>
         {children}

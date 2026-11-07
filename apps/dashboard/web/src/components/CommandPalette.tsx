@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { openSupport } from '@substrat-run/ui';
-import { Badge, Button } from '@substrat-run/ui/wa';
+import { Badge, Button, Input, Segmented, type FieldHandle } from '@substrat-run/ui/wa';
 import { foldTurn, historyFor, type AskTurn } from '../lib/ask';
 import { writtenAtLabel } from '../lib/explanations';
 import { Ic, type IconName } from '../lib/icons';
@@ -60,7 +60,7 @@ export function CommandPalette({
   const items = useMemo(() => paletteItems(q, ctx), [q, ctx]);
   const [sel, setSel] = useState(0);
   useEffect(() => setSel(0), [q, mode]);
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<FieldHandle>(null);
   const list = useRef<HTMLDivElement>(null);
   const [support, setSupport] = useState<'idle' | 'bubble' | 'none'>('idle');
   const modes: PaletteMode[] = ask ? ['jump', 'ask', 'support'] : ['jump', 'support'];
@@ -145,14 +145,15 @@ export function CommandPalette({
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, height: 52, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
           <Ic name="search" size={16} color="var(--text-tertiary)" />
-          <input
+          <Input
             ref={input}
+            bare
             autoFocus
             // The query belongs to Jump and waits there for Tab back; Support has nothing to type into here.
             value={mode === 'jump' ? q : mode === 'ask' ? question : ''}
             readOnly={mode === 'support'}
             onChange={(e) => (mode === 'ask' ? setQuestion(e.target.value) : setQ(e.target.value))}
-            aria-label={mode === 'jump' ? 'Jump to' : mode === 'ask' ? 'Ask' : 'Support'}
+            ariaLabel={mode === 'jump' ? 'Jump to' : mode === 'ask' ? 'Ask' : 'Support'}
             maxLength={mode === 'ask' ? 4000 : undefined}
             placeholder={
               mode === 'jump'
@@ -161,35 +162,15 @@ export function CommandPalette({
                   ? 'Ask about your apps — “why is the deploy failing?”'
                   : 'Write to Substrat support'
             }
-            style={{ flex: 1, minWidth: 0, border: 0, outline: 'none', background: 'transparent', fontSize: 15, color: 'var(--text-primary)', fontFamily: 'var(--font-sans)' }}
+            style={{ flex: 1, minWidth: 0, fontSize: 15 }}
           />
-          <div role="tablist" aria-label="Mode" style={{ display: 'inline-flex', padding: 2, borderRadius: 8, background: 'var(--surface-inset)', flexShrink: 0 }}>
-            {modes.map((m) => (
-              <button
-                key={m}
-                type="button"
-                role="tab"
-                aria-selected={mode === m}
-                onClick={() => {
-                  setMode(m);
-                  input.current?.focus();
-                }}
-                style={{
-                  appearance: 'none',
-                  border: 0,
-                  borderRadius: 6,
-                  padding: '4px 10px',
-                  font: 'inherit',
-                  fontSize: 12.5,
-                  cursor: 'pointer',
-                  background: mode === m ? 'var(--surface-card)' : 'transparent',
-                  color: mode === m ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                  boxShadow: mode === m ? 'var(--shadow-sm)' : 'none',
-                }}
-              >
-                {m === 'jump' ? 'Jump' : m === 'ask' ? 'Ask' : 'Support'}
-              </button>
-            ))}
+          <div onClick={() => input.current?.focus()} style={{ flexShrink: 0 }}>
+            <Segmented
+              label="Mode"
+              options={modes.map((m) => ({ value: m, label: m === 'jump' ? 'Jump' : m === 'ask' ? 'Ask' : 'Support' }))}
+              value={mode}
+              onChange={setMode}
+            />
           </div>
           <Key>esc</Key>
         </div>

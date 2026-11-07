@@ -1,6 +1,6 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
-import { useEffect, useRef, useState } from 'react';
-import { Button, Input } from '@substrat-run/ui/wa';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Button, IconButton, Input, Segmented } from '@substrat-run/ui/wa';
 import { type EventFacetAnswer, api, isApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
@@ -533,43 +533,22 @@ export function EventExplorer({
     <div style={frame}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Group by</span>
-        <div role="group" aria-label="Group by" style={{ display: 'flex', gap: 2, padding: 2, border: '1px solid var(--border-default)', borderRadius: 8, background: 'var(--surface-inset)' }}>
-          {EVENT_GROUPS.map((g) => {
-            const on = group === g.value;
-            return (
-              <button
-                key={g.value}
-                type="button"
-                aria-pressed={on}
-                onClick={() => {
-                  if (g.value === 'field') {
-                    setFieldMode(true);
-                    return;
-                  }
-                  // A dimension CLEARS the payload field, because the read gives the
-                  // field precedence: leaving both set would group by the old field while
-                  // the control showed the new dimension.
-                  setFieldMode(false);
-                  apply({ groupBy: g.value, field: '', type: applied.type });
-                }}
-                style={{
-                  height: 24,
-                  padding: '0 9px',
-                  border: 0,
-                  borderRadius: 6,
-                  font: 'inherit',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                  background: on ? 'var(--surface-card)' : 'transparent',
-                  boxShadow: on ? 'var(--shadow-xs)' : 'none',
-                }}
-              >
-                {g.label}
-              </button>
-            );
-          })}
-        </div>
+        <Segmented
+          label="Group by"
+          options={EVENT_GROUPS.map((g) => ({ value: g.value, label: g.label }))}
+          value={group}
+          onChange={(value) => {
+            if (value === 'field') {
+              setFieldMode(true);
+              return;
+            }
+            // A dimension CLEARS the payload field, because the read gives the
+            // field precedence: leaving both set would group by the old field while
+            // the control showed the new dimension.
+            setFieldMode(false);
+            apply({ groupBy: value, field: '', type: applied.type });
+          }}
+        />
         {group === 'field' && (
           <form
             onSubmit={(e) => {
@@ -587,7 +566,7 @@ export function EventExplorer({
               placeholder="top-level field"
               style={{ width: 150 }}
             />
-            <Button size="sm" variant="ghost">
+            <Button type="submit" size="sm" variant="ghost">
               Group
             </Button>
           </form>
@@ -598,15 +577,13 @@ export function EventExplorer({
           >
             <span style={{ color: 'var(--text-tertiary)' }}>type</span>
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{applied.type}</span>
-            <button
-              type="button"
-              aria-label="Clear event type"
-              title="Remove filter"
+            <IconButton
+              label="Clear event type"
               onClick={() => apply({ groupBy: applied.groupBy, field: applied.field, type: '' })}
-              style={{ width: 16, height: 16, border: 0, background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', padding: 0, fontSize: 14, lineHeight: 1 }}
+              style={{ '--wa-form-control-height': '16px', '--wa-form-control-padding-inline': 0, color: 'var(--text-tertiary)', fontSize: 14 } as CSSProperties}
             >
               ×
-            </button>
+            </IconButton>
           </span>
         )}
         <span style={{ flex: 1 }} />
