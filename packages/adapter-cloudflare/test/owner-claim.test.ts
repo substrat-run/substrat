@@ -151,13 +151,17 @@ describe('owner claim link as a become capability (#1686)', () => {
 
   it('a link past its expiry is refused by the scope, and binds nobody', async () => {
     const principal = (await identity().ownerClaimTarget(s))!;
-    // Minted the way `mintOwnerClaimLink` does, with an expiry the test can wait out.
+    // Minted the way `mintOwnerClaimLink` does, then moved past its expiry in the stored row:
+    // the scope judges the stored instant, so nothing here waits for the clock.
     const minted = await host.mintCapabilityLocal(
       t,
       s,
-      { principal: principalId.parse(principal), expiresAt: instant.parse(new Date(Date.now() + 400).toISOString()), maxUses: 1 },
+      { principal: principalId.parse(principal), expiresAt: instant.parse(new Date(Date.now() + OWNER_CLAIM_TTL_MS).toISOString()), maxUses: 1 },
       actor,
     );
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_i, state) => {
+      state.storage.sql.exec('UPDATE _substrat_capabilities SET expires_at = ? WHERE id = ?', new Date(Date.now() - 1_000).toISOString(), minted.id);
+    });
     // Recorded with a LATER expiry than the capability's, so the directory still matches it and
     // the refusal is the scope's own: the capability's expiry is what decides.
     await identity().recordOwnerClaim(s, principal, {
@@ -165,7 +169,6 @@ describe('owner claim link as a become capability (#1686)', () => {
       tokenHash: await sha256Hex(minted.secret),
       expiresAt: Date.now() + OWNER_CLAIM_TTL_MS,
     });
-    await new Promise((r) => setTimeout(r, 600));
     expect((await redeem(minted.secret)).status).toBe(400);
     expect((await record(minted.id)).uses).toBe(0);
     expect(await identity().needsSetup(s)).toBe(true);
