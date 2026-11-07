@@ -17,7 +17,7 @@ export interface TableColumn<T> {
 
 export interface TableProps<T> {
   columns: TableColumn<T>[];
-  /** The rows to show. The console walks its lists whole, so this is the list, not a page. */
+  /** The rows to show: the whole list a view holds, not a page. */
   rows: T[];
   onRowClick?: (row: T, index: number) => void;
   emptyText?: string;
@@ -36,7 +36,7 @@ export interface TableProps<T> {
   style?: CSSProperties;
 }
 
-/** A row as the table holds it: the table keys a row by `id`, and a console row may not have one. */
+/** A row as the table holds it: the table keys a row by `id`, and a view's row may not have one. */
 interface Line<T> {
   id: string;
   index: number;

@@ -1,6 +1,6 @@
 /**
- * The console's form and action primitives, drawn by Web Awesome. Same props as the
- * `@substrat-run/ui` ones they replace, so a view does not change with the renderer.
+ * The form and action primitives, drawn by Web Awesome. Same props as the ones in
+ * `@substrat-run/ui`'s root export, so a view does not change with the renderer.
  *
  * React 18 sets a custom element's props as attributes, so three things recur here. A
  * boolean is `x || undefined`, since `false` would be written as a present attribute. A
@@ -133,7 +133,7 @@ export function Input({
   type = 'text',
 }: InputProps) {
   const ref = useLiveValue<HTMLElement & { value: string }>(value);
-  const classes = [!label && 'wa-visually-hidden-label', error && 'console-invalid', mono && 'console-mono'].filter(Boolean);
+  const classes = [!label && 'wa-visually-hidden-label', error && 'ui-invalid', mono && 'ui-mono'].filter(Boolean);
   return (
     <wa-input
       ref={ref as never}
@@ -151,7 +151,7 @@ export function Input({
       style={css(style)}
     >
       {prefix && (
-        <span slot="start" className="console-input-prefix">
+        <span slot="start" className="ui-input-prefix">
           {prefix}
         </span>
       )}
@@ -302,7 +302,7 @@ export function Tabs({ tabs, value, defaultValue, onChange, style }: TabsProps) 
   }, []);
 
   return (
-    <wa-tab-group ref={group as never} class="console-tabs" active={current} style={css(style)}>
+    <wa-tab-group ref={group as never} class="ui-tabs" active={current} style={css(style)}>
       {list.map((t) => (
         <wa-tab key={t.value} slot="nav" panel={t.value}>
           {t.label}

@@ -4,7 +4,7 @@ import { renderToString } from 'react-dom/server';
 import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api';
 import { createApi } from '../src/lib/api';
 import type { RecentLogEvent } from '../src/lib/api';
-import type { TableProps } from '../src/components/Table';
+import type { TableProps } from '@substrat-run/ui/wa';
 import {
   LOGS_EMPTY_COMPLETE,
   LOGS_EMPTY_INCOMPLETE,
@@ -21,7 +21,8 @@ import { LogsCard, LogsIncompleteNotice } from '../src/views/Observability';
 
 // `<sub-entity-table>` draws its rows in the browser, which `renderToString` does not reach. The
 // branches under test are the card's own, so a plain table stands in for the element.
-vi.mock('../src/components/Table', () => ({
+vi.mock('@substrat-run/ui/wa', async (real) => ({
+  ...(await real<object>()),
   Table: <T,>({ rows, columns, emptyText }: TableProps<T>) => (
     <table>
       <tbody>
