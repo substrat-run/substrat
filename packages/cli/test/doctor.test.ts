@@ -101,7 +101,7 @@ describe('doctor — reads, and changes nothing without --fix', () => {
     writeFileSync(join(dir, 'package.json'), '{"name":"acme"}');
     const r = doctor(dir, {}, { ...windows(ON), nodeVersion: '20.11.0' });
     expect(r.problems).toBe(2);
-    expect(r.lines.join('\n')).toMatch(/Node 20\.11\.0: `substrat push` needs Node 22[\s\S]*npm install --save-dev wrangler/);
+    expect(r.lines.join('\n')).toMatch(/Node 20\.11\.0: `substrat push` needs Node 22[\s\S]*pnpm add -D wrangler/);
   });
 
   it('outside a project it does not call wrangler missing', () => {

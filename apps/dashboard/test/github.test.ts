@@ -251,9 +251,10 @@ describe('GitHub App client', () => {
       const push = yaml.indexOf('npx @substrat-run/cli push . --slug hr-portal | tee push.out');
       expect(install).toBeGreaterThan(-1);
       expect(push).toBeGreaterThan(install);
-      // Every common lockfile has a branch; bare repos fall back to npm install.
-      for (const line of ['pnpm-lock.yaml', 'yarn.lock', 'package-lock.json', 'else npm install']) {
-        expect(yaml).toContain(line);
+      // The platform builds with pnpm whatever the repo holds, so this installs no other way (#2959).
+      expect(yaml).toContain('run: corepack enable && pnpm install --frozen-lockfile');
+      for (const line of ['yarn', 'package-lock.json', 'npm ci', ' npm install', '$PM']) {
+        expect(yaml).not.toContain(line);
       }
       expect(yaml).toContain('branches: [main]');
       expect(yaml).toContain('SUBSTRAT_CP_URL: https://console.example/api');
@@ -470,7 +471,7 @@ describe('GitHub App client', () => {
       // …and both triggers gain a paths filter so an unrelated merge does not deploy it.
       expect(yaml).toContain("- 'demos/auth-server/**'");
       // Install stays at the repo root: a workspace monorepo's lockfile lives there…
-      expect(yaml).toContain('if [ -f pnpm-lock.yaml ]');
+      expect(yaml).toContain('run: corepack enable && pnpm install --frozen-lockfile');
       // …and the workspace packages the vertical imports are BUILT before the push, once
       // per job and strictly between install and the push/preview: install only links a
       // sibling, whose exports point at a dist/ a fresh checkout lacks, so the first bundle
@@ -488,11 +489,8 @@ describe('GitHub App client', () => {
         expect(build).toBeGreaterThan(install);
         expect(job.indexOf(cmd)).toBeGreaterThan(build);
       }
-      // pnpm builds the closure and not the package itself (push runs its build); Yarn is
-      // told apart by major at run time — Classic has no `foreach`.
+      // pnpm builds the closure and not the package itself (push runs its build).
       expect(yaml).toContain('pnpm --filter "{demos/auth-server}^..." run --if-present build');
-      expect(yaml).toContain("! yarn --version | grep -q '^1\\.'; then yarn workspaces foreach --all --topological-dev --exclude 'demos/auth-server' run build");
-      expect(yaml).toContain('elif [ -f yarn.lock ]; then yarn workspaces run build');
       // A single-package repo depends on published packages — nothing to build.
       expect(deployWorkflowYaml(base)).not.toContain('Build workspace dependencies');
       // The changesets gate diffs the PACKAGE's manifest against the previous commit, and
