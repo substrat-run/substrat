@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Input, Select } from '@substrat-run/ui/wa';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Button, Checkbox, Input, Select, Table, type TableColumn } from '@substrat-run/ui/wa';
 import {
   api,
   connectGithub,
@@ -18,7 +18,7 @@ import {
 import { ApiError as TeamApiError } from '../lib/api.generated';
 import { Ic } from '../lib/icons';
 import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS, MOCK_TRAFFIC } from '../lib/mock';
-import { Page, GridTable, Row } from '../components/layout';
+import { Page } from '../components/layout';
 import { relativeTime } from '../lib/format';
 import { TrafficChart } from '../components/TrafficChart';
 import { BoundScopes } from './BoundScopes';
@@ -50,87 +50,103 @@ function channelsFor(d: Deployment, versionId: string): string[] {
 
 const CHANNEL_PILL = new Map<string, PillKind>([['prod', 'success']]);
 
+/** A table column grows to its content, so a cell that ellipsizes also says how wide it may get. */
+const ellipsis: CSSProperties = { display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
 /**
- * The versions table's shape, shared by the header and every row so the two cannot drift.
+ * The versions table's shape, shared by both tables that list versions so the two cannot drift.
  * `Version` is the widest column on purpose: a prerelease tag (`0.4.0-beta.7`) plus the
  * schema-change badge used to share 1.2fr with the push origin, which is the longest thing
  * in the row (`owner/repo@1a2b3c4`). Origin moved to `Pushed`, where it reads as one fact —
  * when the push happened and where it came from — and the promote column gave up the room
  * it was holding for a single small button.
  */
-const VERSION_COLUMNS = '1.5fr 1.4fr 0.9fr 1fr 0.9fr';
-const VERSION_HEADER = ['Version', 'Pushed', 'Admission', 'Channels', '~Promote'];
-
-export function VersionRow({
-  d,
-  v,
-  last,
-  busy,
-  onPromote,
-}: {
-  d: Deployment;
-  v: DeploymentVersion;
-  last: boolean;
-  busy: boolean;
-  onPromote: (channel: 'prod') => void;
-}) {
-  const here = channelsFor(d, v.id);
-  const admitted = v.admission === 'admitted';
+export function versionColumns(
+  d: Deployment,
+  busy: boolean,
+  onPromote: (versionId: string, channel: 'prod') => void,
+): TableColumn<DeploymentVersion>[] {
   // Only offer a channel the platform actually SERVES. `prod` is the sole serving pointer
   // (dev/staging are write-only — no reader consults them, issue #509 §2), so we never render
   // a button that does nothing. A PRIVATE vertical's prod is self-serve — which is also how
   // rollback works (promote the older version); a LISTED vertical's prod is a staff decision,
   // so it has no self-serve promote at all (use a preview to exercise a version, ask (d)).
   const channels = d.listed ? ([] as const) : (['prod'] as const);
-  return (
-    <Row columns={VERSION_COLUMNS} last={last}>
-      <span style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-        <span style={{ fontFamily: 'var(--font-mono)' }}>{v.version}</span>
-        {/* #286: promoting this version migrates every instance's data in place —
-            the badge is the at-a-glance half of the acknowledgement gate. */}
-        {v.schemaChange && <Pill kind="warning">schema change</Pill>}
-      </span>
-      {/* When the push landed, and where it came from — the repo's deploy workflow vs
-          someone's terminal. Relative, because "3d ago" is the question being asked here;
-          the exact instant is one hover away rather than eating the column. */}
-      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, color: 'var(--text-secondary)' }}>
-        <span style={{ fontSize: 12.5, whiteSpace: 'nowrap' }} title={new Date(v.createdAt).toLocaleString()}>
-          {relativeTime(v.createdAt)}
+  return [
+    {
+      header: 'Version',
+      render: (v) => (
+        <span style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{v.version}</span>
+          {/* #286: promoting this version migrates every instance's data in place —
+              the badge is the at-a-glance half of the acknowledgement gate. */}
+          {v.schemaChange && <Pill kind="warning">schema change</Pill>}
         </span>
-        <OriginTag origin={v.origin} />
-      </span>
-      <span>
-        <Pill kind={ADMISSION_PILL.get(v.admission) ?? 'neutral'}>{v.admission}</Pill>
-      </span>
-      <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {here.length === 0 ? (
-          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-        ) : (
-          here.map((ch) => (
-            <Pill key={ch} kind={CHANNEL_PILL.get(ch) ?? 'neutral'}>
-              {ch}
-            </Pill>
-          ))
-        )}
-      </span>
-      <span style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        {/* Only an ADMITTED version can be promoted. */}
-        {channels.map((ch) =>
-          here.includes(ch) ? null : (
-            <Button
-              key={ch}
-              variant="ghost"
-              size="sm"
-              disabled={!admitted || busy}
-              onClick={() => onPromote(ch)}
-            >
-              → {ch}
-            </Button>
-          ),
-        )}
-      </span>
-    </Row>
-  );
+      ),
+    },
+    {
+      header: 'Pushed',
+      // When the push landed, and where it came from — the repo's deploy workflow vs
+      // someone's terminal. Relative, because "3d ago" is the question being asked here;
+      // the exact instant is one hover away rather than eating the column.
+      render: (v) => (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, color: 'var(--text-secondary)' }}>
+          <span style={{ fontSize: 12.5, whiteSpace: 'nowrap' }} title={new Date(v.createdAt).toLocaleString()}>
+            {relativeTime(v.createdAt)}
+          </span>
+          <OriginTag origin={v.origin} />
+        </span>
+      ),
+    },
+    {
+      header: 'Admission',
+      render: (v) => <Pill kind={ADMISSION_PILL.get(v.admission) ?? 'neutral'}>{v.admission}</Pill>,
+    },
+    {
+      header: 'Channels',
+      render: (v) => {
+        const here = channelsFor(d, v.id);
+        return (
+          <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {here.length === 0 ? (
+              <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+            ) : (
+              here.map((ch) => (
+                <Pill key={ch} kind={CHANNEL_PILL.get(ch) ?? 'neutral'}>
+                  {ch}
+                </Pill>
+              ))
+            )}
+          </span>
+        );
+      },
+    },
+    {
+      header: 'Promote',
+      align: 'right',
+      render: (v) => {
+        const here = channelsFor(d, v.id);
+        return (
+          <span style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            {/* Only an ADMITTED version can be promoted. */}
+            {channels.map((ch) =>
+              here.includes(ch) ? null : (
+                <Button
+                  key={ch}
+                  variant="ghost"
+                  size="sm"
+                  disabled={v.admission !== 'admitted' || busy}
+                  onClick={() => onPromote(v.id, ch)}
+                >
+                  → {ch}
+                </Button>
+              ),
+            )}
+          </span>
+        );
+      },
+    },
+  ];
 }
 
 /**
@@ -192,27 +208,46 @@ function ProdHistory({
         ) : entries.length === 0 ? (
           <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>No promotions recorded yet.</div>
         ) : (
-          <GridTable columns="1fr 1fr 1.4fr 1fr" header={['Went live', 'Replaced', 'When', '~']}>
-            {entries.map((h, i) => (
-              <Row key={h.id} columns="1fr 1fr 1.4fr 1fr" last={i === entries.length - 1}>
-                <MonoTag>{label(h.versionId)}</MonoTag>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: 12.5 }}>
-                  {h.fromVersionId ? label(h.fromVersionId) : '—'}
-                </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                  {new Date(h.at).toLocaleString()}
-                </span>
-                <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  {/* Current prod gets no button; anything older can come back. */}
-                  {h.versionId === prod.versionId || d.listed ? null : (
-                    <Button variant="ghost" size="sm" disabled={busy} onClick={() => onPromote(h.versionId, 'prod')}>
-                      Roll back
-                    </Button>
-                  )}
-                </span>
-              </Row>
-            ))}
-          </GridTable>
+          <div style={{ ...card, overflow: 'hidden' }}>
+            <Table
+              label="Go-live history"
+              rows={entries}
+              rowKey={(h) => h.id}
+              columns={[
+                { header: 'Went live', render: (h) => <MonoTag>{label(h.versionId)}</MonoTag> },
+                {
+                  header: 'Replaced',
+                  render: (h) => (
+                    <span style={{ color: 'var(--text-tertiary)', fontSize: 12.5 }}>
+                      {h.fromVersionId ? label(h.fromVersionId) : '—'}
+                    </span>
+                  ),
+                },
+                {
+                  header: 'When',
+                  render: (h) => (
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {new Date(h.at).toLocaleString()}
+                    </span>
+                  ),
+                },
+                {
+                  header: '',
+                  align: 'right',
+                  render: (h) => (
+                    <span style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      {/* Current prod gets no button; anything older can come back. */}
+                      {h.versionId === prod.versionId || d.listed ? null : (
+                        <Button variant="ghost" size="sm" disabled={busy} onClick={() => onPromote(h.versionId, 'prod')}>
+                          Roll back
+                        </Button>
+                      )}
+                    </span>
+                  ),
+                },
+              ]}
+            />
+          </div>
         ))}
     </div>
   );
@@ -287,18 +322,9 @@ function VerticalCard({
         </div>
       ) : (
         <>
-          <GridTable columns={VERSION_COLUMNS} header={VERSION_HEADER}>
-            {shown.map((v, i) => (
-              <VersionRow
-                key={v.id}
-                d={d}
-                v={v}
-                last={i === shown.length - 1}
-                busy={busy}
-                onPromote={(ch) => onPromote(v.id, ch)}
-              />
-            ))}
-          </GridTable>
+          <div style={{ ...card, overflow: 'hidden' }}>
+            <Table label={`${d.name} versions`} columns={versionColumns(d, busy, onPromote)} rows={shown} rowKey={(v) => v.id} />
+          </div>
           <a
             href="#"
             onClick={(e) => {
@@ -416,46 +442,62 @@ function PreviewsPanel({ teamId, d, busy }: { teamId: string; d: Deployment; bus
       </div>
 
       {previews && previews.length > 0 && (
-        <GridTable columns="0.9fr 0.8fr 1.8fr 1fr 0.8fr" header={['Tag', 'Version', 'URL', 'Expiry', '~Actions']}>
-          {previews.map((p, i) => {
-            const ver = d.versions.find((v) => v.id === p.versionId)?.version ?? '—';
-            return (
-              <Row key={p.scopeId} columns="0.9fr 0.8fr 1.8fr 1fr 0.8fr" last={i === previews.length - 1}>
-                <span style={{ fontWeight: 500 }}>{p.tag ?? '—'}</span>
-                <span><MonoTag>{ver}</MonoTag></span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                  {p.url ? (
-                    <>
-                      <a href={p.url} target="_blank" rel="noreferrer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {p.hostname}
-                      </a>
-                      <CopyButton text={p.url} size={12} />
-                    </>
-                  ) : (
-                    <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                  )}
-                </span>
-                <span>
-                  {p.expiresAt === null ? (
+        <div style={{ ...card, overflow: 'hidden' }}>
+          <Table
+            label="Previews"
+            rows={previews}
+            rowKey={(p) => p.scopeId}
+            columns={[
+              { header: 'Tag', render: (p) => <span style={{ fontWeight: 500 }}>{p.tag ?? '—'}</span> },
+              {
+                header: 'Version',
+                render: (p) => <MonoTag>{d.versions.find((v) => v.id === p.versionId)?.version ?? '—'}</MonoTag>,
+              },
+              {
+                header: 'URL',
+                render: (p) => (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                    {p.url ? (
+                      <>
+                        <a href={p.url} target="_blank" rel="noreferrer" style={{ ...ellipsis, maxWidth: 280 }}>
+                          {p.hostname}
+                        </a>
+                        <CopyButton text={p.url} size={12} />
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                    )}
+                  </span>
+                ),
+              },
+              {
+                header: 'Expiry',
+                render: (p) =>
+                  p.expiresAt === null ? (
                     <Pill kind="info">pinned</Pill>
                   ) : (
                     <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                       {new Date(p.expiresAt).toLocaleDateString()}
                     </span>
-                  )}
-                </span>
-                <span style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                  <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setDomainFor(domainFor === p.tag ? null : p.tag)}>
-                    Domain
-                  </Button>
-                  <Button variant="ghost" size="sm" disabled={disabled} onClick={() => remove(p.tag!)} style={{ color: 'var(--status-danger-fg)' }}>
-                    Delete
-                  </Button>
-                </span>
-              </Row>
-            );
-          })}
-        </GridTable>
+                  ),
+              },
+              {
+                header: 'Actions',
+                align: 'right',
+                render: (p) => (
+                  <span style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setDomainFor(domainFor === p.tag ? null : p.tag)}>
+                      Domain
+                    </Button>
+                    <Button variant="ghost" size="sm" disabled={disabled} onClick={() => remove(p.tag!)} style={{ color: 'var(--status-danger-fg)' }}>
+                      Delete
+                    </Button>
+                  </span>
+                ),
+              },
+            ]}
+          />
+        </div>
       )}
 
       {domainFor && (
@@ -482,12 +524,8 @@ function PreviewsPanel({ teamId, d, busy }: { teamId: string; d: Deployment; bus
           style={{ minWidth: 160 }}
           options={[{ value: '', label: 'version…' }, ...admitted.map((v) => ({ value: v.id, label: v.version }))]}
         />
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5 }}>
-          <input type="checkbox" checked={pin} onChange={(e) => setPin(e.target.checked)} /> pin (test env)
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12.5 }}>
-          <input type="checkbox" checked={empty} onChange={(e) => setEmpty(e.target.checked)} /> clean room
-        </label>
+        <Checkbox label="pin (test env)" checked={pin} onChange={setPin} style={{ fontSize: 12.5 }} />
+        <Checkbox label="clean room" checked={empty} onChange={setEmpty} style={{ fontSize: 12.5 }} />
         <Button size="sm" disabled={disabled || !tag || !versionId} onClick={create}>
           New preview
         </Button>
@@ -599,61 +637,91 @@ function ReleasesPanel({ teamId, d, revision }: { teamId: string; d: Deployment;
         </p>
       </div>
       <TrafficPanel teamId={teamId} slug={d.slug} />
-      <GridTable columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" header={['Version', 'Pushed', 'Went live', 'Where it runs', 'Failures', 'Traffic (24h)']}>
-        {rows.map((r, i) => (
-          <Row key={r.versionId} columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" last={i === rows.length - 1}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <MonoTag>{r.version}</MonoTag>
-              {r.schemaChange && (
-                <span title="updating to this version crosses a migration boundary" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  schema
-                </span>
-              )}
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} title={r.origin ? `pushed via ${r.origin}` : undefined}>
-              {new Date(r.pushedAt).toLocaleString()}
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-              {r.wentLiveAt ? new Date(r.wentLiveAt).toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              {r.isProd && <Pill kind="success">prod</Pill>}
-              {r.isProd && !r.isServing && (
-                <Pill kind="warning">serve pending</Pill>
-              )}
-              {(r.scopesPinned > 0 || (r.isProd && view.scopesTrackingProd > 0)) && (
-                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {r.scopesPinned > 0 ? `${r.scopesPinned} pinned` : ''}
-                  {r.scopesPinned > 0 && r.isProd && view.scopesTrackingProd > 0 ? ' · ' : ''}
-                  {r.isProd && view.scopesTrackingProd > 0 ? `${view.scopesTrackingProd} following prod` : ''}
-                </span>
-              )}
-              {!r.isProd && r.scopesPinned === 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>—</span>}
-            </span>
-            <span>
-              {r.failures > 0 ? (
-                <Pill kind={r.failures >= 3 ? 'danger' : 'warning'}>{r.failures}</Pill>
-              ) : (
-                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>0</span>
-              )}
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-              {r.requests === null ? (
-                <span title="metrics unavailable — unknown, not zero" style={{ color: 'var(--text-tertiary)' }}>
-                  —
-                </span>
-              ) : (
-                <>
-                  {r.requests.toLocaleString()} req
-                  {r.errors !== null && r.errors > 0 && (
-                    <span style={{ color: 'var(--status-danger-fg)' }}> · {r.errors} err</span>
+      <div style={{ ...card, overflow: 'hidden' }}>
+        <Table
+          label="Releases"
+          rows={rows}
+          rowKey={(r) => r.versionId}
+          columns={[
+            {
+              header: 'Version',
+              render: (r) => (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <MonoTag>{r.version}</MonoTag>
+                  {r.schemaChange && (
+                    <span title="updating to this version crosses a migration boundary" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                      schema
+                    </span>
                   )}
-                </>
-              )}
-            </span>
-          </Row>
-        ))}
-      </GridTable>
+                </span>
+              ),
+            },
+            {
+              header: 'Pushed',
+              render: (r) => (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} title={r.origin ? `pushed via ${r.origin}` : undefined}>
+                  {new Date(r.pushedAt).toLocaleString()}
+                </span>
+              ),
+            },
+            {
+              header: 'Went live',
+              render: (r) => (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                  {r.wentLiveAt ? new Date(r.wentLiveAt).toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                </span>
+              ),
+            },
+            {
+              header: 'Where it runs',
+              render: (r) => (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  {r.isProd && <Pill kind="success">prod</Pill>}
+                  {r.isProd && !r.isServing && (
+                    <Pill kind="warning">serve pending</Pill>
+                  )}
+                  {(r.scopesPinned > 0 || (r.isProd && view.scopesTrackingProd > 0)) && (
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {r.scopesPinned > 0 ? `${r.scopesPinned} pinned` : ''}
+                      {r.scopesPinned > 0 && r.isProd && view.scopesTrackingProd > 0 ? ' · ' : ''}
+                      {r.isProd && view.scopesTrackingProd > 0 ? `${view.scopesTrackingProd} following prod` : ''}
+                    </span>
+                  )}
+                  {!r.isProd && r.scopesPinned === 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>—</span>}
+                </span>
+              ),
+            },
+            {
+              header: 'Failures',
+              render: (r) =>
+                r.failures > 0 ? (
+                  <Pill kind={r.failures >= 3 ? 'danger' : 'warning'}>{r.failures}</Pill>
+                ) : (
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>0</span>
+                ),
+            },
+            {
+              header: 'Traffic (24h)',
+              render: (r) => (
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                  {r.requests === null ? (
+                    <span title="metrics unavailable — unknown, not zero" style={{ color: 'var(--text-tertiary)' }}>
+                      —
+                    </span>
+                  ) : (
+                    <>
+                      {r.requests.toLocaleString()} req
+                      {r.errors !== null && r.errors > 0 && (
+                        <span style={{ color: 'var(--status-danger-fg)' }}> · {r.errors} err</span>
+                      )}
+                    </>
+                  )}
+                </span>
+              ),
+            },
+          ]}
+        />
+      </div>
     </div>
   );
 }
@@ -688,30 +756,46 @@ function IssuesPanel({ teamId, d }: { teamId: string; d: Deployment }) {
           record.
         </p>
       </div>
-      <GridTable columns="0.45fr 1.7fr 0.8fr 1.1fr 2fr" header={['Count', 'Shape', 'Origin', 'Last seen', 'Latest detail']}>
-        {rows.map((g, i) => (
-          <Row key={g.fingerprint} columns="0.45fr 1.7fr 0.8fr 1.1fr 2fr" last={i === rows.length - 1}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{g.count}×</span>
-            <span>
-              <MonoTag>{g.operation}</MonoTag>
-              {g.stage && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {g.stage}</span>}
-              {g.code && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {g.code}</span>}
-            </span>
-            <span>
-              <Pill kind={g.origin === 'platform' ? 'danger' : g.origin === 'provider' ? 'warning' : 'neutral'}>
-                {g.origin ?? 'unclassified'}
-              </Pill>
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(g.lastSeen).toLocaleString()}</span>
-            <span
-              title={g.lastMessage}
-              style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-            >
-              {g.lastMessage}
-            </span>
-          </Row>
-        ))}
-      </GridTable>
+      <div style={{ ...card, overflow: 'hidden' }}>
+        <Table
+          label="Recurring failures"
+          rows={rows}
+          rowKey={(g) => g.fingerprint}
+          columns={[
+            { header: 'Count', render: (g) => <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{g.count}×</span> },
+            {
+              header: 'Shape',
+              render: (g) => (
+                <span>
+                  <MonoTag>{g.operation}</MonoTag>
+                  {g.stage && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {g.stage}</span>}
+                  {g.code && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {g.code}</span>}
+                </span>
+              ),
+            },
+            {
+              header: 'Origin',
+              render: (g) => (
+                <Pill kind={g.origin === 'platform' ? 'danger' : g.origin === 'provider' ? 'warning' : 'neutral'}>
+                  {g.origin ?? 'unclassified'}
+                </Pill>
+              ),
+            },
+            {
+              header: 'Last seen',
+              render: (g) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(g.lastSeen).toLocaleString()}</span>,
+            },
+            {
+              header: 'Latest detail',
+              render: (g) => (
+                <span title={g.lastMessage} style={{ ...ellipsis, maxWidth: 320, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                  {g.lastMessage}
+                </span>
+              ),
+            },
+          ]}
+        />
+      </div>
     </div>
   );
 }
@@ -743,38 +827,54 @@ function FailuresPanel({ teamId, d }: { teamId: string; d: Deployment }) {
           support handle — the failure was platform-side, not your code.
         </p>
       </div>
-      <GridTable columns="1.1fr 1.3fr 0.5fr 2fr 1.2fr" header={['When', 'Operation', 'Status', 'Detail', 'Reference']}>
-        {rows.map((f, i) => (
-          <Row key={f.id} columns="1.1fr 1.3fr 0.5fr 2fr 1.2fr" last={i === rows.length - 1}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(f.at).toLocaleString()}</span>
-            <span>
-              <MonoTag>{f.operation}</MonoTag>
-              {f.stage && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {f.stage}</span>}
-            </span>
-            <span>
-              <Pill kind={f.status !== null && f.status >= 500 ? 'danger' : 'warning'}>{f.status ?? '—'}</Pill>
-            </span>
-            <span
-              title={f.message}
-              style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-            >
-              {f.message}
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-              {f.reference ? (
-                <>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {f.reference}
-                  </span>
-                  <CopyButton text={f.reference} size={12} />
-                </>
-              ) : (
-                <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-              )}
-            </span>
-          </Row>
-        ))}
-      </GridTable>
+      <div style={{ ...card, overflow: 'hidden' }}>
+        <Table
+          label="Recent failures"
+          rows={rows}
+          rowKey={(f) => f.id}
+          columns={[
+            { header: 'When', render: (f) => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(f.at).toLocaleString()}</span> },
+            {
+              header: 'Operation',
+              render: (f) => (
+                <span>
+                  <MonoTag>{f.operation}</MonoTag>
+                  {f.stage && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {f.stage}</span>}
+                </span>
+              ),
+            },
+            {
+              header: 'Status',
+              render: (f) => <Pill kind={f.status !== null && f.status >= 500 ? 'danger' : 'warning'}>{f.status ?? '—'}</Pill>,
+            },
+            {
+              header: 'Detail',
+              render: (f) => (
+                <span title={f.message} style={{ ...ellipsis, maxWidth: 320, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                  {f.message}
+                </span>
+              ),
+            },
+            {
+              header: 'Reference',
+              render: (f) => (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  {f.reference ? (
+                    <>
+                      <span style={{ ...ellipsis, maxWidth: 160, fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
+                        {f.reference}
+                      </span>
+                      <CopyButton text={f.reference} size={12} />
+                    </>
+                  ) : (
+                    <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                  )}
+                </span>
+              ),
+            },
+          ]}
+        />
+      </div>
     </div>
   );
 }
@@ -874,18 +974,9 @@ export function VerticalDetail({
           <>
             <div style={{ display: 'grid', gap: 8 }}>
               <h3 style={{ margin: 0, fontSize: 15 }}>Versions</h3>
-              <GridTable columns={VERSION_COLUMNS} header={VERSION_HEADER}>
-                {d.versions.map((v, i) => (
-                  <VersionRow
-                    key={v.id}
-                    d={d}
-                    v={v}
-                    last={i === d.versions.length - 1}
-                    busy={busy}
-                    onPromote={(ch) => onPromote(v.id, ch)}
-                  />
-                ))}
-              </GridTable>
+              <div style={{ ...card, overflow: 'hidden' }}>
+                <Table label="Versions" columns={versionColumns(d, busy, onPromote)} rows={d.versions} rowKey={(v) => v.id} />
+              </div>
             </div>
             <ProdHistory teamId={teamId} d={d} busy={busy} onPromote={onPromote} />
             <ReleasesPanel teamId={teamId} d={d} revision={installsRevision} />

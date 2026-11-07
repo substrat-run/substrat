@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Button } from '@substrat-run/ui/wa';
+import { Button, Table } from '@substrat-run/ui/wa';
 import { api, isApiError, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
@@ -267,12 +267,11 @@ export function RequestSlideOver({
 
           {r && (r.authChecks?.length || r.authChecksDropped) ? (
             <Section title="Authentication">
-              <table>
-                <thead><tr><th>Check</th><th>Outcome</th><th>Reason</th></tr></thead>
-                <tbody>{r.authChecks?.map((check, index) => (
-                  <tr key={index}><td>{check.stage}</td><td>{check.outcome}</td><td><code>{check.reason}</code></td></tr>
-                ))}</tbody>
-              </table>
+              <Table label="Authentication checks" rows={r.authChecks ?? []} columns={[
+                { header: 'Check', key: 'stage' },
+                { header: 'Outcome', key: 'outcome' },
+                { header: 'Reason', render: (check) => <code>{check.reason}</code> },
+              ]} />
               {r.authChecksDropped ? <Quiet>{r.authChecksDropped} additional checks were not recorded.</Quiet> : null}
             </Section>
           ) : null}

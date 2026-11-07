@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Table } from '@substrat-run/ui/wa';
 import { teamApi, type FieldReadsView } from '../lib/api';
 import { card } from '../components/ui';
 
@@ -61,11 +62,14 @@ function Groups({ view }: { view: FieldReadsView }) {
           <p>Armed requests, but no walked responses were observed in this sample ({rate}; {window}).</p>}
         {operations.map((op) => <div key={op.operation} style={{ marginBottom: 12 }}>
           <strong>{op.operation}</strong> <span style={{ fontSize: 12 }}>({op.responses} sampled responses; {rate}; {window})</span>
-          <table><thead><tr><th>Field</th><th>Present</th><th>Null</th><th>Absent</th><th>Eligible</th><th>Sample and window</th></tr></thead>
-            <tbody>{op.fields.map((field) => <tr key={field.field}>
-              <td><code>{field.field}</code></td><td>{field.present}</td><td>{field.empty}</td>
-              <td>{field.absent}</td><td>{field.eligible}</td><td>{rate}; {window}</td>
-            </tr>)}</tbody></table>
+          <Table label={`Fields of ${op.operation}`} rows={op.fields} rowKey={(field) => field.field} columns={[
+            { header: 'Field', render: (field) => <code>{field.field}</code> },
+            { header: 'Present', key: 'present' },
+            { header: 'Null', key: 'empty' },
+            { header: 'Absent', key: 'absent' },
+            { header: 'Eligible', key: 'eligible' },
+            { header: 'Sample and window', render: () => `${rate}; ${window}` },
+          ]} />
           {op.notObserved.length > 0 && <p style={{ fontSize: 12, margin: '6px 0 0' }}>
             Not observed returned in this sampled operation: {op.notObserved.map((field) => field.field).join(', ')}.
           </p>}

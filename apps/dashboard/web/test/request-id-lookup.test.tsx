@@ -8,6 +8,7 @@ import { ApiError as ClientError } from '../src/lib/api.generated';
 import { api, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
 import { parseRequestId, requestLookup, REQUEST_WINDOW_MS } from '../src/lib/request-url';
 import { recordFromLogs, relatedRequests } from '../src/lib/request-detail';
+import { buttons } from './wa';
 
 /** #2192: finding a request by the id a caller was given, and the requests that share its cause. */
 
@@ -255,7 +256,7 @@ describe('the request-finding surfaces', () => {
     const childLine = (source: Record<string, unknown>) =>
       [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: child, method: 'POST', parentInvocationId: parent, ...source } } }] as never;
     const parentLine = [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: parent, method: 'GET', path: '/api/board' } } }] as never;
-    const openButton = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Open');
+    const openButton = () => buttons(container).find((b) => b.textContent === 'Open');
     const render = async (id: string, scope: string, teamApps: string[]) => {
       await act(async () => root.render(<RequestSlideOver teamId="team-a" scopeId={scope} invocationId={id} atMs={at} onClose={vi.fn()} teamApps={teamApps} />));
       await settle();
