@@ -1,5 +1,5 @@
-import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
-import type { ConnectUrlRelayResult } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, problemCodeOf, problemDetail } from '@substrat-run/contracts';
+import type { ConnectUrlRelayResult, ErrorCode } from '@substrat-run/contracts';
 
 /**
  * Start a provider consent round from a VERTICAL (connections.md §3.5.3).
@@ -84,6 +84,14 @@ export class ConnectUrlRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * The taxonomy code the platform's refusal declared (#113), or `undefined` for one that named
+     * none: an `about:blank` refusal, a control plane older than the codes, a body that is not
+     * JSON. Never `code`: `errorCodeOf` reads that, and this refusal is the platform's answer
+     * relayed, not a throw that declared itself here, so a vertical's own `onError` keeps
+     * answering it as it did.
+     */
+    readonly problemCode?: ErrorCode,
   ) {
     super(message);
     this.name = 'ConnectUrlRequestError';
@@ -109,11 +117,12 @@ export async function requestConnectUrl(request: ConnectUrlRequest): Promise<Con
       ...(request.ttlSeconds ? { ttlSeconds: request.ttlSeconds } : {}),
     }),
   });
-  const body = (await res.json().catch(() => ({}))) as Partial<ConnectUrlRelayResult> & { error?: string };
+  const body = (await res.json().catch(() => ({}))) as Partial<ConnectUrlRelayResult>;
   if (!res.ok || !body.url) {
     throw new ConnectUrlRequestError(
-      `the platform refused to start a ${request.provider} consent round (${res.status}): ${body.error ?? 'unknown error'}`,
+      `the platform refused to start a ${request.provider} consent round (${res.status}): ${problemDetail(body) ?? 'unknown error'}`,
       res.status,
+      problemCodeOf(body),
     );
   }
   return body as ConnectUrlRelayResult;

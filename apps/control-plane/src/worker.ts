@@ -208,7 +208,7 @@ import {
   type CopyJobRecord,
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
-import { problemForThrow, refuse, refuseStatus } from './problem.js';
+import { problemForThrow, refuse, refuseRelayed, refuseStatus } from './problem.js';
 import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
@@ -3246,7 +3246,7 @@ export default {
         );
         return c.json({ sent: true, ...result });
       } catch (e) {
-        if (e instanceof TenantMailRefusal) return refuseStatus(e.status, e.message);
+        if (e instanceof TenantMailRefusal) return refuseRelayed(e);
         throw e;
       }
     });
@@ -3305,7 +3305,7 @@ export default {
         return c.json(result);
       } catch (e) {
         if (e instanceof ConnectionRelayError) {
-          return refuseStatus(e.status, e.message, e.probe ? { probe: e.probe } : undefined);
+          return refuseRelayed(e, e.probe ? { probe: e.probe } : undefined);
         }
         throw e;
       }
@@ -3331,7 +3331,7 @@ export default {
         try {
           return c.json(await run(c.env, hostFor(c.env), body, caller.proven));
         } catch (e) {
-          if (e instanceof ConnectionRelayError) return refuseStatus(e.status, e.message);
+          if (e instanceof ConnectionRelayError) return refuseRelayed(e);
           throw e;
         }
       };
@@ -3419,7 +3419,7 @@ export default {
         );
         return c.json(result);
       } catch (e) {
-        if (e instanceof ConnectUrlRelayError) return refuseStatus(e.status, e.message);
+        if (e instanceof ConnectUrlRelayError) return refuseRelayed(e);
         throw e;
       }
     });
@@ -3445,7 +3445,7 @@ export default {
         try {
           return c.json(await run(hostFor(c.env), body, c.env));
         } catch (e) {
-          if (e instanceof ConnectUrlRelayError) return refuseStatus(e.status, e.message);
+          if (e instanceof ConnectUrlRelayError) return refuseRelayed(e);
           throw e;
         }
       };
@@ -3508,7 +3508,7 @@ export default {
         const address = await act(host, deps, { ...key, createdBy: input.createdBy!, ...(input.allowlist ? { allowlist: input.allowlist } : {}) });
         return c.json({ address });
       } catch (e) {
-        if (e instanceof MailInError) return refuseStatus(e.status, e.message);
+        if (e instanceof MailInError) return refuseRelayed(e);
         throw e;
       }
     });

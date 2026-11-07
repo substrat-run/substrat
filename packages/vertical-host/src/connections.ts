@@ -1,4 +1,4 @@
-import { PLATFORM_SECRET_HEADER, connectionBindResult, connectionBindingsResult, connectionRelayResult, connectionSyncResult, connectionUnbindResult } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, problemCodeOf, problemDetail, connectionBindResult, connectionBindingsResult, connectionRelayResult, connectionSyncResult, connectionUnbindResult } from '@substrat-run/contracts';
 import type {
   ConnectionBindingsRequest,
   ConnectionBindingsResult,
@@ -9,6 +9,7 @@ import type {
   ConnectionSyncResult,
   ConnectionUnbindRequest,
   ConnectionUnbindResult,
+  ErrorCode,
   connectionRelayRequest,
   z,
 } from '@substrat-run/contracts';
@@ -62,6 +63,14 @@ export class ConnectionRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * The taxonomy code the platform's refusal declared (#113), or `undefined` for one that named
+     * none: an `about:blank` refusal, a control plane older than the codes, a body that is not
+     * JSON. Never `code`: `errorCodeOf` reads that, and this refusal is the platform's answer
+     * relayed, not a throw that declared itself here, so a vertical's own `onError` keeps
+     * answering it as it did.
+     */
+    readonly problemCode?: ErrorCode,
   ) {
     super(message);
     this.name = 'ConnectionRequestError';
@@ -82,10 +91,10 @@ async function relay<S extends z.ZodTypeAny>(
   const answer: unknown = await res.json().catch(() => ({}));
   const parsed = result.safeParse(answer);
   if (!res.ok || !parsed.success) {
-    const error = (answer as { error?: unknown } | null)?.error;
     throw new ConnectionRequestError(
-      `the platform refused to ${what} (${res.status}): ${typeof error === 'string' ? error : 'unknown error'}`,
+      `the platform refused to ${what} (${res.status}): ${problemDetail(answer) ?? 'unknown error'}`,
       res.status,
+      problemCodeOf(answer),
     );
   }
   return parsed.data;
