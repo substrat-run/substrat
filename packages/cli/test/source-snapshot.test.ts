@@ -68,8 +68,7 @@ describe('source submission', () => {
     ]);
   });
 
-  // Over the node budget by the snapshot's real `pnpm -r list`, which is about a second by itself.
-  it('uploads a workspace member whose pnpm lockfile sits at the workspace root', { timeout: 10_000 }, async () => {
+  it('uploads a workspace member whose pnpm lockfile sits at the workspace root', async () => {
     const dir = workspace();
     writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
     vi.stubGlobal('fetch', async () => Response.json({ id: 'v1', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'demo' }));
