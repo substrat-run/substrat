@@ -582,7 +582,7 @@ export function EventExplorer({
               onClick={() => apply({ groupBy: applied.groupBy, field: applied.field, type: '' })}
               style={{ '--wa-form-control-height': '16px', '--wa-form-control-padding-inline': 0, display: 'flex', width: 16, justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 14 } as CSSProperties}
             >
-              ×
+              <span aria-hidden>×</span>
             </IconButton>
           </span>
         )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Button, Table } from '@substrat-run/ui/wa';
+import { Button, IconButton, Table } from '@substrat-run/ui/wa';
 import { api, isApiError, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
@@ -225,9 +225,9 @@ export function RequestSlideOver({
               Similar requests
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
-            ✕
-          </Button>
+          <IconButton label="Close" size="sm" onClick={onClose}>
+            <span aria-hidden>✕</span>
+          </IconButton>
         </div>
 
         <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 20 }}>

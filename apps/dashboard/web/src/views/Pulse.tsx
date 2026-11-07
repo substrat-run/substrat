@@ -342,7 +342,7 @@ export function Pulse({
               onClick={() => onPreset(null)}
               style={{ '--wa-form-control-height': '20px', '--wa-form-control-padding-inline': '6px', display: 'flex', color: 'var(--text-tertiary)', fontSize: 14 } as CSSProperties}
             >
-              ×
+              <span aria-hidden>×</span>
             </IconButton>
           </span>
         )}
