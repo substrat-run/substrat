@@ -67,7 +67,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/psl` | The public suffix list, for hostname decisions | AGPL + commercial |
 | `packages/engine-test-kit` | What an engine's own suite is written against | AGPL, private |
 | `packages/builder-generator` · `packages/builder-workspace` | The builder studio's agent loop and its workspace/snapshot half | AGPL, private |
-| `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
+| `packages/ui` | Shared UI primitives. `@substrat-run/ui/wa` draws them with Web Awesome and `<sub-entity-table>`, for the dashboard and the console; the root export stays for the apps that register no Web Awesome. It reaches Web Awesome through `@substrat-run/elements` alone: a dependency of its own resolves a second copy, and two copies defining one custom element throw on load | AGPL, private |
 | `packages/portal-starter` | The app shell a generated vertical's `app/` starts from — Lit over `@substrat-run/elements`: themes, user menu, hash routing, one entity table. A builder reference (`copy_reference`), so it compiles on every PR | Apache-2.0, private |
 | `packages/elements` | Web components for a vertical's screens — Lit on Web Awesome's free core, themed by its `--wa-*` tokens: `<sub-entity-table>`, `<sub-user-menu>`, `<sub-avatar>`, and the session read they share. Framework-free, so a vertical's app need not be React | Apache-2.0 |
 | `engines/*` | The nine domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`, `assistant`. `notifications` is published; `assistant` is configured for public publication, first npm release pending | AGPL + commercial |
