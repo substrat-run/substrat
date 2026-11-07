@@ -441,7 +441,11 @@ export async function runGate(ws: Workspace, spec: GateSpec, verticalDir: string
 	}
 
 	const started = Date.now();
-	const refusal = await spec.refuse?.(ws, verticalDir);
+	// A check that cannot finish fails its gate: passing would vouch for what it never read, and a
+	// rejection here would take every other gate's result with it.
+	const refusal = await spec.refuse?.(ws, verticalDir).catch(
+		(cause: unknown) => `This check could not finish: ${cause instanceof Error ? cause.message : String(cause)}`,
+	);
 	if (refusal) {
 		return { name: spec.name, status: 'failed', exitCode: 1, durationMs: Date.now() - started, output: refusal };
 	}
