@@ -729,6 +729,7 @@ import {
   type ScopeListing,
   type ScopeHost,
   type ScopeStub,
+  type PersonScopeOptions,
   type ScopeStubOptions,
   type SqlMigration,
   type SqlValue,
@@ -4978,7 +4979,7 @@ export class SqliteScopeHost implements ScopeHost {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    options?: ScopeStubOptions,
+    options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
     const row = this.directory
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
@@ -5023,7 +5024,7 @@ export class SqliteScopeHost implements ScopeHost {
       // the migration's own message, which is the one an operator needs.
       throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
-    return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options);
+    return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options, undefined, false, options?.verifiedEmail ?? null);
   }
 
   async getScopeStore(
@@ -6907,6 +6908,8 @@ export class SqliteScopeHost implements ScopeHost {
     sessionId?: ImpersonationSessionId,
     /** #119: a purge stub — `openSystemScope`'s, built only by `runPurgeSweep`, never handed on. */
     purge = false,
+    /** K-61: a parameter of its own, so only `getScope` can hand one over and no other door can. */
+    verifiedEmail: string | null = null,
   ): ScopeStub {
     const operations = this.operations;
 
@@ -7090,7 +7093,7 @@ export class SqliteScopeHost implements ScopeHost {
           trace?.head({ operation, tenantId, scopeId, principalKind: subject.kind, principal: actorOf(subject) });
           const checks: CheckTally = { calls: 0 };
           const ctx = this.operationContext(
-            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld, checks,
+            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld, checks, verifiedEmail,
           );
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
@@ -14654,6 +14657,8 @@ export class SqliteScopeHost implements ScopeHost {
     withheld?: ReadonlySet<string>,
     /** #2387: where this invocation's checks are counted; absent where nothing reads the count. */
     checks?: CheckTally,
+    /** K-61: the person's verified address, from `getScope` alone. */
+    verifiedEmail: string | null = null,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -14945,6 +14950,7 @@ export class SqliteScopeHost implements ScopeHost {
       get requestId() {
         return requestIdNow();
       },
+      verifiedEmail,
       emit: (event: DomainEventInput) => writeEvent(event, 'module'),
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
         assertImpersonationWrites(impersonation, 'ctx.requestPlatform');

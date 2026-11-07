@@ -74,8 +74,8 @@ export async function seedScope(dir: string, id: string): Promise<{ host: ScopeH
   await host.admin.activateScope(staff, t, s);
   for (const role of ROLES) await host.admin.defineRole(staff, t, role);
   await host.admin.assignRole(staff, { principalId: member, roleKey: 'member', node: { tenantId: t, scopeId: s } });
-  const stub = await host.getScope(member, t, s);
-  await stub.invoke('todo/join', { email: 'member@example.com', displayName: 'Member' });
+  const stub = await host.getScope(member, t, s, { verifiedEmail: 'member@example.com' });
+  await stub.invoke('todo/join', { displayName: 'Member' });
   await grantOwner(host, staff, { tenantId: t, scopeId: s }, member);
   const list = await stub.invoke<{ id: string }>('todo/create-list', { name: 'Writes' });
   const world: ScopeWorld = { staff, tenant: t, scope: s, member, listId: list.id, bornAt: Date.now() };

@@ -81,6 +81,7 @@ import {
   emittedReportContractSuite,
   emittedMod,
   moduleLogContractSuite,
+  verifiedEmailContractSuite,
   checkTallyContractSuite,
   asyncLogContractSuite,
   idempotencyContractSuite,
@@ -1860,6 +1861,21 @@ describe('a ScopeDO from before the line count (#2762)', () => {
     await stub.invoke('emitted/touch', { ids: [`o-${ulid()}`] }, { onLogLines: (n) => counts.push(n) });
     expect(counts).toEqual([]);
   });
+});
+
+// K-61: the address crosses an RPC here, so this is where a dropped argument would show.
+verifiedEmailContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+    },
+  };
 });
 
 // #1746/#1747: ctx.log inside the DO. There is no sink option to reach — workerd builds the

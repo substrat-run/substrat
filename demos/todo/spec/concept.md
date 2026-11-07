@@ -238,3 +238,6 @@ _No lifecycle is declared: nothing here moves through stages._
   `todo/cancel-invite`, the `invite` entity). The email is queued in the operation, and a consumer of
   `todo.owner-joined` makes the share, because a grant delegates and the person joining holds nothing
   on the list. All three operations check `list:manage`; no key or role changed.
+- 2026-11-07: `todo/join` no longer takes `email` (K-61). The operation reads `ctx.verifiedEmail`, which
+  every door passes, and refuses a person with no verified address, so a typed address claims nothing.
+  The host guard is gone. Under `OIDC_ALLOW_UNVERIFIED_EMAIL` a person can still sign in, but not join.

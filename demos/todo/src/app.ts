@@ -5,25 +5,24 @@
 import { Hono } from 'hono';
 import { invocationLog } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
-import { substratError } from '@substrat-run/contracts';
-import type { AuthSubject, DevCaller, DevLogin } from '@substrat-run/dev-issuer';
-import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
-import { emailRefusalMessage, identifyEmail, type EmailIdentityEnv } from '@substrat-run/oidc-rp';
+import type { DevCaller, DevLogin } from '@substrat-run/dev-issuer';
+import type { ScopeHost } from '@substrat-run/kernel';
 import { API_DOCUMENT } from './api.js';
 import { mountApi } from './routes.js';
 
 export interface AppOptions {
   host: Pick<ScopeHost, 'getScope'>;
-  login: Pick<DevLogin, 'handle' | 'subject' | 'caller'>;
-  /** Where `OIDC_ALLOW_UNVERIFIED_EMAIL` is read from — `process.env` in the dev server. */
-  env: EmailIdentityEnv;
+  login: Pick<DevLogin, 'handle' | 'caller'>;
   /** After a person's first join here: what the host owes them, such as their owner grant. */
   onJoined?: (caller: DevCaller) => Promise<void>;
 }
 
-export function createApp({ host, login, env, onJoined }: AppOptions): Hono {
+export function createApp({ host, login, onJoined }: AppOptions): Hono {
   const app = new Hono();
   const joined = new Set<string>();
+  // Every door goes through here, so an operation sees the address the issuer verified (K-61).
+  const scopeOf = (caller: DevCaller) =>
+    host.getScope(caller.principal, caller.tenantId, caller.scopeId, { verifiedEmail: caller.verifiedEmail });
   // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
   // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
   // purpose: no router fronts this server, so there is nothing to verify and no line to write.
@@ -39,10 +38,9 @@ export function createApp({ host, login, env, onJoined }: AppOptions): Hono {
     if (!caller) return c.json({ error: 'unauthorized' }, 401);
     // Signing in is joining: nobody types an address, and an open invitation becomes a share here.
     // An address the issuer did not verify stays out, so that person is signed in and not joined.
-    if (caller.email && !joined.has(caller.principal)) {
-      const stub = await host.getScope(caller.principal, caller.tenantId, caller.scopeId);
-      const own = joiningAsYourself(stub, env, () => login.subject(c.req.raw.headers));
-      const admitted = await own.invoke('todo/join', { email: caller.email, displayName: caller.display }).then(
+    if (caller.verifiedEmail && !joined.has(caller.principal)) {
+      const stub = await scopeOf(caller);
+      const admitted = await stub.invoke('todo/join', { displayName: caller.display }).then(
         () => true,
         () => false,
       );
@@ -68,43 +66,8 @@ export function createApp({ host, login, env, onJoined }: AppOptions): Hono {
     // there, so Cleo lands in the other tenant without this file knowing she is special.
     const caller = await login.caller(c.req.raw.headers);
     if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
-    const stub = await host.getScope(caller.principal, caller.tenantId, caller.scopeId);
-    return joiningAsYourself(stub, env, () => login.subject(c.req.raw.headers));
+    return scopeOf(caller);
   });
 
   return app;
-}
-
-/**
- * `todo/share-list` finds people by the address they joined with, so `todo/join` takes only
- * the session's own, issuer-verified address (#1359). The operation cannot see the session,
- * so the check wraps the stub every door invokes through — the HTTP route and the MCP tool
- * alike. Input without a string `email` is left to the operation's own parse.
- */
-function joiningAsYourself(
-  stub: ScopeStub,
-  env: EmailIdentityEnv,
-  subject: () => Promise<AuthSubject | null>,
-): ScopeStub {
-  return {
-    tenantId: stub.tenantId,
-    scopeId: stub.scopeId,
-    ...(stub.subjectKind === undefined ? {} : { subjectKind: stub.subjectKind }),
-    async invoke(operation, input, options) {
-      const claimed = (input as { email?: unknown } | undefined)?.email;
-      if (operation === 'todo/join' && typeof claimed === 'string') {
-        const who = await subject();
-        const own = identifyEmail(env, { id: who?.sub ?? '', email: who?.email ?? undefined, emailVerified: who?.emailVerified });
-        if (own.email === null) {
-          throw substratError('permission_denied', `joining needs a verified email address: ${emailRefusalMessage(own.refused)}`);
-        }
-        if (claimed.toLowerCase() !== own.email.toLowerCase()) {
-          throw substratError('permission_denied', 'join with the verified email address you signed in with');
-        }
-        // Stored as the issuer spells it, which is the spelling a share will be addressed to.
-        return stub.invoke(operation, { ...input, email: own.email } as typeof input, options);
-      }
-      return stub.invoke(operation, input, options);
-    },
-  };
 }

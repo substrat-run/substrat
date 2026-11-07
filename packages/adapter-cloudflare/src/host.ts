@@ -415,6 +415,7 @@ import {
   type ScopeListing,
   type ScopeHost,
   type ScopeStub,
+  type PersonScopeOptions,
   type ScopeStubOptions,
   type InvokeOptions,
   type SqlValue,
@@ -1565,6 +1566,8 @@ interface ScopeStubRpc {
      * instance (`SYSTEM_DOOR_MOVED`), and acknowledges with `systemDoor`.
      */
     systemDoorInstance?: string,
+    /** K-61: the person's verified address, sent only for a stub `getScope` made. */
+    verifiedEmail?: string | null,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -5835,14 +5838,14 @@ export class CloudflareScopeHost implements ScopeHost {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    options?: ScopeStubOptions,
+    options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
     // Lifecycle gates (control-plane.md §4.1/§4.2), the K-3 fail-closed path,
     // evaluated durably in the ControlPlaneDO. A throw propagates here.
     await this.assertLive(tenantId, scopeId, 'getScope');
 
     await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options);
+    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, undefined, undefined, undefined, options?.verifiedEmail ?? null);
   }
 
   async getScopeStore(
@@ -7181,6 +7184,8 @@ export class CloudflareScopeHost implements ScopeHost {
      * every invoke, inside its queue, and acknowledges it — the capability session's pattern.
      */
     verticalCaller?: VerticalCaller,
+    /** K-61: a parameter of its own, so only `getScope` can hand one over and no other door can. */
+    verifiedEmail: string | null = null,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const systemModuleId = door?.kind === 'system' ? (door.key as ModuleId) : undefined;
@@ -7277,6 +7282,7 @@ export class CloudflareScopeHost implements ScopeHost {
             capabilitySession,
             verticalCaller,
             systemDoorInstance,
+            verifiedEmail,
           );
         // #1834: through the door (a module's, or #2029 a peer's), pinned to the instance its gate
         // read. A missed pin comes back as an answer, which `through` re-gates on.

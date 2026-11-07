@@ -56,6 +56,7 @@ export type {
   ScopeListing,
   UnreadableScopeRow,
   ScopeStub,
+  PersonScopeOptions,
   ScopeStubOptions,
   InvokeOptions,
   EmittedEvent,

@@ -156,9 +156,14 @@ const bound = operationsFor(todoOperations)({
     ])[0];
     if (existing) return existing;
 
+    // Sharing finds a person by this address, so it is the issuer's word for it (K-61) and
+    // never something the caller typed.
+    if (ctx.verifiedEmail === null) {
+      throw substratError('permission_denied', 'joining needs a verified email address');
+    }
     ctx.sql.exec(
       'INSERT INTO todo_owners (id, email, display_name, created_at) VALUES (?, ?, ?, ?)',
-      [ctx.principal, input.email, input.displayName, ctx.now()],
+      [ctx.principal, ctx.verifiedEmail, input.displayName, ctx.now()],
     );
     const row = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE id = ?', [
       ctx.principal,

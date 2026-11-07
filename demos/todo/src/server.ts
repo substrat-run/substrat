@@ -49,7 +49,6 @@ async function boot() {
   const app = createApp({
     host,
     login,
-    env: process.env,
     onJoined: (caller) => grantOwner(host, staff, { tenantId: caller.tenantId, scopeId: caller.scopeId }, caller.principal),
   });
 
