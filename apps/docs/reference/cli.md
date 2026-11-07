@@ -19,7 +19,7 @@ substrat --help
 
 The package has no runtime dependencies and ships web-standard + `node:*` only. It needs Node
 ≥ 20, and Node ≥ 22 for `push`, since wrangler 4 does. It runs on macOS, Linux and Windows.
-For `push`, the vertical must have **wrangler installed as a devDependency** (`npm install --save-dev wrangler`; a project from
+For `push`, the vertical must have **wrangler installed as a devDependency** (`pnpm add -D wrangler`; a project from
 `npm create substrat` has it). The push builds with that pinned wrangler
 (`wrangler deploy --dry-run`), run directly by Node rather than through `npx`. It never
 downloads a wrangler for you, so a project without one is refused with that instruction.
@@ -367,7 +367,7 @@ substrat push --check           # layer rules + the declared permission surface
 substrat push --check --json    # the same surface as data, for a CI diff
 ```
 
-Runs everything a push does **locally** and stops there: the layer rules, then your declared
+Checks the tree **locally** and stops there: the layer rules, then your declared
 permission surface — resolve `"substrat": { "permissions" }`, import the entry, derive the
 registry, print every key with the module that declares it and its description, every role,
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
@@ -411,9 +411,10 @@ egress worker refuses such a call at run time. `--strict` makes it an error. A d
 literal names is only a `note:`. It is best effort: a host built at runtime or read from config is
 not found. See [declared outbound hosts](/guide/deploying#declared-outbound-hosts).
 
-The CLI POSTs a source snapshot to `{cp}/verticals/{slug}/deploy`. The platform persists
-its revision, installs with a frozen lockfile, runs your configured build command and
-bundles the Worker. It reads the declared surface and computes the release digests. The slug is
+The CLI POSTs a source snapshot to `{cp}/verticals/{slug}/deploy`, and refuses before that if
+the snapshot has no `pnpm-lock.yaml` at its root. The platform persists its revision, runs
+`pnpm install --frozen-lockfile`, runs your configured build command and bundles the Worker.
+It reads the declared surface and computes the release digests. The slug is
 **bare** — the control plane forms the registry id `<workspace>/<slug>` from the workspace you
 push as (see [the prefix](/guide/deploying#the-workspace-prefix)). The version lands
 **pending**; admission is a separate, human step.

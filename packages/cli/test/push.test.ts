@@ -1352,6 +1352,7 @@ describe('substrat preview create — push overrides reach the same push (#1209)
     writeFileSync(join(dir, 'src', 'worker.ts'), 'export default { fetch: () => new Response("ok") };\n');
     mkdirSync(join(dir, 'app'), { recursive: true });
     writeFileSync(join(dir, 'app', 'index.html'), '<!doctype html><div id="root"></div>');
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), '');
     // A wrangler that fails instantly, so the case which gets PAST the preflight stops at the
     // build instead of running a real one for a bundle no assertion looks at.
     installFakeWrangler(dir, FAILING_WRANGLER);

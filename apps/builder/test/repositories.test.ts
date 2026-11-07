@@ -4,7 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
-import { checkoutRepository, repositoryAccess, saveRepository, writeSandboxFile, type ArtifactRepositories } from '../src/repositories.js';
+import { PNPM_LOCKFILE_REQUIRED } from '@substrat-run/contracts';
+import { SourceBuildError } from '../src/problem.js';
+import { assertPnpmLockfile, checkoutRepository, repositoryAccess, saveRepository, writeSandboxFile, type ArtifactRepositories } from '../src/repositories.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -79,6 +81,17 @@ describe('project repositories', () => {
     expect(readFileSync(join(root, 'snapshot.json'), 'utf8')).toBe(content);
     expect(Math.max(...writes)).toBeLessThanOrEqual(4);
     expect(execFileSync('ls', [root], { encoding: 'utf8' }).trim()).toBe('snapshot.json');
+  });
+
+  it('refuses a tree with no pnpm lockfile as a reviewed build failure, and passes one that has it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'build-source-'));
+    roots.push(root);
+    writeFileSync(join(root, 'package-lock.json'), '');
+    const refused = await assertPnpmLockfile(sandbox, root).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(SourceBuildError);
+    expect((refused as Error).message).toBe(PNPM_LOCKFILE_REQUIRED);
+    writeFileSync(join(root, 'pnpm-lock.yaml'), '');
+    await expect(assertPnpmLockfile(sandbox, root)).resolves.toBeUndefined();
   });
 
   it('requests a short-lived repo-scoped token and releases the Artifacts capability', async () => {

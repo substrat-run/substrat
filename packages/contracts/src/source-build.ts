@@ -4,6 +4,13 @@ import { versionOrigin } from './registry.js';
 export const SOURCE_BYTES_MAX = 48 * 1024 * 1024;
 export const SOURCE_FILES_MAX = 20_000;
 
+/**
+ * The platform's build installs with pnpm and nothing else (#2959), so a tree without its lockfile
+ * could only fail there. The CLI says this before the upload and the builder before the install.
+ */
+export const PNPM_LOCKFILE_REQUIRED =
+  'this source has no pnpm-lock.yaml at its root, and the platform installs with pnpm: run `pnpm import` to convert a package-lock.json or yarn.lock, or `pnpm install` to write a new one, then commit it';
+
 /** Canonical relative paths only. Also used before writing a submitted tree to disk. */
 export const sourcePath = z.string().min(1).max(1024).refine(
   (p) => !/[\\\x00-\x1f\x7f]/.test(p) && !p.startsWith('/') &&

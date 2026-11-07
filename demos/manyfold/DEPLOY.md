@@ -70,7 +70,7 @@ deployment**) does three things, in a deliberate order:
 
 The generated workflow: on push to the branch, install dependencies (the install step is
 load-bearing — `substrat push` runs the repo's *own* wrangler build, so devDependencies must be
-on disk; corepack picks the package manager from the lockfile) and `substrat push --promote prod`;
+on disk; it installs with pnpm, as the platform's build does) and `substrat push --promote prod`;
 on PR open/update, create/update a **preview** (the PR's code against a fork of prod, URL
 commented on the PR); on PR close, reap it.
 

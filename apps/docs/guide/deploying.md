@@ -335,9 +335,12 @@ A push then:
    the selected app, nested UI packages, workspace dependencies and build configuration.
 2. **Persists the revision** in the project's hosted source storage before requesting a
    build. A CLI-created project appears in the builder's project menu.
-3. **Builds on the platform** in a fresh container: installs from the frozen lockfile,
+3. **Builds on the platform** in a fresh container: runs `pnpm install --frozen-lockfile`,
    builds workspace dependencies, runs the layer checks, executes your configured build
-   command and bundles the Worker. Keep your lockfile committed and current.
+   command and bundles the Worker. The platform installs with pnpm and nothing else, so keep
+   a `pnpm-lock.yaml` committed and current at the source root: without one, the push is
+   refused before anything uploads. `pnpm import` converts a `package-lock.json` or
+   `yarn.lock`, and a monorepo needs a `pnpm-workspace.yaml`.
 4. **Assembles the release**: the manifest, permission and migration digests, modules,
    static assets and source/build provenance. The control plane independently validates
    the sandbox contract, migration digest and asset hashes before publication.
@@ -624,7 +627,7 @@ view has a **one-click CI setup**: connect the GitHub App, pick a repository and
 3. commits `.github/workflows/substrat-deploy.yml` — which triggers that first run immediately.
 
 The committed workflow is the whole loop from this page: a push to the chosen branch installs
-dependencies (your lockfile picks the package manager), builds the workspace packages the
+dependencies with pnpm (the repo needs a `pnpm-lock.yaml`), builds the workspace packages the
 vertical imports when it lives in a monorepo (install only *links* a sibling; its `dist/` is
 what the bundle resolves), gates the push (below), and runs
 `substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; opening

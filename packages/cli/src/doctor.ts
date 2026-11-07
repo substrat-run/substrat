@@ -88,7 +88,7 @@ export function doctor(dir: string, opts: { fix?: boolean } = {}, sys: DoctorSys
     try {
       lines.push(`  ✓ wrangler ${resolveWrangler(root).version}, installed in this project`);
     } catch {
-      bad('wrangler is not installed in this project — `substrat push` builds with it', 'npm install --save-dev wrangler    (or: pnpm add -D wrangler)');
+      bad('wrangler is not installed in this project — `substrat push` builds with it', 'pnpm add -D wrangler');
     }
   }
 
