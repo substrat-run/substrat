@@ -1,7 +1,7 @@
 import { SELF, env } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { connectionId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { connectionId, platformActorId, problemTypeFor, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -100,29 +100,31 @@ describe('scrive webhook ingress (#574 phase 2)', () => {
   afterAll(() => egress.mockRestore());
 
   const post = (path: string) => SELF.fetch(`https://cp.test${path}`, { method: 'POST' });
+  /** Every rejection answers this body, exactly: nothing in it may vary with why. */
+  const NOT_FOUND = { type: problemTypeFor('not_found'), title: 'Not found', status: 404, detail: 'not found', error: 'not found', code: 'not_found' };
 
   it('answers the uniform 404 for a malformed connection id', async () => {
     const res = await post(`/hooks/scrive/not-a-ulid/inst-1/${TOKEN}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
+    expect(await res.json()).toEqual(NOT_FOUND);
   });
 
   it('answers the SAME 404 for an unknown connection', async () => {
     const res = await post(`/hooks/scrive/${ulid()}/inst-1/${TOKEN}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
+    expect(await res.json()).toEqual(NOT_FOUND);
   });
 
   it('answers the SAME 404 for an unknown instance on a real connection', async () => {
     const res = await post(`/hooks/scrive/${conn}/no-such-instance/${TOKEN}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
+    expect(await res.json()).toEqual(NOT_FOUND);
   });
 
   it('answers the SAME 404 on a token mismatch — and never touches the provider', async () => {
     const res = await post(`/hooks/scrive/${conn}/inst-1/${'b'.repeat(64)}`);
     expect(res.status).toBe(404);
-    expect(await res.json()).toMatchObject({ error: 'not found', detail: 'not found' });
+    expect(await res.json()).toEqual(NOT_FOUND);
   });
 
   it('verifies the token and reconciles against the provider (200, body never read)', async () => {
