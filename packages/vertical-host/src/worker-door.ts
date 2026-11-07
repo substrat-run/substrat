@@ -67,6 +67,9 @@ export interface WorkerDoorDeps<E extends object> {
    * who.display })`. Run when a person first reaches a scope, and only when the issuer verified
    * their address, since a join records it from `ctx.verifiedEmail`. Their own-record shapes are
    * given after it succeeds. A refusal is logged and tried again on their next request.
+   *
+   * It can run more than once for one person (a new isolate, two first requests at once), so the
+   * join has to return the row it already wrote rather than fail, as `todo/join` does.
    */
   join?: (scope: ScopeStub, who: { display: string }) => Promise<unknown>;
 }
