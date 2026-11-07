@@ -122,6 +122,7 @@ import {
   delegatedRevokeSql,
   writeExplicitTupleIn,
   grantEntityShapeIn,
+  grantEntityShapeOnceIn,
   topUpEntityGrantShapes,
   applyScopeRoleChange,
   changeScopeRole,
@@ -3097,6 +3098,13 @@ export function defineScopeDO(
 
     async grantEntityShapeAndAuditIntent(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void> {
       return this.grantEntityShape(principal, entity, permissions);
+    }
+
+    /** The same grant to someone who never had it on this entity (`grantEntityShapeOnceIn`): whether it granted. */
+    async grantEntityShapeOnce(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<boolean> {
+      return this.queue.enqueue(() =>
+        this.revision.transactionSync(() => grantEntityShapeOnceIn(this.switchSql(), principal, entity, permissions)),
+      );
     }
 
     /**

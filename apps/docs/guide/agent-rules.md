@@ -87,9 +87,12 @@ and the `{ error }` envelope are authored there, not here, so they can't drift o
 ship half-done). Sign-in is `workerDoor`, from `@substrat-run/vertical-host/worker-door`:
 the issuer the dashboard delivers, the tenant's identity directory, and the owner seat
 the first person takes. Every route gets its stub through `door.scope`, which hands an
-operation the caller's verified address as `ctx.verifiedEmail`. There is no dev header to
-forget to turn off. `src/server.ts` is the same shape, against the local OIDC issuer
-`pnpm dev` starts.
+operation the caller's verified address as `ctx.verifiedEmail`. The first time a person
+reaches the scope, the door runs your join if you name one (`workerDoor({ join })`), then
+gives them every shape your `permissions` declare `bootstrap` with `holder: 'self'`, once.
+That is what the seed does locally, so a vertical with a join operation names it there, or a
+hosted person is never joined. There is no dev header to forget to turn off. `src/server.ts`
+is the same shape, against the local OIDC issuer `pnpm dev` starts.
 
 **A UI ships as declared assets.** If `app/` exists, `substrat.runtimeNeeds.assets` must
 point at its build output and `runtimeNeeds.build` must produce it — otherwise the deployed

@@ -133,7 +133,16 @@ function hostFor(env: Env): CloudflareScopeHost {
   return host;
 }
 
-/** Who is calling, for every route below. It hands an operation the caller's verified address. */
+/**
+ * Who is calling, for every route below. It hands an operation the caller's verified address, and
+ * the first time a person reaches a scope it gives them every shape `permissions` declares
+ * `bootstrap` with `holder: 'self'`, on their own record. A vertical with a join operation names it
+ * here, so a person is joined when they first sign in, before that grant:
+ *
+ *   join: (scope, who) => scope.invoke('shop/join', { displayName: who.display }),
+ *
+ * This shop has neither: its people are added by staff, and its portal shape is a customer's.
+ */
 const door = workerDoor<Env>({
   directory: (env, node) => env.AUTH.get(env.AUTH.idFromName(node.tenantId)),
   nodeFor,

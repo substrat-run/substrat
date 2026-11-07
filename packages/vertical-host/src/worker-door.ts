@@ -10,6 +10,13 @@
  * `scope` is the one way in. It hands `getScope` the address the issuer verified (K-61), so an
  * operation reads `ctx.verifiedEmail` and a worker cannot forget to pass it.
  *
+ * It is also where a person arrives. The first time someone signed in reaches a scope, the door
+ * runs the vertical's join, if it names one, and then gives them every shape its `permissions`
+ * declare `bootstrap` with `holder: 'self'`, on their own record (`grantSelfShapesLocal`). A dev
+ * server's seed does both; a deployed worker had nothing that did, so a hosted owner could sign in
+ * and then not create anything. Both run again in a new isolate, and both are made safe to: a
+ * join returns the row it already wrote, and a shape is given once, so a revoke stays revoked.
+ *
  * On its own subpath because `IdentityDO` is a Durable Object: `cloudflare:workers` does not load
  * in the node server a vertical's dev loop runs, which imports this package's root.
  *
@@ -18,7 +25,7 @@
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, type EnvVarSpec, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { principalId, type EntityRef, type EnvVarSpec, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import type { ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
 import {
   AuthConfigError,
@@ -29,12 +36,13 @@ import {
   reportScopeMembers,
   verifiedEmailOf,
   type AuthProvider,
+  type AuthSubject,
   type IdentityStub,
   type InstanceAuth,
   type OwnerClaimMintHost,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim, type OwnerClaimRouteDeps } from '@substrat-run/vertical-auth/owner-claim-routes';
-import { mountSession } from '@substrat-run/vertical-auth/session-route';
+import { mountSession, sessionAnswer } from '@substrat-run/vertical-auth/session-route';
 import type { PlatformSurfaceDeps } from './index.js';
 
 export { IdentityDO };
@@ -51,9 +59,21 @@ export interface WorkerDoorDeps<E extends object> {
   directory: (env: E, node: DoorNode) => IdentityStub;
   /** The routed (tenant, scope), from the router's assertion. */
   nodeFor: (req: Request, env: E) => DoorNode;
-  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']>;
+  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost;
   /** The vertical's declared settings, resolved per scope with the delivered values. */
   envSpec: EnvVarSpec[];
+  /**
+   * The vertical's join, if it has one: `(scope, who) => scope.invoke('todo/join', { displayName:
+   * who.display })`. Run when a person first reaches a scope, and only when the issuer verified
+   * their address, since a join records it from `ctx.verifiedEmail`. Their own-record shapes are
+   * given after it succeeds. A refusal is logged and tried again on their next request.
+   */
+  join?: (scope: ScopeStub, who: { display: string }) => Promise<unknown>;
+}
+
+/** The host call that gives a person the shapes declared for their own record. */
+export interface SelfShapeHost {
+  grantSelfShapesLocal(scopeId: ScopeId, principal: PrincipalId): Promise<EntityRef[]>;
 }
 
 type DoorHooks<E> = Required<
@@ -107,6 +127,35 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
   const authProvider = async (env: E, req: Request): Promise<AuthProvider> =>
     providerOf(await wiring(env, deps.nodeFor(req, env)));
 
+  /**
+   * The people who have arrived, per isolate. Arriving is safe to repeat, so this only saves the
+   * calls; it is cleared rather than left to grow.
+   */
+  const arrived = new Set<string>();
+  const arrive = async (env: E, node: DoorNode, principal: PrincipalId, subject: AuthSubject, scope: ScopeStub) => {
+    const key = `${node.tenantId}/${node.scopeId}/${principal}`;
+    if (arrived.has(key)) return;
+    if (deps.join) {
+      // Not yet a person here: they are signed in, and they join once the issuer vouches.
+      if (verifiedEmailOf(subject) === null) return;
+      try {
+        await deps.join(scope, { display: sessionAnswer(principal, subject).display });
+      } catch (err) {
+        console.error(
+          JSON.stringify({ host: 'door-join-failed', ...node, principal, message: err instanceof Error ? err.message : String(err) }),
+        );
+        return;
+      }
+    }
+    await deps.hostFor(env).grantSelfShapesLocal(node.scopeId, principal);
+    if (arrived.size >= 10_000) arrived.clear();
+    arrived.add(key);
+  };
+
+  /** The caller's stub, carrying the address the issuer verified (K-61). */
+  const scopeFor = (env: E, node: DoorNode, principal: PrincipalId, subject: AuthSubject, options?: ScopeStubOptions) =>
+    deps.hostFor(env).getScope(principal, node.tenantId, node.scopeId, { ...options, verifiedEmail: verifiedEmailOf(subject) });
+
   const callerOf = async (env: E, req: Request) => {
     const node = deps.nodeFor(req, env);
     const instance = await wiring(env, node);
@@ -118,17 +167,27 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
   return {
     mount(app) {
       app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProvider(c.env, c.req.raw)).handle(c.req.raw));
-      mountSession(app, { caller: (c) => callerOf(c.env, c.req.raw), directory: deps.directory });
+      mountSession(app, {
+        caller: (c) => callerOf(c.env, c.req.raw),
+        directory: deps.directory,
+        // Every screen asks this first, so it is where a person signed in from a browser arrives.
+        extra: async (c, { node, principal, subject }) => {
+          const who = principalId.parse(principal);
+          await arrive(c.env, node, who, subject, await scopeFor(c.env, node, who, subject));
+          return {};
+        },
+      });
       mountOwnerClaim(app, { nodeFor: deps.nodeFor, authProvider, directory: deps.directory, host: deps.hostFor });
     },
 
     async scope(c, options) {
       const { node, subject, principal } = await callerOf(c.env, c.req.raw);
-      if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
-      return deps.hostFor(c.env).getScope(principalId.parse(principal), node.tenantId, node.scopeId, {
-        ...options,
-        verifiedEmail: verifiedEmailOf(subject),
-      });
+      if (!principal || !subject) throw new HTTPException(401, { message: 'unauthorized' });
+      const who = principalId.parse(principal);
+      const scope = await scopeFor(c.env, node, who, subject, options);
+      // Before the operation, so a client that never asks `/api/me` (MCP, a script) has arrived too.
+      await arrive(c.env, node, who, subject, scope);
+      return scope;
     },
 
     settings: async (env, node) => (await wiring(env, node)).settings,

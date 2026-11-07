@@ -1,6 +1,7 @@
 /**
  * The door a deployed worker mounts (K-61). What is under test is what a project no longer
- * writes: nobody gets a stub, and a stub carries the address the issuer verified and no other.
+ * writes: nobody gets a stub, a stub carries the address the issuer verified and no other, and a
+ * person arriving is joined and given their own record.
  */
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
@@ -29,15 +30,21 @@ vi.mock('@substrat-run/vertical-auth', async () => {
   };
 });
 vi.mock('@substrat-run/vertical-auth/owner-claim-routes', () => ({ mountOwnerClaim: vi.fn() }));
-vi.mock('@substrat-run/vertical-auth/session-route', () => ({ mountSession: vi.fn() }));
+vi.mock('@substrat-run/vertical-auth/session-route', async () => ({
+  ...(await vi.importActual<typeof import('@substrat-run/vertical-auth/session-route')>('@substrat-run/vertical-auth/session-route')),
+  mountSession: vi.fn(),
+}));
 
 const { workerDoor } = await import('../src/worker-door.js');
+const { mountSession } = await import('@substrat-run/vertical-auth/session-route');
 
 const node = { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()) };
 const ann = principalId.parse(ulid());
 
-function door(bound: string | null = ann) {
-  const getScope = vi.fn(async () => ({ tenantId: node.tenantId, scopeId: node.scopeId, invoke: vi.fn() }));
+function door(bound: string | null = ann, join?: (scope: unknown, who: { display: string }) => Promise<unknown>) {
+  const stub = { tenantId: node.tenantId, scopeId: node.scopeId, invoke: vi.fn() };
+  const getScope = vi.fn(async () => stub);
+  const grantSelfShapesLocal = vi.fn(async () => []);
   const directory = {
     resolvePrincipal: async () => bound,
     setPendingOwner: vi.fn(),
@@ -46,10 +53,11 @@ function door(bound: string | null = ann) {
   const built = workerDoor<object>({
     directory: () => directory as never,
     nodeFor: () => node,
-    hostFor: () => ({ getScope }) as never,
+    hostFor: () => ({ getScope, grantSelfShapesLocal }) as never,
     envSpec: [],
+    ...(join ? { join } : {}),
   });
-  return { built, getScope, directory };
+  return { built, getScope, directory, stub, grantSelfShapesLocal };
 }
 
 const statusOf = async (built: ReturnType<typeof door>['built']): Promise<number> => {
@@ -88,6 +96,57 @@ describe('workerDoor (K-61)', () => {
     const { built, getScope } = door(bound);
     expect(await statusOf(built)).toBe(401);
     expect(getScope).not.toHaveBeenCalled();
+  });
+
+  describe('a person arriving', () => {
+    it('is joined, then given their own record, once per isolate', async () => {
+      subject = signedIn({ name: 'Ann' });
+      const join = vi.fn(async () => ({}));
+      const { built, stub, grantSelfShapesLocal } = door(ann, join);
+      expect(await statusOf(built)).toBe(200);
+      expect(await statusOf(built)).toBe(200);
+      expect(join).toHaveBeenCalledOnce();
+      expect(join).toHaveBeenCalledWith(stub, { display: 'Ann' });
+      expect(grantSelfShapesLocal).toHaveBeenCalledOnce();
+      expect(grantSelfShapesLocal).toHaveBeenCalledWith(node.scopeId, ann);
+    });
+
+    it.each([
+      ['with a join, is not joined or given anything', true, 0],
+      ['with no join, is given their own record', false, 1],
+    ])('signed in with an address the issuer did not verify: %s', async (_label, withJoin, grants) => {
+      subject = signedIn({ emailVerified: false });
+      const join = vi.fn(async () => ({}));
+      const { built, grantSelfShapesLocal } = door(ann, withJoin ? join : undefined);
+      expect(await statusOf(built)).toBe(200);
+      expect(join).not.toHaveBeenCalled();
+      expect(grantSelfShapesLocal).toHaveBeenCalledTimes(grants);
+    });
+
+    it('is given nothing when the join refuses, and is tried again on the next request', async () => {
+      subject = signedIn();
+      const join = vi.fn().mockRejectedValueOnce(new Error('no')).mockResolvedValue({});
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { built, grantSelfShapesLocal } = door(ann, join);
+      expect(await statusOf(built)).toBe(200);
+      expect(grantSelfShapesLocal).not.toHaveBeenCalled();
+      expect(errors).toHaveBeenCalledOnce();
+      expect(await statusOf(built)).toBe(200);
+      expect(join).toHaveBeenCalledTimes(2);
+      expect(grantSelfShapesLocal).toHaveBeenCalledOnce();
+      errors.mockRestore();
+    });
+
+    it('arrives through /api/me as well', async () => {
+      subject = signedIn();
+      const join = vi.fn(async () => ({}));
+      const { built, grantSelfShapesLocal } = door(ann, join);
+      built.mount(new Hono());
+      const deps = vi.mocked(mountSession).mock.calls.at(-1)![1];
+      expect(await deps.extra!({ env: {} } as never, { node, principal: ann, subject })).toEqual({});
+      expect(join).toHaveBeenCalledOnce();
+      expect(grantSelfShapesLocal).toHaveBeenCalledWith(node.scopeId, ann);
+    });
   });
 
   it('records the pending owner at provision, and reads settings through the directory', async () => {

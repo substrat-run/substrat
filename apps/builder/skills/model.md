@@ -255,8 +255,9 @@ that breaks them:
 
 - **Host code makes a person's first grant.** The shape only declares it, and no
   operation can make it, because the caller holds nothing yet. The seed does it with
-  `grantEntityShape` (`todo` `src/seed.ts`); a deployed worker does it after the join
-  operation returns. So the join operation only writes the row, and this is settled:
+  `grantEntityShape` (`todo` `src/seed.ts`); a deployed worker's door does it when the
+  person first signs in, for every `bootstrap` shape with `holder: 'self'`, after the join
+  the worker names in `workerDoor({ join })`. So the join operation only writes the row, and this is settled:
   nothing in the model needs to change for it.
 - **Whoever holds a key shares it.** `ctx.grant` re-checks that the caller holds the
   key on that entity, which the owner does through the link. An operation called by

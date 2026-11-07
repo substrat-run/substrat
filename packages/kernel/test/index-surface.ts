@@ -435,6 +435,7 @@ export const INDEX_VALUE_EXPORTS = [
   'generateSealingKeyPair',
   'globalFetch',
   'grantEntityShapeIn',
+  'grantEntityShapeOnceIn',
   'grantedEntitiesForContext',
   'guardSecrets',
   'guardSpine',
