@@ -88,7 +88,18 @@ export interface EmailTransport {
 
 /** A malformed message or a transport-level failure — distinct from a bounce. */
 export class EmailError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /**
+     * The `code` the platform email relay's refusal declared (#113), as the body carried it;
+     * `undefined` for any other failure, and for a refusal naming none (`about:blank`, or a
+     * control plane older than the codes). A string, not the taxonomy's type: this adapter
+     * takes no dependency on contracts, so `errorCode.safeParse` it before branching on it.
+     * Never `code`, for the reason `ControlPlaneError.problemCode` gives: `errorCodeOf` reads
+     * that, and this is the platform's answer relayed, not a throw that declared itself here.
+     */
+    readonly problemCode?: string,
+  ) {
     super(message);
     this.name = 'EmailError';
   }

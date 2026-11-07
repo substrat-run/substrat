@@ -5,7 +5,8 @@ import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemTypeFor, type
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, SESSION_COOKIE, pkceS256, type OidcEnv } from '@substrat-run/oidc-rp';
 import worker, { RelayGateway } from '../src/worker.js';
-import { refuseStatus } from '../src/problem.js';
+import { ConnectionRelayError } from '@substrat-run/control-plane-api';
+import { refuseRelayed } from '../src/problem.js';
 
 /**
  * #113: the worker's OWN routes (the staff roster, the builder lookup, the support identity,
@@ -170,21 +171,27 @@ describe('the /internal relay routes answer problem documents', () => {
     expect(ok.headers.get('content-type')).not.toContain('problem');
   });
 
-  it("a relay class's refusal is about:blank by its status, with the sentence it always had", async () => {
+  it("a relay class's refusal carries the code its status does, with the sentence it always had", async () => {
     const res = await relay('/internal/connections/upsert', {});
     expect(res.status).toBe(400);
     expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
     const body = (await res.json()) as Record<string, unknown>;
     expect(problem.safeParse(body).success).toBe(true);
-    expect(body).toMatchObject({ type: PROBLEM_TYPE_BLANK, detail: expect.stringMatching(/^invalid connection relay request: /) });
-    expect(body.code).toBeUndefined();
+    expect(body).toMatchObject({
+      type: problemTypeFor('validation_failed'),
+      code: 'validation_failed',
+      detail: expect.stringMatching(/^invalid connection relay request: /),
+    });
     expect(body.error).toBe(body.detail);
   });
 
-  it("the probe a refused upsert answered rides beside the problem's members", async () => {
+  it('a relay status the catalog has no code at stays about:blank, the probe riding beside it', async () => {
     const probe = { ok: false, detail: 'the provider refused the token' };
-    const body = (await refuseStatus(422, 'the credential did not pass its probe', { probe }).json()) as Record<string, unknown>;
+    const res = refuseRelayed(new ConnectionRelayError('the credential did not pass its probe', 422, probe as never), { probe });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as Record<string, unknown>;
     expect(body).toMatchObject({ type: PROBLEM_TYPE_BLANK, status: 422, error: 'the credential did not pass its probe', probe });
+    expect(body.code).toBeUndefined();
   });
 
   it('the relay gateway refuses an unreadable caller as validation_failed', async () => {

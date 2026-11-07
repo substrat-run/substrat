@@ -1,5 +1,7 @@
 import {
   MAIL_IN_PROVIDER,
+  codeForRefusalStatus,
+  type ErrorCode,
   connectionId as connectionIdSchema,
   instant,
   mailInAddress,
@@ -52,12 +54,19 @@ export const LOCAL_PART = /^[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?-[a-z2-7]{16}$/;
 
 /** Why a request was refused, with the status a relay answers it with. */
 export class MailInError extends Error {
+  /**
+   * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
+   * `toProblem` with the status unchanged; `undefined` for a status the catalog has no code
+   * at (413, 422, 501, 502), which stays `about:blank`. See `codeForRefusalStatus`.
+   */
+  readonly code: ErrorCode | undefined;
   constructor(
     message: string,
     readonly status: 400 | 403 | 404 | 409 | 503,
   ) {
     super(message);
     this.name = 'MailInError';
+    this.code = codeForRefusalStatus(this.status);
   }
 }
 

@@ -1,10 +1,12 @@
 import { isPrimaryScope, onRequestLandingFor, ulid, type ConnectionLandingOptionsInput, type ScopeHost } from '@substrat-run/kernel';
 import {
+  codeForRefusalStatus,
   instant,
   connectionId,
   connectionRelayRequest,
   isVerticalConnectorProvider,
   type ConnectionProbe,
+  type ErrorCode,
   type ConnectionRelayResult,
   type PlatformActorId,
   type ScopeId,
@@ -37,6 +39,12 @@ import {
  * every upsert (tuples are idempotent), so a re-connect also heals a missing grant.
  */
 export class ConnectionRelayError extends Error {
+  /**
+   * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
+   * `toProblem` with the status unchanged; `undefined` for a status the catalog has no code
+   * at (413, 422, 501, 502), which stays `about:blank`. See `codeForRefusalStatus`.
+   */
+  readonly code: ErrorCode | undefined;
   constructor(
     message: string,
     /**
@@ -51,6 +59,7 @@ export class ConnectionRelayError extends Error {
   ) {
     super(message);
     this.name = 'ConnectionRelayError';
+    this.code = codeForRefusalStatus(this.status);
   }
 }
 

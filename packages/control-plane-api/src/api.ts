@@ -3489,7 +3489,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (err instanceof ConnectionRelayError && err.status < 500) {
         // A refusal carries the provider's own answer, so a console can show WHY rather
         // than "save failed" — the whole point of checking before writing.
-        return refuseStatus(c, err.status, err.message, err.probe ? { probe: err.probe } : undefined);
+        const probe = err.probe ? { probe: err.probe } : undefined;
+        // #113: by the code its status carries (a 422 has none, and stays about:blank).
+        return err.code ? refuse(c, err.code, err.message, probe) : refuseStatus(c, err.status, err.message, probe);
       }
       // A 5xx relay refusal (#603: this deployment holds no seal key) is the PLATFORM
       // failing, not the caller — rethrown so the shared boundary maps it (still a 503

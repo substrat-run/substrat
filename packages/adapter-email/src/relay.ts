@@ -88,8 +88,16 @@ interface RelayResponse {
   delivered?: string[];
   queued?: string[];
   bounced?: string[];
-  error?: string;
+  /** A refusal's sentence: RFC 9457's `detail`, and `error`, its duplicate an older control plane answers alone. */
+  detail?: unknown;
+  error?: unknown;
+  /** A refusal's taxonomy code (#113); absent on `about:blank` and from an older control plane. */
+  code?: unknown;
 }
+
+/** The first non-empty string of these, else `undefined`. */
+const sentence = (...candidates: unknown[]): string | undefined =>
+  candidates.find((c): c is string => typeof c === 'string' && c !== '');
 
 // The header the platform presents (kernel's `PLATFORM_SECRET_HEADER`). Hardcoded rather than
 // imported so this low-level adapter takes no dependency on the kernel — the same structural
@@ -165,7 +173,10 @@ export class PlatformRelayEmailTransport implements EmailTransport {
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as RelayResponse;
-      throw new EmailError(`platform email relay refused (${res.status}): ${body.error ?? 'unknown error'}`);
+      throw new EmailError(
+        `platform email relay refused (${res.status}): ${sentence(body.detail, body.error) ?? 'unknown error'}`,
+        sentence(body.code),
+      );
     }
     const body = (await res.json().catch(() => ({}))) as RelayResponse;
     return {
