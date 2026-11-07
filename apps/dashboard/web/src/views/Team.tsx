@@ -7,7 +7,7 @@ import { Page } from '../components/layout';
 import { card, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
 
 const COLS = '2.4fr 1fr 1fr 1fr 190px';
-const ROW_ACTION = { '--wa-form-control-padding-inline': '4px' } as CSSProperties;
+const ROW_ACTION = { '--wa-form-control-padding-inline': '4px', color: 'var(--text-secondary)' } as CSSProperties;
 const ROW_ACTION_DANGER = { ...ROW_ACTION, color: 'var(--status-danger-fg)' };
 // A Map, not an object literal: a status named like an Object.prototype key must not find one.
 const STATUS = new Map<string, { kind: PillKind; label: string }>([

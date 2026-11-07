@@ -70,7 +70,7 @@ export function AppHeader({
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <h1 style={{ margin: 0, fontSize: 22, lineHeight: '29px', fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>{app.name}</h1>
-          <IconButton label="Rename" size="sm">
+          <IconButton label="Rename" size="sm" style={{ color: 'var(--text-tertiary)' }}>
             <Ic name="pencil" size={14} />
           </IconButton>
           {judged ? (
