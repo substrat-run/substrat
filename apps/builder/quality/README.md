@@ -11,7 +11,7 @@ has the method and the results.
 | `score.mjs` | Grades one archived run and appends a row to the ledger |
 | `stages.py` | Splits each run into stages: usage, what it produced and how it ended |
 | `rubric-todo.md` | The 14 judged items, written from the `todo` fixture's brief |
-| `runs-2026-11.jsonl` | The ledger: the first 50 runs and the 3 that confirmed what shipped |
+| `runs-2026-11.jsonl` | The ledger: the valid runs behind the write-up |
 | `controls-2026-11.jsonl` | The scorer's own checks, before any run counted |
 
 ```sh

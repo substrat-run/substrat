@@ -15,10 +15,11 @@ this builds on. · **Touches:** `apps/builder/skills`, `apps/builder/src/referen
 every time, as fast and as cheaply as possible? We ran 50 graded builds in November 2026 to find
 out, on Haiku and Sonnet, changing one thing per arm.
 
-**The answer:** on Sonnet the todo app now scores 89 of 100 on six runs out of six, with no repairs
-and no red gates. The baseline scored 79 to 84 with a repair in every run. Time and tokens improved
-less reliably: see [§2](#2-results). The last 11 points are invites and deploying, which the template
-does not offer yet. Most defects were ours: stale skills and a wrong setup, rather than the model.
+**The answer:** on Sonnet the todo app now scores 89 of 100 in eight runs of nine and 84 in the other,
+with no repairs and no red gates. The baseline scored 79 to 84 with a repair in every run. Time and
+tokens barely moved: see [§2](#2-results). The last 11 points are invites and deploying, which the
+template does not offer yet. Most defects were ours: stale skills and a wrong setup, rather than the
+model.
 
 ## 1. How a run was graded
 
@@ -66,13 +67,16 @@ ended without green gates. Each arm is one change on top of what had been adopte
 | lanes | Sonnet | 74, 84, 84 | 285 | 41 | 1.3 | 1.42 | 185 | 39 | 1 |
 | low effort | Sonnet | 68–89 (6 runs) | 228 | 32 | 0.2 | 1.39 | 138 | 32 | 1 |
 | final candidate | Sonnet | 89, 89, 89 | 258 | 32 | 0 | 1.53 | 156 | 37 | 0 |
-| **as shipped, on current `main`** | **Sonnet** | **89, 89, 89** | **292** | **39** | **0** | **2.12** | **162** | **40** | **0** |
+| **as shipped** | **Sonnet** | **89 in eight of nine, 84** | **299** | **40** | **0** | **2.18** | **-** | **-** | **0** |
 
-**Quality and repairs held from the candidate to what shipped. Time and tokens did not.** The skills
-are the same in both, and the shipped runs made about as many reference calls. They took more coding
-steps (22 to 29 against 18 to 21) on debugging detours, and input grows with every step. Three runs
-cannot say whether that is variation or a cause we have not found. Over all six, the average is 275
-seconds, 36 steps and 1.83M input, against the Sonnet baseline's 300, 43 and 2.06M.
+**Quality and repairs held from the candidate to what shipped. Speed did not, and it was probably
+never real.** The candidate's 258 seconds came from three runs. Nine runs of the same skills average
+299 seconds and 40 steps, against the baseline's 300 and 43, so three runs were a lucky draw. We first
+blamed the 0.185.0 release, which left most lockfiles with two kernels, but three runs on matching
+pins were just as slow. Two kernels in one project is still a defect to fix.
+
+The lesson is about the method. Sonnet's build stage ranges from 17 to 33 steps on unchanged skills,
+so three runs cannot show a small speed gain.
 
 A score of 0 is a run that stalled before building an app, and both were on Haiku. A contradiction
 in the model or scenario left them waiting on a question, because the build may change neither.
@@ -82,8 +86,8 @@ per run is missing: this path does not record a price.
 
 ### Per stage
 
-One shipped run's six stages, averaged over the three. All 29 repairs in the ledger happened in
-scaffolding and coding, and none in the stages before them.
+Three shipped runs, averaged. All the repairs in the ledger happened in scaffolding and coding, and
+none in the stages before them.
 
 | Stage | Produced | Steps | Seconds | Input (k) | Uncached (k) | Output (k) |
 |---|---|---|---|---|---|---|
@@ -128,7 +132,9 @@ their usage cannot be split. `stages.py` reads this from each run's report and t
    the model to avoid it.
 4. **A scorer needs controls.** Early versions passed sabotaged code and graded the same code 11
    points apart, which is wider than most of the differences in §2.
-5. **Grade only what the brief asks.** Early rubric items failed runs for renaming and editing, which
+5. **Three runs can fool you.** A speed gain that looked solid was luck, and two explanations for
+   losing it were wrong. Speed claims need the same input every run, and more than three runs.
+6. **Grade only what the brief asks.** Early rubric items failed runs for renaming and editing, which
    nobody had asked for.
 
 ## 6. What to try next
