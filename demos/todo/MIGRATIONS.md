@@ -12,3 +12,4 @@ once it is on the base branch: add a new migration instead.
 | Module | Version | sha256 |
 |---|---|---|
 | @substrat-run/demo-todo | 0001 | `414ae1f4e73694ee77c4f27f499d366053f9c22d31b5a66abe3db3d763f1be15` |
+| @substrat-run/demo-todo | 0002 | `535b152b1e92180b6257bcffd885d0f460607e12d151ba094b154f6b177cf478` |

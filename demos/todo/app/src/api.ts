@@ -18,7 +18,7 @@
 import { createClient } from './api.generated.js';
 
 export { ApiError } from './api.generated.js';
-export type { Item, List, Owner, Paged, Share, TodoClient } from './api.generated.js';
+export type { Invite, Item, List, Owner, Paged, Share, TodoClient } from './api.generated.js';
 
 /**
  * `errorMessage` is left at its default on purpose: this vertical's `app.onError`

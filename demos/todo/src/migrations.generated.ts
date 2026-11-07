@@ -50,4 +50,18 @@ export const todoMigrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-todo_invites
+    version: '0002',
+    sql: `
+      CREATE TABLE todo_invites (
+        id TEXT PRIMARY KEY NOT NULL,
+        list_id TEXT NOT NULL REFERENCES todo_lists(id),
+        email TEXT NOT NULL,
+        invited_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (list_id, email)
+      );
+    `,
+  },
 ];

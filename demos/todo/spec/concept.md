@@ -74,6 +74,8 @@ Björn may do is decided by the share on *that list*, not by anything about Bjö
 - **Items** — which list they are on, what they say, done or not, who added them,
   when.
 - **Shares** — which list, which person, and the email it was sent to.
+- **Invitations** — which list, the address, who asked and when. One lasts until the
+  address joins or the owner withdraws it.
 
 The email is load-bearing. The sharing screen promises "shared with
 björn@example.com", and accounts are opaque ids, so the address needs a table of
@@ -85,7 +87,8 @@ missing table.
 - **Your lists** — the ones you own and the ones shared with you, marked which is
   which.
 - **A list** — its items, tick to complete, add an item.
-- **Sharing** — enter an email, see who the list is shared with, revoke.
+- **Sharing** — enter an email, see who the list is shared with and who is still
+  invited, revoke a share, withdraw an invitation.
 
 ## 9. The scenario the test will replay
 
@@ -130,6 +133,8 @@ expensive later.
 - Everyone uses the same app; there is no separate portal for people you share
   with.
 - A list is shared with a **person**, not with a public link.
+- Sharing with an address that has not joined sends an email, and the list arrives
+  when that address joins. Signing in is joining, with the address the issuer verified.
 - Revoking a share is possible, and takes effect immediately.
 - Item text is ordinary personal data — nothing needing erasure beyond deleting
   it.
@@ -167,10 +172,18 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    e2 ||--o{ e1 : has
+    e3 ||--o{ e1 : has
     e3 ||--o{ e2 : has
-    e2 ||--o{ e4 : has
-    e1["item"] {
+    e4 ||--o{ e3 : has
+    e3 ||--o{ e5 : has
+    e1["invite"] {
+        string created_at
+        string email
+        string id PK
+        string invited_by
+        string list_id
+    }
+    e2["item"] {
         string added_by
         string created_at
         number done
@@ -178,19 +191,19 @@ erDiagram
         string list_id
         string text
     }
-    e2["list"] {
+    e3["list"] {
         string created_at
         string id PK
         string name
         string owner_id
     }
-    e3["owner"] {
+    e4["owner"] {
         string created_at
         string display_name
         string email
         string id PK
     }
-    e4["share"] {
+    e5["share"] {
         string created_at
         string email
         string id PK
@@ -221,3 +234,7 @@ _No lifecycle is declared: nothing here moves through stages._
   `list:contribute` per hit, as `search-items` does; no key or role changed. `list-items` became
   kernel-composed (`derive: 'list'`) and gained a `done` filter and a sort by `text`; its default
   order is still the id, so a cursor handed out before stays valid.
+- 2026-11-07: An owner can invite an address that has not joined (`todo/invite`, `todo/list-invites`,
+  `todo/cancel-invite`, the `invite` entity). The email is queued in the operation, and a consumer of
+  `todo.owner-joined` makes the share, because a grant delegates and the person joining holds nothing
+  on the list. All three operations check `list:manage`; no key or role changed.

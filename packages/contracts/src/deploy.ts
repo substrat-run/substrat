@@ -472,9 +472,9 @@ export const STORE_DRIVERS: readonly (StoreDriverRegistration & { readonly dumpP
   {
     driver: 'graph',
     isolationBasis: { kind: 'decisionRecord', decisionRecord: 'D-67' },
-    // D-67's narrow first use: none yet. A vertical whose operator accepts the shared isolate is
-    // added here by name, in a reviewed change.
-    verticals: [],
+    // D-67's narrow first use: the platform's own modeling vertical. A vertical whose operator
+    // accepts the shared isolate is added here by name, in a reviewed change.
+    verticals: ['modeling-studio'],
     erasure: 'pending',
     // Under the driver's 1 MB limit on a request, with room for the envelope around a page.
     dumpPageMaxBytes: 900_000,

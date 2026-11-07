@@ -1,5 +1,46 @@
 {
   "entities": {
+    "invite": {
+      "table": "todo_invites",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "list_id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "invited_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "list_id",
+          "email",
+          "invited_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "list"
+      ],
+      "key": [
+        "email",
+        "list_id"
+      ],
+      "erasable": [
+        "email"
+      ]
+    },
     "item": {
       "table": "todo_items",
       "fields": {
@@ -154,6 +195,9 @@
   "handlers": {
     "todo/archive-list": {
       "derive": "archive"
+    },
+    "todo/list-invites": {
+      "derive": "list"
     },
     "todo/list-items": {
       "derive": "list"
