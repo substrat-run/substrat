@@ -1,5 +1,5 @@
 import { prepareMessage, EmailError } from '@substrat-run/adapter-email';
-import { isSubstratError, type Connection, type PlatformActorId } from '@substrat-run/contracts';
+import { codeForRefusalStatus, isSubstratError, type Connection, type ErrorCode, type PlatformActorId } from '@substrat-run/contracts';
 import type {
   MailSendResult,
   MailSender,
@@ -25,6 +25,12 @@ import type {
 
 /** A refusal the relay answers with, carrying its HTTP status. */
 export class TenantMailRefusal extends Error {
+  /**
+   * The taxonomy code its status carries (#113), read by `errorCodeOf` and rendered by
+   * `toProblem` with the status unchanged; `undefined` for a status the catalog has no code
+   * at (413, 422, 501, 502), which stays `about:blank`. See `codeForRefusalStatus`.
+   */
+  readonly code: ErrorCode | undefined;
   constructor(
     readonly status: 400 | 403 | 409 | 413 | 502 | 503,
     message: string,
@@ -33,6 +39,7 @@ export class TenantMailRefusal extends Error {
   ) {
     super(message, options);
     this.name = 'TenantMailRefusal';
+    this.code = codeForRefusalStatus(this.status);
   }
 }
 
