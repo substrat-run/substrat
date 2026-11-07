@@ -1815,8 +1815,8 @@ function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; a
           {env && <Pill kind="success">explicit updates</Pill>}
           <div style={{ flex: 1 }} />
           {env && (
-            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)} style={{ color: 'var(--status-danger-fg)' }}>
-              Delete
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)}>
+              <span style={{ color: 'var(--status-danger-fg)' }}>Delete</span>
             </Button>
           )}
         </div>
@@ -1896,12 +1896,12 @@ function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; a
                             size="sm"
                             label={`Show DNS records for ${h.hostname}`}
                             onClick={() => setOpenRecords((o) => (o === h.hostname ? null : h.hostname))}
-                            style={{ ...iconBtn, transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
+                            style={{ transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
                           >
                             <Ic name="chevronDown" size={16} />
                           </IconButton>
                         )}
-                        <IconButton size="sm" label={`Remove ${h.hostname}`} onClick={() => void removeDomain(h.hostname)} style={iconBtn}>
+                        <IconButton size="sm" label={`Remove ${h.hostname}`} onClick={() => void removeDomain(h.hostname)}>
                           <Ic name="trash" size={14} />
                         </IconButton>
                       </div>
@@ -2741,7 +2741,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
         {opts.secret && <Pill kind={opts.hasValue ? 'success' : 'neutral'}>{opts.hasValue ? 'secret · set' : 'secret'}</Pill>}
         <div style={{ flex: 1 }} />
         {opts.hasValue && (
-          <IconButton size="sm" label="Remove" onClick={() => remove(key)} style={iconBtn}><Ic name="trash" size={14} /></IconButton>
+          <IconButton size="sm" label="Remove" onClick={() => remove(key)}><Ic name="trash" size={14} /></IconButton>
         )}
       </div>
       {opts.description && <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 8, lineHeight: 1.5 }}>{opts.description}</div>}
@@ -2991,13 +2991,13 @@ function AppDomains({ teamId, app, authServers }: { teamId: string; app: AppRow;
                       size="sm"
                       label={`Show DNS records for ${h.hostname}`}
                       onClick={() => setOpenRecords((o) => (o === h.hostname ? null : h.hostname))}
-                      style={{ ...iconBtn, transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
+                      style={{ transform: openRecords === h.hostname ? 'rotate(180deg)' : 'none' }}
                     >
                       <Ic name="chevronDown" size={16} />
                     </IconButton>
                   )}
                   {isDefault ? null : (
-                    <IconButton size="sm" label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)} style={iconBtn}>
+                    <IconButton size="sm" label={`Remove ${h.hostname}`} onClick={() => setToRemove(h)}>
                       <Ic name="trash" size={14} />
                     </IconButton>
                   )}
@@ -3591,7 +3591,6 @@ function IdentityCard({ teamId, app, authServers }: { teamId: string; app: AppRo
   );
 }
 
-const iconBtn = { color: 'var(--text-tertiary)' } as const;
 function IconBox({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <span aria-label={label} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)' }}>{children}</span>
