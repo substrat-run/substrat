@@ -48,6 +48,10 @@ import '@substrat-run/elements/themes/ledger.css';
 // <html class="sub-theme-ledger">, plus `wa-dark` for dark mode
 ```
 
+The package root registers every element, and a bundler cannot remove them. An app that uses only
+some imports those by subpath: `@substrat-run/elements/avatar`, `/user-menu` or `/entity-table`.
+`/entity-table-model` and `/session` carry the helpers with no element.
+
 ## How it is built
 
 [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s free, MIT core:
