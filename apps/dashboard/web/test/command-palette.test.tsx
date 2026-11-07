@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette } from '../src/components/CommandPalette';
 import type { PaletteContext } from '../src/lib/palette';
+import { type as typeInto } from './wa';
 
 /** #1921: the ⌘K overlay — keyboard first, one entry point for jumping and for support. */
 const CTX: PaletteContext = {
@@ -33,14 +34,7 @@ describe('CommandPalette', () => {
     return { onGo, onClose };
   };
   const key = (k: string) => act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: k })));
-  const type = async (text: string) => {
-    const input = container.querySelector('input')!;
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      set.call(input, text);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-  };
+  const type = (text: string) => act(async () => typeInto(container.querySelector('wa-input')!, text));
 
   it('filters as you type and opens the selected row with Enter', async () => {
     const { onGo, onClose } = await render();
@@ -71,7 +65,7 @@ describe('CommandPalette', () => {
     (window as { ticket0?: unknown }).ticket0 = { unmount: vi.fn(), open };
     const { onClose } = await render();
     await key('Tab');
-    expect(container.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('Support');
+    expect((container.querySelector('wa-radio-group[label="Mode"]') as HTMLElement & { value: string }).value).toBe('support');
     await key('Enter');
     expect(open).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalled();

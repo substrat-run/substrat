@@ -25,6 +25,7 @@ import {
 import { OBS_SECTIONS, sectionOf, sectionQuery } from '../src/lib/obs-sections';
 import { obsPath } from '../src/lib/router';
 import { readObsQuery } from '../src/lib/observability-query';
+import { buttons, choose, disabled, type } from './wa';
 
 /** #1748: the Findings inbox — its rules, and the view against the client the plane serves. */
 
@@ -173,7 +174,13 @@ describe('Findings view', () => {
     await settle();
   };
   const button = (label: string, within: ParentNode = host) =>
-    [...within.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
+    buttons(within).find((b) => b.textContent?.trim() === label);
+  const tab = (prefix: string) => [...host.querySelectorAll('wa-tab')].find((t) => t.textContent?.startsWith(prefix));
+  const pickTab = async (prefix: string) => {
+    const name = tab(prefix)!.getAttribute('panel');
+    await act(async () => void host.querySelector('wa-tab-group')!.dispatchEvent(new CustomEvent('wa-tab-show', { detail: { name } })));
+    await settle();
+  };
   const row = (id: string) => host.querySelector(`[data-finding="${id}"]`)!;
 
   function fake(
@@ -240,7 +247,7 @@ describe('Findings view', () => {
     expect(host.textContent).not.toContain('acked one');
     expect(host.textContent).toContain('Regressed');
     expect(host.textContent).toContain('onset 41 s after rollout');
-    const tabs = [...host.querySelectorAll('button')].map((b) => b.textContent);
+    const tabs = [...host.querySelectorAll('wa-tab')].map((b) => b.textContent);
     expect(tabs.some((t) => t?.startsWith('Open'))).toBe(true);
     expect(tabs.some((t) => t?.startsWith('Suppressed'))).toBe(true);
   });
@@ -271,8 +278,8 @@ describe('Findings view', () => {
     // Its status is one the inbox knows, so its moves are drawn as for any other.
     expect(button('Acknowledge', r)).toBeTruthy();
     await click(button('Suppress…', r));
-    const kinds = [...document.body.querySelectorAll('label')].find((l) => l.textContent?.startsWith('Kind'))?.querySelector('select');
-    expect([...kinds!.options].map((o) => o.textContent)).toEqual(['Any kind', 'anomaly']);
+    const kinds = document.body.querySelector('wa-select[label="Kind"]');
+    expect([...kinds!.querySelectorAll('wa-option')].map((o) => o.textContent)).toEqual(['Any kind', 'anomaly']);
   });
 
   it('#2401: a kind or severity named like an Object.prototype key is shown as named, not looked up there', async () => {
@@ -303,7 +310,7 @@ describe('Findings view', () => {
 
   it('asks the parent to switch tab, and renders the one it is given', async () => {
     const onTab = await mount(fake(entries));
-    await click([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Acked')));
+    await pickTab('Acked');
     expect(onTab).toHaveBeenCalledWith('acked');
     await mount(fake(entries), 'acked', true, onTab);
     expect(host.textContent).toContain('acked one');
@@ -335,7 +342,7 @@ describe('Findings view', () => {
       await mount(client);
       expect((client.calls.list as { status: string }[]).map((c) => c.status).sort()).toEqual(['acked', 'open', 'resolved', 'suppressed']);
       expect(button('Load more')).toBeUndefined();
-      expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toContain('1');
+      expect(tab('Open')?.textContent).toContain('1');
     });
 
     it('offers Load more on a tab with more behind it, leaves that tab uncounted, and counts the others', async () => {
@@ -343,7 +350,7 @@ describe('Findings view', () => {
       expect(button('Load more')).toBeTruthy();
       expect(host.textContent).toContain('Showing 3');
       expect(host.textContent).not.toContain('Showing the latest');
-      const label = (prefix: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith(prefix))?.textContent;
+      const label = (prefix: string) => tab(prefix)?.textContent;
       expect(label('Open')).toBe('Open'); // a floor is not a total: no number
       expect(label('Acked')).toContain('1'); // a tab that fit in one page keeps its exact count
     });
@@ -359,7 +366,7 @@ describe('Findings view', () => {
       expect(host.querySelectorAll('[data-finding]')).toHaveLength(7);
       // The last page was short, so the walk is over: no button, and the tab now carries its exact count.
       expect(button('Load more')).toBeUndefined();
-      expect([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Open'))?.textContent).toContain('7');
+      expect(tab('Open')?.textContent).toContain('7');
       // In the plane's order, oldest last.
       expect([...host.querySelectorAll('[data-finding]')].map((r) => r.getAttribute('data-finding'))).toEqual(
         open(7).map((e) => e.id),
@@ -445,7 +452,7 @@ describe('Findings view', () => {
       await mount(client);
       expect(button('Load more')).toBeUndefined();
       expect(host.textContent).toContain('Showing the latest 3 findings');
-      const label = (prefix: string) => [...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith(prefix))?.textContent;
+      const label = (prefix: string) => tab(prefix)?.textContent;
       expect(label('Open')).toBe('Open'); // cut: no number
       expect(label('Acked')).toContain('0'); // the twin: an uncut tab keeps its exact count
     });
@@ -484,7 +491,7 @@ describe('Findings view', () => {
 
   it('offers a suppressed finding no move', async () => {
     await mount(fake(entries), 'suppressed');
-    expect(row('s').querySelectorAll('button')).toHaveLength(0);
+    expect(buttons(row('s'))).toHaveLength(0);
   });
 
   it('draws no actions when the caller may not manage — and the twin draws them', async () => {
@@ -537,13 +544,8 @@ describe('Findings view', () => {
     await mount(client);
     await click(button('Suppress…', row('o')));
     const confirm = button('Suppress', document.body)!;
-    expect(confirm.disabled).toBe(true); // a reason is required
-    const input = document.body.querySelector('input')!;
-    await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(input, 'known retry storm');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    expect(disabled(confirm)).toBe(true); // a reason is required
+    await act(async () => type(document.body.querySelector('wa-input[label="Reason"]')!, 'known retry storm'));
     await click(button('Suppress', document.body));
     expect(client.calls.create).toHaveLength(1);
     expect(client.calls.create![0]).toMatchObject({ kind: 'recurring', operation: 'tickets/create', reason: 'known retry storm' });
@@ -564,19 +566,12 @@ describe('Findings view', () => {
   });
 
   const typeReason = async (text: string) => {
-    const input = document.body.querySelector('input')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    await act(async () => type(document.body.querySelector('wa-input[label="Reason"]')!, text));
   };
   const pick = async (label: string, value: string) => {
-    const sel = [...document.body.querySelectorAll('label')].find((l) => l.textContent?.startsWith(label))?.querySelector('select');
+    const sel = document.body.querySelector(`wa-select[label="${label}"]`);
     expect(sel).toBeTruthy();
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(sel, value);
-      sel!.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await act(async () => choose(sel!, value));
   };
   const rule1: FindingRuleEntry = { id: 'R1', tenantId: 'T', kind: null, operation: 'tickets/create', code: 'conflict', subject: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), reason: 'noise', createdBy: 'me', createdAt: 'then' };
 
@@ -584,19 +579,19 @@ describe('Findings view', () => {
     await mount(fake([finding({ id: 'x', operation: null })]));
     await click(button('Suppress…'));
     await typeReason('why');
-    expect(button('Suppress', document.body)!.disabled).toBe(false); // the kind narrows it
+    expect(disabled(button('Suppress', document.body)!)).toBe(false); // the kind narrows it
     await pick('Kind', '');
-    expect(button('Suppress', document.body)!.disabled).toBe(true);
+    expect(disabled(button('Suppress', document.body)!)).toBe(true);
     expect(document.body.textContent).toContain('Pick at least one of kind');
     await pick('Error code', 'conflict');
-    expect(button('Suppress', document.body)!.disabled).toBe(false);
+    expect(disabled(button('Suppress', document.body)!)).toBe(false);
   });
 
   it('sends the kind the dialog shows, and caps the reason at the server’s length', async () => {
     const client = fake(entries);
     await mount(client);
     await click(button('Suppress…', row('o')));
-    expect(document.body.querySelector('input')!.getAttribute('maxlength')).toBe(String(REASON_MAX));
+    expect(document.body.querySelector('wa-input[label="Reason"]')!.getAttribute('maxlength')).toBe(String(REASON_MAX));
     await pick('Kind', '');
     await typeReason('why');
     await click(button('Suppress', document.body));
@@ -612,30 +607,29 @@ describe('Findings view', () => {
     await click(button('Suppress…', row('o')));
     await typeReason('why');
     await click(button('Suppress', document.body));
-    expect(document.body.textContent).toContain('Suppress matching anomalies');
+    expect((document.body.querySelector('wa-dialog[label="Suppress matching anomalies"]') as HTMLElement & { open: boolean }).open).toBe(true);
     expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(/read findings but not change/);
     expect(host.textContent).not.toContain('Rule created');
   });
 
   const escape = async () => {
     await act(async () => {
-      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      document.body.querySelector('wa-dialog')!.dispatchEvent(new CustomEvent('wa-hide', { cancelable: true }));
     });
     await settle();
   };
 
-  it('opens the suppress dialog as a named modal with focus inside, and Escape closes it and gives focus back (#2199)', async () => {
+  // `wa-dialog` owns the modal, focus inside and focus back, which a browser shows. What is the
+  // view's is that the element outlives the close: it only gives focus back as it closes itself.
+  it('opens the suppress dialog as a named modal, and Escape closes it with the element kept to give focus back (#2199)', async () => {
     await mount(fake(entries));
-    const opener = button('Suppress…', row('o'))!;
-    opener.focus();
-    await click(opener);
-    const dialog = document.body.querySelector('[role="dialog"]')!;
-    expect(dialog.getAttribute('aria-modal')).toBe('true');
-    expect(document.getElementById(dialog.getAttribute('aria-labelledby')!)?.textContent).toBe('Suppress matching anomalies');
-    expect(dialog.contains(document.activeElement)).toBe(true);
+    await click(button('Suppress…', row('o')));
+    const dialog = document.body.querySelector('wa-dialog') as HTMLElement & { open: boolean };
+    expect(dialog.open).toBe(true);
+    expect(dialog.getAttribute('label')).toBe('Suppress matching anomalies');
     await escape();
-    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(opener);
+    expect(dialog.open).toBe(false);
+    expect(dialog.isConnected).toBe(true);
   });
 
   it('keeps the suppress dialog open on Escape while the create is in flight (#2199)', async () => {
@@ -646,7 +640,7 @@ describe('Findings view', () => {
     await typeReason('why');
     await click(button('Suppress', document.body));
     await escape();
-    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect((document.body.querySelector('wa-dialog') as HTMLElement & { open: boolean }).open).toBe(true);
   });
 
   it('draws no Revoke rule for a non-manager — and the twin does', async () => {
@@ -721,13 +715,13 @@ describe('Findings view', () => {
         waiting[input.id] = () => resolve(finding({ id: input.id, title: `row ${input.id}`, status: input.status }));
       });
     await mount(client);
-    const busyOf = (id: string) => button('Acknowledge', row(id))?.getAttribute('aria-busy');
+    const busyOf = (id: string) => button('Acknowledge', row(id))?.hasAttribute('loading');
     await click(button('Acknowledge', row('a')));
     await click(button('Acknowledge', row('b')));
-    expect([busyOf('a'), busyOf('b')]).toEqual(['true', 'true']);
+    expect([busyOf('a'), busyOf('b')]).toEqual([true, true]);
     await act(async () => waiting.b!());
     await settle();
-    expect(busyOf('a')).toBe('true'); // b's finishing did not clear a's guard
+    expect(busyOf('a')).toBe(true); // b's finishing did not clear a's guard
     await act(async () => waiting.a!());
     await settle();
     expect(host.textContent).not.toContain('row a');
@@ -764,7 +758,7 @@ describe('Findings view', () => {
         '/api/teams/T1/findings?status=resolved',
         '/api/teams/T1/findings?status=suppressed',
       ]);
-      await click([...host.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Resolved')));
+      await pickTab('Resolved');
       expect(onNav).toHaveBeenCalledWith({ view: 'findings', tab: 'resolved' });
       await render(true);
       await settle();

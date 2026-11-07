@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { REVIEW_TEXT_SHOWN_MAX, type MigrationDiff, type MigrationEntry } from '@substrat-run/contracts';
 import { PromoteMigrations } from '../src/components/PromoteMigrations';
+import { buttons } from './wa';
 
 /** #2322: the promote dialog shows each migration's declared moves and discards, as text. */
 describe('PromoteMigrations: declared moves and discards', () => {
@@ -67,7 +68,7 @@ describe('PromoteMigrations: declared moves and discards', () => {
     const reason = 'r'.repeat(REVIEW_TEXT_SHOWN_MAX) + 'TAIL';
     show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }]));
     expect(text()).not.toContain('TAIL');
-    const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show all')!;
+    const button = buttons(container).find((b) => b.textContent === 'Show all')!;
     act(() => button.click());
     expect(text()).toContain(`${reason}Show less`);
   });
@@ -111,7 +112,7 @@ describe('PromoteMigrations: declared moves and discards', () => {
     show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }]));
     expect(text()).toContain('line 5…');
     expect(text()).not.toContain('line 6');
-    act(() => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show all')!.click());
+    act(() => buttons(container).find((b) => b.textContent === 'Show all')!.click());
     expect(text()).toContain('line 9');
   });
 

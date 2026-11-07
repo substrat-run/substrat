@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette, type AskFn } from '../src/components/CommandPalette';
 import { foldTurn, historyFor, lookLabel, mockAsk, type AskTurn } from '../src/lib/ask';
 import type { PaletteContext } from '../src/lib/palette';
+import { type as typeInto } from './wa';
 
 /**
  * ⌘K Ask (#2283): what a turn shows, folded from the assistant's stream protocol, and the
@@ -106,15 +107,8 @@ describe('⌘K Ask', () => {
 
   const render = (ask: AskFn | null) => act(async () => root.render(<CommandPalette ctx={CTX} ask={ask} onGo={vi.fn()} onClose={vi.fn()} />));
   const key = (k: string) => act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: k })));
-  const type = async (text: string) => {
-    const input = container.querySelector('input')!;
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      set.call(input, text);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-  };
-  const tabs = () => [...container.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
+  const type = (text: string) => act(async () => typeInto(container.querySelector('wa-input')!, text));
+  const tabs = () => [...container.querySelectorAll('wa-radio-group[label="Mode"] wa-radio')].map((t) => t.textContent);
 
   it('offers no Ask mode where the deployment writes no AI text', async () => {
     await render(null);
@@ -126,7 +120,7 @@ describe('⌘K Ask', () => {
     await render(ask);
     expect(tabs()).toEqual(['Jump', 'Ask', 'Support']);
     await key('Tab');
-    expect(container.querySelector('input')!.getAttribute('aria-label')).toBe('Ask');
+    expect(container.querySelector('wa-input')!.getAttribute('label')).toBe('Ask');
 
     await type('Why do uploads fail?');
     await key('Enter');
