@@ -8,6 +8,11 @@ LABEL=${M##*/}
 HERE=${0:A:h}
 H=${BUILDER_RUNS:-$PWD/data/builder-runs}
 SHA=$(git rev-parse --short HEAD)
+# Every run builds in .builder/projects/eval-todo, so two queues in one checkout write over each other.
+LOCK=.builder/queue.lock
+mkdir -p .builder
+mkdir $LOCK 2>/dev/null || { echo "another queue is running in this checkout: $LOCK"; exit 4; }
+trap 'rmdir $LOCK' EXIT
 for i in $(seq 1 $N); do
   free=$(df -g "$PWD" | awk 'NR==2{print $4}')
   [ "$free" -lt 8 ] && { echo "stop: ${free}G free"; exit 3; }
