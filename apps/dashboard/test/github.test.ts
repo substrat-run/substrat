@@ -306,7 +306,7 @@ describe('GitHub App client', () => {
       // the package's directory.
       expect(yaml).toContain('for s in typecheck test lint:boundaries; do');
       expect(yaml).toContain(`'demos/auth-server/package.json' "$1"; }`);
-      expect(yaml).toContain(`if declares "$s"; then ( cd demos/auth-server && $PM run "$s" )`);
+      expect(yaml).toContain(`if declares "$s"; then ( cd demos/auth-server && pnpm run "$s" )`);
       // Never the repo root, even in a monorepo: the build step above builds the vertical's
       // dependency closure and nothing else, so a root script is free to need a tool this job
       // never built. Falling back to the root `lint:boundaries` is how the first version of
@@ -323,7 +323,7 @@ describe('GitHub App client', () => {
       expect(root).toContain(GATE);
       expect(root.indexOf(GATE)).toBeLessThan(root.indexOf('cli push . --slug hr-portal | tee push.out'));
       expect(root).toContain(`'package.json' "$1"; }`);
-      expect(root).toContain(`if declares "$s"; then ( cd . && $PM run "$s" )`);
+      expect(root).toContain(`if declares "$s"; then ( cd . && pnpm run "$s" )`);
     });
 
     it('never hard-codes a fabricated version coordinate', () => {
