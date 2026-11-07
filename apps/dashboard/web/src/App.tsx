@@ -181,6 +181,7 @@ export function App() {
   // Theme → data-theme on the root (every token flips; no per-theme overrides).
   useEffect(() => {
     document.documentElement.dataset['theme'] = dark ? 'dark' : 'light';
+    document.documentElement.classList.toggle('wa-dark', dark);
     localStorage.setItem('substrat.dash.theme', dark ? 'dark' : 'light');
   }, [dark]);
 

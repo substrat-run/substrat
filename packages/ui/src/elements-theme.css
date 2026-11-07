@@ -63,14 +63,20 @@
     --wa-color-neutral-on-loud: var(--text-inverse);
 
     --wa-color-success-fill-quiet: var(--status-success-bg);
+    --wa-color-success-fill-normal: var(--status-success-bg);
     --wa-color-success-fill-loud: var(--status-success-dot);
     --wa-color-success-on-quiet: var(--status-success-fg);
+    --wa-color-success-on-normal: var(--status-success-fg);
     --wa-color-warning-fill-quiet: var(--status-warning-bg);
+    --wa-color-warning-fill-normal: var(--status-warning-bg);
     --wa-color-warning-fill-loud: var(--status-warning-dot);
     --wa-color-warning-on-quiet: var(--status-warning-fg);
+    --wa-color-warning-on-normal: var(--status-warning-fg);
     --wa-color-danger-fill-quiet: var(--status-danger-bg);
+    --wa-color-danger-fill-normal: var(--status-danger-bg);
     --wa-color-danger-fill-loud: var(--status-danger-dot);
     --wa-color-danger-on-quiet: var(--status-danger-fg);
+    --wa-color-danger-on-normal: var(--status-danger-fg);
 
     --wa-font-family-body: var(--font-sans);
     --wa-font-family-code: var(--font-mono);

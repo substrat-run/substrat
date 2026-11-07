@@ -8,12 +8,14 @@ export interface BadgeProps {
   status?: 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'brand';
   /** Show the leading status dot. Default true. */
   dot?: boolean;
+  /** The dot breathes, for a state still in flight. */
+  pulse?: boolean;
   children?: ReactNode;
   style?: CSSProperties;
 }
 
 /** Web Awesome has no `info`, so it is a neutral badge the stylesheet gives the info colours. */
-export function Badge({ status = 'neutral', dot = true, children, style }: BadgeProps) {
+export function Badge({ status = 'neutral', dot = true, pulse, children, style }: BadgeProps) {
   return (
     <wa-badge
       class={status === 'info' ? 'ui-badge-info' : undefined}
@@ -22,7 +24,7 @@ export function Badge({ status = 'neutral', dot = true, children, style }: Badge
       pill
       style={css(style)}
     >
-      {dot && <span slot="start" className="ui-badge-dot" />}
+      {dot && <span slot="start" className={pulse ? 'ui-badge-dot ui-badge-pulse' : 'ui-badge-dot'} />}
       {children}
     </wa-badge>
   );
