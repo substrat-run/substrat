@@ -303,21 +303,28 @@ interface SecretHit {
   readonly after: 'operator' | 'comparison' | 'key';
   /** A header's value, whose whole remainder is the secret (`Authorization: token V`, `Cookie: a=b; session=V`). */
   readonly header: boolean;
+  /** Read inside a quoted name (`` `password=V`: ``), so it already sits in a string: the quotes are not read from it. */
+  readonly inName: boolean;
 }
 
 /** Every secret-named value in `text`, earliest first. A count's whole plain value is none. */
 function secretHits(text: string): SecretHit[] {
   const hits: SecretHit[] = [];
-  const hit = (name: string, at: number, after: SecretHit['after']): void => {
+  const hit = (name: string, at: number, after: SecretHit['after'], inName = false): void => {
     const joined = joinedName(name);
     const bare = stickyAt(BARE_VALUE, text, at)![0];
     const count = COUNT_NAME.test(joined) && !CREDENTIAL_NAME.test(joined);
     if (count && LITERAL.test(bare) && stickyAt(VALUE_END, text, at + bare.length)) return;
-    hits.push({ at, bare, after, header: HEADER_NAME.test(joined) && (after === 'operator' || stickyAt(HEADER_VALUE, text, at) !== null) });
+    hits.push({ at, bare, after, header: HEADER_NAME.test(joined) && (after === 'operator' || stickyAt(HEADER_VALUE, text, at) !== null), inName });
+  };
+  const assignment = (m: RegExpExecArray, offset: number, inName: boolean): void => {
+    const name = m[2] ?? m[3]!;
+    if (namesSecret(name)) hit(name, offset + m.index + m[0].length, KEY_OPERATOR.test(m[4]!) ? 'key' : COMPARISON.test(m[4]!) ? 'comparison' : 'operator', inName);
   };
   for (const m of text.matchAll(ASSIGNMENT)) {
-    const name = m[2] ?? m[3]!;
-    if (namesSecret(name)) hit(name, m.index + m[0].length, KEY_OPERATOR.test(m[4]!) ? 'key' : COMPARISON.test(m[4]!) ? 'comparison' : 'operator');
+    assignment(m, 0, false);
+    // A quoted name is read inside too, as what it holds may be an assignment of its own: `` `password=V`: ``.
+    if (m[2] !== undefined) for (const inner of m[2].matchAll(ASSIGNMENT)) assignment(inner, m.index + m[1]!.length, true);
   }
   for (const m of text.matchAll(QUOTED_ARGUMENT)) {
     if (m[1] || namesSecret(m[3]!)) hit(m[3]!, m.index + m[0].length, 'key');
@@ -359,6 +366,8 @@ const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
  * (`` `if (token == null)` lets any caller through ``).
  */
 const CLOSER = /([)\]]*)[`"'][,.;:]?/y;
+/** What a closing quote is glued to: the end of a word, or a closing bracket (`null'`, `f(x)'`). */
+const GLUED = /[\w)\]]/;
 
 /**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
@@ -370,16 +379,22 @@ const CLOSER = /([)\]]*)[`"'][,.;:]?/y;
  * sentence does not go on after (`if (token == null) return "V"`), to the end of the line every
  * quoted string is masked too (`password = "a" + "V"`, `token = Buffer.from("V")`). The quotes are
  * read from there, from the first value and from the start of the line, since either hit may itself
- * sit inside a string (`"password=abc" + "V"`) or after a stray quote. The ranges are collected and
- * applied once, so one mask cannot use up another.
+ * sit inside a string (`"password=abc" + "V"`) or after a stray quote. A hit inside a quoted name
+ * starts the masking but no reading, as its name's closing quote would read as an opening one; the
+ * first of each outside a name is read from instead. A quote glued to what is before it may close a
+ * string where the line's reading opens one, so from the earliest hit on, the quotes are also read
+ * from after each such quote. The ranges are collected and applied once, so one mask cannot use up
+ * another.
  */
 function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   const hits = secretHits(text);
   if (mode === 'line') return hits[0] ? `${text.slice(0, hits[0].at)}[redacted]` : text;
   const values = hits.filter((hit) => !readsAsProse(text, hit));
   let strings: RegExpExecArray[] | undefined;
+  /** The quoted strings, read from the start of the line. */
+  const lineStrings = (): RegExpExecArray[] => (strings ??= [...text.matchAll(QUOTED)]);
   /** The quote at `at` closes a string, read from the start of the line. */
-  const closes = (at: number): boolean => (strings ??= [...text.matchAll(QUOTED)]).some((m) => m.index + m[0].length === at + 1);
+  const closes = (at: number): boolean => lineStrings().some((m) => m.index + m[0].length === at + 1);
   const goesOn = ({ at, bare }: SecretHit): boolean => {
     let end = at + bare.length;
     const closer = stickyAt(CLOSER, text, end);
@@ -389,7 +404,9 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
     }
     return stickyAt(PROSE_GOES_ON, text, end) !== null;
   };
-  const first = hits.find((hit) => values.includes(hit) || !goesOn(hit));
+  /** Each value, and each prose hit the sentence does not go on after. */
+  const stops = hits.filter((hit) => values.includes(hit) || !goesOn(hit));
+  const first = stops[0];
   if (!first) return text;
   const ranges: Array<[number, number]> = [];
   for (const { at, bare, header } of values) {
@@ -402,7 +419,9 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
     if (LITERAL.test(bare)) end += stickyAt(NEXT_TOKEN, text, end)?.[0].length ?? 0;
     if (end > at) ranges.push([at, end]);
   }
-  for (const from of new Set([0, first.at, values[0]?.at ?? first.at])) {
+  const glued = lineStrings().filter((m) => m.index >= first.at && GLUED.test(text[m.index - 1]!)).map((m) => m.index + 1);
+  const outside = (pool: SecretHit[]): number => pool.find((hit) => !hit.inName)?.at ?? 0;
+  for (const from of new Set([0, outside(stops), outside(values), ...glued])) {
     for (const m of text.slice(from).matchAll(QUOTED)) {
       const end = from + m.index + m[0].length;
       if (end > first.at) ranges.push([Math.max(from + m.index, first.at), end]);
