@@ -13,27 +13,32 @@ const PROJECT_FILES = ['package.json', 'tsconfig.json', 'tsconfig.worker.json', 
  * The routes every project mounts: each declared operation at its `http`, and `POST /api/invoke`,
  * which the app's `invoke` calls. Nothing in it is the vertical's, so no build should write it.
  */
-const routes = (ops: string): string => `import type { Context, Hono } from 'hono';
-import { externalInput, externalJson, mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
-import { ${ops === 'operations' ? ops : `${ops} as operations`} } from '../spec/model.js';
-
-export type { ResolveStub };
-
-/** The HTTP API, derived from the declared operations; both entrypoints mount it. */
-export function mountApi(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  app: Hono<any, any, any>,
-  resolveStub: ResolveStub,
-): { operation: string; method: string; path: string }[] {
-  app.onError((err, c: Context) => problemResponse(c, err));
-  // The route the app's \`invoke\` calls: a thin wrapper over one operation.
-  app.post('/api/invoke', async (c) => {
-    const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-    return externalJson(c, (await (await resolveStub(c)).invoke(op, externalInput(input))) ?? null);
-  });
-  return mountOperations(app, operations, resolveStub);
-}
-`;
+// Lines rather than one template literal: tools/declared-deps.mjs reads source text, so an import
+// line at the start of a template's line would count as one of the builder's own imports.
+const routes = (ops: string): string =>
+	[
+		"import type { Context, Hono } from 'hono';",
+		"import { externalInput, externalJson, mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';",
+		`import { ${ops === 'operations' ? ops : `${ops} as operations`} } from '../spec/model.js';`,
+		'',
+		'export type { ResolveStub };',
+		'',
+		'/** The HTTP API, derived from the declared operations; both entrypoints mount it. */',
+		'export function mountApi(',
+		'  // eslint-disable-next-line @typescript-eslint/no-explicit-any',
+		'  app: Hono<any, any, any>,',
+		'  resolveStub: ResolveStub,',
+		'): { operation: string; method: string; path: string }[] {',
+		'  app.onError((err, c: Context) => problemResponse(c, err));',
+		"  // The route the app's `invoke` calls: a thin wrapper over one operation.",
+		"  app.post('/api/invoke', async (c) => {",
+		'    const { op, input } = await c.req.json<{ op: string; input?: unknown }>();',
+		'    return externalJson(c, (await (await resolveStub(c)).invoke(op, externalInput(input))) ?? null);',
+		'  });',
+		'  return mountOperations(app, operations, resolveStub);',
+		'}',
+		'',
+	].join('\n');
 
 const withoutComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
 
