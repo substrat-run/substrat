@@ -114,9 +114,14 @@ const bound = operationsFor(operations)({
       ctx.principal,
     ])[0];
     if (existing) return existing;
+    // Sharing finds a person by this address, so it is the issuer's word for it (K-61) and
+    // never something the caller typed.
+    if (ctx.verifiedEmail === null) {
+      throw substratError('permission_denied', 'joining needs a verified email address');
+    }
     ctx.sql.exec(
       'INSERT INTO lists_people (id, email, display_name, created_at) VALUES (?, ?, ?, ?)',
-      [ctx.principal, input.email, input.displayName, ctx.now()],
+      [ctx.principal, ctx.verifiedEmail, input.displayName, ctx.now()],
     );
     const row = ctx.sql.query<PersonRow>('SELECT * FROM lists_people WHERE id = ?', [
       ctx.principal,
@@ -274,6 +279,9 @@ const bound = operationsFor(operations)({
 
   'lists/invite': async (ctx, input) => {
     assertAllowed(await ctx.check(LISTS_PERM.listManage, listRef(input.listId)));
+    // A grant delegates, but the share an invitation becomes is made by a consumer, where nothing
+    // re-checks the inviter. So what they hand on is asked here, whether or not the address has joined.
+    assertAllowed(await ctx.check(LISTS_PERM.listContribute, listRef(input.listId)));
     const list = listOrThrow(ctx, input.listId);
     const invitee = personByEmail(ctx, input.email);
     if (invitee) {

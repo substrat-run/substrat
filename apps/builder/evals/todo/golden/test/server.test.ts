@@ -22,6 +22,7 @@ beforeAll(async () => {
   world = await seed(host);
   who.markus = () => ({ p: world.markus, t: world.tenant, s: world.scope });
   who.alice = () => ({ p: world.alice, t: world.tenant, s: world.scope });
+  who.dana = () => ({ p: world.dana, t: world.tenant, s: world.scope });
   app = new Hono();
   mountApi(app, async (c) => {
     const key = c.req.header('x-test-user');
@@ -59,6 +60,11 @@ describe('the HTTP surface', () => {
   it('no caller and an unknown caller are 401', async () => {
     expect((await invoke(null, 'lists/my-lists', {})).status).toBe(401);
     expect((await invoke('mallory', 'lists/my-lists', {})).status).toBe(401);
+  });
+
+  it('a join with no verified address is 403: the address is the issuer’s, never typed', async () => {
+    // This stand-in hands the stub no verified address, so `ctx.verifiedEmail` is null.
+    expect((await invoke('dana', 'lists/join', { displayName: 'Dana' })).status).toBe(403);
   });
 
   it('a collaborator on a guarded operation is 403', async () => {

@@ -8,6 +8,23 @@
     "name": "Shared Lists",
     "sendsEmail": true,
     "permissions": "src/provision.ts",
+    "runtimeNeeds": {
+      "entry": "src/worker.ts",
+      "stores": [
+        {
+          "binding": "SCOPE",
+          "class": "ScopeDO"
+        },
+        {
+          "binding": "SWEEPER",
+          "class": "SweeperDO"
+        },
+        {
+          "binding": "AUTH",
+          "class": "IdentityDO"
+        }
+      ]
+    },
     "devServers": [
       {
         "name": "issuer",
@@ -28,27 +45,26 @@
     "issuer": "substrat-dev-issuer --personas src/personas.ts",
     "server": "tsx src/server.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "lint:boundaries": "substrat-boundary-lint"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "@substrat-run/adapter-cloudflare": "^0.185.0",
-    "@substrat-run/adapter-sqlite": "^0.185.0",
-    "@substrat-run/attachment-extractors": "^0.2.46",
-    "@substrat-run/contracts": "^0.185.0",
-    "@substrat-run/engine-invoicing": "^0.11.69",
-    "@substrat-run/engine-workorder": "^0.13.10",
-    "@substrat-run/kernel": "^0.185.0",
-    "@substrat-run/oidc-rp": "^0.13.0",
-    "@substrat-run/vertical-host": "^0.185.0",
+    "@substrat-run/adapter-cloudflare": "^0.187.0",
+    "@substrat-run/adapter-sqlite": "^0.187.0",
+    "@substrat-run/attachment-extractors": "^0.2.48",
+    "@substrat-run/contracts": "^0.187.0",
+    "@substrat-run/engine-invoicing": "^0.11.71",
+    "@substrat-run/engine-workorder": "^0.13.12",
+    "@substrat-run/kernel": "^0.187.0",
+    "@substrat-run/vertical-host": "^0.187.0",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261023.1",
     "@substrat-run/boundary-lint": "^0.8.2",
-    "@substrat-run/dev-issuer": "^0.3.5",
+    "@substrat-run/dev-issuer": "^0.4.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.0.0",
     "@vitest/ui": "^5.0.0",

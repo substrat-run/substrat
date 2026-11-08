@@ -78,8 +78,9 @@ export async function seed(host: ScopeHost): Promise<World> {
         node: { tenantId: t, scopeId: s },
       });
       if (p === world.dana) continue;
-      const stub = await host.getScope(p.principal, t, s);
-      await stub.invoke('lists/join', { email: p.email, displayName: p.name });
+      // As the door hands it over: the address the issuer verified, which the join records.
+      const stub = await host.getScope(p.principal, t, s, { verifiedEmail: p.email });
+      await stub.invoke('lists/join', { displayName: p.name });
       await grantOwner(host, world.staff, { tenantId: t, scopeId: s }, p.principal);
     }
   }
