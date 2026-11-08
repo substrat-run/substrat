@@ -173,6 +173,24 @@ export function grantEntityShapeIn(db: SwitchSql, principal: PrincipalId, entity
 }
 
 /**
+ * The shape's grant to someone who has never had it on this entity: {@link grantEntityShapeIn},
+ * unless a marker row is there, live or tombstoned. What a door runs on every sign-in, where
+ * re-granting would bring back what a revoke took. Answers whether it granted.
+ */
+export function grantEntityShapeOnceIn(db: SwitchSql, principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): boolean {
+  const object = entityObjectRef(entity, 'grantEntityShapeOnce');
+  const given = db.all(
+    'SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ?',
+    `${PRINCIPAL}${principal}`,
+    ENTITY_SHAPE_MARKER_RELATION,
+    object,
+  );
+  if (given.length > 0) return false;
+  grantEntityShapeIn(db, principal, entity, permissions);
+  return true;
+}
+
+/**
  * Where a pass stopped, so the next pass of the same reconcile starts there instead of at the
  * first marker (#2083): the shape (its index in `shapes`), the step of it, and for a marker walk
  * the last marker it read. Without it every pass re-read the holders earlier passes had already

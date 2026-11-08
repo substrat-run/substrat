@@ -17,8 +17,9 @@ holds on that entity. So sharing a record is an operation the holder calls, neve
 calls (`engine-invites` is for joining an org, not for sharing one record). Someone who has
 not joined yet gets an invitation row and an email in that same operation, and a consumer
 of the join event makes the share (`todo/invite`, `shareInvitedLists` in `todo` `src/module.ts`). A person's first grant on their
-own record is host code, the seed or the worker after the join operation; that is the
-normal path, not a defect in the model.
+own record is host code: the seed locally, and the worker's door when a hosted person first
+signs in, after the join the worker names (`workerDoor({ join })`). That is the normal path,
+not a defect in the model.
 
 **Tier 1 — engines you compose** (imported; their in-scope functions run in
 YOUR transaction):
