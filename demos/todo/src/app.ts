@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { invocationLog } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import type { DevCaller, DevLogin } from '@substrat-run/dev-issuer';
-import type { ScopeHost } from '@substrat-run/kernel';
+import type { ScopeHost, ScopeStubOptions } from '@substrat-run/kernel';
 import { API_DOCUMENT } from './api.js';
 import { mountApi } from './routes.js';
 
@@ -15,14 +15,22 @@ export interface AppOptions {
   login: Pick<DevLogin, 'handle' | 'caller'>;
   /** After a person's first join here: what the host owes them, such as their owner grant. */
   onJoined?: (caller: DevCaller) => Promise<void>;
+  /**
+   * Where the mail an invite queues is written, as soon as the call commits: `server.ts` hands in
+   * adapter-sqlite's `devMailOutbox`, named here only by the stub options it adds.
+   */
+  outbox?: { kick(caller: DevCaller): Pick<ScopeStubOptions, 'onPlatformRequests'> };
 }
 
-export function createApp({ host, login, onJoined }: AppOptions): Hono {
+export function createApp({ host, login, onJoined, outbox }: AppOptions): Hono {
   const app = new Hono();
   const joined = new Set<string>();
   // Every door goes through here, so an operation sees the address the issuer verified (K-61).
   const scopeOf = (caller: DevCaller) =>
-    host.getScope(caller.principal, caller.tenantId, caller.scopeId, { verifiedEmail: caller.verifiedEmail });
+    host.getScope(caller.principal, caller.tenantId, caller.scopeId, {
+      verifiedEmail: caller.verifiedEmail,
+      ...outbox?.kick(caller),
+    });
   // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
   // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
   // purpose: no router fronts this server, so there is nothing to verify and no line to write.

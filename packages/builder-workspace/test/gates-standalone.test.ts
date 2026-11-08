@@ -171,6 +171,7 @@ describe('standaloneGates — when each gate applies', () => {
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":""}},"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'names no entry'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts","build":{"command":"pnpm --dir app build"}}},"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts","build":"pnpm --dir app build"}},"devDependencies":{"wrangler":"^4"}}', 'runtimeNeeds.build: '],
 		['dev-join', 'src/server.ts', 'devLogin({}); process.env.PORT ?? 8891', "devLogin({}); process.env.PORT ?? 8891; await stub.invoke('todo/join', { displayName })", 'never runs it'],
+		['dev-mail', 'src/server.ts', 'devLogin({}); process.env.PORT ?? 8891', 'devLogin({}); devMailOutbox(host, { dataDir, actor }); getScope(p, t, s, { ...outbox.kick(caller) })', 'writes it nowhere'],
 		['migrations-registered', 'src/module.ts', 'export const appModule = { migrations: [] };', "import { migrations } from './migrations.generated.js'; export const appModule = { migrations };", 'Nothing in src/ registers'],
 		['hosted-join', 'src/worker.ts', 'workerDoor({ hostFor }) // join: todo/join', "workerDoor({ join: (s, w) => s.invoke('todo/join', { displayName: w.display }) })", 'todo/join'],
 	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {

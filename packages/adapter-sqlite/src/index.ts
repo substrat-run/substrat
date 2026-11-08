@@ -986,6 +986,7 @@ import { createTupleChecker, directoryTenantReader } from './checker.js';
 import { decidedByOf, entityString, forgetInvocationTrace, invocationTrace, tracedSql } from './trace.js';
 
 export { scopeStoreRunnersFor } from './scope-store-runners.js';
+export { devMailOutbox, MAIL_OUTBOX_ENV, type DevMailOutbox, type DevMailOutboxOptions, type OutboxNode } from './dev-mail-outbox.js';
 
 /**
  * A fault in the database itself (full, corrupt, I/O), as opposed to one statement failing.
