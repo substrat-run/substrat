@@ -223,8 +223,10 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// after it, so a turn that changed no entity leaves the artifact untouched.
 	const model = await emitProjectModel(ws, opts.verticalDir);
 	// The migrations follow the same model: appended to journal.json when an entity changed, and
-	// re-rendered into src/migrations.generated.ts, so a build never writes the model's DDL.
-	const migrations = await emitProjectMigrations(ws, opts.verticalDir);
+	// re-rendered into src/migrations.generated.ts, so a build never writes the model's DDL. Only
+	// from a model that emitted: the journal must never record one the model-emit gate refused.
+	const migrations =
+		model.status === 'emitted' ? await emitProjectMigrations(ws, opts.verticalDir) : { status: 'absent' as const, output: '' };
 	// Re-render PERMISSIONS.md beside it, for the same reason: the permission
 	// checkpoint is a person reading that file's diff in the turn's commit, and a
 	// generated project had no way to produce it — the renderer lives in the
