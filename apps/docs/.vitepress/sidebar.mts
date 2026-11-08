@@ -35,6 +35,28 @@ export function engineSidebar(slug: string, text: string) {
   };
 }
 
+/** Where the error-code pages live, relative to this file. */
+const ERRORS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../errors');
+
+/**
+ * One page per problem code, read from the directory rather than listed by hand. The pages
+ * are emitted from the closed taxonomy (`pnpm lint:problem-codes`, #113), so the directory is
+ * the code list: a code the registry gains reaches the nav and `llms.txt` with its page.
+ * Sorted by file name, because a reader holding a `code` looks it up by name.
+ */
+function errorCodePages(): { text: string; link: string }[] {
+  if (!existsSync(ERRORS_DIR)) return [];
+  return readdirSync(ERRORS_DIR)
+    .filter((f) => f.endsWith('.md') && f !== 'index.md')
+    .sort()
+    .map((file) => {
+      const slug = file.replace(/\.md$/, '');
+      const raw = readFileSync(join(ERRORS_DIR, file), 'utf8');
+      const title = /^title:\s*(.+)$/m.exec(raw)?.[1].trim().replace(/^['"]|['"]$/g, '');
+      return { text: title ?? slug, link: `/errors/${slug}` };
+    });
+}
+
 /** Where the weekly changelog entries live, relative to this file. */
 const CHANGELOG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../changelog');
 
@@ -244,6 +266,11 @@ export function guideSidebar() {
         { text: 'Router', link: '/platform/router' },
         { text: 'Dashboard', link: '/platform/dashboard' },
       ],
+    },
+    {
+      text: 'Error codes',
+      collapsed: true,
+      items: [{ text: 'Every error code', link: '/errors/' }, ...errorCodePages()],
     },
     {
       text: 'Package reference',

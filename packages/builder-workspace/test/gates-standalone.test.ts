@@ -163,6 +163,8 @@ describe('standaloneGates — when each gate applies', () => {
 		['app-events', 'app/src/screens.ts', 'html`<sub-entity-table @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'html`<sub-entity-table row-click @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'without the row-click'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/gone.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'src/gone.ts'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'no wrangler'],
+		['hosted-entry', 'package.json', '{"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'nothing to build'],
+		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":""}},"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'names no entry'],
 		['hosted-join', 'src/worker.ts', 'workerDoor({ hostFor }) // join: todo/join', "workerDoor({ join: (s, w) => s.invoke('todo/join', { displayName: w.display }) })", 'todo/join'],
 	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
 		const w = await fixtureWorkspace();
@@ -181,6 +183,14 @@ describe('standaloneGates — when each gate applies', () => {
 
 		await w.writeFile(`${PROJECT}/${file}`, good);
 		expect((await runGate(w, gate(name), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
+
+	it('passes hosted-entry on a hand-authored wrangler.jsonc, which substrat push falls back to', async () => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/package.json`, '{"devDependencies":{"wrangler":"^4"}}');
+		await w.writeFile(`${PROJECT}/wrangler.jsonc`, '{ "main": "src/worker.ts" }');
+		expect((await runGate(w, gate('hosted-entry'), PROJECT)).status).toBe('passed');
 		await w.dispose();
 	});
 

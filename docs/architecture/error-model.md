@@ -387,11 +387,40 @@ already answer their expected refusal as a value.
      `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
      sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
      three files to writing no bare `{ error` and reading no throw's `.message` again.
-   - **Still open, surface by surface:** the social relay and the egress worker (#113's remainder). A repo-wide source gate
-     waits until they are converted. `dev-issuer` is done where
-     it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
-     `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which
-     the clients of the protocol parse, so they are out of scope.
+   - **`apps/social-relay` — built.** Discovery's, JWKS's and `/userinfo`'s refusals, the platform surface
+     (`/internal/clients` and the gate in front of it) and a path no route answers refuse through
+     `refuse(code, detail)` in `routes.ts` (`not_found`, `unauthenticated`, `forbidden`, `validation_failed`);
+     an unknown `/internal/*` path is the `about:blank` 501, and a throw no route caught is `internal` 500
+     with no `detail` (the throw is logged). `/userinfo` announces the OAuth error in `WWW-Authenticate`
+     (RFC 6750 §3): the bare `Bearer` challenge when no bearer was sent, `Bearer error="invalid_token"` when
+     the token fails. Statuses and sentences are unchanged and `error` rides beside `detail`. Left alone on
+     purpose: `/token`'s RFC 6749 §5.2 body, the §4.1.2.1 redirect errors back to the install, and the HTML
+     error page shown when there is nowhere safe to redirect; the BankID hop was already a problem document.
+     `test/relay.test.ts` holds the media type, `code`, status and `error === detail` of each refusal.
+   - **`apps/vertical-egress` — built.** The egress worker's own refusals answer `application/problem+json`.
+     An undeclared host and a preview or fork's subrequest are `forbidden`. Their `error` keeps the
+     `outbound refused` label the body always carried, beside `detail`, `host` and `vertical`. A peer call's
+     refusals are `unavailable` (no `PEER_CALLS` binding), `forbidden` (no caller identity) and
+     `validation_failed` (a body that does not parse). The router's peer refusal is relayed by its code only
+     where the catalog answers that code at the router's status, so a target's own refusal is `about:blank`.
+     Statuses, sentences and the `x-substrat-egress: refused` mark are unchanged. A store call keeps the
+     strict `storeResponse` envelope, which the scope host reads into a `StoreError`. `test/worker.test.ts`
+     and `test/peer-call.test.ts` hold the documents.
+   - **The repo-wide gate — built.** `pnpm lint:problem-refusals` (`tools/problem-refusals.mjs`, in CI's checks
+     job) reads every route file under `apps/`, `packages/`, `demos/`, `connectors/` and `engines/`. A response built
+     with a literal status of 400 or more must serve `application/problem+json` in that same call, which is what
+     every problem helper's serializer does. A computed status is out of its sight; the per-package scans above
+     hold those where they exist. Its `ALLOWED` list names every file still answering a refusal outside the
+     helpers, with an exact count of sites, as one of two kinds. `protocol` is a body another specification owns:
+     OAuth's `/token`, MCP's JSON-RPC errors, the store driver wire, a third-party API's stand-in,
+     and pages written for a person. `pending` is a site not converted yet, grouped by owner area. A count that no
+     longer matches is red in either direction, so the PR that converts a site deletes its entry.
+   - **Still open, surface by surface:** the `pending` entries of that list: the router's text/plain hostname
+     refusals, the scaffold template, the demos and two small vertical-host and vertical-auth routes, which no
+     PR converts yet. `dev-issuer` is done where it applies: `/dev/token` answers `application/problem+json`,
+     and so does `/userinfo`'s refusal of a missing or bad bearer (#2844), with the OAuth error in
+     `WWW-Authenticate`. Its `/authorize` and `/token` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON
+     errors or a redirect), which the clients of the protocol parse, so they are out of scope.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
      `problemDetail` (#971) and every surface answers `detail`. The members carried beside
      `error` are either declared per code in `PROBLEM_EXTENSIONS` or retired by then.
@@ -414,8 +443,11 @@ code apart, and with that the regex table had nothing left to protect.
    [#811](https://github.com/substrat-run/substrat/issues/811). *Leaning: not in v1 — emit
    the full set per operation, narrow once the model layer owns it.*
 2. **Do we serve `/errors/{code}`?** The `type` URI is only worth a URI if it resolves.
-   *Leaning: yes, generated from the same registry into the docs site — otherwise use plain
-   slugs and drop the pretence.*
+   *Answered: yes.* `pnpm lint:problem-codes` (`tools/problem-codes-emit.mts`) writes one page per
+   code to `apps/docs/errors/`, served at exactly the `type` URI, plus an index at `/errors/`. The
+   facts on them (codes, statuses, titles, members, the example bodies) are read from `errors.ts`;
+   the prose is keyed by code in the emitter, which refuses a code it has none for. CI re-emits
+   with `--check`.
 3. **`conflict` splitting.** Uniqueness conflicts and state-machine conflicts are both 409
    but want different client handling. *Leaning: one code plus `reason` now; splitting later
    is additive, merging later is not.*
