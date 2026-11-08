@@ -9,7 +9,9 @@ and the name in `app/package.json`. Every list is a `<sub-entity-table>` over
 element. A screen offers every action its line in the Screens section names, each as a
 visible control: a `wa-button`, a checkbox. A row that opens its record does it as the
 starter's does, `row-click @sub-row-click=${…}` to a screen with `nav: false`, and a row
-click does nothing else: never tick, delete or revoke on a row click. Do not add React or
+click does nothing else: never tick, delete or revoke on a row click. After an action, call
+`reload()` on each table it changed, as the starter's add does: a table keeps what it loaded, so
+re-rendering the screen shows the old rows. Do not add React or
 hand-roll a table. Its `build` script is the
 `app-build` gate. Keep it in `app/` with its own package.json; the API proxies or
 serves it.

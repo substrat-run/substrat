@@ -62,7 +62,9 @@ async function addItem(event: SubmitEvent): Promise<void> {
     return;
   }
   form.reset();
-  location.reload();
+  // A table keeps the rows it loaded, and re-rendering the screen keeps the table: reload the one
+  // this action changed, or the new item shows only after the page is reloaded.
+  await document.querySelector<HTMLElement & { reload(): Promise<void> }>('sub-entity-table[label="Items"]')?.reload();
 }
 
 export const screens: Screen[] = [
