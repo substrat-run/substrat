@@ -21,6 +21,7 @@
  * that fails most — the model was told "this is NOT a code problem" about its
  * own type errors. Default: every nonzero exit is a plain failure.
  */
+import { runtimeNeeds } from '@substrat-run/contracts';
 import type { Workspace } from './workspace.js';
 import {
 	emitProjectModel,
@@ -322,6 +323,15 @@ async function entryMissing(ws: Workspace, projectDir: string): Promise<string |
 		return 'substrat.runtimeNeeds in package.json names no entry, so substrat push has nothing to deploy. Set "entry": "src/worker.ts", the template\'s worker.';
 	} else if (!(await ws.exists(`${projectDir}/${needs.entry}`))) {
 		return `package.json names ${needs.entry} as the deployed entry (substrat.runtimeNeeds.entry), and it is not there, so the project cannot be pushed. Copy it back from the template (copy_reference template ${needs.entry}) and keep it: it imports only from src/provision.ts and src/routes.ts.`;
+	}
+	if (needs !== undefined) {
+		// What push parses, by the schema push parses it with: a DeepSeek build declared
+		// `build: { command, output }`, and every gate passed a project push would refuse.
+		const parsed = runtimeNeeds.safeParse(needs);
+		if (!parsed.success) {
+			const issues = parsed.error.issues.map((i) => `${['runtimeNeeds', ...i.path].join('.')}: ${i.message}`).join('; ');
+			return `substrat.runtimeNeeds in package.json is not what substrat push reads, so the push is refused (${issues}). Write it back in the template's shape: "build" is the command as one string, "pnpm --dir app build".`;
+		}
 	}
 	if (pkg.devDependencies?.wrangler || pkg.dependencies?.wrangler) return null;
 	return 'package.json has no wrangler, and substrat push builds the worker with the project\'s own. Put back the template\'s "wrangler" in devDependencies, with its version.';
