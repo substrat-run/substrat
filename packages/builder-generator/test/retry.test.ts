@@ -63,6 +63,13 @@ describe('classifyProviderError', () => {
 		).toBe(false);
 	});
 
+	it('retries a 200 whose body could not be read', () => {
+		// Workers AI now and then answers one; four builds died on it.
+		expect(
+			classifyProviderError(err('Failed to process successful response', { statusCode: 200 })),
+		).toMatchObject({ retryable: true, reason: 'unreadable response' });
+	});
+
 	it('retries a stalled stream, even when the abort wraps it', () => {
 		const stalled = new DOMException('Chunk timeout of 50ms exceeded', 'TimeoutError');
 		const wrapped = Object.assign(new Error('aborted'), { name: 'AbortError', cause: stalled });
@@ -85,6 +92,15 @@ describe('retryDelayMs', () => {
 		expect(retryDelayMs(1, d, mid)).toBe(2_000);
 		expect(retryDelayMs(2, d, mid)).toBe(4_000);
 		expect(retryDelayMs(5, d, mid)).toBe(30_000); // capped, not 32s
+	});
+
+	it('waits longer on a rate limit with no retry-after', () => {
+		const mid = (): number => 0.5;
+		const limited = classifyProviderError(err('Too Many Requests', { statusCode: 429 }));
+		expect([1, 2, 3, 4, 5].map((n) => retryDelayMs(n, limited, mid))).toEqual([
+			5_000, 10_000, 20_000, 40_000, 80_000,
+		]);
+		expect(retryDelayMs(6, limited, mid)).toBe(90_000); // capped
 	});
 });
 
