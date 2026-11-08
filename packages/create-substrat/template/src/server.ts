@@ -8,14 +8,15 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid, type ScopeStub } from '@substrat-run/kernel';
+import { devMailOutbox } from '@substrat-run/adapter-sqlite';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { buildBikeShopHost, linkDevPersonas, seedBikeShop, type BikeShopWorld } from './seed.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 
 // ============================================================================
-// The DEV entrypoint. It owns exactly three things — a SQLite host on disk, the
-// relying-party login, and the port — and then mounts `routes.ts`, the same
+// The DEV entrypoint. It owns exactly four things — a SQLite host on disk, the
+// relying-party login, where queued mail goes, and the port — and then mounts `routes.ts`, the same
 // route table `worker.ts` mounts. There is no business logic here and no route
 // here either: a route added to this file would exist in dev and 404 in
 // production, which is the one failure this split exists to prevent.
@@ -48,6 +49,15 @@ await linkDevPersonas(host, world);
 
 // The local platform actor (a stub locally): directory reads are stamped with it.
 const staffActor = platformActorId.parse(ulid());
+
+// ── MAIL ────────────────────────────────────────────────────────────────────
+// An operation queues mail with `requestEmail`, and hosted, the platform sends it once the
+// operation commits. Locally there is no platform, so each mail is written to `.data/outbox/`
+// (or `MAIL_OUTBOX_DIR`) as an `.eml` file, and one line names it: open it to read the
+// invitation a person was sent. `drain()` catches what an earlier run left queued; `kick` (in
+// `stub` below) writes a mail as soon as the call that queued it commits.
+const outbox = devMailOutbox(host, { dataDir, actor: staffActor });
+await outbox.drain();
 
 /**
  * The relying party — login, callback, logout, plus `sub` → principal through the
@@ -91,7 +101,10 @@ app.get('/api/me', async (c) => {
 async function stub(c: Context): Promise<ScopeStub> {
   const caller = await login.caller(c.req.raw.headers);
   if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
-  return host.getScope(caller.principal, caller.tenantId, caller.scopeId, { verifiedEmail: caller.verifiedEmail });
+  return host.getScope(caller.principal, caller.tenantId, caller.scopeId, {
+    verifiedEmail: caller.verifiedEmail,
+    ...outbox.kick(caller),
+  });
 }
 
 // Everything else — including `/api/invoke` and the shared error envelope.
@@ -103,5 +116,5 @@ mountApi(app, stub);
 // block; `PORT=…` moves this one.
 const PORT = Number(process.env.PORT ?? 8891);
 serve({ fetch: app.fetch, port: PORT });
-console.log(`Bike-shop API on http://localhost:${PORT} — data in ${dataDir}`);
+console.log(`Bike-shop API on http://localhost:${PORT} — data in ${dataDir}, mail in ${outbox.dir}`);
 console.log(`Sign in at http://localhost:${PORT}/api/auth/login — issuer: ${login.issuer}`);

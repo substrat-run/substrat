@@ -209,6 +209,11 @@ deliberately won't let you bind for yourself:
   person in your data, pass their `subjectId`. The queued send holds their address and the
   message, and erasing that subject cancels a send that has not gone yet and removes both. The direct relay stays for
   code that has no operation around it, such as the auth-server's sign-in mail.
+
+  On your local dev server nothing sends mail. `devMailOutbox` from `@substrat-run/adapter-sqlite`
+  (the scaffold's `src/server.ts` wires it) writes each queued mail to `.data/outbox/<request>.eml`,
+  or to `MAIL_OUTBOX_DIR`, logs one line naming the file, and settles it with `email.sent`, so an
+  invitation you send while testing is a file you can open. It does not check `sendsEmail`.
 - `provisions` — the verticals your manager app creates tenants of (the tenant-provisioner
   request), turned on the same way (`setVerticalTenantProvisioner`).
 - `usesModels` — set it (`"usesModels": true`) if your vertical answers with a language model.

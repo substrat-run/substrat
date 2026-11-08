@@ -59,6 +59,7 @@ export type GateName =
 	| 'hosted-assets'
 	| 'hosted-join'
 	| 'dev-join'
+	| 'dev-mail'
 	| 'migration-replay';
 
 export type GateStatus = 'passed' | 'failed' | 'blocked' | 'skipped';
@@ -426,6 +427,20 @@ async function devJoinMissing(ws: Workspace, projectDir: string): Promise<string
 }
 
 /**
+ * Mail queued on the dev server and written nowhere: the platform sends it hosted, and locally
+ * `devMailOutbox` writes it to `.data/outbox/` and names the file. Without it an invitation sat
+ * queued, so the person testing an invite had nothing to open (#3017). Every gate passed.
+ */
+async function devMailMissing(ws: Workspace, projectDir: string): Promise<string | null> {
+	if (!/\brequestEmail\(/.test(withoutComments(await readTree(ws, `${projectDir}/src`)))) return null;
+	const dev = withoutComments(
+		(await Promise.all(['server.ts', 'app.ts'].map((f) => ws.readFile(`${projectDir}/src/${f}`).catch(() => '')))).join('\n'),
+	);
+	if (/\bdevMailOutbox\(/.test(dev) && /\.kick\(/.test(dev)) return null;
+	return 'src/ queues email with requestEmail, and the dev server writes it nowhere, so locally an invitation reaches nobody and nobody can read it. Do as the template\'s src/server.ts does: const outbox = devMailOutbox(host, { dataDir, actor }) from @substrat-run/adapter-sqlite, await outbox.drain() at boot, and spread ...outbox.kick(caller) into every getScope the dev server makes.';
+}
+
+/**
  * The generated migrations are what the module registers: a build that keeps its own DDL beside
  * them ships tables the journal never recorded, and the next model change cannot see them.
  */
@@ -630,6 +645,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/server.ts`),
 			note: 'no src/server.ts yet',
 			refuse: (ws) => devJoinMissing(ws, projectDir),
+		},
+		{
+			name: 'dev-mail',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/server.ts`),
+			note: 'no src/server.ts yet',
+			refuse: (ws) => devMailMissing(ws, projectDir),
 		},
 		{
 			name: 'hosted-join',

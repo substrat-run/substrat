@@ -17,6 +17,7 @@ import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { platformActorId } from '@substrat-run/contracts';
+import { devMailOutbox } from '@substrat-run/adapter-sqlite';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { createApp } from './app.js';
 import { buildHost, grantOwner, linkDevPersonas, reconcileOwnerGrants, seed, type World } from './seed.js';
@@ -46,9 +47,14 @@ async function boot() {
   await reconcileOwnerGrants(host, { ...world, staff });
 
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
+  // An invitation's email, written to `.data/outbox/` (or `MAIL_OUTBOX_DIR`): there is no
+  // platform here to send it.
+  const outbox = devMailOutbox(host, { dataDir: DATA, actor: staff });
+  await outbox.drain();
   const app = createApp({
     host,
     login,
+    outbox,
     onJoined: (caller) => grantOwner(host, staff, { tenantId: caller.tenantId, scopeId: caller.scopeId }, caller.principal),
   });
 
