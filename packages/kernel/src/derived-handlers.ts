@@ -72,7 +72,12 @@ function bodyOf(
         parentOrThrow?.(ctx, input);
         return ctx.page<Row>(plan.entity, {
           ...pageOf(input),
-          filters: filtersOf(plan.filters, input),
+          // The page is the checked parent's, whatever else the input names. A plan built before
+          // `defineOperations` refused a second field over the link column could carry one, and
+          // a filter keyed by column would let it replace the parent's id the check read.
+          filters: plan.parent
+            ? { ...filtersOf(plan.filters, input), [plan.parent.column]: input?.[plan.parent.idFrom] }
+            : filtersOf(plan.filters, input),
           ...(plan.total ? { total: true } : {}),
           // The host parsed it against `z.enum(['active', 'archived'])` (#119).
           ...(plan.viewFrom !== undefined && input?.[plan.viewFrom] !== undefined
