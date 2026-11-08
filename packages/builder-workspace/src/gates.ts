@@ -52,6 +52,7 @@ export type GateName =
 	| 'hosted-entry'
 	| 'hosted-assets'
 	| 'hosted-join'
+	| 'dev-join'
 	| 'migration-replay';
 
 export type GateStatus = 'passed' | 'failed' | 'blocked' | 'skipped';
@@ -336,6 +337,22 @@ async function hostedJoinUnnamed(ws: Workspace, projectDir: string): Promise<str
 	return `The model declares ${join}, and src/worker.ts does not name it in workerDoor, so a hosted person is never joined and cannot create anything. Add it to the workerDoor options: join: (scope, who) => scope.invoke('${join}', { displayName: who.display }), with the input your join takes.`;
 }
 
+/**
+ * The dev server joins a person when they sign in, as the worker's door does hosted. A build that
+ * never runs the join there passes every gate, and in the browser every create is refused with
+ * "join first": the scenario suite drives the module and never signs in.
+ */
+async function devJoinMissing(ws: Workspace, projectDir: string): Promise<string | null> {
+	const declared = withoutComments(`${await readTree(ws, `${projectDir}/spec`)}\n${await readTree(ws, `${projectDir}/src`)}`);
+	const join = /['"]([a-z][a-z0-9-]*\/(?:join|sign-up))['"]\s*:/.exec(declared)?.[1];
+	if (!join) return null;
+	const dev = withoutComments(
+		(await Promise.all(['server.ts', 'app.ts'].map((f) => ws.readFile(`${projectDir}/src/${f}`).catch(() => '')))).join('\n'),
+	);
+	if (dev.includes(join)) return null;
+	return `The model declares ${join}, and the dev server (src/server.ts, src/app.ts) never runs it, so a person who signs in is not joined and every create is refused. Run it on sign-in in /api/me, with the address the issuer verified, as the todo reference's src/app.ts does.`;
+}
+
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export function standaloneGates(projectDir: string): GateSpec[] {
@@ -499,6 +516,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: pkg,
 			note: 'no package.json yet',
 			refuse: (ws) => entryMissing(ws, projectDir),
+		},
+		{
+			name: 'dev-join',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/server.ts`),
+			note: 'no src/server.ts yet',
+			refuse: (ws) => devJoinMissing(ws, projectDir),
 		},
 		{
 			name: 'hosted-join',
