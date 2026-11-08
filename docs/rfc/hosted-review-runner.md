@@ -909,8 +909,10 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   credential.
 - **Long path lists are cut.** A record lists at most 200 files not sent and 200 deleted paths,
   with the full counts beside them; the headline counts from the full number.
-- **Redaction matches patterns, inside caps.** A stored quote is at most 200 characters. An
-  explanation is cut at a word break inside its first 1,000 characters before any mask reads it,
+- **Redaction matches patterns, inside caps.** A stored quote is at most 200 characters. Only the
+  first line of a quote or an explanation is kept, so an explanation written over several lines
+  loses every line after its first. An explanation is cut at a word break inside its first 1,000
+  characters before any mask reads it,
   and at most 500 are stored; a longer one is cut, never refused. Keeping the word whole means no
   one-word token reaches a mask in pieces; a value of several words, such as a phone number, can
   keep its first words when the cut falls inside it. Not every mask runs in linear time, so these
@@ -920,8 +922,10 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   string or a code span (`` `password=hunter2` ``) takes the rest of its line with it, since the
   closing quote reads as an opening one.
 - **A sentence about a quoted check keeps its words.** When an explanation quotes a comparison or
-  a key and the sentence goes on after it (`` `token == null` lets any caller through ``), a quoted
-  string later on that line is kept as written.
+  a key and the sentence goes on after it in a lower-case word (`` `token == null` lets any caller
+  through ``), a quoted string later on that line is kept as written. A capitalised word, a tab or
+  a keyword such as `return` after the check reads as code instead, so a later quoted string is
+  then masked.
 - **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
   no model, and the review stays `received` until the prune removes it. A call that returned usage
   has its ledger line written before anything decides whether its result is kept, so a result
