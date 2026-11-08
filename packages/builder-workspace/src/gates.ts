@@ -52,6 +52,7 @@ export type GateName =
 	| 'sends-email'
 	| 'invite-email'
 	| 'app-events'
+	| 'app-writes'
 	| 'hosted-entry'
 	| 'hosted-assets'
 	| 'hosted-join'
@@ -270,6 +271,38 @@ async function rowClickUnheard(ws: Workspace, projectDir: string): Promise<strin
 		}
 	}
 	return null;
+}
+
+/**
+ * An operation that changes data and that no screen offers: the API has it, and a person using
+ * the app never reaches it. Haiku builds left out delete-list, rename-list or edit-item in about one
+ * in three, and every gate passed, since the scenario drives the module and never the screens.
+ * The host's own calls (join, from server.ts or worker.ts) count as reached; an operation only
+ * another program calls says so in an `api-only:` comment in app/src.
+ */
+async function writesUnoffered(ws: Workspace, projectDir: string): Promise<string | null> {
+	const model = await ws.readFile(`${projectDir}/spec/model.ts`).catch(() => '');
+	const parts = model.split(/\n\s*'([a-z0-9-]+\/[a-z0-9-]+)':\s*\{/);
+	const writes: string[] = [];
+	for (let i = 1; i < parts.length; i += 2) {
+		if (/\bemits\s*:/.test(parts[i + 1] ?? '')) writes.push(parts[i]!);
+	}
+	if (writes.length === 0) return null;
+	const appRaw = await readTree(ws, `${projectDir}/app/src`);
+	const app = withoutComments(appRaw);
+	const hostFiles = (await ws.listFiles(`${projectDir}/src`).catch(() => [] as string[])).filter(
+		(f) => !f.endsWith('/') && f !== 'module.ts' && !f.includes('.generated.'),
+	);
+	const host = withoutComments(
+		(await Promise.all(hostFiles.map((f) => ws.readFile(`${projectDir}/src/${f}`).catch(() => '')))).join('\n'),
+	);
+	const apiOnly = [...appRaw.matchAll(/api-only:([^\n]*)/g)].map((m) => m[1]!).join(' ');
+	// The short name after a slash too: an app may build the name from its namespace (`${NS}/x`).
+	const named = (source: string, op: string): boolean =>
+		new RegExp(`/${op.split('/')[1]!.replace(/-/g, '\\-')}['"\`]`).test(source);
+	const missing = writes.filter((op) => !named(app, op) && !named(host, op) && !apiOnly.includes(op));
+	if (missing.length === 0) return null;
+	return `spec/model.ts declares operations that change data and that nothing in app/src calls, so a person using the app can never do them: ${missing.join(', ')}. Section 4 of spec/concept.md says who may do each: give each a visible control on the screen it belongs to, as a row action or a button on the record's screen, and reload the tables it changes. An operation that only another program calls stays off the screens: name it in a comment in app/src, // api-only: <operation> — <why>.`;
 }
 
 /** A hosted send is refused unless the project asked to send, and no suite sees that: a local host only queues. */
@@ -519,6 +552,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: hasApp,
 			note: 'no app/ yet',
 			refuse: (ws) => rowClickUnheard(ws, projectDir),
+		},
+		{
+			name: 'app-writes',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => writesUnoffered(ws, projectDir),
 		},
 		{
 			name: 'hosted-assets',
