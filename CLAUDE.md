@@ -611,7 +611,10 @@ kernel's `migrationSteps` computes it; its `--base <ref>` half refuses a row the
 shipped that is now changed, missing or renumbered, since a scope that applied it fails closed on
 the edit at its next migration pass, #2066, and a new one placed or numbered before what the base
 shipped, which an existing scope would run out of order), plus `lint:decisions`, `lint:playbook`, `lint:docs`,
-`lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`, `lint:review-checklist`
+`lint:llms`, `lint:agent-rules`, `lint:problem-codes` (`tools/problem-codes-emit.mts`, #113: one page per
+problem code at `apps/docs/errors/`, served at the `type` URI each problem document carries; the facts
+read from contracts' `errors.ts`, the prose keyed by code in the emitter, which refuses a code it has
+none for; fixtures via `pnpm test:problem-codes`), `lint:launch`, `lint:plugin`, `lint:pins`, `lint:review-checklist`
 (the hosted review runner's rules module, #2365),
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
 in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —
@@ -826,6 +829,12 @@ writes), `lint:role-seat-paths` (`tools/role-seat-paths.mjs`, #2447: in the host
 role tuple, role-table write, kernel scope-role writer and ScopeDO role projection has a reserved-key refusal
 before it in its function, or sits in a function its `ALLOWED` list names with the reason — a revoke, or a
 fan-out of definitions already judged; a stale entry is refused too),
+`lint:problem-refusals` (`tools/problem-refusals.mjs`, #113, fixtures via `pnpm test:problem-refusals`:
+every route file's response built with a literal status of 400 or more serves `application/problem+json`
+in that same call, as the problem helpers do, or is in its `ALLOWED` list — `protocol` for a body another
+specification owns (OAuth, JSON-RPC, the store wire, a page for a person), `pending` for a site not yet
+converted, grouped by owner area — with an exact per-file count, so the list only shrinks; a computed
+status is out of its sight),
 `lint:store-driver-repository` (#2297: contracts' `*.repo.test.ts` suite, which the package's own run
 excludes. It holds every public workspace manifest's `repository.url` to the platform repository, the
 one a `writtenInRepo` isolation basis admits approvals from. It reads the whole workspace, so it runs in
