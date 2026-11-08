@@ -446,6 +446,15 @@ Every one of these is a compile error, not a lint:
   the row and every other field optional over that entity's own columns is the shape that
   loses updates, and one with no `concurrency` is refused at module load, the same way a
   bare-array list output is
+- **an entity-narrowed check takes its id once**: an operation whose `permission` is
+  `{ entity, idFrom }` may not take a second input field that spells the same id, so
+  `{ dealId, deal_id }` beside `idFrom: 'dealId'` is refused at module load, and so is `dealId`
+  beside `idFrom: 'id'`. Names are compared ignoring case, `_` and `-`. The check reads the field
+  `idFrom` names, so anything reading the other one (a derived page filters by it) reads a record
+  the caller was never checked on. Take the id once, in the field the path names. A second record
+  of the same kind on purpose is named for its role (`targetDealId`) and checked in the handler. A
+  bare `id` beside another `idFrom` is not judged, since it is usually a child's id
+  (`/lists/{listId}/items/{id}`)
 - `piiClass` is required, and anything other than `'none'` requires a `subjectId`, because an
   erasure has to be keyable
 - a `payload` cannot carry a field the entity marks `erasable` or `outsideText` — immutable
