@@ -354,10 +354,11 @@ function readsAsProse(text: string, { at, bare, after, header }: SecretHit): boo
  */
 const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
 /**
- * A quote closing the string a prose hit's name sits in, with a comma, stop, semicolon or colon
- * after it: the sentence may go on after it, or end (`` `token == null` lets any caller through ``).
+ * A quote closing the string a prose hit's name sits in, after any closing brackets and with a
+ * comma, stop, semicolon or colon after it: the sentence may go on after it, or end
+ * (`` `if (token == null)` lets any caller through ``).
  */
-const CLOSER = /[`"'][,.;:]?/y;
+const CLOSER = /([)\]]*)[`"'][,.;:]?/y;
 
 /**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
@@ -382,7 +383,7 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   const goesOn = ({ at, bare }: SecretHit): boolean => {
     let end = at + bare.length;
     const closer = stickyAt(CLOSER, text, end);
-    if (closer && closes(end)) {
+    if (closer && closes(end + closer[1]!.length)) {
       end += closer[0].length;
       if (end === text.length) return true;
     }

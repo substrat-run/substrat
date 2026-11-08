@@ -599,6 +599,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a string after a key and a plain word', 'token: see "s3cr3tVALUE"'],
     ['a code span glued to a plain word', 'token: see`s3cr3tVALUE`'],
     ['a stray quote after a plain word', 'token: see" the \'s3cr3tVALUE\''],
+    ['a string after a prose stop, inside an earlier string', '"a if (token == null) return "s3cr3tVALUE" password=abc'],
+    ['a string after a prose stop, after an apostrophe', "it's if (token == null) return 's3cr3tVALUE' then password=abc"],
     ['a string after a comparison and a capital keyword', 'password == null Return "s3cr3tVALUE"'],
     ['a string after a capital Then', 'if token == nil Then "s3cr3tVALUE"'],
     ['a string after a comparison and a capital word', 'password == null Fallback "s3cr3tVALUE"'],
@@ -712,6 +714,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
       ...['.', ';'].map((stop) => `the check \`token == null\`${stop} any caller can void it`), 'the branch that skips it is `token == null`.',
       // Not a quoted name, as it holds a quote: the colon after it is the sentence's.
       'the check `role == "guest" || token == null`: any caller can void it',
+      '`if (token == null)` lets any caller through', '`(token == null)` is true', '`assert(seen[token == null])` fails open',
     ]) {
       expect(redact(prose, 500, 'value')).toBe(prose);
     }
