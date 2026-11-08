@@ -192,6 +192,29 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.dispose();
 	});
 
+	it('app-writes refuses a write no screen offers, and passes once the app, the host or an api-only mark names it', async () => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
+		await w.writeFile(
+			`${PROJECT}/spec/model.ts`,
+			"defineOperations({\n  'todo/join': { emits: {} },\n  'todo/delete-list': { emits: {} },\n  'todo/my-lists': { derive: 'list' },\n})",
+		);
+		await w.writeFile(`${PROJECT}/src/server.ts`, "await stub.invoke('todo/join', { displayName });");
+		await w.writeFile(`${PROJECT}/app/src/screens.ts`, 'html``');
+		const refused = await runGate(w, gate('app-writes'), PROJECT);
+		expect(refused.status).toBe('failed');
+		expect(refused.output).toContain('can never do them: todo/delete-list.');
+
+		for (const offered of [
+			"invoke(`${NS}/delete-list`, { id: row.id })",
+			'// api-only: todo/delete-list — a nightly script clears old lists',
+		]) {
+			await w.writeFile(`${PROJECT}/app/src/screens.ts`, offered);
+			expect((await runGate(w, gate('app-writes'), PROJECT)).status).toBe('passed');
+		}
+		await w.dispose();
+	});
+
 	it('passes hosted-entry on a hand-authored wrangler.jsonc, which substrat push falls back to', async () => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/package.json`, '{"devDependencies":{"wrangler":"^4"}}');
