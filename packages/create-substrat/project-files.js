@@ -30,12 +30,12 @@ import { DEV_SERVERS } from './dev-servers.js';
 // The runtime packages release together off one version line (the changesets `fixed`
 // group), so one constant is right for all of them. Engines do NOT share a line —
 // each versions on its own, so one pin per engine, deliberately.
-const SUBSTRAT = '^0.186.0';
-const ENGINE_WORKORDER = '^0.13.11';
-const ENGINE_INVOICING = '^0.11.70';
+const SUBSTRAT = '^0.187.0';
+const ENGINE_WORKORDER = '^0.13.12';
+const ENGINE_INVOICING = '^0.11.71';
 const BOUNDARY_LINT = '^0.8.2';
-const DEV_ISSUER = '^0.3.6';
-const ATTACHMENT_EXTRACTORS = '^0.2.47';
+const DEV_ISSUER = '^0.4.0';
+const ATTACHMENT_EXTRACTORS = '^0.2.48';
 
 export const TSCONFIG = `${JSON.stringify(
   {
@@ -56,7 +56,7 @@ export const TSCONFIG = `${JSON.stringify(
     // under their own config (tsconfig.worker.json) — the node config must not
     // see them. `src/routes.ts` is deliberately NOT excluded: the shared route
     // table must typecheck under both, which is what keeps it host-agnostic.
-    exclude: ['src/worker.ts', 'src/config-do.ts'],
+    exclude: ['src/worker.ts'],
   },
   null,
   2,
@@ -104,10 +104,10 @@ export function packageJson(name) {
             { binding: 'SCOPE', class: 'ScopeDO' },
             // The scope-local sweep singleton — the deployment's own timer (#461).
             { binding: 'SWEEPER', class: 'SweeperDO' },
-            // Per-instance config delivered by the platform (/internal/configure) —
-            // one DO per tenant, rows per scope. Without it the app cannot receive
-            // the settings the dashboard offers its users.
-            { binding: 'CONFIG', class: 'ConfigDO' },
+            // The tenant's identity directory: who is bound to what, the owner seat,
+            // and the settings the platform delivers (/internal/configure). One DO per
+            // tenant, rows per scope.
+            { binding: 'AUTH', class: 'IdentityDO' },
           ],
         },
         // No envSpec copy here (#1206): the declared per-instance settings live in

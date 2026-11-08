@@ -31,8 +31,8 @@ beforeAll(async () => {
   const eveId = principalId.parse(ulid());
   const node = { tenantId: world.tenant, scopeId: world.scope };
   await host.admin.assignRole(world.staff, { principalId: eveId, roleKey: 'member', node });
-  eve = await host.getScope(eveId, world.tenant, world.scope);
-  await eve.invoke('todo/join', { email: 'eve@example.com', displayName: 'Eve' });
+  eve = await host.getScope(eveId, world.tenant, world.scope, { verifiedEmail: 'eve@example.com' });
+  await eve.invoke('todo/join', { displayName: 'Eve' });
   // The owner shape as it was before #119.
   await host.admin.grantEntityShape(world.staff, {
     principalId: eveId,

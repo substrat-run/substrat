@@ -56,6 +56,7 @@ export type {
   ScopeListing,
   UnreadableScopeRow,
   ScopeStub,
+  PersonScopeOptions,
   ScopeStubOptions,
   InvokeOptions,
   EmittedEvent,
@@ -634,7 +635,7 @@ export {
 } from './findings.js';
 export { effectiveRoleGrantQuery, seatScopeTuple } from './scope-tuple-seat.js';
 export { delegatedRevokeSql, shapeProtectedTypesQuery, writeExplicitTupleIn } from './entity-grant.js';
-export { SHAPE_MARKER_INDEX_DDL, SHAPE_MARKER_READS_PER_ROW, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
+export { SHAPE_MARKER_INDEX_DDL, SHAPE_MARKER_READS_PER_ROW, grantEntityShapeIn, grantEntityShapeOnceIn, shapeTopUpBatch, topUpEntityGrantShapes } from './entity-grant-shape.js';
 export type { ShapeCursor, ShapePass } from './entity-grant-shape.js';
 export { ENTITY_UNBIND_OPERATION, unbindEntityHolderBounded } from './entity-binding.js';
 export { applyScopeRoleChange, changeScopeRole, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';

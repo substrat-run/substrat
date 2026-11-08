@@ -6,6 +6,7 @@
  * expectation grading, and the usage accounting (§9.6 — the metric is token
  * usage per PASSING build, so the accounting is load-bearing).
  */
+import { continuationPrompt, MAX_CONTINUATIONS } from '@substrat-run/builder-workspace';
 import { chmodSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -177,6 +178,14 @@ describe('prepareProject', () => {
 		);
 	});
 
+	it('lays a seed beside the concept, so a run starts at a later stage', async () => {
+		const ws = await scratchRoot();
+		const dir = `${EVAL_PROJECT_PREFIX}fx`;
+		await prepareProject(ws, dir, { ...FIXTURE, seed: { 'spec/model.ts': 'export {};', 'test/scenario.test.ts': 'export {};' } });
+		expect(await ws.readFile(`${dir}/test/scenario.test.ts`)).toBe('export {};');
+		expect(await ws.exists(`${dir}/spec/concept.md`)).toBe(true);
+	});
+
 	it('refuses to wipe outside the eval namespace', async () => {
 		const ws = await scratchRoot();
 		await expect(prepareProject(ws, '.builder/projects/real-app', FIXTURE)).rejects.toThrow(
@@ -224,6 +233,22 @@ describe('runEval', () => {
 		});
 		expect(result.usage.stepUsage).toHaveLength(1);
 		expect(result.generatorId).toBe('scripted');
+	});
+
+	it('continues a pass the step ceiling cut, before the gates, as the studio does', async () => {
+		const { ws, dir, projectWs } = await setup();
+		const gen = scripted([
+			async () => [{ type: 'truncated', steps: 40, maxSteps: 40 }, usage(1000, 200)],
+			async (input) => {
+				await writeModule(input);
+				return [usage(1000, 200)];
+			},
+		]);
+		const result = await runEval({ ws, projectWs, projectDir: dir, fixture: FIXTURE, makeGenerator: async () => gen, gates: [], probe: probeOf(GOOD_PROBE) });
+		expect(result.passed).toBe(true);
+		expect(result.turns).toBe(1);
+		expect(gen.received).toHaveLength(2);
+		expect(gen.received[1]).toBe(continuationPrompt(1, MAX_CONTINUATIONS));
 	});
 
 	it('answers questions with the frozen answer message and counts them', async () => {

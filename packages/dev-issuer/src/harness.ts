@@ -15,7 +15,7 @@
  * speaks OIDC and this is an ordinary relying party — which is the property the whole
  * package exists to preserve.
  */
-import { oidcRpAuthProvider } from '@substrat-run/vertical-auth/oidc-rp-provider';
+import { oidcRpAuthProvider, verifiedEmailOf } from '@substrat-run/vertical-auth/oidc-rp-provider';
 import type { AuthSubject } from '@substrat-run/vertical-auth/provider';
 import { DEV_CLIENT_ID } from './issuer.js';
 import type {
@@ -66,6 +66,8 @@ export interface DevCaller {
   display: string;
   /** The issuer's `email` claim, or null when it sent none. */
   email: string | null;
+  /** What the door hands `getScope` as `verifiedEmail` (K-61). */
+  verifiedEmail: string | null;
 }
 
 export interface DevLogin {
@@ -122,6 +124,7 @@ export function devLogin(opts: DevLoginOptions): DevLogin {
         sub: subject.sub,
         display: subject.name ?? subject.email ?? subject.sub,
         email: subject.email,
+        verifiedEmail: verifiedEmailOf(subject),
       };
     },
   };

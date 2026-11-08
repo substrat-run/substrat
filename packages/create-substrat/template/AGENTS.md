@@ -50,7 +50,6 @@ src/personas.ts        the dev cast, read by the issuer and the seed ← harness
 src/routes.ts          the routes, DERIVED from the operations     ← harness
 src/server.ts          the dev entrypoint (node + persona picker)   ← harness
 src/worker.ts          the deployable Cloudflare worker             ← harness
-src/config-do.ts       per-instance config store (Cloudflare only)  ← harness
 test/scenario.test.ts  the scenario — including the denials
 test/entities.test.ts  the registry, held to the tables it migrates
 test/setup.ts          the 50-byte LIKE/GLOB pattern limit, on by default (vitest setupFiles)
@@ -79,10 +78,15 @@ modules defined anywhere else will run locally and silently not deploy.
 `worker.ts` **mounts** the platform's `/internal/*` management contract via
 `mountPlatformSurface` from `@substrat-run/vertical-host` (one call — the routes
 and the `{ error }` envelope are authored there, not here, so they can't drift or
-ship half-done). What `worker.ts` still owns is **the auth seam** — it resolves
-nobody until you wire real auth there, and every `/api/*` call is 401 until you do.
-That is deliberate: there is no dev header to forget to turn off. `src/server.ts`
-shows the shape, signing in against the local OIDC issuer `pnpm dev` starts.
+ship half-done). Sign-in is `workerDoor`, from `@substrat-run/vertical-host/worker-door`:
+the issuer the dashboard delivers, the tenant's identity directory, and the owner seat
+the first person takes. Every route gets its stub through `door.scope`, which hands an
+operation the caller's verified address as `ctx.verifiedEmail`. The first time a person
+reaches the scope, the door runs your join if you name one (`workerDoor({ join })`), then
+gives them every shape your `permissions` declare `bootstrap` with `holder: 'self'`, once.
+That is what the seed does locally, so a vertical with a join operation names it there, or a
+hosted person is never joined. There is no dev header to forget to turn off. `src/server.ts`
+is the same shape, against the local OIDC issuer `pnpm dev` starts.
 
 **A UI ships as declared assets.** If `app/` exists, `substrat.runtimeNeeds.assets` must
 point at its build output and `runtimeNeeds.build` must produce it — otherwise the deployed
@@ -90,15 +94,15 @@ vertical serves the API and 404s on `/`, with every local gate green. Declare it
 change that creates `app/`, not at deploy time. (`substrat push` refuses an undeclared UI,
 but by then you are already deploying.)
 
-Among the hooks it passes, **`onConfigure` is the one you must not drop.** It is
+Among the hooks `door.platform` passes, **`onConfigure` is the one you must not drop.** It is
 how per-instance settings reach the running app: the dashboard's Settings → Env
 and Identity tabs POST to `/internal/configure`, and a vertical that supplies no
 hook answers **501** to that call for its whole life — the setting is saved, the
 dashboard reports `delivered: false`, and the app never sees it. That includes the
 `substrat:auth` issuer choice, i.e. the difference between a working login and
-401-on-everything. The starter stores deliveries in `config-do.ts` and reads them
-back through `resolveScopedEnvSpec` (`instanceConfig`). Read settings that way and
-never off `env` directly: an `envSpec` default rides as a worker binding shared by
+401-on-everything. Deliveries land in the tenant's identity directory, and
+`door.settings(env, node)` reads them back. Read settings that way and never off
+`env` directly: an `envSpec` default rides as a worker binding shared by
 every install of one serving script, so `env.FOO` is the same string for every
 tenant no matter what any of them saved. Declare a setting once, in
 `src/manifest.ts` (`SHOP_ENV`) — `src/provision.ts` re-exports it as `envSpec`,

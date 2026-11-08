@@ -122,6 +122,7 @@ import {
   delegatedRevokeSql,
   writeExplicitTupleIn,
   grantEntityShapeIn,
+  grantEntityShapeOnceIn,
   topUpEntityGrantShapes,
   applyScopeRoleChange,
   changeScopeRole,
@@ -3099,6 +3100,13 @@ export function defineScopeDO(
       return this.grantEntityShape(principal, entity, permissions);
     }
 
+    /** The same grant to someone who never had it on this entity (`grantEntityShapeOnceIn`): whether it granted. */
+    async grantEntityShapeOnce(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<boolean> {
+      return this.queue.enqueue(() =>
+        this.revision.transactionSync(() => grantEntityShapeOnceIn(this.switchSql(), principal, entity, permissions)),
+      );
+    }
+
     /**
      * One bounded pass of a declared shape's reconcile (#2071), with its events, in ONE
      * transaction: how many it topped up, how many it took retired keys from (#2082), and where
@@ -3303,6 +3311,8 @@ export function defineScopeDO(
        * instance may be rewound storage the gate never saw. The reply carries `systemDoor.honoured`.
        */
       systemDoorInstance?: string,
+      /** K-61: the person's verified address, which only the coordinator's `getScope` sends. */
+      verifiedEmail?: string | null,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -3357,6 +3367,9 @@ export function defineScopeDO(
             capabilitySession,
             verticalCaller,
             systemDoorInstance,
+            undefined,
+            undefined,
+            verifiedEmail,
           );
         } catch (err) {
           if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
@@ -3381,6 +3394,7 @@ export function defineScopeDO(
             systemDoorInstance,
             undefined,
             logTally,
+            verifiedEmail,
           ),
         );
       } catch (err) {
@@ -3422,6 +3436,8 @@ export function defineScopeDO(
       purge?: boolean,
       /** #2762: where this call's `ctx.log` lines are counted — `invoke`'s, never an RPC argument. */
       logTally?: { logLines: number; reached: boolean },
+      /** K-61: see `invoke` above. */
+      verifiedEmail?: string | null,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -3673,6 +3689,7 @@ export function defineScopeDO(
               undefined,
               withheld,
               checks,
+              verifiedEmail,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -9598,6 +9615,8 @@ export function defineScopeDO(
       withheld?: ReadonlySet<string>,
       /** #2387: where this invocation's checks are counted; absent where nothing reads the count. */
       checks?: CheckTally,
+      /** K-61: the person's verified address, from `getScope` alone. */
+      verifiedEmail?: string | null,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -9771,6 +9790,7 @@ export function defineScopeDO(
         // #1672: a capability's own id stands in so the type holds — it is not a person, and
         // the event actor says what it is instead. Every other door passes its own value.
         principal: capabilityId ? (capabilityId as unknown as PrincipalId) : principal,
+        verifiedEmail: verifiedEmail ?? null,
         pageContinuation: (list, query) => visibleContinuation(
           this.continuationStore(impersonation?.mode !== 'read-only' && !this.isCopy()),
           { scopeId, principal: `${subject.kind}:${subject.id}`, operation: operation ?? 'kernel', list, query },

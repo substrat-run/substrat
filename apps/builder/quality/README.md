@@ -8,6 +8,8 @@ has the method and the results.
 | File | What |
 |---|---|
 | `queue.sh` | Runs the `todo` eval N times and grades each run |
+| `queue-par.sh` | The same, all at once: each run gets its own lane |
+| `pack.sh` | Packs this checkout, so a run builds against unreleased packages |
 | `score.mjs` | Grades one archived run and appends a row to the ledger |
 | `stages.py` | Splits each run into stages: usage, what it produced and how it ended |
 | `rubric-todo.md` | The 14 judged items, written from the `todo` fixture's brief |

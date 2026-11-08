@@ -8,20 +8,24 @@ LABEL=${M##*/}
 HERE=${0:A:h}
 H=${BUILDER_RUNS:-$PWD/data/builder-runs}
 SHA=$(git rev-parse --short HEAD)
-# Every run builds in .builder/projects/eval-todo, so two queues in one checkout write over each other.
-LOCK=.builder/queue.lock
+# Every run builds in .builder/projects/eval-todo, so two queues in one checkout write over each other,
+# unless each has its own LANE (queue-par.sh), which gives it its own project and reports.
+LANE=${BUILDER_EVAL_LANE:-}
+PROJ=.builder/projects/eval-${LANE:+$LANE-}todo
+EVALS=.builder/evals${LANE:+/$LANE}
+LOCK=.builder/queue${LANE:+-$LANE}.lock
 mkdir -p .builder
 mkdir $LOCK 2>/dev/null || { echo "another queue is running in this checkout: $LOCK"; exit 4; }
 trap 'rmdir $LOCK' EXIT
 for i in $(seq 1 $N); do
   free=$(df -Pk . | awk 'NR==2{print int($4/1048576)}')
   [ -n "$free" ] && [ "$free" -lt 8 ] && { echo "stop: ${free}G free"; exit 3; }
-  ID=$S-$LABEL-$(date +%m%d-%H%M%S); D=$H/runs/$ID; mkdir -p $D
+  ID=$S-$LABEL-${LANE:+l$LANE-}$(date +%m%d-%H%M%S); D=$H/runs/$ID; mkdir -p $D
   echo "== $ID $(date +%T)"
   pnpm builder evals --eval todo --model $SPEC --quiet "$@" > $D/stdout.log 2>&1; code=$?
-  R=$(ls -t .builder/evals/*.json 2>/dev/null | head -1)
+  R=$(ls -t $EVALS/*.json 2>/dev/null | head -1)
   [ -n "$R" ] && [ "$R" -nt $D ] && cp "$R" $D/report.json && cp "${R%.json}.todo.log" $D/transcript.log 2>/dev/null
   mkdir -p $D/project
-  (cd .builder/projects/eval-todo 2>/dev/null && tar --exclude node_modules --exclude dist --exclude .git -cf - .) | tar -xf - -C $D/project
+  (cd $PROJ 2>/dev/null && tar --exclude node_modules --exclude dist --exclude .git -cf - .) | tar -xf - -C $D/project
   node $HERE/score.mjs $D $S $LABEL $SHA $code
 done

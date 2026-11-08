@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { mintSession, SESSION_COOKIE, FLOW_COOKIE } from '@substrat-run/oidc-rp';
-import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
+import { oidcRpAuthProvider, verifiedEmailOf, type OidcRpConfig } from '../src/oidc-rp-provider.js';
+import type { AuthSubject } from '../src/provider.js';
 
 /**
  * The RP `AuthProvider` end-to-end against a STUBBED issuer: discovery, the authorize
@@ -291,5 +292,25 @@ describe('oidcRpAuthProvider with cookieDomain', () => {
       .toContain('Max-Age=0');
     expect(setCookies(logout).find((c) => c.startsWith('sb_oidc_idt=') && c.includes(`Domain=${DOMAIN}`)))
       .toContain('Max-Age=0');
+  });
+});
+
+describe('verifiedEmailOf (K-61)', () => {
+  const subject = (over: Partial<AuthSubject>): AuthSubject => ({
+    sub: 'dev|ann', email: 'Ann@Example.com', name: null, emailVerified: true, ...over,
+  });
+
+  it('answers the verified address, in the issuer\'s spelling', () => {
+    expect(verifiedEmailOf(subject({}))).toBe('Ann@Example.com');
+  });
+
+  it.each([
+    ['nobody signed in', null],
+    ['an address the issuer did not verify', subject({ emailVerified: false })],
+    ['a session with no claim', subject({ emailVerified: undefined })],
+    ['no address', subject({ email: null })],
+    ['a delegated token', subject({ delegation: { actor: 'other-app', scope: [] } })],
+  ])('is null for %s', (_label, who) => {
+    expect(verifiedEmailOf(who)).toBeNull();
   });
 });

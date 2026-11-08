@@ -2988,6 +2988,50 @@ export const loggedModManifest = moduleManifest.parse({
   entitlementKey: 'logged',
 });
 
+export const addressModManifest = moduleManifest.parse({
+  id: '@test/address',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'address:use', description: 'the ctx.verifiedEmail fixture permission' }],
+  events: {
+    emits: [{ type: 'address.acted', schemaVersion: 1 }],
+    consumes: [{ type: 'address.acted', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'address',
+});
+
+/**
+ * The module the `ctx.verifiedEmail` suite drives (K-61). `address/who` answers what the
+ * operation sees, and `address/act` emits so the suite can read what its consumer saw.
+ */
+export const addressMod: ModuleRegistration = {
+  manifest: addressModManifest,
+  migrations: [
+    { version: '0001-init', sql: 'CREATE TABLE address_seen (seen TEXT)' },
+  ],
+  ...testOperations({
+    'address/who': ((ctx) => ({ verifiedEmail: ctx.verifiedEmail })) as OperationHandler<never, unknown>,
+    'address/act': ((ctx) => {
+      ctx.emit({
+        type: 'address.acted',
+        schemaVersion: 1,
+        entity: { entityType: 'address-thing', entityId: 'one' },
+        piiClass: 'none',
+        payload: {},
+      });
+    }) as OperationHandler<never, unknown>,
+    'address/consumer-saw': ((ctx) =>
+      ctx.sql.query<{ seen: string | null }>('SELECT seen FROM address_seen').map((r) => r.seen)) as OperationHandler<never, unknown>,
+  }),
+  consumers: {
+    'address.acted': ((ctx) => {
+      ctx.sql.exec('INSERT INTO address_seen (seen) VALUES (?)', [ctx.verifiedEmail]);
+    }) as ConsumerHandler,
+  },
+};
+
 /**
  * The module the `ctx.log` suite drives. `logged/act` logs, emits, and its consumer logs
  * again in the same invocation; `logged/fail` logs and then throws, so the suite can show
@@ -3201,6 +3245,7 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1746/#1747: the ctx.log suite's module. Its consumer reacts only to its own
   // `logged.acted`, so it is inert for every other suite.
   loggedMod,
+  addressMod,
   // #1901: the async-log suite's module. Its consumer reacts only to its own
   // `asynclog.acted`, and its schedules run only on a host that registers it.
   asyncLogMod,

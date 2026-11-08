@@ -137,7 +137,7 @@ const TEMPLATE_PERMISSIONS_ENTRY = 'src/provision.ts';
 /** The `substrat.runtimeNeeds.stores` literal `packages/create-substrat/index.js` writes. */
 const TEMPLATE_STORES = [
   { binding: 'SCOPE', class: 'ScopeDO' },
-  { binding: 'CONFIG', class: 'ConfigDO' },
+  { binding: 'AUTH', class: 'IdentityDO' },
 ];
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */

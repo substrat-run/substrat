@@ -1,4 +1,4 @@
-import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts';
+import { reservedKeysOf, type EntityGrantShape, type ReservedKeySource } from '@substrat-run/contracts';
 
 /**
  * The runtime half of a key reserved to a system principal (#2430, K-55), shared by both adapters
@@ -553,6 +553,8 @@ export type DeclaredManifest = Omit<ReservedKeySource['manifest'], 'permissions'
  */
 export interface DeclaredPermissions {
   modules: readonly { manifest: DeclaredManifest }[];
+  /** The declared grant shapes. A host reads the `bootstrap` ones a person is given on arrival. */
+  entityGrants?: readonly EntityGrantShape[];
 }
 
 /**

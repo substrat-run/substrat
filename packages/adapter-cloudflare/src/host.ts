@@ -415,6 +415,7 @@ import {
   type ScopeListing,
   type ScopeHost,
   type ScopeStub,
+  type PersonScopeOptions,
   type ScopeStubOptions,
   type InvokeOptions,
   type SqlValue,
@@ -1567,6 +1568,8 @@ interface ScopeStubRpc {
      * instance (`SYSTEM_DOOR_MOVED`), and acknowledges with `systemDoor`.
      */
     systemDoorInstance?: string,
+    /** K-61: the person's verified address, sent only for a stub `getScope` made. */
+    verifiedEmail?: string | null,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -1861,6 +1864,8 @@ interface ScopeStubRpc {
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
   grantEntityShapeAndAuditIntent(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
+  /** The same grant, unless a marker for it was ever written there: whether it granted. */
+  grantEntityShapeOnce(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<boolean>;
   /**
    * One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming
    * at `after` (#2083). A DO from before the cursor ignores `after`, answers `done` and no `next`.
@@ -5837,14 +5842,14 @@ export class CloudflareScopeHost implements ScopeHost {
     principal: PrincipalId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    options?: ScopeStubOptions,
+    options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
     // Lifecycle gates (control-plane.md §4.1/§4.2), the K-3 fail-closed path,
     // evaluated durably in the ControlPlaneDO. A throw propagates here.
     await this.assertLive(tenantId, scopeId, 'getScope');
 
     await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options);
+    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, undefined, undefined, undefined, options?.verifiedEmail ?? null);
   }
 
   async getScopeStore(
@@ -7183,6 +7188,8 @@ export class CloudflareScopeHost implements ScopeHost {
      * every invoke, inside its queue, and acknowledges it — the capability session's pattern.
      */
     verticalCaller?: VerticalCaller,
+    /** K-61: a parameter of its own, so only `getScope` can hand one over and no other door can. */
+    verifiedEmail: string | null = null,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const systemModuleId = door?.kind === 'system' ? (door.key as ModuleId) : undefined;
@@ -7279,6 +7286,7 @@ export class CloudflareScopeHost implements ScopeHost {
             capabilitySession,
             verticalCaller,
             systemDoorInstance,
+            verifiedEmail,
           );
         // #1834: through the door (a module's, or #2029 a peer's), pinned to the instance its gate
         // read. A missed pin comes back as an answer, which `through` re-gates on.
@@ -13065,6 +13073,24 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<void> {
     await this.refuseReservedGrant(permissions, scopeId); // #2430
     await this.scopeStub(scopeId).grantEntityShape(principal, entity, permissions);
+  }
+
+  /**
+   * What a person is given on their own record when they arrive (#2071): every shape this host's
+   * `permissions` declares `bootstrap` with `holder: 'self'`, on the entity whose id is their
+   * principal id. Each is given once, ever, so a door can run this on every sign-in: a key or a
+   * marker a revoke took stays taken. Answers the records it granted on; nothing when the host was
+   * given no `permissions`.
+   */
+  async grantSelfShapesLocal(scopeId: ScopeId, principal: PrincipalId): Promise<EntityRef[]> {
+    const shapes = (this.permissions?.entityGrants ?? []).filter((s) => s.bootstrap && s.holder === 'self');
+    const granted: EntityRef[] = [];
+    for (const shape of shapes) {
+      const entity = { entityType: shape.entityType, entityId: principal };
+      await this.refuseReservedGrant(shape.permissions, scopeId); // #2430
+      if (await this.scopeStub(scopeId).grantEntityShapeOnce(principal, entity, shape.permissions)) granted.push(entity);
+    }
+    return granted;
   }
 
   /**

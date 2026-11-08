@@ -61,6 +61,7 @@ import {
   concurrencyContractSuite,
   emittedReportContractSuite,
   moduleLogContractSuite,
+  verifiedEmailContractSuite,
   checkTallyContractSuite,
   asyncLogContractSuite,
   idempotencyContractSuite,
@@ -1385,6 +1386,19 @@ asyncLogContractSuite('adapter-sqlite', async () => {
     host,
     lines: () => lines,
     logs: () => logs,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// K-61: the address an operation reads, and every door that must answer null.
+verifiedEmailContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-address-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

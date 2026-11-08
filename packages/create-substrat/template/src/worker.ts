@@ -11,35 +11,16 @@
  * package.json (entry = this file, stores = the DO classes exported here) —
  * you never author wrangler config.
  *
- * ── THE AUTH SEAM ────────────────────────────────────────────────────────────
- * This starter ships NO auth in the worker: every /api/* call is 401 until you
- * wire `authenticatedPrincipal` below. That is deliberate and it is honest —
- * there is nothing here that resolves a caller, in any environment, so there is
- * nothing to accidentally deploy.
- *
- * It used to resolve a caller through an `x-principal` header gated on
- * ALLOW_DEV_HEADER. That is an impersonation bypass — a cross-tenant hole with a
- * UI, one environment variable from being live — and it is gone. `src/server.ts`
- * shows the shape you want instead: @substrat-run/vertical-auth's
- * `oidcRpAuthProvider` verifies the request against your issuer and hands you a
- * subject; an identity directory maps that subject to a PrincipalId. The dev
- * server can use `host.admin` as that directory. A hosted worker needs a durable
- * one — @substrat-run/vertical-auth's per-tenant `IdentityDO` is the platform's,
- * and it also gives you the owner-claim and invite flows a new install needs.
- * ───────────────────────────────────────────────────────────────────────────
+ * Sign-in is `workerDoor`'s, from @substrat-run/vertical-host: the issuer the dashboard delivers
+ * for this instance, the tenant's identity directory (the `AUTH` store), and the owner seat the
+ * first person takes. There is no credential store here and no dev header: a request names no
+ * caller, the session does. Member invites are yours to add: who may invite is your own rule, so
+ * mount `mountInviteRoutes` from @substrat-run/vertical-auth with your admin gate.
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import {
-  resolveScopedEnvSpec,
-  scopeId,
-  tenantId,
-  z,
-  type PrincipalId,
-  type ScopeId,
-  type TenantId,
-} from '@substrat-run/contracts';
+import { scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import {
   CloudflareScopeHost,
   defineScopeDO,
@@ -56,21 +37,21 @@ import {
   RouterAssertionError,
   invocationLog,
 } from '@substrat-run/vertical-host';
+import { IdentityDO, workerDoor } from '@substrat-run/vertical-host/worker-door';
 import { MODULES, OWNER_ROLE_KEY, ROLES, permissions } from './provision.js';
 import { SHOP_ENV } from './manifest.js';
 import { mountApi } from './routes.js';
-import { AUTH_CONFIG_KEY, ConfigDO, type ConfigDo } from './config-do.js';
 
 /** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 
 /**
- * The per-instance config store (`config-do.ts`) — one per tenant, rows keyed by scope.
- * Declared as a store in package.json `substrat.runtimeNeeds.stores`, like `ScopeDO`
- * above and `SweeperDO` below. Re-exported because workerd resolves a DO class from the
- * ENTRY module's exports; defining it in another file is fine, hiding it here is not.
+ * The tenant's identity directory: who is bound to what, the owner seat, and the settings the
+ * platform delivers. Declared as a store in package.json `substrat.runtimeNeeds.stores`, like
+ * `ScopeDO` above and `SweeperDO` below. Re-exported because workerd resolves a DO class from the
+ * ENTRY module's exports.
  */
-export { ConfigDO };
+export { IdentityDO };
 
 /**
  * The deployment's own timer (#461): a roster-keeping singleton whose alarm runs
@@ -117,8 +98,8 @@ interface Env {
   SCOPE: DurableObjectNamespace;
   /** The roster-keeping sweep singleton — the deployment's own timer (#461). */
   SWEEPER: DurableObjectNamespace;
-  /** Per-instance config delivered by the platform (`/internal/configure`). */
-  CONFIG: DurableObjectNamespace;
+  /** The tenant's identity directory, and what the platform delivers to this instance. */
+  AUTH: DurableObjectNamespace<IdentityDO>;
   /** Local `wrangler dev` only: when 'true', fall back to DEV_NODE if no router
    *  asserted a node. Addresses an instance; authenticates nobody. */
   ALLOW_DEV_NODE?: string;
@@ -152,75 +133,26 @@ function hostFor(env: Env): CloudflareScopeHost {
   return host;
 }
 
-/** This tenant's config DO — one per tenant, holding a row set per scope. */
-function configDo(env: Env, node: Node): DurableObjectStub & ConfigDo {
-  return env.CONFIG.get(env.CONFIG.idFromName(node.tenantId)) as DurableObjectStub & ConfigDo;
-}
-
 /**
- * The scope's delivered auth choice. Parsed LENIENTLY on purpose: an absent or
- * malformed entry means "nothing delivered", never a throw, so a bad delivery can
- * never lock an instance out of its own login.
+ * Who is calling, for every route below. It hands an operation the caller's verified address, and
+ * the first time a person reaches a scope it gives them every shape `permissions` declares
+ * `bootstrap` with `holder: 'self'`, on their own record. A vertical with a join operation names it
+ * here, so a person is joined when they first sign in, before that grant:
+ *
+ *   join: (scope, who) => scope.invoke('shop/join', { displayName: who.display }),
+ *
+ * This shop has neither: its people are added by staff, and its portal shape is a customer's.
  */
-const authChoice = z.object({
-  mode: z.literal('oidc'),
-  issuer: z.string().min(1),
-  clientId: z.string().min(1).optional(),
-  clientSecret: z.string().min(1).optional(),
+const door = workerDoor<Env>({
+  directory: (env, node) => env.AUTH.get(env.AUTH.idFromName(node.tenantId)),
+  nodeFor,
+  hostFor,
+  envSpec: SHOP_ENV,
 });
 
-/**
- * Everything this instance was configured with, in ONE DO hop: the ordinary declared
- * settings (`SHOP_ENV`) resolved delivered > env > default, and the structured
- * `substrat:auth` choice the dashboard's Identity tab sends.
- *
- * Reading settings THROUGH this — rather than off `env` — is the whole reason the
- * `/internal/configure` hook exists: a spec `default` rides as a worker binding shared
- * by every install of one serving script, so `env.SHOP_NAME` is the same string for
- * every tenant no matter what any of them saved.
- */
-async function instanceConfig(env: Env, node: Node) {
-  const delivered = await configDo(env, node).getScopeConfig(node.scopeId);
-  const settings = resolveScopedEnvSpec(SHOP_ENV, env as unknown as Record<string, unknown>, delivered).values;
-  let identity: z.infer<typeof authChoice> | null = null;
-  const raw = delivered[AUTH_CONFIG_KEY];
-  if (raw) {
-    try {
-      const parsed = authChoice.safeParse(JSON.parse(raw));
-      identity = parsed.success ? parsed.data : null;
-    } catch {
-      identity = null;
-    }
-  }
-  return { settings, identity };
-}
-
-/**
- * THE AUTH SEAM (see the header comment): resolve the caller to a PrincipalId, or
- * null for nobody. Two steps, and this starter ships neither:
- *
- *   1. Verify the request → a subject. `instanceConfig` already reads the issuer
- *      the dashboard delivered as `substrat:auth`, so this is
- *      `oidcRpAuthProvider({ issuer, clientId, clientSecret, sessionSecret }).resolve(...)`
- *      — and you mount the same provider's `handle` on `/api/auth/*` for the login
- *      round-trip. `src/server.ts` does exactly this against the local dev issuer.
- *   2. Map that subject → a PrincipalId, per scope. This needs a durable store the
- *      worker owns; @substrat-run/vertical-auth's `IdentityDO` is one, and carries
- *      the owner-claim (first sign-in takes the seat) and invite flows with it.
- *
- * Returning null unconditionally is the safe default, not an oversight: a starter
- * that guessed here would be a starter that let the wrong person in.
- */
-async function authenticatedPrincipal(_req: Request, _env: Env): Promise<PrincipalId | null> {
-  return null; // ← wire real auth here (see the two steps above)
-}
-
-/** Resolve caller + routed node → a scope stub. 401 if nobody. */
-async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
-  const node = nodeFor(c.req.raw, c.env);
-  const principal = await authenticatedPrincipal(c.req.raw, c.env);
-  if (!principal) throw new HTTPException(401, { message: await unauthorizedReason(c.env, node) });
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+/** The caller's scope stub. 401 if nobody. */
+function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
+  return door.scope(c, {
     // An operation that called `ctx.requestPlatform`, or committed an event of a type this
     // vertical EXPORTS (whether or not another app imports it yet), flags its response. The
     // router then has the platform act on this scope within seconds instead of at the next
@@ -229,27 +161,6 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
     // waits up to a quarter of an hour.
     ...kickFlags((name, value) => c.header(name, value)),
   });
-}
-
-/**
- * Why the caller is nobody — a DIAGNOSIS, not a bare "unauthorized".
- *
- * The expensive case to debug is the one that looks like a platform bug and is not:
- * a tenant picks an identity provider in the dashboard, the platform delivers it here
- * successfully, and every request is still 401 — because this starter ships no auth.
- * Saying so, and naming the seam, is the difference between a five-minute fix and a
- * support thread. Only runs on the failure path, so it costs a DO hop on 401s alone.
- */
-async function unauthorizedReason(env: Env, node: Node): Promise<string> {
-  try {
-    const { identity } = await instanceConfig(env, node);
-    if (identity) {
-      return `unauthorized — this instance has an identity provider configured (${identity.issuer}), but this vertical has not wired it up yet: implement \`authenticatedPrincipal\` in src/worker.ts (the auth seam)`;
-    }
-  } catch {
-    // The config store is unreachable — that is not the caller's problem to hear about.
-  }
-  return 'unauthorized';
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -269,16 +180,9 @@ app.use(
   }),
 );
 
-// Who am I, and what instance am I on — resolves the caller without invoking
-// anything. Auth-shaped and host-specific, so it stays OUT of the shared table;
-// `server.ts` answers the same question from its own login.
-app.get('/api/me', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  const principal = await authenticatedPrincipal(c.req.raw, c.env);
-  if (!principal) return c.json({ error: await unauthorizedReason(c.env, node) }, 401);
-  const { settings, identity } = await instanceConfig(c.env, node);
-  return c.json({ principal, settings, identity: identity ? { issuer: identity.issuer } : null });
-});
+// Sign-in: the login round-trip at `/api/auth/*`, who is signed in at `/api/me`, and the owner
+// seat at `/api/claim-owner`. Accounts and passwords live at the issuer, not here.
+door.mount(app);
 
 // ── The vertical's API — the SAME table `server.ts` mounts (src/routes.ts) ───
 // Including `/api/invoke`. Mounted BEFORE the platform surface: Hono keeps only the
@@ -293,34 +197,22 @@ mountApi(app, stub);
 // and bookmarks/rewind — plus the guaranteed { error } envelope is authored ONCE
 // in @substrat-run/vertical-host (issue #510); mount it and it cannot drift.
 //
-// This starter's hooks keep the deployment's sweep roster (#461) in step: a newly
-// provisioned scope joins it (so its schedules run), and a deleted one leaves it.
-// A full reconcile needs a durable owner-of-record to heal from — this starter keeps none
-// (that lives with real auth, the auth seam), so `resolveOwner` is omitted. The platform's
-// reconcile then only seats what each version declares (schedule, peer and connection
-// grants) and re-grants no owner, until you wire auth and supply one.
+// The hooks keep the deployment's sweep roster (#461) in step: a newly provisioned scope joins it
+// (so its schedules run), and a deleted one leaves it. The door's hooks do the rest: the owner seat
+// at provision, and the settings the dashboard's Env and Identity tabs deliver.
 mountPlatformSurface<Env>(app, {
   platformSecret: (env) => env.PLATFORM_SECRET,
   hostFor,
   roles: ROLES,
   ownerRoleKey: OWNER_ROLE_KEY,
-  // Both hooks are `Promise<void>`: the roster's own count is its business, and
-  // returning it here would make the platform's response shape depend on what a
-  // vertical happens to hand back. Await, discard.
+  ...door.platform,
   onProvision: async (env, b) => {
+    await door.platform.onProvision(env, b);
     await sweeper(env).noteScope(b.tenantId, b.scopeId);
   },
-  onDeleteScope: async (env, s) => {
+  onDeleteScope: async (env, s, tenantId) => {
+    await door.platform.onDeleteScope(env, s, tenantId);
     await sweeper(env).forgetScope(s);
-  },
-  // Per-instance config delivery (the dashboard's Settings → Env and Identity tabs).
-  // WITHOUT this hook `/internal/configure` answers 501 for the life of the app: the
-  // dashboard saves the setting, reports `delivered: false`, and the running worker
-  // never sees it — including the `substrat:auth` issuer choice that is the difference
-  // between a working login and 401-on-everything. Store it; `instanceConfig` reads it
-  // back. Idempotent, so the platform's reconciliation sweep can re-deliver safely.
-  onConfigure: async (env, b) => {
-    await configDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries);
   },
 });
 

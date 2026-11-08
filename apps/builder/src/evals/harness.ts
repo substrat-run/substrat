@@ -26,9 +26,11 @@ import type {
 } from '@substrat-run/builder-workspace';
 import {
 	checkModel,
+	continuationPrompt,
 	ensureVerticalRepo,
 	gateRepairPrompt,
 	gateReport,
+	MAX_CONTINUATIONS,
 	MAX_GATE_REPAIRS,
 	repairNeeded,
 	runTurn,
@@ -51,6 +53,7 @@ import {
 	type LaneTurn,
 } from '../phase.js';
 import type { BuilderToolStat } from '@substrat-run/contracts';
+import { layProject } from '../setup.js';
 import { runProbe, type ProbeFn, type ProbeResult } from './probe.js';
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -103,6 +106,8 @@ export interface EvalFixture {
 	readonly prompt?: string;
 	/** Everything the builder answered, as one block. Only meaningful with `prompt`. */
 	readonly answers?: string;
+	/** Files laid down beside the concept, so a run starts at a later stage. Path to content. */
+	readonly seed?: Readonly<Record<string, string>>;
 	readonly expect: EvalExpectations;
 }
 
@@ -463,6 +468,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let questions = 0;
 	let interviewQuestions = 0;
 	let questionsThisTurn = 0;
+	/** Continuations spent this turn; repair passes draw on the same budget. */
+	let continuations = 0;
 	let answersSent = false;
 	let buildSent = false;
 	let lastGates: GateRun | null = null;
@@ -470,14 +477,15 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let fatal: string | undefined;
 	let generatorId = 'unknown';
 
-	const runPass = async (
+	const runOnePass = async (
 		generator: VerticalGenerator,
 		text: string,
 		phase: BuildPhase,
 		carriedReport?: string,
 		plan?: LanePlan,
-	): Promise<void> => {
+	): Promise<boolean> => {
 		let prose = '';
+		let truncated = false;
 		const passStarted = Date.now();
 		for await (const event of generator.run({
 			workspace: projectWs,
@@ -500,6 +508,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			...(opts.signal ? { signal: opts.signal } : {}),
 		})) {
 			emit(event);
+			if (event.type === 'truncated') truncated = true;
 			if (event.type === 'assistant-text') prose += event.text;
 			if (event.type === 'question') {
 				questions += 1;
@@ -535,6 +544,22 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		addStage(phase, { passes: 1, durationMs: Date.now() - passStarted });
 		history.push({ role: 'user', text, lane: plan?.lane });
 		if (prose) history.push({ role: 'assistant', text: prose, lane: plan?.lane });
+		return truncated;
+	};
+
+	/** As in runTurnLoop: a pass the step ceiling cut is not done yet, so it continues before the gates. */
+	const runPass = async (
+		generator: VerticalGenerator,
+		text: string,
+		phase: BuildPhase,
+		carriedReport?: string,
+		plan?: LanePlan,
+	): Promise<void> => {
+		let truncated = await runOnePass(generator, text, phase, carriedReport, plan);
+		while (truncated && continuations < MAX_CONTINUATIONS && !fatal && !opts.signal?.aborted) {
+			continuations += 1;
+			truncated = await runOnePass(generator, continuationPrompt(continuations, MAX_CONTINUATIONS), phase, undefined, plan);
+		}
 	};
 
 	const runChecks = async (label: string, phase: BuildPhase) => {
@@ -575,9 +600,13 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 				message = questionsThisTurn > 0 ? ANSWER_MESSAGE : CONTINUE_MESSAGE;
 			}
 			questionsThisTurn = 0;
+			continuations = 0;
 			turns += 1;
 			turnStart = history.length;
 
+			if (phase === 'scaffold' && opts.references && (await layProject(projectWs, opts.references, process.env.BUILDER_EVAL_WORKSPACE ?? ''))) {
+				emit({ type: 'tool-call', tool: 'lay_project', summary: 'project files, app shell and install' });
+			}
 			const lanes = opts.lanes ? await planLanes(projectWs, phase) : [];
 			if (lanes.length === 0) {
 				await runPass(generator, message, phase, lastGateReport);
@@ -697,6 +726,9 @@ export async function prepareProject(
 	if (fixture.concept !== undefined) {
 		await ws.mkdir(`${projectDir}/spec`, { recursive: true });
 		await ws.writeFile(`${projectDir}/spec/concept.md`, fixture.concept);
+	}
+	for (const [path, content] of Object.entries(fixture.seed ?? {})) {
+		await ws.writeFile(`${projectDir}/${path}`, content);
 	}
 	// Commit with zero gates. For a concept fixture the ledger starts at
 	// "concept exists", which lands detectPhase on `model` for turn 1. For a

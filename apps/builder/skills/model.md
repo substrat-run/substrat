@@ -255,21 +255,25 @@ that breaks them:
 
 - **Host code makes a person's first grant.** The shape only declares it, and no
   operation can make it, because the caller holds nothing yet. The seed does it with
-  `grantEntityShape` (`todo` `src/seed.ts`); a deployed worker does it after the join
-  operation returns. So the join operation only writes the row, and this is settled:
-  nothing in the model needs to change for it.
+  `grantEntityShape` (`todo` `src/seed.ts`); a deployed worker's door does it when the
+  person first signs in, for every `bootstrap` shape with `holder: 'self'`, after the join
+  the worker names in `workerDoor({ join })`. So the join operation only writes the row, and this is settled:
+  nothing in the model needs to change for it. The door may call the join again for someone
+  who has joined, so a join returns the row it already has rather than failing.
 - **Whoever holds a key shares it.** `ctx.grant` re-checks that the caller holds the
   key on that entity, which the owner does through the link. An operation called by
   the person being added can give them nothing. So when the concept says people are
-  invited and accept, declare one operation the *holder* calls, finding someone who
-  has already joined by their email (`todo/share-list`), and no pending invitation
-  whose accept step would have to grant.
+  invited and accept, declare one operation the *holder* calls (`todo/share-list`),
+  and no accept step that would have to grant. When the address may not have joined,
+  declare an `invite` entity beside it, as `todo` does: `todo/invite` shares at once
+  or records the invitation, `todo/list-invites` and `todo/cancel-invite` let the owner
+  see and withdraw it, and a consumer of the join event turns it into a share.
 
 Finding people by email makes the joined address a credential: a member who joins
-with someone else's address receives that person's shares. The operation cannot see
-the session, so host code holds this. Before the join operation runs, it compares
-the claimed email with the session's issuer-verified one, refuses a mismatch, and
-passes on the verified spelling (`joiningAsYourself` in `todo` `src/app.ts`).
+with someone else's address receives that person's shares. So a join never takes the
+caller's address as input, and a model that declares one does not load. The operation
+reads `ctx.verifiedEmail`, which the door passes to `getScope`, and refuses when it is
+null (`todo/join` in `todo` `src/module.ts`).
 
 ## Not every table is an entity
 

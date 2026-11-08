@@ -45,9 +45,9 @@ jobs:
       # (EUNKNOWNCONFIG). pnpm skips already-published versions on its own.
       #
       # A publish can fail part-way: the packages before the failure are on npm, the rest
-      # are not, and every prod deploy below is skipped with them. The one transient seen
-      # so far — a provenance-signing conflict in the transparency log — is retried once by
-      # tools/publish-packages.mjs. When a publish still fails, the maintainer's move is
+      # are not, and every prod deploy below is skipped with them. Two transients are known —
+      # a provenance-signing conflict in the transparency log, and a version npm has taken but
+      # not listed yet — and tools/publish-packages.mjs retries both. When a publish still fails, the maintainer's move is
       # "Re-run failed jobs" on THIS run: the re-run resumes the publish (the skip above)
       # and the gate below still fires, since the commit message has not changed. Only do
       # that if no LATER release run has STARTED since, finished or not: a re-run deploys
@@ -61,6 +61,16 @@ jobs:
       # on console/app.substrat.net through several releases). Note the prod-deploy
       # gate below no longer relies on this alone — it also fires on the
       # `Version packages` release commit, so an app-only release still deploys.
+      #
+      # `pnpm release` then pushes those tags itself, all in one push, before the action
+      # reaches them. The action runs one `git push` per tag, all at once, and twice GitHub
+      # refused every one (27 tags on 2026-10-31, 29 on 2026-11-07): they shared a temporary
+      # directory on its side that went from under them, `index-pack failed`. That fails this
+      # step after a good publish, and every prod deploy with it, over tags nothing reads. A
+      # tag already on the remote makes the action's own push a no-op, so it stays as the
+      # fallback when the one push fails. `commitMode: github-api` looks like the shorter fix
+      # and is not one: it refuses a commit changing an executable file, and
+      # `packages/create-substrat/index.js` is one nearly every Version packages PR changes.
       #
       # `version` must be spelled out: the action's default is a bare
       # `changeset version`, which bumps the package.json versions and stops —
