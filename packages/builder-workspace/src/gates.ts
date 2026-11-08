@@ -47,6 +47,8 @@ export type GateName =
 	| 'app-starter'
 	| 'sign-in'
 	| 'sends-email'
+	| 'invite-email'
+	| 'app-events'
 	| 'hosted-entry'
 	| 'hosted-join'
 	| 'migration-replay';
@@ -236,6 +238,35 @@ async function noRealSignIn(ws: Workspace, projectDir: string): Promise<string |
 	return /devLogin|verticalAuth|oidcRp/.test(server) ? null : 'src/ has no sign-in. Use devLogin, as the template\'s src/server.ts does.';
 }
 
+/**
+ * An invitation nobody receives: the concept invites people by email, and nothing in src/ sends one.
+ * The score sees it and no other gate does, and the scenario suite passes, since a local host only queues.
+ */
+async function inviteSendsNoEmail(ws: Workspace, projectDir: string): Promise<string | null> {
+	const concept = await ws.readFile(`${projectDir}/spec/concept.md`).catch(() => '');
+	if (!/invit/i.test(concept) || !/e-?mail/i.test(concept)) return null;
+	if (/\brequestEmail\(/.test(withoutComments(await readTree(ws, `${projectDir}/src`)))) return null;
+	return 'spec/concept.md invites people by email, and nothing in src/ sends one, so an invitation reaches nobody. Queue the email in the operation that invites, with requestEmail(ctx, { to, subject, html, text }) from @substrat-run/kernel, as todo/invite does in the todo reference.';
+}
+
+/**
+ * `<sub-entity-table>` answers a row click with `sub-row-click`, and only under the `row-click`
+ * attribute, so a listener spelled any other way never fires and a row cannot be opened. A judge
+ * reading the code passed one such build; clicking it found it.
+ */
+async function rowClickUnheard(ws: Workspace, projectDir: string): Promise<string | null> {
+	const app = withoutComments(await readTree(ws, `${projectDir}/app/src`));
+	for (const [tag] of app.matchAll(/<sub-entity-table\b(?:=>|[^>])*>/g)) {
+		if (/@row-?click\s*=/i.test(tag)) {
+			return 'app/src listens for @row-click on <sub-entity-table>, which sends sub-row-click, so clicking a row does nothing. Write row-click @sub-row-click=${…}: the attribute turns row clicks on, and the event carries { row }.';
+		}
+		if (/@sub-row-click\s*=/.test(tag) && !/\srow-click(?=[\s>=])/.test(tag)) {
+			return 'app/src listens for @sub-row-click on a <sub-entity-table> without the row-click attribute, so the event never fires. Add row-click to the element.';
+		}
+	}
+	return null;
+}
+
 /** A hosted send is refused unless the project asked to send, and no suite sees that: a local host only queues. */
 async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<string | null> {
 	if (!/\brequestEmail\(/.test(withoutComments(await readTree(ws, `${projectDir}/src`)))) return null;
@@ -406,6 +437,20 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: pkg,
 			note: 'no package.json yet',
 			refuse: (ws) => undeclaredEmail(ws, projectDir),
+		},
+		{
+			name: 'invite-email',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/module.ts`),
+			note: 'no src/module.ts yet',
+			refuse: (ws) => inviteSendsNoEmail(ws, projectDir),
+		},
+		{
+			name: 'app-events',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => rowClickUnheard(ws, projectDir),
 		},
 		{
 			name: 'hosted-entry',
