@@ -920,10 +920,16 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   text.
 - **Redaction can take more than the value.** In an explanation, a secret-named value inside a
   string or a code span (`` `password=hunter2` ``) takes the rest of its line with it, since the
-  closing quote reads as an opening one. From such a value, or from a check that reads as code, on
-  to the end of the line, a quote right after a word or a closing bracket (`x'`) may close a string
-  or open one, so the quoted strings after it are read both ways and the words between them are
-  masked too.
+  closing quote reads as an opening one. From the first secret-named value, or check that reads as
+  code, to the end of the line, a quote straight after anything but a space or an opening bracket
+  (`x'`, `null.'`, `"a"'`) may close a string or open one, unless a value starts there, so the
+  quoted strings after it are read both ways and the words between them are masked too; a
+  contraction there (`it's`) takes the rest of the line. A quoted name is read inside as well, so a
+  config path with a secret-named segment (`"secret:db:url"`) loses what follows that segment, and
+  a count inside one (`` `maxTokens=8000` ``) is masked.
+- **Only a glued quote is read both ways.** A quote after a space, or one before the first
+  secret-named value or check, is read as the line read from its start pairs it, so a stray one
+  there changes which later text reads as inside a string.
 - **A sentence about a quoted check keeps its words.** When an explanation quotes a comparison or
   a key and the sentence goes on after it in a lower-case word (`` `token == null` lets any caller
   through ``), a quoted string later on that line is kept as written. A capitalised word, a tab or
