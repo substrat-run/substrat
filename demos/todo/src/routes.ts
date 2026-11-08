@@ -10,6 +10,7 @@
 import type { Context, Hono } from 'hono';
 import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
 import { todoOperations } from '../spec/model.js';
+import { API_DOCUMENT } from './api.js';
 
 export type { ResolveStub };
 
@@ -31,5 +32,7 @@ export function mountApi(
   // confirm the feature exists. `problemResponse` renders the body.
   app.onError((err, c: Context) => problemResponse(c, err));
 
-  return mountOperations(app, todoOperations, resolveStub);
+  // `/api/docs` renders the document this app already serves at `/openapi.json`, tags and prose
+  // included, rather than the one the mount would derive from the same operations.
+  return mountOperations(app, todoOperations, resolveStub, { docs: { document: API_DOCUMENT } });
 }

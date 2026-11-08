@@ -56,9 +56,8 @@ export function createApp({ host, login, onJoined }: AppOptions): Hono {
   // origin. Computed once at boot from the same declarations the routes below are
   // derived from — never read from the checked-in `openapi.json`, which exists so
   // a surface change shows up in a PR diff (api-surface.md §2.4) rather than to be
-  // served. No `/api/docs` page: rendering one means bundling Scalar, and the
-  // smallest vertical that is still a real one does not need a second dependency
-  // to prove the document is reachable.
+  // served. The platform's `/api/docs` renders this same document, which `routes.ts`
+  // hands `mountOperations`.
   app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
 
   mountApi(app, async (c) => {

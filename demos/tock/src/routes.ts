@@ -11,6 +11,7 @@
 import type { Context, Hono } from 'hono';
 import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
 import { tockOperations } from '../spec/model.js';
+import { API_DOCUMENT } from './api.js';
 
 export type { ResolveStub };
 
@@ -20,5 +21,7 @@ export function mountApi(
   resolveStub: ResolveStub,
 ): { operation: string; method: string; path: string }[] {
   app.onError((err, c: Context) => problemResponse(c, err));
-  return mountOperations(app, tockOperations, resolveStub);
+  // `/api/docs` renders the document this app already serves at `/openapi.json`, tags and prose
+  // included, rather than the one the mount would derive from the same operations.
+  return mountOperations(app, tockOperations, resolveStub, { docs: { document: API_DOCUMENT } });
 }

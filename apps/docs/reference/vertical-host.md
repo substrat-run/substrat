@@ -175,15 +175,19 @@ headers and their semantics are specified in API design —
 ### It also serves the API reference
 
 `mountOperations` registers `GET /api/docs` and its self-hosted renderer at
-`/api/docs/renderer.js` automatically. The page reads the app's `/openapi.json`
-with the browser's existing session; try-it calls stay on the app's origin.
-No CDN, asset build step, or per-app docs route is needed. The specification
-retains the app's authentication rules. A signed-out visitor sees a sign-in
-prompt, and a missing or invalid specification produces an explanation.
+`/api/docs/renderer.js` automatically, and the OpenAPI document the page renders at
+`GET /api/openapi.json`. The document is derived from the operations the call mounts, the
+same catalog the routes and the MCP tools come from, and is read through `resolveStub`: a
+signed-out visitor gets a 401, which the page turns into a sign-in prompt. The page reads it
+with the browser's existing session; try-it calls stay on the app's origin. No CDN, asset
+build step, or per-app docs route is needed, and because both paths sit under `/api`, a dev
+server's Vite proxy and a hosted app's `runWorkerFirst: ['/api/*']` already reach them.
 
-The app must still serve `/openapi.json` from its declared operations. An existing
-`GET /api/docs` registered before `mountOperations` takes precedence; use
-`docs: false` to disable the platform page when supplying your own reference.
+`docs: { info: { title, version } }` names the derived document, and
+`docs: { document }` serves one the app already builds (with its own tags and prose)
+instead. A route registered at `/api/docs` or `/api/openapi.json` before
+`mountOperations` takes precedence; use `docs: false` to disable both when supplying your
+own reference.
 As with the other mounted routes, call `mountOperations` before an API catch-all.
 
 ### It also mounts the MCP surface

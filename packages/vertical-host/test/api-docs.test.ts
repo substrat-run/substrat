@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runInNewContext } from 'node:vm';
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { z } from '@substrat-run/contracts';
+import type { ScopeStub } from '@substrat-run/kernel';
 import { mountOperations } from '../src/operations-routes.js';
 
 function appWithDocs() {
@@ -39,7 +42,8 @@ describe('automatic API reference', () => {
   it('renders the app specification with its existing session and no proxy', async () => {
     const spec = { openapi: '3.1.0', paths: {} };
     const b = await browser(200, spec);
-    expect(b.fetch).toHaveBeenCalledWith('/openapi.json', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    // Beside the page, under the API prefix a dev proxy and a hosted worker-first route both carry.
+    expect(b.fetch).toHaveBeenCalledWith('./openapi.json', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
     expect(b.createApiReference).toHaveBeenCalledWith('#app', { content: spec, hideClientButton: true });
     expect(b.status.remove).toHaveBeenCalled();
   });
@@ -66,6 +70,33 @@ describe('automatic API reference', () => {
     expect((await app.request('/v1/api/docs/renderer.js')).status).toBe(200);
   });
 
+  it('serves the operations it mounts as the document, through the app door', async () => {
+    const operations = {
+      'shop/get-bike': {
+        summary: 'Read one bike.',
+        input: z.object({ bikeId: z.string() }),
+        http: { method: 'GET', path: '/bikes/{bikeId}' },
+      },
+      // Not mounted, so not documented: the document describes the routes that exist.
+      'shop/unrouted': { summary: 'Reachable through /api/invoke only.', input: z.object({}) },
+    };
+    const app = new Hono();
+    mountOperations(app, operations, async (c) => {
+      if (c.req.header('cookie') !== 'sb_session=yes') throw new HTTPException(401, { message: 'unauthorized' });
+      return {} as ScopeStub;
+    }, { mcp: false, docs: { info: { title: 'Bike shop', version: '1.2.0' } } });
+
+    expect((await app.request('/api/openapi.json')).status).toBe(401);
+    const act = `Bearer x.${btoa(JSON.stringify({ act: { sub: 'agent' } }))}.y`;
+    expect((await app.request('/api/openapi.json', { headers: { cookie: 'sb_session=yes', authorization: act } })).status).toBe(401);
+    const response = await app.request('/api/openapi.json', { headers: { cookie: 'sb_session=yes' } });
+    expect(response.status).toBe(200);
+    const document = (await response.json()) as { info: unknown; paths: Record<string, Record<string, { summary: string }>> };
+    expect(document.info).toEqual({ title: 'Bike shop', version: '1.2.0' });
+    expect(Object.keys(document.paths)).toEqual(['/api/bikes/{bikeId}']);
+    expect(document.paths['/api/bikes/{bikeId}']?.['get']?.summary).toBe('Read one bike.');
+  });
+
   it('preserves an existing app reference and supports opting out', async () => {
     const app = new Hono();
     app.get('/api/docs', (c) => c.text('custom reference'));
@@ -74,5 +105,17 @@ describe('automatic API reference', () => {
     const off = new Hono();
     mountOperations(off, {}, async () => { throw new Error('unused'); }, { mcp: false, docs: false });
     expect((await off.request('/api/docs')).status).toBe(404);
+    expect((await off.request('/api/openapi.json')).status).toBe(404);
+  });
+
+  it("serves a document the vertical already builds, or the route it registered first", async () => {
+    const own = { openapi: '3.1.0', info: { title: 'Own', version: '1' }, paths: {} };
+    const given = new Hono();
+    mountOperations(given, {}, async () => ({}) as ScopeStub, { mcp: false, docs: { document: own } });
+    expect(await (await given.request('/api/openapi.json')).json()).toEqual(own);
+    const first = new Hono();
+    first.get('/api/openapi.json', (c) => c.json({ registered: 'first' }));
+    mountOperations(first, {}, async () => ({}) as ScopeStub, { mcp: false });
+    expect(await (await first.request('/api/openapi.json')).json()).toEqual({ registered: 'first' });
   });
 });
