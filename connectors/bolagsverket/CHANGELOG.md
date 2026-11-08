@@ -1,5 +1,14 @@
 # @substrat-run/connector-bolagsverket
 
+## 0.0.11
+
+### Patch Changes
+
+- Updated dependencies [8bbd127]
+- Updated dependencies [da48705]
+  - @substrat-run/kernel@0.188.0
+  - @substrat-run/contracts@0.188.0
+
 ## 0.0.10
 
 ### Patch Changes
