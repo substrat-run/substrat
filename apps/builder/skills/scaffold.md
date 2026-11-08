@@ -198,9 +198,7 @@ it:
   survive between requests), run the seed, link the personas, then sign people in
   with `devLogin` from `@substrat-run/dev-issuer`, exactly as `template`'s
   `src/server.ts` and `src/personas.ts` do: `/api/auth/*`, `/api/me`, and
-  `resolveStub` = `login.caller(headers)` → `getScope`, with `...outbox.kick(caller)` spread
-  into its options so the mail an operation queues is written to `.data/outbox/` (the
-  template's `devMailOutbox`, from `@substrat-run/adapter-sqlite`). No caller → 401. Never
+  `resolveStub` = `login.caller(headers)` → `getScope`. No caller → 401. Never
   identify a caller from a header, cookie or picker the client sets: that is an
   impersonation bypass, and the app has no "switch person" control. Serve with `serve` from `@hono/node-server` (Hono's
   `app.fetch` takes a web `Request` — do not hand-wire `node:http` to it). Read
