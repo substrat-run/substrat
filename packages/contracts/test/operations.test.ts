@@ -162,7 +162,8 @@ ops({
     summary: 's',
     // @ts-expect-error 'custId' is not a field of this operation's input
     permission: { key: 'customer:manage', entity: 'customer', idFrom: 'custId' },
-    input: z.object({ customerId: z.string(), name: z.string() }),
+    // No `customerId`: beside `idFrom: 'custId'` it would be a second customer id, refused at load.
+    input: z.object({ name: z.string() }),
     output: z.object({ id: z.string() }),
   },
 });

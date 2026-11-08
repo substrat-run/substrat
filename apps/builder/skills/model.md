@@ -206,6 +206,13 @@ gate goes red, and the Model tab keeps the picture from before the turn.
   people editing different fields of the same row would each save over the other.
   Declare `concurrency: { over: '<entity>', idFrom: '<id field>' }` and emit about the
   entity, since a version is the last event about it.
+- **A narrowed check takes its id once.** Beside `permission: { entity: 'deal', idFrom:
+  'dealId' }` the input has no second field for the same id: not `deal_id`, `dealID` or
+  `deal-id` (case, `_` and `-` are ignored), and, when `idFrom` is `id`, not `dealId`. The
+  check reads `dealId`, so a page filtering by `deal_id` would serve any deal the caller
+  names. Take the id once, as the path parameter: `path: '/deals/{dealId}/history'`. A
+  second deal on purpose (a merge target) is named for its role, `targetDealId`, and the
+  handler checks it too.
 - **`derive: 'delete'` answers `{ id, deleted }`** and takes the id alone. A delete
   that answers anything else, or whose entity is another's parent (a cascade), is
   hand-written and declares neither.

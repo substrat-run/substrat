@@ -874,6 +874,7 @@ export function defineOperations<
       (ops) => assertTrashedDeclarations(ops, entities),
       (ops) => assertHandlersDeclared(ops, entities),
       assertJoinTakesNoAddress,
+      assertOneIdPerCheckedEntity,
     ]);
     return operations;
   };
@@ -1514,6 +1515,94 @@ function assertJoinTakesNoAddress(operations: Record<string, unknown>): void {
         'the address is somebody else\'s, name the operation for what it does',
     );
   }
+}
+
+/**
+ * An entity-narrowed check reads ONE id, so the input carries that id once.
+ *
+ * `permission: { entity, idFrom }` says which input field names the entity the caller is checked
+ * on, and every check reads that field: a derived handler's, an authored handler's
+ * `ctx.check(perm, ref)`, the host's in front of a trashed entity, and the conformance pair that
+ * holds a handler to the declaration. Nothing tied what the operation then READ to it. One of five
+ * CRM-shaped builds in a builder eval (#3017) declared two derived lists as
+ *
+ * ```ts
+ * derive: 'list',
+ * permission: { key: 'deal:access', entity: 'deal', idFrom: 'dealId' },
+ * input: z.object({ dealId: z.string(), deal_id: z.string().optional() }),
+ * paged: { over: { entity: 'dealHistory', filterable: ['deal_id'] } },
+ * http: { method: 'GET', path: '/deals/{dealId}/history' },
+ * ```
+ *
+ * The derived plan took `deal_id` as a second filter on the same link column, the caller's value
+ * last, so the page checked the deal its path named and filtered by the one the query named: a rep
+ * allowed deal A read any deal B's history with `GET /deals/A/history?deal_id=B`, through REST,
+ * `/api/invoke` and MCP alike. An authored handler reading `input.deal_id ?? input.dealId` has the
+ * same hole. The conformance pair passes either way, because it fills the field `idFrom` names and
+ * never the optional one beside it. Without the second field there is nothing to send: the host's
+ * parse drops an undeclared `deal_id`, and a derived page filters only by declared inputs.
+ *
+ * So a second field naming the same id is refused. Names are compared as spellings, case and `_`/`-`
+ * ignored, because that is how the duplicate arrives: a field other than `idFrom` that equals it, or
+ * equals `<entity>Id`, under that comparison. Every input a derived page or create could map onto
+ * the parent's link column is one of those spellings. A second id with a different name
+ * (`intoListId` on a merge, `targetDealId`) is untouched: it names a second entity on purpose, the
+ * conformance kit drives it as a `coEntities` entry, and the handler checks the caller on it too.
+ * With `entityFrom` there is no one entity name, so only the spellings of `idFrom` itself are
+ * refused.
+ *
+ * ## Why a bare `id` is not refused
+ *
+ * Beside a different `idFrom`, `id` is the child row's id in the nested-route shape — the check on
+ * the list (`listId`), the item addressed by `id` (`/lists/{listId}/items/{id}`). That is a
+ * different entity's id, which the handler must still confirm sits under the checked one, and its
+ * name alone cannot tell it from a second spelling of the checked id. A rule that refuses correct
+ * code gets routed around, so `id` passes. `deal_id` beside `id` as the `idFrom` is refused: that
+ * spelling says which entity it names.
+ *
+ * Load time for the reasons `assertListsArePaged` gives: it reaches every module that declares
+ * operations, and fires in every build, test and dev server.
+ */
+function assertOneIdPerCheckedEntity(operations: Record<string, unknown>): void {
+  for (const [name, value] of Object.entries(operations)) {
+    const op = value as {
+      permission?: { entity?: unknown; idFrom?: unknown };
+      input?: z.ZodObject<z.ZodRawShape>;
+      http?: { path?: unknown };
+    };
+    const permission = typeof op.permission === 'object' && op.permission !== null ? op.permission : {};
+    const { entity, idFrom } = permission;
+    if (typeof idFrom !== 'string') continue;
+    const spellings = new Set([idSpelling(idFrom)]);
+    if (typeof entity === 'string') spellings.add(`${idSpelling(entity)}id`);
+    const twins = Object.keys(op.input?.shape ?? {}).filter(
+      (field) => field !== idFrom && spellings.has(idSpelling(field)),
+    );
+    if (twins.length === 0) continue;
+    const named = twins.map((field) => `\`${field}\``).join(' and ');
+    const what = typeof entity === 'string' ? `the '${entity}'` : 'the entity';
+    const path = typeof op.http?.path === 'string' ? op.http.path : undefined;
+    const inPath =
+      path === undefined
+        ? ''
+        : path.includes(`{${idFrom}}`)
+          ? `, which the path already names (\`${path}\`)`
+          : `, named in the path as \`{${idFrom}}\``;
+    throw new Error(
+      `model: '${name}' checks ${what} named by \`${idFrom}\`, and its input also takes ${named} — ` +
+        'a second field naming the same id. Whatever reads that one (a derived page filters by it) reads ' +
+        'an entity the caller was never checked on, so a caller allowed one reads any other by sending ' +
+        'its id there.\n' +
+        `  Remedy: take the id once, as \`${idFrom}\`${inPath}; drop ${named}. A second entity of ` +
+        `the same kind on purpose (a merge target) is named for its role — \`target${idFrom.charAt(0).toUpperCase()}` +
+        `${idFrom.slice(1)}\` — and checked in the handler too.`,
+    );
+  }
+}
+
+/** `deal_id`, `dealId`, `Deal-ID` → `dealid`: the spellings of one id name compare equal. */
+function idSpelling(name: string): string {
+  return name.toLowerCase().replace(/[_-]/g, '');
 }
 
 function assertPatchInputs(operations: Record<string, unknown>): void {
