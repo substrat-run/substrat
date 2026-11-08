@@ -63,11 +63,11 @@ these.
 | Cold start of the graph release, first call | 2.1–2.4 s (2 297, 2 147 and 2 415 ms) |
 | Warm call | 6–8 ms |
 | Memory of the graph release | Python heap 43.6 MB (43 581 440 bytes), a lower bound. No other value |
-| Cost per loaded isolate per day, as billed | No value |
+| Cost per loaded isolate per day, as billed | $0: the day's usage bills 50 Dynamic Workers at $0, inside the 1 000 a month included |
 
 **Steps 6 and 7 were not read.** The namespace and scripts were removed before anyone read the
-dashboard, so there is no `exceededMemory`, `exceededCpu` or error rate, and no billed figure.
-Those rows stay unmeasured until the runbook is run again and read before step 8. The runs used 20
+dashboard, so there is no `exceededMemory`, `exceededCpu` or error rate. The rerun below reads them.
+The billed figure came later, from the account's usage for the day. The runs used 20
 loader ids each, 60 in all. At the listed $0.002 per Dynamic Worker per day that is at most about
 $0.12, which is arithmetic and not a bill.
 
@@ -103,7 +103,7 @@ release. The probe gained a control that loads the driver under ids x, x and y i
 | Warm call | 3–6 ms |
 | Memory of the graph release | Python heap 43.6 MB in every run |
 | `exceededMemory` / `exceededCpu` | None. Workers analytics for the account over the runs show only `success` and `clientDisconnected` outcomes, and 0 errors |
-| Cost, as billed | Read from the day's usage once it shows |
+| Cost, as billed | Not yet billed when this was written. The runs were the same size as those of 2026-11-04, which billed $0 |
 
 So the id is what separates two loaded isolates: inside one object nothing else differed. Two
 objects sharing an id still came apart, most likely because they ran on different machines, so the
