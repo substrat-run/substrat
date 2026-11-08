@@ -249,6 +249,13 @@ from the first approval in production on: avoid reaping across a deploy that cha
   one reap. Refusing a bind once the reap has been claimed would close it, and it is outside this step.
 - **A large backup of a fenced scope.** It cannot be restored into another scope (above). That gap is
   D-69's: its restore route reads a backup under the scope it lands in.
+- **A directory restored from before a mark.** The break-glass `POST /directory/restore` puts the directory
+  back to a copy's moment, and the store objects keep their own. A copy taken before a mark brings the scope
+  back without `stores_fenced_at`, over objects that are fenced, so once it is unarchived its stores answer
+  every call with 410 (`store_fenced`). That is the restore's nature more than the fence's: the same copy
+  brings back a reaped scope over storage already deleted, and the fence makes the store half fail loudly
+  where it used to answer empty. Reconciling the column from the objects would mean reading every store
+  object, and it is not built here.
 - **The cost of a tombstone.** One small row in one object per deleted binding, kept until the store
   script goes. It holds nothing of the tenant's, and the object's name is not in it. A fence reaches an
   object nothing ever wrote, and creates it to hold the mark.

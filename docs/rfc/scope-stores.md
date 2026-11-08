@@ -160,6 +160,7 @@ Reserved names, only the platform may send:
 | `substrat.discard-stage` | `{ stageId }` | `{ discarded }` | drop a stage, and say whether the object held it |
 | `substrat.size` | none | `{ bytes }` | the object's whole storage. The spike read `databaseSize` |
 | `substrat.wipe` | none | `{}` | remove all of it |
+| `substrat.fence` | none | `{}` | a deletion's wipe (D-71). The store entry answers it and the driver never sees it: the entry writes a tombstone, waits out the calls inside the driver, hands the driver `substrat.wipe`, and from then on refuses every `caller` call and every platform `stage-page` and `commit-stage` (§10.5) |
 | `substrat.erase` | `{ subjectId }` | `{ erased }` | the driver's answer to subject erasure (#2068, D-45) |
 | `substrat.selfcheck` | none | `{ operations }` | build the driver's whole runtime, then name the catalog it serves (#2814) |
 
