@@ -13,27 +13,38 @@ export interface UsageDay {
 }
 
 export interface UsageSeries { key: string; label: string }
+/** A vertical's registry id (`<owner>/<slug>`) → the name its page shows. */
+export type VerticalNames = ReadonlyMap<string, string>;
 /** One bar. `value` null is a day with no reading, drawn as a gap and never as zero. */
 export interface UsageBar { day: string; value: number | null; segments: { key: string; value: number }[] }
 export interface UsageChartData { series: UsageSeries[]; bars: UsageBar[]; peak: number }
 
-/** How many apps the legend names before the rest fold into Other. */
-const NAMED_APPS = 4;
-export const ALL_APPS = 'all';
+/** How many verticals the legend names before the rest fold into Other. */
+const NAMED_VERTICALS = 4;
+export const ALL_VERTICALS = 'all';
 const OTHER = 'other';
 const TEAM = 'team';
 const keyOf = (vertical: string | null) => vertical ?? 'unresolved';
 
+/**
+ * What a usage row names a vertical by. The meters key rows by registry id, whose owner prefix
+ * is a workspace id nobody reads; one the catalog no longer lists keeps its bare slug.
+ */
+export function verticalLabel(names: VerticalNames, vertical: string | null): string {
+  if (vertical === null) return 'Unresolved vertical';
+  return names.get(vertical) ?? vertical.slice(vertical.lastIndexOf('/') + 1);
+}
+
 const totalOf = (day: UsageDay, metric: UsageMetric) => metric === 'requests' ? day.requests : metric === 'tokens' ? day.tokens : day.storedBytes;
 const sharesOf = (day: UsageDay, metric: UsageMetric) => metric === 'requests' ? day.requestsByVertical : metric === 'tokens' ? day.tokensByVertical : [];
 
-/** The apps a metric names over the window, busiest first. Stored data has no per-app split. */
-export function appsOf(days: readonly UsageDay[], metric: UsageMetric): UsageSeries[] {
+/** The verticals a metric names over the window, busiest first. Stored data has no per-vertical split. */
+export function verticalsOf(days: readonly UsageDay[], metric: UsageMetric, names: VerticalNames): UsageSeries[] {
   const totals = new Map<string, { label: string; value: number }>();
   for (const day of days) {
     for (const share of sharesOf(day, metric)) {
       const key = keyOf(share.vertical);
-      const row = totals.get(key) ?? { label: share.vertical ?? 'Unresolved app', value: 0 };
+      const row = totals.get(key) ?? { label: verticalLabel(names, share.vertical), value: 0 };
       row.value += share.value;
       totals.set(key, row);
     }
@@ -43,12 +54,12 @@ export function appsOf(days: readonly UsageDay[], metric: UsageMetric): UsageSer
 
 /**
  * Shape the days for the chart. What a day's shares leave of its total goes to Other: a long
- * label or an app past the cap is in the total and in no share, and a bar must reach its total.
+ * label or a vertical past the cap is in the total and in no share, and a bar must reach its total.
  */
-export function usageChart(days: readonly UsageDay[], metric: UsageMetric, app: string): UsageChartData {
-  const apps = appsOf(days, metric);
-  const narrowed = app !== ALL_APPS && metric !== 'stored';
-  const named = narrowed ? apps.filter((row) => row.key === app) : apps.slice(0, NAMED_APPS);
+export function usageChart(days: readonly UsageDay[], metric: UsageMetric, vertical: string, names: VerticalNames): UsageChartData {
+  const verticals = verticalsOf(days, metric, names);
+  const narrowed = vertical !== ALL_VERTICALS && metric !== 'stored';
+  const named = narrowed ? verticals.filter((row) => row.key === vertical) : verticals.slice(0, NAMED_VERTICALS);
   const namedKeys = new Set(named.map((row) => row.key));
   let hasOther = false;
   const bars = days.map((day): UsageBar => {

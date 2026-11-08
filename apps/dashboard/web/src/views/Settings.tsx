@@ -5,9 +5,10 @@ import { card } from '../components/ui';
 import { isApiError, teamApi } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { APP_SHA, APP_VERSION } from '../lib/version';
+import { Entitlements } from './Entitlements';
 
-/** Account settings: session identity, stored team details, and organization deletion. */
-export function Settings({ org, teamId, slug, name, email }: { org: string; teamId: string; slug: string; name?: string | null; email?: string | null }) {
+/** Account settings: session identity, stored team details, entitlements, and organization deletion. */
+export function Settings({ org, teamId, slug, name, email, isTeamAdmin }: { org: string; teamId: string; slug: string; name?: string | null; email?: string | null; isTeamAdmin: boolean }) {
   const [tab, setTab] = useState('organization');
   return (
     <Page maxWidth={720}>
@@ -16,6 +17,7 @@ export function Settings({ org, teamId, slug, name, email }: { org: string; team
         tabs={[
           { value: 'profile', label: 'Profile' },
           { value: 'organization', label: 'Organization' },
+          { value: 'entitlements', label: 'Entitlements' },
           { value: 'about', label: 'About' },
           { value: 'danger', label: 'Danger zone' },
         ]}
@@ -47,6 +49,13 @@ export function Settings({ org, teamId, slug, name, email }: { org: string; team
           <div><div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Your name</div><div style={{ paddingTop: 6, color: 'var(--text-primary)' }}>{name || 'Not provided'}</div></div>
           <div><div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Email</div><div style={{ paddingTop: 6, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{email || 'Not provided'}</div></div>
         </div>
+      )}
+
+      {tab === 'entitlements' && (
+        <>
+          <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>The engines and verticals this team may install and run, as the platform granted them.</div>
+          <Entitlements teamId={teamId} canRead={isTeamAdmin} />
+        </>
       )}
 
       {tab === 'about' && <AboutCard />}

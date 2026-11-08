@@ -34,7 +34,7 @@ afterEach(() => {
   container.remove();
 });
 
-const render = async (canRead = true) => act(async () => { root.render(<Billing teamId="team-a" canRead={canRead} />); });
+const render = async (canRead = true, names: ReadonlyMap<string, string> = new Map()) => act(async () => { root.render(<Billing teamId="team-a" canRead={canRead} names={names} />); });
 
 const modelUsagePayload = (models: object) => ({
   readAt: '2026-10-29T00:00:00Z',
@@ -44,39 +44,38 @@ const modelUsagePayload = (models: object) => ({
   models,
 });
 
-it('shows unavailable when the entitlement read fails, with no sample plan or invoice', async () => {
-  read.mockRejectedValue(new Error('unavailable'));
-  await render();
-  expect(container.textContent).toContain('Entitlements are unavailable');
-  expect(container.textContent).not.toMatch(/Documents engine|€480|Paid|VISA/);
-});
-
-it('asks a member to contact an owner or admin without reading grants', async () => {
+it('asks a member to contact an owner or admin without reading usage', async () => {
   await render(false);
-  expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
-  expect(read).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('Ask a team owner or admin to view usage.');
   expect(readUsage).not.toHaveBeenCalled();
 });
 
-it('shows the owner/admin refusal for a handwritten API 403', async () => {
-  read.mockRejectedValue(new ApiError(403, 'Forbidden', null));
+it('reads no entitlements: they are Settings, not usage', async () => {
   await render();
-  expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
-  expect(container.textContent).not.toContain('Entitlements are unavailable');
+  expect(read).not.toHaveBeenCalled();
+  expect(container.textContent).not.toContain('Entitlements');
 });
 
-it('shows exactly the granted keys and supplied quota or expiry', async () => {
-  read.mockResolvedValue([{ key: 'app', quota: 7 }, { key: 'reports', expiresAt: '2027-01-01T00:00:00Z' }]);
-  await render();
-  expect(container.textContent).toContain('app');
-  expect(container.textContent).toContain('Quota: 7');
-  expect(container.textContent).toContain('reports');
-  expect(container.textContent).toContain('2027-01-01');
-  expect(container.textContent).not.toMatch(/Documents engine|€480|Paid|VISA/);
+it('names each vertical as its page does, and a vertical the catalog does not list by its bare slug', async () => {
+  const usage = await readUsage();
+  const day = (date: string) => ({
+    day: date, requests: 30, requestsByVertical: [{ vertical: 'acme-x1/crm', value: 20 }, { vertical: 'acme-x1/gone', value: 10 }],
+    modelCalls: 0, tokens: 0, tokensByVertical: [], storedBytes: null, storedScopes: 0,
+  });
+  readUsage.mockResolvedValue({
+    ...usage,
+    requests: { ...usage.requests, state: 'complete', requests: 30, coveredDays: 1, byVertical: [{ vertical: 'acme-x1/crm', requests: 20 }, { vertical: 'acme-x1/gone', requests: 10 }] },
+    days: [day('2026-10-28')],
+  });
+  await render(true, new Map([['acme-x1/crm', 'Acme CRM']]));
+  const text = container.textContent ?? '';
+  expect(text).toContain('All verticals');
+  expect(text.slice(text.indexOf('Router requests'))).toContain('Acme CRM: at least 20');
+  expect(text).toContain('gone: at least 10');
+  expect(text).not.toContain('acme-x1/');
 });
 
 it('distinguishes unavailable sources from no model usage, without displaying zeros', async () => {
-  read.mockResolvedValue([]);
   await render();
   expect(container.textContent).toContain('not available');
   expect(container.textContent).toContain('No model usage recorded');
@@ -84,7 +83,6 @@ it('distinguishes unavailable sources from no model usage, without displaying ze
 });
 
 it('shows metered usage coverage, estimate and freshness without prices', async () => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z',
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
@@ -110,7 +108,6 @@ it.each([
   { name: 'all reported', calls: 2, reportedCalls: 2, inputTokens: 20, outputTokens: 10, tokens: '20 input', expectedLabel: '2 of 2 calls reported usage', exact: true },
   { name: 'none reported', calls: 1, reportedCalls: 0, inputTokens: null, outputTokens: null, tokens: 'Tokens not reported', expectedLabel: '0 of 1 calls reported usage', exact: false },
 ])('shows $name model token coverage without turning unreported calls into zeroes', async ({ calls, reportedCalls, inputTokens, outputTokens, tokens, expectedLabel, exact }) => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue(modelUsagePayload({
     state: 'complete', calls, reportedCalls, inputTokens, outputTokens,
     estimated: false, lowerBound: false, truncatedReason: null,
@@ -131,7 +128,6 @@ it.each([
 });
 
 it('labels new plane vocabulary as unknown and treats its figures as estimates and lower bounds', async () => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z',
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
@@ -152,7 +148,6 @@ it('labels new plane vocabulary as unknown and treats its figures as estimates a
 });
 
 it('shows numeric figures as lower bounds when coverage is incomplete or a new truncation reason is present', async () => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z',
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
@@ -192,7 +187,6 @@ for (const field of Object.keys(exactSignals) as (keyof typeof exactSignals)[]) 
 }
 
 it('shows whitespace truncation reasons as limited lower bounds', async () => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z', retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: ' ', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
@@ -209,7 +203,6 @@ it('shows whitespace truncation reasons as limited lower bounds', async () => {
 });
 
 it.each([null, 0] as const)('treats absent, null, or numeric estimate metadata (%s) as estimated lower bounds', async (estimate) => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z',
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
@@ -227,22 +220,18 @@ it.each([null, 0] as const)('treats absent, null, or numeric estimate metadata (
 });
 
 it('shows usage unavailable on read failure and recognizes a handwritten 403 refusal', async () => {
-  read.mockResolvedValue([]);
   readUsage.mockRejectedValue(new Error('offline'));
   await render();
   expect(container.textContent).toContain('Usage is unavailable');
   act(() => root.unmount());
   root = createRoot(container);
-  read.mockResolvedValue([{ key: 'private-grant' }]);
   readUsage.mockRejectedValue(new ApiError(403, 'Forbidden', null));
   await render();
-  expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
+  expect(container.textContent).toContain('Ask a team owner or admin to view usage.');
   expect(container.textContent).not.toContain('Usage is unavailable');
-  expect(container.textContent).not.toContain('private-grant');
 });
 
 it('draws a day with no reading as a gap, and never as a zero-height bar', async () => {
-  read.mockResolvedValue([]);
   const day = (date: string, requests: number | null) => ({
     day: date, requests, requestsByVertical: requests === null ? [] : [{ vertical: 'app', value: requests }],
     modelCalls: 0, tokens: 0, tokensByVertical: [], storedBytes: null, storedScopes: 0,
@@ -257,7 +246,6 @@ it('draws a day with no reading as a gap, and never as a zero-height bar', async
 });
 
 it('shows build time in whole minutes, and says what it leaves out', async () => {
-  read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     ...modelUsagePayload({ state: 'empty', calls: null, reportedCalls: 0, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false }),
     builds: { state: 'complete', builds: 2, ms: 90_001, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', builds: 2, ms: 90_001 }], breakdownTruncated: false },

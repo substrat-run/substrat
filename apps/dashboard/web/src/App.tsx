@@ -905,6 +905,8 @@ export function App() {
     for (const entry of catalog) if (entry.provides?.includes('oidc-issuer')) slugs.add(entry.slug);
     return slugs;
   }, [catalog]);
+  // Billing's meters key rows by registry id; the catalog holds the team's own and listed names.
+  const verticalNames = useMemo(() => new Map(catalog.map((entry) => [entry.slug, entry.name])), [catalog]);
 
   // Session mode: checking → interstitial; signed out → redirect to the IdP (only a
   // failed round-trip renders the retry card); signed in but teamless → onboarding
@@ -1068,7 +1070,7 @@ export function App() {
       ) : route.section === 'integrations' ? (
         <Integrations teamId={me.currentTeamId} />
       ) : route.section === 'billing' ? (
-        <Billing teamId={me.currentTeamId} canRead={isTeamAdmin} />
+        <Billing teamId={me.currentTeamId} canRead={isTeamAdmin} names={verticalNames} />
       ) : route.section === 'audit' ? (
         <AuditLog teamId={me.currentTeamId} apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} personName={personName} />
       ) : route.section === 'observability' ? (
@@ -1086,7 +1088,7 @@ export function App() {
           canManageFindings={canManageFindings(members, me.principal)}
         />
       ) : route.section === 'settings' ? (
-        <Settings org={org} teamId={me.currentTeamId} slug={currentTeam?.slug ?? ''} name={me.name} email={me.email} />
+        <Settings org={org} teamId={me.currentTeamId} slug={currentTeam?.slug ?? ''} name={me.name} email={me.email} isTeamAdmin={isTeamAdmin} />
       ) : null}
 
       {palette && (

@@ -2,7 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { Segmented } from '@substrat-run/ui/wa';
 import { LINE_COLORS } from './TrafficChart';
 import { card } from './ui';
-import { ALL_APPS, appsOf, shortBytes, shortNumber, usageChart, type UsageDay, type UsageMetric } from '../lib/usage-days';
+import { ALL_VERTICALS, shortBytes, shortNumber, usageChart, verticalsOf, type UsageDay, type UsageMetric, type VerticalNames } from '../lib/usage-days';
 
 const HEIGHT = 220;
 const METRICS: { value: UsageMetric; label: string }[] = [
@@ -13,13 +13,13 @@ const METRICS: { value: UsageMetric; label: string }[] = [
 const GAP = 'repeating-linear-gradient(135deg, var(--border-default) 0 3px, transparent 3px 7px)';
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' };
 
-/** One bar per closed day, stacked by app. A day with no reading is hatched, never a zero. */
-export function UsageChart({ days }: { days: readonly UsageDay[] }) {
+/** One bar per closed day, stacked by vertical. A day with no reading is hatched, never a zero. */
+export function UsageChart({ days, names }: { days: readonly UsageDay[]; names: VerticalNames }) {
   const [metric, setMetric] = useState<UsageMetric>('requests');
-  const [picked, setPicked] = useState(ALL_APPS);
-  const apps = appsOf(days, metric);
-  const app = apps.some((row) => row.key === picked) ? picked : ALL_APPS;
-  const { series, bars, peak } = usageChart(days, metric, app);
+  const [picked, setPicked] = useState(ALL_VERTICALS);
+  const verticals = verticalsOf(days, metric, names);
+  const vertical = verticals.some((row) => row.key === picked) ? picked : ALL_VERTICALS;
+  const { series, bars, peak } = usageChart(days, metric, vertical, names);
   const colorOf = new Map(series.map((row, i) => [row.key, row.key === 'other' ? 'var(--text-tertiary)' : LINE_COLORS[i % LINE_COLORS.length]!]));
   const format = metric === 'stored' ? shortBytes : shortNumber;
   const read = bars.filter((bar) => bar.value !== null).length;
@@ -35,11 +35,11 @@ export function UsageChart({ days }: { days: readonly UsageDay[] }) {
         <h2 style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>Daily usage</h2>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <Segmented label="Meter" options={METRICS} value={metric} onChange={setMetric} />
-          {apps.length > 1 && (
+          {verticals.length > 1 && (
             <Segmented
-              label="App"
-              options={[{ value: ALL_APPS, label: 'All apps' }, ...apps.slice(0, 4).map((row) => ({ value: row.key, label: row.label }))]}
-              value={app}
+              label="Vertical"
+              options={[{ value: ALL_VERTICALS, label: 'All verticals' }, ...verticals.slice(0, 4).map((row) => ({ value: row.key, label: row.label }))]}
+              value={vertical}
               onChange={setPicked}
             />
           )}
