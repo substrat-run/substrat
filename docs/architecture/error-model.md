@@ -397,6 +397,15 @@ already answer their expected refusal as a value.
      purpose: `/token`'s RFC 6749 §5.2 body, the §4.1.2.1 redirect errors back to the install, and the HTML
      error page shown when there is nowhere safe to redirect; the BankID hop was already a problem document.
      `test/relay.test.ts` holds the media type, `code`, status and `error === detail` of each refusal.
+   - **`apps/vertical-egress` — built.** The egress worker's own refusals answer `application/problem+json`.
+     An undeclared host and a preview or fork's subrequest are `forbidden`. Their `error` keeps the
+     `outbound refused` label the body always carried, beside `detail`, `host` and `vertical`. A peer call's
+     refusals are `unavailable` (no `PEER_CALLS` binding), `forbidden` (no caller identity) and
+     `validation_failed` (a body that does not parse). The router's peer refusal is relayed by its code only
+     where the catalog answers that code at the router's status, so a target's own refusal is `about:blank`.
+     Statuses, sentences and the `x-substrat-egress: refused` mark are unchanged. A store call keeps the
+     strict `storeResponse` envelope, which the scope host reads into a `StoreError`. `test/worker.test.ts`
+     and `test/peer-call.test.ts` hold the documents.
    - **The repo-wide gate — built.** `pnpm lint:problem-refusals` (`tools/problem-refusals.mjs`, in CI's checks
      job) reads every route file under `apps/`, `packages/`, `demos/`, `connectors/` and `engines/`. A response built
      with a literal status of 400 or more must serve `application/problem+json` in that same call, which is what
@@ -406,13 +415,12 @@ already answer their expected refusal as a value.
      OAuth's `/token`, MCP's JSON-RPC errors, the store driver wire, a third-party API's stand-in,
      and pages written for a person. `pending` is a site not converted yet, grouped by owner area. A count that no
      longer matches is red in either direction, so the PR that converts a site deletes its entry.
-   - **Still open, surface by surface:** the `pending` entries of that list: the egress worker (in flight),
-     and the router's text/plain hostname refusals, the scaffold template, the demos and two small
-     vertical-host and vertical-auth routes, which no PR converts yet. `dev-issuer` is done where it applies:
-     `/dev/token` answers `application/problem+json`, and so does `/userinfo`'s refusal of a missing or bad
-     bearer (#2844), with the OAuth error in `WWW-Authenticate`. Its `/authorize` and `/token` stay OAuth 2.0
-     endpoints answering by RFC 6749 (JSON errors or a redirect), which the clients of the protocol parse, so
-     they are out of scope.
+   - **Still open, surface by surface:** the `pending` entries of that list: the router's text/plain hostname
+     refusals, the scaffold template, the demos and two small vertical-host and vertical-auth routes, which no
+     PR converts yet. `dev-issuer` is done where it applies: `/dev/token` answers `application/problem+json`,
+     and so does `/userinfo`'s refusal of a missing or bad bearer (#2844), with the OAuth error in
+     `WWW-Authenticate`. Its `/authorize` and `/token` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON
+     errors or a redirect), which the clients of the protocol parse, so they are out of scope.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
      `problemDetail` (#971) and every surface answers `detail`. The members carried beside
      `error` are either declared per code in `PROBLEM_EXTENSIONS` or retired by then.

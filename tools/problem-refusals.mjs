@@ -281,15 +281,6 @@ export const ALLOWED = [
     reason: 'a static file the inlined app does not have: a 404 for a browser fetching an asset',
   },
 
-  // ── pending: another open #113 PR converts these ───────────────────────────────────────────
-  {
-    area: 'vertical egress',
-    path: 'apps/vertical-egress/src/worker.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: 'the outbound refusal answers `{ error, host, vertical, detail }` as application/json',
-  },
-
   // ── pending: not converted yet, and in no open PR ──────────────────────────────────────────
   {
     area: 'router',

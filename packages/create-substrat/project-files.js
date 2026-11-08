@@ -82,6 +82,14 @@ export default defineConfig({
  */
 export const TEST_RUNNER = { vitest: '^5.0.0', '@vitest/ui': '^5.0.0' };
 
+/**
+ * The pnpm a scaffold installs with: the one the platform's build runs, which is this workspace's
+ * own (`tools/template-sync.mjs` holds the two together). With no pin a project took whatever pnpm
+ * was installed, and pnpm 11 refuses one: it stops on better-sqlite3's ignored build, and holds
+ * back any release younger than its minimum age, which every fresh `@substrat-run` release is.
+ */
+export const PACKAGE_MANAGER = 'pnpm@10.10.0';
+
 /** The package.json of a new project. */
 export function packageJson(name) {
   return `${JSON.stringify(
@@ -90,6 +98,7 @@ export function packageJson(name) {
       version: '0.0.0',
       private: true,
       type: 'module',
+      packageManager: PACKAGE_MANAGER,
       // What `substrat push` reads: the permission surface (the registry the
       // promotion checkpoint diffs) and the runtime needs the deploy config is
       // derived from — you never author wrangler config (src/worker.ts is the
@@ -161,8 +170,8 @@ export function packageJson(name) {
         ...TEST_RUNNER,
       },
       // Do NOT add `zod` here — import `z` from `@substrat-run/contracts` (AGENTS.md, rule 10).
-      // better-sqlite3 >=13 ships prebuilt binaries for every supported platform and
-      // declares no install script, so it needs no build allowlist entry.
+      // better-sqlite3 >=13 ships prebuilt binaries for every supported platform, so its build
+      // stays ignored and needs no allowlist entry: pnpm 10 names it as ignored, and it loads.
     },
     null,
     2,
