@@ -286,7 +286,12 @@ async function appUnserved(ws: Workspace, projectDir: string): Promise<string | 
 	} catch {
 		return null;
 	}
-	if (!needs || needs.assets) return null;
+	if (!needs) return null;
+	const assets = needs.assets as { directory?: unknown } | undefined;
+	if (assets !== undefined && (typeof assets !== 'object' || assets === null || typeof assets.directory !== 'string' || !assets.directory)) {
+		return 'substrat.runtimeNeeds.assets in package.json is not what push reads, an object naming the built directory, so the push is refused. Write it back as "assets": { "directory": "app/dist", "notFoundHandling": "single-page-application", "runWorkerFirst": ["/api/*", "/internal/*"] }.';
+	}
+	if (assets) return null;
 	if (!(await ws.exists(`${projectDir}/app/index.html`))) return null;
 	return 'app/ has a UI that a push would not serve: substrat push refuses it, since the deployed vertical would answer the API and 404 on /. Declare it under substrat.runtimeNeeds in package.json: "build": "pnpm --dir app build", and "assets": { "directory": "app/dist", "notFoundHandling": "single-page-application", "runWorkerFirst": ["/api/*", "/internal/*"] }.';
 }

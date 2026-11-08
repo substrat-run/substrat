@@ -162,6 +162,7 @@ describe('standaloneGates — when each gate applies', () => {
 		['app-events', 'app/src/screens.ts', 'html`<sub-entity-table .rows=${r} @row-click=${(e) => open(e)}></sub-entity-table>`', 'html`<sub-entity-table row-click @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'sub-row-click'],
 		['app-events', 'app/src/screens.ts', 'html`<sub-entity-table @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'html`<sub-entity-table row-click @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'without the row-click'],
 		['hosted-assets', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts","assets":{"directory":"app/dist"}}}}', 'would not serve'],
+		['hosted-assets', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts","assets":"app/dist"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts","assets":{"directory":"app/dist"}}}}', 'not what push reads'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/gone.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'src/gone.ts'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'no wrangler'],
 		['hosted-entry', 'package.json', '{"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'nothing to build'],
