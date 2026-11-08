@@ -116,6 +116,10 @@ Usage, or Workers & Pages → Plans/Usage → Dynamic Workers.
 
 **Paste back** the number of Dynamic Workers created that day and the amount shown.
 
+A token that may read billing can read the same figures with
+`GET /client/v4/accounts/<account>/paygo-usage`. It returns the current billing period, one row
+per service and day, with `ConsumedQuantity` and `BilledCost`.
+
 To compare: each probe run creates about 20 distinct loader ids. Each block lists them as `"id"`.
 
 ## 8. Remove everything
