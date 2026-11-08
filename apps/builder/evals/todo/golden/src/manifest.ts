@@ -5,6 +5,7 @@ import {
   moduleManifest,
   permissionKey,
   type EntityGrantShape,
+  type EnvVarSpec,
 } from '@substrat-run/contracts';
 import { entities, operations } from '../spec/model.js';
 
@@ -21,6 +22,12 @@ export const ENTITY_GRANTS: EntityGrantShape[] = [
   { entityType: 'person', permissions: [...OWNER_GRANTS], bootstrap: true, holder: 'self' },
   { entityType: 'list', permissions: [LISTS_PERM.listContribute] },
 ];
+
+/**
+ * The per-instance settings this vertical reads: none. Declared anyway, because `substrat push`
+ * uploads it from `src/provision.ts` (`envSpec`) and the dashboard renders its Settings form from it.
+ */
+export const LISTS_ENV: EnvVarSpec[] = [];
 
 const surface = manifestOperations(operations, {
   permissions: {
@@ -39,5 +46,6 @@ export const listsManifest = moduleManifest.parse({
   events: { ...surface.events, consumes: [{ type: 'lists.person-joined', schemaVersion: 1 }] },
   ...manifestEntities(entities, {}),
   lists: listsDeclaredBy(operations, entities),
+  envSpec: LISTS_ENV,
   entitlementKey: 'shared-lists',
 });

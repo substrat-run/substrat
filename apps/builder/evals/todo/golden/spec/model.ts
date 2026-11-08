@@ -93,10 +93,11 @@ export const PERMISSIONS = ['list:create', 'list:manage', 'list:contribute'] as 
 const deleted = z.object({ id: z.string(), deleted: z.boolean() });
 
 export const operations = defineOperations(entities, PERMISSIONS)({
+  /** The address is the issuer's verified one (`ctx.verifiedEmail`), never input: sharing finds people by it. */
   'lists/join': {
     summary: 'Claim your account in this workspace',
     permission: 'list:create',
-    input: z.object({ email: z.string().email(), displayName: z.string().min(1) }),
+    input: z.object({ displayName: z.string().min(1) }),
     output: entities.person.fields,
     http: { method: 'POST', path: '/join' },
     emits: {

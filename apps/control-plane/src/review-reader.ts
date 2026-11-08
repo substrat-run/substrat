@@ -303,28 +303,31 @@ interface SecretHit {
   readonly after: 'operator' | 'comparison' | 'key';
   /** A header's value, whose whole remainder is the secret (`Authorization: token V`, `Cookie: a=b; session=V`). */
   readonly header: boolean;
-  /** Read inside a quoted name (`` `password=V`: ``), so it already sits in a string: the quotes are not read from it. */
-  readonly inName: boolean;
+  /**
+   * For a hit read inside a quoted name (`` `password=V`: ``), where that name's assignment ends. The
+   * hit sits in the name's string, so the quotes are read from there rather than from the hit.
+   */
+  readonly nameEnd: number | undefined;
 }
 
 /** Every secret-named value in `text`, earliest first. A count's whole plain value is none. */
 function secretHits(text: string): SecretHit[] {
   const hits: SecretHit[] = [];
-  const hit = (name: string, at: number, after: SecretHit['after'], inName = false): void => {
+  const hit = (name: string, at: number, after: SecretHit['after'], nameEnd?: number): void => {
     const joined = joinedName(name);
     const bare = stickyAt(BARE_VALUE, text, at)![0];
     const count = COUNT_NAME.test(joined) && !CREDENTIAL_NAME.test(joined);
     if (count && LITERAL.test(bare) && stickyAt(VALUE_END, text, at + bare.length)) return;
-    hits.push({ at, bare, after, header: HEADER_NAME.test(joined) && (after === 'operator' || stickyAt(HEADER_VALUE, text, at) !== null), inName });
+    hits.push({ at, bare, after, header: HEADER_NAME.test(joined) && (after === 'operator' || stickyAt(HEADER_VALUE, text, at) !== null), nameEnd });
   };
-  const assignment = (m: RegExpExecArray, offset: number, inName: boolean): void => {
+  const assignment = (m: RegExpExecArray, offset: number, nameEnd?: number): void => {
     const name = m[2] ?? m[3]!;
-    if (namesSecret(name)) hit(name, offset + m.index + m[0].length, KEY_OPERATOR.test(m[4]!) ? 'key' : COMPARISON.test(m[4]!) ? 'comparison' : 'operator', inName);
+    if (namesSecret(name)) hit(name, offset + m.index + m[0].length, KEY_OPERATOR.test(m[4]!) ? 'key' : COMPARISON.test(m[4]!) ? 'comparison' : 'operator', nameEnd);
   };
   for (const m of text.matchAll(ASSIGNMENT)) {
-    assignment(m, 0, false);
+    assignment(m, 0);
     // A quoted name is read inside too, as what it holds may be an assignment of its own: `` `password=V`: ``.
-    if (m[2] !== undefined) for (const inner of m[2].matchAll(ASSIGNMENT)) assignment(inner, m.index + m[1]!.length, true);
+    if (m[2] !== undefined) for (const inner of m[2].matchAll(ASSIGNMENT)) assignment(inner, m.index + m[1]!.length, m.index + m[0].length);
   }
   for (const m of text.matchAll(QUOTED_ARGUMENT)) {
     if (m[1] || namesSecret(m[3]!)) hit(m[3]!, m.index + m[0].length, 'key');
@@ -366,8 +369,13 @@ const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
  * (`` `if (token == null)` lets any caller through ``).
  */
 const CLOSER = /([)\]]*)[`"'][,.;:]?/y;
-/** What a closing quote is glued to: the end of a word, or a closing bracket (`null'`, `f(x)'`). */
-const GLUED = /[\w)\]]/;
+/**
+ * What a closing quote may be glued to, read in place at the character before it: anything but a
+ * space, an opening bracket or `=`, nor, for a double quote, the colon or comma after a
+ * double-quoted string (`null'`, `f(x)'`, `null;'`, `"a"'`, `"a":'`). After those a quote opens:
+ * `f("V")`, `cfg["a"]`, `user="V"`, `{"a":"V","b":"W"}`.
+ */
+const GLUED = /(?!(?<=")[:,](?="))[^\s([{=]/y;
 
 /**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
@@ -380,11 +388,14 @@ const GLUED = /[\w)\]]/;
  * quoted string is masked too (`password = "a" + "V"`, `token = Buffer.from("V")`). The quotes are
  * read from there, from the first value and from the start of the line, since either hit may itself
  * sit inside a string (`"password=abc" + "V"`) or after a stray quote. A hit inside a quoted name
- * starts the masking but no reading, as its name's closing quote would read as an opening one; the
- * first of each outside a name is read from instead. A quote glued to what is before it may close a
- * string where the line's reading opens one, so from the earliest hit on, the quotes are also read
- * from after each such quote. The ranges are collected and applied once, so one mask cannot use up
- * another.
+ * may start the masking but no reading from itself, as its name's closing quote would read as an
+ * opening one: the quotes are read from the first of each outside a name instead, and from where
+ * each name holding a hit ends its assignment, past which a stray quote before the name cannot
+ * mislead the reading. A quote glued to what is before it may close a string where the
+ * line's reading opens one, unless a hit's value starts there, so from the earliest hit on, the
+ * quotes are also read from after each such quote. Each read stops at a string an earlier one
+ * found, so a run of quotes is read about twice, not once per quote. The ranges are collected and
+ * applied once, so one mask cannot use up another.
  */
 function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   const hits = secretHits(text);
@@ -419,12 +430,19 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
     if (LITERAL.test(bare)) end += stickyAt(NEXT_TOKEN, text, end)?.[0].length ?? 0;
     if (end > at) ranges.push([at, end]);
   }
-  const glued = lineStrings().filter((m) => m.index >= first.at && GLUED.test(text[m.index - 1]!)).map((m) => m.index + 1);
-  const outside = (pool: SecretHit[]): number => pool.find((hit) => !hit.inName)?.at ?? 0;
-  for (const from of new Set([0, outside(stops), outside(values), ...glued])) {
+  /** Where a hit's value starts: a quote there opens it (`password="V"`). */
+  const opens = new Set(hits.map((hit) => hit.at));
+  const glued = lineStrings().filter((m) => m.index >= first.at && !opens.has(m.index) && stickyAt(GLUED, text, m.index - 1)).map((m) => m.index + 1);
+  const outside = (pool: SecretHit[]): number => pool.find((hit) => hit.nameEnd === undefined)?.at ?? 0;
+  /** Where a string read so far starts. A string depends only on where it starts, so a read that meets one goes on as an earlier read did, and stops. */
+  const read = new Set<number>();
+  for (const from of new Set([0, outside(stops), outside(values), ...hits.map((hit) => hit.nameEnd ?? 0), ...glued])) {
     for (const m of text.slice(from).matchAll(QUOTED)) {
-      const end = from + m.index + m[0].length;
-      if (end > first.at) ranges.push([Math.max(from + m.index, first.at), end]);
+      const start = from + m.index;
+      if (read.has(start)) break;
+      read.add(start);
+      const end = start + m[0].length;
+      if (end > first.at) ranges.push([Math.max(start, first.at), end]);
     }
   }
   let out = '';
