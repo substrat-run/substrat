@@ -499,20 +499,27 @@ export class AiSdkGenerator implements VerticalGenerator {
 			(t): ModelMessage => ({ role: t.role, content: t.text }),
 		);
 
-		const messages: ModelMessage[] = [
-			{
-				role: 'system',
-				content: stable,
-				...(anthropic ? { providerOptions: CACHE_PO } : {}),
-			},
-			{
-				role: 'system',
-				content: conceptCtx,
-				...(anthropic ? { providerOptions: CACHE_PO } : {}),
-			},
-			...history,
-			{ role: 'user', content: userText },
-		];
+		// Two system blocks only where each carries its own cache marker
+		// (Anthropic here, qwen at the wire). Every other dialect caches a byte
+		// prefix on its own, so one joined block costs nothing — and some hosts
+		// refuse a second system message outright (Qwen on Workers AI: "System
+		// message must be at the beginning").
+		const system: ModelMessage[] =
+			anthropic || qwenDialect
+				? [
+						{
+							role: 'system',
+							content: stable,
+							...(anthropic ? { providerOptions: CACHE_PO } : {}),
+						},
+						{
+							role: 'system',
+							content: conceptCtx,
+							...(anthropic ? { providerOptions: CACHE_PO } : {}),
+						},
+					]
+				: [{ role: 'system', content: `${stable}\n\n---\n\n${conceptCtx}` }];
+		const messages: ModelMessage[] = [...system, ...history, { role: 'user', content: userText }];
 
 		let steps = 0;
 		// Per-request usage, one entry per step — the host needs it because tier
