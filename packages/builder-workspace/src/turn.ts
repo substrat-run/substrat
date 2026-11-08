@@ -27,6 +27,7 @@ import {
 	type GateSpec,
 } from './gates.js';
 import { emitProjectModel, type ModelEmitResult } from './model.js';
+import { emitProjectMigrations } from './migrations.js';
 import type { Workspace } from './workspace.js';
 
 const BOT_NAME = 'Substrat Builder Studio';
@@ -221,6 +222,11 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// artifact. No-op until the model phase has written that file, and deterministic
 	// after it, so a turn that changed no entity leaves the artifact untouched.
 	const model = await emitProjectModel(ws, opts.verticalDir);
+	// The migrations follow the same model: appended to journal.json when an entity changed, and
+	// re-rendered into src/migrations.generated.ts, so a build never writes the model's DDL. Only
+	// from a model that emitted: the journal must never record one the model-emit gate refused.
+	const migrations =
+		model.status === 'emitted' ? await emitProjectMigrations(ws, opts.verticalDir) : { status: 'absent' as const, output: '' };
 	// Re-render PERMISSIONS.md beside it, for the same reason: the permission
 	// checkpoint is a person reading that file's diff in the turn's commit, and a
 	// generated project had no way to produce it — the renderer lives in the
@@ -234,7 +240,7 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// ONLY change is the artifact still has to commit it — an uncommitted one never
 	// reaches the snapshot the Model tab reads, and dies with the container.
 	const files =
-		model.status === 'emitted' || permissions === 'changed' ? await changedFiles(ws, opts.verticalDir) : written;
+		model.status === 'emitted' || migrations.status === 'emitted' || permissions === 'changed' ? await changedFiles(ws, opts.verticalDir) : written;
 
 	// The shared runner owns the verdict, including on direct gate rechecks.
 	// Reuse this turn's emission so it does not import the model a second time.

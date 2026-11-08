@@ -30,11 +30,14 @@ import {
 	type ModelEmitResult,
 	type ModelEmitStatus,
 } from './model.js';
+import { emitProjectMigrations } from './migrations.js';
 
 export type GateName =
 	| 'install'
 	| 'model'
 	| 'model-emit'
+	| 'migrations-emit'
+	| 'migrations-registered'
 	| 'typecheck'
 	| 'boundary-lint'
 	| 'permissions'
@@ -353,6 +356,20 @@ async function devJoinMissing(ws: Workspace, projectDir: string): Promise<string
 	return `The model declares ${join}, and the dev server (src/server.ts, src/app.ts) never runs it, so a person who signs in is not joined and every create is refused. Run it on sign-in in /api/me, with the address the issuer verified, as the todo reference's src/app.ts does.`;
 }
 
+/**
+ * The generated migrations are what the module registers: a build that keeps its own DDL beside
+ * them ships tables the journal never recorded, and the next model change cannot see them.
+ */
+async function migrationsUnregistered(ws: Workspace, projectDir: string): Promise<string | null> {
+	if (!(await ws.exists(`${projectDir}/src/migrations.generated.ts`))) return null;
+	if (await ws.exists(`${projectDir}/src/migrations.ts`)) {
+		return 'src/migrations.ts writes DDL beside src/migrations.generated.ts, which is generated from spec/model.ts after every turn. Delete src/migrations.ts and register the generated migrations: import { migrations } from \'./migrations.generated.js\'. A table that should change is a change to the model.';
+	}
+	const src = withoutComments(await readTree(ws, `${projectDir}/src`));
+	if (/from\s+['"]\.\/migrations\.generated(\.js)?['"]/.test(src)) return null;
+	return 'Nothing in src/ registers src/migrations.generated.ts, which holds the tables spec/model.ts declares. Register it as the module\'s migrations: import { migrations } from \'./migrations.generated.js\'.';
+}
+
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export function standaloneGates(projectDir: string): GateSpec[] {
@@ -516,6 +533,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: pkg,
 			note: 'no package.json yet',
 			refuse: (ws) => entryMissing(ws, projectDir),
+		},
+		{
+			name: 'migrations-registered',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/module.ts`),
+			note: 'no src/module.ts yet',
+			refuse: (ws) => migrationsUnregistered(ws, projectDir),
 		},
 		{
 			name: 'dev-join',
@@ -697,6 +721,19 @@ export async function runGates(
 			...MODEL_EMIT_GATE[model.status],
 			durationMs: Date.now() - started,
 			output: model.output,
+		};
+		results.push(result);
+		onResult?.(result);
+	}
+	// The migrations come from the same model, so they are judged only when it loaded: a model
+	// that will not emit is the model-emit gate's to report, once.
+	const migrations = model.status === 'emitted' ? await emitProjectMigrations(ws, verticalDir, { check: true }) : null;
+	if (migrations && migrations.status !== 'absent' && migrations.status !== 'unavailable') {
+		const result: GateResult = {
+			name: 'migrations-emit',
+			...(migrations.status === 'stale' ? { status: 'passed' as const, exitCode: 0 } : MODEL_EMIT_GATE[migrations.status]),
+			durationMs: 0,
+			output: migrations.output,
 		};
 		results.push(result);
 		onResult?.(result);
