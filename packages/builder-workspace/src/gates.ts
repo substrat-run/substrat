@@ -50,6 +50,7 @@ export type GateName =
 	| 'invite-email'
 	| 'app-events'
 	| 'hosted-entry'
+	| 'hosted-assets'
 	| 'hosted-join'
 	| 'migration-replay';
 
@@ -275,6 +276,27 @@ async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<strin
 }
 
 /**
+ * A project with an app that nothing deployed would serve: `substrat push` refuses it, and pushed
+ * anyway it answers the API and 404s on /. Every local gate passes, since the dev server serves the app.
+ */
+async function appUnserved(ws: Workspace, projectDir: string): Promise<string | null> {
+	let needs: { assets?: unknown } | undefined;
+	try {
+		needs = (JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as { substrat?: { runtimeNeeds?: { assets?: unknown } } })?.substrat?.runtimeNeeds;
+	} catch {
+		return null;
+	}
+	if (!needs) return null;
+	const assets = needs.assets as { directory?: unknown } | undefined;
+	if (assets !== undefined && (typeof assets !== 'object' || assets === null || typeof assets.directory !== 'string' || !assets.directory)) {
+		return 'substrat.runtimeNeeds.assets in package.json is not what push reads, an object naming the built directory, so the push is refused. Write it back as "assets": { "directory": "app/dist", "notFoundHandling": "single-page-application", "runWorkerFirst": ["/api/*", "/internal/*"] }.';
+	}
+	if (assets) return null;
+	if (!(await ws.exists(`${projectDir}/app/index.html`))) return null;
+	return 'app/ has a UI that a push would not serve: substrat push refuses it, since the deployed vertical would answer the API and 404 on /. Declare it under substrat.runtimeNeeds in package.json: "build": "pnpm --dir app build", and "assets": { "directory": "app/dist", "notFoundHandling": "single-page-application", "runWorkerFirst": ["/api/*", "/internal/*"] }.';
+}
+
+/**
  * What `substrat push` needs: a deploy config, which is `substrat.runtimeNeeds` naming an entry that
  * exists or else a hand-authored wrangler.jsonc, and the project's own wrangler, which it builds the
  * worker with and never downloads. Without them every local gate passes and nothing can be pushed.
@@ -463,6 +485,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: hasApp,
 			note: 'no app/ yet',
 			refuse: (ws) => rowClickUnheard(ws, projectDir),
+		},
+		{
+			name: 'hosted-assets',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => appUnserved(ws, projectDir),
 		},
 		{
 			name: 'hosted-entry',

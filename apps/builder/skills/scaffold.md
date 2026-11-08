@@ -44,15 +44,22 @@ Projects are standalone source repositories. Use published, pinned versions of
 `file:` or links to the platform checkout. `pnpm add --save-exact` resolves the available package version.
 Typical dependencies: `contracts`, `kernel`, `adapter-sqlite`, plus the engines composed.
 **The project files are already here.** `package.json`, `tsconfig.json`, `tsconfig.worker.json`,
-`vitest.config.ts`, `test/setup.ts`, `src/worker.ts`, `pnpm-workspace.yaml` and `app/` were laid
-down from `template` and `portal`, and installed. Do not copy or read them from a reference.
-`src/worker.ts` is the deployed entry, and `workerDoor` in it signs people in. It imports only
-`MODULES`, `OWNER_ROLE_KEY`, `ROLES`, `permissions` and `envSpec` from `src/provision.ts`, and
-`mountApi` from `src/routes.ts`, so export those and leave the worker as it is, except to name
-your join in it. Never delete it: it is what `substrat push` deploys. `pnpm typecheck` compiles
-it. Edit `package.json`: the name and `substrat` block, and drop the engines you do not use, but
-keep `wrangler`, which the push builds with. Keep its versions: never look a version up or write
-one from memory.
+`vitest.config.ts`, `test/setup.ts`, `src/worker.ts`, `src/routes.ts`, `pnpm-workspace.yaml` and
+`app/` were laid down from `template` and `portal`, and installed. Do not copy or read them from a
+reference. `src/routes.ts` exports `mountApi`, which mounts every operation `spec/model.ts`
+declares and `POST /api/invoke`, which the app calls: keep it as it is.
+`src/worker.ts` is the deployed entry, and `workerDoor` in it signs people in. It already runs
+the model's join when that takes the person's display name or nothing; name any other join in its
+options yourself. It imports only `MODULES`, `OWNER_ROLE_KEY`, `ROLES`,
+`permissions` and `envSpec` from `src/provision.ts`, and `mountApi` from `src/routes.ts`, so
+export those and leave the worker as it is. Never delete it: it is what `substrat push` deploys.
+`pnpm typecheck` compiles it. Edit `package.json`: the name and `substrat` block, and drop the
+engines you do not use, but keep `wrangler`, which the push builds with, and keep
+`"sendsEmail": true` under `substrat` whenever `src/` calls `requestEmail` (it is already set when
+the concept invites by email), and keep `runtimeNeeds.build` and `runtimeNeeds.assets`: they are
+what serves `app/` once deployed. Keep its versions: never look a version up or write one from memory.
+The dev server, `src/server.ts`, listens on `process.env.PORT ?? 8891`, the port
+`app/vite.config.ts` proxies to; the todo reference's own port is the demo's, not yours.
 
 Declare the vertical: `"substrat": { "slug": "<slug>", "name": "<Name>", "permissions":
 "src/provision.ts" }` — the file exporting `MODULES` and `ROLES`. The studio renders

@@ -74,6 +74,41 @@ describe('layProject', () => {
 		expect(project.ran).toEqual([]);
 	});
 
+	it('settles the routes, the hosted join and the email flag from what the earlier stages decided', async () => {
+		const golden = (f: string) => readFileSync(fileURLToPath(new URL(`../evals/todo/golden/${f}`, import.meta.url)), 'utf8');
+		const tpl = template();
+		await tpl.writeFile('src/worker.ts', 'const door = workerDoor<Env>({\n  nodeFor,\n});');
+		await tpl.writeFile('package.json', '{ "name": "template", "substrat": { "runtimeNeeds": { "entry": "src/worker.ts" } } }');
+		const project = memory({ 'spec/model.ts': golden('spec/model.ts'), 'spec/concept.md': golden('spec/concept.md') });
+		await layProject(project.ws, { template: tpl, portal: portal() });
+		expect(project.store.get('src/routes.ts')).toContain("app.post('/api/invoke'");
+		expect(project.store.get('src/worker.ts')).toContain("join: (scope, who) => scope.invoke('lists/join', { displayName: who.display }),\n  nodeFor,");
+		expect(JSON.parse(project.store.get('package.json')!).substrat).toEqual({ runtimeNeeds: { entry: 'src/worker.ts' }, sendsEmail: true });
+
+		// With an app laid down, push needs it built and served.
+		const withApp = memory({ 'spec/model.ts': golden('spec/model.ts') });
+		const tpl3 = template();
+		await tpl3.writeFile('package.json', '{ "name": "template", "substrat": { "runtimeNeeds": { "entry": "src/worker.ts" } } }');
+		await layProject(withApp.ws, { template: tpl3, portal: memory({ 'package.json': '{}', 'index.html': '<div id="app"></div>' }).ws });
+		expect(JSON.parse(withApp.store.get('package.json')!).substrat.runtimeNeeds).toEqual({
+			entry: 'src/worker.ts',
+			build: 'pnpm --dir app build',
+			assets: { directory: 'app/dist', notFoundHandling: 'single-page-application', runWorkerFirst: ['/api/*', '/internal/*'] },
+		});
+
+		const bare = memory({ 'spec/model.ts': "export const operations = defineOperations(e, P)({ 'lists/join': { input: z.object({ email }) } });" });
+		await layProject(bare.ws, { template: template(), portal: portal() });
+		expect(bare.store.get('src/worker.ts')).not.toContain('join:');
+		expect(JSON.parse(bare.store.get('package.json')!).substrat).toBeUndefined();
+
+		const named = memory({ 'spec/model.ts': "export const todoOperations = defineOperations(e, P)({ 'todo/join': { input: z.object({}), output } });" });
+		const tpl2 = template();
+		await tpl2.writeFile('src/worker.ts', 'const door = workerDoor<Env>({\n  nodeFor,\n});');
+		await layProject(named.ws, { template: tpl2, portal: portal() });
+		expect(named.store.get('src/routes.ts')).toContain("import { todoOperations as operations } from '../spec/model.js';");
+		expect(named.store.get('src/worker.ts')).toContain("join: (scope) => scope.invoke('todo/join', {}),");
+	});
+
 	it('is laid on the hosted path too, before a scaffold pass, for a fresh studio project', () => {
 		const agent = readFileSync(fileURLToPath(new URL('../src/agent.ts', import.meta.url)), 'utf8');
 		expect(agent).toMatch(/if \(phase === 'scaffold' && entry\.directory === '\.'\) \{[\s\S]{0,400}?await layProject\(projectWs, references\)/);
