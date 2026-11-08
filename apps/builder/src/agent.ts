@@ -617,7 +617,9 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (phase === 'scaffold' && entry.directory === '.') {
 					const references = openReferences((dir, id) => new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${dir}`, id }));
 					const laid = await layProject(projectWs, references).catch((err: unknown) => {
-						record?.note('project-lay-failed', err instanceof Error ? err.message : String(err));
+						// The cause to the server log, as every other failure here: problem.ts is the one door.
+						console.error('builder.lay-project.failed', { project: entry.id }, err);
+						record?.note('project-lay-failed', 'the project files were not laid down; the install gate runs next');
 						return false;
 					});
 					if (laid) {
