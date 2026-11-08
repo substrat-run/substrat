@@ -181,7 +181,7 @@ import type {
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
 import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, MailSender, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
-import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
+import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, storesFencedRefusal, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
 import {
@@ -1934,19 +1934,58 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * `substrat.wipe` on each declared store, resolved now and called later: a reap resolves its
-   * stores, which can refuse (503), before it unroutes the scope, and wipes after (#2285).
+   * `substrat.fence` on each declared store (D-71), checked now and called later: a reap resolves its
+   * stores, which can refuse (503), before it unroutes the scope, and fences them after (#2285).
+   *
+   * The stores are read again when it is called, once the router has stopped serving the scope. Only a
+   * request routed by hostname carries a store list (a peer dispatch carries none), and a version's
+   * bindings are recorded with its row, so whatever a request still running can name was recorded before
+   * that read. An earlier read could miss a binding a version published in between, and a call to it would
+   * recreate an object nothing fenced.
    */
-  const platformStoresWipe = async (c: ReqCtx, scope: Scope): Promise<() => Promise<void>> => {
-    const reach = await platformStoresOf(c, scope);
+  const platformStoresFence = async (
+    c: ReqCtx,
+    scope: Scope,
+    /** The scope's row outlives this fence, so the directory has to say so first (D-71). A deleted row has nothing to say it on. */
+    row: { outlives: boolean; whileTenantDeleting?: boolean } = { outlives: false },
+  ): Promise<() => Promise<void>> => {
+    await platformStoresOf(c, scope);
     return async () => {
+      const reach = await platformStoresOf(c, scope);
       if (!reach) return;
-      await reach.caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
+      if (row.outlives) {
+        await c.var.admin.markScopeStoresFenced(c.get('actor'), scope.tenantId, scope.id,
+          row.whileTenantDeleting ? { whileTenantDeleting: true } : {});
+      }
+      await reach.caller.fenceStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
     };
   };
 
-  /** `substrat.wipe` on each declared store, before the scope's own bytes go. */
-  const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => (await platformStoresWipe(c, scope))();
+  /**
+   * D-71: a reap began fencing this scope's stores. Nothing is restored into it, and nothing reads them
+   * for a copy: a fenced store answers a read with what the wipe left, so a backup, a fork or a pull of
+   * it would hold the stores empty and look whole.
+   */
+  const refuseStoresFenced = async (c: ReqCtx, scope: Scope): Promise<ControlPlaneError | undefined> =>
+    (await c.var.admin.scopeStoresFencedAt(c.get('actor'), scope.tenantId, scope.id)) === null
+      ? undefined
+      : new ControlPlaneError(409, storesFencedRefusal(scope.id));
+
+  /**
+   * A reap asked again on a scope an earlier try of it marked: a backup now would hold its stores
+   * wiped, and would stand as the reap's recorded copy in place of the one taken before the mark.
+   */
+  const refuseBackupOfFenced = async (c: ReqCtx, scope: Scope): Promise<ControlPlaneError | undefined> => {
+    const at = await c.var.admin.scopeStoresFencedAt(c.get('actor'), scope.tenantId, scope.id);
+    return at === null
+      ? undefined
+      : new ControlPlaneError(
+        409,
+        `scope ${scope.id} had its stores fenced at ${at} by an earlier try of this reap, so a backup now would hold them wiped. ` +
+          `The backup that try took, if it took one, is listed under GET /tenants/${scope.tenantId}/scopes/${scope.id}/backups. ` +
+          'Finish the reap with backup=false.',
+      );
+  };
 
   /**
    * The stores a backup, a full pull or a fork copies: those the scope's running version declares.
@@ -1966,6 +2005,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!caller || !scope.vertical) return undefined;
     const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeDrivers);
     if (all.length === 0) return undefined;
+    const fenced = await refuseStoresFenced(c, scope);
+    if (fenced) throw fenced;
     const place = { tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical };
     const current = new Set(running.map((store) => store.binding));
     for (const dropped of all.filter((store) => !current.has(store.binding))) {
@@ -2728,9 +2769,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Art. 17 erasure — silently writing that customer's data to a bucket the reap
         // does not clear would defeat the request it was made to satisfy. Staff who are
         // retiring (not erasing) a tenant pass `backup: true` deliberately.
-        const backup = wantsBackup === true ? await backupScope(c, tenantId, scope) : null;
+        // `backup` is one flag for the whole tenant, so a scope an earlier try already marked takes no
+        // new backup (its stores may be wiped; that try's copy, if any, is in the listing) and the
+        // scopes after it are still backed up (D-71).
+        const marked = wantsBackup === true && (await c.var.admin.scopeStoresFencedAt(actor, tenantId, scope.id)) !== null;
+        const backup = wantsBackup === true && !marked ? await backupScope(c, tenantId, scope) : null;
         const vertical = await verticalForScope(c, scope);
-        await wipePlatformStores(c, scope);
+        // Archived above, so the router no longer serves it (`READ_ROUTE_SQL` wants an active scope of
+        // an active tenant), and reapScope below releases its names.
+        await (await platformStoresFence(c, scope, { outlives: true, whileTenantDeleting: true }))();
         if (vertical) await vertical.deleteScope({ tenantId, scopeId: scope.id });
         // Tenant teardown reaps every scope and releases every name by design — force past
         // the bound-hostname guard (which fences the interactive per-scope reap route below).
@@ -6654,6 +6701,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2207: the stores are resolved before anything is written, so one that cannot be named
     // refuses the snapshot rather than leave a fork row behind.
     const reach = await platformStoresOf(c, scope);
+    const fenced = reach && await refuseStoresFenced(c, scope);
+    if (fenced) throw fenced;
     // Directory row FIRST, as `provisioning` (K-31's two-phase shape, used as
     // intended): a crash between the row and the data copy leaves an inert
     // provisioning row — which, carrying provenance and an expiry, the GC sweep
@@ -6789,16 +6838,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * it was before the ledger. Without per-script resolution there is only that deployment, and
    * a ledgered copy the platform cannot reach refuses the reap.
    */
-  const reapScopeStorage = async (c: ReqCtx, scope: Scope): Promise<boolean> => {
+  const reapScopeStorage = async (c: ReqCtx, scope: Scope, row: { outlives: boolean } = { outlives: false }): Promise<boolean> => {
     const actor = c.get('actor');
     const dispatch = options.resolveVerticalRef;
     // #2285: every refusal that can be decided up front comes before anything is destroyed, the
     // unroute included: a refused reap leaves the scope routed and whole. Then unroute, wipe, delete.
     if (dispatch) await claimScopeScriptReap({ admin: c.var.admin, actor }, scope.tenantId, scope.id);
     else await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
-    const wipeStores = await platformStoresWipe(c, scope);
-    // Stop routing before the wipe: a call that lands between the wipe and the delete would
-    // recreate the store object, and nothing left could reach it.
+    const fenceStores = await platformStoresFence(c, scope, row);
+    // Stop routing first: that is the fast path, which ends new requests. A call already past the
+    // router, or signed and still on its way, is what the fence below is for (D-71). It would
+    // otherwise recreate the store object after the wipe, and nothing left could reach it.
     await unrouteScope(c.var.admin, actor, scope);
     // A preview fork reaped through this door (the console's Prune/Retire, the dashboard's
     // Retire) holds sign-in clients and an MCP registration at its team's auth servers (#1704):
@@ -6806,7 +6856,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await retireClientsOfReapedScope(previewAuthDeps(c), scope);
     // #2207: the stores first, on every path below: a routed scope's copies are reaped through
     // their scripts, and a store is per scope, not per script.
-    await wipeStores();
+    await fenceStores();
     // The deployment the scope's vertical resolves to, deleted through; a 501 there is recorded
     // as stranded storage, as `reapScopeScriptCopies` records its own.
     const viaDeployment = async (): Promise<boolean> => {
@@ -6978,14 +7028,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const held = await options.scopeBackups.get({ tenantId, scopeId, capturedAt });
     if (!held) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
+    // Such a backup restores only into its own scope (D-69). One whose scope is reaped or fenced takes
+    // none, so the answer says that rather than name a restore that refuses (D-71).
+    const restoreOnly = async (what: string) => {
+      const closed = scope.status === 'reaped' || (await c.var.admin.scopeStoresFencedAt(c.get('actor'), tenantId, scopeId)) !== null;
+      return refuseStatus(c, 413, closed
+        ? `backup ${capturedAt} of scope ${scopeId} ${what}, which only a restore into scope ${scopeId} applies, and that scope ` +
+          'is reaped or has its stores fenced. A backup like this cannot be restored into another scope yet.'
+        : `backup ${capturedAt} of scope ${scopeId} ${what}, which only a restore applies; restore it with POST /tenants/${tenantId}/scopes/${scopeId}/backups/${capturedAt}/restore`);
+    };
     if (held.entries > 1) {
-      return refuseStatus(c, 413, `backup ${capturedAt} of scope ${scopeId} is stored in ${held.entries} entries (its pages, and any writes caught while it was taken), which only a restore applies; restore it with POST /tenants/${tenantId}/scopes/${scopeId}/backups/${capturedAt}/restore`);
+      return restoreOnly(`is stored in ${held.entries} entries (its pages, and any writes caught while it was taken)`);
     }
     // A store held in one page is served inline, as `stores` always was; one held in more is a
     // restore's to apply (D-69), so the backup is refused whole rather than handed back in part.
     const paged = held.storeEntries.find((store) => store.entries > 1);
     if (paged) {
-      return refuseStatus(c, 413, `backup ${capturedAt} of scope ${scopeId} holds scope store '${paged.binding}' in ${paged.entries} pages, which only a restore applies; restore it with POST /tenants/${tenantId}/scopes/${scopeId}/backups/${capturedAt}/restore`);
+      return restoreOnly(`holds scope store '${paged.binding}' in ${paged.entries} pages`);
     }
     const pagedStores = [];
     for (const store of held.storeEntries) {
@@ -7618,6 +7677,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // would read as "the reap broke" when the scope is in fact untouched (#321's lesson).
     let backup: ScopeBackup | null = null;
     if (!(wantsBackup === false || (wantsBackup === undefined && !options.scopeBackups))) {
+      const fenced = await refuseBackupOfFenced(c, scope);
+      if (fenced) return relayRefusal(c, fenced);
       try {
         backup = await backupScope(c, tenantId, scope);
       } catch (e) {
@@ -7636,7 +7697,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try {
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
-      const storageStranded = await reapScopeStorage(c, scope);
+      const storageStranded = await reapScopeStorage(c, scope, { outlives: true });
       await c.var.admin.reapScope(actor, tenantId, scopeId, {
         ...(backup ? { backupRef: backupRefOf(backup) } : {}),
       });
@@ -7860,6 +7921,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const fenced = await refuseStoresFenced(c, scope);
+    if (fenced) return relayRefusal(c, fenced);
     const raw: unknown = await c.req.json();
     const dump = scopeDump.parse(raw);
     // #1869: where the uploaded file says it came from, when the caller had to set the dump's
@@ -7911,6 +7974,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!store) return refuseStatus(c, 501, 'no backup target configured');
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    const fenced = await refuseStoresFenced(c, scope);
+    if (fenced) return relayRefusal(c, fenced);
     const held = await store.get({ tenantId, scopeId, capturedAt });
     if (!held) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
     const { header } = held;
@@ -11707,7 +11772,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // leaves the preview routed, signing in, and whole.
     if (dispatch) await claimScopeScriptReap({ admin: c.var.admin, actor }, preview.tenantId, preview.id);
     else await assertNoUnreachableScopeCopies(c.var.admin, actor, preview.tenantId, preview.id);
-    const wipeStores = await platformStoresWipe(c, preview);
+    const fenceStores = await platformStoresFence(c, preview);
     // A preview is still routed until its row goes: unroute before the wipe.
     await unrouteScope(c.var.admin, actor, preview);
     // A fork's own sign-in clients and MCP registration go once nothing routes to it, and before
@@ -11716,7 +11781,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the retry a PR-close job makes still finds it — after the row is gone, nothing would name
     // those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
-    await wipeStores();
+    await fenceStores();
     let storageStranded = false;
     if (dispatch) {
       ({ storageStranded } = await drainScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: dispatch }, preview.tenantId, preview.id));

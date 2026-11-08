@@ -14,6 +14,7 @@ import {
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
+  ControlPlaneError,
   createControlPlaneApi,
   createR2BackupStore,
   DEV_ACTOR_HEADER,
@@ -74,7 +75,7 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
   });
 
   /** What the deployment was asked to load, and a switch to make its load refuse. */
-  const world = (budget?: StoreRequestBudget) => {
+  const world = (budget?: StoreRequestBudget, opts: { backups?: boolean } = {}) => {
     const loads: unknown[] = [];
     const deployment = {
       refuseLoad: false,
@@ -90,6 +91,8 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
         return { tables: 1 };
       },
       snapshotScope: async () => ({ tables: 1 }),
+      deleteScope: async () => undefined,
+      exportScope: async () => [customers],
     };
     const driver = fakeStoreDriver({ pageRows: 10 });
     const { bucket, objects } = fakeBucket();
@@ -97,7 +100,7 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { [VERTICAL]: deployment as unknown as VerticalClient },
-      scopeBackups: createR2BackupStore(bucket),
+      ...(opts.backups === false ? {} : { scopeBackups: createR2BackupStore(bucket) }),
       platformScopeStores: platformOver(driver),
       storeDrivers: [graph],
       ...(budget ? { storeMoveBudget: budget } : {}),
@@ -105,15 +108,15 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
     return { app, driver, deployment, loads, bucket, objects };
   };
 
-  const install = async (): Promise<ScopeId> => {
+  const install = async (tenant = t): Promise<ScopeId> => {
     const s = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: VERTICAL });
-    await host.admin.activateScope(staff, t, s);
-    await host.admin.bindScopeVersion(staff, t, s, versionId);
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: VERTICAL });
+    await host.admin.activateScope(staff, tenant, s);
+    await host.admin.bindScopeVersion(staff, tenant, s, versionId);
     return s;
   };
 
-  const store = (s: string, binding: string) => storeObject(t, VERTICAL, s, binding);
+  const store = (s: string, binding: string, tenant = t) => storeObject(tenant, VERTICAL, s, binding);
   const ops = (w: ReturnType<typeof world>) => w.driver.calls.map((c) => c.operation);
 
   /** A scope whose GRAPH store holds 25 rows and DOCS 3, and a backup of it. */
@@ -253,5 +256,123 @@ describe('scope stores in pages through a backup, a restore and a snapshot (D-69
     expect(refused.status).toBe(409);
     expect(JSON.stringify(await refused.json())).toMatch(/budget of 2 pages/);
     expect(ops(tight)).not.toContain('substrat.commit-stage');
+  });
+
+  it('a scope a reap has marked takes no restore on either route, before anything is staged or loaded (D-71)', async () => {
+    const w = world();
+    const { s, backup } = await backedUp(w);
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.markScopeStoresFenced(staff, t, s);
+    w.driver.calls.length = 0;
+    const loaded = w.loads.length;
+    const dump = { tenantId: t, scopeId: s, capturedAt: '2026-01-02T03:04:05.000Z', tables: [customers] };
+    for (const res of [
+      await restore(w, s, backup.capturedAt),
+      await w.app.request(`/tenants/${t}/scopes/${s}/restore`, { method: 'POST', headers: auth, body: JSON.stringify(dump) }),
+    ]) {
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('a new scope');
+    }
+    expect(w.driver.calls).toEqual([]);
+    expect(w.loads.length).toBe(loaded);
+  });
+
+  it('a reap that fences the stores while a restore runs leaves them empty: the commits are refused (D-71)', async () => {
+    const w = world();
+    const { s, backup } = await backedUp(w);
+    await host.admin.archiveScope(staff, t, s);
+    let fenced = false;
+    w.driver.before(async (call) => {
+      if (call.operation !== 'substrat.commit-stage' || fenced) return;
+      fenced = true;
+      await platformOver(w.driver).fenceStores({
+        tenantId: t, scopeId: s, vertical: VERTICAL, stores: [{ binding: 'DOCS', driver: 'graph' }, { binding: 'GRAPH', driver: 'graph' }],
+      });
+    });
+    const res = await restore(w, s, backup.capturedAt);
+    expect(fenced).toBe(true);
+    expect(res.status).toBe(410);
+    const answer = JSON.stringify(await res.json());
+    expect(answer).toContain('store_fenced');
+    expect(answer).toContain('restores into a new scope');
+    expect(answer).not.toContain('restore again to finish');
+    expect(w.driver.rowsOf(store(s, 'GRAPH'))).toBe(0);
+    expect(w.driver.rowsOf(store(s, 'DOCS'))).toBe(0);
+  });
+
+  it('a marked scope is not read for a copy: a backup, a fork and a full pull refuse, naming the way out (D-71)', async () => {
+    const w = world();
+    const { s } = await backedUp(w);
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.markScopeStoresFenced(staff, t, s);
+    w.driver.calls.length = 0;
+    for (const res of [
+      await w.app.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth }),
+      await w.app.request(`/tenants/${t}/scopes/${s}/snapshots`, { method: 'POST', headers: auth, body: '{}' }),
+      await w.app.request(`/tenants/${t}/scopes/${s}/export?full=true`, { headers: auth }),
+    ]) {
+      expect(res.status).toBe(409);
+      expect(JSON.stringify(await res.json())).toContain('a new scope');
+    }
+    expect(ops(w)).not.toContain('substrat.export-page');
+  });
+
+  it('a reap asked again on a scope its first try marked takes no new backup, and finishes with backup=false (D-71)', async () => {
+    const w = world();
+    const { s, backup } = await backedUp(w);
+    await host.admin.archiveScope(staff, t, s);
+    // The first try took its backup and marked the scope, then failed before the row was reaped.
+    await host.admin.markScopeStoresFenced(staff, t, s);
+    const reap = (body: unknown) =>
+      w.app.request(`/tenants/${t}/scopes/${s}/reap`, { method: 'POST', headers: auth, body: JSON.stringify(body) });
+    const before = [...w.objects.keys()].filter((k) => k.startsWith(`scopes/${t}/${s}/`)).length;
+    const again = await reap({});
+    expect(again.status).toBe(409);
+    const refusal = JSON.stringify(await again.json());
+    expect(refusal).toContain('backup=false');
+    expect(refusal).toContain(`/scopes/${s}/backups`);
+    expect([...w.objects.keys()].filter((k) => k.startsWith(`scopes/${t}/${s}/`)).length).toBe(before);
+    expect((await reap({ backup: false })).status).toBe(200);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('reaped');
+    expect(w.objects.has(`scopes/${t}/${s}/${backup.capturedAt}.json`)).toBe(true);
+  });
+
+  it('a scope reap asked again with no backup asked for and no backup target goes on (D-71)', async () => {
+    const w = world(undefined, { backups: false });
+    const s = await install();
+    w.driver.put(store(s, 'GRAPH'), 3);
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.markScopeStoresFenced(staff, t, s);
+    const res = await w.app.request(`/tenants/${t}/scopes/${s}/reap`, { method: 'POST', headers: auth, body: '{}' });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('reaped');
+  });
+
+  it('a tenant reap with backup asked again after it failed partway backs up the rest and skips the marked scope (D-71)', async () => {
+    const w = world();
+    const tenant = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tenant, slug: `reap-${tenant.slice(-8).toLowerCase()}`, name: 'Reap Co' });
+    const scopes = [await install(tenant), await install(tenant)];
+    for (const s of scopes) w.driver.put(store(s, 'GRAPH', tenant), 3);
+    await host.admin.setTenantStatus(staff, tenant, 'deleting');
+    // The first scope the reap reaches fails after its backup and its fence: the try stops there.
+    let failed: string | undefined;
+    const deleteScope = async (_t: string, s: string) => {
+      if (failed === undefined) {
+        failed = s;
+        throw new ControlPlaneError(503, 'the deployment could not delete the scope');
+      }
+    };
+    (w.deployment as unknown as { deleteScope: unknown }).deleteScope = ({ scopeId: s }: { scopeId: string }) => deleteScope(tenant, s);
+    const reap = () => w.app.request(`/tenants/${tenant}/reap`, { method: 'POST', headers: auth, body: JSON.stringify({ backup: true }) });
+    expect((await reap()).status).toBe(503);
+    expect(await host.admin.scopeStoresFencedAt(staff, tenant, scopeId.parse(failed!))).not.toBeNull();
+    const backupsOf = (s: string) => [...w.objects.keys()].filter((k) => k.startsWith(`scopes/${tenant}/${s}/`) && /\.json$/.test(k) && !k.slice(`scopes/${tenant}/${s}/`.length).includes('/')).length;
+    expect(backupsOf(failed!)).toBe(1);
+    const again = await reap();
+    expect(again.status, await again.clone().text()).toBe(200);
+    // The marked scope keeps the one backup its first try took; the other got its own.
+    for (const s of scopes) expect(backupsOf(s)).toBe(1);
+    expect((await host.admin.getTenant(staff, tenant))?.status).toBe('reaped');
   });
 });

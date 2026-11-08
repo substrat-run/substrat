@@ -340,6 +340,12 @@ export interface PlatformSweepOptions {
    */
   reapScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
   /**
+   * How the tenant reap's default reaps one scope of a tenant it is tearing down. Defaults to
+   * `reapScopeFn`. The control-plane cron sets it so that the scope's fence holds the tenant to
+   * `deleting` (D-71): an un-delete between the archive and the fence stops the reap there.
+   */
+  reapTenantScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
+  /**
    * Also drain the staff access log to Tier 2 and prune what it drained (K-24,
    * control-plane.md §4.4). UNSET (the default) skips the phase entirely, exactly like
    * `reapArchivedAfterDays`: a deployment that has named no durable target must not have
@@ -1939,6 +1945,7 @@ export async function runPlatformSweep(
       (t) => t.status === 'deleting' && t.deletingAt !== null && t.deletingAt <= cutoff,
     );
     const reapOneScope =
+      options.reapTenantScopeFn ??
       options.reapScopeFn ??
       // Tenant teardown releases every name by design: force past the bound-hostname guard.
       ((tenantId: TenantId, scopeId: ScopeId) =>

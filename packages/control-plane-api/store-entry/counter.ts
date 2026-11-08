@@ -7,8 +7,8 @@ import { DurableObject, env as ambient } from 'cloudflare:workers';
  * received and `inspect` its UTF-8 byte count and SHA-256 (for a body too big to echo), `arm` sets an alarm and `alarmed` counts the alarms the entry forwarded, `seen`
  * counts the calls this instance has had (in memory, so a driver built per call answers 1).
  * `refuse` answers a 404 refusal in the envelope, `fail` a 500 one carrying a traceback, and
- * `garble` a 500 that is not the envelope. The reserved operations answer the way a driver's
- * must, from the counter.
+ * `garble` a 500 that is not the envelope. The reserved operations a suite calls answer the way a
+ * driver's must, from the counter.
  */
 export class CounterStore extends DurableObject<Record<string, unknown>> {
   #seen = 0;
@@ -16,7 +16,7 @@ export class CounterStore extends DurableObject<Record<string, unknown>> {
   override async fetch(request: Request): Promise<Response> {
     this.#seen += 1;
     const raw = await request.text();
-    const body = JSON.parse(raw) as { operation?: string; input?: { by?: number } };
+    const body = JSON.parse(raw) as { operation?: string; input?: { by?: number; abort?: boolean } };
     const current = (await this.ctx.storage.get<number>('n')) ?? 0;
     switch (body.operation) {
       case 'read':
@@ -55,6 +55,16 @@ export class CounterStore extends DurableObject<Record<string, unknown>> {
         return new Response('Traceback: storage path /data/s1', { status: 500 });
       case 'substrat.size':
         return Response.json({ result: { bytes: current } });
+      case 'substrat.wipe':
+        // As a driver may: everything goes, the entry's tombstone with it, and the entry writes it back.
+        await this.ctx.storage.deleteAll();
+        return Response.json({ result: {} });
+      case 'substrat.selfcheck':
+        // For a test: lose this instance, and what it held in memory, as an eviction does.
+        if (body.input?.abort) this.ctx.abort('the test asked');
+        return Response.json({ result: {} });
+      case 'substrat.stage-page':
+        return Response.json({ result: { staged: true } });
       default: {
         const next = current + (body.input?.by ?? 1);
         await this.ctx.storage.put('n', next);

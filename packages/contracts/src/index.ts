@@ -41,6 +41,8 @@ export {
   STORE_STAGE_MAX_AGE_MS,
   STORE_CALL_MAX_BYTES,
   STORE_DUMP_PAGE_MAX_BYTES,
+  STORE_FENCE_DRAINING_CODE,
+  STORE_FENCED_CODE,
   scopeStoreBodyBytes,
   scopeStoreKeyId,
   verifyScopeStoreCall,

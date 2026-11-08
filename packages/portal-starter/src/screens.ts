@@ -5,12 +5,14 @@
  */
 import type { Column } from '@substrat-run/elements';
 import { html, type TemplateResult } from 'lit';
-import { invoke, pagedRead } from './api.js';
+import { invoke, loaded, pagedRead } from './api.js';
 
 export interface Screen {
   /** The route after `#/`; the first screen answers an empty hash. */
   path: string;
   label: string;
+  /** False for a screen reached from another, such as one record: it stays out of the top bar. */
+  nav?: boolean;
   render(): TemplateResult;
 }
 
@@ -26,6 +28,29 @@ const ITEM_COLUMNS: Column<Item>[] = [
   { key: 'name', label: 'Name', sort: 'name' },
   { key: 'created_at', label: 'Created', kind: 'relative' },
 ];
+
+/** A value from the hash's query, as in `#/item?id=…`. */
+const param = (name: string): string | null => new URLSearchParams(location.hash.split('?')[1] ?? '').get(name);
+
+/**
+ * A row opens its record, and a row click does nothing else: every other action is a visible
+ * control, on the record's screen or beside the row. `row-click` turns row clicks on, and
+ * `sub-row-click` carries the row.
+ */
+const openItem = (event: CustomEvent<{ row: Item }>): void => {
+  location.hash = `#/item?id=${encodeURIComponent(event.detail.row.id)}`;
+};
+
+async function deleteItem(id: string): Promise<void> {
+  if (!confirm('Delete this item?')) return;
+  try {
+    await invoke('acme/delete-item', { id });
+  } catch (err) {
+    alert(err instanceof Error ? err.message : String(err));
+    return;
+  }
+  location.hash = '#/items';
+}
 
 async function addItem(event: SubmitEvent): Promise<void> {
   event.preventDefault();
@@ -50,7 +75,26 @@ export const screens: Screen[] = [
         <wa-input name="name" label="Name" required></wa-input>
         <wa-button type="submit" variant="brand">Add</wa-button>
       </form>
-      <sub-entity-table label="Items" empty="Nothing here yet." .source=${ITEMS} .columns=${ITEM_COLUMNS}></sub-entity-table>
+      <sub-entity-table label="Items" empty="Nothing here yet." .source=${ITEMS} .columns=${ITEM_COLUMNS}
+        row-click @sub-row-click=${openItem}></sub-entity-table>
     `,
+  },
+  {
+    path: 'item',
+    label: 'Item',
+    nav: false,
+    render: () => {
+      const id = param('id') ?? '';
+      return html`
+        <p><a href="#/items">Back to items</a></p>
+        ${loaded(
+          () => invoke<Item>('acme/get-item', { id }),
+          (item) => html`
+            <h1>${item.name}</h1>
+            <wa-button variant="danger" @click=${() => deleteItem(item.id)}>Delete</wa-button>
+          `,
+        )}
+      `;
+    },
   },
 ];

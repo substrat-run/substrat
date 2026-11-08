@@ -2081,6 +2081,25 @@ describe('runPlatformSweep — reap deleting tenants (§4.8)', () => {
     expect(calls).toEqual([`reapTenant:${due.id}`]); // reapScope did NOT go through the host
   });
 
+  it('the default reaper prefers reapTenantScopeFn over reapScopeFn for a tenant it tears down (D-71)', async () => {
+    const due = tenantRow(genId(), OLD);
+    const s1 = scopeRow(sid(), due.id, 'archived');
+    const calls: string[] = [];
+    const via: string[] = [];
+    await runPlatformSweep(reapHost([due], { [due.id]: [s1] }, calls), {
+      ...base,
+      reapDeletingAfterDays: 0,
+      reapScopeFn: async (_t, s) => {
+        via.push(`scope:${s}`);
+      },
+      reapTenantScopeFn: async (_t, s) => {
+        via.push(`tenant:${s}`);
+      },
+    });
+    expect(via).toEqual([`tenant:${s1.id}`]);
+    expect(calls).toEqual([`reapTenant:${due.id}`]);
+  });
+
   it('reapTenantFn fully overrides the default tenant reaper', async () => {
     const due = tenantRow(genId(), OLD);
     const viaFn: string[] = [];

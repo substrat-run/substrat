@@ -17,7 +17,7 @@ function draw(): void {
     html`
       <header class="bar">
         <nav>
-          ${screens.map(
+          ${screens.filter((s) => s.nav !== false).map(
             (s) => html`<a href="#/${s.path}" aria-current=${s === current ? 'page' : 'false'}>${s.label}</a>`,
           )}
         </nav>
