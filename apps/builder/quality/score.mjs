@@ -75,9 +75,16 @@ if (files.length > 3) {
 		const module = read(join(proj, 'src/module.ts'));
 		const emits = count(module, /ctx\.emit\(/g);
 		items.push(['ui_reaches_api', !/['"`]\/api\/invoke/.test(app) || /\/api\/invoke|\/invoke['"`]/.test(server)]);
-		// A worker that does not pass the address fails closed: it deploys, and nobody can join it.
+		// Deployable means pushable and usable: a worker that compiles, signs people in through the door,
+		// joins a person when the model has a join (hosted, nothing else does), and the project's own
+		// wrangler, which `substrat push` builds it with.
 		const worker = read(join(proj, 'src/worker.ts'));
-		items.push(['deployable', worker !== '' && (!/ctx\.verifiedEmail/.test(module) || /verifiedEmail/.test(worker))]);
+		const compiled = r?.gates?.results?.find((g) => g.name === 'typecheck')?.status === 'passed';
+		const joinOp = /['"]([a-z][a-z0-9-]*\/(?:join|sign-up))['"]\s*:/.exec(`${read(join(proj, 'spec/model.ts'))}\n${server}`)?.[1];
+		const door = worker.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+		const joins = !joinOp || (/\bjoin\s*:/.test(door) && door.includes(joinOp));
+		const wrangler = /"wrangler"\s*:/.test(read(join(proj, 'package.json')));
+		items.push(['deployable', worker !== '' && compiled && /workerDoor/.test(worker) && joins && wrangler]);
 		items.push(['engine_rules', emits > 0 && emitsUnchecked(module).length === 0]);
 		items.push(['real_signin', /devLogin|verticalAuth|oidcRp/.test(server) && !/x-principal/i.test(`${server}\n${app}`.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))]);
 		// An email really has to be queued from an invite: naming an invite helper proves nothing, as neither sends mail.
@@ -100,7 +107,7 @@ const invalid = [
 record.valid = invalid.length === 0;
 record.invalid = invalid;
 record.hypothesis = process.env.HYPOTHESIS ?? null;
-record.rubric = 9;
+record.rubric = 12;
 // Runs at once share the machine, so a time compares only with runs at the same number.
 record.lanes = Number(process.env.LANES ?? 1);
 appendFileSync(process.env.LEDGER ?? join(dirname(dirname(runDir)), 'runs.jsonl'), `${JSON.stringify(record)}\n`);

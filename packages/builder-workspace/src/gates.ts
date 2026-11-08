@@ -47,6 +47,7 @@ export type GateName =
 	| 'app-starter'
 	| 'sign-in'
 	| 'sends-email'
+	| 'hosted-entry'
 	| 'hosted-join'
 	| 'migration-replay';
 
@@ -153,11 +154,11 @@ export async function declaresPermissions(ws: Workspace, projectDir: string): Pr
 }
 
 /** package.json's `substrat` block, empty when the file is unreadable or malformed. */
-async function substratBlock(ws: Workspace, projectDir: string): Promise<{ permissions?: string; sendsEmail?: boolean }> {
+type SubstratBlock = { permissions?: string; sendsEmail?: boolean; runtimeNeeds?: { entry?: string } };
+
+async function substratBlock(ws: Workspace, projectDir: string): Promise<SubstratBlock> {
 	try {
-		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
-			substrat?: { permissions?: string; sendsEmail?: boolean };
-		};
+		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as { substrat?: SubstratBlock };
 		return pkg.substrat ?? {};
 	} catch {
 		return {};
@@ -240,6 +241,21 @@ async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<strin
 	if (!/\brequestEmail\(/.test(withoutComments(await readTree(ws, `${projectDir}/src`)))) return null;
 	if ((await substratBlock(ws, projectDir)).sendsEmail === true) return null;
 	return 'src/ queues email with requestEmail, and a hosted send is refused unless the project asks for it. Set "sendsEmail": true under "substrat" in package.json.';
+}
+
+/**
+ * What `substrat push` needs: the entry it deploys, and the project's own wrangler, which it builds
+ * the worker with and never downloads. Without either every local gate passes and nothing can be pushed.
+ */
+async function entryMissing(ws: Workspace, projectDir: string): Promise<string | null> {
+	const entry = (await substratBlock(ws, projectDir)).runtimeNeeds?.entry;
+	if (typeof entry !== 'string') return null;
+	if (!(await ws.exists(`${projectDir}/${entry}`))) {
+		return `package.json names ${entry} as the deployed entry (substrat.runtimeNeeds.entry), and it is not there, so the project cannot be pushed. Copy it back from the template (copy_reference template ${entry}) and keep it: it imports only from src/provision.ts and src/routes.ts.`;
+	}
+	const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as Record<string, Record<string, string> | undefined>;
+	if (pkg.devDependencies?.wrangler || pkg.dependencies?.wrangler) return null;
+	return 'package.json has no wrangler, and substrat push builds the worker with the project\'s own. Put back the template\'s "wrangler" in devDependencies, with its version.';
 }
 
 /**
@@ -390,6 +406,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: pkg,
 			note: 'no package.json yet',
 			refuse: (ws) => undeclaredEmail(ws, projectDir),
+		},
+		{
+			name: 'hosted-entry',
+			cmd: 'true',
+			appliesWhen: pkg,
+			note: 'no package.json yet',
+			refuse: (ws) => entryMissing(ws, projectDir),
 		},
 		{
 			name: 'hosted-join',

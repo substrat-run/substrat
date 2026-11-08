@@ -43,10 +43,16 @@ Projects are standalone source repositories. Use published, pinned versions of
 `@substrat-run/*` packages; platform dependencies must not use `workspace:`, `catalog:`,
 `file:` or links to the platform checkout. `pnpm add --save-exact` resolves the available package version.
 Typical dependencies: `contracts`, `kernel`, `adapter-sqlite`, plus the engines composed.
-**Start from the template's project files.** First call `copy_reference` on `template` for
-`package.json`, `tsconfig.json`, `vitest.config.ts` and `test/setup.ts`, each to the same
-path. Then edit `package.json`: the name and `substrat` block, and drop the engines you
-do not use. Keep its versions: never look a version up or write one from memory.
+**The project files are already here.** `package.json`, `tsconfig.json`, `tsconfig.worker.json`,
+`vitest.config.ts`, `test/setup.ts`, `src/worker.ts`, `pnpm-workspace.yaml` and `app/` were laid
+down from `template` and `portal`, and installed. Do not copy or read them from a reference.
+`src/worker.ts` is the deployed entry, and `workerDoor` in it signs people in. It imports only
+`MODULES`, `OWNER_ROLE_KEY`, `ROLES`, `permissions` and `envSpec` from `src/provision.ts`, and
+`mountApi` from `src/routes.ts`, so export those and leave the worker as it is, except to name
+your join in it. Never delete it: it is what `substrat push` deploys. `pnpm typecheck` compiles
+it. Edit `package.json`: the name and `substrat` block, and drop the engines you do not use, but
+keep `wrangler`, which the push builds with. Keep its versions: never look a version up or write
+one from memory.
 
 Declare the vertical: `"substrat": { "slug": "<slug>", "name": "<Name>", "permissions":
 "src/provision.ts" }` — the file exporting `MODULES` and `ROLES`. The studio renders

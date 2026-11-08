@@ -158,6 +158,8 @@ describe('standaloneGates — when each gate applies', () => {
 		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
 		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
 		['sends-email', 'package.json', '{ not json', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/gone.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'src/gone.ts'],
+		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'no wrangler'],
 		['hosted-join', 'src/worker.ts', 'workerDoor({ hostFor }) // join: todo/join', "workerDoor({ join: (s, w) => s.invoke('todo/join', { displayName: w.display }) })", 'todo/join'],
 	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
 		const w = await fixtureWorkspace();
