@@ -3,11 +3,9 @@ import { Page } from '../components/layout';
 import { UsageChart } from '../components/UsageChart';
 import { card, PageTitle, Pill, type PillKind } from '../components/ui';
 import { isApiError, teamApi } from '../lib/api';
-import { shortBytes, shortNumber } from '../lib/usage-days';
+import { shortBytes, shortNumber, verticalLabel, type VerticalNames } from '../lib/usage-days';
 import { isExactUsageFigure, type UsageScalar } from '../lib/usage-precision';
 
-type Grants = Awaited<ReturnType<ReturnType<typeof teamApi>['listEntitlements']>>;
-type Result = { teamId: string; grants: Grants; error: 'forbidden' | 'unavailable' | null };
 type Usage = Awaited<ReturnType<ReturnType<typeof teamApi>['readMeteredUsage']>>;
 type UsageResult = { teamId: string; usage: Usage | null; error: 'forbidden' | 'unavailable' | null };
 const number = (value: number) => new Intl.NumberFormat('en-US').format(value);
@@ -78,7 +76,7 @@ function UsageSummary({ usage }: { usage: Usage }) {
   );
 }
 
-function UsageCards({ usage }: { usage: Usage }) {
+function UsageCards({ usage, names }: { usage: Usage; names: VerticalNames }) {
   const storage = usage.storage;
   const requests = usage.requests;
   const models = usage.models;
@@ -101,8 +99,8 @@ function UsageCards({ usage }: { usage: Usage }) {
         <p>{requests.requests === null ? requests.state === 'empty' ? 'No requests recorded in covered days.' : 'not available' : `${requestsLowerBound ? 'At least ' : ''}${number(requests.requests)} ${requests.estimated === false && !requestsLowerBound ? 'request counts' : 'estimated request counts'} from stored rows`}</p>
         <p>Coverage: {requests.coveredDays} of {requests.totalDays} closed UTC days ({requests.sinceDay} to {requests.untilDay}) · {coverage(requests.state, requestStates)}{reasonLabel(requests.truncatedReason)}{oddTruncationLabel(requests.lowerBound)}.</p>
         <p>Estimate: {requests.estimated === true && knownCoverage(requests.state, requestStates) ? 'yes, estimated from sampled router datapoints' : requests.estimated === false && !requestsLowerBound ? 'no; stored request counts as reported' : 'unknown; treat this figure as an estimate'}{requestsLowerBound ? '; this lower bound is over stored estimates, not exact traffic' : ''}.{oddEstimateLabel(requests.estimated)} Freshness: last rollup {date(requests.lastReadAt)}.</p>
-        {requests.byVertical.length > 0 && <ul>{requests.byVertical.map((row) => <li key={row.vertical ?? 'unresolved'}>{row.vertical ?? 'Unresolved app'}: {requestsLowerBound ? 'at least ' : ''}{number(row.requests)} {requests.estimated === false && !requestsLowerBound ? 'requests' : 'estimated requests'}</li>)}</ul>}
-        {requests.breakdownTruncated && <p>App breakdown truncated to 50 entries.</p>}
+        {requests.byVertical.length > 0 && <ul>{requests.byVertical.map((row) => <li key={row.vertical ?? 'unresolved'}>{verticalLabel(names, row.vertical)}: {requestsLowerBound ? 'at least ' : ''}{number(row.requests)} {requests.estimated === false && !requestsLowerBound ? 'requests' : 'estimated requests'}</li>)}</ul>}
+        {requests.breakdownTruncated && <p>Vertical breakdown truncated to 50 entries.</p>}
         <p>{usage.retention.requestMonths === null ? 'Request rollup retained as persisted; no pruning horizon is configured.' : `Request rollup kept ${usage.retention.requestMonths} months.`}</p>
       </div>
       <div style={section}>
@@ -117,9 +115,9 @@ function UsageCards({ usage }: { usage: Usage }) {
           const tokens = row.inputTokens === null || row.outputTokens === null
             ? row.reportedCalls === 0 ? 'tokens not reported' : 'token totals not available'
             : `${rowTokensLowerBound ? 'at least ' : ''}${number(row.inputTokens)} input and ${number(row.outputTokens)} output tokens as reported`;
-          return <li key={`${row.vertical}:${row.model}`}>{row.vertical} · {row.model}: {modelsLowerBound ? 'at least ' : ''}{number(row.calls)} calls; {row.reportedCalls} of {row.calls} calls reported usage, {tokens}</li>;
+          return <li key={`${row.vertical}:${row.model}`}>{verticalLabel(names, row.vertical)} · {row.model}: {modelsLowerBound ? 'at least ' : ''}{number(row.calls)} calls; {row.reportedCalls} of {row.calls} calls reported usage, {tokens}</li>;
         })}</ul>}
-        {models.breakdownTruncated && <p>App and model breakdown truncated to 50 entries.</p>}
+        {models.breakdownTruncated && <p>Vertical and model breakdown truncated to 50 entries.</p>}
         <p>Model usage records are kept {usage.retention.modelDays} days.</p>
       </div>
       {usage.builds && (
@@ -127,30 +125,22 @@ function UsageCards({ usage }: { usage: Usage }) {
           <h3>Build time</h3>
           <p>{usage.builds.ms === null ? usage.builds.state === 'empty' ? 'No successful builds recorded in this window.' : 'not available' : `${usage.builds.lowerBound === false ? '' : 'At least '}${minutes(usage.builds.ms)} across ${number(usage.builds.builds ?? 0)} successful builds`}</p>
           <p>Counts hosted builds that produced a release, from leaving the queue to the release being collected. Queue time and failed builds are not counted.</p>
-          {usage.builds.byVertical.length > 0 && <ul>{usage.builds.byVertical.map((row) => <li key={row.vertical}>{row.vertical}: {minutes(row.ms)} across {number(row.builds)} builds</li>)}</ul>}
-          {usage.builds.breakdownTruncated && <p>App breakdown truncated to 50 entries.</p>}
+          {usage.builds.byVertical.length > 0 && <ul>{usage.builds.byVertical.map((row) => <li key={row.vertical}>{verticalLabel(names, row.vertical)}: {minutes(row.ms)} across {number(row.builds)} builds</li>)}</ul>}
+          {usage.builds.breakdownTruncated && <p>Vertical breakdown truncated to 50 entries.</p>}
         </div>
       )}
     </>
   );
 }
 
-/** The team's directory grants and persisted usage; no prices or payments. */
-export function Billing({ teamId, canRead }: { teamId: string; canRead: boolean }) {
-  const [result, setResult] = useState<Result | null>(null);
+/** The team's persisted usage, per vertical by name; no prices or payments. */
+export function Billing({ teamId, canRead, names }: { teamId: string; canRead: boolean; names: VerticalNames }) {
   const [usageResult, setUsageResult] = useState<UsageResult | null>(null);
 
   useEffect(() => {
     if (!canRead) return;
     let current = true;
-    setResult(null);
     setUsageResult(null);
-    void teamApi(teamId).listEntitlements().then(
-      (grants) => { if (current) setResult({ teamId, grants, error: null }); },
-      (error: unknown) => {
-        if (current) setResult({ teamId, grants: [], error: isApiError(error) && error.status === 403 ? 'forbidden' : 'unavailable' });
-      },
-    );
     void teamApi(teamId).readMeteredUsage().then(
       (usage) => { if (current) setUsageResult({ teamId, usage, error: null }); },
       (error: unknown) => {
@@ -160,50 +150,27 @@ export function Billing({ teamId, canRead }: { teamId: string; canRead: boolean 
     return () => { current = false; };
   }, [teamId, canRead]);
 
-  const shown = result?.teamId === teamId ? result : null;
   const shownUsage = usageResult?.teamId === teamId ? usageResult : null;
-  const refused = !canRead || shown?.error === 'forbidden' || shownUsage?.error === 'forbidden';
+  const refused = !canRead || shownUsage?.error === 'forbidden';
   return (
     <Page maxWidth={960}>
-      <PageTitle title="Billing" subtitle="What this team has used over the last 30 closed days, and what it is entitled to. Nothing here is charged yet." />
+      <PageTitle title="Billing" subtitle="What this team has used over the last 30 closed days. Nothing here is charged yet." />
       {refused ? (
-        <div role="status" style={{ ...card, padding: 20 }}>Ask a team owner or admin to view entitlements.</div>
-      ) : <>
-      {!shownUsage ? (
+        <div role="status" style={{ ...card, padding: 20 }}>Ask a team owner or admin to view usage.</div>
+      ) : !shownUsage ? (
         <div role="status" style={{ ...card, padding: 20 }}>Loading usage…</div>
       ) : shownUsage.error === 'unavailable' || !shownUsage.usage ? (
         <div role="status" style={{ ...card, padding: 20 }}>Usage is unavailable. Try again later.</div>
       ) : (
         <>
           <UsageSummary usage={shownUsage.usage} />
-          <UsageChart days={shownUsage.usage.days} />
+          <UsageChart days={shownUsage.usage.days} names={names} />
           <details style={{ marginTop: 12 }}>
             <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>Meter details</summary>
-            <UsageCards usage={shownUsage.usage} />
+            <UsageCards usage={shownUsage.usage} names={names} />
           </details>
         </>
       )}
-      <h2 style={{ marginTop: 28 }}>Entitlements</h2>
-      {!shown ? (
-        <div role="status" style={{ ...card, padding: 20 }}>Loading entitlements…</div>
-      ) : shown.error === 'unavailable' ? (
-        <div role="status" style={{ ...card, padding: 20 }}>Entitlements are unavailable. Try again later.</div>
-      ) : shown.grants.length === 0 ? (
-        <div role="status" style={{ ...card, padding: 20 }}>No entitlements have been reported for this team.</div>
-      ) : (
-        <div style={{ ...card, overflow: 'hidden' }}>
-          {shown.grants.map((grant, i) => (
-            <div key={grant.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '12px 16px', borderBottom: i === shown.grants.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-primary)' }}>{grant.key}</span>
-              <span style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                {grant.quota !== undefined && <span>Quota: {grant.quota}</span>}
-                {grant.expiresAt !== undefined && <span>Expires: <time dateTime={grant.expiresAt}>{grant.expiresAt.slice(0, 10)}</time></span>}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      </>}
     </Page>
   );
 }
