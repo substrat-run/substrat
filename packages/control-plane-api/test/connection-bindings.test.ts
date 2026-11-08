@@ -111,10 +111,13 @@ describe('poll connector binding door', () => {
   it('will not write a binding when recording its audit intent fails', async () => {
     const before = bind.mock.calls.length;
     const audit = vi.spyOn(host.admin, 'recordConnectionBindingChange').mockRejectedValueOnce(new Error('audit unavailable'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect((await write()).status).toBe(500);
+      const response = await write();
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ detail: expect.stringMatching(/^nothing was bound: .*\(reference [^)]+\): audit unavailable$/) });
       expect(bind.mock.calls.length).toBe(before);
-    } finally { audit.mockRestore(); }
+    } finally { audit.mockRestore(); log.mockRestore(); }
   });
   it('reports an applied binding with an audit warning when the outcome log fails', async () => {
     const original = host.admin.recordConnectionBindingChange;
@@ -165,6 +168,20 @@ describe('poll connector binding door', () => {
     expect(bind.mock.calls.at(-1)?.[2]).toMatchObject({ ...docs, folder: 'General', tenantId: tenant, scopeId: scope, vertical: 'acme-crm' });
     const log = (await host.admin.auditLog(actor, { tenantId: tenant })).filter((r) => r.action === 'bindConnectionScope' && r.after?.connectionId === m365);
     expect(log.map((r) => r.after?.folder)).toEqual(['General', 'General']);
+  });
+  // A connector's bind that throws an uncoded error (Graph refusing the site, a sign-in that
+  // failed) answered the generic 500 with no detail. It says which connector failed, and why.
+  it('answers a connector failure as a 502 naming the connector, a reference and the cause', async () => {
+    await host.admin.grantToConnection(actor, { connectionId: m365, permission: permissionKey.parse('docs:land'), node: { tenantId: tenant, scopeId: scope }, grantedBy: actor });
+    bind.mockRejectedValueOnce(new Error('Graph answered 403 accessDenied'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await write({ operation: 'docs/land', permission: 'docs:land', folder: 'General' }, path(m365));
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({
+        detail: expect.stringMatching(/^the microsoft365 connector could not bind scope \w+ \(reference [^)]+\): Graph answered 403 accessDenied$/),
+      });
+    } finally { log.mockRestore(); }
   });
   it('preserves unavailable targets alongside held and missing permission results', async () => {
     const held = { ...input, tenantId: tenant, scopeId: scope, vertical: 'acme-crm', boundAt: '2026-10-15T12:00:00.000Z' };
