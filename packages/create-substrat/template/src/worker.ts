@@ -38,8 +38,9 @@ import {
   invocationLog,
 } from '@substrat-run/vertical-host';
 import { IdentityDO, workerDoor } from '@substrat-run/vertical-host/worker-door';
-import { MODULES, OWNER_ROLE_KEY, ROLES, permissions } from './provision.js';
-import { SHOP_ENV } from './manifest.js';
+// Only from provision.ts, the file `substrat push` reads: so this worker fits any vertical whose
+// provision.ts exports these five, and needs no edit beyond a `join`.
+import { MODULES, OWNER_ROLE_KEY, ROLES, envSpec, permissions } from './provision.js';
 import { mountApi } from './routes.js';
 
 /** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
@@ -147,7 +148,7 @@ const door = workerDoor<Env>({
   directory: (env, node) => env.AUTH.get(env.AUTH.idFromName(node.tenantId)),
   nodeFor,
   hostFor,
-  envSpec: SHOP_ENV,
+  envSpec,
 });
 
 /** The caller's scope stub. 401 if nobody. */

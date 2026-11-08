@@ -7,7 +7,7 @@
 import { standalonePackageJson } from '@substrat-run/builder-generator';
 import type { Workspace } from '@substrat-run/builder-workspace/edge';
 
-const PROJECT_FILES = ['package.json', 'tsconfig.json', 'vitest.config.ts', 'test/setup.ts'];
+const PROJECT_FILES = ['package.json', 'tsconfig.json', 'tsconfig.worker.json', 'vitest.config.ts', 'test/setup.ts', 'src/worker.ts'];
 
 /** The root and the app install as one, and the template's build policy still holds. */
 const WORKSPACE_MEMBERS = 'packages:\n  - "."\n  - app\n';

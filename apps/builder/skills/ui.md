@@ -1,7 +1,7 @@
 **app/** — built whenever the concept's Screens section names one (only an
-explicit "API-only" skips it), in the scaffold, not deferred. Start with
-`copy_reference` from `portal`, `.` to `app`: a working shell with themes, the
-user menu, hash routing and an entity table. Then rewrite `app/src/screens.ts`,
+explicit "API-only" skips it), in the scaffold, not deferred. `app/` was laid
+down from `portal`: a working shell with themes, the user menu, hash routing and
+an entity table, so do not copy it again. Rewrite `app/src/screens.ts`,
 one screen per line of the Screens section, and set the title in `app/index.html`
 and the name in `app/package.json`. Every list is a `<sub-entity-table>` over
 `pagedRead`; every action goes through `invoke`; every other read goes through

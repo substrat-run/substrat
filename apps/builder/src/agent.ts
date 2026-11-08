@@ -57,6 +57,7 @@ import {
 } from './problem.js';
 import type { BuildPhase } from './phase.js';
 import { openReferences } from './reference.js';
+import { layProject } from './setup.js';
 import {
 	buildWriteGuard,
 	buildContext,
@@ -610,6 +611,22 @@ export class BuilderAgent extends DurableObject<Env> {
 				// workspace only exists now. Emitted so the UI stepper shows real state.
 				const phase = await detectPhase(projectWs);
 				emit({ type: 'phase', phase });
+				// The project files a build starts from, laid down and installed before its first scaffold
+				// pass, as the evals do, so the scaffold skill can say they are here. A fresh studio project
+				// only: one with a package.json is left alone, and a failed install is the install gate's.
+				if (phase === 'scaffold' && entry.directory === '.') {
+					const references = openReferences((dir, id) => new ContainerWorkspace({ sandbox: sb, root: `${TOOLCHAIN}/${dir}`, id }));
+					const laid = await layProject(projectWs, references).catch((err: unknown) => {
+						// The cause to the server log, as every other failure here: problem.ts is the one door.
+						console.error('builder.lay-project.failed', { project: entry.id }, err);
+						record?.note('project-lay-failed', 'the project files were not laid down; the install gate runs next');
+						return false;
+					});
+					if (laid) {
+						record?.note('project-laid', 'project files, app shell and install');
+						emit({ type: 'workspace-updated' });
+					}
+				}
 				const allSkills = await this.#loadSkills(new ContainerWorkspace({ sandbox: sb, root: TOOLCHAIN, id: 'toolchain' }));
 				// `<provider>:auto` becomes concrete per phase (model-pairs.ts) —
 				// fast for interview, strong for build turns.
