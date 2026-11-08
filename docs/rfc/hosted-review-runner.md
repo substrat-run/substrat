@@ -925,12 +925,15 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   `=` (`x'`, `null.'`, `"a"'`) may close a string or open one, unless a value starts there, so the
   quoted strings after it are read both ways and the words between them are masked too. A later
   `key="value"` or double-quoted JSON object keeps the words after it, since a quote after `=`, or
-  after the colon or comma that follows a double-quoted string, opens one; a `key:"value"`, an
-  object in single quotes or a contraction (`it's`) there takes the rest of the line. A quoted name
+  a double quote after the colon or comma that follows a double-quoted string, opens one; a
+  `key:"value"`, an object in single quotes or one mixing quote kinds, or a contraction (`it's`)
+  there takes the rest of the line. A quoted name
   is read inside as well, so a config path with a secret-named segment (`"secret:db:url"`) loses
   what follows that segment, and a count inside one (`` `maxTokens=8000` ``) is masked.
-- **Only a glued quote is read both ways.** A quote after a space, an opening bracket or `=`, or
-  one before the first secret-named value or check, is read only as the fixed readings pair it:
+- **Only a glued quote is read both ways.** A quote after a space, an opening bracket or `=`, a
+  double quote after the colon or comma that follows a double-quoted string (the separator counts
+  only when the quote after it is double too), or a quote before the first secret-named value or
+  check, is read only as the fixed readings pair it:
   from the start of the line, from the first value and check, and from past each quoted name
   holding one. A stray one there changes which later text reads as inside a string, and so does a
   quote after a backslash, read as escaped inside a string a stray quote before the first value

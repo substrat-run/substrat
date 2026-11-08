@@ -371,11 +371,11 @@ const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
 const CLOSER = /([)\]]*)[`"'][,.;:]?/y;
 /**
  * What a closing quote may be glued to, read in place at the character before it: anything but a
- * space, an opening bracket or `=`, nor the colon or comma after a double-quoted string (`null'`,
- * `f(x)'`, `null;'`, `"a"'`). After those a quote opens: `f("V")`, `cfg["a"]`, `user="V"`,
- * `{"a":"V","b":"W"}`.
+ * space, an opening bracket or `=`, nor, for a double quote, the colon or comma after a
+ * double-quoted string (`null'`, `f(x)'`, `null;'`, `"a"'`, `"a":'`). After those a quote opens:
+ * `f("V")`, `cfg["a"]`, `user="V"`, `{"a":"V","b":"W"}`.
  */
-const GLUED = /(?!(?<=")[:,])[^\s([{=]/y;
+const GLUED = /(?!(?<=")[:,](?="))[^\s([{=]/y;
 
 /**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
