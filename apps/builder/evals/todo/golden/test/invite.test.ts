@@ -9,7 +9,10 @@ import { buildHost, seed, type World } from '../src/seed.js';
 let dir: string;
 let host: ScopeHost;
 let world: World;
-const as = (who: 'markus' | 'dana') => host.getScope(world[who].principal, world.tenant, world.scope);
+// Each stub carries the address the issuer verified, as the door hands it to every operation.
+const verified = { markus: 'markus@example.com', dana: 'dana@example.com' } as const;
+const as = (who: 'markus' | 'dana') =>
+  host.getScope(world[who].principal, world.tenant, world.scope, { verifiedEmail: verified[who] });
 const mail = async () =>
   (await (host as unknown as { listPlatformRequestHistory(t: string, s: string): Promise<{ kind: string; payload: { to: string; subject: string } }[]> }).listPlatformRequestHistory(world.tenant, world.scope));
 
@@ -33,7 +36,7 @@ describe('inviting someone who has not joined', () => {
     const dana = await as('dana');
     await expect(dana.invoke('lists/list-items', { listId: list.id })).rejects.toThrow(/permission denied/i);
 
-    await dana.invoke('lists/join', { email: 'dana@example.com', displayName: 'Dana' });
+    await dana.invoke('lists/join', { displayName: 'Dana' });
     await new Promise((r) => setTimeout(r, 200));
     const items = await dana.invoke<Page<{ text: string }>>('lists/list-items', { listId: list.id });
     expect(items.entries.map((i) => i.text)).toEqual(['Passports']);
