@@ -6,8 +6,7 @@ import { Hono } from 'hono';
 import { invocationLog } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import type { DevCaller, DevLogin } from '@substrat-run/dev-issuer';
-import type { ScopeHost } from '@substrat-run/kernel';
-import type { DevMailOutbox } from '@substrat-run/adapter-sqlite';
+import type { ScopeHost, ScopeStubOptions } from '@substrat-run/kernel';
 import { API_DOCUMENT } from './api.js';
 import { mountApi } from './routes.js';
 
@@ -16,8 +15,11 @@ export interface AppOptions {
   login: Pick<DevLogin, 'handle' | 'caller'>;
   /** After a person's first join here: what the host owes them, such as their owner grant. */
   onJoined?: (caller: DevCaller) => Promise<void>;
-  /** Where the mail an invite queues is written, as soon as the call commits (`devMailOutbox`). */
-  outbox?: Pick<DevMailOutbox, 'kick'>;
+  /**
+   * Where the mail an invite queues is written, as soon as the call commits: `server.ts` hands in
+   * adapter-sqlite's `devMailOutbox`, named here only by the stub options it adds.
+   */
+  outbox?: { kick(caller: DevCaller): Pick<ScopeStubOptions, 'onPlatformRequests'> };
 }
 
 export function createApp({ host, login, onJoined, outbox }: AppOptions): Hono {
