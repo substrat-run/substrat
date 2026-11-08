@@ -46,7 +46,10 @@
 	// dispatch namespace's outbound worker, never addressed directly.
 	"workers_dev": false,
 
-	"observability": { "enabled": true },
+	// Invocation logs OFF: the runtime's record of each request carries its headers, and the
+	// platform's calls into this worker present the platform credential in one Cloudflare's
+	// redaction does not recognise. The worker's own console lines still record.
+	"observability": { "enabled": true, "logs": { "invocation_logs": false } },
 
 	"env": {
 		"test": {
@@ -67,7 +70,7 @@
 			},
 			"analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "substrat_egress_test" }], // differs: test data stays out of prod charts
 			"workers_dev": false,
-			"observability": { "enabled": true }
+			"observability": { "enabled": true, "logs": { "invocation_logs": false } }
 		}
 	}
 }

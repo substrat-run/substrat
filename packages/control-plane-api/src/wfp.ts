@@ -315,8 +315,15 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // `traces` is a SEPARATE switch (#858) — `enabled: true` alone yields logs only
       // while automatic tracing is in beta. Omitted unless the platform sets a sampling
       // rate, so a deploy of this code changes nothing about what prod emits.
+      //
+      // Invocation logs are OFF. The runtime's own record of each request carries the request's
+      // headers, and the platform's calls into a vertical present the platform credential in one
+      // that Cloudflare's redaction does not recognise, so every such call wrote it into the
+      // account's logs. The script's own lines (the stamped invocation line among them) still
+      // record; what goes is the runtime record's CPU and wall time.
       observability: {
         enabled: true,
+        logs: { enabled: true, invocation_logs: false },
         ...(opts.traceSampling !== undefined
           ? { traces: { enabled: true, head_sampling_rate: opts.traceSampling } }
           : {}),

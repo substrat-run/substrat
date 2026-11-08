@@ -3733,17 +3733,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const changeRefused = bindingChangeRefusal(row.provider, held as { kind?: string } | undefined, input as { kind?: string });
     if (changeRefused) return refuseStatus(c, 409, changeRefused);
     const operationId = ulid();
-    const done = await auditedChange({
-      flow: 'connection-binding', operationId,
-      run: () => bind(c.var.host, row, { ...input, tenantId: row.tenantId, scopeId, vertical: target.vertical! }),
-      refused: () => false,
-      record: (phase) => c.var.admin.recordConnectionBindingChange(c.get('actor'), {
-        tenantId: row.tenantId, scopeId, connectionId: row.id, provider: row.provider,
-        ...input,
-        operationId, ...(phase.phase === 'applied' ? { phase: 'applied' } : phase),
-      }),
-    });
-    if ('error' in done) throw done.error;
+    // A failure here answers a sentence and a reference, never the generic 500: what threw goes to
+    // the log line and staff's ops-failure row (`withheldFailure`), and back to a staff caller. A
+    // refusal that declared its code still renders as itself.
+    const failed = (stage: 'audit-intent' | 'connector', status: number, err: unknown, sentence: (reference: string) => string) => {
+      const withheld = withheldFailure(
+        c,
+        { operation: 'connection.bind', stage, tenantId: row.tenantId, scopeId, vertical: row.vertical, status, message: messageOfThrow(err) },
+        err,
+        sentence,
+      );
+      c.set('failureRecorded', true);
+      return refuseStatus(c, status, withheld.detail ? `${sentence(withheld.reference)}: ${withheld.detail}` : sentence(withheld.reference), { reference: withheld.reference });
+    };
+    let done: Awaited<ReturnType<typeof auditedChange<ConnectionScopeBinding>>>;
+    try {
+      done = await auditedChange({
+        flow: 'connection-binding', operationId,
+        run: () => bind(c.var.host, row, { ...input, tenantId: row.tenantId, scopeId, vertical: target.vertical! }),
+        refused: () => false,
+        record: (phase) => c.var.admin.recordConnectionBindingChange(c.get('actor'), {
+          tenantId: row.tenantId, scopeId, connectionId: row.id, provider: row.provider,
+          ...input,
+          operationId, ...(phase.phase === 'applied' ? { phase: 'applied' } : phase),
+        }),
+      });
+    } catch (err) {
+      // Only the intent row is written outside `run`: nothing was bound.
+      if (errorCodeOf(err) !== undefined) throw err;
+      return failed('audit-intent', 500, err, (reference) => `nothing was bound: the binding's audit record could not be written (reference ${reference})`);
+    }
+    if ('error' in done) {
+      if (errorCodeOf(done.error) !== undefined || done.error instanceof ControlPlaneError) throw done.error;
+      return failed('connector', 502, done.error, (reference) => `the ${row.provider} connector could not bind scope ${scopeId} (reference ${reference})`);
+    }
     return c.json({ ...done.result, permissionHeld: true, ...('unrecorded' in done ? { auditWarning: done.unrecorded } : {}) });
   });
 
