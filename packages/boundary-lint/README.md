@@ -45,6 +45,7 @@ the only thing that can tell them apart, which is why this is a linter and not a
 | **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
 | **R8** no `SELECT *` | an **engine** never reads with a star — a read names its columns, so the shape it publishes is its schema's rather than its table's |
 | **R12** one list parameter | module code never writes `IN (${…})` with one `?` per value — a Durable Object refuses the 101st bound parameter, so a list goes in as ONE JSON array with `inList(values)` from `@substrat-run/contracts` |
+| **R13** guarded CSV | module code never writes CSV by joining cells with `','` itself — a spreadsheet runs a cell starting with `=`, `+`, `-` or `@` as a formula, quoted or not, so a file goes through `csvTable(header, rows)` from `@substrat-run/contracts` |
 
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
 consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness, and are
@@ -199,6 +200,40 @@ block covers them.
 A list whose length is fixed and short opts out in a `boundary-lint-allow R12` …
 `boundary-lint-end R12` block.
 
+## CSV is written by `csvTable` (R13)
+
+Excel, LibreOffice and Google Sheets run a cell that starts with `=`, `+`, `-` or `@` as a
+formula, so a contact named `=HYPERLINK("http://example.net","x")` reaches an exported file as a
+working link. Quoting the cell per RFC 4180 does not stop it: a quoted `"=1+1"` is evaluated just
+the same.
+
+```ts
+// R13. Quoted, and still a formula in the sheet.
+return { csv: rows.map((r) => [r.name, r.email].map(quote).join(',')).join('\n') };
+
+// Every cell guarded (a leading ') and then quoted.
+import { csvTable } from '@substrat-run/contracts';
+return { csv: csvTable(['name', 'email'], rows.map((r) => [r.name, r.email])) };
+```
+
+R13 fires on a comma join — `.join(',')`, `.join()`, a `','` either side of a `+`, a template's
+`${a},${b}` — inside a function that says CSV: the word in code or a string (`csv:`, `toCsv`,
+`CSV_HEADER`, `'text/csv'`, an operation key like `'crm/export-csv'` on the line its handler opens
+on), never in a comment. The function is the outermost one holding the join, so a callback inside
+a handler is judged by the handler. A file that uses `csvTable` or `csvCell` from
+`@substrat-run/contracts` is not judged: a join there is one cell's own value (`tags.join(',')`), or
+a row of cells `csvCell` already guarded. Neither is a join of a constant written in capitals
+(`HEADER.join(',')`), which is the author's own text.
+
+**What it cannot see**, so a clean run is not read as proof: a CSV the code never calls CSV (an
+output named `text`, a helper named `rowsToText`); a delimiter other than a bare comma (`', '`,
+`';'`, a tab); a delimiter held in a name (`.join(SEP)`); a row built by mutation (`line += cell +
+sep`); a file that uses the helper for one export and joins another by hand; and anything outside
+module code, such as a file a browser app assembles itself. It reaches too far in one shape: a
+function that reads CSV without writing one (an import whose error message joins a value with
+`','`). A join that is not a CSV row opts out in a `boundary-lint-allow R13` …
+`boundary-lint-end R13` block.
+
 ## The escape hatch
 
 A one-time extraction handoff (decision 27) opts out of R5 explicitly, in a block a
@@ -211,8 +246,8 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 ```
 
 R6 has the same block for code that must read the real clock, R8 for a maintenance or
-migration read whose row never leaves the engine, and R12 for a placeholder list of fixed,
-short length. R4 accepts only an update that sets
+migration read whose row never leaves the engine, R12 for a placeholder list of fixed,
+short length, and R13 for a comma join that is not a CSV row. R4 accepts only an update that sets
 `_substrat_tuples.revoked_at` to the current non-null UTC timestamp, with no other
 assignments and a statement-local SQL comment in a generated
 `migrations.generated.ts` file. The comment names the issue whose migration diff a person

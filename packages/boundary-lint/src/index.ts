@@ -137,6 +137,14 @@
  *                      `@substrat-run/contracts`. A list of fixed, short length sits
  *                      in a `boundary-lint-allow R12` … `boundary-lint-end R12` block.
  *
+ *   R13 guarded CSV    module code never writes CSV by joining cells with `','` itself. A
+ *                      spreadsheet runs a cell starting with `=`, `+`, `-` or `@` as a formula,
+ *                      quoted or not, so a hand-built export hands whoever opens it a link or a
+ *                      DDE call a stranger typed into a name field. Cells go through `csvCell`, a
+ *                      file through `csvTable(header, rows)`, from `@substrat-run/contracts`. A
+ *                      join that is not a CSV row sits in a `boundary-lint-allow R13` …
+ *                      `boundary-lint-end R13` block.
+ *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
  * unbuilt; the no-clock rule landed first and took the number, so #786 shipped
@@ -198,7 +206,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11' | 'R12';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8' | 'R9' | 'R10' | 'R11' | 'R12' | 'R13';
   message: string;
 }
 
@@ -1456,6 +1464,162 @@ function checkPlaceholderList(rel: string, source: string, out: Violation[]): vo
   }
 }
 
+// ---------------------------------------------------------------------------
+// R13 — CSV is written by csvTable, never joined by hand (#3017's eval)
+// ---------------------------------------------------------------------------
+
+/**
+ * The word CSV in code or a string, read across camelCase: `csv`, `CSV_HEADER`, `exportCsv`,
+ * `'text/csv'`, `'crm/export-csv'` — never the `csV` that runs across `MetricsView`.
+ */
+const CSV_WORD = /(?<![A-Za-z])[cC]sv(?![a-z])|(?<=[a-z\d])Csv(?![a-z])|CSV/;
+
+/** `.join(',')`, and `.join()`, whose separator is a comma. */
+const JOIN_COMMA = /\.join\s*\(\s*(?:(['"`]),\1\s*)?\)/g;
+/** A `','` on either side of a `+`. */
+const PLUS_COMMA = /(['"`]),\1\s*\+|\+\s*(['"`]),\2/g;
+/** `${a},${b}`: template text that is one comma between two values. */
+const TEMPLATE_COMMA = /\},\$\{/g;
+
+/** Is the comma join `stripped` matched at `m` code — not text inside a string? */
+function joinsInCode(masked: string, re: RegExp, m: RegExpExecArray): boolean {
+  if (re === TEMPLATE_COMMA) return masked.slice(m.index, m.index + 4) === '} ${';
+  if (re === JOIN_COMMA) {
+    if (masked[m.index] !== '.') return false;
+    // `HEADER.join(',')` joins the author's own constant text, which carries no formula.
+    return !/(?<![\w$.])[A-Z][A-Z\d_]*\s*$/.test(masked.slice(Math.max(0, m.index - 64), m.index));
+  }
+  const q = m[1] ? m.index : m.index + m[0].length - 3;
+  const plus = m[1] ? m.index + m[0].length - 1 : m.index;
+  return masked[plus] === '+' && masked.slice(q, q + 3) === `${m[1] ?? m[2]} ${m[1] ?? m[2]}`;
+}
+
+/** The `(` that opens the `)` at `close`, or -1. */
+function openerOf(masked: string, close: number): number {
+  for (let depth = 0, i = close; i >= 0; i--) {
+    if (masked[i] === ')') depth++;
+    else if (masked[i] === '(' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Where the head of the function whose body is the block opening at `open` starts — its
+ * parameter list, so a handler's key or a function's name on that line is read with it — or -1
+ * when the block is not a function's body (an `if`/`for`/`while`/`switch`/`catch` block, an object
+ * literal, a class).
+ */
+function functionHead(masked: string, open: number): number {
+  const before = (to: number): string => masked.slice(Math.max(0, to - 400), to);
+  const tail = before(open);
+  const arrow = /=>\s*$/.exec(tail);
+  const end = arrow ? open - tail.length + arrow.index : open;
+  const head = before(end);
+  const params = /\)\s*(?::[^{};=()]*)?$/.exec(head); // `) {`, `): Promise<Row[]> {`, `) =>`
+  if (!params) return arrow ? end : -1;
+  const opener = openerOf(masked, end - head.length + params.index);
+  if (opener < 0) return arrow ? end : -1;
+  const keyword = /(?<![\w$])(?:if|for|while|switch|catch|with|case)\s*$/;
+  return !arrow && keyword.test(masked.slice(Math.max(0, opener - 12), opener)) ? -1 : opener;
+}
+
+/**
+ * The outermost function holding `at`, from the start of the line its head is on to the end of
+ * its body: an operation's handler or a top-level helper, never a callback inside one. The whole
+ * file when `at` is in no function's block.
+ */
+function functionScope(masked: string, at: number): [number, number] {
+  let scope: [number, number] = [0, masked.length];
+  for (let [open, close] = enclosingBlock(masked, at); open >= 0; [open, close] = enclosingBlock(masked, open)) {
+    const head = functionHead(masked, open);
+    if (head >= 0) scope = [masked.lastIndexOf('\n', head) + 1, close < 0 ? masked.length : close];
+  }
+  return scope;
+}
+
+/**
+ * Does this file use `csvTable` or `csvCell` from `@substrat-run/contracts` — named, aliased, or
+ * through a namespace import — anywhere outside the import itself?
+ */
+function usesCsvHelper(source: string, masked: string): boolean {
+  const uses: RegExp[] = [];
+  const imports: Array<[number, number]> = [];
+  const word = (name: string): string => `(?<![\\w$.])${name.replace(/\$/g, '\\$')}`;
+  IMPORT_CLAUSE.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = IMPORT_CLAUSE.exec(source)); ) {
+    const clause = (m[1] ?? '').trim();
+    if (m[2] !== '@substrat-run/contracts' || /^type\b/.test(clause)) continue;
+    imports.push([m.index, m.index + m[0].length]);
+    const ns = /\*\s*as\s+([A-Za-z_$][\w$]*)/.exec(clause)?.[1];
+    if (ns) uses.push(new RegExp(`${word(ns)}\\s*\\.\\s*csv(?:Table|Cell)(?![\\w$])`, 'g'));
+    for (const part of /\{([\s\S]*)\}/.exec(clause)?.[1]?.split(',') ?? []) {
+      const [imported = '', local = imported] = part.trim().split(/\s+as\s+/);
+      if ((imported === 'csvTable' || imported === 'csvCell') && /^[A-Za-z_$][\w$]*$/.test(local)) {
+        uses.push(new RegExp(`${word(local)}(?![\\w$])`, 'g'));
+      }
+    }
+  }
+  return uses.some((re) => [...masked.matchAll(re)].some((u) => !imports.some(([a, b]) => u.index >= a && u.index < b)));
+}
+
+/**
+ * R13 — module code never writes CSV by joining cells itself.
+ *
+ * Excel, LibreOffice and Google Sheets run a cell that starts with `=`, `+`, `-` or `@` as a
+ * formula, so a contact named `=HYPERLINK("http://example.net","x")` reaches an exported file as
+ * a working link — and quoting the cell per RFC 4180 does not stop it. In an eval of the builder
+ * studio, five CRM-shaped builds out of five shipped a contact export that way (#3017). The cells
+ * go through `csvCell` instead, and a file through `csvTable(header, rows)`, from
+ * `@substrat-run/contracts`, which guards the first character and then quotes.
+ *
+ * Fires on a comma join — `.join(',')`, `.join()`, a `','` either side of a `+`, a template's
+ * `${a},${b}` — inside a function that says CSV: the word in code or a string (`csv:`, `toCsv`,
+ * `CSV_HEADER`, `'text/csv'`, an operation key like `'crm/export-csv'` on the line the handler
+ * opens on), never in a comment. The function is the OUTERMOST one holding the join — the
+ * operation's handler or a top-level helper — so a `rows.map((r) => r.join(','))` callback is
+ * judged by the handler it sits in; a join in no function is judged by the file. A file that uses
+ * `csvTable` or `csvCell` from `@substrat-run/contracts` anywhere is not judged: a join there is a
+ * cell's own value (`tags.join(',')`), or rows of cells `csvCell` already guarded. A join of a
+ * constant written in capitals (`HEADER.join(',')`) is the author's text and carries no formula.
+ *
+ * **Known blind spots**, so a clean run is not read as proof: a CSV the code never calls CSV (an
+ * output named `text`, a helper named `rowsToText`); a delimiter other than a bare comma (`', '`,
+ * `';'`, a tab); a delimiter held in a name (`.join(SEP)`); rows joined by mutation
+ * (`line += cell + sep`); a file that uses the helper for one export and joins another by hand; and
+ * code outside module code — `app/` builds its own file in the browser, which no rule here reads.
+ * Over-reach: a function that handles CSV without writing one (an import that joins a value with
+ * `','` for its error message) — the allow block covers it.
+ */
+function checkHandBuiltCsv(rel: string, source: string, out: Violation[]): void {
+  if (!CSV_WORD.test(source)) return;
+  const masked = maskSource(source);
+  if (usesCsvHelper(source, masked)) return;
+  const stripped = maskSource(source, { literals: false });
+  let allowed: Set<number> | undefined;
+  const reported = new Set<number>();
+  for (const re of [JOIN_COMMA, PLUS_COMMA, TEMPLATE_COMMA]) {
+    re.lastIndex = 0;
+    for (let m: RegExpExecArray | null; (m = re.exec(stripped)); ) {
+      if (!joinsInCode(masked, re, m)) continue;
+      const [from, to] = functionScope(masked, m.index);
+      if (!CSV_WORD.test(stripped.slice(from, to))) continue;
+      const line = lineAt(source, m.index);
+      allowed ??= allowedLines(source.split('\n'), stripped.split('\n'), 'R13');
+      if (allowed.has(line) || reported.has(line)) continue;
+      reported.add(line);
+      out.push({
+        file: rel,
+        line,
+        rule: 'R13',
+        message:
+          `hand-built CSV — a cell starting with =, +, - or @ runs as a formula when the file is ` +
+          `opened in a spreadsheet, quoted or not. Write the file with csvTable(header, rows) from ` +
+          `@substrat-run/contracts (a join that is not a CSV row: boundary-lint-allow R13 … boundary-lint-end R13)`,
+      });
+    }
+  }
+}
+
 /**
  * R2's test seams (#2155 review): the packages that hand a test what module code must never hold —
  * `@substrat-run/kernel/testing` mints a `BoundOperations` over any maps, and the two kits wrap it
@@ -1477,6 +1641,7 @@ function checkModuleFile(
   checkEngineCatch(rel, source, out);
   checkHandlerMapCast(rel, source, out);
   checkPlaceholderList(rel, source, out);
+  checkHandBuiltCsv(rel, source, out);
   if (pkg.engine) checkSelectStar(rel, source, out);
 
   for (const spec of importsOf(source)) {

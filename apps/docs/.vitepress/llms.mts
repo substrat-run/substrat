@@ -482,7 +482,7 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
     'If you are building on Substrat, read this one page before any other:',
     '',
     `- [**Agent rules**](${twinUrl(START_HERE)}): the always-on contract — the three layers,`,
-    '  the ten non-negotiable module-code rules, the gates to run, and the two checkpoints you',
+    '  the twelve non-negotiable module-code rules, the gates to run, and the two checkpoints you',
     '  may never self-approve. Most of what a generated vertical gets wrong is on that page,',
     '  and where it restates the summary above, that page is the authoritative one.',
     '',

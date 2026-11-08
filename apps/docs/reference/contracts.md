@@ -336,6 +336,18 @@ sanctioned arithmetic: `addMoney`, `mulMoney`, `moneyOf`, `addDecimal`, `mulDeci
 `compareDecimal` — exact micro-unit (6 dp) bigint arithmetic, half-up rounding. See
 [Money](/concepts/money).
 
+## CSV (`csv.ts`)
+
+`csvTable(header, rows)` writes a CSV file a spreadsheet opens as data: every cell through
+`csvCell`, comma-separated, CRLF after every record, as RFC 4180 has it. Excel, LibreOffice and
+Google Sheets run a cell starting with `=`, `+`, `-` or `@` as a formula even when it is quoted, so
+`csvCell` writes such a string, and one starting with a tab, CR or LF, with a leading `'`, then
+quotes it if it holds a comma, a `"`, a CR or an LF. A string that is wholly a decimal number
+(`-12.50`) is left as it is, since money is a string here; a number is written as `String(n)`;
+`null` and `undefined` are an empty cell. `NaN`, `Infinity`, anything that is not a string,
+number, boolean or null, and a row whose width is not the header's all throw. `boundary-lint`
+rule [R13](/reference/boundary-lint) refuses cells joined by hand in module code.
+
 ## Model usage (`model-usage.ts`)
 
 The one fact a platform-provided model call produces, and the meter built from it:

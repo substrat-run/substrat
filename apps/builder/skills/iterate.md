@@ -35,6 +35,10 @@ turn, never later.
   an admin permission — never user input into live DDL.
 - Money/decimals are strings via contracts helpers; IDs are `ulid()`; dates
   are ISO-8601 TEXT.
+- A CSV export is an operation that returns `csvTable(header, rows)` from
+  `@substrat-run/contracts`, never cells joined with `','` in `src/` or `app/`. A
+  spreadsheet runs a cell starting with `=`, `+`, `-` or `@` as a formula even when
+  quoted; `csvTable` writes it as text. boundary-lint refuses the hand-joined one.
 
 ## Typechecking: always through the project's tsconfig
 

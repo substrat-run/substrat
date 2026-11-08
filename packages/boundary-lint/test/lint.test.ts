@@ -1808,3 +1808,116 @@ describe('R12 — a hand-built IN list of placeholders', () => {
     ).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R13 — CSV is written by csvTable, never joined by hand (#3017's eval)
+// ---------------------------------------------------------------------------
+
+describe('R13 — a CSV joined by hand', () => {
+  /** A standalone vertical whose module is `lines`, written as plain strings so `${` stays literal. */
+  const r13 = (lines: string[], extra: Record<string, string> = {}): Violation[] =>
+    lint(project({ 'package.json': VERTICAL_PKG, 'src/module.ts': lines.join('\n'), ...extra })).filter((v) => v.rule === 'R13');
+
+  /** The export every build in the eval wrote: RFC 4180 quoting, no formula guard. */
+  const EVAL_SHAPE = [
+    "const csvCell = (v: string): string => (/[\",\\n\\r]/.test(v) ? `\"${v.replace(/\"/g, '\"\"')}\"` : v);",
+    'export const ops = {',
+    "  'crm/export-contacts': async (ctx, input) => {",
+    "    const rows = ctx.sql.query('SELECT name, email FROM crm_contacts');",
+    "    const lines = ['name,email'];",
+    '    for (const r of rows) {',
+    "      lines.push([r.name, r.email].map(csvCell).join(','));",
+    '    }',
+    "    return { csv: lines.join('\\n') + '\\n' };",
+    '  },',
+    '};',
+  ];
+
+  it('fires on the export the eval builds shipped, anchored at the join, naming the helper', () => {
+    expect(r13(EVAL_SHAPE)).toEqual([
+      expect.objectContaining({ file: 'src/module.ts', line: 7, rule: 'R13', message: expect.stringContaining('csvTable(header, rows)') }),
+    ]);
+  });
+
+  it('fires on every spelling of a comma join: .join(), a + concatenation, a template', () => {
+    const vs = r13([
+      'export function exportCsv(ctx, rows) {',
+      '  const a = rows.map((r) => [r.name, r.email].join());',
+      "  const b = rows.map((r) => r.name + ',' + r.email);",
+      '  const c = rows.map((r) => `${r.name},${r.email}`);',
+      "  return { a, b, c };",
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([2, 3, 4]);
+  });
+
+  it('judges a join by the outermost function holding it, and reads a handler key on its line', () => {
+    const vs = r13([
+      'export const ops = {',
+      "  'crm/export-csv': async (ctx, input) => {",
+      "    return { text: input.rows.map((r) => { return r.join(','); }).join('\\n') };",
+      '  },',
+      '};',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([3]);
+  });
+
+  it('twin: a comma join in a function that never says CSV passes, beside one that does', () => {
+    expect(
+      r13([
+        "export function tagsOf(row) { return row.tags.join(','); }",
+        "export const MetricsView = (rows) => { return rows.map((r) => r.k).join(','); };",
+        '// a CSV export lives elsewhere: never write rows.join(",") for one',
+        'export function exportCsv(ctx) { return { csv: ctx.sql.query("SELECT 1").length }; }',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('twin: a file that uses the helper, named, aliased or through a namespace, is not judged', () => {
+    const body = (helper: string): string[] => [
+      'export function exportCsv(ctx, rows) {',
+      `  return { csv: ${helper}(['name', 'tags'], rows.map((r) => [r.name, r.tags.join(',')])) };`,
+      '}',
+    ];
+    expect(r13(["import { csvTable } from '@substrat-run/contracts';", ...body('csvTable')])).toEqual([]);
+    expect(r13(["import { z, csvTable as table } from '@substrat-run/contracts';", ...body('table')])).toEqual([]);
+    expect(r13(["import * as c from '@substrat-run/contracts';", ...body('c.csvTable')])).toEqual([]);
+    // Cells `csvCell` guarded may be joined: that is the row it was made for.
+    expect(r13(["import { csvCell } from '@substrat-run/contracts';", ...EVAL_SHAPE.slice(1)])).toEqual([]);
+  });
+
+  it('twin: an import of the helper that nothing uses, or a local one of the same name, does not count', () => {
+    expect(r13(["import { csvTable } from '@substrat-run/contracts';", ...EVAL_SHAPE]).map((v) => v.line)).toEqual([8]);
+    expect(r13(['const csvTable = (rows) => rows;', 'csvTable([]);', ...EVAL_SHAPE]).map((v) => v.line)).toEqual([9]);
+  });
+
+  it('twin: a constant header, and a comma inside a string, are not cells joined', () => {
+    expect(
+      r13([
+        "const HEADER = ['name', 'email'];",
+        'export function exportCsv(ctx) {',
+        "  const head = HEADER.join(',');",
+        `  const doc = "write rows.join(',') + ',' and \`\${a},\${b}\` by hand";`,
+        '  return { csv: head + doc };',
+        '}',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('a join that is not a CSV row opts out in a reviewable block, and only inside it', () => {
+    const vs = r13([
+      'export function importCsv(ctx, input) {',
+      '  // boundary-lint-allow R13 — the expected header, echoed in an error',
+      "  const expected = input.columns.join(',');",
+      '  // boundary-lint-end R13',
+      "  return { csv: input.rows.map((r) => r.join(',')) , expected };",
+      '}',
+    ]);
+    expect(vs.map((v) => v.line)).toEqual([5]);
+  });
+
+  it('is module code only — a harness file and a test are not walked for it', () => {
+    const shape = "export const toCsv = (rows) => rows.map((r) => r.join(',')).join('\\n');";
+    expect(r13([], { 'src/seed.ts': shape, 'test/module.test.ts': shape })).toEqual([]);
+  });
+});
