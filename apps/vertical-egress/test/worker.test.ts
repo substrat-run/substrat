@@ -150,7 +150,7 @@ describe('outbound policy (#303)', () => {
     expect(internet).toHaveBeenCalledTimes(2);
   });
 
-  it('refuses an undeclared host with a body that names it and says what to declare', async () => {
+  it('refuses an undeclared host with a problem document that names it and says what to declare', async () => {
     const internet = vi.fn();
     vi.stubGlobal('fetch', internet);
 
@@ -160,10 +160,18 @@ describe('outbound policy (#303)', () => {
     );
 
     expect(res.status).toBe(403);
-    const body = (await res.json()) as { error: string; host: string; detail: string };
-    expect(body.error).toBe('outbound refused');
-    expect(body.host).toBe('exfil.example.com');
-    expect(body.detail).toContain('substrat.outbound');
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    // #113: a superset of the pre-problem body, whose `error` was already this short label.
+    expect(await res.json()).toEqual({
+      type: 'https://substrat.net/errors/forbidden',
+      title: 'Forbidden',
+      status: 403,
+      code: 'forbidden',
+      detail: expect.stringContaining('Add it to package.json substrat.outbound'),
+      error: 'outbound refused',
+      host: 'exfil.example.com',
+      vertical: 'acme-crm',
+    });
     expect(internet).not.toHaveBeenCalled();
   });
 

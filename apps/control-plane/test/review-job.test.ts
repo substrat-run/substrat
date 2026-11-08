@@ -9,7 +9,7 @@ import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview, type ChangedFile } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -17,6 +17,8 @@ import { REVIEW_RULES_DIGEST } from '../src/review-rules.generated.js';
 import { readReview, receiveReview, reviewHeadline, writeReviewResult } from '../src/review-store.js';
 import { createReviewApi } from '../src/reviews.js';
 import { archive } from './review-fixtures.js';
+
+declare const __PROBE_REDACTION_COST__: boolean;
 
 const testEnv = env as unknown as Parameters<typeof reviewJobDeps>[0] & { REVIEW_SOURCES: R2Bucket; REVIEW_JOBS: DurableObjectNamespace };
 const bucket = testEnv.REVIEW_SOURCES;
@@ -555,7 +557,94 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a soft hyphen inside a token shape', `x = ${'gh' + 'p_' + 'a1'.repeat(9)}\u00ad${'a1'.repeat(9)}`],
     ...['DB_PASS', 'SMTP_PASS', 'PGPASSWORD', 'passphrase', 'passcode', 'userpass', 'DBPassword', 'APIToken', 'JWTSecret', 'AWSSecretKey',
       'clientsecret', 'accesstoken', 'authtoken', 'apitoken', 'api_keys', 'tokens', 'signing_key', 'encryption_key', 'HMAC_KEY', 'master_key',
-      'ssh_key', 'AUTH_KEY', 'client_key', 'password1', 'secret2', 'passwd', 'access_key'].map((name) => [`the name ${name}`, `${name} = "s3cr3tVALUE"`]),
+      'ssh_key', 'AUTH_KEY', 'client_key', 'password1', 'secret2', 'passwd', 'access_key', 'credential', 'pwd', 'private_key', 'dbPassValue'].map((name) => [`the name ${name}`, `${name} = "s3cr3tVALUE"`]),
+    ['a line separator inside a quoted value', 'password="abc\u2028s3cr3tVALUE"'],
+    ['an escaped line separator inside a quoted value', 'password="abc\\\u2028s3cr3tVALUE"'],
+    ['an unclosed value ending in a backslash', 'password = "s3cr3tVALUE\\'],
+    ['a name after a call', 'getConfig().password = "s3cr3tVALUE"'],
+    ['a name after an index', 'arr[0].secret = "s3cr3tVALUE"'],
+    ['a name after a variable index', 'users[i].password = "s3cr3tVALUE"'],
+    ['a name after a non-null assertion', 'config!.password = "s3cr3tVALUE"'],
+    ['a name with a leading dot', '.password = "s3cr3tVALUE"'],
+    ['a dotted bare name', 'db.password = s3cr3tVALUE'],
+    ['a name starting with a digit', '2FA_SECRET=s3cr3tVALUE'],
+    ['a key starting with a digit', '2fa_secret: "s3cr3tVALUE"'],
+    ['a digit before the word', '1password_token = "s3cr3tVALUE"'],
+    ['an ordinal before the key', '3rd_party_api_key = "s3cr3tVALUE"'],
+    ['a key with a leading dash', '-password: s3cr3tVALUE'],
+    ['a quoted name after a letter', 'x"password": "s3cr3tVALUE"'],
+    ['a not-equal comparison', 'if (password != "s3cr3tVALUE") {'],
+    ['a value with a number before it', 'PASSWORD=2024!s3cr3tVALUE'],
+    ['a value with a number and a symbol before it', 'password=123$s3cr3tVALUE'],
+    ['a value after a number and an at sign', 'password=1@s3cr3tVALUE'],
+    ['a value after a number and a colon', 'token = 12:s3cr3tVALUE'],
+    ['a value after a null word', 'secret=none/s3cr3tVALUE'],
+    ['a value after a boolean', 'password=true s3cr3tVALUE'],
+    ['a value after a number and a plus', 'secret = 1 + "s3cr3tVALUE"'],
+    ['a value after null and an or', 'password = null || "s3cr3tVALUE"'],
+    ['a flag before an assignment', 'mysql --password s3cr3tVALUE -e token=abc1'],
+    ['a typed const with a type word', 'const password: string = "s3cr3tVALUE"'],
+    ['a typed let', "let token: string = 's3cr3tVALUE'"],
+    ['a value inside a call', 'token = Buffer.from("s3cr3tVALUE")'],
+    ['a value inside a constructor', 'password = new Secret("s3cr3tVALUE")'],
+    ['a value inside a call after a key', "secret: getSecret('s3cr3tVALUE')"],
+    ...['os.getenv', 'os.environ.get', 'Env.get', 'ENV.fetch', 'env'].map((call) => [`a default in ${call}`, `${call}("KEY", "s3cr3tVALUE")`]),
+    ['a secret-named argument', 'read("API_KEY", "s3cr3tVALUE")'],
+    ['a JSON-escaped lookup', 'os.getenv(\\"KEY\\", \\"s3cr3tVALUE\\")'],
+    ['a JSON-escaped secret-named argument', 'read(\\"API_KEY\\", \\"s3cr3tVALUE\\")'],
+    ['a string after a comparison with null and a paren', 'if (secret == null) return "s3cr3tVALUE"'],
+    ['a string after a comparison with null and a ?', 'password == null ? "s3cr3tVALUE" : x'],
+    ['a string after a comparison with undefined and ||', 'token === undefined || "s3cr3tVALUE"'],
+    ...['then', 'else', 'return'].map((word) => [`a string after a comparison and ${word}`, `if token == nil ${word} "s3cr3tVALUE"`]),
+    ['a string after a key and a plain word', 'token: see "s3cr3tVALUE"'],
+    ['a code span glued to a plain word', 'token: see`s3cr3tVALUE`'],
+    ['a stray quote after a plain word', 'token: see" the \'s3cr3tVALUE\''],
+    ['a string after a prose stop, inside an earlier string', '"a if (token == null) return "s3cr3tVALUE" password=abc'],
+    ['a string after a prose stop, after an apostrophe', "it's if (token == null) return 's3cr3tVALUE' then password=abc"],
+    ['a string after a comparison and a capital keyword', 'password == null Return "s3cr3tVALUE"'],
+    ['a string after a capital Then', 'if token == nil Then "s3cr3tVALUE"'],
+    ['a string after a comparison and a capital word', 'password == null Fallback "s3cr3tVALUE"'],
+    ['a string after a plain word and a tab', 'token: see\tthe "s3cr3tVALUE"'],
+    ['a string after a plain word and a name character', 'token: see _x "s3cr3tVALUE"'],
+    ['a string after a plain-word argument', 'read("API_KEY", value) then "s3cr3tVALUE"'],
+    ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
+    ['a long argument name', `read("${'x'.repeat(72)}_api_key", "s3cr3tVALUE")`],
+    ['a space before an argument’s comma', '"API_KEY" , "s3cr3tVALUE"'],
+    ['a space inside a lookup', 'getenv( "KEY", "s3cr3tVALUE")'],
+    ['a fallback after ||', 'process.env.DB_PASSWORD || "s3cr3tVALUE"'],
+    ['a fallback after ??', 'process.env.DB_PASSWORD ?? "s3cr3tVALUE"'],
+    ['a fallback after or', 'conf.get("password") or "s3cr3tVALUE"'],
+    ['an unquoted fallback', 'password || s3cr3tVALUE'],
+    ...['||=', '??=', '&&=', '+=', '<-'].map((op) => [`the operator ${op}`, `password ${op} s3cr3tVALUE`]),
+    ['a name in a bare index', '$_POST[password] = "s3cr3tVALUE"'],
+    ['a bracketed name', '[password]=s3cr3tVALUE'],
+    ['a bold name', '**password**: s3cr3tVALUE'],
+    ['an optional key', 'password?: "s3cr3tVALUE"'],
+    ['a curly-quoted name', '“password”: "s3cr3tVALUE"'],
+    ['a name in curly single quotes', '‘password’: "s3cr3tVALUE"'],
+    ['a type with a union', 'password: string | null = "s3cr3tVALUE"'],
+    ...[',', ';', ')', ']', '}'].map((separator) => [`more of a value after ${separator}`, `password=abc${separator}s3cr3tVALUE`]),
+    ['a value starting with a separator', 'password=,s3cr3tVALUE'],
+    ['a value after a boolean and a tab', 'password=true\ts3cr3tVALUE'],
+    ['a PEM body past a line separator', '-----BEGIN PRIVATE KEY-----abc\u2028s3cr3tVALUE'],
+    ...[0x034f, 0x202a, 0x202e, 0x2066, 0x2069, 0x3164, 0xffa0, 0xfe00, 0xfe0f, 0xfff9, 0xe0000, 0xe007f, 0xe0100].map((code) => [
+      `U+${code.toString(16)} inside a token shape`, `x = ${'gh' + 'p_' + 'a1'.repeat(9)}${String.fromCodePoint(code)}${'a1'.repeat(9)}`,
+    ]),
+    ...['token', 'bearer', 'basic', 'digest', 'negotiate', 'ntlm', 'OAuth', 'Bot', 'SSWS', 'ApiKey'].map((scheme) => [`the header scheme ${scheme}`, `Authorization: ${scheme} s3cr3tVALUE`]),
+    ['a header after a word', 'the request sends Authorization: token s3cr3tVALUE'],
+    ['a later cookie', 'Cookie: a=b; session=s3cr3tVALUE'],
+    ['a later cookie after a bare first value', 'Cookie: a; session=s3cr3tVALUE'],
+    ['a later cookie after a word', 'it sends Cookie: a=b; session=s3cr3tVALUE'],
+    ['a later value in a plural name', 'cookies: a=b; session=s3cr3tVALUE'],
+    ['a later value after a header’s `=`', 'cookie=abc; session=s3cr3tVALUE'],
+    ['a later word after a header’s `=`', 'authorization = abc s3cr3tVALUE'],
+    ['a count’s number with more after it', 'maxTokens = 1 + "s3cr3tVALUE"'],
+    ['a value after a second secret', 'run --password hunter22 and token=s3cr3tVALUE'],
+    ['a value after twenty plain-word hits', `${'token: a '.repeat(20)}password=s3cr3tVALUE`],
+    ['a value after twenty other values', `${'token=a1 '.repeat(20)}password=s3cr3tVALUE`],
+    ['an assigned flag', 'run --password=s3cr3tVALUE'],
+    ['a single-dash flag', 'run -password s3cr3tVALUE'],
+    ['a flag starting with a digit', 'run --2fa-secret s3cr3tVALUE'],
     ['a quoted dotted name', '"db.password": "s3cr3tVALUE"'],
     ['a quoted config path', "'spring.datasource.password': 's3cr3tVALUE'"],
     ['a quoted name with a space', '"my password": "s3cr3tVALUE"'],
@@ -568,15 +657,41 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a comparison', 'if (password == "s3cr3tVALUE") {'],
     ['a lower-case bearer scheme', 'authorization: bearer s3cr3tVALUE-9z'],
     ['a lower-case scheme with no secret name', 'the header carries bearer s3cr3tVALUE-9z'],
-  ])('masks %s', (_label, line) => {
-    const out = redact(line);
-    expect(out).not.toContain('s3cr3tVALUE');
-    expect(out).not.toContain('a1a1a1a1a1a1a1a1a1');
-    expect(out).toContain('[redacted]');
+  ])('masks %s, in a quote and in an explanation', (_label, line) => {
+    for (const mode of ['line', 'value'] as const) {
+      const out = redact(line, 500, mode);
+      expect(out, mode).not.toContain('s3cr3tVALUE');
+      expect(out, mode).not.toContain('a1a1a1a1a1a1a1a1a1');
+      expect(out, mode).toContain('[redacted]');
+    }
   });
 
-  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
-    'leaves %s as it is', (line) => expect(redact(line)).toBe(line),
+  const userinfo = 'u:s3cr3tVALUE';
+  it.each([
+    ['(212) 555-1234', '([redacted]'],
+    ['call (555) 123-4567', 'call ([redacted]'],
+    ['-555-123-4567', '-[redacted]'],
+    ['id-5551234567', 'id-[redacted]'],
+    [`-postgres://${userinfo}@h`, '-postgres://[redacted]@h'],
+    ['.redis://:s3cr3tVALUE@h', '.redis://[redacted]@h'],
+    [`1postgres://${userinfo}@h`, '1postgres://[redacted]@h'],
+    ['+redis://:s3cr3tVALUE@h', '+redis://[redacted]@h'],
+    [`POSTGRES://${userinfo}@h`, 'POSTGRES://[redacted]@h'],
+  ])('masks %s whatever comes before it', (line, masked) => expect(redact(line)).toBe(masked));
+
+  it.each([
+    'password = 123456', 'DB_PASSWORD=12345678', 'pwd: 654321', 'password == 12345678',
+    ...['password', 'passwd', 'pwd', 'secret', 'credential', 'private_key'].map((name) => `${name}_tokens = 13579`),
+  ])('masks a number after a credential’s name: %s', (line) => {
+    for (const mode of ['line', 'value'] as const) expect(redact(line, 500, mode), mode).toBe(`${line.replace(/\d+$/, '')}[redacted]`);
+  });
+
+  it.each(["key: 'invoice/void'", 'passed: true', 'author: alice', 'maxTokens: 8000', 'inputTokens = 1200', 'max_tokens: 4096,', 'maxTokens: 8000;', '[maxTokens: 8000]', '{maxTokens: 8000}', 'count(outputTokens: 0)', 'tokenCount: 12', 'token_limit = 4096', 'tokenBudget: 100',
+    ...['-1', '1.5', 'true', 'false', 'null', 'undefined', 'none', 'nil'].map((value) => `tokens: ${value}`), 'password::hash(input)', 'the anti-token check runs', 'the token_factor "x"', 'run --password --verbose', 'Object.keys(row)', 'if (a == b) x = 1', 'Basic validation is missing', 'Bearer tokens are logged', 'Bearer authentication is missing', 'Basic configuration'])(
+    'leaves %s as it is, in a quote and in an explanation', (line) => {
+      expect(redact(line)).toBe(line);
+      expect(redact(line, 500, 'value')).toBe(line);
+    },
   );
 
   it.each(['password=correcthorsebatterystaple', 'token := hunter', 'secret => hunter', 'run --password hunter', 'if (password == hunter)'])(
@@ -586,21 +701,126 @@ describe('the assembler, the fence, the redaction and the headline', () => {
   );
 
   it('masks only the value in an explanation, so its words survive', () => {
-    expect(redact('reads the token: it never calls ctx.check', 500, 'value')).toBe('reads the token: it never calls ctx.check');
+    for (const prose of [
+      'reads the token: it never calls ctx.check', 'no authorization: any caller can void it', 'the cookie: it is not HttpOnly',
+      'when authorization == null any caller can void it', 'if (token === undefined) return',
+      'reads `token`, then logs it and returns `done` to the caller',
+      'no authorization: add `assertAllowed(await ctx.check(PERMS.invoiceVoid))` as the first line',
+      'no authorization: tokens are missing', 'the password or API key leaks', 'reads password || token from the config', 'reads password ?? token from the config', 'fn(password=)',
+      "no authorization: it's never checked", 'no authorization: it returns "ok" to any caller',
+      '`authorization == null` lets any caller through, add a check first', 'the check `password == null` is skipped when the flag is off',
+      'with `token == null`, the guard returns early', '`secret: none` disables signing for the route', 'reads `token: abc` from the config file',
+      '"authorization == null" is the branch that skips the check', "the check 'password == null' is skipped",
+      ...['.', ';'].map((stop) => `the check \`token == null\`${stop} any caller can void it`), 'the branch that skips it is `token == null`.',
+      // Not a quoted name, as it holds a quote: the colon after it is the sentence's.
+      'the check `role == "guest" || token == null`: any caller can void it',
+      '`if (token == null)` lets any caller through', '`(token == null)` is true', '`assert(seen[token == null])` fails open',
+    ]) {
+      expect(redact(prose, 500, 'value')).toBe(prose);
+    }
     expect(redact('drop password=hunter22 from the source', 500, 'value')).toBe('drop password=[redacted] from the source');
     expect(redact('the line sets secret: "s3cr3t VALUE" and logs it', 500, 'value')).toBe('the line sets secret: [redacted] and logs it');
+    expect(redact('secret = "a\\"s3cr3tVALUE" then logs it', 500, 'value')).toBe('secret = [redacted] then logs it');
+    expect(redact('password = "a" + "b" is logged', 500, 'value')).toBe('password = [redacted] + [redacted] is logged');
+    expect(redact('token = Buffer.from("V") is logged', 500, 'value')).toBe('token = [redacted]) is logged');
+    expect(redact('run --password hunter22 and token=abc1 here', 500, 'value')).toBe('run --password [redacted] and token=[redacted] here');
+    expect(redact('log("done") then password=hunter22 is set', 500, 'value')).toBe('log("done") then password=[redacted] is set');
+    expect(redact('password: Hunterabc is stored', 500, 'value')).toBe('password: [redacted] is stored');
+    // Read from the value, the string's closing quote opens one more: the rest of the line goes, the start stays.
+    expect(redact('"password=abc" is set', 500, 'value')).toBe('"password=[redacted]');
+    expect(redact('read("API_KEY", "V") is called', 500, 'value')).toBe('read("API_KEY", [redacted]) is called');
+    expect(redact('cookie_name=abc def', 500, 'value')).toBe('cookie_name=[redacted] def');
+    expect(redact('when authorization == expected it logs', 500, 'value')).toBe('when authorization == [redacted] it logs');
+    expect(redact('the cookie or "abc" is logged', 500, 'value')).toBe('the cookie or [redacted] is logged');
+    expect(redact('sets password=abc, then logs', 500, 'value')).toBe('sets password=[redacted], then logs');
+    expect(redact(`token=${'gh' + 'p_' + 'a1'.repeat(18)} is set`, 500, 'value')).toBe('token=[redacted] is set');
+    // A second name inside the value: its own mask ends first, and must not bring the tail back.
+    expect(redact('password = "token=abc def" is set', 500, 'value')).toBe('password = [redacted] is set');
   });
 
-  // Every mask starts only where no character of its own run precedes it, so a long run is scanned
-  // once: unanchored, a 64K run of name characters took seconds. The bound is generous.
-  it('redacts a long run of name characters in linear time', () => {
-    const started = Date.now();
-    for (const run of ['a_', 'a.', 'a-', 'a%']) {
-      redact(`${run.repeat(32_768)}: x`);
-      redact(`${run.repeat(32_768)}@`, 500, 'value');
-      redact(`${run.repeat(32_768)}://`, 500, 'value');
-    }
-    expect(Date.now() - started).toBeLessThan(1_000);
+  it.each([
+    ['password: hunterabc', 'password: [redacted]'],
+    ['when secret == null any caller can', 'when secret == [redacted]'],
+  ])('a quote masks %s, which an explanation keeps as prose', (line, masked) => {
+    expect(redact(line)).toBe(masked);
+    expect(redact(line, 500, 'value')).toBe(line);
+  });
+
+  // The earliest value may sit inside a string, so no one reading of the quotes is right on every line.
+  it.each([
+    ['a JSON object holding an earlier value', '{"dsn":"password=abc","secret":"s3cr3tVALUE"}'],
+    ['a string before an assignment', '"password=abc" token="s3cr3tVALUE"'],
+    ['a string in a sentence', 'say "password=abc" and token="s3cr3tVALUE" here'],
+    ['a flag inside a string', '"--password=abc" --token "s3cr3tVALUE"'],
+    ['a string holding a value, then a plus', '"password=abc" + "s3cr3tVALUE"'],
+    ['a string holding a header’s name, then a plus', '"Authorization: " + "s3cr3tVALUE"'],
+    ['a stray closing quote', 'password=abc" token="s3cr3tVALUE"'],
+    ['an unclosed string', '"password=abc "s3cr3tVALUE"'],
+    ['a stray quote after a comparison with null', 'if (token == null") token = \'a\' "s3cr3tVALUE"'],
+    ['a stray quote after a comparison, then a key', 'when password === null") token: s3cr3tVALUE "s3cr3tVALUE"'],
+  ])('masks a value after %s, in every stored field', (_label, line) => {
+    const parsed = parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: line, fix: line }] }));
+    const [kept] = assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings;
+    for (const field of ['quote', 'failsWhen', 'fix'] as const) expect(kept![field], field).not.toContain('s3cr3tVALUE');
+  });
+
+  it('masks a quote to the end of its line and an explanation only at its value', () => {
+    const line = 'const password = "s3cr3tVALUE"; log(x);';
+    const parsed = parseReply(JSON.stringify({
+      findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: 'password = "s3cr3tVALUE" is logged', fix: 'move password = "s3cr3tVALUE" to a binding' }],
+      addressedToReviewer: [{ file: 'src/a.ts', line: 1, quote: line }],
+    }));
+    expect(assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings).toMatchObject([
+      { item: 'S2', quote: 'const password = [redacted]', failsWhen: 'password = [redacted] is logged', fix: 'move password = [redacted] to a binding' },
+      { item: 'outside', quote: 'const password = [redacted]' },
+    ]);
+  });
+
+  const at = (quote: string, rest: { failsWhen?: string; fix?: string } = {}) => ({ item: 'S2', file: 'src/a.ts', line: 1, quote, failsWhen: 'x', fix: 'y', ...rest });
+  const assembled = (entry: ReturnType<typeof at>, text: string) => assemble(parseReply(JSON.stringify({ findings: [entry] }))!, [{ path: 'src/a.ts', text }]);
+
+  it('refuses a quote past 200 characters, and cuts an explanation to the 1,000 it reads, storing 500', () => {
+    const wide = 'x'.repeat(201);
+    expect(assembled(at(wide), wide)).toMatchObject({ findings: [], dropped: 1 });
+    expect(assembled(at(wide.slice(1)), wide)).toMatchObject({ findings: [{ item: 'S2' }], dropped: 0 });
+    const long = 'ab '.repeat(334);
+    const kept = assembled(at('x', { failsWhen: long, fix: long }), 'x');
+    expect(kept.dropped).toBe(0);
+    expect(kept.findings[0]!.failsWhen).toHaveLength(500);
+    expect(kept.findings[0]!.fix).toHaveLength(500);
+    // A mask shrinks what it covers, so text past the cut would otherwise reach the stored 500.
+    const past = `${'A'.repeat(1_000)} past the cut`;
+    expect(assembled(at('x', { failsWhen: past, fix: past }), 'x').findings).toMatchObject([{ failsWhen: '[redacted]', fix: '[redacted]' }]);
+  });
+
+  it.each([
+    ['exactly at the cut, kept', `${'A'.repeat(994)} abcde`, '[redacted] abcde'],
+    ['split by the cut, dropped', `${'A'.repeat(994)} abcdef`, '[redacted]'],
+    ['after a tab, dropped alone', `keep ${'A'.repeat(989)}\tabcdef`, 'keep [redacted]'],
+    ['with no break to cut at', 'a-'.repeat(600), '[redacted]'],
+    ['on a later line, which goes anyway', `a-a\n${'a-'.repeat(600)}`, 'a-a'],
+  ])('a word %s', (_label, text, stored) => {
+    expect(assembled(at('x', { failsWhen: text, fix: text }), 'x').findings).toMatchObject([{ failsWhen: stored, fix: stored }]);
+  });
+
+  // What the cut would leave of each fits no shape, so only keeping the word whole hides it.
+  it.each([
+    ['a GitHub token', 'gh' + 'p_' + 'a'.repeat(36), 39],
+    ['an npm token', 'np' + 'm_' + 'a'.repeat(36), 39],
+    ['an AWS key id', 'AK' + 'IA' + 'A'.repeat(16), 19],
+    ['a Google key', 'AI' + 'za' + 'a'.repeat(35), 38],
+    ['a Stripe key', 'sk' + '_live_' + 'a'.repeat(27), 27],
+    ['a JWT', `${'ey' + 'J'}${'a'.repeat(8)}.${'ey' + 'J'}${'a'.repeat(8)}.${'a'.repeat(14)}`, 31],
+    ['URL userinfo', `postgres://${'u:'}s3cr3tVALUE@h`, 24],
+    ['an email', 'someone@example.com', 10],
+  ])('stores nothing of %s split by the cut', (_label, token, kept) => {
+    const text = `${'A'.repeat(999 - kept)} ${token} tail`;
+    expect(assembled(at('x', { failsWhen: text, fix: text }), 'x').findings).toMatchObject([{ failsWhen: '[redacted]', fix: '[redacted]' }]);
+  });
+
+  // A loop whose alternatives can both take a backslash is exponential on this, and the test then never ends.
+  it('masks a quoted value after a run of backslashes', () => {
+    expect(redact(`password="${'\\'.repeat(900)}\u2028s3cr3tVALUE"`, 500, 'value')).toBe('password=[redacted]');
   });
 
   it('never reads clean with a failed or blocked gate, and counts dropped findings and files not sent', () => {
@@ -608,6 +828,38 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(reviewHeadline({ ...base, gates: [{ name: 'g', status: 'failed' }, { name: 'h', status: 'blocked' }] }))
       .toBe(`Substrat review: 0 blocking, 0 advisory · rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · gates failed · gates blocked · 2 dropped · 1 not sent`);
     expect(reviewHeadline({ ...base, dropped: 0, notSent: [], gates: [] })).toBe(`Substrat review: 0 blocking, 0 advisory · rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · gates not run`);
+  });
+});
+
+// What redaction costs. Opt in with SUBSTRAT_PROBE_REDACTION_COST=1: a measurement, never part of the gate.
+describe.skipIf(!__PROBE_REDACTION_COST__)('redaction: what it costs (opt in, #2365)', () => {
+  const millis = (body: () => void): number => {
+    const started = Date.now();
+    body();
+    return Date.now() - started;
+  };
+
+  // Not every mask is linear, so the cut is what bounds them: uncut, each of these takes seconds.
+  // Each run breaks just inside the cut, so the masks read nearly all 1,000 characters of it.
+  it('the cut bounds the masks that are not linear', () => {
+    const runs = [`${'eyJ-'.repeat(249)} ${'eyJ-'.repeat(16_384)}`, `Bearer ${'a'.repeat(992)} ${'a'.repeat(65_536)}`];
+    let stored: string[] = [];
+    expect(millis(() => {
+      stored = runs.map((run) => assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]).findings[0]!.failsWhen);
+    })).toBeLessThan(500);
+    expect(stored.map((text) => text.slice(0, 8))).toEqual(['eyJ-eyJ-', 'Bearer [']);
+  });
+
+  // The bare name and the email keep a left boundary and a URL scheme reads its run once, so a long
+  // run of name characters is not rescanned from every character. The bound is generous.
+  it('a long run of name characters stays inside a generous bound', () => {
+    expect(millis(() => {
+      for (const run of ['a_', 'a.', 'a-', 'a%', 'ab']) {
+        redact(`${run.repeat(32_768)}: x`);
+        redact(`${run.repeat(32_768)}@`, 500, 'value');
+        redact(`${run.repeat(32_768)}://`, 500, 'value');
+      }
+    })).toBeLessThan(1_000);
   });
 });
 
@@ -686,19 +938,56 @@ describe('the job object: held results', () => {
     }
   });
 
-  it('a result that cannot be held is not written, nor its ledger line, when the receipt is within the expiry margin', async () => {
+  it.each([
+    ['a fresh job', 0],
+    ['a job whose attempts ran out', REVIEW_MAX_ATTEMPTS],
+  ])('%s inside the expiry margin calls no model and writes nothing', async (_label, attempt) => {
     const { id } = await stored(CHANGED.source, CHANGED.base);
     const receipt = await (await bucket.get(`records/${id}.json`))!.json<Record<string, unknown>>();
     await bucket.put(`records/${id}.json`, JSON.stringify({ ...receipt, expiresAt: new Date(Date.now() + REVIEW_WRITE_EXPIRY_MARGIN_MS / 2).toISOString() }));
+    const model = double([{ text: reply({ findings: [] }) }]);
     const recordUsage = vi.fn(async () => ({ recorded: true }));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    await inObject(`fallback-expiry-${id}`, async (storage) => {
-      await storage.put('job', { reviewId: id, attempt: 0 });
-      await reviewAlarm(refusingHold(storage), deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage }));
+    await inObject(`margin-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt });
+      await reviewAlarm(storage, deps(model, {}, { recordUsage }));
       expect(await storage.get('job')).toBeUndefined();
     });
+    expect(model.calls.n).toBe(0);
     expect(recordUsage).not.toHaveBeenCalled();
     expect(await bucket.head(`results/${id}.json`)).toBeNull();
+  });
+
+  it('a paid call has its ledger line when its result is no longer wanted: held past expiry, or pruned during the call, held or not', async () => {
+    const pastExpiry = await stored(CHANGED.source, CHANGED.base);
+    const pruned = await stored(CHANGED.source, CHANGED.base);
+    const prunedUnheld = await stored(CHANGED.source, CHANGED.base);
+    const lines: string[] = [];
+    const recordUsage = async (u: { requestId: string }) => { lines.push(u.requestId); return { recorded: true }; };
+    const pruning = (id: string) => {
+      const real = double([{ text: reply({ findings: [] }) }]).host();
+      return () => ({ status: real.status, run: async (input: Parameters<typeof real.run>[0]) => { await bucket.delete(`records/${id}.json`); return real.run(input); } }) as never;
+    };
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await inObject(`ledger-expired-${pastExpiry.id}`, async (storage) => {
+      await storage.put('job', { reviewId: pastExpiry.id, attempt: 1 });
+      const { headline: _h, ...rest } = (await readReview(bucket, pastExpiry.actor, pastExpiry.id))!;
+      const usage = { requestId: pastExpiry.id, line: {} };
+      await storage.put('held', { result: { ...rest, state: 'completed', startedAt: 'a', finishedAt: 'b' }, expiresAt: new Date(Date.now() - 1_000).toISOString(), usage });
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    await inObject(`ledger-pruned-${pruned.id}`, async (storage) => {
+      await storage.put('job', { reviewId: pruned.id, attempt: 0 });
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage, modelHost: pruning(pruned.id) }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    await inObject(`ledger-unheld-${prunedUnheld.id}`, async (storage) => {
+      await storage.put('job', { reviewId: prunedUnheld.id, attempt: 0 });
+      await reviewAlarm(refusingHold(storage), deps(double([]), {}, { recordUsage, modelHost: pruning(prunedUnheld.id) }));
+      expect(await storage.get('job')).toBeUndefined();
+    });
+    expect(lines).toEqual([pastExpiry.id, pruned.id, prunedUnheld.id]);
+    for (const { id } of [pastExpiry, pruned, prunedUnheld]) expect(await bucket.head(`results/${id}.json`)).toBeNull();
   });
 
   it('a receipt that cannot be read does not stop the write; a rejected ledger line stays held and is written on the next alarm; a sync throw is caught', async () => {

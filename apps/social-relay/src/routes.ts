@@ -27,7 +27,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
-import { PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, problemForStatus, substratError, toProblem, type ErrorCode } from '@substrat-run/contracts';
 import { MtlsFailure, type MtlsRequest, type MtlsResponse, type MtlsStage } from './mtls-client.js';
 import type { ClientRecord, RelayStore } from './do-contract.js';
 import { PROVIDERS, providerOf, type UpstreamCredentials, type UpstreamProvider } from './providers.js';
@@ -127,12 +127,34 @@ function basicCredentials(authorization: string): { clientId: string; clientSecr
   }
 }
 
+/**
+ * A problem document on the wire (#113). The media type is the contract: a body shaped like a
+ * problem but labelled `application/json` is not one. Its `error` member is the deprecated
+ * duplicate of `detail`, kept so a reader that still takes `error` keeps working.
+ */
+function problemResponse(
+  body: { readonly status: number; readonly [member: string]: unknown },
+  headers: Readonly<Record<string, string>> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    status: body.status,
+    headers: { ...headers, 'content-type': PROBLEM_CONTENT_TYPE },
+  });
+}
+
+/**
+ * A refusal the relay decided, by its taxonomy code: the status follows from the catalog.
+ * Every refusal outside the OAuth protocol answers this way. The OAuth ones keep their own
+ * shapes: `/token`'s RFC 6749 §5.2 body, the §4.1.2.1 redirect back to the install, and the
+ * page `renderError` shows a person when there is nowhere safe to redirect.
+ */
+function refuse(code: ErrorCode, detail: string, headers?: Readonly<Record<string, string>>): Response {
+  return problemResponse(toProblem(substratError(code, detail)), headers);
+}
+
 /** A refusal of the hop's own, as RFC 9457 problem+json, naming the stage it stopped at. */
 function hopProblem(status: number, stage: string, detail: string, stages: MtlsStage[] = []): Response {
-  return new Response(JSON.stringify({ ...problemForStatus(status, detail), stage, stages }), {
-    status,
-    headers: { 'content-type': PROBLEM_CONTENT_TYPE },
-  });
+  return problemResponse({ ...problemForStatus(status, detail), stage, stages });
 }
 
 /** The store stub for this request. One instance: the registry is global to the relay. */
@@ -252,6 +274,10 @@ function acceptableRedirectUri(value: string): boolean {
   return url.protocol === 'https:' || (url.protocol === 'http:' && loopback);
 }
 
+function badRedirectUris(bad: readonly string[]): string {
+  return `redirect URIs must be https (or http on loopback) and carry no fragment: ${bad.join(', ')}`;
+}
+
 /**
  * The per-client limit, from config, refusing to be broken by a bad value in EITHER
  * direction: a typo used to read as `NaN` and quietly remove the limit — which is the one
@@ -267,6 +293,16 @@ export function createApp(options: AppOptions = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const now = options.now ?? (() => Date.now());
   const app = new Hono<{ Bindings: Env }>();
+
+  /**
+   * A throw no route caught (a store call that failed, say) is a bare `internal` 500 with no
+   * detail, so an unreviewed message never reaches the caller. Without this, Hono answers a
+   * text 500. The throw itself goes to the log, as Hono's own handler would have sent it.
+   */
+  app.onError((err) => {
+    console.error('social-relay: unhandled throw', err);
+    return problemResponse(toProblem(undefined));
+  });
 
   /** What this worker is, for anyone who reaches its root. It has no other page. */
   app.get('/', (c) =>
@@ -363,7 +399,7 @@ export function createApp(options: AppOptions = {}) {
 
   app.get('/:provider/.well-known/openid-configuration', (c) => {
     const live = liveProvider(c.env, c.req.param('provider'));
-    if (!live) return c.json({ error: 'unknown or unconfigured provider' }, 404);
+    if (!live) return refuse('not_found', 'unknown or unconfigured provider');
     const issuer = issuerOf(c.env, c.req.raw, live.provider.id);
     return c.json({
       ...endpointsOf(issuer),
@@ -382,7 +418,7 @@ export function createApp(options: AppOptions = {}) {
 
   app.get('/:provider/jwks.json', async (c) => {
     const live = liveProvider(c.env, c.req.param('provider'));
-    if (!live) return c.json({ error: 'unknown or unconfigured provider' }, 404);
+    if (!live) return refuse('not_found', 'unknown or unconfigured provider');
     const key = await storeOf(c.env).signingKey();
     return c.json({ keys: [publicJwkOf(key)] });
   });
@@ -640,11 +676,20 @@ export function createApp(options: AppOptions = {}) {
 
   app.get('/:provider/userinfo', async (c) => {
     const live = liveProvider(c.env, c.req.param('provider'));
-    if (!live) return c.json({ error: 'unknown provider' }, 404);
+    if (!live) return refuse('not_found', 'unknown provider');
+    /**
+     * RFC 6750 §3: the OAuth error is announced in `WWW-Authenticate`, and the body is ours to
+     * choose, so it is the problem document every other refusal here is. §3.1: a request that
+     * carried no bearer at all gets the bare challenge, with no error code.
+     */
     const authorization = c.req.header('authorization') ?? '';
     if (!authorization.toLowerCase().startsWith('bearer ')) {
-      return c.json({ error: 'invalid_token' }, 401, { 'www-authenticate': 'Bearer' });
+      return refuse('unauthenticated', 'no bearer token was presented', { 'www-authenticate': 'Bearer' });
     }
+    const invalidToken = () =>
+      refuse('unauthenticated', 'the bearer token is invalid or has expired', {
+        'www-authenticate': 'Bearer error="invalid_token"',
+      });
     const key = await storeOf(c.env).signingKey();
     const claims = await verifyJwt(key, authorization.slice(7).trim(), now());
     const issuer = issuerOf(c.env, c.req.raw, live.provider.id);
@@ -655,9 +700,7 @@ export function createApp(options: AppOptions = {}) {
      * claim the relay actually sets as the issuer keeps that from being a coincidence a
      * later change to the audience string can quietly break.
      */
-    if (!claims || claims.iss !== issuer || claims.aud !== `${issuer}/userinfo`) {
-      return c.json({ error: 'invalid_token' }, 401, { 'www-authenticate': 'Bearer' });
-    }
+    if (!claims || claims.iss !== issuer || claims.aud !== `${issuer}/userinfo`) return invalidToken();
     const { iss, aud, iat, exp, ...identity } = claims;
     return c.json(identity);
   });
@@ -673,7 +716,7 @@ export function createApp(options: AppOptions = {}) {
     try {
       assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
     } catch (e) {
-      if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+      if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
       throw e;
     }
     await next();
@@ -681,11 +724,9 @@ export function createApp(options: AppOptions = {}) {
 
   platform.post('/clients', async (c) => {
     const parsed = registerInput.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: 'name and redirectUris are required' }, 400);
+    if (!parsed.success) return refuse('validation_failed', 'name and redirectUris are required');
     const bad = parsed.data.redirectUris.filter((uri) => !acceptableRedirectUri(uri));
-    if (bad.length) {
-      return c.json({ error: `redirect URIs must be https (or http on loopback) and carry no fragment: ${bad.join(', ')}` }, 400);
-    }
+    if (bad.length) return refuse('validation_failed', badRedirectUris(bad));
     const created = await storeOf(c.env).registerClient(parsed.data, now());
     return c.json(created, 201);
   });
@@ -698,13 +739,11 @@ export function createApp(options: AppOptions = {}) {
    */
   platform.put('/clients/by-ref/:ref', async (c) => {
     const ref = c.req.param('ref');
-    if (!CLIENT_REF.test(ref)) return c.json({ error: 'ref must be 1-128 characters of [A-Za-z0-9:._-]' }, 400);
+    if (!CLIENT_REF.test(ref)) return refuse('validation_failed', 'ref must be 1-128 characters of [A-Za-z0-9:._-]');
     const parsed = registerInput.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: 'name and redirectUris are required' }, 400);
+    if (!parsed.success) return refuse('validation_failed', 'name and redirectUris are required');
     const bad = parsed.data.redirectUris.filter((uri) => !acceptableRedirectUri(uri));
-    if (bad.length) {
-      return c.json({ error: `redirect URIs must be https (or http on loopback) and carry no fragment: ${bad.join(', ')}` }, 400);
-    }
+    if (bad.length) return refuse('validation_failed', badRedirectUris(bad));
     const ensured = await storeOf(c.env).ensureClient(ref, parsed.data, now());
     return c.json(ensured, ensured.created ? 201 : 200);
   });
@@ -712,7 +751,7 @@ export function createApp(options: AppOptions = {}) {
   /** A new secret for a client whose holder lost it; the previous one stops working at once. */
   platform.post('/clients/:clientId/secret', async (c) => {
     const clientSecret = await storeOf(c.env).rotateClientSecret(c.req.param('clientId'));
-    return clientSecret ? c.json({ clientSecret }) : c.json({ error: 'no such client' }, 404);
+    return clientSecret ? c.json({ clientSecret }) : refuse('not_found', 'no such client');
   });
 
   platform.get('/clients', async (c) => c.json({ clients: await storeOf(c.env).listClients() }));
@@ -720,18 +759,24 @@ export function createApp(options: AppOptions = {}) {
   platform.post('/clients/:clientId/disabled', async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as { disabled?: boolean };
     const ok = await storeOf(c.env).setClientDisabled(c.req.param('clientId'), body.disabled !== false);
-    return ok ? c.json({ ok: true }) : c.json({ error: 'no such client' }, 404);
+    return ok ? c.json({ ok: true }) : refuse('not_found', 'no such client');
   });
 
   platform.delete('/clients/:clientId', async (c) => {
     const ok = await storeOf(c.env).deleteClient(c.req.param('clientId'));
-    return ok ? c.json({ ok: true }) : c.json({ error: 'no such client' }, 404);
+    return ok ? c.json({ ok: true }) : refuse('not_found', 'no such client');
   });
 
   app.route('/internal', platform);
 
-  /** An unknown `/internal/*` path answers JSON, never a page — a platform caller parses. */
-  app.all('/internal/*', (c) => c.json({ error: 'not implemented' }, 501));
+  /**
+   * An unknown `/internal/*` path answers a problem document, never a page — a platform caller
+   * parses. By status alone (`about:blank`): the closed taxonomy has no code for a 501.
+   */
+  app.all('/internal/*', () => problemResponse(problemForStatus(501, 'not implemented')));
+
+  /** A path or method no route answers. Without this, Hono answers a text 404. */
+  app.notFound(() => refuse('not_found', 'no such route'));
 
   return app;
 }

@@ -32,7 +32,7 @@ node build-graph.mjs
 node run-local.mjs
 ```
 
-**Expect** 23 `PASS` lines and exit 0. Any `FAIL` here is a problem with the spike: stop and
+**Expect** 27 `PASS` lines and exit 0. Any `FAIL` here is a problem with the spike: stop and
 report it, rather than deploying.
 
 ## 2. Pack the graph release
@@ -43,7 +43,7 @@ node run-local.mjs --graph
 ```
 
 **Expect** a line `graph-release.bin: <n> files, <bytes> bytes of release, …`, with about 1 318
-files and 7.4 MB. Then 25 `PASS` lines, including `[cold-start] graph: measured (first … ms, warm …
+files and 7.4 MB. Then 29 `PASS` lines, including `[cold-start] graph: measured (first … ms, warm …
 ms, heap …)`.
 
 **Paste back** both lines: the build line, and the graph cold-start line from the local run.

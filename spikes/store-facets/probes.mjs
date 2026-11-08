@@ -29,6 +29,10 @@ export async function runProbes(request, { graph = false, drivers = ['js', 'py']
     const sa = await call(`${driver}-sa`, { driver, op: 'mark', share: '1' });
     const sb = await call(`${driver}-sb`, { driver, op: 'mark', share: '1' });
     check('isolate', `${driver}: two objects sharing one id reach one isolate (the control)`, sa.answer?.mark && sa.answer.mark === sb.answer?.mark, { sa, sb });
+    // Within one object only the id differs, so this shows whether the id is what separates.
+    const ids = await request('/ids', { object: object(`${driver}-ids`), driver });
+    check('isolate', `${driver}: in one object, one id reaches one isolate`, ids.x && ids.x === ids.xAgain, ids);
+    check('isolate', `${driver}: in one object, two ids reach two isolates`, ids.x && ids.y && ids.x !== ids.y, ids);
 
     // Network: closed by globalOutbound null, and the control shows the probe would see it open.
     const closed = await call(`${driver}-net`, { driver, op: 'network' });
