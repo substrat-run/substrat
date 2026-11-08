@@ -12,9 +12,9 @@ tracking: ["#2830"]
 # D-70 — A store driver's code runs in its own loaded isolate, outside the verifier, with no network
 
 > **Proposed 2026-11-04, not ratified.** The route is chosen. The spike in `spikes/store-facets/`
-> has run on a real dispatch namespace twice, and its figures are in **Measured** below. One is still
-> missing: the billed cost, which shows a day after the run. If a figure rules the route out, this record says so and is withdrawn rather
-> than ratified. Nothing is built on it until then.
+> has run on a real dispatch namespace twice, and its figures, the billed cost among them, are in
+> **Measured** below. None rules the route out. If one had, this record would say so and be withdrawn
+> rather than ratified. Nothing is built on it until it is ratified.
 
 **The store script runs only platform code, and the driver's code runs beside it in an isolate of its own.** The store script keeps D-63's shape, one script per (driver, vertical), uploaded and rolled out as today. What changes is what runs in it:
 
@@ -42,7 +42,7 @@ When this is built, D-67's lift is withdrawn under its own revisit clause, and t
 
 ## Measured
 
-From two sets of three runs of the spike (`spikes/store-facets/RUNBOOK.md`), on 2026-11-04 and 2026-11-08, each about five minutes apart, on a test account with Workers for Platforms, with graph release `678ab0f4…` (1 324 files, 7.6 MB). The runs are in [FINDINGS.md](../../spikes/store-facets/FINDINGS.md#deployed). Each figure is required, and an unmeasured one blocks ratification: the billed cost is still to be read.
+From two sets of three runs of the spike (`spikes/store-facets/RUNBOOK.md`), on 2026-11-04 and 2026-11-08, each about five minutes apart, on a test account with Workers for Platforms, with graph release `678ab0f4…` (1 324 files, 7.6 MB). The runs are in [FINDINGS.md](../../spikes/store-facets/FINDINGS.md#deployed). Each figure was required before ratification, and each is now measured.
 
 | Question | Result |
 | --- | --- |
@@ -52,7 +52,7 @@ From two sets of three runs of the spike (`spikes/store-facets/RUNBOOK.md`), on 
 | A facet's storage is its own, and survives an abort and a restart under new code | **Yes,** JavaScript and Python. |
 | A loaded isolate's env holds nothing the supervisor did not pass | **Yes,** JavaScript and Python. |
 | Cold start and memory of the graph release in a loaded isolate (first call, warm call) | First call **2.1–3.2 s** (2 297, 2 147 and 2 415 ms; then 2 915, 3 125 and 2 181 ms), warm call **3–8 ms**. Memory: Python heap **43.6 MB** (43 581 440 bytes) in every run. Workers analytics showed no `exceededResources` outcome and no errors over the 2026-11-08 runs. Cloudflare does not report an isolate's total memory, so the heap is the figure, a lower bound. |
-| Cost per loaded isolate per day, as billed | **To be read** from the account's usage for 2026-11-08. Each run creates about 22 loader ids. At the listed $0.002 per Dynamic Worker per day, the six runs come to at most about $0.27, which is arithmetic, not a bill. |
+| Cost per loaded isolate per day, as billed | **$0.** The account's usage for 2026-11-04 bills 50 Dynamic Workers at $0, inside the 1 000 a month the plan includes, and every other service the runs used (Workers for Platforms requests and CPU, Durable Object requests and duration) at $0 inside its allowance. 2026-11-08's usage was not yet billed when this was written. Its runs were the same size. Past the allowance, the listed price is $0.002 per Dynamic Worker per day. No bill has shown that rate. |
 
 ## Why
 

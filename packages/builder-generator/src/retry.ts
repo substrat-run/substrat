@@ -46,6 +46,7 @@ interface ErrorFacts {
 	headers?: Record<string, string>;
 	message: string;
 	aborted: boolean;
+	timedOut: boolean;
 }
 
 /** Walk err and its causes for the AI SDK APICallError shape. */
@@ -54,6 +55,7 @@ function factsOf(err: unknown): ErrorFacts {
 	let headers: Record<string, string> | undefined;
 	const messages: string[] = [];
 	let aborted = false;
+	let timedOut = false;
 	let cur: unknown = err;
 	for (let depth = 0; cur != null && depth < 5; depth++) {
 		const e = cur as Record<string, unknown>;
@@ -70,9 +72,10 @@ function factsOf(err: unknown): ErrorFacts {
 		if (typeof e['message'] === 'string') messages.push(e['message'] as string);
 		if (typeof e['responseBody'] === 'string') messages.push(e['responseBody'] as string);
 		if (e['name'] === 'AbortError') aborted = true;
+		if (e['name'] === 'TimeoutError') timedOut = true;
 		cur = e['cause'];
 	}
-	return { statusCode, headers, message: messages.join('\n'), aborted };
+	return { statusCode, headers, message: messages.join('\n'), aborted, timedOut };
 }
 
 /** Seconds-or-HTTP-date `retry-after`, or `retry-after-ms`; capped; undefined when absent/garbled. */
@@ -94,6 +97,10 @@ function retryAfterMs(headers: Record<string, string> | undefined): number | und
 
 export function classifyProviderError(err: unknown): RetryDecision {
 	const facts = factsOf(err);
+
+	// A stream that went silent past the stall timeout. The SDK aborts it with a TimeoutError,
+	// which can arrive wrapped in an AbortError, so this is asked before cancellation is.
+	if (facts.timedOut) return { retryable: true, overflow: false, reason: 'stalled stream' };
 
 	// User cancellation is neither a failure nor retryable.
 	if (facts.aborted) return { retryable: false, overflow: false, reason: 'aborted' };

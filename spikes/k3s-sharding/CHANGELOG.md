@@ -1,5 +1,16 @@
 # @substrat-run/spike-k3s-sharding
 
+## 0.0.44
+
+### Patch Changes
+
+- Updated dependencies [8bbd127]
+- Updated dependencies [da48705]
+  - @substrat-run/kernel@0.188.0
+  - @substrat-run/contracts@0.188.0
+  - @substrat-run/adapter-sqlite@0.188.0
+  - @substrat-run/demo-todo@1.0.1
+
 ## 0.0.43
 
 ### Patch Changes

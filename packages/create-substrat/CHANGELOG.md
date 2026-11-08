@@ -1,5 +1,16 @@
 # create-substrat
 
+## 0.15.0
+
+### Minor Changes
+
+- 8bbd127: `workerDoor` joins a person the first time they reach a scope, through the `join` a worker names, and then gives them every shape its `permissions` declare `bootstrap` with `holder: 'self'`, once, so a revoke stays revoked (`grantSelfShapesLocal`, `grantEntityShapeOnceIn`). A hosted owner could sign in and then not create anything. The template's worker says where a join goes.
+
+### Patch Changes
+
+- 2ced573: A new project pins the pnpm the platform builds with (`packageManager`). Unpinned, it took whatever pnpm was installed, and pnpm 11 stops on better-sqlite3's ignored build and holds back a release younger than its minimum age.
+- 98d0703: The template's worker imports only from `src/provision.ts` (`MODULES`, `OWNER_ROLE_KEY`, `ROLES`, `permissions`, `envSpec`) and `src/routes.ts`, so a vertical built from it needs no edit there beyond naming its join.
+
 ## 0.14.0
 
 ### Minor Changes

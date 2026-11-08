@@ -296,13 +296,15 @@ still carries a hash). The copy-link affordance remains as the fallback.
 ## 9. Out of scope for this line of work
 
 Seat/member-count billing and per-member metering ([membership.md §7](membership.md)).
-The Billing view reads this team's directory entitlements and persisted metered usage
-through its team path for an owner or admin. The control plane's new
+The Billing view reads this team's persisted metered usage through its team path for an
+owner or admin, and names each vertical as the catalog does rather than by registry id.
+The team's directory entitlements are Settings › Entitlements, behind the same gate: they say
+what the team may install, not what it used. The control plane's new
 `GET /tenants/:tenantId/metered-usage` is path-pinned to the same tenant and returns
 only scope-database storage samples, estimated daily router requests, and recorded
 model calls and provider-reported tokens, as totals and as one row per day for the
-page's chart, plus the minutes successful hosted builds worked, per app (#2946). A day with no reading behind it is null, not zero, and stored bytes have
-no per-app split. It reads at most 30 closed UTC days, 10,000 request rows, 10,000
+page's chart, plus the minutes successful hosted builds worked, per vertical (#2946). A day with no reading behind it is null, not zero, and stored bytes have
+no per-vertical split. It reads at most 30 closed UTC days, 10,000 request rows, 10,000
 storage rows, and 25 pages of 501 model records. Capped totals are labelled
-as partial, with bounded app/model breakdowns. It contains no prices, invoice,
+as partial, with bounded vertical/model breakdowns. It contains no prices, invoice,
 checkout, payment method, spend limit, or person-level usage.

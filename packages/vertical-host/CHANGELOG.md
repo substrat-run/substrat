@@ -1,5 +1,20 @@
 # @substrat-run/vertical-host
 
+## 0.188.0
+
+### Minor Changes
+
+- 8bbd127: `workerDoor` joins a person the first time they reach a scope, through the `join` a worker names, and then gives them every shape its `permissions` declare `bootstrap` with `holder: 'self'`, once, so a revoke stays revoked (`grantSelfShapesLocal`, `grantEntityShapeOnceIn`). A hosted owner could sign in and then not create anything. The template's worker says where a join goes.
+
+### Patch Changes
+
+- Updated dependencies [8bbd127]
+- Updated dependencies [da48705]
+  - @substrat-run/kernel@0.188.0
+  - @substrat-run/contracts@0.188.0
+  - @substrat-run/vertical-auth@0.32.1
+  - @substrat-run/model-providers@0.5.78
+
 ## 0.187.0
 
 ### Minor Changes

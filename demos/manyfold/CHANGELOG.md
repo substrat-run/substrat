@@ -1,5 +1,19 @@
 # @substrat-run/demo-manyfold
 
+## 0.7.105
+
+### Patch Changes
+
+- Updated dependencies [8bbd127]
+- Updated dependencies [da48705]
+  - @substrat-run/kernel@0.188.0
+  - @substrat-run/adapter-cloudflare@0.188.0
+  - @substrat-run/vertical-host@0.188.0
+  - @substrat-run/contracts@0.188.0
+  - @substrat-run/adapter-sqlite@0.188.0
+  - @substrat-run/vertical-auth@0.32.1
+  - @substrat-run/dev-issuer@0.4.1
+
 ## 0.7.104
 
 ### Patch Changes

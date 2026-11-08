@@ -11,6 +11,7 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalWorkspace } from '@substrat-run/builder-workspace';
 import { AiSdkGenerator, type BuildEvent } from '../src/index.js';
+import { STALL_TIMEOUT } from '../src/ai-sdk.js';
 import { classifyProviderError, retryDelayMs } from '../src/retry.js';
 
 const err = (message: string, extra: Record<string, unknown> = {}): Error =>
@@ -60,6 +61,14 @@ describe('classifyProviderError', () => {
 		expect(
 			classifyProviderError(Object.assign(new Error('aborted'), { name: 'AbortError' })).retryable,
 		).toBe(false);
+	});
+
+	it('retries a stalled stream, even when the abort wraps it', () => {
+		const stalled = new DOMException('Chunk timeout of 50ms exceeded', 'TimeoutError');
+		const wrapped = Object.assign(new Error('aborted'), { name: 'AbortError', cause: stalled });
+		for (const e of [stalled, wrapped]) {
+			expect(classifyProviderError(e)).toMatchObject({ retryable: true, reason: 'stalled stream' });
+		}
 	});
 });
 
@@ -191,6 +200,46 @@ describe('AiSdkGenerator retry loop', () => {
 		expect(events.filter((e) => e.type === 'retry')).toHaveLength(2);
 		expect(events.filter((e) => e.type === 'error')).toHaveLength(1);
 		expect(calls).toBe(3); // first attempt + 2 retries
+	});
+
+	// A Workers AI build sat on one open, silent request for over 20 minutes: nothing timed it out.
+	it.each([
+		['before any output', [{ type: 'stream-start' as const, warnings: [] }]],
+		[
+			'after some output',
+			[
+				{ type: 'stream-start' as const, warnings: [] },
+				{ type: 'text-start' as const, id: '0' },
+				{ type: 'text-delta' as const, id: '0', delta: 'thinking about it' },
+			],
+		],
+	])('abandons and retries a stream that goes silent %s', async (_when, parts) => {
+		vi.useFakeTimers();
+		let call = 0;
+		const model = new MockLanguageModelV3({
+			doStream: async ({ abortSignal }) => {
+				call += 1;
+				if (call > 1) return okStream('done after the stall');
+				// Sends its parts, then nothing until aborted, as a stalled response body does.
+				return {
+					stream: new ReadableStream({
+						start(c) {
+							for (const p of parts) c.enqueue(p);
+							abortSignal?.addEventListener('abort', () => c.error(abortSignal.reason), { once: true });
+						},
+					}),
+				};
+			},
+		});
+		const events = await collectFake(
+			new AiSdkGenerator({ model, label: 'mock/test', stallTimeout: { firstChunkMs: 50, chunkMs: 50 } }),
+			await input(),
+		);
+
+		expect(events.filter((e) => e.type === 'retry')).toMatchObject([{ reason: 'stalled stream' }]);
+		expect(events.some((e) => e.type === 'error')).toBe(false);
+		expect(call).toBe(2);
+		expect(STALL_TIMEOUT).toEqual({ firstChunkMs: 300_000, chunkMs: 120_000 });
 	});
 
 	it('passes a host-declared temperature through to the provider (H4)', async () => {
