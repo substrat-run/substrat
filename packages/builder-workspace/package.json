@@ -33,8 +33,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:*"
+  },
   "devDependencies": {
-    "@substrat-run/contracts": "workspace:*",
     "@substrat-run/engine-workorder": "workspace:*",
     "@types/node": "catalog:",
     "ai": "7.0.159",
