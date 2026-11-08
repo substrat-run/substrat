@@ -57,6 +57,14 @@ export interface AiSdkGeneratorOptions {
 	 */
 	readonly maxRetries?: number;
 	/**
+	 * How long a stream may stay silent before its request is abandoned and retried like any
+	 * transient failure: `firstChunkMs` until a step's first output (prefill, and thinking a
+	 * provider does not stream), `chunkMs` between outputs after that. Default `STALL_TIMEOUT`.
+	 * Without it a stalled connection holds the turn forever: a Workers AI build sat on one
+	 * open, silent request for over 20 minutes.
+	 */
+	readonly stallTimeout?: { readonly firstChunkMs: number; readonly chunkMs: number };
+	/**
 	 * Offer the edit_file search/replace tool (builder-harness.md H1). Default
 	 * OFF: the host declares it per model (model-pairs.ts `editToolFor`) —
 	 * frontier models hold the exact-match format ~97–99% of the time, sub-tier
@@ -124,6 +132,9 @@ export function apiErrorFacts(err: unknown): ApiErrorFacts {
 		message: err instanceof Error ? err.message : String(err),
 	};
 }
+
+/** Five minutes to a step's first output, two between outputs: well past any step a build has taken. */
+export const STALL_TIMEOUT = { firstChunkMs: 300_000, chunkMs: 120_000 } as const;
 
 type CachePO = { anthropic: { cacheControl: { type: 'ephemeral' } } };
 const CACHE_PO: CachePO = { anthropic: { cacheControl: { type: 'ephemeral' } } };
@@ -564,6 +575,7 @@ export class AiSdkGenerator implements VerticalGenerator {
 						? [stepCountIs(Math.max(1, maxSteps - steps)), tokenBudgetIs(maxTokens)]
 						: stepCountIs(Math.max(1, maxSteps - steps)),
 					maxRetries: 0,
+					timeout: this.#opts.stallTimeout ?? STALL_TIMEOUT,
 					// Step-economies, mutually exclusive by dialect (see the helpers):
 					// Anthropic gets a moving cache breakpoint; qwen passes through
 					// untouched (its markers are injected at the wire by the host, and
