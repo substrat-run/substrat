@@ -154,11 +154,11 @@ export async function declaresPermissions(ws: Workspace, projectDir: string): Pr
 }
 
 /** package.json's `substrat` block, empty when the file is unreadable or malformed. */
-type SubstratBlock = { permissions?: string; sendsEmail?: boolean; runtimeNeeds?: { entry?: string } };
-
-async function substratBlock(ws: Workspace, projectDir: string): Promise<SubstratBlock> {
+async function substratBlock(ws: Workspace, projectDir: string): Promise<{ permissions?: string; sendsEmail?: boolean }> {
 	try {
-		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as { substrat?: SubstratBlock };
+		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
+			substrat?: { permissions?: string; sendsEmail?: boolean };
+		};
 		return pkg.substrat ?? {};
 	} catch {
 		return {};
@@ -244,16 +244,28 @@ async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<strin
 }
 
 /**
- * What `substrat push` needs: the entry it deploys, and the project's own wrangler, which it builds
- * the worker with and never downloads. Without either every local gate passes and nothing can be pushed.
+ * What `substrat push` needs: a deploy config, which is `substrat.runtimeNeeds` naming an entry that
+ * exists or else a hand-authored wrangler.jsonc, and the project's own wrangler, which it builds the
+ * worker with and never downloads. Without them every local gate passes and nothing can be pushed.
+ * A malformed package.json is install's to refuse, as for the other gates.
  */
 async function entryMissing(ws: Workspace, projectDir: string): Promise<string | null> {
-	const entry = (await substratBlock(ws, projectDir)).runtimeNeeds?.entry;
-	if (typeof entry !== 'string') return null;
-	if (!(await ws.exists(`${projectDir}/${entry}`))) {
-		return `package.json names ${entry} as the deployed entry (substrat.runtimeNeeds.entry), and it is not there, so the project cannot be pushed. Copy it back from the template (copy_reference template ${entry}) and keep it: it imports only from src/provision.ts and src/routes.ts.`;
+	let pkg: { substrat?: { runtimeNeeds?: { entry?: unknown } }; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+	try {
+		pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) ?? {};
+	} catch {
+		return null;
 	}
-	const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as Record<string, Record<string, string> | undefined>;
+	const needs = pkg.substrat?.runtimeNeeds;
+	if (needs === undefined) {
+		if (!(await ws.exists(`${projectDir}/wrangler.jsonc`))) {
+			return 'package.json declares no substrat.runtimeNeeds and the project has no wrangler.jsonc, so substrat push has nothing to build. Put back the template\'s "runtimeNeeds" under "substrat", with "entry": "src/worker.ts".';
+		}
+	} else if (typeof needs.entry !== 'string' || needs.entry.trim() === '') {
+		return 'substrat.runtimeNeeds in package.json names no entry, so substrat push has nothing to deploy. Set "entry": "src/worker.ts", the template\'s worker.';
+	} else if (!(await ws.exists(`${projectDir}/${needs.entry}`))) {
+		return `package.json names ${needs.entry} as the deployed entry (substrat.runtimeNeeds.entry), and it is not there, so the project cannot be pushed. Copy it back from the template (copy_reference template ${needs.entry}) and keep it: it imports only from src/provision.ts and src/routes.ts.`;
+	}
 	if (pkg.devDependencies?.wrangler || pkg.dependencies?.wrangler) return null;
 	return 'package.json has no wrangler, and substrat push builds the worker with the project\'s own. Put back the template\'s "wrangler" in devDependencies, with its version.';
 }

@@ -84,7 +84,7 @@ if (files.length > 3) {
 		const door = worker.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
 		const joins = !joinOp || (/\bjoin\s*:/.test(door) && door.includes(joinOp));
 		const wrangler = /"wrangler"\s*:/.test(read(join(proj, 'package.json')));
-		items.push(['deployable', worker !== '' && compiled && /workerDoor/.test(worker) && joins && wrangler]);
+		items.push(['deployable', worker !== '' && compiled && /\bworkerDoor\s*(?:<[^>]*>)?\(/.test(door) && joins && wrangler]);
 		items.push(['engine_rules', emits > 0 && emitsUnchecked(module).length === 0]);
 		items.push(['real_signin', /devLogin|verticalAuth|oidcRp/.test(server) && !/x-principal/i.test(`${server}\n${app}`.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))]);
 		// An email really has to be queued from an invite: naming an invite helper proves nothing, as neither sends mail.

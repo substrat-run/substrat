@@ -58,7 +58,8 @@ Declare the vertical: `"substrat": { "slug": "<slug>", "name": "<Name>", "permis
 "src/provision.ts" }` — the file exporting `MODULES` and `ROLES`. The studio renders
 `PERMISSIONS.md` from it after every turn (the permission review a person signs off),
 and the permissions gate is red without it once `src/module.ts` exists.
-Scripts: `"typecheck": "tsc -p tsconfig.json --noEmit"`, `"test": "vitest run"`,
+Scripts: `"typecheck": "tsc --noEmit && tsc -p tsconfig.worker.json --noEmit"` (the second half compiles
+the worker, which `tsconfig.json` leaves out), `"test": "vitest run"`,
 `"dev": "tsx src/server.ts"`. devDependencies: `typescript`, `tsx`, `vitest`, `hono`,
 `@hono/node-server`, `@types/node`. Run `pnpm --ignore-workspace install` from the project
 via run_command after changing package.json, and commit the project's `pnpm-lock.yaml`.
