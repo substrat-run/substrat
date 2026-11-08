@@ -120,6 +120,12 @@ export function classifyProviderError(err: unknown): RetryDecision {
 		return { retryable: false, overflow: true, reason: 'context overflow' };
 	}
 
+	// A 200 whose body the SDK could not parse: Workers AI answers one now and then, and four builds
+	// died on it. It carries the 200, so it is asked before the status is.
+	if (/failed to process successful response/i.test(facts.message)) {
+		return { retryable: true, overflow: false, reason: 'unreadable response' };
+	}
+
 	const status = facts.statusCode;
 	const after = retryAfterMs(facts.headers);
 	if (status !== undefined) {

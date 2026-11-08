@@ -63,6 +63,13 @@ describe('classifyProviderError', () => {
 		).toBe(false);
 	});
 
+	it('retries a 200 whose body could not be read', () => {
+		// Workers AI now and then answers one; four builds died on it.
+		expect(
+			classifyProviderError(err('Failed to process successful response', { statusCode: 200 })),
+		).toMatchObject({ retryable: true, reason: 'unreadable response' });
+	});
+
 	it('retries a stalled stream, even when the abort wraps it', () => {
 		const stalled = new DOMException('Chunk timeout of 50ms exceeded', 'TimeoutError');
 		const wrapped = Object.assign(new Error('aborted'), { name: 'AbortError', cause: stalled });
