@@ -1,5 +1,14 @@
 # @substrat-run/engine-notifications
 
+## 0.3.33
+
+### Patch Changes
+
+- Updated dependencies [8bbd127]
+- Updated dependencies [da48705]
+  - @substrat-run/kernel@0.188.0
+  - @substrat-run/contracts@0.188.0
+
 ## 0.3.32
 
 ### Patch Changes
