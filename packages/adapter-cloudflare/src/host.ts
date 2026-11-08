@@ -1862,6 +1862,8 @@ interface ScopeStubRpc {
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
   grantEntityShapeAndAuditIntent(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
+  /** The same grant, unless a marker for it was ever written there: whether it granted. */
+  grantEntityShapeOnce(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<boolean>;
   /**
    * One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming
    * at `after` (#2083). A DO from before the cursor ignores `after`, answers `done` and no `next`.
@@ -13064,6 +13066,24 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<void> {
     await this.refuseReservedGrant(permissions, scopeId); // #2430
     await this.scopeStub(scopeId).grantEntityShape(principal, entity, permissions);
+  }
+
+  /**
+   * What a person is given on their own record when they arrive (#2071): every shape this host's
+   * `permissions` declares `bootstrap` with `holder: 'self'`, on the entity whose id is their
+   * principal id. Each is given once, ever, so a door can run this on every sign-in: a key or a
+   * marker a revoke took stays taken. Answers the records it granted on; nothing when the host was
+   * given no `permissions`.
+   */
+  async grantSelfShapesLocal(scopeId: ScopeId, principal: PrincipalId): Promise<EntityRef[]> {
+    const shapes = (this.permissions?.entityGrants ?? []).filter((s) => s.bootstrap && s.holder === 'self');
+    const granted: EntityRef[] = [];
+    for (const shape of shapes) {
+      const entity = { entityType: shape.entityType, entityId: principal };
+      await this.refuseReservedGrant(shape.permissions, scopeId); // #2430
+      if (await this.scopeStub(scopeId).grantEntityShapeOnce(principal, entity, shape.permissions)) granted.push(entity);
+    }
+    return granted;
   }
 
   /**

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { errorCodeOf } from '@substrat-run/contracts';
 import { SHAPE_MARKER_READS_PER_ROW, SHAPE_RETIRE_CONFIRMS_MAX } from '../src/entity-grant-shape.js';
-import { SHAPE_MARKER_INDEX_DDL, grantEntityShapeIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type ShapeCursor, type SwitchSql } from '../src/index.js';
+import { SHAPE_MARKER_INDEX_DDL, grantEntityShapeIn, grantEntityShapeOnceIn, shapeTopUpBatch, topUpEntityGrantShapes, ulid, writeExplicitTupleIn, type ShapeCursor, type SwitchSql } from '../src/index.js';
 
 /**
  * The declared shape's reconcile (#2071), over a bare `_substrat_tuples`. The edges the
@@ -172,6 +172,31 @@ describe('a declared entity-grant shape, topped up (#2071)', () => {
     t.tuple(anna, 'bootstrap', 'e1', NOW);
     expect(t.topUp().map((u) => u.principal)).toEqual([bo]);
     expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+  });
+
+  describe('given once, as a door does at every sign-in', () => {
+    const once = (t: ReturnType<typeof fresh>, anna: PrincipalId) =>
+      grantEntityShapeOnceIn(t.sql, anna, { entityType: 'employee', entityId: 'e1' }, OLD);
+
+    it('grants the whole shape the first time, and nothing after', () => {
+      const t = fresh();
+      const anna = who();
+      expect(once(t, anna)).toBe(true);
+      expect(t.keysOf(anna, 'e1')).toEqual(OLD);
+      expect(once(t, anna)).toBe(false);
+    });
+
+    it.each([
+      ['a key', 'granted:emp:read', ['emp:report']],
+      ['the marker', 'bootstrap', OLD],
+    ])('does not bring back %s a revoke took', (_label, relation, left) => {
+      const t = fresh();
+      const anna = who();
+      once(t, anna);
+      t.tuple(anna, relation, 'e1', NOW);
+      expect(once(t, anna)).toBe(false);
+      expect(t.keysOf(anna, 'e1')).toEqual(left);
+    });
   });
 
   it('the shape is matched by entity type: a marker on another type is not topped up', () => {

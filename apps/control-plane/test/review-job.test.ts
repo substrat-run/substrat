@@ -590,6 +590,23 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a value inside a call after a key', "secret: getSecret('s3cr3tVALUE')"],
     ...['os.getenv', 'os.environ.get', 'Env.get', 'ENV.fetch', 'env'].map((call) => [`a default in ${call}`, `${call}("KEY", "s3cr3tVALUE")`]),
     ['a secret-named argument', 'read("API_KEY", "s3cr3tVALUE")'],
+    ['a JSON-escaped lookup', 'os.getenv(\\"KEY\\", \\"s3cr3tVALUE\\")'],
+    ['a JSON-escaped secret-named argument', 'read(\\"API_KEY\\", \\"s3cr3tVALUE\\")'],
+    ['a string after a comparison with null and a paren', 'if (secret == null) return "s3cr3tVALUE"'],
+    ['a string after a comparison with null and a ?', 'password == null ? "s3cr3tVALUE" : x'],
+    ['a string after a comparison with undefined and ||', 'token === undefined || "s3cr3tVALUE"'],
+    ...['then', 'else', 'return'].map((word) => [`a string after a comparison and ${word}`, `if token == nil ${word} "s3cr3tVALUE"`]),
+    ['a string after a key and a plain word', 'token: see "s3cr3tVALUE"'],
+    ['a code span glued to a plain word', 'token: see`s3cr3tVALUE`'],
+    ['a stray quote after a plain word', 'token: see" the \'s3cr3tVALUE\''],
+    ['a string after a prose stop, inside an earlier string', '"a if (token == null) return "s3cr3tVALUE" password=abc'],
+    ['a string after a prose stop, after an apostrophe', "it's if (token == null) return 's3cr3tVALUE' then password=abc"],
+    ['a string after a comparison and a capital keyword', 'password == null Return "s3cr3tVALUE"'],
+    ['a string after a capital Then', 'if token == nil Then "s3cr3tVALUE"'],
+    ['a string after a comparison and a capital word', 'password == null Fallback "s3cr3tVALUE"'],
+    ['a string after a plain word and a tab', 'token: see\tthe "s3cr3tVALUE"'],
+    ['a string after a plain word and a name character', 'token: see _x "s3cr3tVALUE"'],
+    ['a string after a plain-word argument', 'read("API_KEY", value) then "s3cr3tVALUE"'],
     ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
     ['a long argument name', `read("${'x'.repeat(72)}_api_key", "s3cr3tVALUE")`],
     ['a space before an argument’s comma', '"API_KEY" , "s3cr3tVALUE"'],
@@ -610,7 +627,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a value starting with a separator', 'password=,s3cr3tVALUE'],
     ['a value after a boolean and a tab', 'password=true\ts3cr3tVALUE'],
     ['a PEM body past a line separator', '-----BEGIN PRIVATE KEY-----abc\u2028s3cr3tVALUE'],
-    ...[0x034f, 0x202a, 0x202e, 0x2066, 0x2069, 0x3164, 0xfe00, 0xfe0f, 0xe0000, 0xe007f].map((code) => [
+    ...[0x034f, 0x202a, 0x202e, 0x2066, 0x2069, 0x3164, 0xffa0, 0xfe00, 0xfe0f, 0xfff9, 0xe0000, 0xe007f, 0xe0100].map((code) => [
       `U+${code.toString(16)} inside a token shape`, `x = ${'gh' + 'p_' + 'a1'.repeat(9)}${String.fromCodePoint(code)}${'a1'.repeat(9)}`,
     ]),
     ...['token', 'bearer', 'basic', 'digest', 'negotiate', 'ntlm', 'OAuth', 'Bot', 'SSWS', 'ApiKey'].map((scheme) => [`the header scheme ${scheme}`, `Authorization: ${scheme} s3cr3tVALUE`]),
@@ -690,6 +707,14 @@ describe('the assembler, the fence, the redaction and the headline', () => {
       'reads `token`, then logs it and returns `done` to the caller',
       'no authorization: add `assertAllowed(await ctx.check(PERMS.invoiceVoid))` as the first line',
       'no authorization: tokens are missing', 'the password or API key leaks', 'reads password || token from the config', 'reads password ?? token from the config', 'fn(password=)',
+      "no authorization: it's never checked", 'no authorization: it returns "ok" to any caller',
+      '`authorization == null` lets any caller through, add a check first', 'the check `password == null` is skipped when the flag is off',
+      'with `token == null`, the guard returns early', '`secret: none` disables signing for the route', 'reads `token: abc` from the config file',
+      '"authorization == null" is the branch that skips the check', "the check 'password == null' is skipped",
+      ...['.', ';'].map((stop) => `the check \`token == null\`${stop} any caller can void it`), 'the branch that skips it is `token == null`.',
+      // Not a quoted name, as it holds a quote: the colon after it is the sentence's.
+      'the check `role == "guest" || token == null`: any caller can void it',
+      '`if (token == null)` lets any caller through', '`(token == null)` is true', '`assert(seen[token == null])` fails open',
     ]) {
       expect(redact(prose, 500, 'value')).toBe(prose);
     }
@@ -713,6 +738,14 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(redact('password = "token=abc def" is set', 500, 'value')).toBe('password = [redacted] is set');
   });
 
+  it.each([
+    ['password: hunterabc', 'password: [redacted]'],
+    ['when secret == null any caller can', 'when secret == [redacted]'],
+  ])('a quote masks %s, which an explanation keeps as prose', (line, masked) => {
+    expect(redact(line)).toBe(masked);
+    expect(redact(line, 500, 'value')).toBe(line);
+  });
+
   // The earliest value may sit inside a string, so no one reading of the quotes is right on every line.
   it.each([
     ['a JSON object holding an earlier value', '{"dsn":"password=abc","secret":"s3cr3tVALUE"}'],
@@ -723,6 +756,8 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a string holding a header’s name, then a plus', '"Authorization: " + "s3cr3tVALUE"'],
     ['a stray closing quote', 'password=abc" token="s3cr3tVALUE"'],
     ['an unclosed string', '"password=abc "s3cr3tVALUE"'],
+    ['a stray quote after a comparison with null', 'if (token == null") token = \'a\' "s3cr3tVALUE"'],
+    ['a stray quote after a comparison, then a key', 'when password === null") token: s3cr3tVALUE "s3cr3tVALUE"'],
   ])('masks a value after %s, in every stored field', (_label, line) => {
     const parsed = parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: line, fix: line }] }));
     const [kept] = assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings;
@@ -805,12 +840,14 @@ describe.skipIf(!__PROBE_REDACTION_COST__)('redaction: what it costs (opt in, #2
   };
 
   // Not every mask is linear, so the cut is what bounds them: uncut, each of these takes seconds.
+  // Each run breaks just inside the cut, so the masks read nearly all 1,000 characters of it.
   it('the cut bounds the masks that are not linear', () => {
+    const runs = [`${'eyJ-'.repeat(249)} ${'eyJ-'.repeat(16_384)}`, `Bearer ${'a'.repeat(992)} ${'a'.repeat(65_536)}`];
+    let stored: string[] = [];
     expect(millis(() => {
-      for (const run of ['eyJ-'.repeat(16_384), `Bearer ${'a'.repeat(65_536)}`]) {
-        assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]);
-      }
+      stored = runs.map((run) => assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]).findings[0]!.failsWhen);
     })).toBeLessThan(500);
+    expect(stored.map((text) => text.slice(0, 8))).toEqual(['eyJ-eyJ-', 'Bearer [']);
   });
 
   // The bare name and the email keep a left boundary and a URL scheme reads its run once, so a long

@@ -158,12 +158,14 @@ describe('standaloneGates — when each gate applies', () => {
 		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
 		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
 		['sends-email', 'package.json', '{ not json', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+		['hosted-join', 'src/worker.ts', 'workerDoor({ hostFor }) // join: todo/join', "workerDoor({ join: (s, w) => s.invoke('todo/join', { displayName: w.display }) })", 'todo/join'],
 	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
 		await w.writeFile(`${PROJECT}/app/vite.config.ts`, 'process.env.PORT ?? 8891');
 		await w.writeFile(`${PROJECT}/src/server.ts`, 'devLogin({}); process.env.PORT ?? 8891');
 		await w.writeFile(`${PROJECT}/src/module.ts`, 'requestEmail(ctx, message);');
+		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'todo/join': { input } })");
 		await w.writeFile(`${PROJECT}/app/node_modules/@substrat-run/elements/dist/controls.js`, "import 'x/components/button/button.js';");
 
 		await w.writeFile(`${PROJECT}/${file}`, bad);

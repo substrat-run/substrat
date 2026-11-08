@@ -192,9 +192,9 @@ export const ALLOWED = [
   {
     area: 'social relay',
     path: 'apps/social-relay/src/routes.ts',
-    sites: 7,
+    sites: 5,
     kind: 'protocol',
-    reason: '`/:provider/token` and `/:provider/userinfo`: RFC 6749 §5.2 and RFC 6750 §3 error bodies an OAuth client parses',
+    reason: '`/:provider/token`: RFC 6749 §5.2 error bodies an OAuth client parses',
   },
   {
     area: 'dev-issuer',
@@ -282,13 +282,6 @@ export const ALLOWED = [
   },
 
   // ── pending: another open #113 PR converts these ───────────────────────────────────────────
-  {
-    area: 'social relay',
-    path: 'apps/social-relay/src/routes.ts',
-    sites: 13,
-    kind: 'pending',
-    reason: 'the discovery, JWKS, userinfo-provider and `/internal/clients` refusals answer `{ error }` as application/json',
-  },
   {
     area: 'vertical egress',
     path: 'apps/vertical-egress/src/worker.ts',

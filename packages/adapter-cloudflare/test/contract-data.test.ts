@@ -2048,6 +2048,40 @@ describe('#1856 — grantEntityLocal refuses a ref the permission graph cannot h
     await host.grantEntityShapeLocal(s, who, entity, [USE]);
     await expect((await host.getScope(who, t, s)).invoke('perm/probe', { permission: USE, entity })).resolves.toMatchObject({ allowed: true });
   });
+
+  it("gives the shapes declared for a person's own record once, so a revoke stays revoked", async () => {
+    const own = { entityType: 'localOwner', entityId: who };
+    // A door's host: given the vertical's permissions, of which only the first shape is the person's own.
+    const door = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      permissions: {
+        modules: [permMod],
+        entityGrants: [
+          { entityType: 'localOwner', permissions: [READ], bootstrap: true, holder: 'self' },
+          { entityType: 'localList', permissions: [READ] },
+          { entityType: 'localDesk', permissions: [READ], bootstrap: true, holder: 'grantee' },
+        ],
+      },
+    });
+    try {
+      expect(await door.grantSelfShapesLocal(s, who)).toEqual([own]);
+      await expect(probe(own)).resolves.toMatchObject({ allowed: true });
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) =>
+        state.storage.sql.exec(
+          "UPDATE _substrat_tuples SET revoked_at = '2026-11-07T00:00:00.000Z' WHERE subject = ? AND relation = ? AND object = ?",
+          `principal:${who}`,
+          `granted:${READ}`,
+          `localOwner:${who}`,
+        ),
+      );
+      expect(await door.grantSelfShapesLocal(s, who)).toEqual([]);
+      await expect(probe(own)).resolves.toMatchObject({ allowed: false });
+    } finally {
+      await door.close();
+    }
+  });
 });
 
 describe('#113 — a refusal raised inside a Durable Object keeps its code across the hop', () => {
