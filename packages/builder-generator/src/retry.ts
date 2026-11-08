@@ -25,6 +25,8 @@ export interface RetryDecision {
 	readonly overflow: boolean;
 	/** Provider-mandated wait, already capped, when a retry-after header exists. */
 	readonly retryAfterMs?: number;
+	/** HTTP 429: the provider is shedding load, so the backoff is longer (`RATE_LIMIT_*`). */
+	readonly rateLimited?: boolean;
 	/** Short human label for the retry event ("overloaded", "HTTP 503", …). */
 	readonly reason: string;
 }
@@ -34,6 +36,13 @@ const RETRY_AFTER_CAP_MS = 60_000;
 /** Backoff: base × 2^(attempt-1), jittered ±25%, capped. */
 const BACKOFF_BASE_MS = 2_000;
 const BACKOFF_CAP_MS = 30_000;
+/**
+ * A 429 with no retry-after: 5 s doubling to 90 s, about 2.5 minutes over the default five tries.
+ * The plain backoff spent about a minute, and five builds sharing a Workers AI model's limit each
+ * gave up mid-scaffold after it; a hosted builder shares one account's limit across every tenant.
+ */
+const RATE_LIMIT_BASE_MS = 5_000;
+const RATE_LIMIT_CAP_MS = 90_000;
 
 const OVERFLOW_PATTERNS =
 	/prompt is too long|context.?(length|window).{0,20}exceed|exceeds? the (available )?context|maximum context length|input length and .?max_tokens.? exceed|reduce the length of|too many total text bytes/i;
@@ -119,6 +128,7 @@ export function classifyProviderError(err: unknown): RetryDecision {
 				retryable: true,
 				overflow: false,
 				...(after !== undefined ? { retryAfterMs: after } : {}),
+				...(status === 429 ? { rateLimited: true } : {}),
 				reason: status === 429 ? 'rate limited' : `HTTP ${status}`,
 			};
 		}
@@ -143,7 +153,10 @@ export function retryDelayMs(
 	random: () => number = Math.random,
 ): number {
 	if (decision.retryAfterMs !== undefined) return Math.round(decision.retryAfterMs);
-	const base = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt - 1));
+	const [first, cap] = decision.rateLimited
+		? [RATE_LIMIT_BASE_MS, RATE_LIMIT_CAP_MS]
+		: [BACKOFF_BASE_MS, BACKOFF_CAP_MS];
+	const base = Math.min(cap, first * 2 ** Math.max(0, attempt - 1));
 	const jitter = 1 + (random() * 0.5 - 0.25);
 	return Math.round(base * jitter);
 }

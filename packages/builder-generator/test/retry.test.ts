@@ -86,6 +86,15 @@ describe('retryDelayMs', () => {
 		expect(retryDelayMs(2, d, mid)).toBe(4_000);
 		expect(retryDelayMs(5, d, mid)).toBe(30_000); // capped, not 32s
 	});
+
+	it('waits longer on a rate limit with no retry-after', () => {
+		const mid = (): number => 0.5;
+		const limited = classifyProviderError(err('Too Many Requests', { statusCode: 429 }));
+		expect([1, 2, 3, 4, 5].map((n) => retryDelayMs(n, limited, mid))).toEqual([
+			5_000, 10_000, 20_000, 40_000, 80_000,
+		]);
+		expect(retryDelayMs(6, limited, mid)).toBe(90_000); // capped
+	});
 });
 
 // ── the loop, end-to-end over a mock model ────────────────────────────────────
