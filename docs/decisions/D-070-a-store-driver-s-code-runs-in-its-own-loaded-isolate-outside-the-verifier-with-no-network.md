@@ -12,10 +12,8 @@ tracking: ["#2830"]
 # D-70 — A store driver's code runs in its own loaded isolate, outside the verifier, with no network
 
 > **Proposed 2026-11-04, not ratified.** The route is chosen. The spike in `spikes/store-facets/`
-> has run on a real dispatch namespace, and its figures are in **Measured** below. Three are still
-> missing: whether the loader id is what keeps two objects apart, the isolate's memory beyond the
-> Python heap, and the billed cost. They come from another run that reads the dashboard before the
-> account is cleaned. If a figure rules the route out, this record says so and is withdrawn rather
+> has run on a real dispatch namespace twice, and its figures are in **Measured** below. One is still
+> missing: the billed cost, which shows a day after the run. If a figure rules the route out, this record says so and is withdrawn rather
 > than ratified. Nothing is built on it until then.
 
 **The store script runs only platform code, and the driver's code runs beside it in an isolate of its own.** The store script keeps D-63's shape, one script per (driver, vertical), uploaded and rolled out as today. What changes is what runs in it:
@@ -44,17 +42,17 @@ When this is built, D-67's lift is withdrawn under its own revisit clause, and t
 
 ## Measured
 
-From three runs of the spike (`spikes/store-facets/RUNBOOK.md`) on 2026-11-04, about five minutes apart, on a test account with Workers for Platforms, at spike commit `69e274990`, with graph release `678ab0f4…` (1 324 files, 7.6 MB). Each run passed 22 of 24 checks, and the same two failed each time. The runs are in [FINDINGS.md](../../spikes/store-facets/FINDINGS.md#deployed). Each figure is required, and an unmeasured one blocks ratification: the memory beyond the heap and the billed cost are still unmeasured, and need another run that reads the dashboard before the account is cleaned.
+From two sets of three runs of the spike (`spikes/store-facets/RUNBOOK.md`), on 2026-11-04 and 2026-11-08, each about five minutes apart, on a test account with Workers for Platforms, with graph release `678ab0f4…` (1 324 files, 7.6 MB). The runs are in [FINDINGS.md](../../spikes/store-facets/FINDINGS.md#deployed). Each figure is required, and an unmeasured one blocks ratification: the billed cost is still to be read.
 
 | Question | Result |
 | --- | --- |
 | A dispatch-namespace script may bind a Worker Loader | **Yes.** The deploy lists `env.LOADER` and succeeds. |
-| Two loader ids give two isolates; one id reuses its isolate | **Not shown.** One object's calls reach one isolate, and two objects with their own ids reach two. But two objects sharing one id also reached two isolates, in all three runs, so the runs do not show that the id is what keeps them apart, nor that the fallback's sharing is there to save. |
+| Two loader ids give two isolates; one id reuses its isolate | **Yes, within one object.** In one object, the driver loaded under one id twice reached one isolate, and under two ids reached two, JavaScript and Python, in all three runs of 2026-11-08. Only the id differed, so the id is what separates. **Across objects, not shown:** two objects sharing one id reached two isolates in all six runs, so the fallback's saving is not shown. |
 | `fetch()` and `connect()` throw in a loaded isolate, JavaScript and Python | **Yes.** The control with the network inherited reaches it. |
 | A facet's storage is its own, and survives an abort and a restart under new code | **Yes,** JavaScript and Python. |
 | A loaded isolate's env holds nothing the supervisor did not pass | **Yes,** JavaScript and Python. |
-| Cold start and memory of the graph release in a loaded isolate (first call, warm call) | First call **2.1–2.4 s** (2 297, 2 147 and 2 415 ms), warm call **6–8 ms**. Memory: Python heap **43.6 MB** (43 581 440 bytes), a lower bound. **Isolate memory not measured.** |
-| Cost per loaded isolate per day, as billed | **Not measured.** The runs used 60 loader ids; at the listed $0.002 per Dynamic Worker per day that is at most about $0.12, which is arithmetic, not a bill. |
+| Cold start and memory of the graph release in a loaded isolate (first call, warm call) | First call **2.1–3.2 s** (2 297, 2 147 and 2 415 ms; then 2 915, 3 125 and 2 181 ms), warm call **3–8 ms**. Memory: Python heap **43.6 MB** (43 581 440 bytes) in every run. Workers analytics showed no `exceededResources` outcome and no errors over the 2026-11-08 runs. Cloudflare does not report an isolate's total memory, so the heap is the figure, a lower bound. |
+| Cost per loaded isolate per day, as billed | **To be read** from the account's usage for 2026-11-08. Each run creates about 22 loader ids. At the listed $0.002 per Dynamic Worker per day, the six runs come to at most about $0.27, which is arithmetic, not a bill. |
 
 ## Why
 
