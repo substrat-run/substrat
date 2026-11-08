@@ -909,6 +909,30 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
   credential.
 - **Long path lists are cut.** A record lists at most 200 files not sent and 200 deleted paths,
   with the full counts beside them; the headline counts from the full number.
+- **Redaction matches patterns, inside caps.** A stored quote is at most 200 characters. Only the
+  first line of a quote or an explanation is kept, so an explanation written over several lines
+  loses every line after its first. An explanation is cut at a word break inside its first 1,000
+  characters before any mask reads it,
+  and at most 500 are stored; a longer one is cut, never refused. Keeping the word whole means no
+  one-word token reaches a mask in pieces; a value of several words, such as a phone number, can
+  keep its first words when the cut falls inside it. Not every mask runs in linear time, so these
+  caps are what bound the time redaction takes. A secret in a shape no mask knows stays in the
+  text.
+- **Redaction can take more than the value.** In an explanation, a secret-named value inside a
+  string or a code span (`` `password=hunter2` ``) takes the rest of its line with it, since the
+  closing quote reads as an opening one.
+- **A sentence about a quoted check keeps its words.** When an explanation quotes a comparison or
+  a key and the sentence goes on after it in a lower-case word (`` `token == null` lets any caller
+  through ``), a quoted string later on that line is kept as written. A capitalised word, a tab or
+  a keyword such as `return` after the check reads as code instead, so a later quoted string is
+  then masked.
+- **The last hour of a receipt's life writes no result.** A job that starts inside that hour calls
+  no model, and the review stays `received` until the prune removes it. A call that returned usage
+  has its ledger line written before anything decides whether its result is kept, so a result
+  dropped by this margin or by a prune still leaves the line. If that ledger write fails on the
+  job's last alarm, it is logged and not tried again, so a failed write with a pruned receipt leaves
+  no line. A timed-out call returns no usage, so it has no line though it may still be billed, and
+  with `REVIEW_PLATFORM_TENANT` unset no line is written at all.
 - **Only the gateway pair reaches the model host.** A gateway id setting is not passed, so the
   call goes to the account's default gateway; naming another gateway is a later change.
 

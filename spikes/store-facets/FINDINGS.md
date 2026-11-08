@@ -87,3 +87,27 @@ points at `deleteAll` in a facet; that is not isolated yet. Deployed, the second
 in all three runs. So step 2's "25 PASS" reads 24 locally on this release.
 
 After the runs, the namespace and the dispatcher both answered 404.
+
+### Rerun (2026-11-08)
+
+Three more runs, about five minutes apart, on the same kind of account, with the same graph
+release. The probe gained a control that loads the driver under ids x, x and y inside one object
+(`/ids`), so that only the id differs. Each run passed 27 of 29 checks.
+
+| Question | Result |
+| --- | --- |
+| In one object, one id reaches one isolate | Yes, JavaScript and Python, all three runs |
+| In one object, two ids reach two isolates | Yes, JavaScript and Python, all three runs |
+| Two objects sharing one id reach one isolate (the control) | No, again, in all three runs: the same two failures as on 2026-11-04 |
+| Cold start of the graph release, first call | 2 915, 3 125 and 2 181 ms |
+| Warm call | 3–6 ms |
+| Memory of the graph release | Python heap 43.6 MB in every run |
+| `exceededMemory` / `exceededCpu` | None. Workers analytics for the account over the runs show only `success` and `clientDisconnected` outcomes, and 0 errors |
+| Cost, as billed | Read from the day's usage once it shows |
+
+So the id is what separates two loaded isolates: inside one object nothing else differed. Two
+objects sharing an id still came apart, most likely because they ran on different machines, so the
+fallback, one isolate per (release, tenant, vertical), cannot count on sharing to save anything.
+
+Workers analytics show these scripts as `__unknown__` under Workers for Platforms, so the outcome
+counts are for the whole test account, which ran nothing else.
