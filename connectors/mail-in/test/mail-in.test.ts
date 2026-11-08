@@ -113,10 +113,10 @@ function mail(o: {
 
 const PDF = new TextEncoder().encode('%PDF-1.7 a supplier invoice, as bytes');
 
-async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number } = {}) {
+async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number; raw?: boolean; failRawTimes?: number } = {}) {
   dir = mkdtempSync(join(tmpdir(), 'substrat-mail-in-'));
   const landed: MailInChange[] = [];
-  const fail = { times: opts.failTimes ?? 0, attachmentTimes: opts.failAttachmentTimes ?? 0 };
+  const fail = { times: opts.failTimes ?? 0, attachmentTimes: opts.failAttachmentTimes ?? 0, rawTimes: opts.failRawTimes ?? 0 };
   const docsMod = {
     manifest: moduleManifest.parse({
       id: '@test/docs',
@@ -143,8 +143,14 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number;
           fail.attachmentTimes -= 1;
           throw new Error('the vertical could not record the file this time');
         }
+        if (change.change === 'raw' && fail.rawTimes > 0) {
+          fail.rawTimes -= 1;
+          throw new Error('the vertical could not record the original this time');
+        }
         landed.push(change);
-        if (change.change === 'message') return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` } };
+        if (change.change === 'message') {
+          return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` }, ...(opts.raw ? { raw: true } : {}) };
+        }
         return { ok: true };
       }) as OperationHandler<never, unknown>,
     }),
@@ -470,6 +476,45 @@ describe('delivery', () => {
     const [entry] = await messageEntries(w.host, accepted.connectionId);
     expect(entry!.entry).toMatchObject({ status: 'delivered', landed: { '0': stored[0]!.id } });
     expect(entry!.entry.uploaded).toBeUndefined();
+  });
+
+  it('lands the original message on the entity when the answer asks for it, before the attachments', async () => {
+    const w = await world({ raw: true });
+    const a = await w.request();
+    const raw = mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } });
+    const accepted = await w.send(a.address, raw);
+    if (!accepted.accepted) throw new Error('refused');
+    expect(await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).toEqual({ status: 'delivered', attachments: 1 });
+
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'raw', 'attachment']);
+    const original = (await w.files(`doc-${accepted.messageId.slice(0, 12)}`)).find((f) => f.contentType === 'message/rfc822');
+    expect(w.landed[1]).toMatchObject({ change: 'raw', messageId: accepted.messageId, attachment: { id: original!.id, filename: 'message.eml', size: raw.byteLength } });
+    const opened = await (await w.host.attachments(w.reader, w.t, w.s)).open(original!.id);
+    expect(new Uint8Array(opened!.body as Uint8Array)).toEqual(raw);
+  });
+
+  it('stores the original once when its change fails, and tells the scope again on the retry', async () => {
+    const w = await world({ raw: true, failRawTimes: 1 });
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address }));
+    if (!accepted.accepted) throw new Error('refused');
+    expect((await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).status).toBe('retrying');
+    w.advance(7 * 60 * 60 * 1000);
+    expect((await sweepMailIn(w.host, w.deps, a.connectionId)).delivered).toBe(1);
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'raw']);
+    const stored = await w.files(`doc-${accepted.messageId.slice(0, 12)}`);
+    expect(stored).toHaveLength(1);
+    expect(w.landed[1]).toMatchObject({ change: 'raw', attachment: { id: stored[0]!.id } });
+  });
+
+  it('lands no original when the answer does not ask for it', async () => {
+    const w = await world();
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
+    if (!accepted.accepted) throw new Error('refused');
+    await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId);
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
+    expect((await w.files(`doc-${accepted.messageId.slice(0, 12)}`)).map((f) => f.contentType)).toEqual(['application/pdf']);
   });
 });
 
