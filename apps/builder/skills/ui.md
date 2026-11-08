@@ -11,7 +11,8 @@ visible control: a `wa-button`, a checkbox. So is every operation in spec/model.
 data, on the screen where §4 of the concept lets someone do it: rename, edit and delete included.
 One that only another program calls (the host's join, an operation the invite dialog already
 covers) says so in app/src, `// api-only: <operation> — <why>`; the app-writes gate holds both.
-A row that opens its record does it as the starter's does, `row-click @sub-row-click=${…}` to a screen with `nav: false`, and a row
+A row that opens its record does it as the starter's does, `row-click @sub-row-click=${…}` to
+a screen with `nav: false`, and a row
 click does nothing else: never tick, delete or revoke on a row click. Those, and any action on
 one row, are row actions: `.actions` on the table puts each in its row as a button, as the
 starter's Delete is, and the table runs it and reloads. What an action changes stays visible in
