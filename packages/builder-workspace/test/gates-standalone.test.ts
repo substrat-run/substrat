@@ -158,6 +158,9 @@ describe('standaloneGates — when each gate applies', () => {
 		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
 		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
 		['sends-email', 'package.json', '{ not json', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
+		['invite-email', 'src/module.ts', "'todo/invite': async (ctx) => {}", 'requestEmail(ctx, message);', 'reaches nobody'],
+		['app-events', 'app/src/screens.ts', 'html`<sub-entity-table .rows=${r} @row-click=${(e) => open(e)}></sub-entity-table>`', 'html`<sub-entity-table row-click @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'sub-row-click'],
+		['app-events', 'app/src/screens.ts', 'html`<sub-entity-table @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'html`<sub-entity-table row-click @sub-row-click=${(e) => open(e)}></sub-entity-table>`', 'without the row-click'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/gone.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'src/gone.ts'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'no wrangler'],
 		['hosted-entry', 'package.json', '{"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'nothing to build'],
@@ -170,6 +173,7 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.writeFile(`${PROJECT}/src/server.ts`, 'devLogin({}); process.env.PORT ?? 8891');
 		await w.writeFile(`${PROJECT}/src/module.ts`, 'requestEmail(ctx, message);');
 		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'todo/join': { input } })");
+		await w.writeFile(`${PROJECT}/spec/concept.md`, 'People are invited to a list by email.');
 		await w.writeFile(`${PROJECT}/app/node_modules/@substrat-run/elements/dist/controls.js`, "import 'x/components/button/button.js';");
 
 		await w.writeFile(`${PROJECT}/${file}`, bad);
