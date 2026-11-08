@@ -156,6 +156,7 @@ describe('standaloneGates — when each gate applies', () => {
 		['app-ports', 'src/server.ts', 'process.env.PORT ?? 8878', 'process.env.PORT ?? 8891', 'cannot reach'],
 		['app-starter', 'app/src/screens.ts', "invoke('acme/add-item')", "invoke('lists/add-item')", 'still the starter'],
 		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
+		['dev-scripts', 'package.json', '{"scripts":{"issuer":"substrat-dev-issuer --personas src/personas.ts"}}', '{"scripts":{"dev":"tsx watch src/server.ts"}}', 'src/personas.ts (the "issuer" script)'],
 		['sends-email', 'package.json', '{}', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
 		['sends-email', 'package.json', '{ not json', '{"substrat":{"sendsEmail":true}}', 'sendsEmail'],
 		['invite-email', 'src/module.ts', "'todo/invite': async (ctx) => {}", 'requestEmail(ctx, message);', 'reaches nobody'],

@@ -49,6 +49,7 @@ export type GateName =
 	| 'app-ports'
 	| 'app-starter'
 	| 'sign-in'
+	| 'dev-scripts'
 	| 'sends-email'
 	| 'invite-email'
 	| 'app-events'
@@ -241,6 +242,31 @@ async function noRealSignIn(ws: Workspace, projectDir: string): Promise<string |
 	const app = withoutComments(await readTree(ws, `${projectDir}/app/src`));
 	if (/x-principal/i.test(`${server}\n${app}`)) return 'The code identifies the caller from an x-principal header, which anyone can set. Use devLogin, as the template\'s src/server.ts does.';
 	return /devLogin|verticalAuth|oidcRp/.test(server) ? null : 'src/ has no sign-in. Use devLogin, as the template\'s src/server.ts does.';
+}
+
+/**
+ * A script that runs a file the project does not have. The scaffold writes src/server.ts and
+ * src/personas.ts, which the laid-down package.json's dev and issuer scripts run; 8 of 137 Haiku builds
+ * never did, so `pnpm dev` could not start and nobody could sign in locally. The sign-in and dev-join
+ * gates read src/server.ts only when it exists, so every gate passed.
+ */
+async function scriptsRunMissingFiles(ws: Workspace, projectDir: string): Promise<string | null> {
+	let scripts: Record<string, unknown>;
+	try {
+		scripts = (JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as { scripts?: Record<string, unknown> }).scripts ?? {};
+	} catch {
+		return null;
+	}
+	const missing = new Map<string, string>();
+	for (const [name, command] of Object.entries(scripts)) {
+		if (typeof command !== 'string') continue;
+		for (const [file] of command.matchAll(/\bsrc\/[\w./-]+\.[cm]?[jt]s\b/g)) {
+			if (!missing.has(file) && !(await ws.exists(`${projectDir}/${file}`))) missing.set(file, name);
+		}
+	}
+	if (missing.size === 0) return null;
+	const named = [...missing].map(([file, script]) => `${file} (the "${script}" script)`).join(', ');
+	return `package.json runs files the project does not have, so pnpm dev cannot start and nobody can sign in locally: ${named}. Write each from the template's (copy_reference template <file>) and adapt it: src/server.ts is the local API with its dev sign-in, src/personas.ts the cast the dev issuer offers and the seed links to people.`;
 }
 
 /**
@@ -498,6 +524,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/server.ts`),
 			note: 'no src/server.ts yet',
 			refuse: (ws) => noRealSignIn(ws, projectDir),
+		},
+		{
+			name: 'dev-scripts',
+			cmd: 'true',
+			appliesWhen: pkg,
+			note: 'no package.json yet',
+			refuse: (ws) => scriptsRunMissingFiles(ws, projectDir),
 		},
 		{
 			name: 'sends-email',
