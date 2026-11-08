@@ -220,7 +220,7 @@ Each refusal names its remedy.
 ## The rules (non-negotiable)
 
 **Module code** = everything reachable from a `ModuleRegistration` (operations,
-consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
+consumers). Rules 1–5 and 12 are enforced mechanically by `boundary-lint`.
 
 1. **Data access is `ctx.sql` only.** Never import `better-sqlite3`, an adapter,
    `node:*`, or `cloudflare:workers` in module code. That last one is not a style rule:
@@ -275,6 +275,10 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
     copies or majors; composing a contracts schema into one built from a separate `zod`
     fails at *runtime* (`expected a Zod schema`) with an error pointing nowhere near the
     cause.
+12. **A CSV is written by `csvTable(header, rows)`** from `@substrat-run/contracts`, never
+    by joining cells with `','`. Excel, LibreOffice and Google Sheets run a cell starting
+    with `=`, `+`, `-` or `@` as a formula even when it is quoted, so a name someone typed
+    reaches whoever opens the export as a working link. `csvTable` writes it as text.
 
 ## Swallowing an engine error requires `ctx.atomic`
 
@@ -340,7 +344,7 @@ reference is the [todo demo](https://github.com/substrat-run/substrat/tree/main/
 
 ```sh
 npm test                        # the scenario, including the denials
-npx @substrat-run/boundary-lint # the layer rules (1–5)
+npx @substrat-run/boundary-lint # the layer rules (1–5, 12)
 npm run typecheck
 ```
 
