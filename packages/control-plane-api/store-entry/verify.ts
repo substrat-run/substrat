@@ -19,16 +19,20 @@ import {
 } from '@substrat-run/contracts/scope-store-envelope';
 import { STORE_CALLER_KEYS_VAR, STORE_PLATFORM_KEYS_VAR, STORE_SCRIPT_VAR } from './names.js';
 
+export { storeFenceWipeBody, storeObjectFence } from './fence.js';
+
 /**
- * A call the entry refuses: answer `status` with `message`, as plain text. It is the entry's own
- * answer, never a store's, so it stays outside the store envelope (#2815): a caller reads it as a bad
- * envelope. The router and the control plane refuse an oversize body before they sign it, so the 413
- * here is the entry holding its own limit, not the refusal a vertical sees.
+ * A call the entry refuses: answer `status` with `message`. The entry's own refusals are plain text,
+ * outside the store envelope (#2815): a caller reads them as a bad envelope. The router and the control
+ * plane refuse an oversize body before they sign it, so the 413 here is the entry holding its own limit,
+ * not the refusal a vertical sees. The fence's 410 and 503 (`fence.ts`) are the exception: they say what
+ * the store object is, gone or draining, so they are the store envelope's error, named by `contentType`.
  */
 export interface StoreCallRefusal {
   readonly ok: false;
-  readonly status: 401 | 413 | 503;
+  readonly status: 401 | 410 | 413 | 503;
   readonly message: string;
+  readonly contentType?: string;
 }
 
 /** What the entry does with a call: hand it on, or answer `status` with `message`. */

@@ -16,6 +16,10 @@ object is bound to one name by construction, with nothing stored that the driver
 then spends the envelope's nonce through the verifier's spendStoreNonce (K-59), so one envelope is
 admitted once.
 
+Inside the object, a call passes the fence (store-entry/fence.ts, D-71) before it reaches the
+driver, the same fence the JavaScript entry runs, from the same module. An object a deletion path
+has fenced refuses it, whenever it was signed.
+
 The body stays in JavaScript (#2811). The verifier module reads it once, bounded by STORE_CALL_MAX_BYTES
 (a declared Content-Length over the limit is refused with 413 before the body is read, and a stream
 that goes past it is refused at the limit), verifies it as the text those bytes decode to, and hands
@@ -45,6 +49,7 @@ from __SUBSTRAT_STORE_DRIVER__ import __SUBSTRAT_STORE_CLASS__ as StoreDriver
 # Each of these is a name in store-entry/names.ts; test/python-entry.test.ts holds them equal.
 VERIFIER_MODULE = "./substrat-store-verify.js"
 OBJECT_BINDING = "SUBSTRAT_STORE"
+FENCE_OPERATION = "substrat.fence"
 RESERVED_BINDING_PREFIX = "SUBSTRAT_STORE"
 
 
@@ -75,8 +80,11 @@ def _driver_env(env):
 
 
 def _refusal(verified):
-    """The response for a refused call: its status and its plain-text message."""
-    return Response(verified.message, status=verified.status)
+    """The response for a refused call: its status and its message. The entry's own refusals are plain
+    text; the fence's 410 and 503 are the store envelope's error, which names its content type."""
+    content_type = getattr(verified, "contentType", None)
+    headers = {"content-type": content_type} if content_type else None
+    return Response(verified.message, status=verified.status, headers=headers)
 
 
 async def _verified(request, env):
@@ -94,12 +102,26 @@ class SubstratStoreObject(DurableObject):
     def __init__(self, ctx, env):
         super().__init__(ctx, env)
         self._driver = None
+        self._fence = None
 
     def _driver_object(self):
         """Constructed once per object instance, on first use, so the driver keeps its in-memory state."""
         if self._driver is None:
             self._driver = StoreDriver(self.ctx, _driver_env(self.env))
         return self._driver
+
+    def _fence_of(self):
+        """One fence per object instance, as in the JavaScript entry. The verifier module holds it.
+
+        The fence is JavaScript and calls this storage after this function has returned, so it is
+        handed the JavaScript object. Under workers-runtime-sdk's DurableObjectContext, ctx.storage is
+        a Python wrapper that reaches JavaScript as a borrowed proxy, destroyed when the call returns,
+        and every call would then fail. create_proxy is not the answer: a proxy's .get may be Python's
+        __getitem__, so the mark would read as absent and the fence would fail open.
+        """
+        if self._fence is None:
+            self._fence = import_from_javascript(VERIFIER_MODULE).storeObjectFence(_raw_storage(self.ctx))
+        return self._fence
 
     async def fetch(self, request):
         call = await _verified(request, self.env)
@@ -111,13 +133,35 @@ class SubstratStoreObject(DurableObject):
         verifier = import_from_javascript(VERIFIER_MODULE)
         if not verifier.spendStoreNonce(_raw_storage(self.ctx), call.envelope, int(Date.now() // 1000)):
             return _refusal(verifier.spentNonce)
-        return await self._driver_object().fetch(_driver_request(request.url, call.body))
+        fence = self._fence_of()
+        if call.envelope.op == FENCE_OPERATION:
+            closed = await fence.close()
+            if not closed.ok:
+                return _refusal(closed)
+            body = verifier.storeFenceWipeBody(call.body)
+            try:
+                return await self._driver_object().fetch(_driver_request(request.url, body))
+            finally:
+                await fence.reassert()
+        admitted = await fence.admit(call.envelope)
+        if not admitted.ok:
+            return _refusal(admitted)
+        try:
+            return await self._driver_object().fetch(_driver_request(request.url, call.body))
+        finally:
+            await fence.leave()
 
     async def alarm(self, alarm_info=None):
-        """An alarm is the object's own timer, which only the driver sets. It goes to the driver."""
-        driver = self._driver_object()
-        if hasattr(driver, "alarm"):
-            await driver.alarm(alarm_info)
+        """An alarm is the object's own timer, which only the driver sets. It goes to the driver, unless the object is fenced."""
+        fence = self._fence_of()
+        if not await fence.admitAlarm():
+            return
+        try:
+            driver = self._driver_object()
+            if hasattr(driver, "alarm"):
+                await driver.alarm(alarm_info)
+        finally:
+            await fence.leave()
 
 
 class Default(WorkerEntrypoint):

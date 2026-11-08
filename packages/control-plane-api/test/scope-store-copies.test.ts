@@ -114,7 +114,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     const caller: PlatformScopeStores = {
       callStore: (target) => (async (operation: string) => (asked.push(operation), refuse.callStore(target)('substrat.size'))) as never,
       eraseSubject: async (input) => (asked.push('erase'), refuse.eraseSubject(input)),
-      wipeStores: async (input) => (asked.push('wipe'), refuse.wipeStores(input)),
+      fenceStores: async (input) => (asked.push('wipe'), refuse.fenceStores(input)),
       sizeStores: async (input) => (asked.push('size'), refuse.sizeStores(input)),
     };
     return { caller, asked };
