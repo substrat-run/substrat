@@ -611,6 +611,16 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a string after a quote glued to a bracket', 'if (secret == null)\' x = "a" \'s3cr3tVALUE\''],
     ['a string after a quote glued to an index', 'token = seen[i]\' y = "a" \'s3cr3tVALUE\''],
     ['a string after a quote glued to a later word', 'if (secret == null) x\' = "a" \'s3cr3tVALUE\''],
+    ...[';', '.', '}', '!', '?', '>', '-', '*', ',', ':', 'é', '"a"', '\\'].map((glue) => [`a string after a quote glued to ${glue}`, `if (secret == null${glue}') x = "a" 's3cr3tVALUE'`]),
+    ['a string after a glued quote, then a value', 'if (secret == null\') x = "a" \'s3cr3tVALUE\' token=abc'],
+    ['a string after a double quote glued to a colon after a word', 'if (secret == null:" x = \'b\' "s3cr3tVALUE"'],
+    ['a string after a double quote glued to a colon after a single-quoted string', 'if (secret == null) \'a\':" x = \'b\' "s3cr3tVALUE"'],
+    ['a string after a single quote glued to a colon after a double-quoted string', 'if (secret == null) "a":\' x = "b" \'s3cr3tVALUE\''],
+    ['a string after a backtick glued to a comma after a double-quoted string', 'if (secret == null) "a",` x = "b" `s3cr3tVALUE`'],
+    ['a string after a stray quote before a code span holding a value', "a 'b `password=abc`: ok and 's3cr3tVALUE' x"],
+    ['a string after a stray quote before a string holding a value', 'a \'b "api_key=abc": ok and \'s3cr3tVALUE\' x'],
+    ['a string after a stray quote before a second quoted name', "`password=abc`: ok 'b `token=c`: ok and 's3cr3tVALUE'"],
+    ['a string after a value and a stray quote before a quoted check that goes on', "password=abc 'b `token == null and x`: ok and 's3cr3tVALUE' x"],
     ['a concatenated value', 'password = "a" + "s3cr3tVALUE"'],
     ['a long argument name', `read("${'x'.repeat(72)}_api_key", "s3cr3tVALUE")`],
     ['a space before an argument’s comma', '"API_KEY" , "s3cr3tVALUE"'],
@@ -728,6 +738,12 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     expect(redact('password = "a" + "b" is logged', 500, 'value')).toBe('password = [redacted] + [redacted] is logged');
     // A quote glued to a word before the value changes no reading after it.
     expect(redact("it's the user's password = \"a\" + \"b\" is logged", 500, 'value')).toBe("it's the user's password = [redacted] + [redacted] is logged");
+    // A quote that opens a value, or follows an opening bracket, opens a string.
+    expect(redact('secret:"a" is logged', 500, 'value')).toBe('secret:[redacted] is logged');
+    expect(redact('token = cfg["a"] or {"b": 1} is logged', 500, 'value')).toBe('token = [redacted]] or {[redacted]: 1} is logged');
+    // So does one after `=`, or after the colon or comma that follows a double-quoted string.
+    expect(redact('password=abc then user="bob" logs in and "admin" is checked', 500, 'value')).toBe('password=[redacted] then user=[redacted] logs in and [redacted] is checked');
+    expect(redact('token=abc {"a":"b","c":"d"} done', 500, 'value')).toBe('token=[redacted] {[redacted]:[redacted],[redacted]:[redacted]} done');
     expect(redact('token = Buffer.from("V") is logged', 500, 'value')).toBe('token = [redacted]) is logged');
     expect(redact('run --password hunter22 and token=abc1 here', 500, 'value')).toBe('run --password [redacted] and token=[redacted] here');
     expect(redact('log("done") then password=hunter22 is set', 500, 'value')).toBe('log("done") then password=[redacted] is set');
@@ -774,7 +790,7 @@ describe('the assembler, the fence, the redaction and the headline', () => {
     ['a stray quote after a comparison with null', 'if (token == null") token = \'a\' "s3cr3tVALUE"'],
     ['a stray quote after a comparison, then a key', 'when password === null") token: s3cr3tVALUE "s3cr3tVALUE"'],
     ['a JSON-escaped name holding an earlier value', '\\"api_key=abc\\"=f("s3cr3tVALUE")'],
-    ['a lone quote between a comparison and a value', 'if (token == null) " token = \'a\' "s3cr3tVALUE"'],
+    ['a lone quote, read again from the value after it', 'if (token == null) " token = \'a\' "s3cr3tVALUE"'],
   ])('masks a value after %s, in every stored field', (_label, line) => {
     const parsed = parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: line, failsWhen: line, fix: line }] }));
     const [kept] = assemble(parsed!, [{ path: 'src/a.ts', text: line }]).findings;
@@ -859,13 +875,24 @@ describe.skipIf(!__PROBE_REDACTION_COST__)('redaction: what it costs (opt in, #2
   // Not every mask is linear, so the cut is what bounds them: uncut, each of these takes seconds.
   // Each run breaks just inside the cut, so the masks read nearly all 1,000 characters of it.
   it('the cut bounds the masks that are not linear', () => {
-    // The third reads the quotes again after every quote glued to a word.
-    const runs = [`${'eyJ-'.repeat(249)} ${'eyJ-'.repeat(16_384)}`, `Bearer ${'a'.repeat(992)} ${'a'.repeat(65_536)}`, `password=a ${"x' ".repeat(16_384)}`];
+    const runs = [`${'eyJ-'.repeat(249)} ${'eyJ-'.repeat(16_384)}`, `Bearer ${'a'.repeat(992)} ${'a'.repeat(65_536)}`];
     let stored: string[] = [];
     expect(millis(() => {
       stored = runs.map((run) => assemble(parseReply(JSON.stringify({ findings: [{ item: 'S2', file: 'src/a.ts', line: 1, quote: 'x', failsWhen: run, fix: run }] }))!, [{ path: 'src/a.ts', text: 'x' }]).findings[0]!.failsWhen);
     })).toBeLessThan(500);
-    expect(stored.map((text) => text.slice(0, 8))).toEqual(['eyJ-eyJ-', 'Bearer [', 'password']);
+    expect(stored.map((text) => text.slice(0, 8))).toEqual(['eyJ-eyJ-', 'Bearer [']);
+  });
+
+  // The quotes are read again after each glued quote. Each read stops at a string an earlier read
+  // found, so these uncut runs cost a read or two; read in full, each would take seconds.
+  it('a read of the quotes stops where an earlier read went on', () => {
+    const runs = [`password=a ${"x' ".repeat(16_384)}`, `password=a ${"'".repeat(16_384)}`, `password=a ${'`'.repeat(16_384)}`, `password=a {${'"a":"b",'.repeat(4_096)}`];
+    let stored: string[] = [];
+    expect(millis(() => {
+      stored = runs.map((run) => redact(run, 500, 'value'));
+    })).toBeLessThan(500);
+    // The first run is masked whole only when the quotes are read again after each glued quote.
+    expect(stored.map((text) => text.slice(0, 32))).toEqual(['password=[redacted] x[redacted]', 'password=[redacted] [redacted]', 'password=[redacted] [redacted]', 'password=[redacted] {[redacted]:']);
   });
 
   // The bare name and the email keep a left boundary and a URL scheme reads its run once, so a long
