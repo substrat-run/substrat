@@ -263,7 +263,9 @@ The codes are a small closed set — `unauthenticated`, `permission_denied`, `fo
 `not_found`, `conflict`, `validation_failed`, `precondition_failed`, `rate_limited`,
 `unavailable`, `internal` — because an open set is a suggestion. A module narrows one with a
 `reason` slug it owns rather than inventing a code, which is the same boundary discipline
-engines follow everywhere else.
+engines follow everywhere else. Each code has a page under [Error codes](/errors/) saying
+what it means, when it is returned and what the caller should do, and that page's address
+is the `type` the document carries.
 
 One rule that is not a detail: **`internal` never carries a message.** An unrecognised throw
 is by definition one nobody reviewed for what it discloses, and a multi-tenant surface is

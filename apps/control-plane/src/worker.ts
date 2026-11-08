@@ -2995,7 +2995,7 @@ export default {
       const refusal = refuse('unauthenticated', why);
       const headers = new Headers(c.res.headers);
       headers.set('content-type', refusal.headers.get('content-type')!);
-      c.res = new Response(refusal.body, { status: 401, headers });
+      c.res = new Response(refusal.body, { status: refusal.status, headers });
     });
 
     // Staff sign-in: OIDC relying party (AuthHero) — /api/auth/login → /callback →

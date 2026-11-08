@@ -65,6 +65,7 @@
  */
 
 import {
+  errorCode,
   isPeerCallHost,
   isPlatformStoreCode,
   isStoreCallHost,
@@ -76,7 +77,14 @@ import {
   PARENT_REQUEST_ID_HEADER,
   parentRequestIdOf,
   PLATFORM_STORE_CODE,
+  PROBLEM_CATALOG,
+  PROBLEM_CONTENT_TYPE,
+  problemForStatus,
   RELAY_CALLER_HEADER,
+  substratError,
+  toProblem,
+  type ErrorCode,
+  type Problem,
   type StoreResponse,
 } from '@substrat-run/contracts';
 
@@ -299,11 +307,49 @@ function relayHost(env: Env): string | null {
 const EGRESS_HEADER = 'x-substrat-egress';
 
 /**
+ * This worker's own refusals, as RFC 9457 problem documents (#113): the media type is the
+ * contract, and the deprecated `error` duplicate rides along (`toProblem` and
+ * `problemForStatus` emit it), so a reader of `error` keeps working. `carried` is what a body
+ * answered beside the sentence before #113, kept so the body stays a superset of what it was.
+ */
+function problemResponse(
+  body: Problem,
+  headers: Readonly<Record<string, string>> = {},
+  carried?: Readonly<Record<string, unknown>>,
+): Response {
+  return new Response(JSON.stringify(carried ? { ...body, ...carried } : body), {
+    status: body.status,
+    headers: { 'content-type': PROBLEM_CONTENT_TYPE, ...headers },
+  });
+}
+
+/** A refusal this worker decided, by its code: the status follows from the catalog. */
+const byCode = (code: ErrorCode, detail: string): Problem => toProblem(substratError(code, detail));
+
+/**
+ * The router's refusal of a peer call, relayed. By the router's code only when the catalog
+ * answers that code at the status the router chose, so the status never moves; otherwise
+ * `about:blank` by the status. That is the router's `refused`, a target's own refusal relayed
+ * verbatim (it may have been a `permission_denied`, so no code is invented for it), and its
+ * `unavailable` at 502.
+ */
+function relayedProblem(status: number, code: string, message: string): Problem {
+  const known = errorCode.safeParse(code);
+  return known.success && PROBLEM_CATALOG[known.data].status === status
+    ? byCode(known.data, message)
+    : problemForStatus(status, message);
+}
+
+/**
  * The one refusal a vertical's subrequest meets: meters the verdict, logs it, and answers 403
  * with what was refused, for whom and why. The `x-substrat-egress: refused` header marks it as
  * the platform's, and the `console.warn` puts it in Workers Logs, where a bare 403 from a
  * destination would never be (#2192). The policy carries no version, so the line names the
  * vertical and tenant but not the version.
+ *
+ * A `forbidden` problem (#113). `error` keeps the short `outbound refused` it always carried
+ * rather than duplicating `detail`: this body had both members, with these values, before
+ * problem documents, and a vertical may match on it. `host` and `vertical` ride beside it.
  */
 function outboundRefused(
   env: Env,
@@ -314,10 +360,11 @@ function outboundRefused(
 ): Response {
   meter(env, hostname, verdict);
   logRefusal(env, verdict, hostname, slug);
-  return new Response(JSON.stringify({ error: 'outbound refused', host: hostname, vertical: slug, detail }), {
-    status: 403,
-    headers: { 'content-type': 'application/json', [EGRESS_HEADER]: 'refused' },
-  });
+  return problemResponse(
+    byCode('forbidden', detail),
+    { [EGRESS_HEADER]: 'refused' },
+    { error: 'outbound refused', host: hostname, vertical: slug },
+  );
 }
 
 /** The structured `egress.refused` line; `verdict` tells the refusals apart (`peer` is a peer
@@ -374,15 +421,15 @@ function meter(env: Env, hostname: string, verdict: Verdict | 'redirect', to?: s
  * exactly what this whole mechanism exists to prevent.
  */
 async function peerCall(request: Request, hostname: string, env: Env): Promise<Response> {
-  const problem = (status: number, error: string, headers: Record<string, string> = {}): Response =>
-    new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const refuse = (code: ErrorCode, detail: string, headers?: Record<string, string>): Response =>
+    problemResponse(byCode(code, detail), headers);
   const policy = env.OUTBOUND_POLICY;
   if (!env.PEER_CALLS) {
     // Name the binding and the worker it belongs on. A refusal that says only "not
     // available" sends whoever reads it looking through a vertical's own code for a bug
     // that is one line of deployment config in a different repo directory.
-    return problem(
-      503,
+    return refuse(
+      'unavailable',
       'peer calls are not available in this environment: the egress worker ' +
         '(substrat-vertical-egress) has no PEER_CALLS binding to the router\'s PeerCalls ' +
         'entrypoint. Add it to apps/vertical-egress/wrangler.jsonc and redeploy the egress ' +
@@ -393,8 +440,8 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
     // The platform's own decision, so it is marked and logged like an outbound refusal. The
     // router's outcomes below are not: the target's door and the router answer those.
     logRefusal(env, 'peer', hostname, policy?.slug ?? null);
-    return problem(
-      403,
+    return refuse(
+      'forbidden',
       'peer call refused: this call carries no caller identity. A peer call is made from a ' +
         "vertical's request handler, through the platform — not from inside a Durable Object, " +
         'and not from a script the router did not dispatch (#1706).',
@@ -403,7 +450,7 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
   }
   const parsed = peerCallRequest.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
-    return problem(400, 'peer call refused: the body names a target vertical and an operation (#1706)');
+    return refuse('validation_failed', 'peer call refused: the body names a target vertical and an operation (#1706)');
   }
   // #2192: the calling request's id, so the target's line can name it as its parent. The
   // caller's claim, never part of WHO is calling: passed beside the caller, and only as one ULID.
@@ -419,7 +466,7 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
     parsed.data,
     ...(parent ? [{ parentInvocationId: parent }] : []),
   );
-  if (!outcome.ok) return problem(outcome.status, outcome.message);
+  if (!outcome.ok) return problemResponse(relayedProblem(outcome.status, outcome.code, outcome.message));
   return new Response(JSON.stringify({ result: outcome.result ?? null }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -431,6 +478,11 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
  * The platform's own answers carry a code reserved to it (#2815), so the vertical can tell
  * them from its store's: the refusing rule's code (#2406), or else `substrat.refused` for a
  * 4xx and `substrat.unavailable` for a 5xx.
+ *
+ * Every answer here, refusals included, is the strict `storeResponse` envelope (#2209), never a
+ * problem document (#113): the scope host reads this hop through the kernel's `callScopeStore`,
+ * which parses it with `storeResponse` and answers anything else as `badEnvelope`. It reads the
+ * envelope into a `StoreError`, which is the problem.
  */
 async function storeCall(request: Request, env: Env): Promise<Response> {
   const problem = (status: number, error: string, ruleCode?: string): Response => {
