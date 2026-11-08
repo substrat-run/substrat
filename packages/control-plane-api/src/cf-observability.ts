@@ -7,6 +7,7 @@ import { serviceFamilyPattern } from './service-family.js';
 import {
   ENTITY_TYPES_SEPARATOR,
   FIELD_COVERAGE_ID_FIELD,
+  PLATFORM_SECRET_HEADER,
   ROUTER_REQUEST_POINT,
   ROUTER_SCRIPT_NAMES,
   splitEntityTypes,
@@ -609,6 +610,22 @@ function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown
 }
 
 /**
+ * A raw event without the platform credential's header, at whatever depth it sits. The runtime's
+ * own record of a request carries the request's headers, and Cloudflare's redaction does not
+ * recognise this one, so a record written while invocation logs were on holds the credential.
+ * Matched by key name rather than by one path, since the record's shape is Cloudflare's to change.
+ */
+function withoutPlatformCredential<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(withoutPlatformCredential) as T;
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([k, v]) =>
+      k.toLowerCase() === PLATFORM_SECRET_HEADER ? [k, '[redacted]'] : [k, withoutPlatformCredential(v)],
+    ),
+  ) as T;
+}
+
+/**
  * The events of a telemetry `events` answer, as every reader in this module receives them.
  *
  * The list is unwrapped: the view has nested it one level deeper across API revisions, so
@@ -672,7 +689,7 @@ function projectEvent(e: Record<string, unknown>): RecentLogEvent {
     requestId: str(metadata['requestId']) ?? str(workers['requestId']),
     cpuTimeMs: num(workers['cpuTimeMs']),
     wallTimeMs: num(workers['wallTimeMs']),
-    raw: withoutOutputFields(e),
+    raw: withoutPlatformCredential(withoutOutputFields(e)),
   };
 }
 

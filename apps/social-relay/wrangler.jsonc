@@ -44,7 +44,10 @@
 	// No workers.dev hostname: the registered redirect URIs name this origin and nothing
 	// else should be able to answer as it.
 	"workers_dev": false,
-	"observability": { "enabled": true },
+	// Invocation logs OFF: the runtime's record of each request carries its headers, and the
+	// platform's calls into this worker present the platform credential in one Cloudflare's
+	// redaction does not recognise. The worker's own console lines still record.
+	"observability": { "enabled": true, "logs": { "invocation_logs": false } },
 
 	"env": {
 		"test": {
@@ -56,7 +59,7 @@
 			},
 			"migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayDO"] }],
 			"workers_dev": false,
-			"observability": { "enabled": true }
+			"observability": { "enabled": true, "logs": { "invocation_logs": false } }
 		}
 	}
 }

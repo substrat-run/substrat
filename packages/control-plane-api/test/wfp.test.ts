@@ -45,17 +45,21 @@ async function metadataOf(
   return JSON.parse(meta) as Record<string, unknown>;
 }
 
+const LOGS = { enabled: true, invocation_logs: false };
+
 describe('createWfpUploader — tracing (#858)', () => {
   it('declares no traces block by default, so a deploy changes nothing prod emits', async () => {
     const meta = await metadataOf({});
-    // `enabled: true` must survive — it is what makes builder logs queryable at all.
-    expect(meta['observability']).toEqual({ enabled: true });
+    // `enabled: true` must survive — it is what makes builder logs queryable at all — and
+    // invocation logs stay off: the runtime's record carries the platform credential's header.
+    expect(meta['observability']).toEqual({ enabled: true, logs: LOGS });
   });
 
   it('declares traces at the given head sampling rate when the platform sets one', async () => {
     const meta = await metadataOf({}, { traceSampling: 1 });
     expect(meta['observability']).toEqual({
       enabled: true,
+      logs: LOGS,
       traces: { enabled: true, head_sampling_rate: 1 },
     });
   });
@@ -67,6 +71,7 @@ describe('createWfpUploader — tracing (#858)', () => {
     const meta = await metadataOf({}, { traceSampling: 0 });
     expect(meta['observability']).toEqual({
       enabled: true,
+      logs: LOGS,
       traces: { enabled: true, head_sampling_rate: 0 },
     });
   });
