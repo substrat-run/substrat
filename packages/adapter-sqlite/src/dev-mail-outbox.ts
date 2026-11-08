@@ -76,31 +76,44 @@ export function devMailOutbox(host: OutboxHost, options: DevMailOutboxOptions): 
   const dir = options.dir ?? process.env[MAIL_OUTBOX_ENV] ?? join(options.dataDir, 'outbox');
   const log = options.log ?? ((line: string) => console.log(line));
 
+  /** Write one mail and settle it; the file name. A rewrite of the same request is the same file. */
+  const deliver = async (node: OutboxNode, entry: PlatformRequest, mail: SendEmailRequest): Promise<string> => {
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${entry.id}.eml`);
+    writeFileSync(file, emlOf(entry, mail, node));
+    const sender = mail.from === undefined ? 'platform' : 'tenant';
+    const about = mail.about ?? null;
+    await host.settlePlatformRequest(node.tenantId, node.scopeId, entry.id, {
+      status: 'done',
+      result: { sent: true, sender, messageId: null, outbox: file },
+      event: {
+        type: EMAIL_SENT,
+        entity: about ?? { entityType: PLATFORM_REQUEST_ENTITY_TYPE, entityId: entry.id },
+        payload: { request: entry.id, about, sender, messageId: null, attempts: entry.attempts + 1, code: null, status: null },
+      },
+    });
+    log(`mail to ${mail.to}, "${mail.subject}": ${file}`);
+    return file;
+  };
+
   const drainScope = async (node: OutboxNode): Promise<string[]> => {
     const written: string[] = [];
+    const failed: string[] = [];
     for (const entry of await host.listPlatformRequests(node.tenantId, node.scopeId)) {
       // A row that did not decode is the platform drain's to refuse; nothing here acts on it.
       if (!isPlatformRequest(entry) || entry.kind !== SEND_EMAIL_KIND || entry.decodeError !== undefined) continue;
       const parsed = sendEmailRequest.safeParse(entry.payload);
       if (!parsed.success) continue;
-      mkdirSync(dir, { recursive: true });
-      const file = join(dir, `${entry.id}.eml`);
-      writeFileSync(file, emlOf(entry, parsed.data, node));
-      const mail = parsed.data;
-      const sender = mail.from === undefined ? 'platform' : 'tenant';
-      const about = mail.about ?? null;
-      await host.settlePlatformRequest(node.tenantId, node.scopeId, entry.id, {
-        status: 'done',
-        result: { sent: true, sender, messageId: null, outbox: file },
-        event: {
-          type: EMAIL_SENT,
-          entity: about ?? { entityType: PLATFORM_REQUEST_ENTITY_TYPE, entityId: entry.id },
-          payload: { request: entry.id, about, sender, messageId: null, attempts: entry.attempts + 1, code: null, status: null },
-        },
-      });
-      log(`mail to ${mail.to}, "${mail.subject}": ${file}`);
-      written.push(file);
+      // One mail that cannot be written or settled stays queued for the next drain, and does not
+      // hold back the mail behind it.
+      try {
+        written.push(await deliver(node, entry, parsed.data));
+      } catch (err) {
+        failed.push(entry.id);
+        log(`mail outbox: could not write ${entry.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    if (failed.length > 0) throw new Error(`mail outbox: ${failed.length} mail(s) left queued: ${failed.join(', ')}`);
     return written;
   };
 
@@ -136,11 +149,27 @@ export function devMailOutbox(host: OutboxHost, options: DevMailOutboxOptions): 
   };
 }
 
-/** A header value, RFC 2047-encoded when it is not plain ASCII. */
+/**
+ * A header value, RFC 2047-encoded when it is not plain ASCII: as encoded words of at most 75
+ * characters (45 bytes of UTF-8 each, split between characters), folded one to a line.
+ */
 function header(value: string): string {
   const flat = value.replace(/[\r\n]+/g, ' ');
   if (/^[\x20-\x7e]*$/.test(flat)) return flat;
-  return `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(flat)))}?=`;
+  const encoder = new TextEncoder();
+  const words: string[] = [];
+  let chunk: number[] = [];
+  const flush = () => {
+    if (chunk.length > 0) words.push(`=?UTF-8?B?${btoa(String.fromCharCode(...chunk))}?=`);
+    chunk = [];
+  };
+  for (const char of flat) {
+    const bytes = encoder.encode(char);
+    if (chunk.length + bytes.length > 45) flush();
+    chunk.push(...bytes);
+  }
+  flush();
+  return words.join('\r\n ');
 }
 
 /** The mail as a message a mail client opens: both bodies, and the headers a reader needs. */
