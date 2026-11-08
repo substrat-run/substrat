@@ -47,6 +47,7 @@ export type GateName =
 	| 'app-starter'
 	| 'sign-in'
 	| 'sends-email'
+	| 'hosted-join'
 	| 'migration-replay';
 
 export type GateStatus = 'passed' | 'failed' | 'blocked' | 'skipped';
@@ -241,6 +242,19 @@ async function undeclaredEmail(ws: Workspace, projectDir: string): Promise<strin
 	return 'src/ queues email with requestEmail, and a hosted send is refused unless the project asks for it. Set "sendsEmail": true under "substrat" in package.json.';
 }
 
+/**
+ * A hosted person is joined by the worker's door, and only when the worker names the join. Every
+ * local gate passes without it, because the dev server joins on sign-in itself; hosted, the owner
+ * signs in and cannot create anything.
+ */
+async function hostedJoinUnnamed(ws: Workspace, projectDir: string): Promise<string | null> {
+	const worker = withoutComments(await ws.readFile(`${projectDir}/src/worker.ts`).catch(() => ''));
+	const declared = withoutComments(`${await readTree(ws, `${projectDir}/spec`)}\n${await readTree(ws, `${projectDir}/src`)}`);
+	const join = /['"]([a-z][a-z0-9-]*\/(?:join|sign-up))['"]\s*:/.exec(declared)?.[1];
+	if (!join || (/\bjoin\s*:/.test(worker) && worker.includes(join))) return null;
+	return `The model declares ${join}, and src/worker.ts does not name it in workerDoor, so a hosted person is never joined and cannot create anything. Add it to the workerDoor options: join: (scope, who) => scope.invoke('${join}', { displayName: who.display }), with the input your join takes.`;
+}
+
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export function standaloneGates(projectDir: string): GateSpec[] {
@@ -376,6 +390,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: pkg,
 			note: 'no package.json yet',
 			refuse: (ws) => undeclaredEmail(ws, projectDir),
+		},
+		{
+			name: 'hosted-join',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/worker.ts`),
+			note: 'no src/worker.ts yet',
+			refuse: (ws) => hostedJoinUnnamed(ws, projectDir),
 		},
 		{
 			name: 'migration-replay',

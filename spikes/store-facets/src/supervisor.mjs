@@ -9,6 +9,7 @@
 //      runs `op` on the driver facet of `object` and reports how long the call took
 // POST /restart?object=                           aborts the object's driver facet (storage kept)
 // POST /supervisor-tables?object=                 the tables in the supervisor's own storage
+// POST /ids?object=&driver=js|py                  one object loads the driver under ids x, x and y
 import { DurableObject } from 'cloudflare:workers';
 import JS_DRIVER from './drivers/probe-driver.js';
 import PY_DRIVER from './drivers/probe_driver.py';
@@ -90,6 +91,23 @@ export class Supervisor extends DurableObject {
     }
     if (url.pathname === '/supervisor-tables') {
       return json({ tables: this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*' ORDER BY name").toArray().map((r) => r.name) });
+    }
+    if (url.pathname === '/ids') {
+      // Within this one object (one machine, one process), the probe driver is loaded under two
+      // loader ids, x and y, as three facets: x, x again under another facet name, and y. Only the id
+      // differs, so if x and x share an isolate and x and y do not, the id is what keeps them apart.
+      const driver = q('driver', 'js');
+      const { className, code } = workerCode(driver, 'v1', 'closed');
+      const tag = q('object', '');
+      const markOf = async (id, facetName) => {
+        const worker = this.env.LOADER.get(`${driver}:ids:${tag}:${id}`, () => code);
+        const facet = this.ctx.facets.get(facetName, () => ({ class: worker.getDurableObjectClass(className) }));
+        return (await (await facet.fetch('https://facet/mark', { method: 'POST' })).json()).mark;
+      };
+      const x = await markOf('x', 'ids-x');
+      const xAgain = await markOf('x', 'ids-x-again');
+      const y = await markOf('y', 'ids-y');
+      return json({ x, xAgain, y });
     }
     const [driver, op, version, net] = [q('driver', 'js'), q('op', 'mark'), q('version', 'v1'), q('net', 'closed')];
     // The loader id: per object (D-70's target), or shared by every object (the control).
