@@ -6,6 +6,10 @@ one screen per line of the Screens section, and set the title in `app/index.html
 and the name in `app/package.json`. Every list is a `<sub-entity-table>` over
 `pagedRead`; every action goes through `invoke`; every other read goes through
 `loaded` in `app/src/api.ts`, so a refusal shows as one; every control is a `wa-*`
-element. Do not add React or hand-roll a table. Its `build` script is the
+element. A screen offers every action its line in the Screens section names, each as a
+visible control: a `wa-button`, a checkbox. A row that opens its record does it as the
+starter's does, `row-click @sub-row-click=${…}` to a screen with `nav: false`, and a row
+click does nothing else: never tick, delete or revoke on a row click. Do not add React or
+hand-roll a table. Its `build` script is the
 `app-build` gate. Keep it in `app/` with its own package.json; the API proxies or
 serves it.
