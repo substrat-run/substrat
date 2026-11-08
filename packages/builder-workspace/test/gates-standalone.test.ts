@@ -168,11 +168,13 @@ describe('standaloneGates — when each gate applies', () => {
 		['hosted-entry', 'package.json', '{"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'nothing to build'],
 		['hosted-entry', 'package.json', '{"substrat":{"runtimeNeeds":{"entry":""}},"devDependencies":{"wrangler":"^4"}}', '{"substrat":{"runtimeNeeds":{"entry":"src/server.ts"}},"devDependencies":{"wrangler":"^4"}}', 'names no entry'],
 		['dev-join', 'src/server.ts', 'devLogin({}); process.env.PORT ?? 8891', "devLogin({}); process.env.PORT ?? 8891; await stub.invoke('todo/join', { displayName })", 'never runs it'],
+		['migrations-registered', 'src/module.ts', 'export const appModule = { migrations: [] };', "import { migrations } from './migrations.generated.js'; export const appModule = { migrations };", 'Nothing in src/ registers'],
 		['hosted-join', 'src/worker.ts', 'workerDoor({ hostFor }) // join: todo/join', "workerDoor({ join: (s, w) => s.invoke('todo/join', { displayName: w.display }) })", 'todo/join'],
 	] as const)('%s refuses what passed every other gate', async (name, file, bad, good, says) => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
 		await w.writeFile(`${PROJECT}/app/index.html`, '<div id="app"></div>');
+		await w.writeFile(`${PROJECT}/src/migrations.generated.ts`, 'export const migrations = [];');
 		await w.writeFile(`${PROJECT}/app/vite.config.ts`, 'process.env.PORT ?? 8891');
 		await w.writeFile(`${PROJECT}/src/server.ts`, 'devLogin({}); process.env.PORT ?? 8891');
 		await w.writeFile(`${PROJECT}/src/module.ts`, 'requestEmail(ctx, message);');

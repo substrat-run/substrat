@@ -7,7 +7,7 @@ operation surface are **decided** — transcribe them, never re-derive them:
 
 | in the model | becomes |
 |---|---|
-| `defineEntities` | the migration DDL, and `manifestEntities(...)` in the manifest |
+| `defineEntities` | the migrations (generated, see below), and `manifestEntities(...)` in the manifest |
 | `parents` | `entityRelations` — spread from `manifestEntities`, never hand-written |
 | `defineOperations` | one registered operation per key, each checking its declared `permission` |
 | `input` | the schema the handler parses — **import it, do not restate it** |
@@ -122,9 +122,10 @@ Keep the perm consts beside the manifest so "add a permission" is one edit.
 Permission keys are host-local vocabulary (`customer:manage` is fine); roles are
 named for the persona.
 
-**src/migrations.ts** — `export const appMigrations: SqlMigration[]` (from
-`@substrat-run/kernel`). Tables prefixed `<app>_`, TEXT ids, ISO-8601 TEXT
-timestamps, decimal/money as TEXT.
+**src/migrations.generated.ts** — generated from `spec/model.ts` after every turn, with
+`journal.json` as its record: `export const migrations: SqlMigration[]`. Register it as the
+module's migrations and never write DDL for the model's tables, nor a `src/migrations.ts`: a
+table that should change is a change to the model, and the next turn appends its migration.
 
 **src/module.ts** — operations + registration:
 
@@ -133,11 +134,11 @@ import { moneyOf, mulMoney, addDecimal, type EntityRef } from '@substrat-run/con
 import { assertAllowed, operationsFor, ulid, type ModuleRegistration } from '@substrat-run/kernel';
 import { createWorkOrder, getReportedLines, completeWorkOrder, PERM as WO } from '@substrat-run/engine-workorder';
 import { APP_PERM, appManifest } from './manifest.js';
-import { appMigrations } from './migrations.js';
+import { migrations } from './migrations.generated.js';
 import { operations } from '../spec/model.js'; // the declared surface, approved in the model phase
 
 export const appModule: ModuleRegistration = {
-  manifest: appManifest, migrations: appMigrations,
+  manifest: appManifest, migrations,
   // the handlers, held to the declaration: each `input` is typed from it and already parsed
   // against it by the host — so a handler never declares or parses a schema of its own
   ...operationsFor(operations)({
