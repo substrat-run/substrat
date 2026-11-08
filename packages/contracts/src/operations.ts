@@ -1953,6 +1953,11 @@ function listPlan(decl: DeclarationRead, entities: Record<string, EntityDef>): D
       viewFrom = field;
       continue;
     }
+    // A second field over the link column would let a caller pass the check on one parent and
+    // page another's rows: the check reads the parent's id, the filter would read this one.
+    if (snakeCaseField(field) === parent?.column) {
+      return `input field '${field}' filters the link column '${parent.column}' as well as the parent's id '${parent.idFrom}', so the page could be another ${parent.entity}'s than the one checked`;
+    }
     const filter = optionalFilterOf(decl, field, filterable, base.def);
     if (typeof filter === 'string') return filter;
     filters.push(filter);

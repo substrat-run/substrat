@@ -249,6 +249,8 @@ describe('derivationOf — list', () => {
     ['an input that is no filter', { ...LIST, input: z.object({ folderId: z.string(), q: z.string().optional() }) }],
     ['a required input beyond the parent id', { ...LIST, input: z.object({ folderId: z.string(), status: z.enum(['draft', 'done']) }) }],
     ['a filter with a default', { ...LIST, input: z.object({ folderId: z.string(), status: z.enum(['draft', 'done']).default('draft') }) }],
+    // The check reads `folderId`; a second field over `folder_id` would choose the rows.
+    ['a second field over the link to the checked parent', { ...LIST, input: z.object({ folderId: z.string(), folder_id: z.string().optional() }) }],
     // The handler would bind `true` against a 0/1 column — the mapping is the handler's.
     ['a filter of another type than its column', { ...LIST, input: z.object({ folderId: z.string(), pinned: z.boolean().optional() }) }],
     // A page is a read: matched exactly, as `get` is.
@@ -289,6 +291,10 @@ describe('derivationOf — list', () => {
     } as const;
     expect(() => define({ 'n/list': { ...misLinked, derive: 'list' } })).toThrow(
       "model: 'n/list' declares `derive: 'list'`, but the parent's id 'title' filters column 'title', which is not the link to 'folder' ('folder_id').",
+    );
+    const twice = { ...LIST, input: z.object({ folderId: z.string(), folder_id: z.string().optional() }) };
+    expect(() => define({ 'n/list': { ...twice, derive: 'list' } })).toThrow(
+      "model: 'n/list' declares `derive: 'list'`, but input field 'folder_id' filters the link column 'folder_id' as well as the parent's id 'folderId', so the page could be another folder's than the one checked.",
     );
   });
 
