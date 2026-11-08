@@ -10,6 +10,23 @@
 import { useEffect, useState } from 'react';
 import { api, type ProviderEntry } from './api.js';
 
+type Listing = string[] | 'loading' | Error;
+
+/**
+ * The open row whose models still have to be fetched, if any. The listing follows
+ * the OPEN row, not the click: the picker opens on the current model's provider,
+ * and a listing started only by a click left that row empty — a listable provider
+ * with no list, and no suggestions either, since those are only for unlistable ones.
+ */
+export function rowToList(
+	providers: readonly ProviderEntry[] | null,
+	open: string | null,
+	models: Readonly<Record<string, Listing>>,
+): ProviderEntry | null {
+	const p = providers?.find((p) => p.name === open);
+	return p && p.listable && p.credential.set && models[p.name] === undefined ? p : null;
+}
+
 export function ModelPicker(props: {
 	current: string;
 	onPicked: (spec: string) => void;
@@ -17,7 +34,7 @@ export function ModelPicker(props: {
 }) {
 	const [providers, setProviders] = useState<ProviderEntry[] | null>(null);
 	const [open, setOpen] = useState<string | null>(props.current.split(':')[0] ?? null);
-	const [models, setModels] = useState<Record<string, string[] | 'loading' | Error>>({});
+	const [models, setModels] = useState<Record<string, Listing>>({});
 	const [free, setFree] = useState('');
 	const [error, setError] = useState<string | null>(null);
 
@@ -25,17 +42,18 @@ export function ModelPicker(props: {
 		void api.providers().then(setProviders, (e: Error) => setError(e.message));
 	}, []);
 
-	async function expand(p: ProviderEntry): Promise<void> {
+	useEffect(() => {
+		const p = rowToList(providers, open, models);
+		if (!p) return;
+		setModels((m) => ({ ...m, [p.name]: 'loading' }));
+		api.models(p.name).then(
+			({ models: list }) => setModels((m) => ({ ...m, [p.name]: list })),
+			(e: Error) => setModels((m) => ({ ...m, [p.name]: e })),
+		);
+	}, [providers, open, models]);
+
+	function expand(p: ProviderEntry): void {
 		setOpen(open === p.name ? null : p.name);
-		if (p.listable && p.credential.set && models[p.name] === undefined) {
-			setModels((m) => ({ ...m, [p.name]: 'loading' }));
-			try {
-				const { models: list } = await api.models(p.name);
-				setModels((m) => ({ ...m, [p.name]: list }));
-			} catch (e) {
-				setModels((m) => ({ ...m, [p.name]: e as Error }));
-			}
-		}
 	}
 
 	async function pick(spec: string): Promise<void> {
@@ -68,7 +86,7 @@ export function ModelPicker(props: {
 					const runnable = p.credential.set;
 					return (
 						<div className="provider" key={p.name}>
-							<div className="provider-head" onClick={() => void expand(p)}>
+							<div className="provider-head" onClick={() => expand(p)}>
 								<span className="vendor">{p.hosting.vendor}</span>
 								<span className="loc">{p.hosting.location}</span>
 								<span className="spacer" style={{ flex: 1 }} />
