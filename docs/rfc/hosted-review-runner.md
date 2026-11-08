@@ -921,15 +921,20 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 - **Redaction can take more than the value.** In an explanation, a secret-named value inside a
   string or a code span (`` `password=hunter2` ``) takes the rest of its line with it, since the
   closing quote reads as an opening one. From the first secret-named value, or check that reads as
-  code, to the end of the line, a quote straight after anything but a space or an opening bracket
-  (`x'`, `null.'`, `"a"'`) may close a string or open one, unless a value starts there, so the
-  quoted strings after it are read both ways and the words between them are masked too; a
-  contraction there (`it's`) takes the rest of the line. A quoted name is read inside as well, so a
-  config path with a secret-named segment (`"secret:db:url"`) loses what follows that segment, and
-  a count inside one (`` `maxTokens=8000` ``) is masked.
-- **Only a glued quote is read both ways.** A quote after a space, or one before the first
-  secret-named value or check, is read as the line read from its start pairs it, so a stray one
-  there changes which later text reads as inside a string.
+  code, to the end of the line, a quote straight after anything but a space, an opening bracket or
+  `=` (`x'`, `null.'`, `"a"'`) may close a string or open one, unless a value starts there, so the
+  quoted strings after it are read both ways and the words between them are masked too. A later
+  `key="value"` or double-quoted JSON object keeps the words after it, since a quote after `=`, or
+  after the colon or comma that follows a double-quoted string, opens one; a `key:"value"`, an
+  object in single quotes or a contraction (`it's`) there takes the rest of the line. A quoted name
+  is read inside as well, so a config path with a secret-named segment (`"secret:db:url"`) loses
+  what follows that segment, and a count inside one (`` `maxTokens=8000` ``) is masked.
+- **Only a glued quote is read both ways.** A quote after a space, an opening bracket or `=`, or
+  one before the first secret-named value or check, is read only as the fixed readings pair it:
+  from the start of the line, from the first value and check, and from past each quoted name
+  holding one. A stray one there changes which later text reads as inside a string, and so does a
+  quote after a backslash, read as escaped inside a string a stray quote before the first value
+  opened.
 - **A sentence about a quoted check keeps its words.** When an explanation quotes a comparison or
   a key and the sentence goes on after it in a lower-case word (`` `token == null` lets any caller
   through ``), a quoted string later on that line is kept as written. A capitalised word, a tab or

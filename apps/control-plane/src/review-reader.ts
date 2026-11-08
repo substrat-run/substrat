@@ -370,10 +370,12 @@ const PROSE_GOES_ON = /(?:'[a-z]+)? +(?:(?!(?:return|then|else)\b)[a-z]|`)/y;
  */
 const CLOSER = /([)\]]*)[`"'][,.;:]?/y;
 /**
- * What a closing quote may be glued to: anything but a space or an opening bracket (`null'`,
- * `f(x)'`, `null;'`, `"a"'`). After an opening bracket a quote opens (`f("V")`, `cfg["a"]`).
+ * What a closing quote may be glued to, read in place at the character before it: anything but a
+ * space, an opening bracket or `=`, nor the colon or comma after a double-quoted string (`null'`,
+ * `f(x)'`, `null;'`, `"a"'`). After those a quote opens: `f("V")`, `cfg["a"]`, `user="V"`,
+ * `{"a":"V","b":"W"}`.
  */
-const GLUED = /[^\s([{]/;
+const GLUED = /(?!(?<=")[:,])[^\s([{=]/y;
 
 /**
  * `line`: mask from the earliest secret-named value to the end of the line (a quote from the
@@ -391,8 +393,9 @@ const GLUED = /[^\s([{]/;
  * each name holding a hit ends its assignment, past which a stray quote before the name cannot
  * mislead the reading. A quote glued to what is before it may close a string where the
  * line's reading opens one, unless a hit's value starts there, so from the earliest hit on, the
- * quotes are also read from after each such quote. The ranges are collected and applied once, so
- * one mask cannot use up another.
+ * quotes are also read from after each such quote. Each read stops at a string an earlier one
+ * found, so a run of quotes is read about twice, not once per quote. The ranges are collected and
+ * applied once, so one mask cannot use up another.
  */
 function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   const hits = secretHits(text);
@@ -429,12 +432,17 @@ function maskSecretAssignment(text: string, mode: 'line' | 'value'): string {
   }
   /** Where a hit's value starts: a quote there opens it (`password="V"`). */
   const opens = new Set(hits.map((hit) => hit.at));
-  const glued = lineStrings().filter((m) => m.index >= first.at && !opens.has(m.index) && GLUED.test(text[m.index - 1]!)).map((m) => m.index + 1);
+  const glued = lineStrings().filter((m) => m.index >= first.at && !opens.has(m.index) && stickyAt(GLUED, text, m.index - 1)).map((m) => m.index + 1);
   const outside = (pool: SecretHit[]): number => pool.find((hit) => hit.nameEnd === undefined)?.at ?? 0;
+  /** Where a string read so far starts. A string depends only on where it starts, so a read that meets one goes on as an earlier read did, and stops. */
+  const read = new Set<number>();
   for (const from of new Set([0, outside(stops), outside(values), ...hits.map((hit) => hit.nameEnd ?? 0), ...glued])) {
     for (const m of text.slice(from).matchAll(QUOTED)) {
-      const end = from + m.index + m[0].length;
-      if (end > first.at) ranges.push([Math.max(from + m.index, first.at), end]);
+      const start = from + m.index;
+      if (read.has(start)) break;
+      read.add(start);
+      const end = start + m[0].length;
+      if (end > first.at) ranges.push([Math.max(start, first.at), end]);
     }
   }
   let out = '';
