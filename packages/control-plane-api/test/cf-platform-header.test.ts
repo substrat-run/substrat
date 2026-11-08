@@ -3,9 +3,10 @@ import { createCfObservabilityReader } from '../src/cf-observability.js';
 
 /**
  * The runtime's record of a request carries its headers, and one written while invocation logs
- * were on holds the platform credential in `x-substrat-platform`. No reader returns its value.
+ * were on holds the platform's and the router's credentials. No reader returns either value.
  */
 const CREDENTIAL = 'credential-value-never-returned';
+const ROUTER_CREDENTIAL = 'router-value-never-returned';
 
 const runtimeRecord = (requestId: string) => ({
   timestamp: 1002,
@@ -14,7 +15,7 @@ const runtimeRecord = (requestId: string) => ({
     requestId,
     outcome: 'ok',
     cpuTimeMs: 3,
-    event: { request: { url: 'https://acme.test/internal/drain', method: 'POST', headers: { 'X-Substrat-Platform': CREDENTIAL, accept: '*/*' } } },
+    event: { request: { url: 'https://acme.test/internal/drain', method: 'POST', headers: { 'X-Substrat-Platform': CREDENTIAL, 'x-substrat-router': ROUTER_CREDENTIAL, accept: '*/*' } } },
   },
 });
 
@@ -33,7 +34,7 @@ function fakedCloudflare() {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('no reader returns the platform credential from a runtime record', () => {
+describe('no reader returns a platform credential from a runtime record', () => {
   it.each([
     ['the fleet view', { hours: 24, limit: 50 }],
     ['the service-grain view', { services: ['acme-widgets'], hours: 24, limit: 50 }],
@@ -41,6 +42,7 @@ describe('no reader returns the platform credential from a runtime record', () =
     const { events } = await fakedCloudflare().recentLogs(input);
     expect(events).toHaveLength(1);
     expect(JSON.stringify(events)).not.toContain(CREDENTIAL);
+    expect(JSON.stringify(events)).not.toContain(ROUTER_CREDENTIAL);
     expect(JSON.stringify(events)).toContain('"accept":"*/*"');
   });
 });

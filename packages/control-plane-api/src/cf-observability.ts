@@ -610,17 +610,23 @@ function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown
 }
 
 /**
- * A raw event without the platform credential's header, at whatever depth it sits. The runtime's
- * own record of a request carries the request's headers, and Cloudflare's redaction does not
- * recognise this one, so a record written while invocation logs were on holds the credential.
- * Matched by key name rather than by one path, since the record's shape is Cloudflare's to change.
+ * The headers that carry a shared platform credential: the platform's, and the router's on every
+ * dispatch. Cloudflare's redaction recognises neither.
+ */
+const CREDENTIAL_HEADERS = new Set([PLATFORM_SECRET_HEADER, 'x-substrat-router']);
+
+/**
+ * A raw event without the platform credentials' headers, at whatever depth they sit. The runtime's
+ * own record of a request carries the request's headers, so a record written while invocation logs
+ * were on holds the credentials. Matched by key name rather than by one path, since the record's
+ * shape is Cloudflare's to change.
  */
 function withoutPlatformCredential<T>(value: T): T {
   if (Array.isArray(value)) return value.map(withoutPlatformCredential) as T;
   if (value === null || typeof value !== 'object') return value;
   return Object.fromEntries(
     Object.entries(value).map(([k, v]) =>
-      k.toLowerCase() === PLATFORM_SECRET_HEADER ? [k, '[redacted]'] : [k, withoutPlatformCredential(v)],
+      CREDENTIAL_HEADERS.has(k.toLowerCase()) ? [k, '[redacted]'] : [k, withoutPlatformCredential(v)],
     ),
   ) as T;
 }
