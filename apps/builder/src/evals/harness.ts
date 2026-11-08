@@ -605,7 +605,13 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			turnStart = history.length;
 
 			if (phase === 'scaffold' && opts.references && (await layProject(projectWs, opts.references, process.env.BUILDER_EVAL_WORKSPACE ?? ''))) {
-				emit({ type: 'tool-call', tool: 'lay_project', summary: 'project files, app shell and install' });
+				// What the lay settled for the model, named so a run shows the change ran.
+				const settled = [
+					(await projectWs.exists('src/routes.ts')) && 'routes',
+					/first sign-in joins them/.test(await projectWs.readFile('src/worker.ts').catch(() => '')) && 'join',
+					/"sendsEmail": true/.test(await projectWs.readFile('package.json').catch(() => '')) && 'email',
+				].filter(Boolean);
+				emit({ type: 'tool-call', tool: 'lay_project', summary: `project files, app shell and install; settled: ${settled.join(', ') || 'nothing'}` });
 			}
 			const lanes = opts.lanes ? await planLanes(projectWs, phase) : [];
 			if (lanes.length === 0) {
