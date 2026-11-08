@@ -318,6 +318,13 @@ export const ALLOWED = [
     reason: "the worker's unknown-`/api` 404 answers `{ error }`, as the dev server's 401 does",
   },
   {
+    area: 'builder eval fixture',
+    path: 'apps/builder/evals/todo/golden/src/worker.ts',
+    sites: 1,
+    kind: 'pending',
+    reason: "the golden todo build's worker is the scaffold template's, and answers its unknown-`/api` 404 the same way",
+  },
+  {
     area: 'scaffold template',
     path: 'apps/builder/evals/todo/golden/src/server.ts',
     sites: 1,
