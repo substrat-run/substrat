@@ -1,6 +1,21 @@
-/** The reference is platform plumbing; the document and its auth stay with the app. */
-import type { Hono } from 'hono';
-import { servedPathOf } from './mcp-guard.js';
+/**
+ * The reference and the document it renders are platform plumbing; the auth stays with the app.
+ *
+ * The page used to read the app's own `/openapi.json`, and only an app that wrote that route had
+ * one. The scaffold and every app the builder generated wrote none, so their `/api/docs` explained
+ * that the app "has not made its API specification available", on the dev server and hosted
+ * alike. A route at the origin's root was the wrong home for it anyway: a dev server's Vite proxy
+ * forwards `/api` and a hosted app with static assets runs its worker first for `/api/*`, so a
+ * root `/openapi.json` reached neither unless each app remembered to route it.
+ *
+ * So the document sits beside the page, at `${base}/openapi.json`, rendered from the operations
+ * the mount was handed: the catalog the REST routes and the MCP tools are rendered from, so the
+ * three cannot describe different surfaces. It is read through the app's own `resolveStub`, the
+ * same door every route takes, because the document enumerates the surface.
+ */
+import type { Context, Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { carriesAct, servedPathOf } from './mcp-guard.js';
 import { DOCS_RENDERER } from './docs-renderer.generated.js';
 
 const HTML = `<!doctype html>
@@ -17,7 +32,7 @@ const HTML = `<!doctype html>
 (async () => {
   const status = document.getElementById('status');
   try {
-    const response = await fetch('/openapi.json', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    const response = await fetch('./openapi.json', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
     if (response.status === 401) {
       status.textContent = 'Sign in to the app, then reload this reference. ';
       const link = document.createElement('a'); link.href = '/'; link.textContent = 'Open app'; status.append(link);
@@ -39,16 +54,43 @@ const HTML = `<!doctype html>
 </script>
 </body></html>`;
 
-/** Repeated mounts share one reference; an app's existing reference takes precedence. */
+export interface ApiDocsMount {
+  /** The mount's base path: the page is `${base}/docs`, the document `${base}/openapi.json`. */
+  readonly base: string;
+  /** The document. Called on the first request that reaches it, and kept. */
+  readonly document: () => Record<string, unknown>;
+  /** The app's own door: throws (a 401, for nobody signed in) when the caller may not read it. */
+  readonly authenticate: (c: Context) => Promise<unknown>;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function mountApiDocs(app: Hono<any, any, any>): void {
-  if (!app.routes.some((route) => route.method === 'GET' && route.path === servedPathOf(app, '/api/docs'))) {
-    app.get('/api/docs', (c) => c.html(HTML));
+const registered = (app: Hono<any, any, any>, path: string): boolean =>
+  app.routes.some((route) => route.method === 'GET' && route.path === servedPathOf(app, path));
+
+/** Repeated mounts share one reference; a route the app registered first takes precedence. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function mountApiDocs(app: Hono<any, any, any>, mount: ApiDocsMount): void {
+  const page = `${mount.base}/docs`;
+  if (!registered(app, page)) {
+    app.get(page, (c) => c.html(HTML));
   }
-  if (!app.routes.some((route) => route.method === 'GET' && route.path === servedPathOf(app, '/api/docs/renderer.js'))) {
-    app.get('/api/docs/renderer.js', (c) => c.body(DOCS_RENDERER, 200, {
+  if (!registered(app, `${page}/renderer.js`)) {
+    app.get(`${page}/renderer.js`, (c) => c.body(DOCS_RENDERER, 200, {
       'Content-Type': 'text/javascript; charset=utf-8',
       'X-Content-Type-Options': 'nosniff',
     }));
+  }
+  const documentPath = `${mount.base}/openapi.json`;
+  if (!registered(app, documentPath)) {
+    let built: Record<string, unknown> | undefined;
+    app.get(documentPath, async (c) => {
+      // Like every operation route: a delegated token is for the MCP endpoint only (#1824).
+      if (carriesAct(c.req.header('authorization'))) {
+        throw new HTTPException(401, { message: 'a delegated token is accepted only at the MCP endpoint' });
+      }
+      await mount.authenticate(c);
+      built ??= mount.document();
+      return c.json(built);
+    });
   }
 }

@@ -47,11 +47,12 @@ export default app;
 
 ## Automatic API reference
 
-`mountOperations` also serves `/api/docs` and its self-hosted renderer. Keep serving
-`/openapi.json` from your operation declarations; the page uses the app's current
-session and makes try-it requests on the same origin. No app asset build changes
-are required. Register operations before a catch-all route. Set `docs: false` when
-supplying your own reference, or register that reference before mounting operations.
+`mountOperations` also serves `/api/docs`, its self-hosted renderer, and the OpenAPI
+document the page renders at `/api/openapi.json`, derived from the operations it mounts and
+read through `resolveStub`. The page uses the app's current session and makes try-it requests
+on the same origin. No app asset build changes are required. Register operations before a
+catch-all route. `docs: { document }` serves a document the app already builds instead; set
+`docs: false` when supplying your own reference, or register it before mounting operations.
 
 ## What it owns vs. what you supply
 

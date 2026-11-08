@@ -48,6 +48,7 @@ export type GateName =
 	| 'app-api'
 	| 'app-components'
 	| 'app-ports'
+	| 'app-data'
 	| 'app-starter'
 	| 'sign-in'
 	| 'dev-scripts'
@@ -231,6 +232,23 @@ async function portsDisagree(ws: Workspace, projectDir: string): Promise<string 
 	const proxy = apiPortIn(await read('app/vite.config.ts'));
 	if (!server || !proxy || server === proxy) return null;
 	return `src/server.ts listens on ${server} by default and app/vite.config.ts proxies to ${proxy}, so the app cannot reach the server. Use ${proxy} in src/server.ts.`;
+}
+
+/**
+ * What app/vite.config.ts must keep refusing to serve. `deny` replaces Vite's own list, so its
+ * defaults are restated, and `.data/` is where the dev server keeps every scope's database: left
+ * out, `/@fs/<project>/.data/<scope>.sqlite` answers 200 to anyone who can reach the dev server.
+ * The portal starter carries all of it; `pnpm lint:vite-proxy` holds the starter to the same list.
+ */
+const DEV_FS_DENY = ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.data/**'];
+
+async function dataDirServed(ws: Workspace, projectDir: string): Promise<string | null> {
+	// Raw text: the patterns themselves hold `/**` and `**/`, which a comment strip would eat.
+	const config = await ws.readFile(`${projectDir}/app/vite.config.ts`).catch(() => '');
+	if (config === '') return null;
+	const missing = DEV_FS_DENY.filter((pattern) => !config.includes(`'${pattern}'`) && !config.includes(`"${pattern}"`));
+	if (missing.length === 0 && !/\bstrict\s*:\s*false\b/.test(config)) return null;
+	return `app/vite.config.ts lets the dev server serve files it must refuse (${missing.length ? missing.join(', ') : 'fs.strict: false'}), so /@fs/<project>/.data/<scope>.sqlite hands the whole database to anyone who can reach it. Keep server.fs.deny exactly as the portal starter writes it.`;
 }
 
 async function starterLeft(ws: Workspace, projectDir: string): Promise<string | null> {
@@ -553,6 +571,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: hasApp,
 			note: 'no app/ yet',
 			refuse: (ws) => portsDisagree(ws, projectDir),
+		},
+		{
+			name: 'app-data',
+			cmd: 'true',
+			appliesWhen: hasApp,
+			note: 'no app/ yet',
+			refuse: (ws) => dataDirServed(ws, projectDir),
 		},
 		{
 			name: 'app-starter',

@@ -18,6 +18,22 @@ export default defineConfig({
   },
   server: {
     port: WEB_PORT,
+    // The API keeps its scopes' SQLite databases in this demo's `.data/`, inside the root Vite
+    // serves files from: without this, `/@fs/…/.data/<scope>.sqlite` answers 200 to anyone who
+    // can reach this port. `deny` REPLACES Vite's own list, so its defaults are written out first
+    // (`pnpm lint:vite-proxy` holds both halves).
+    fs: {
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem,key,p12,pfx,cer,der}',
+        '.npmrc',
+        '.yarnrc.yml',
+        '**/.git/**',
+        '**/.data/**',
+        '*.{sqlite,sqlite-shm,sqlite-wal}',
+      ],
+    },
     proxy: {
       // `changeOrigin: false`, written out. Vite's string shorthand expands to
       // `{ target, changeOrigin: true }`, which rewrites Host — and the API derives

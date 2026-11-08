@@ -8,6 +8,7 @@
 import type { Context, Hono } from 'hono';
 import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
 import { ticket0Operations } from '../spec/model.js';
+import { API_DOCUMENT } from './api.js';
 
 export type { ResolveStub };
 
@@ -31,7 +32,10 @@ export function mountApi(
   // what is left of the error map is nothing.
   app.onError((err, c: Context) => problemResponse(c, err));
 
+  // `/api/docs` renders the document this desk already serves at `/openapi.json`, tags and prose
+  // included, rather than the one the mount would derive from the same operations.
   return mountOperations(app, ticket0Operations, resolveStub, {
+    docs: { document: API_DOCUMENT },
     ...(authorizationServers ? { mcp: { protectedResource: { authorizationServers } } } : {}),
   });
 }

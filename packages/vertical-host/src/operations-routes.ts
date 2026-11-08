@@ -41,6 +41,9 @@ import {
   errorCodeOf,
   mcpEndpointPath,
   SubstratError,
+  apiCatalogFrom,
+  buildOpenApiDocument,
+  type ApiDocumentInfo,
 } from '@substrat-run/contracts';
 import { externalInput, externalJson } from './wire.js';
 import { RouteAnswer, type RouteImpl, type RouteStatus } from '@substrat-run/contracts';
@@ -56,7 +59,7 @@ import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
 import { mcpToolName, mountMcp, type MountMcpOptions } from './mcp.js';
-import { assertDistinctToolNames, assertMcpPathFree, carriesAct, routeAnsweringAt } from './mcp-guard.js';
+import { assertDistinctToolNames, assertMcpPathFree, carriesAct, routeAnsweringAt, servedPathOf } from './mcp-guard.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -242,9 +245,33 @@ export interface MountOperationsOptions {
    * `false` turns it off. An object configures it (`path`, `serverInfo`).
    */
   readonly mcp?: false | MountMcpOptions;
-  /** Serve the platform reference at /api/docs over the app's /openapi.json. On by default. */
-  readonly docs?: false;
+  /**
+   * The platform reference at `${basePath}/docs`, and the OpenAPI document it renders at
+   * `${basePath}/openapi.json`. On by default.
+   *
+   * The document is rendered from these same operations (`apiCatalogFrom` +
+   * `buildOpenApiDocument`), the catalog the routes and the MCP tools come from, and read through
+   * `resolveStub`, so a signed-out caller gets the 401 the page turns into a sign-in prompt. Under
+   * `${basePath}` on purpose: a dev server's proxy forwards it and a hosted app's assets run the
+   * worker first for it, where a root `/openapi.json` reached neither by default.
+   *
+   * `false` turns off both. `info` names the document (default `{ title: 'API', version: '0' }`);
+   * `document` serves one the vertical already builds, with its own tags and prose, instead. A
+   * route the app registered at either path before this mount keeps answering there.
+   */
+  readonly docs?: false | MountDocsOptions;
 }
+
+/** What `docs` configures (§ `MountOperationsOptions.docs`). */
+export interface MountDocsOptions {
+  /** The document's title and version, when it is derived. */
+  readonly info?: ApiDocumentInfo;
+  /** A document to serve instead of the derived one. */
+  readonly document?: Record<string, unknown>;
+}
+
+/** What a derived document is called when the vertical names nothing. */
+const DEFAULT_DOCUMENT_INFO: ApiDocumentInfo = { title: 'API', version: '0' };
 
 /** A request body, or the 400 it deserves. */
 function parseBody(raw: string): unknown {
@@ -341,6 +368,26 @@ function assertNoUnreachable(declared: readonly (readonly [string, { http: { met
 }
 
 /**
+ * The OpenAPI document for the operations a mount registers, at the path each is served on.
+ *
+ * `buildOpenApiDocument` writes every path under `/api`, the fleet's convention; a mount under
+ * another base, or on a Hono app with a base path of its own, is re-rooted at `served`.
+ */
+function openApiDocumentOf(
+  operations: Readonly<Record<string, object>>,
+  info: ApiDocumentInfo,
+  served: string,
+): Record<string, unknown> {
+  const document = buildOpenApiDocument(info, apiCatalogFrom(operations));
+  if (served === '/api') return document;
+  const paths = document['paths'] as Record<string, unknown>;
+  return {
+    ...document,
+    paths: Object.fromEntries(Object.entries(paths).map(([path, item]) => [`${served}${path.slice('/api'.length)}`, item])),
+  };
+}
+
+/**
  * Mount one route per declared operation. Returns what it mounted — a caller
  * can assert on it, and a test that expects N routes fails loudly at zero
  * rather than passing over an empty table.
@@ -422,7 +469,16 @@ export function mountOperations(
     }
   }
 
-  if (options.docs !== false) mountApiDocs(app);
+  if (options.docs !== false) {
+    const docs = options.docs ?? {};
+    mountApiDocs(app, {
+      base,
+      authenticate: resolveStub,
+      document: () =>
+        docs.document ??
+        openApiDocumentOf(Object.fromEntries(declared), docs.info ?? DEFAULT_DOCUMENT_INFO, servedPathOf(app, base)),
+    });
+  }
 
   for (const [name, op] of declared) {
     const { method, path } = op.http;

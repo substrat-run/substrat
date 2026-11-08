@@ -31,15 +31,38 @@
  *
  * Text, not an AST: comments are stripped and `${…}` collapsed before the braces are
  * matched, and a loud false positive beats a silent pass.
+ *
+ * ── The second rule: the dev server does not serve the data directory ──────────────────────
+ *
+ * Every demo's API keeps its scopes' SQLite databases in `.data/` beside it, and so does a
+ * project the builder generates. That directory sits inside the root Vite serves files from
+ * (the workspace root it finds by walking up), so a dev server left at its defaults answers
+ * `GET /@fs/<project>/.data/<tenant>__<scope>.sqlite` with 200: the whole live database, to
+ * anyone who can reach the port, signed in or not. Five of five CRM-shaped eval builds did
+ * (#3017). Vite's `server.fs.deny` is the lever, and it REPLACES Vite's own list rather than
+ * adding to it, so a config that names only the data directory re-opens `.env` and the keys.
+ *
+ * So every config this reads, plus `packages/portal-starter` (the app every generated project's
+ * `app/` is copied from), writes `server.fs.deny` as a plain array literal that carries Vite's
+ * defaults (`VITE_FS_DENY_DEFAULTS`, Vite 8's) and `DATA_DIR_DENY`, and never sets
+ * `fs.strict: false`, which turns every check off. A whole file opts out of this rule with
+ * `vite-fs-allow: <reason>`; `vite-proxy-allow` answers for the proxy rule only.
  */
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ROOT = 'demos';
+/** Every demo, and the app shell the builder copies into each generated project's `app/`. */
+const ROOTS = ['demos', 'packages/portal-starter'];
 const CONFIG = /^vite\.config\.(?:ts|mts|js|mjs)$/;
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.wrangler']);
 /** A whole-file opt-out, and it has to give a reason. */
 const ALLOW = /vite-proxy-allow:\s*\S/;
+/** The same, for the data-directory rule alone. */
+const FS_ALLOW = /vite-fs-allow:\s*\S/;
+/** Vite 8's `server.fs.deny` default: what a config that sets `deny` must restate. */
+const VITE_FS_DENY_DEFAULTS = ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**'];
+/** The dev servers' data directory, wherever in the tree it sits. */
+const DATA_DIR_DENY = '**/.data/**';
 
 /**
  * Comments gone, `${…}` collapsed — so a brace count means what it looks like.
@@ -182,6 +205,77 @@ const rewritesHost = (source) => {
   return offenders;
 };
 
+/**
+ * `ownProperties`, reading quoted text as text: a deny pattern such as `'*.{crt,pem}'` carries
+ * braces that are not an object, and dropping them would mangle the pattern being judged.
+ */
+const ownPropertiesQuoted = (body) => {
+  let out = '';
+  let depth = 0;
+  let quote = null;
+  for (const c of body) {
+    if (quote !== null) {
+      if (c === quote) quote = null;
+      if (depth === 0) out += c;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      if (depth === 0) out += c;
+    } else if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (depth === 0) out += c;
+  }
+  return out;
+};
+
+/**
+ * What is wrong with a config's `server.fs`, as one line each: nothing, when some `fs: { … }`
+ * carries a `deny: [ … ]` of string literals holding every Vite default and the data directory,
+ * and no `fs` object anywhere turns `strict` off.
+ */
+const servesDataDir = (source) => {
+  const src = flatten(source);
+  const offenders = [];
+  const decl = /\bfs\s*:/g;
+  let covered = false;
+  let d;
+  while ((d = decl.exec(src)) !== null) {
+    const after = src.slice(d.index + d[0].length);
+    const open = after.indexOf('{');
+    if (open === -1 || after.slice(0, open).trim() !== '') {
+      offenders.push('fs: not a plain object literal — this check cannot read it');
+      continue;
+    }
+    const region = braced(after, 0);
+    if (region === null) {
+      offenders.push('fs: the object never closes — this check cannot read it');
+      continue;
+    }
+    decl.lastIndex = d.index + d[0].length + region.end + 1;
+    const own = ownPropertiesQuoted(region.body);
+    if (/\bstrict\s*:\s*false\b/.test(own)) {
+      offenders.push('fs.strict: false — Vite then serves every file it can read');
+      continue;
+    }
+    const deny = /\bdeny\s*:/.exec(own);
+    if (!deny) continue;
+    const list = /^\s*\[([^\]]*)\]/.exec(own.slice(deny.index + deny[0].length));
+    if (!list) {
+      offenders.push('fs.deny: not an array literal — this check cannot read it');
+      continue;
+    }
+    const entries = [...list[1].matchAll(/(['"`])([^'"`]*)\1/g)].map((m) => m[2]);
+    const missing = [...VITE_FS_DENY_DEFAULTS, DATA_DIR_DENY].filter((want) => !entries.includes(want));
+    if (missing.length > 0) offenders.push(`fs.deny: missing ${missing.map((m) => `'${m}'`).join(', ')}`);
+    else covered = true;
+  }
+  if (!covered && offenders.length === 0) {
+    offenders.push(`no server.fs.deny — Vite serves /@fs/<project>/.data/ (the dev databases) to anyone who can reach the port`);
+  }
+  return offenders;
+};
+
 const walk = (dir, out = []) => {
   if (!existsSync(dir)) return out;
   for (const e of readdirSync(dir)) {
@@ -219,34 +313,68 @@ const SELF_CHECK = [
   // The SECOND declaration is judged too, not just the first.
   ["server: { proxy: { '/api': { target: T, changeOrigin: false } } },\npreview: { proxy: { '/api': T } }", 1],
 ];
-const drift = SELF_CHECK.filter(([src, want]) => rewritesHost(src).length !== want);
+const DENY_OK = `'${[...VITE_FS_DENY_DEFAULTS, DATA_DIR_DENY].join("', '")}'`;
+const FS_SELF_CHECK = [
+  ['server: { port: 5271 }', 1],
+  [`server: { fs: { deny: [${DENY_OK}] } }`, 0],
+  [`server: { fs: { deny: [\n  ${DENY_OK},\n  '*.sqlite',\n] } }`, 0],
+  // Only the data directory: Vite's defaults are gone, so `.env` is served again.
+  ["server: { fs: { deny: ['**/.data/**'] } }", 1],
+  [`server: { fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**'] } }`, 1],
+  [`server: { fs: { strict: false, deny: [${DENY_OK}] } }`, 1],
+  ['server: { fs: { deny: DENY } }', 1],
+  ['server: { fs: FS }', 1],
+  // A pattern in a comment is not a pattern Vite reads.
+  [`server: { fs: { deny: [ /* '**/.data/**' */ '.env'] } }`, 1],
+];
+const drift = [
+  ...SELF_CHECK.map(([src, want]) => [src, want, rewritesHost(src).length]),
+  ...FS_SELF_CHECK.map(([src, want]) => [src, want, servesDataDir(src).length]),
+].filter(([, want, got]) => got !== want);
 if (drift.length > 0) {
   console.error('vite-proxy: the rule no longer tells its own cases apart — fix the predicate before trusting a run:');
-  for (const [src, want] of drift) {
-    console.error(`  expected ${want} offender(s), got ${rewritesHost(src).length}: ${src.replace(/\n/g, ' ')}`);
+  for (const [src, want, got] of drift) {
+    console.error(`  expected ${want} offender(s), got ${got}: ${src.replace(/\n/g, ' ')}`);
   }
   process.exit(2);
 }
 
-const configs = walk(ROOT);
-if (configs.length === 0) {
-  console.error(`vite-proxy: no vite config found under ${ROOT}/ — the check would pass by scanning nothing.`);
-  process.exit(2);
+const configs = ROOTS.flatMap((root) => walk(root));
+for (const root of ROOTS) {
+  if (!configs.some((file) => file.startsWith(`${root}/`))) {
+    console.error(`vite-proxy: no vite config found under ${root}/ — the check would pass by scanning nothing.`);
+    process.exit(2);
+  }
 }
 
 let checked = 0;
+let fsChecked = 0;
 const offenders = [];
+const fsOffenders = [];
 for (const file of configs) {
   const source = readFileSync(file, 'utf8');
-  if (ALLOW.test(source)) continue;
-  checked++;
-  for (const why of rewritesHost(source)) offenders.push(`${file}: ${why}`);
+  if (!ALLOW.test(source)) {
+    checked++;
+    for (const why of rewritesHost(source)) offenders.push(`${file}: ${why}`);
+  }
+  if (!FS_ALLOW.test(source)) {
+    fsChecked++;
+    for (const why of servesDataDir(source)) fsOffenders.push(`${file}: ${why}`);
+  }
 }
 
 if (offenders.length > 0) {
   console.error('vite-proxy: a demo proxy would rewrite Host, which sends the OIDC callback to the API port (#1388).');
   console.error("  Write the object form out: '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: false }");
   for (const o of offenders) console.error(`  ${o}`);
-  process.exit(1);
 }
-console.log(`vite-proxy: ok (${checked} of ${configs.length} demo configs checked, ${configs.length - checked} opted out)`);
+if (fsOffenders.length > 0) {
+  console.error('vite-proxy: a dev server would serve the data directory, the scopes\' SQLite databases (#3017).');
+  console.error(`  Write it out under server: fs: { deny: [${DENY_OK}] }`);
+  for (const o of fsOffenders) console.error(`  ${o}`);
+}
+if (offenders.length > 0 || fsOffenders.length > 0) process.exit(1);
+console.log(
+  `vite-proxy: ok (${configs.length} configs; proxy rule ${checked} checked, ${configs.length - checked} opted out; ` +
+    `data-directory rule ${fsChecked} checked, ${configs.length - fsChecked} opted out)`,
+);

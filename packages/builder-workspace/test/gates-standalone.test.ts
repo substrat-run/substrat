@@ -154,6 +154,7 @@ describe('standaloneGates — when each gate applies', () => {
 	it.each([
 		['app-components', 'app/src/screens.ts', 'html`<wa-dialog></wa-dialog>`', 'html`<wa-button></wa-button>`', '<wa-dialog>'],
 		['app-ports', 'src/server.ts', 'process.env.PORT ?? 8878', 'process.env.PORT ?? 8891', 'cannot reach'],
+		['app-data', 'app/vite.config.ts', "process.env.PORT ?? 8891; fs: { deny: ['**/.data/**'] }", `process.env.PORT ?? 8891; fs: { deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.data/**'] }`, '.env'],
 		['app-starter', 'app/src/screens.ts', "invoke('acme/add-item')", "invoke('lists/add-item')", 'still the starter'],
 		['sign-in', 'src/server.ts', "c.req.header('x-principal')", 'devLogin({})', 'x-principal'],
 		['dev-scripts', 'package.json', '{"scripts":{"issuer":"substrat-dev-issuer --personas src/personas.ts"}}', '{"scripts":{"dev":"tsx watch src/server.ts"}}', 'src/personas.ts (the "issuer" script)'],
