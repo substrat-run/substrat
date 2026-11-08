@@ -3,7 +3,7 @@
  * Screens section. `render` is a Lit template, so `.prop=${…}` sets an element's property
  * and `@event=${…}` listens to it.
  */
-import type { Column } from '@substrat-run/elements';
+import type { Column, RowAction } from '@substrat-run/elements';
 import { html, type TemplateResult } from 'lit';
 import { invoke, loaded, pagedRead } from './api.js';
 
@@ -33,13 +33,18 @@ const ITEM_COLUMNS: Column<Item>[] = [
 const param = (name: string): string | null => new URLSearchParams(location.hash.split('?')[1] ?? '').get(name);
 
 /**
- * A row opens its record, and a row click does nothing else: every other action is a visible
- * control, on the record's screen or beside the row. `row-click` turns row clicks on, and
- * `sub-row-click` carries the row.
+ * A row opens its record, and a row click does nothing else. An action on one row (tick it,
+ * delete it, revoke it) is a row action: `.actions` puts it in the row as a button, and the table
+ * runs it and reloads. `row-click` turns row clicks on, and `sub-row-click` carries the row.
  */
 const openItem = (event: CustomEvent<{ row: Item }>): void => {
   location.hash = `#/item?id=${encodeURIComponent(event.detail.row.id)}`;
 };
+
+/** What a person does to one item, right in its row. */
+const ITEM_ACTIONS: RowAction<Item>[] = [
+  { id: 'delete', label: 'Delete', tone: 'danger', run: (row) => invoke('acme/delete-item', { id: row.id }) },
+];
 
 async function deleteItem(id: string): Promise<void> {
   if (!confirm('Delete this item?')) return;
@@ -78,7 +83,7 @@ export const screens: Screen[] = [
         <wa-button type="submit" variant="brand">Add</wa-button>
       </form>
       <sub-entity-table label="Items" empty="Nothing here yet." .source=${ITEMS} .columns=${ITEM_COLUMNS}
-        row-click @sub-row-click=${openItem}></sub-entity-table>
+        .actions=${ITEM_ACTIONS} row-click @sub-row-click=${openItem}></sub-entity-table>
     `,
   },
   {

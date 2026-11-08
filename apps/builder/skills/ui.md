@@ -9,7 +9,11 @@ and the name in `app/package.json`. Every list is a `<sub-entity-table>` over
 element. A screen offers every action its line in the Screens section names, each as a
 visible control: a `wa-button`, a checkbox. A row that opens its record does it as the
 starter's does, `row-click @sub-row-click=${…}` to a screen with `nav: false`, and a row
-click does nothing else: never tick, delete or revoke on a row click. After an action, call
+click does nothing else: never tick, delete or revoke on a row click. Those, and any action on
+one row, are row actions: `.actions` on the table puts each in its row as a button, as the
+starter's Delete is, and the table runs it and reloads. What an action changes stays visible in
+its row: a tick needs a done column beside it (`{ key: 'done', label: 'Done', kind: 'boolean' }`),
+or a person cannot tell a ticked item from an open one. After any other action, call
 `reload()` on each table it changed, as the starter's add does: a table keeps what it loaded, so
 re-rendering the screen shows the old rows. Do not add React or
 hand-roll a table. Its `build` script is the
