@@ -1,5 +1,12 @@
 # @substrat-run/model-providers
 
+## 0.5.80
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+
 ## 0.5.79
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @substrat-run/connector-scrive
 
+## 0.14.96
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.14.95
 
 ### Patch Changes

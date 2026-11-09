@@ -1,5 +1,12 @@
 # @substrat-run/model-emit
 
+## 0.12.8
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+
 ## 0.12.7
 
 ### Patch Changes

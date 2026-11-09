@@ -1,5 +1,12 @@
 # @substrat-run/model-view
 
+## 0.6.38
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+
 ## 0.6.37
 
 ### Patch Changes

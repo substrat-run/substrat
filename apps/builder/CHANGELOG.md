@@ -1,5 +1,21 @@
 # @substrat-run/builder
 
+## 0.13.4
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/engine-assistant@0.1.42
+  - @substrat-run/engine-metering@0.6.74
+  - @substrat-run/adapter-cloudflare@0.190.0
+  - @substrat-run/builder-workspace@0.13.2
+  - @substrat-run/cli@0.58.4
+  - @substrat-run/control-plane-api@0.190.0
+  - @substrat-run/kernel@0.190.0
+  - @substrat-run/model-providers@0.5.80
+  - @substrat-run/builder-generator@0.12.3
+
 ## 0.13.3
 
 ### Patch Changes

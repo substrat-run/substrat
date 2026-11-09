@@ -1,5 +1,12 @@
 # @substrat-run/builder-workspace
 
+## 0.13.2
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+
 ## 0.13.1
 
 ### Patch Changes

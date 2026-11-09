@@ -1,5 +1,11 @@
 # @substrat-run/boundary-lint
 
+## 0.9.1
+
+### Patch Changes
+
+- 126435e: Treat the auth-server's BankID email step as harness code, like the rest of its BankID flow.
+
 ## 0.9.0
 
 ### Minor Changes

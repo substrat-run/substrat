@@ -1,5 +1,15 @@
 # @substrat-run/vertical-host
 
+## 0.190.0
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+  - @substrat-run/model-providers@0.5.80
+  - @substrat-run/vertical-auth@0.32.3
+
 ## 0.189.0
 
 ### Minor Changes
