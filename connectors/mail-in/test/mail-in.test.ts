@@ -113,7 +113,7 @@ function mail(o: {
 
 const PDF = new TextEncoder().encode('%PDF-1.7 a supplier invoice, as bytes');
 
-async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number; raw?: boolean; failRawTimes?: number } = {}) {
+async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number; raw?: boolean | string; failRawTimes?: number } = {}) {
   dir = mkdtempSync(join(tmpdir(), 'substrat-mail-in-'));
   const landed: MailInChange[] = [];
   const fail = { times: opts.failTimes ?? 0, attachmentTimes: opts.failAttachmentTimes ?? 0, rawTimes: opts.failRawTimes ?? 0 };
@@ -149,7 +149,7 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number;
         }
         landed.push(change);
         if (change.change === 'message') {
-          return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` }, ...(opts.raw ? { raw: true } : {}) };
+          return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` }, ...(opts.raw ? { raw: opts.raw } : {}) };
         }
         return { ok: true };
       }) as OperationHandler<never, unknown>,
@@ -491,6 +491,15 @@ describe('delivery', () => {
     expect(w.landed[1]).toMatchObject({ change: 'raw', messageId: accepted.messageId, attachment: { id: original!.id, filename: 'message.eml', size: raw.byteLength } });
     const opened = await (await w.host.attachments(w.reader, w.t, w.s)).open(original!.id);
     expect(new Uint8Array(opened!.body as Uint8Array)).toEqual(raw);
+  });
+
+  it('still lands the attachments when the answer carries a raw field of its own', async () => {
+    const w = await world({ raw: '<the source of a row>' });
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
+    if (!accepted.accepted) throw new Error('refused');
+    expect(await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).toEqual({ status: 'delivered', attachments: 1 });
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
   });
 
   it('stores the original once when its change fails, and tells the scope again on the retry', async () => {
