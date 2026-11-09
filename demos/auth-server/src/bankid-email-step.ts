@@ -3,7 +3,7 @@ import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import type { MergeOutcome } from './account-merge.js';
-import { bankidEmailCode } from './email.js';
+import { bankidEmailCode, bankidJoinedNotice } from './email.js';
 import { isPlaceholderAddress } from './placeholder-address.js';
 
 /**
@@ -97,7 +97,9 @@ export function joinRefusal(
   if (accounts.some((a) => a.providerId === PROVIDER_ID)) return 'This address belongs to an account with another BankID.';
   // Otherwise whoever registered the address without proving it keeps a way in.
   if (!user.emailVerified) return 'This address has an unfinished account. Finish setting it up, then connect BankID from your account page.';
-  if (!autoLinkAccounts || user.role === 'admin' || user.phoneNumber) return SIGN_IN_FIRST;
+  // An admin is not refused: the code proves what a password reset proves, and this join is
+  // announced to the address. A phone is a second factor the code would step around.
+  if (!autoLinkAccounts || user.phoneNumber) return SIGN_IN_FIRST;
   return null;
 }
 
@@ -211,6 +213,15 @@ export const bankidEmailEndpoints = (opts: BankIdEmailStepOptions) => {
         const session = user && await adapter.createSession(user.id);
         if (!user || !session) throw new APIError('INTERNAL_SERVER_ERROR', { message: 'could not create a session' });
         await setSessionCookie(ctx, { session, user });
+        // A joined BankID is a lasting way in that a password change does not end, so the
+        // address hears about it. The join has happened: a failed notice must not fail the sign-in.
+        if (existing) {
+          try {
+            await opts.transport.send(bankidJoinedNotice({ to: challenge.email, from: opts.sender }));
+          } catch {
+            // Nothing to undo, and the person is already signed in.
+          }
+        }
         return ctx.json({ status: 'complete' as const, hintCode: null });
       },
     ),
