@@ -347,7 +347,7 @@ export async function withoutLogoutConfirmation(
   headers.set('cookie', [request.headers.get('cookie'), ...state].filter(Boolean).join('; '));
   headers.set('content-type', 'application/x-www-form-urlencoded');
   // The page's form is same-origin, so its post would carry this issuer's own origin.
-  headers.set('origin', new URL(request.url).origin);
+  headers.set('origin', url.origin);
   headers.delete('content-length');
   // Same constructor reasoning as `advertiseExtensions`: the handler's own class, not the global.
   const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
@@ -374,18 +374,18 @@ export async function withoutLogoutConfirmation(
  * app), never through here, so the person reads why. If the upstream URL cannot be had, for
  * any reason, the plugin's own redirect stands and the screen offers the button.
  *
- * Only a browser navigation starts one. A link scanner's GET would otherwise write a state row
+ * Only a top-level browser navigation starts one. A link scanner's GET would otherwise write a state row
  * and a `started` sign-in-log row, and spend the `/sign-in` rate limit of whoever shares its
  * address. Anything else gets the login screen, which applies the same rule when a person opens it.
  */
-async function straightToUpstream(
+export async function straightToUpstream(
   handle: (request: Request) => Promise<Response>,
   request: Request,
   response: Response,
   providerFor: ((clientId: string) => string | undefined) | undefined,
 ): Promise<Response> {
   if (!providerFor || request.method !== 'GET' || response.status !== 302) return response;
-  if (request.headers.get('sec-fetch-mode') !== 'navigate') return response;
+  if (request.headers.get('sec-fetch-mode') !== 'navigate' || request.headers.get('sec-fetch-dest') !== 'document') return response;
   const url = new URL(request.url);
   if (url.pathname !== '/api/auth/oauth2/authorize') return response;
   const login = new URL(response.headers.get('location') ?? '', url);
