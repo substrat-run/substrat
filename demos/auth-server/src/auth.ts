@@ -153,6 +153,12 @@ export interface AuthDeps {
    */
   signInPolicyFor?: (clientId: string) => SignInPolicy | undefined;
   /**
+   * The one upstream a client sends everyone straight to (`straightThroughProvider`), read
+   * from the policy AND what the issuer offers, which only the runtime knows. Undefined, or
+   * an answer of none, leaves the plugin's redirect to the login screen as it is.
+   */
+  straightThroughFor?: (clientId: string) => string | undefined;
+  /**
    * Record one federated sign-in hop (`src/sign-in-log.ts`) — what makes a refused Microsoft
    * sign-in a row an operator can read instead of a sentence in somebody else's browser.
    *
@@ -303,6 +309,104 @@ async function advertiseExtensions(
   });
 }
 
+const END_SESSION_PATH = '/api/auth/oauth2/end-session';
+
+/**
+ * RP-initiated logout without the plugin's "Confirm logout" page. The plugin interrupts every
+ * browser logout it cannot tie to the current session by a valid `id_token_hint` (no hint, an
+ * expired one, one for an older session) with a page asking the person to press a button,
+ * and offers no option to turn that off. Someone who pressed "Sign out" in an app has already
+ * said yes, so the issuer presses the button itself: it posts the page's own form back to
+ * `/confirm` with the signed state cookie the page just set, and answers with that result —
+ * the session ended and a 302 to the registered post-logout URI.
+ *
+ * Only the confirmation is skipped. The client gate, `enable_end_session` and the exact match
+ * on `post_logout_redirect_uris` are all still the plugin's, judged on the first request. The
+ * price is that any page can now sign a browser out of this issuer by linking here; that is
+ * an annoyance, not an exposure, and it is the price every app's sign-out button already asks.
+ */
+async function withoutLogoutConfirmation(
+  handle: (request: Request) => Promise<Response>,
+  request: Request,
+): Promise<Response> {
+  const response = await handle(request);
+  if (response.status !== 200 || new URL(request.url).pathname !== END_SESSION_PATH) return response;
+  if (!response.headers.get('content-type')?.includes('text/html')) return response;
+  if (!(await response.clone().text()).includes('data-oidc-logout-confirmation')) return response;
+  const state = response.headers.getSetCookie().map((c) => c.split(';')[0] ?? '');
+  const headers = new Headers(request.headers);
+  headers.set('cookie', [request.headers.get('cookie'), ...state].filter(Boolean).join('; '));
+  headers.set('content-type', 'application/x-www-form-urlencoded');
+  // The page's form is same-origin, so its post would carry this issuer's own origin.
+  headers.set('origin', new URL(request.url).origin);
+  headers.delete('content-length');
+  // Same constructor reasoning as `advertiseExtensions`: the handler's own class, not the global.
+  const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
+  return handle(
+    new Request_(new URL(`${END_SESSION_PATH}/confirm`, request.url).toString(), {
+      method: 'POST',
+      headers,
+      body: 'action=confirm',
+    }),
+  );
+}
+
+/**
+ * A client with only one upstream to offer goes there from `/oauth2/authorize` directly,
+ * with no screen. The plugin answers a signed-out authorize with a 302 to the login screen,
+ * which would draw nothing but "Continuing to Microsoft…" and then ask for the upstream URL
+ * itself. This asks for it here instead, with the same `/sign-in/social` call and the same
+ * signed `oauth_query`, and answers with a 302 to the upstream carrying its state cookie.
+ *
+ * It cannot loop, for the reasons the screen's own redirect cannot: a refused session comes
+ * back through authorize with `max_age=0`, which is the re-authentication it asks for, and a
+ * refused upstream sign-in returns to `/login?…&social_error=1` (`socialErrorTarget` in the
+ * app), never through here, so the person reads why. If the upstream URL cannot be had, the
+ * plugin's own redirect stands and the screen offers the button.
+ */
+async function straightToUpstream(
+  handle: (request: Request) => Promise<Response>,
+  request: Request,
+  response: Response,
+  providerFor: ((clientId: string) => string | undefined) | undefined,
+): Promise<Response> {
+  if (!providerFor || request.method !== 'GET' || response.status !== 302) return response;
+  const url = new URL(request.url);
+  if (url.pathname !== '/api/auth/oauth2/authorize') return response;
+  const login = new URL(response.headers.get('location') ?? '', url);
+  if (login.origin !== url.origin || login.pathname !== '/login' || !login.searchParams.has('sig')) return response;
+  const clientId = login.searchParams.get('client_id');
+  const provider = clientId ? providerFor(clientId) : undefined;
+  if (!provider) return response;
+  const oauthQuery = login.search.slice(1);
+  const headers = new Headers(request.headers);
+  headers.set('content-type', 'application/json');
+  headers.set('accept', 'application/json');
+  headers.set('origin', url.origin);
+  headers.set('sec-fetch-mode', 'cors');
+  // Same constructor reasoning as `advertiseExtensions`: the handler's own classes.
+  const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
+  const started = await handle(
+    new Request_(new URL('/api/auth/sign-in/social', url).toString(), {
+      method: 'POST',
+      headers,
+      // The body the screen's `signInSocial` sends for the same request.
+      body: JSON.stringify({
+        provider,
+        callbackURL: '/',
+        errorCallbackURL: `/login?${oauthQuery}&social_error=1`,
+        oauth_query: oauthQuery,
+      }),
+    }),
+  );
+  const upstream = started.ok ? ((await started.json().catch(() => null)) as { url?: unknown } | null)?.url : undefined;
+  if (typeof upstream !== 'string') return response;
+  const redirect = new Headers({ location: upstream, 'cache-control': 'no-store' });
+  for (const cookie of [...response.headers.getSetCookie(), ...started.headers.getSetCookie()]) redirect.append('set-cookie', cookie);
+  const Rebuilt = response.constructor as new (body: null, init: { status: number; headers: Headers }) => Response;
+  return new Rebuilt(null, { status: 302, headers: redirect });
+}
+
 /** The slice of a Better Auth hook context the machine-scope checks read. */
 interface ScopeHookCtx {
   body?: unknown;
@@ -448,7 +552,12 @@ export function buildAuth(deps: AuthDeps) {
   // spelling serves a document without the flag.
   auth.handler = auth.fetch = async (request: Request) => {
     try {
-      const response = await handle(request);
+      const response = await straightToUpstream(
+        handle,
+        request,
+        await withoutLogoutConfirmation(handle, request),
+        deps.straightThroughFor,
+      );
       // Better Auth's HTTP router can turn an unexpected exception into a 500 before it
       // reaches this wrapper. Both paths need the same safe record.
       if (response.status >= 500) await recordSignInException(request, deps.recordSignIn);

@@ -322,6 +322,20 @@ export function effectiveSignIn(
   };
 }
 
+/**
+ * The upstream a client sends everyone straight to, when it leaves nothing to choose: an
+ * operator narrowed it (`restricted`, so an issuer that merely has one provider still shows
+ * its form) to exactly one provider, no password and no identifier-first routing. BankID is
+ * never one, because it is not a redirect: the person approves on this issuer's own screen.
+ * The authorize answer reads this to skip the login screen (`auth.ts`), and the screen keeps
+ * the same rule for the request it is still handed (`app/src/auth/SignIn.tsx`).
+ */
+export function straightThroughProvider(signIn: EffectiveSignIn): string | undefined {
+  if (!signIn.restricted || signIn.password || signIn.identifierFirst || signIn.providers.length !== 1) return undefined;
+  const only = signIn.providers[0]!.id;
+  return only === BANKID_METHOD ? undefined : only;
+}
+
 /** What the signed-out login screen is told about one client. `restricted` is what lets it
  *  say "this application accepts Microsoft" rather than "this issuer offers Microsoft" — and
  *  what gates the straight-through redirect, which must never fire on the console's own
