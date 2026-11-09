@@ -272,6 +272,16 @@ describe('<sub-entity-table> paging="scroll"', () => {
     expect(table.shadowRoot!.querySelector('table')!.hasAttribute('aria-rowcount')).toBe(false);
   });
 
+  it('paging="more" keeps the batches it appended across a re-read', async () => {
+    const { source } = growing();
+    const { table } = await tableWith({ source, paging: 'more' });
+    click(table.shadowRoot!.querySelector('footer wa-button')!);
+    await settle(table);
+    await table.reload();
+    await settle(table);
+    expect(plainRows(table)).toHaveLength(3);
+  });
+
   it('a page that fails does not re-arm the observer, so it cannot spin; the button stays', async () => {
     const follow = vi.fn(() => Promise.reject(new Error('down')));
     const { table } = await tableWith({ source: { read: async () => page(['a'], 'p2'), follow }, paging: 'scroll' });

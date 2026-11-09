@@ -406,8 +406,9 @@ export class EntityTableModel<T, S extends string = string> {
   }
 
   /**
-   * Read the page on screen again, with the current query. Keeps a `problem` it is told to,
-   * so a reload can carry one.
+   * Read what is on screen again, with the current query: the page and, with `keepAppended`,
+   * every batch appended to it, so an action does not collapse a long list. Keeps a `problem`
+   * it is told to, so a reload can carry one.
    */
   async load(keep: Problem | null = null): Promise<void> {
     const generation = ++this.#generation;
@@ -455,7 +456,7 @@ export class EntityTableModel<T, S extends string = string> {
         });
       } else if (shown) {
         // A failed re-read is a blip over rows we still have, not a reason to drop them.
-        this.#set({ refreshing: false, problem: { kind: 'failed', message: messageOf(error) } });
+        this.#set({ refreshing: false, loadingMore: false, problem: { kind: 'failed', message: messageOf(error) } });
       } else {
         this.#set({ phase: 'error', problem: { kind: 'failed', message: messageOf(error) } });
       }
@@ -535,9 +536,10 @@ export class EntityTableModel<T, S extends string = string> {
     return this.setQuery({ q: '', filters: {} });
   }
 
+  /** Append the next batch. Waits out a re-read: `next` still belongs to the rows it is replacing. */
   async more(): Promise<void> {
-    const { next, loadingMore } = this.state;
-    if (!next || loadingMore) return;
+    const { next, loadingMore, refreshing } = this.state;
+    if (!next || loadingMore || refreshing) return;
     const generation = this.#generation;
     this.#set({ loadingMore: true });
     try {
