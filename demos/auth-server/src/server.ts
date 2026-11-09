@@ -29,7 +29,7 @@ import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvide
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
-import { clientSignIn, clientSignInRoute, readSignInPolicy } from './sign-in-policy.js';
+import { clientSignIn, clientSignInRoute, readSignInPolicy, straightThroughProvider } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
 import { placesOf } from './places.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
@@ -162,6 +162,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // Read per request like everything else here, so narrowing a client in the dashboard
     // decides the very next authorize request rather than the next restart.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
+    straightThroughFor: (clientId) => straightThroughProvider(clientSignIn(sql, clientId, offeredProviders())),
     // The same sign-in log the deployed issuer keeps, over the dev database — so a provider
     // misconfiguration is debugged the same way locally as in production.
     recordSignIn: signInLoggerFor(sql),

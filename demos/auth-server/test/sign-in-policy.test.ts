@@ -16,6 +16,7 @@ import {
   resolveSignInRoute,
   sanitizeSignInPolicy,
   signInMethodOfPath,
+  straightThroughProvider,
 } from '../src/sign-in-policy.js';
 import {
   genericProvidersFrom,
@@ -169,6 +170,8 @@ function rebuild(): Auth {
     // The wiring both runtimes do (`auth-do.ts`, `server.ts`): the policy is read from the
     // registry per request, so a client narrowed a moment ago decides the next authorize.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
+    straightThroughFor: (clientId) =>
+      straightThroughProvider(clientSignIn(sql, clientId, publicProvidersFrom(readProviders(sql)))),
   });
 }
 
@@ -437,6 +440,24 @@ describe('a session established through the provider the client names', () => {
     const cookie = await signInThroughAcme();
     // The loop, if this regresses: `/login` — whose one button is the trip just taken.
     expect(landedOn(await authorize(acmeOnly, cookie))).toBe('/consent');
+  });
+
+  it('sends a signed-out visitor straight to the upstream, and resumes the request on the way back', async () => {
+    const adminCookie = await signInAs(ADMIN);
+    const acmeOnly = await register('Directory RP', adminCookie, {
+      signIn: { providers: ['acme'], password: false },
+    });
+    saveAcme();
+
+    // No login screen in between: the authorize answer IS the upstream redirect.
+    const sent = await authorize(acmeOnly, '');
+    expect(landedOn(sent)).toBe(ACME_DISCOVERY.authorization_endpoint);
+    const state = new URL(sent.headers.get('location') ?? '').searchParams.get('state');
+    const back = await call(`/api/auth/callback/acme?code=an-authorization-code&state=${state}`, {
+      headers: { ...NAVIGATE, cookie: cookiesFrom(sent) },
+    });
+    // The pending request rode along as `oauth_query`, so the callback resumes it.
+    expect(landedOn(back)).toBe('/consent');
   });
 
   it('still refuses the same session at a client that names a DIFFERENT provider', async () => {

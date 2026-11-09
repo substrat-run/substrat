@@ -467,33 +467,15 @@ describe('RP-initiated logout', () => {
     expect(listed?.enable_end_session).toBe(true);
     expect(listed?.post_logout_redirect_uris).toEqual([POST_LOGOUT]);
 
-    // With no `id_token_hint` the issuer asks the person first, so this is a browser
-    // navigation and the answer is a page, not a redirect.
-    const page = await endSession(
+    // With no `id_token_hint` the plugin would ask the person first; the issuer answers its
+    // own confirmation (`withoutLogoutConfirmation`), so a browser goes straight back.
+    const res = await endSession(
       { client_id: client.client_id, post_logout_redirect_uri: POST_LOGOUT },
       admin,
-      { accept: 'text/html' },
+      { 'sec-fetch-mode': 'navigate' },
     );
-    expect(page.status).toBe(200);
-    expect(await page.text()).toContain('data-oidc-logout-confirmation');
-
-    const confirmation = page.headers
-      .getSetCookie()
-      .map((c) => c.split(';')[0] ?? '')
-      .filter((pair) => !pair.endsWith('='))
-      .join('; ');
-    const done = await call('/api/auth/oauth2/end-session/confirm', {
-      method: 'POST',
-      headers: {
-        // The confirm endpoint takes the form post its own page submits; `accept` is what
-        // asks for the redirect as a value instead of a 302 this harness cannot follow.
-        'content-type': 'application/x-www-form-urlencoded',
-        accept: 'application/json',
-        cookie: `${admin}; ${confirmation}`,
-      },
-      body: 'action=confirm',
-    });
-    expect(await done.json()).toMatchObject({ redirect: true, url: POST_LOGOUT });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(POST_LOGOUT);
     expect(await sessionExists(admin)).toBe(false);
   });
 
@@ -507,25 +489,11 @@ describe('RP-initiated logout', () => {
       body: JSON.stringify({ enable_end_session: true }),
     });
 
-    const page = await endSession(
+    const done = await endSession(
       { client_id: client.client_id, post_logout_redirect_uri: RP_REDIRECT },
       admin,
       { accept: 'text/html' },
     );
-    const confirmation = page.headers
-      .getSetCookie()
-      .map((c) => c.split(';')[0] ?? '')
-      .filter((pair) => !pair.endsWith('='))
-      .join('; ');
-    const done = await call('/api/auth/oauth2/end-session/confirm', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        accept: 'text/html',
-        cookie: `${admin}; ${confirmation}`,
-      },
-      body: 'action=confirm',
-    });
     // Signed out — and told, on the issuer's own page, that the redirect was refused. The
     // sign-in callback registered above bought nothing here.
     expect(done.status).toBe(200);
