@@ -1112,7 +1112,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     return html`<footer part="footer">
       <span>${shown}</span>
       ${state.next
-        ? html`<wa-button size="s" appearance="outlined" ?loading=${state.loadingMore} @click=${() => this.#model!.more()}
+        ? html`<wa-button size="s" appearance="outlined" ?loading=${state.loadingMore} ?disabled=${state.refreshing} @click=${() => this.#model!.more()}
             >Load more</wa-button
           >`
         : nothing}

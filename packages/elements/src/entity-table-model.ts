@@ -203,6 +203,9 @@ export class EntityTableModel<T, S extends string = string> {
     };
   }
 
+  /** How many batches are on screen: the page, and each one `more()` appended to it. */
+  #batches = 1;
+
   #set(patch: Partial<TableState<T, S>>) {
     this.state = { ...this.state, ...patch };
     this.onChange(this.state);
@@ -221,8 +224,9 @@ export class EntityTableModel<T, S extends string = string> {
   }
 
   /**
-   * Read the page on screen again, with the current query. Keeps a `problem` it is told to,
-   * so a reload can carry one.
+   * Read what is on screen again, with the current query: the page and every batch appended
+   * to it, so an action does not collapse a long list. Keeps a `problem` it is told to, so a
+   * reload can carry one.
    */
   async load(keep: Problem | null = null): Promise<void> {
     const generation = ++this.#generation;
@@ -239,7 +243,7 @@ export class EntityTableModel<T, S extends string = string> {
             total: null,
             capped: r.capped,
           }))
-        : await (link === null ? this.source.read(query) : this.source.follow(link)).then((p) => ({
+        : await this.#readBatches(query, link).then((p) => ({
             mode: 'page' as const,
             rows: p.entries,
             next: p.next,
@@ -268,11 +272,27 @@ export class EntityTableModel<T, S extends string = string> {
         });
       } else if (shown) {
         // A failed re-read is a blip over rows we still have, not a reason to drop them.
-        this.#set({ refreshing: false, problem: { kind: 'failed', message: messageOf(error) } });
+        this.#set({ refreshing: false, loadingMore: false, problem: { kind: 'failed', message: messageOf(error) } });
       } else {
         this.#set({ phase: 'error', problem: { kind: 'failed', message: messageOf(error) } });
       }
     }
+  }
+
+  /**
+   * The page at `link` and the batches after it, each through the `next` the one before it
+   * just handed out. A saved link would miss a row pushed across a batch boundary since.
+   */
+  async #readBatches(query: TableQuery<S>, link: string | null): Promise<Page<T>> {
+    const first = await (link === null ? this.source.read(query) : this.source.follow(link));
+    const entries = [...first.entries];
+    let { next } = first;
+    for (let batch = 1; next && batch < this.#batches; batch++) {
+      const page = await this.source.follow(next);
+      entries.push(...page.entries);
+      next = page.next;
+    }
+    return { entries, next, total: first.total };
   }
 
   /** Change the query and read again, from the first page. A new view starts with nothing selected. */
@@ -281,6 +301,7 @@ export class EntityTableModel<T, S extends string = string> {
     const selected = patch.view !== undefined && patch.view !== this.state.query.view ? NONE : this.state.selected;
     this.#trail = [null];
     this.#offsets = [0];
+    this.#batches = 1;
     this.#set({ query, selected, page: 0, offset: 0 });
     return this.load();
   }
@@ -335,6 +356,7 @@ export class EntityTableModel<T, S extends string = string> {
     // Into a search, or back out of one: either way the answer starts at its first page.
     this.#trail = [null];
     this.#offsets = [0];
+    this.#batches = 1;
     this.#set({ page: 0, offset: 0 });
     return this.load();
   }
@@ -344,14 +366,16 @@ export class EntityTableModel<T, S extends string = string> {
     return this.setQuery({ q: '', filters: {} });
   }
 
+  /** Append the next batch. Waits out a re-read: `next` still belongs to the rows it is replacing. */
   async more(): Promise<void> {
-    const { next, loadingMore } = this.state;
-    if (!next || loadingMore) return;
+    const { next, loadingMore, refreshing } = this.state;
+    if (!next || loadingMore || refreshing) return;
     const generation = this.#generation;
     this.#set({ loadingMore: true });
     try {
       const page = await this.source.follow(next);
       if (generation !== this.#generation) return;
+      this.#batches += 1;
       this.#set({ rows: [...this.state.rows, ...page.entries], next: page.next, loadingMore: false });
     } catch (error) {
       if (generation !== this.#generation) return;

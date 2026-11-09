@@ -58,6 +58,60 @@ describe('EntityTableModel', () => {
     expect(follow).toHaveBeenCalledTimes(2);
   });
 
+  it('re-reads every appended batch through the links it hands out now, and keeps their selection', async () => {
+    const read = vi.fn(async () => page(['a'], 'fresh')).mockResolvedValueOnce(page(['a'], 'p2'));
+    const follow = vi.fn(async (next: string) => (next === 'p3' ? page(['c']) : page(['b'], 'p3')));
+    const model = modelOver({ read, follow, search: async () => ({ results: [], capped: false }) });
+    await model.load();
+    await model.more();
+    model.toggle('b');
+
+    await model.run({ id: 'touch', label: 'Touch', run: async () => {} }, { id: 'a' });
+    expect(follow).toHaveBeenLastCalledWith('fresh');
+    expect(model.state.rows.map((r) => r.id)).toEqual(['a', 'b']);
+    expect(model.state.next).toBe('p3');
+    expect([...model.state.selected]).toEqual(['b']);
+
+    await model.setQuery({ order: 'desc' });
+    expect(model.state.rows.map((r) => r.id)).toEqual(['a']);
+    await model.more();
+    await model.search('term');
+    await model.search('');
+    expect(model.state.rows.map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('does not follow an old link while a re-read is out', async () => {
+    let answer!: (p: Page<Row>) => void;
+    const read = vi.fn(async () => page(['a'], 'old-order'));
+    const follow = vi.fn(async () => page(['old']));
+    const model = modelOver({ read, follow });
+    await model.load();
+
+    read.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const resort = model.setQuery({ order: 'desc' });
+    await model.more();
+    answer(page(['z']));
+    await resort;
+    expect(follow).not.toHaveBeenCalled();
+    expect(model.state.rows.map((r) => r.id)).toEqual(['z']);
+  });
+
+  it('is not left loading when a failed re-read overtakes a batch in flight', async () => {
+    let answer!: (p: Page<Row>) => void;
+    const read = vi.fn(async () => page(['a'], 'p2'));
+    const follow = vi.fn(() => new Promise<Page<Row>>((resolve) => (answer = resolve)));
+    const model = modelOver({ read, follow });
+    await model.load();
+
+    const more = model.more();
+    read.mockRejectedValueOnce(new Error('blip'));
+    await model.load();
+    answer(page(['b']));
+    await more;
+    expect(model.state).toMatchObject({ loadingMore: false, problem: { kind: 'failed' } });
+    expect(model.state.rows.map((r) => r.id)).toEqual(['a']);
+  });
+
   it('keeps the rows when an action is refused, and re-reads when it went stale', async () => {
     const read = vi.fn(async () => page(['a', 'b']));
     const model = modelOver({ read });
