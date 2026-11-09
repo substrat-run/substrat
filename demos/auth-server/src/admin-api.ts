@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
+import { adminMergeAccounts } from './account-merge.js';
 import {
   ACCOUNT_LINKING,
   ALLOW_SIGNUP,
@@ -53,7 +54,7 @@ import {
   type BankIdTransportKind,
 } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, readSignInLogEntry, signInLogQuery } from './sign-in-log.js';
-import { importBody, importUsers } from './user-import.js';
+import { importBody, importUsers, wallClock } from './user-import.js';
 import { platformOwnerOf } from './resources.js';
 
 /**
@@ -460,6 +461,7 @@ const bankidPut = z.object({
   clientKey: z.string().min(1).optional(),
   caCert: z.string().min(1).nullable().optional(),
   allowSignup: z.boolean(),
+  requireEmail: z.boolean().optional(),
   disabled: z.boolean(),
 });
 
@@ -1099,6 +1101,21 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     deps.sql.exec('DELETE FROM account WHERE id = ? AND user_id = ?', accountId, userId);
     return c.json({ removed: accountId });
+  });
+
+  /**
+   * Join another account into this one — the operator's answer to one person holding two
+   * accounts (a BankID sign-in and a Microsoft one, say), which the person cannot fix from
+   * `/account` because each method already belongs to an account. `from`'s sign-in methods
+   * move here and `from` is removed; its `sub` retires, so `account-merge.ts` refuses when an
+   * app has bound it. One transaction: a refusal or a throw leaves both accounts as they were.
+   */
+  app.post('/users/:userId/merge', async (c) => {
+    const parsed = z.object({ from: z.string().min(1) }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw new HTTPException(400, { message: 'body must be { from: <user id> }' });
+    const outcome = deps.transaction(() => adminMergeAccounts(deps.sql, c.req.param('userId'), parsed.data.from, wallClock()));
+    if ('refused' in outcome) throw new HTTPException(outcome.refused === 'unknown user' ? 404 : 409, { message: outcome.refused });
+    return c.json({ merged: parsed.data.from, into: outcome.survivor });
   });
 
   /**

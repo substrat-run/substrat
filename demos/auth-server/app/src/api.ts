@@ -287,6 +287,18 @@ export async function adminRemoveSignInMethod(userId: string, accountId: string)
 }
 
 /**
+ * Join `fromUserId` into `userId`: its sign-in methods move here and it is removed. The server
+ * refuses a join that would strand an app's binding, remove an admin, or leave two passwords or
+ * two BankIDs on one account — those come back as the error's message.
+ */
+export async function adminMergeUser(userId: string, fromUserId: string): Promise<void> {
+  await admin<{ merged: string }>(`/users/${encodeURIComponent(userId)}/merge`, {
+    method: 'POST',
+    body: JSON.stringify({ from: fromUserId }),
+  });
+}
+
+/**
  * Bring people over from another issuer, keeping their ids. A real call writes one batch of at
  * most `IMPORT_BATCH_LIMIT`, whole or not at all; a `dryRun` checks up to `DRY_RUN_LIMIT` and
  * writes nothing. The server holds every rule — this only carries them.
@@ -803,8 +815,17 @@ export interface BankIdStart {
   qr: string;
 }
 
+/** A completed order that has to prove an address before it becomes a session. */
+export interface BankIdEmailRequired {
+  status: 'email_required';
+  token: string;
+  /** May this person put it off? Only an existing placeholder account, and only a few times. */
+  canSkip: boolean;
+}
+
 export type BankIdCollectResult =
   | { status: 'pending' | 'failed' | 'complete'; hintCode: string | null }
+  | BankIdEmailRequired
   | { redirect: boolean; url: string };
 
 export async function bankidStart(link = false): Promise<BankIdStart> {
@@ -827,6 +848,21 @@ export async function verifyPhoneCode(code: string, oauthQuery?: string | null):
 export async function bankidQr(orderRef: string): Promise<string> {
   return (await authApi<{ qr: string }>('/bankid/qr', { method: 'POST', body: JSON.stringify({ orderRef }) })).qr;
 }
+
+export const bankidEmailSend = (token: string, email: string) =>
+  authApi<{ sent: boolean }>('/bankid/email/send', { method: 'POST', body: JSON.stringify({ token, email }) });
+
+const bankidEmailResume = (path: string, body: object, oauthQuery: string | null) =>
+  authApi<{ status: 'complete' } | { redirect: boolean; url: string }>(path, {
+    method: 'POST',
+    body: JSON.stringify({ ...body, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) }),
+  });
+
+export const bankidEmailVerify = (token: string, code: string, oauthQuery: string | null) =>
+  bankidEmailResume('/bankid/email/verify', { token, code }, oauthQuery);
+
+export const bankidEmailSkip = (token: string, oauthQuery: string | null) =>
+  bankidEmailResume('/bankid/email/skip', { token }, oauthQuery);
 
 export async function bankidCollect(orderRef: string, oauthQuery?: string | null): Promise<BankIdCollectResult> {
   return authApi('/bankid/collect', {
@@ -1117,6 +1153,7 @@ export interface BankIdSettings {
   certSet: boolean;
   caSet: boolean;
   allowSignup: boolean;
+  requireEmail: boolean;
   disabled: boolean;
   updatedAt: number;
   /** The last connection test, or null when none has run since the certificate was saved. */
@@ -1146,6 +1183,7 @@ export interface BankIdDraft {
   clientKey?: string;
   caCert?: string | null;
   allowSignup: boolean;
+  requireEmail: boolean;
   disabled: boolean;
 }
 

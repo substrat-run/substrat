@@ -16,6 +16,7 @@ import {
 import { resolveScopedEnvSpec } from '@substrat-run/contracts';
 import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
+import { mergeAccounts } from './account-merge.js';
 import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { buildAuth, DEMO_CLIENT, seedDemoClient, type Auth } from './auth.js';
@@ -129,6 +130,12 @@ const bankidFor = (cfg: BankIdConfig | undefined) =>
         transport: nodeBankIdTransport(cfg),
         allowSignup: cfg.allowSignup,
         clientIpHeader: CLIENT_IP_HEADER,
+        ...(cfg.requireEmail ?? true ? {
+          requireEmail: {
+            merge: (placeholderId: string, otherId: string) =>
+              sqlite.transaction(() => mergeAccounts(sql, placeholderId, otherId, Date.now()))(),
+          },
+        } : {}),
       }
     : undefined;
 

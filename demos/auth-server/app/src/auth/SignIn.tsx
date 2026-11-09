@@ -3,12 +3,16 @@ import QRCode from 'qrcode';
 import {
   bankidCancel,
   bankidCollect,
+  bankidEmailSend,
+  bankidEmailSkip,
+  bankidEmailVerify,
   bankidQr,
   bankidStart,
   requestPasswordReset,
   resolveSignInRoute,
   signIn as signInWithPassword,
   signInSocial,
+  type BankIdEmailRequired,
   type BankIdStart,
   type ClientSignIn,
   type ClientTheme,
@@ -417,6 +421,7 @@ export function BankIdSignIn({
   const [hint, setHint] = useState('Open the BankID app and scan the QR code.');
   const [err, setErr] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [emailStep, setEmailStep] = useState<BankIdEmailRequired | null>(null);
   /** Set once the flow settled (session made, or redirect leaving) — the unmount cleanup
    *  must not cancel an order that just succeeded. */
   const settled = useRef(false);
@@ -459,7 +464,7 @@ export function BankIdSignIn({
 
   // Poll collect every two seconds — the API's own guidance, and specifically not faster.
   useEffect(() => {
-    if (!order || failed) return;
+    if (!order || failed || emailStep) return;
     const timer = setInterval(async () => {
       try {
         const result = await bankidCollect(order.orderRef, oauthQuery);
@@ -467,6 +472,11 @@ export function BankIdSignIn({
           // An authorize request resumed — the browser belongs to the relying party now.
           settled.current = true;
           window.location.href = result.url;
+          return;
+        }
+        if ('token' in result) {
+          settled.current = true;
+          setEmailStep(result);
           return;
         }
         const poll = result as { status: string; hintCode: string | null };
@@ -486,7 +496,9 @@ export function BankIdSignIn({
       }
     }, 2000);
     return () => clearInterval(timer);
-  }, [order, failed, oauthQuery, onDone]);
+  }, [order, failed, emailStep, oauthQuery, onDone]);
+
+  if (emailStep) return <BankIdEmail step={emailStep} oauthQuery={oauthQuery} theme={theme} onDone={onDone} />;
 
   return (
     <Centered>
@@ -519,6 +531,78 @@ export function BankIdSignIn({
         >
           Back
         </button>
+      </Card>
+    </Centered>
+  );
+}
+
+/** The address a completed BankID order has to prove (`src/bankid-email-step.ts`). */
+function BankIdEmail({
+  step, oauthQuery, theme, onDone,
+}: { step: BankIdEmailRequired; oauthQuery: string | null; theme: ClientTheme; onDone: () => void }) {
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const finish = (result: { status: 'complete' } | { redirect: boolean; url: string }) => {
+    if ('url' in result && result.url) window.location.href = result.url;
+    else onDone();
+  };
+  const act = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Centered>
+      <Card title="Add your email" logo={theme.logoUrl}>
+        <p className="muted">
+          BankID does not share an email address. If you already have an account here, use its
+          address and we will connect them.
+        </p>
+        <Field label="Email" type="email" value={email} onChange={setEmail} />
+        <button
+          className={sent ? 'btn' : 'btn primary'}
+          disabled={busy || !email.trim()}
+          onClick={() => void act(async () => {
+            await bankidEmailSend(step.token, email);
+            setCode('');
+            setSent(true);
+          })}
+        >
+          {sent ? 'Send a new code' : 'Send code'}
+        </button>
+        {sent && (
+          <>
+            <Field label="Code from the email" value={code} onChange={setCode} />
+            <button
+              className="btn primary"
+              disabled={busy || !/^\d{6}$/.test(code.trim())}
+              onClick={() => void act(async () => finish(await bankidEmailVerify(step.token, code.trim(), oauthQuery)))}
+            >
+              Continue
+            </button>
+          </>
+        )}
+        {err && <p className="error">{err}</p>}
+        {step.canSkip && (
+          <button
+            className="btn link"
+            disabled={busy}
+            onClick={() => void act(async () => finish(await bankidEmailSkip(step.token, oauthQuery)))}
+          >
+            Not now
+          </button>
+        )}
       </Card>
     </Centered>
   );
