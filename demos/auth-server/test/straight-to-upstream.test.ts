@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { straightToUpstream } from '../src/auth.js';
+import { straightToUpstream as straightToUpstreamOf } from '../src/auth.js';
+
+// Node's fetch types and the worker's are different `Response`s to the compiler; the suite only
+// hands over fakes, so one cast here keeps them out of every call.
+const straightToUpstream = straightToUpstreamOf as unknown as (
+  handle: () => Promise<unknown>,
+  request: unknown,
+  response: unknown,
+  providerFor: () => string,
+) => Promise<Response>;
 
 const ORIGIN = 'https://issuer.example';
 const PAGE_LOAD = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
