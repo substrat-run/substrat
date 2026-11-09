@@ -40,6 +40,7 @@ import {
   sweepMailIn,
   type MailInLanding,
 } from '../src/index.js';
+import { MESSAGE_PREFIX, type MailInMessageEntry } from '../src/address.js';
 
 /**
  * Inbound mail end to end on the pure adapter (#2611): a real scope running a vertical module that
@@ -446,6 +447,49 @@ describe('delivery', () => {
     w.advance(7 * 60 * 60 * 1000);
     expect(await sweepMailIn(w.host, w.deps, a.connectionId)).toMatchObject({ retrying: 0, deadLettered: 0 });
     expect((await mailInAddressOf(w.host, w.actor, w.t, w.s))!.stats).toMatchObject({ deadLettered: 1, pending: 0 });
+  });
+
+  it('lands once when two deliveries reach the same message together', async () => {
+    const w = await world({});
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
+    if (!accepted.accepted) throw new Error('refused');
+    const outcomes = await Promise.all([
+      deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId),
+      deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId),
+    ]);
+    expect(outcomes.map((o) => o.status).sort()).toEqual(['delivered', 'skipped']);
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
+    expect(await w.files(`doc-${accepted.messageId.slice(0, 12)}`)).toHaveLength(1);
+  });
+
+  describe('a run killed before it could record its failure', () => {
+    const killed = async (attempts: number) => {
+      const w = await world({});
+      const a = await w.request();
+      const accepted = await w.send(a.address, mail({ to: a.address }));
+      if (!accepted.accepted) throw new Error('refused');
+      const key = `${MESSAGE_PREFIX}${accepted.messageId}`;
+      const entry = (await w.host.admin.getConnectorState(accepted.connectionId, key)) as MailInMessageEntry;
+      const until = new Date(Date.parse(entry.receivedAt) + 10 * 60 * 1000).toISOString();
+      await w.host.admin.putConnectorState(accepted.connectionId, key, { ...entry, attempts, claim: { token: 'gone', until } });
+      return { w, a };
+    };
+
+    it('holds the message until its claim lapses, then is retried', async () => {
+      const { w, a } = await killed(1);
+      expect(await sweepMailIn(w.host, w.deps, a.connectionId)).toMatchObject({ delivered: 0 });
+      w.advance(11 * 60 * 1000);
+      expect(await sweepMailIn(w.host, w.deps, a.connectionId)).toMatchObject({ delivered: 1 });
+    });
+
+    it('dead-letters the message once it has used every attempt, keeping the bytes', async () => {
+      const { w, a } = await killed(MAX_DELIVERY_ATTEMPTS);
+      w.advance(11 * 60 * 1000);
+      expect(await sweepMailIn(w.host, w.deps, a.connectionId)).toMatchObject({ delivered: 0, deadLettered: 1 });
+      expect(w.landed).toEqual([]);
+      expect(w.store.keys()).toHaveLength(1);
+    });
   });
 
   it('resumes after a failure without landing a message twice', async () => {
