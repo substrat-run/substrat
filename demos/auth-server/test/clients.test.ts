@@ -5,7 +5,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
 import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { buildAuth, type Auth } from '../src/auth.js';
+import { buildAuth, withoutLogoutConfirmation, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
@@ -497,6 +497,15 @@ describe('RP-initiated logout', () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('data-oidc-logout-confirmation');
     expect(await sessionExists(admin)).toBe(true);
+  });
+
+  it('keeps the confirmation page when the confirmation is refused', async () => {
+    const page = new Response('<form data-oidc-logout-confirmation></form>', { headers: { 'content-type': 'text/html' } });
+    const answer = await withoutLogoutConfirmation(
+      async (request) => (new URL(request.url).pathname.endsWith('/confirm') ? (new Response(null, { status: 403 }) as never) : (page as never)),
+      new Request(`${ORIGIN}/api/auth/oauth2/end-session?client_id=c`) as never,
+    );
+    expect(answer).toBe(page);
   });
 
   it('ends the session but ignores a post-logout URI that is not registered', async () => {
