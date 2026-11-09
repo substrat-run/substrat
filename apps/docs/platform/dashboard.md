@@ -224,6 +224,30 @@ its own URL (`settings/environment` …) so deep links survive:
   is the [permission-diff checkpoint](/concepts/permissions), and it happens when you press
   *Update* on Deployments, not here.
 
+## Billing: what the team has used {#billing}
+
+**Billing** in the left menu shows what the team has used over its last **30 closed UTC days**
+(today is not included). It meters usage and does not charge for it: the page says nothing here
+is charged yet, and carries no prices or payments. It is for a team **owner or admin**; anyone else
+sees "Ask a team owner or admin to view usage", as does a caller the platform refuses.
+
+At the top, a summary of four figures: **Requests** (estimated from sampled router datapoints,
+with how many of the 30 days are covered), **Model tokens** (as the providers reported them, with
+how many calls reported any), **Stored** (the size of the team's app databases, with how many
+scopes were sampled) and **Build time** (successful hosted builds, with their count). A figure
+marked **≥** is a lower bound: the read was partial, capped or short of a source, and an
+unavailable source reads "Not available" rather than zero.
+
+Under the summary, a **daily usage chart** draws one bar per closed day for requests, model tokens or stored bytes, stacked by app; a day with no reading is hatched, never drawn as zero. Under **Meter details**
+each meter gives its coverage, whether it is an estimate, how fresh it is, and a breakdown per
+app (and model) by the app's name, cut at 50 entries when longer. Build time counts hosted builds
+that produced a release, from leaving the queue to the release being collected; queue time and
+failed builds are not counted. Record retention is stated beside each meter.
+
+Entitlements are not on this page: the team's own grants are under **Settings → Entitlements**,
+which an owner or admin can read. The HTTP read behind Billing is in the
+[control-plane API reference](/reference/control-plane-api).
+
 ## Team-level pages: Observability and Audit
 
 Two views are about the team's apps rather than one instance, so they are pages in the left menu
@@ -389,6 +413,7 @@ seam (an app becomes a live scope; deleting one deprovisions it for real). Most 
 surface is now shipped: the app lifecycle, builder **Deployments**, a read-only **Data** browser with
 export/import, **Previews**, per-app **Environment**, custom **Domains**, team **members** (invite /
 accept / remove / leave, with a Team view), and third-party **connections** (an Integrations view).
-Billing and the plan are the main pieces still on the roadmap the
+Usage is visible in **Billing**, and charging is not built: no price, invoice or payment appears
+there. The plan remains on the roadmap the
 [design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out.
 It is served as a React SPA bundled into its worker; the account menu lives in the sidebar footer.
