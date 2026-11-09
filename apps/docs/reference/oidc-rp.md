@@ -177,7 +177,9 @@ never keep somebody signed in here.
 The hint is what lets the sign-out be a straight redirect. Without it the issuer cannot tell
 a real sign-out from a link somebody was tricked into following, so the spec says it should
 interrupt with a *Confirm logout* page — whether it does is the issuer's choice, and Better
-Auth's provider does, which is the bug #1361 fixed. Two conditions live at the issuer and
+Auth's provider does, which is the bug #1361 fixed. The platform's auth server confirms on
+the person's behalf for a browser `GET` that names an enabled client, so its page appears
+only for a request with no `client_id` or a form POST. Two conditions live at the issuer and
 are the same for a vertical: RP-initiated logout enabled for the client, and the **exact**
 `post_logout_redirect_uri` the app will send on its allow-list. There are exactly two such
 values, both the app's origin plus a fixed path: `/` (or the `onSuccess` path) when the logout

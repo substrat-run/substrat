@@ -324,17 +324,21 @@ const END_SESSION_PATH = '/api/auth/oauth2/end-session';
  * `/confirm` with the signed state cookie the page just set, and answers with that result —
  * the session ended and a 302 to the registered post-logout URI.
  *
- * Only the confirmation is skipped. The client gate, `enable_end_session` and the exact match
- * on `post_logout_redirect_uris` are all still the plugin's, judged on the first request. The
- * price is that any page can now sign a browser out of this issuer by linking here; that is
- * an annoyance, not an exposure, and it is the price every app's sign-out button already asks.
+ * Only the confirmation is skipped, and only for a GET naming a client. The plugin judges the
+ * client gate, `enable_end_session` and the exact match on `post_logout_redirect_uris` on the
+ * first request only when a client is named, so a bare link keeps the page. A POST keeps it
+ * too: from another site it arrives without the Lax session cookie, and answering it here
+ * would report a sign-out that ended nothing. The price is that any page can sign a browser
+ * out of this issuer by linking here with a client's id; that is an annoyance, not an
+ * exposure, and it is the price every app's sign-out button already asks.
  */
 async function withoutLogoutConfirmation(
   handle: (request: Request) => Promise<Response>,
   request: Request,
 ): Promise<Response> {
   const response = await handle(request);
-  if (response.status !== 200 || new URL(request.url).pathname !== END_SESSION_PATH) return response;
+  const url = new URL(request.url);
+  if (response.status !== 200 || request.method !== 'GET' || url.pathname !== END_SESSION_PATH || !url.searchParams.get('client_id')) return response;
   if (!response.headers.get('content-type')?.includes('text/html')) return response;
   if (!(await response.clone().text()).includes('data-oidc-logout-confirmation')) return response;
   const state = response.headers.getSetCookie().map((c) => c.split(';')[0] ?? '');
@@ -365,8 +369,12 @@ async function withoutLogoutConfirmation(
  * It cannot loop, for the reasons the screen's own redirect cannot: a refused session comes
  * back through authorize with `max_age=0`, which is the re-authentication it asks for, and a
  * refused upstream sign-in returns to `/login?…&social_error=1` (`socialErrorTarget` in the
- * app), never through here, so the person reads why. If the upstream URL cannot be had, the
- * plugin's own redirect stands and the screen offers the button.
+ * app), never through here, so the person reads why. If the upstream URL cannot be had, for
+ * any reason, the plugin's own redirect stands and the screen offers the button.
+ *
+ * Only a browser navigation starts one. A link scanner's GET would otherwise write a state row
+ * and a `started` sign-in-log row, and spend the `/sign-in` rate limit of whoever shares its
+ * address. Anything else gets the login screen, which applies the same rule when a person opens it.
  */
 async function straightToUpstream(
   handle: (request: Request) => Promise<Response>,
@@ -375,13 +383,12 @@ async function straightToUpstream(
   providerFor: ((clientId: string) => string | undefined) | undefined,
 ): Promise<Response> {
   if (!providerFor || request.method !== 'GET' || response.status !== 302) return response;
+  if (request.headers.get('sec-fetch-mode') !== 'navigate') return response;
   const url = new URL(request.url);
   if (url.pathname !== '/api/auth/oauth2/authorize') return response;
   const login = new URL(response.headers.get('location') ?? '', url);
   if (login.origin !== url.origin || login.pathname !== '/login' || !login.searchParams.has('sig')) return response;
   const clientId = login.searchParams.get('client_id');
-  const provider = clientId ? providerFor(clientId) : undefined;
-  if (!provider) return response;
   const oauthQuery = login.search.slice(1);
   const headers = new Headers(request.headers);
   headers.set('content-type', 'application/json');
@@ -390,19 +397,26 @@ async function straightToUpstream(
   headers.set('sec-fetch-mode', 'cors');
   // Same constructor reasoning as `advertiseExtensions`: the handler's own classes.
   const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
-  const started = await handle(
-    new Request_(new URL('/api/auth/sign-in/social', url).toString(), {
-      method: 'POST',
-      headers,
-      // The body the screen's `signInSocial` sends for the same request.
-      body: JSON.stringify({
-        provider,
-        callbackURL: '/',
-        errorCallbackURL: `/login?${oauthQuery}&social_error=1`,
-        oauth_query: oauthQuery,
+  let started: Response;
+  try {
+    const provider = clientId ? providerFor(clientId) : undefined;
+    if (!provider) return response;
+    started = await handle(
+      new Request_(new URL('/api/auth/sign-in/social', url).toString(), {
+        method: 'POST',
+        headers,
+        // The body the screen's `signInSocial` sends for the same request.
+        body: JSON.stringify({
+          provider,
+          callbackURL: '/',
+          errorCallbackURL: `/login?${oauthQuery}&social_error=1`,
+          oauth_query: oauthQuery,
+        }),
       }),
-    }),
-  );
+    );
+  } catch {
+    return response;
+  }
   const upstream = started.ok ? ((await started.json().catch(() => null)) as { url?: unknown } | null)?.url : undefined;
   if (typeof upstream !== 'string') return response;
   const redirect = new Headers({ location: upstream, 'cache-control': 'no-store' });

@@ -146,8 +146,9 @@ its own domain, so the next "Sign in" is a silent re-authentication as the same 
 `GET /api/auth/logout?federated` ends that one too, through OIDC RP-Initiated Logout — the
 issuer's `end_session_endpoint`, with the ID token from this login as `id_token_hint`. The
 hint is what makes it a straight redirect: without it the issuer cannot tell a real sign-out
-from a link somebody was tricked into following, so it interrupts with a *Confirm logout*
-page. The provider keeps that token in its own cookie, scoped to the logout path and
+from a link somebody was tricked into following, so it may interrupt with a *Confirm logout*
+page. The platform's auth server does not for this request, a browser `GET` naming the
+client; another issuer can. The provider keeps that token in its own cookie, scoped to the logout path and
 `SameSite=Strict`, and hands it back exactly once.
 
 Two conditions live at the **issuer**, not here — at an Auth Server app they are the two
