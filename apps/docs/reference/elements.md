@@ -108,13 +108,60 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 - **Row detail.** `detail(cell, row)` draws below a row, across the whole table, the way `mount`
   draws a cell. `expanded` is the key of the open row, or null. The table never opens one itself,
   so a screen keeps that state and decides what opens it.
+- **Selection the screen owns (opt-in).** `selection` is the selected row keys, and a screen can
+  read or set it at any time. `sub-selection-change` fires with `{ keys, rows, parents }` when the
+  person or a re-read changes it, not when the screen set it. `row-select` makes the row itself
+  select: a click selects that row alone, cmd/ctrl-click toggles it, shift-click extends from
+  the last anchor, cmd/ctrl+A selects the rows loaded now, and Escape clears. Rows that load
+  after a cmd/ctrl+A are not added to it.
+- **What happens to a selection (opt-in).** Under `row-select`, or once a screen sets
+  `selection`, a selection survives a page turn and a shift-click ranges over the pages walked so
+  far. A row a re-read no longer returns leaves it. A new sort, filter, search or page size keeps
+  only the selected rows its first read still has, and a new view clears it. A `selectable` table
+  with neither keeps its original rule: the selection is the rows on screen.
+- **Opening a row (opt-in).** `row-open` fires `sub-row-open` with `{ row }` on a double-click or
+  Enter. With `row-click` as well, `sub-row-click` waits `doubleClickMs` (300) and does not fire
+  for a double-click, so a single click can preview and a double-click can open. A double-click
+  slower than that window reports both.
+- **Keyboard (opt-in).** Any of `row-select`, `row-open`, `row-draggable` or `childrenOf` makes the
+  table an ARIA grid with one focusable row. Up and Down move, Home and End jump, Shift+Up and
+  Shift+Down extend the selection, and Space toggles it. Controls inside a row stay in the Tab order.
+- **Loading on scroll (opt-in).** `paging="scroll"` loads the next page as the end of the list comes
+  into view, with no total needed. It keeps a real "Load more" for a keyboard or screen reader, and
+  Down on the last row loads too. A re-read keeps every page already loaded.
+- **Row action icons.** A `RowAction` takes `icon`, a Web Awesome icon name or `{ src }` for your own
+  SVG, drawn with `label` as its accessible name and tooltip. `menu: true` puts it in the "More"
+  menu at the end of the row. Once any action says so, the others all stay on the row.
+- **Right-click.** `sub-row-contextmenu` fires with `{ row, x, y, originalEvent }`. Call
+  `preventDefault()` on it to keep the browser's own menu away and draw yours. Under `row-select`, a
+  right-click on an unselected row selects it first.
+- **Drag and drop (opt-in).** `row-draggable`, narrowed by `canDrag(row)`, makes rows draggable.
+  `sub-row-dragstart` carries `{ row, rows, dataTransfer, originalEvent }`, where `rows` is the whole
+  selection if the row is part of it. Set `dataTransfer` on it, or call `preventDefault()` to refuse.
+  `canDrop(row, dragged)` says which rows take a drop. Without it no row does, and a dragged row
+  never takes itself. It runs on every pointer move, so keep it cheap. A hovered target has the
+  `drop-target` part, and `sub-row-drop` fires with `{ target, dragged, dataTransfer, originalEvent }`.
+  The preview says how many are moving; `dragLabel(rows)` words it. On touch a long press
+  (`longPressMs`, 500) starts the drag with `dataTransfer` null, and a finger that moves first scrolls.
+  What a drop means is up to the screen.
+- **Nested rows (opt-in).** `childrenOf(row)` returns a read in the same shape as `source`, made
+  with the table's query when the row first opens, so each level sorts on its own. `canExpand(row)`
+  says which rows can open, and `rowRank(row)` keeps some first within a level (lower first, such as
+  folders before files). `open` is the open row keys, and `sub-row-toggle` fires with
+  `{ row, key, open, keys }`. Right opens a row or moves to its first child; Left closes it or moves
+  to its parent. Row keys must be unique across every level. Use `paging="scroll"` for the top
+  level. Each open row gets its own "Load more" line. A search is a flat list of matches, with no
+  levels. `reload()` reads every open level again, and `reload(key)` reads one. A failed or refused
+  child read shows inside its row. Selecting a parent does not select its children: the selection is
+  exactly what was picked, `parents` on the event says what is under what, and `topmost: true` on a
+  bulk action skips a row whose parent is selected too.
 - **Narrow screens.** Columns with `priority` 3, then 2, are dropped while the table is wider than
   its frame.
 - **Styling** goes from the outside in. First the theme's `--wa-*` tokens. Then `--sub-table-*`:
   `row-height`, `cell-padding-inline`, `cell-padding-block`, `header-background`, `row-hover`,
-  `row-selected` and `max-height` (setting a max height makes the header stick). Then
+  `row-selected`, `indent` (one level of nesting) and `max-height` (setting a max height makes the header stick). Then
   `density="compact"`. Last, `::part()`: `frame`, `toolbar`, `bulk-bar`, `table`, `header-cell`,
-  `row` (plus `selected`), `cell`, `detail`, `footer` and `empty`.
+  `row` (plus `selected` and `drop-target`), `cell`, `detail`, `footer` and `empty`.
 - The `empty` slot replaces the empty text, for example with a "Create" button.
 - **Events.** `sub-query-change` fires with `{ query }` whenever the person changes the view,
   sort, filters or search, so a screen can keep the query in its URL and hand it back through the

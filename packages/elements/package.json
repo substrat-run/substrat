@@ -62,6 +62,7 @@
     "lit": "^3.3.0"
   },
   "devDependencies": {
+    "jsdom": "^26.1.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

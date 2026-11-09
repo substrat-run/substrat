@@ -2269,6 +2269,9 @@ importers:
         specifier: ^3.3.0
         version: 3.3.3
     devDependencies:
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
