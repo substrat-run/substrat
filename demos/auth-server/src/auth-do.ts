@@ -20,7 +20,7 @@ import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
-import { clientSignIn, clientSignInRoute, readSignInPolicy, straightThroughProvider } from './sign-in-policy.js';
+import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
 import { optionalTwilioFrom } from './twilio.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
@@ -223,8 +223,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Read per request like everything else here, so narrowing a client in the dashboard
       // decides the very next authorize request rather than the next deploy.
       signInPolicyFor: (clientId) => readSignInPolicy(this.ctx.storage.sql, clientId),
-      straightThroughFor: (clientId) =>
-        straightThroughProvider(clientSignIn(this.ctx.storage.sql, clientId, this.offeredProviders())),
+      straightThroughFor: (clientId) => clientStraightThrough(this.ctx.storage.sql, clientId, () => this.offeredProviders()),
       // The sign-in log writes into THIS issuer's own SQLite, which is what makes it readable
       // where a hosted install can actually be read: the admin console, the dashboard's Data
       // tab, and `/internal/export`. A dispatch-namespace script's `console.log` is none of

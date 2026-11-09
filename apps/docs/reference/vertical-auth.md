@@ -161,8 +161,8 @@ never reaches the issuer: the provider parks it in a short-lived `HttpOnly`, `Sa
 `sb_oidc_return` cookie, and `/api/auth/logged-out` reads it once, clears it and redirects
 there (same-origin paths only; anything else lands on `/`). An origin alone
 does not match, and the mismatch is quiet: the person is signed out and left at the issuer
-instead of coming back. The first sign-out after
-turning them on can still show the confirmation page: the ID token minted before then
+instead of coming back. At an issuer that asks for confirmation, the first sign-out after
+turning them on can still show its page: the ID token minted before then
 carries no session id for the issuer to match, and the next sign-in puts one there.
 
 Local sign-out happens **first, always**. An issuer that is down, advertises no end-session

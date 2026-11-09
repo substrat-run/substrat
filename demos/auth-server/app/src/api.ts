@@ -729,6 +729,8 @@ export interface ClientSignIn {
   passwordSecondFactor?: 'sms';
   /** Ask for an email or BankID first; the method follows from the address. */
   identifierFirst?: true;
+  /** The one method this client sends everyone to (`effectiveSignIn` on the server). */
+  straightThrough?: string;
 }
 
 /** What the second step does for one address (`resolveSignInRoute` on the server). */
