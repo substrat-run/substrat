@@ -287,6 +287,13 @@ describe('<sub-assistant>', () => {
     expect(find(el, 'slot[name="empty"]')).toBeNull();
   });
 
+  it('still draws a turn when the page carries a malformed lang', async () => {
+    const model = modelOf(answer('ok'), { t: 'data-provenance', producedAt: '2026-11-09T10:00:00.000Z', sources: 2 }, finish);
+    const el = await mount(model, (e) => e.setAttribute('lang', 'en_US'));
+    await ask(el, model);
+    expect(text(el, 'provenance')).toContain('from 2 sources');
+  });
+
   it('names its messages at the level the host gives', async () => {
     const model = modelOf(answer('ok'), finish);
     const el = await mount(model, (e) => (e.headingLevel = 4));

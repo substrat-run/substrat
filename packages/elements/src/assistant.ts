@@ -272,8 +272,14 @@ export class SubAssistant extends SubstratElement {
     return this.renderRoot.querySelector('textarea');
   }
 
+  /** A page can carry a malformed tag (`en_US`), and `Intl` throws on one in the middle of a render. */
   get #lang(): string | undefined {
-    return this.closest<HTMLElement>('[lang]')?.lang || document.documentElement.lang || undefined;
+    const lang = this.closest<HTMLElement>('[lang]')?.lang || document.documentElement.lang;
+    try {
+      return lang ? Intl.getCanonicalLocales(lang)[0] : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   #subscribe(): void {
