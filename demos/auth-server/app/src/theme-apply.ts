@@ -5,7 +5,7 @@ import { schemeOf, type ClientTheme } from '../../src/theme-wire.js';
  * declares. Values arrive sanitized (hex colors, a px radius), so setting them is safe;
  * `setProperty` takes them as one CSS value, never as parseable stylesheet text.
  */
-const THEME_VARS: [keyof ClientTheme, string][] = [
+const THEME_VARS: [Exclude<keyof ClientTheme, 'text'>, string][] = [
   ['colorPrimary', '--accent'],
   ['colorPrimaryForeground', '--accent-contrast'],
   ['colorBackground', '--bg'],

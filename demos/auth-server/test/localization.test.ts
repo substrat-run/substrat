@@ -10,6 +10,9 @@ import { buildAuth, type Auth } from '../src/auth.js';
 import { emailBrandOf, invitationEmail, resetPasswordEmail } from '../src/email.js';
 import { issuerLocale, requestLocale, resolveLocale } from '../src/locale-wire.js';
 import { SWEDISH_REFUSALS } from '../src/server-messages.js';
+import { clientBranding } from '../src/branding.js';
+import { translate } from '../src/messages.js';
+import { sanitizeTheme, themeProblems, themeTitle, withAllText, withoutDefaultText } from '../src/theme-wire.js';
 
 const ORIGIN = 'http://localhost:8877';
 const from = { email: 'no-reply@send.substrat.test', name: 'Acme' };
@@ -118,5 +121,57 @@ describe('the mail', () => {
 
   it('leaves out a logo a mail client would block', () => {
     expect(emailBrandOf({ logoUrl: 'data:image/png;base64,AAAA', colorPrimary: '#111111' })).toEqual({ color: '#111111' });
+  });
+});
+
+describe('a theme file\'s text', () => {
+  const ISSUER_TEXT = JSON.stringify({ text: { sv: { 'common.signIn': 'Issuer', 'common.back': 'Backa' } } });
+
+  it('names each wrong language, key and placeholder, and serves the rest', () => {
+    const file = {
+      text: {
+        de: { 'common.signIn': 'Anmelden' },
+        sv: {
+          nope: 'x',
+          'common.continueWith': 'Via {provder}',
+          'common.signIn': 'Kom in',
+          'common.back': '',
+        },
+      },
+    };
+    expect(themeProblems(file)).toEqual([
+      'text has no language "de"; use sv or en; .sv has no key "nope"; .sv.common.continueWith uses {provder}, which nothing fills; .sv.common.back must be 1 to 500 characters',
+    ]);
+    expect(sanitizeTheme(file)).toEqual({ text: { sv: { 'common.signIn': 'Kom in' } } });
+  });
+
+  it('cannot reach an object\'s prototype through a key', () => {
+    const file = JSON.parse('{"text":{"sv":{"__proto__":"x","constructor":"y"}}}');
+    expect(sanitizeTheme(file)).toEqual({});
+  });
+
+  it('is laid over the issuer\'s entry by entry', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE oauth_client (client_id TEXT, metadata TEXT, disabled INTEGER)');
+    db.prepare('INSERT INTO oauth_client VALUES (?, ?, 0)').run('rp', JSON.stringify({ theme: { text: { sv: { 'common.signIn': 'Klient' } } } }));
+    const sql = { exec: (q: string, ...b: unknown[]) => ({ toArray: () => db.prepare(q).all(...(b as [])) }) } as never;
+    expect(clientBranding(sql, 'rp', ISSUER_TEXT).theme.text).toEqual({ sv: { 'common.signIn': 'Klient', 'common.back': 'Backa' } });
+  });
+
+  it('is what a screen says, filling placeholders, with the built-in behind it', () => {
+    expect(translate('sv', 'common.continueWith', { provider: 'BankID' }, { 'common.continueWith': 'Via {provider}' })).toBe('Via BankID');
+    expect(translate('sv', 'common.back', {}, { 'common.signIn': 'x' })).toBe('Tillbaka');
+  });
+
+  it('decides the heading before the theme\'s one title', () => {
+    const theme = { title: 'Acme', text: { sv: { 'common.title': 'Välkommen' } } };
+    expect([themeTitle(theme, 'sv'), themeTitle(theme, 'en'), themeTitle({}, 'en')]).toEqual(['Välkommen', 'Acme', 'Substrat Auth']);
+  });
+
+  it('survives being shown in full: only what changed is stored', () => {
+    const shown = withAllText({ sv: { 'common.signIn': 'Kom in' } });
+    expect(shown.sv!['common.back']).toBe('Tillbaka');
+    expect(shown.en!['common.signIn']).toBe('Sign in');
+    expect(withoutDefaultText(shown)).toEqual({ sv: { 'common.signIn': 'Kom in' } });
   });
 });

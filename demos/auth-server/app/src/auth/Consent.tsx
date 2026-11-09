@@ -8,7 +8,7 @@ import {
 } from '../api';
 import { Centered, Card } from '../primitives';
 import { useT } from './locale';
-import type { MessageKey } from './messages';
+import type { MessageKey } from '../../../src/messages.js';
 
 /**
  * What each requested scope means, in the words of the person being asked. An unknown scope
