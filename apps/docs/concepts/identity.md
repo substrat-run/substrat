@@ -227,10 +227,27 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   secret and are not people.
 - **Swedish BankID.** Not an OAuth redirect but the real relying-party flow: an animated
   QR code or same-device start, approval in the BankID app, and the verified personal
-  number as the account key. A first sign-in proves an email address with an emailed
-  code, and joins the account already holding it. The mTLS client certificate is pasted in the dashboard;
+  number as the account key. With **Require a verified email** on, which is the default, a
+  first sign-in proves an email address with an emailed code, and joins the account
+  already holding it. Joining is automatic only for an ordinary account. It refuses an
+  `admin`, an account with an SMS factor, an address nobody has verified, one already
+  holding another BankID, and a banned account; so does the issuer-wide
+  `ACCOUNT_LINKING=block`, which never joins implicitly. The person is told to sign in
+  to the existing account first and connect BankID from `/account` — a refusal there is
+  the rule working, not linking broken. The mTLS client certificate is pasted in the dashboard;
   the test environment works with BankID's published test certificate, so you can try it
   before your bank issues a production one.
+- **Merging two accounts.** One person sometimes ends up with two accounts — a BankID
+  sign-in and a Microsoft one — and cannot fix it from `/account`, because each method
+  already belongs to an account. An administrator opens the account that should **stay**,
+  goes to its **Identities** tab and chooses **Merge another account into this one**. The
+  other account's sign-in methods move to the selected one, its sessions and issued tokens
+  end, and the account is removed: its `sub` retires, so the direction matters. Merging
+  refuses rather than lose something: a retired account an app has bound (merge the other
+  way, so that `sub` survives), a retired account holding the `admin` role (remove the
+  role first), a banned account on either side, and two accounts that both hold a password
+  or both a BankID. It is one transaction, so a refusal leaves both accounts as they were,
+  and it cannot be undone.
 - **Client registration for machines.** Dynamic registration
   ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)) and **Client ID Metadata
   Documents** (CIMD, under the MCP profile) — the mechanism [MCP clients](/concepts/mcp)
