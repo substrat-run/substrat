@@ -1,32 +1,19 @@
 import { readAssistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
+import type { AssistantEvent, AssistantHistoryEntry, AssistantLabels, AssistantSource } from '@substrat-run/elements';
+import { writtenAtLabel } from './explanations';
 
 /**
- * Ask in the ⌘K overlay (#2283): the assistant's stream protocol, folded into what one turn
- * shows. Pure, so what the reader is told (which reads the answer came from, whether the budget
- * ran out, what went wrong) is asserted without drawing anything.
+ * Ask in the ⌘K overlay (#2283): the dashboard's route as the source `<sub-assistant>` reads.
+ * Pure, so what the reader is told (which reads the answer came from, whether the budget ran
+ * out, what went wrong) is asserted without drawing anything.
  *
  * Events are read with `readAssistantStreamEvent`, the protocol's forward-compatible reader: an
  * event this page does not know is skipped, not a crash, so a newer dashboard worker can add
  * one without breaking an older page.
  */
 
-/** One read the assistant made, as the turn lists it: "Looked at 12 findings". */
-export interface AskLook {
-  tool: string;
-  label: string;
-}
-
-export interface AskTurn {
-  question: string;
-  looks: AskLook[];
-  /** The answer's text; empty while there is none. */
-  answer: string;
-  provenance: { producedAt: string; model: string | null; sources: number } | null;
-  /** The person's or the team's daily budget ran out: on this turn, or with it. */
-  budgetExhausted: boolean;
-  /** A turn that ended without an answer, in words for the person. */
-  error: string | null;
-}
+/** What the overlay calls to ask: the dashboard's `dashboard/ask` route, or the preview's stand-in. */
+export type AskFn = (input: { messages: AssistantHistoryEntry[] }) => Promise<{ events: Array<Record<string, unknown>> }>;
 
 /** A read's name as the reader says it: `list_team_audit` → "team audit", `finding_evidence` → "finding evidence". */
 export function readName(tool: string): string {
@@ -51,64 +38,54 @@ export function lookLabel(tool: string, output: unknown): string {
   return Array.isArray(list) ? `Read ${name} (${list.length}${out.truncated ? '+' : ''})` : `Read ${name}`;
 }
 
-/** Fold one response's events into the turn they describe. */
-export function foldTurn(raw: readonly unknown[]): AskTurn {
-  const turn: AskTurn = { question: '', looks: [], answer: '', provenance: null, budgetExhausted: false, error: null };
-  for (const r of raw) {
-    const read = readAssistantStreamEvent(r);
-    if (!read.known) continue;
-    const e = read.event;
-    switch (e.t) {
-      case 'user-message':
-        turn.question = e.text;
-        break;
-      case 'tool-output':
-        turn.looks.push({ tool: e.tool, label: lookLabel(e.tool, e.output) });
-        break;
-      case 'tool-error':
-        turn.looks.push({ tool: e.tool, label: `Could not read ${readName(e.tool)}` });
-        break;
-      case 'text-delta':
-        turn.answer += e.delta;
-        break;
-      case 'data-provenance':
-        turn.provenance = { producedAt: e.producedAt, model: e.model ?? null, sources: e.sources ?? 0 };
-        break;
-      case 'budget-notice':
-        if (e.exhausted) turn.budgetExhausted = true;
-        break;
-      case 'turn-finish':
-        if (e.reason === 'budget') turn.error = 'You have used today’s AI answers; they reset at midnight UTC.';
-        break;
-      case 'turn-error':
-        turn.error = e.message;
-        break;
-      default:
-        break;
-    }
-  }
-  return turn;
+/**
+ * A read as a line in the reader's words, since a tool's name and output are the dashboard's to
+ * say. A tool's input says nothing until it has answered, so it is not drawn at all.
+ */
+function inWords(event: AssistantEvent): AssistantEvent | null {
+  if (event.t === 'tool-input') return null;
+  if (event.t === 'tool-output') return { t: 'host-event', kind: 'read', text: lookLabel(event.tool, event.output) };
+  if (event.t === 'tool-error') return { t: 'host-event', kind: 'read', text: `Could not read ${readName(event.tool)}` };
+  return event;
 }
+
+/** The route, one question at a time: a whole-body POST, played into the element as events. */
+export function askSource(ask: AskFn): AssistantSource {
+  return {
+    async *send({ text, history }) {
+      const { events } = await ask({ messages: historyFor(history, text) });
+      for (const raw of events) {
+        const read = readAssistantStreamEvent(raw);
+        const event = read.known ? inWords(read.event) : null;
+        if (event) yield event;
+      }
+    },
+  };
+}
+
+/** What Ask says that the element would say differently. */
+export const ASK_LABELS: Partial<AssistantLabels> = {
+  conversation: 'Ask',
+  working: 'Reading…',
+  budgetOut: 'You have used today’s AI answers; they reset at midnight UTC.',
+  budgetLast: 'That was today’s last AI answer.',
+  provenance: (p) => {
+    const reads = p.sources ?? 0;
+    return `Answered ${writtenAtLabel(p.producedAt)} from ${reads} ${reads === 1 ? 'read' : 'reads'}${p.model ? ` · model ${p.model.split('/').pop()}` : ''}`;
+  },
+};
 
 /** The most turns sent back with a question: the route's bound, user and assistant together. */
 export const ASK_HISTORY_MAX = 12;
 
-/**
- * The conversation to send with a new question: each answered turn as a question and its answer,
- * oldest first, the newest kept when it is too long. A turn with no answer is left out, so a
- * failed question is not repeated to the model as if it had been answered.
- */
-export function historyFor(turns: readonly AskTurn[], question: string): Array<{ role: 'user' | 'assistant'; text: string }> {
-  const past = turns.filter((t) => t.answer).flatMap((t) => [
-    { role: 'user' as const, text: t.question },
-    { role: 'assistant' as const, text: t.answer },
-  ]);
+/** The conversation to send with a new question, the newest kept when it is too long. */
+export function historyFor(history: readonly AssistantHistoryEntry[], question: string): AssistantHistoryEntry[] {
   // An odd count, so the kept window still opens on a question: question, answer, …, question.
-  return [...past, { role: 'user' as const, text: question }].slice(-(ASK_HISTORY_MAX - 1));
+  return [...history, { role: 'user' as const, text: question }].slice(-(ASK_HISTORY_MAX - 1));
 }
 
 /** The preview's assistant (DEV_MOCK): two reads and an answer, after a moment, and nothing leaves the page. */
-export function mockAsk(): (input: { messages: Array<{ role: 'user' | 'assistant'; text: string }> }) => Promise<{ events: Array<Record<string, unknown>> }> {
+export function mockAsk(): AskFn {
   return async ({ messages }) => {
     await new Promise((r) => setTimeout(r, 700));
     const question = messages[messages.length - 1]!.text;

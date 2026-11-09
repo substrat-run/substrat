@@ -36,6 +36,65 @@
  *   `sub-row-click` `{ row }` when a row is clicked, under `row-click`. A pointer's shortcut
  *   only: what it opens should also be reachable by a link or a button in the row.
  *
+ * ## Lists people work in (all opt-in)
+ *
+ * The table reports the gesture and draws the state. What a gesture means is the screen's.
+ *
+ * Selection the screen can read and set:
+ *   `selection` — the selected row keys, set or read at any time; `sub-selection-change`
+ *     `{ keys, rows, parents }` fires whenever the person or a re-read changes them. `rows` is the
+ *     loaded rows among `keys`, and `parents` each nested key's parent, for a screen dropping
+ *     children of selected parents (or `topmost` on a bulk action, which does it for you).
+ *   `row-select` makes the row itself select: a click selects that row alone, cmd/ctrl-click
+ *     toggles it, shift-click extends from the last anchor, cmd/ctrl+A selects the rows loaded
+ *     now (rows loaded later are not added), Escape clears.
+ *   Setting either option keeps a selection across a page turn, and a shift-click ranges over
+ *   the pages walked so far. A row a re-read no longer returns leaves it. A changed sort,
+ *   filter, search or page size keeps only the selected rows its first read still has, and a
+ *   changed view clears it. Without either option, a selection is the rows on screen, as ever.
+ *
+ * Opening a row and moving by keyboard:
+ *   `row-open` fires `sub-row-open` `{ row }` on a double-click or Enter. With `row-click` too,
+ *     `sub-row-click` waits `doubleClickMs` (300) and does not fire for a double-click, so a
+ *     single click can preview and a double-click open. `row-select` never waits.
+ *   Any of `row-select`, `row-open`, `row-draggable` or `childrenOf` makes it an ARIA grid (a
+ *     treegrid with `childrenOf`) with one focusable row: Up/Down move, Home/End jump, Shift+Up/Down
+ *     extend, Space toggles. Controls inside a row stay in the Tab order.
+ *   `paging="scroll"` loads the next page as the end of the list comes into view, keeps a real
+ *     "Load more" for a keyboard or screen reader, and Down on the last row loads too. A re-read
+ *     keeps every page already loaded, where `more` falls back to the first.
+ *   A `RowAction` takes `icon` (a Web Awesome name or `{ src }`, drawn with `label` as its
+ *     accessible name) and `menu` (always in the "More" menu at the end of the row).
+ *
+ * Right-click and drag, as hooks:
+ *   `sub-row-contextmenu` `{ row, x, y, originalEvent }` always fires; `preventDefault()` on it
+ *     keeps the browser's own menu away so the screen can draw one. Under `row-select` a
+ *     right-click on an unselected row selects it first.
+ *   `row-draggable`, narrowed by `canDrag(row)`, makes rows draggable. `sub-row-dragstart`
+ *     `{ row, rows, dataTransfer, originalEvent }` carries the whole selection if the row is part
+ *     of it; set `dataTransfer` on it, or `preventDefault()` to refuse. The preview says how
+ *     many are moving (`dragLabel(rows)` words it).
+ *   `canDrop(row, dragged)` says which rows take a drop; absent, none do, and a dragged row
+ *     never takes itself. It runs on every move of the pointer, so keep it cheap. While hovered
+ *     the row has the `drop-target` part. `sub-row-drop` `{ target, dragged, dataTransfer,
+ *     originalEvent }` reports the drop.
+ *   On touch, a long press (`longPressMs`, 500) starts the drag, with `dataTransfer` null. Moving
+ *     the finger first scrolls as usual.
+ *
+ * Nested rows, separate from `expanded` / `detail`:
+ *   `childrenOf(row)` returns a read shaped like `source`, made when a row first opens with the
+ *     table's query, so each level sorts on its own. `canExpand(row)` says which rows can open;
+ *     `rowRank(row)` keeps some first within a level (lower first: folders before files). Row
+ *     keys are unique across every level.
+ *   `open` — the open row keys; `sub-row-toggle` `{ row, key, open, keys }` fires when one is
+ *     opened or closed. Right opens or moves to the first child, Left closes or moves to the parent.
+ *   Use `paging="scroll"` for the top level: page numbers mean little once rows open in the
+ *     middle. Each open row gets its own "Load more" row, because loading on scroll mid-list would
+ *     keep pushing the rows below it down. A search is a flat list of matches, with no levels.
+ *   `reload()` reads every open level again and `reload(key)` just that row's children. A failed
+ *     or refused child read shows in that row's level. Selecting a parent does not select its
+ *     children; a selection is exactly the rows picked.
+ *
  * ## Cells a vertical draws itself
  *
  * `render(row)` returns a Lit template or a string, drawn in the table's shadow root. A
@@ -49,7 +108,8 @@
  * The theme's `--wa-*` tokens; then `--sub-table-*` (row height, header and selected
  * backgrounds, cell padding, `--sub-table-max-height` — set it and the header sticks);
  * then `::part()` — `frame`, `toolbar`, `bulk-bar`, `table`, `header-cell`, `row`
- * (plus `selected`), `cell`, `detail`, `footer`, `empty`.
+ * (plus `selected`, `drop-target`), `cell`, `detail`, `footer`, `empty`. `--sub-table-indent`
+ * is the width of one level of nesting.
  */
 import '@awesome.me/webawesome/dist/components/badge/badge.js';
 import '@awesome.me/webawesome/dist/components/button/button.js';
@@ -57,6 +117,7 @@ import '@awesome.me/webawesome/dist/components/callout/callout.js';
 import '@awesome.me/webawesome/dist/components/checkbox/checkbox.js';
 import '@awesome.me/webawesome/dist/components/dropdown/dropdown.js';
 import '@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js';
+import '@awesome.me/webawesome/dist/components/icon/icon.js';
 import '@awesome.me/webawesome/dist/components/input/input.js';
 import '@awesome.me/webawesome/dist/components/option/option.js';
 import '@awesome.me/webawesome/dist/components/popover/popover.js';
@@ -81,6 +142,7 @@ import {
   toggleColumn,
   type ColumnSpec,
   type RowAction,
+  type TableEntry,
   type TableLayout,
   type TableQuery,
   type TableSource,
@@ -126,6 +188,31 @@ const widthOf = <T, S extends string>(c: Column<T, S>) => (c.width ? `width:${c.
 /** At most this many actions show on a row; past that, the first stays and the rest go in "More". */
 const INLINE_ACTIONS = 2;
 
+/** How far a finger may wander during a long press before it is a scroll, in CSS pixels. */
+const LONG_PRESS_SLOP = 8;
+
+/** The type a dragged row's keys are carried under: Firefox starts no drag with no data on it. */
+const DRAG_TYPE = 'application/x-sub-entity-table';
+
+/** What a row drag carries while it is under way. */
+interface RowDrag<T> {
+  rows: T[];
+  keys: Set<string>;
+}
+
+/** A finger held on a row: a press until the timer fires, a drag once `rows` is set. */
+interface TouchPress<T> {
+  pointer: number;
+  x: number;
+  y: number;
+  key: string;
+  row: T;
+  timer: ReturnType<typeof setTimeout>;
+  dragging: boolean;
+}
+
+type RowEntry<T> = Extract<TableEntry<T>, { kind: 'row' }>;
+
 /** Where `layout-key` keeps a layout in this browser. */
 const LAYOUT_STORE = 'sub-entity-table:layout:';
 
@@ -152,6 +239,21 @@ const arrow = (order: 'asc' | 'desc' | null) =>
     <path d="M6 2.5 9 6H3z" class="up"/><path d="M6 9.5 3 6h6z" class="down"/>
   </svg>`;
 
+const twisty = svg`<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2.5 8.5 6 4 9.5z"/></svg>`;
+
+/** What every line of one render shares. */
+interface RowLine<T, S extends string> {
+  state: TableState<T, S>;
+  columns: Column<T, S>[];
+  rowActions: RowAction<T>[];
+  now: Date;
+  navigable: boolean;
+  nested: boolean;
+  picks: boolean;
+  tabStop: string | null;
+  span: number;
+}
+
 interface Mounted<T> {
   el: HTMLElement;
   row: T;
@@ -169,6 +271,19 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     layout: { attribute: false },
     detail: { attribute: false },
     expanded: { attribute: false },
+    selection: { attribute: false },
+    open: { attribute: false },
+    childrenOf: { attribute: false },
+    canExpand: { attribute: false },
+    rowRank: { attribute: false },
+    canDrag: { attribute: false },
+    canDrop: { attribute: false },
+    dragLabel: { attribute: false },
+    doubleClickMs: { attribute: false },
+    longPressMs: { attribute: false },
+    rowSelect: { type: Boolean, attribute: 'row-select', reflect: true },
+    rowOpen: { type: Boolean, attribute: 'row-open', reflect: true },
+    rowDraggable: { type: Boolean, attribute: 'row-draggable', reflect: true },
     rowClick: { type: Boolean, attribute: 'row-click', reflect: true },
     columnPicker: { type: Boolean, attribute: 'column-picker', reflect: true },
     layoutKey: { attribute: 'layout-key' },
@@ -193,6 +308,21 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   declare layout: TableLayout | undefined;
   declare detail: ((cell: HTMLElement, row: T) => CellHandle<T> | void) | undefined;
   declare expanded: string | null;
+  declare selection: Iterable<string> | undefined;
+  declare open: Iterable<string> | undefined;
+  /** A read for this row's children. Not `children`: every element already has one. */
+  declare childrenOf: ((row: T) => TableSource<T, S>) | undefined;
+  declare canExpand: ((row: T) => boolean) | undefined;
+  declare rowRank: ((row: T) => number) | undefined;
+  declare canDrag: ((row: T) => boolean) | undefined;
+  declare canDrop: ((row: T, dragged: T[]) => boolean) | undefined;
+  declare dragLabel: ((rows: T[]) => string) | undefined;
+  declare doubleClickMs: number;
+  declare longPressMs: number;
+  declare rowSelect: boolean;
+  declare rowOpen: boolean;
+  /** Not `draggable`: every element already has one, and it means the element itself. */
+  declare rowDraggable: boolean;
   declare rowClick: boolean;
   declare columnPicker: boolean;
   declare layoutKey: string | undefined;
@@ -202,7 +332,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   declare searchLabel: string;
   declare selectable: boolean;
   declare density: 'comfortable' | 'compact';
-  declare paging: 'pages' | 'more';
+  declare paging: 'pages' | 'more' | 'scroll';
   declare pageSize: number;
   declare pageSizes: number[];
   declare view: TableState<T, S> | undefined;
@@ -215,6 +345,43 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #drop: '2' | '3' | null = null;
   #dragging: string | null = null;
   #announce = '';
+  /** A single click waiting to see whether it becomes a double-click. */
+  #pendingClick: { key: string; timer: ReturnType<typeof setTimeout>; fire: () => void } | null = null;
+  /** The entry holding the one tabindex="0". */
+  #current: string | null = null;
+  /** Where the row holding focus stood as this render began, in case the render takes it away. */
+  #hadFocusAt: number | null = null;
+  /** The entries as last drawn, since `willUpdate` already sees the model's next ones. */
+  #drawnIds: string[] = [];
+  /** The array this element last wrote to `selection`, to tell it from one a screen set. */
+  #written: Iterable<string> | undefined;
+  /** A screen has set `selection`, so it has opted in to a selection that outlives a page. */
+  #screenSelects = false;
+  /** A checkbox's change event does not say whether shift was held; the click before it does. */
+  #shiftOnCheckbox = false;
+  #notePickClick = {
+    handleEvent: (e: MouseEvent) => {
+      this.#shiftOnCheckbox = e.shiftKey;
+    },
+    capture: true,
+  };
+  #lastSelected: ReadonlySet<string> = new Set();
+  #lastOpen: ReadonlySet<string> = new Set();
+  #drag: RowDrag<T> | null = null;
+  #dropKey: string | null = null;
+  #dragPreview: HTMLElement | null = null;
+  #touch: TouchPress<T> | null = null;
+  #swallowClick = false;
+  #end: IntersectionObserver | null = null;
+  #sentinel: Element | null = null;
+  #watchedRows = -1;
+  /** Scrolling is what a held finger must not start. Passive listeners cannot refuse it. */
+  #holdScroll = {
+    handleEvent: (e: TouchEvent) => {
+      if (this.#touch?.dragging && e.cancelable) e.preventDefault();
+    },
+    passive: false,
+  };
 
   constructor() {
     super();
@@ -223,6 +390,11 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.views = [];
     this.filters = [];
     this.expanded = null;
+    this.doubleClickMs = 300;
+    this.longPressMs = 500;
+    this.rowSelect = false;
+    this.rowOpen = false;
+    this.rowDraggable = false;
     this.rowClick = false;
     this.label = '';
     this.empty = 'Nothing here.';
@@ -247,6 +419,12 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     super.disconnectedCallback();
     this.#resize.disconnect();
     clearTimeout(this.#searchTimer);
+    if (this.#pendingClick) clearTimeout(this.#pendingClick.timer);
+    this.#pendingClick = null;
+    this.#endTouch();
+    this.#end?.disconnect();
+    this.#sentinel = null;
+    this.#watchedRows = -1;
     for (const slot of [...this.#mounted.keys()]) this.#unmount(slot);
   }
 
@@ -276,8 +454,12 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.dispatchEvent(new CustomEvent('sub-layout-change', { detail: { layout: next }, bubbles: true, composed: true }));
   }
 
-  /** Read again with the current query — after the host created a row, say. */
-  reload(): Promise<void> {
+  /**
+   * Read again with the current query — after the host created a row, say. With nested rows
+   * this re-reads every open level too; given a row's key, only that row's children.
+   */
+  reload(key?: string): Promise<void> {
+    if (key !== undefined) return this.#model?.reloadLevel(key) ?? Promise.resolve();
     return this.#model?.load() ?? Promise.resolve();
   }
 
@@ -291,20 +473,107 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     if (changed.has('layoutKey') && this.layoutKey && this.layout === undefined) {
       this.layout = this.#stored() ?? undefined;
     }
-    if (changed.has('source') && this.source) {
+    const root = this.renderRoot as ShadowRoot | undefined;
+    const focused = root?.activeElement;
+    this.#hadFocusAt = focused instanceof HTMLTableRowElement && focused.dataset['entry'] ? this.#drawnIds.indexOf(focused.dataset['entry']) : null;
+    if (changed.has('selection') && this.selection && this.selection !== this.#written) this.#screenSelects = true;
+    const fresh = changed.has('source') && this.source;
+    if (fresh) {
       const view = this.query?.view ?? this.views[0]?.id ?? null;
-      this.#model = new EntityTableModel<T, S>(this.source, (state) => (this.view = state), {
+      this.#model = new EntityTableModel<T, S>(this.source!, (state) => this.#stateChanged(state), {
         query: { limit: this.pageSize, ...this.query, view },
+        ...(this.selection ? { selected: this.selection } : {}),
       });
       this.view = this.#model.state;
-      void this.#model.load();
+      this.#lastSelected = this.#model.state.selected;
+      this.#lastOpen = new Set();
     }
+    this.#model?.configure({
+      retainSelection: this.rowSelect || this.#screenSelects,
+      keepAppended: this.paging !== 'pages',
+      tree: this.childrenOf ? { childrenOf: this.childrenOf, ...(this.canExpand ? { canExpand: this.canExpand } : {}) } : undefined,
+      rank: this.rowRank,
+    });
+    if (changed.has('selection') && this.selection) {
+      const keys = new Set(this.selection);
+      this.#lastSelected = keys;
+      this.#model?.setSelection(keys);
+    }
+    if ((changed.has('open') || fresh) && this.open) {
+      this.#lastOpen = new Set(this.open);
+      void this.#model?.setOpen(this.#lastOpen);
+    }
+    if (fresh) void this.#model!.load();
   }
 
   protected updated(changed: PropertyValues): void {
     super.updated(changed);
     this.#fit();
     this.#syncMounts();
+    this.#watchEnd();
+    this.#restoreFocus();
+    this.#drawnIds = this.#focusable.map((e) => e.id);
+  }
+
+  /** Report a selection the screen did not set itself. */
+  #stateChanged(state: TableState<T, S>) {
+    this.view = state;
+    const before = this.#lastSelected;
+    if (state.selected === before) return;
+    if (state.selected.size === before.size && [...state.selected].every((k) => before.has(k))) return;
+    this.#lastSelected = state.selected;
+    const keys = [...state.selected];
+    this.selection = this.#written = keys;
+    const model = this.#model!;
+    const parents = Object.fromEntries(keys.map((k) => [k, model.parentOf(k)]));
+    this.dispatchEvent(
+      new CustomEvent('sub-selection-change', { detail: { keys, rows: model.selectedRows, parents }, bubbles: true, composed: true }),
+    );
+  }
+
+  /** The rows on the list and their "Load more" lines: what the arrow keys walk. */
+  get #focusable(): Exclude<TableEntry<T>, { kind: 'status' }>[] {
+    return (this.#model?.entries ?? []).filter((e): e is Exclude<TableEntry<T>, { kind: 'status' }> => e.kind !== 'status');
+  }
+
+  /** The table takes the keyboard, and draws itself as a grid, only if a gesture asked for it. */
+  get #navigable(): boolean {
+    return this.rowSelect || this.rowOpen || this.rowDraggable || Boolean(this.childrenOf);
+  }
+
+  /** A render can take away the row holding focus (its action removed it); keep focus nearby. */
+  #restoreFocus() {
+    const at = this.#hadFocusAt;
+    this.#hadFocusAt = null;
+    if (at === null || at < 0 || (this.renderRoot as ShadowRoot).activeElement) return;
+    const list = this.#focusable;
+    const next = list[Math.min(at, list.length - 1)];
+    if (next) this.#focus(next.id);
+  }
+
+  #focus(id: string, options?: FocusOptions) {
+    this.#current = id;
+    this.requestUpdate();
+    this.renderRoot.querySelector<HTMLElement>(`tr[data-entry="${CSS.escape(id)}"]`)?.focus(options);
+  }
+
+  /**
+   * Under `paging="scroll"`, read on when the end of the list comes into view. Observed afresh
+   * each time the list grows: the end still in view after a short page is no change, so an
+   * observer left alone would stay silent. A failed read does not grow it, so nothing loops.
+   */
+  #watchEnd() {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const sentinel = this.renderRoot.querySelector('.sentinel');
+    const rows = this.view?.rows.length ?? 0;
+    if (sentinel === this.#sentinel && rows === this.#watchedRows) return;
+    this.#sentinel = sentinel;
+    this.#watchedRows = rows;
+    this.#end ??= new IntersectionObserver((seen) => {
+      if (seen.some((e) => e.isIntersecting)) void this.#model?.more();
+    });
+    this.#end.disconnect();
+    if (sentinel) this.#end.observe(sentinel);
   }
 
   /**
@@ -334,7 +603,8 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #syncMounts() {
     const model = this.#model;
     const mounting = this.#shown.filter((c) => c.mount);
-    const rows = this.view?.phase === 'ready' ? this.view.rows : [];
+    const entries = this.view?.phase === 'ready' && model ? model.entries : [];
+    const rows = entries.flatMap((e) => (e.kind === 'row' ? [e.row] : []));
     const wanted = new Set<string>();
     if (model) {
       for (const row of rows) {
@@ -370,13 +640,345 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     this.#mounted.set(slot, { el, row, handle: mount(el, row) });
   }
 
-  #onRowClick(e: Event, row: T) {
-    if (!this.rowClick) return;
+  /** The event landed on a control of the row's own, which it belongs to instead. */
+  #onOwnControl(e: Event) {
     for (const node of e.composedPath()) {
       if (node === e.currentTarget) break;
-      if (node instanceof Element && node.matches(OWN_CLICK)) return;
+      if (node instanceof Element && node.matches(OWN_CLICK)) return true;
     }
-    this.dispatchEvent(new CustomEvent('sub-row-click', { detail: { row }, bubbles: true, composed: true }));
+    return false;
+  }
+
+  #emit(name: string, detail: unknown, cancelable = false) {
+    return this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true, cancelable }));
+  }
+
+  #onRowClick(e: MouseEvent, entry: RowEntry<T>) {
+    if (this.#swallowClick) {
+      this.#swallowClick = false;
+      return;
+    }
+    if (this.#onOwnControl(e)) return;
+    if (this.#navigable) this.#focus(entry.id, { preventScroll: true });
+    const model = this.#model!;
+    const modified = e.shiftKey || e.metaKey || e.ctrlKey;
+    if (this.rowSelect) {
+      if (e.shiftKey) model.extendTo(entry.key, { additive: e.metaKey || e.ctrlKey });
+      else if (modified) model.toggle(entry.key);
+      else model.selectOnly(entry.key);
+      if (modified) return; // Picking rows out, which is not a click on one.
+    }
+    if (this.rowClick) this.#clickOrWait(entry);
+  }
+
+  /** With `row-open` too, a click waits to see whether a second one turns it into an open. */
+  #clickOrWait({ key, row }: RowEntry<T>) {
+    const fire = () => this.#emit('sub-row-click', { row });
+    if (!this.rowOpen) return void fire();
+    const pending = this.#pendingClick;
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.#pendingClick = null;
+      if (pending.key === key) return; // The second click of a double.
+      pending.fire();
+    }
+    this.#pendingClick = {
+      key,
+      fire,
+      timer: setTimeout(() => {
+        this.#pendingClick = null;
+        fire();
+      }, this.doubleClickMs),
+    };
+  }
+
+  /** A second click, or a shift-click, would otherwise select the text under it. */
+  #onRowMouseDown(e: MouseEvent) {
+    if (this.#onOwnControl(e)) return;
+    if ((this.rowSelect && e.shiftKey) || (this.rowOpen && e.detail > 1)) e.preventDefault();
+  }
+
+  #onRowDoubleClick(e: MouseEvent, row: T) {
+    if (this.rowOpen && !this.#onOwnControl(e)) this.#emit('sub-row-open', { row });
+  }
+
+  #onContextMenu(e: MouseEvent, entry: RowEntry<T>) {
+    if (this.#touch?.dragging) return e.preventDefault(); // The long press that started this drag.
+    const model = this.#model!;
+    if (this.rowSelect && !model.state.selected.has(entry.key)) model.selectOnly(entry.key);
+    const allowed = this.#emit('sub-row-contextmenu', { row: entry.row, x: e.clientX, y: e.clientY, originalEvent: e }, true);
+    if (!allowed) e.preventDefault();
+  }
+
+  /** The row under the focus, for keys pressed on the row itself and not on a control in it. */
+  #onRowKey(e: KeyboardEvent) {
+    const target = e.composedPath()[0];
+    if (!(target instanceof HTMLTableRowElement) || !target.dataset['entry']) return;
+    const list = this.#focusable;
+    const at = list.findIndex((x) => x.id === target.dataset['entry']);
+    const entry = list[at];
+    if (entry && this.#keyOnEntry(e, list, at, entry)) e.preventDefault();
+  }
+
+  #keyOnEntry(e: KeyboardEvent, list: Exclude<TableEntry<T>, { kind: 'status' }>[], at: number, entry: (typeof list)[number]): boolean {
+    const model = this.#model!;
+    const picks = this.rowSelect || this.selectable;
+    const mod = e.metaKey || e.ctrlKey;
+    const go = (to: number) => {
+      const next = list[to];
+      if (!next) return;
+      if (next.kind === 'row') {
+        if (e.shiftKey && picks) model.extendTo(next.key, entry.kind === 'row' ? { from: entry.key } : {});
+        else model.setAnchor(next.key);
+      }
+      this.#focus(next.id);
+    };
+    switch (e.key) {
+      case 'ArrowDown':
+        if (at < list.length - 1) go(at + 1);
+        else void this.#loadOnThenFocus(list.length);
+        return true;
+      case 'ArrowUp':
+        go(at - 1);
+        return true;
+      case 'Home':
+        go(0);
+        return true;
+      case 'End':
+        go(list.length - 1);
+        return true;
+      case 'ArrowRight':
+        if (entry.kind !== 'row' || !entry.expandable) return false;
+        if (!entry.open) this.#toggleRow(entry);
+        else if (list[at + 1]?.level === entry.level + 1) go(at + 1);
+        return true;
+      case 'ArrowLeft': {
+        if (entry.kind === 'row' && entry.open) {
+          this.#toggleRow(entry);
+          return true;
+        }
+        const parent = entry.parent;
+        if (parent === null) return false;
+        const up = list.findIndex((x) => x.kind === 'row' && x.key === parent);
+        if (up >= 0) go(up);
+        return true;
+      }
+      case 'Enter':
+        if (entry.kind === 'more') void this.#moreThenFocus(entry, at);
+        else if (this.rowOpen) this.#emit('sub-row-open', { row: entry.row });
+        else return false;
+        return true;
+      case ' ':
+        if (entry.kind === 'more') void this.#moreThenFocus(entry, at);
+        else if (picks) model.toggle(entry.key);
+        else return false;
+        return true;
+      case 'Escape':
+        if (!this.rowSelect || model.state.selected.size === 0) return false;
+        model.clearSelection();
+        return true;
+      case 'a':
+      case 'A':
+        if (!this.rowSelect || !mod) return false;
+        model.selectLoaded();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** Down on the last row reads the next page, then steps onto the first row it brought. */
+  async #loadOnThenFocus(index: number) {
+    const model = this.#model!;
+    if (this.paging === 'pages' || !model.state.next || model.state.mode === 'search') return;
+    await model.more();
+    await this.updateComplete;
+    const next = this.#focusable[index];
+    if (next) this.#focus(next.id);
+  }
+
+  /** The "Load more" line goes when its level is walked, so focus lands where it stood. */
+  async #moreThenFocus(entry: Extract<TableEntry<T>, { kind: 'more' }>, index: number) {
+    await this.#model!.moreIn(entry.parent);
+    await this.updateComplete;
+    const next = this.#focusable[index];
+    if (next) this.#focus(next.id);
+  }
+
+  #toggleRow(entry: RowEntry<T>) {
+    const model = this.#model!;
+    const keys = new Set(model.state.open);
+    const open = !keys.delete(entry.key);
+    if (open) keys.add(entry.key);
+    this.#lastOpen = keys;
+    this.open = [...keys];
+    void model.setOpen(keys);
+    this.#emit('sub-row-toggle', { row: entry.row, key: entry.key, open, keys: [...keys] });
+  }
+
+  #canDragRow(row: T) {
+    return this.rowDraggable && (this.canDrag?.(row) ?? true);
+  }
+
+  #draggedRows(key: string, row: T): T[] {
+    const model = this.#model!;
+    return model.state.selected.has(key) ? model.selectedRows : [row];
+  }
+
+  /** What a drag's preview says: the row, or how many. */
+  #dragText(rows: T[]) {
+    if (this.dragLabel) return this.dragLabel(rows);
+    if (rows.length !== 1 || !this.columns[0]) return `${rows.length} items`;
+    return cellText(this.columns[0], rows[0]!, new Date()).text;
+  }
+
+  #makePreview(rows: T[]) {
+    const preview = document.createElement('div');
+    preview.className = 'drag-preview';
+    preview.textContent = this.#dragText(rows);
+    this.renderRoot.append(preview);
+    return preview;
+  }
+
+  #onDragStart(e: DragEvent, key: string, row: T) {
+    if (this.#touch) return e.preventDefault(); // A long press drags its own way, on every browser.
+    const rows = this.#draggedRows(key, row);
+    const model = this.#model!;
+    const transfer = e.dataTransfer;
+    transfer?.setData(DRAG_TYPE, JSON.stringify(rows.map(model.keyOf)));
+    const preview = this.#makePreview(rows);
+    transfer?.setDragImage?.(preview, 12, 12);
+    // The browser has its picture once this event is over.
+    setTimeout(() => preview.remove(), 0);
+    if (!this.#emit('sub-row-dragstart', { row, rows, dataTransfer: transfer, originalEvent: e }, true)) return e.preventDefault();
+    this.#drag = { rows, keys: new Set(rows.map(model.keyOf)) };
+  }
+
+  #acceptsDrop(key: string, row: T) {
+    const drag = this.#drag;
+    return drag !== null && !drag.keys.has(key) && (this.canDrop?.(row, drag.rows) ?? false);
+  }
+
+  #setDropKey(key: string | null) {
+    if (key === this.#dropKey) return;
+    this.#dropKey = key;
+    this.requestUpdate();
+  }
+
+  #onDragOver(e: DragEvent, key: string, row: T) {
+    if (!this.#drag) return;
+    if (this.#acceptsDrop(key, row)) {
+      e.preventDefault();
+      this.#setDropKey(key);
+    } else {
+      this.#setDropKey(null);
+    }
+  }
+
+  #onDragLeave(e: DragEvent) {
+    const to = e.relatedTarget as Node | null;
+    if (!to || (!this.renderRoot.contains(to) && !this.contains(to))) this.#setDropKey(null);
+  }
+
+  #reportDrop(row: T, dataTransfer: DataTransfer | null, originalEvent: Event) {
+    this.#emit('sub-row-drop', { target: row, dragged: this.#drag!.rows, dataTransfer, originalEvent });
+  }
+
+  #onDrop(e: DragEvent, key: string, row: T) {
+    if (!this.#acceptsDrop(key, row)) return;
+    e.preventDefault();
+    this.#reportDrop(row, e.dataTransfer, e);
+    this.#endDrag();
+  }
+
+  #endDrag() {
+    this.#drag = null;
+    this.#setDropKey(null);
+  }
+
+  #onPointerDown(e: PointerEvent, key: string, row: T) {
+    if (e.pointerType !== 'touch' || this.#touch || !this.#canDragRow(row) || this.#onOwnControl(e)) return;
+    this.#touch = {
+      pointer: e.pointerId,
+      x: e.clientX,
+      y: e.clientY,
+      key,
+      row,
+      dragging: false,
+      timer: setTimeout(() => this.#beginTouchDrag(e), this.longPressMs),
+    };
+    window.addEventListener('pointermove', this.#onTouchMove);
+    window.addEventListener('pointerup', this.#onTouchEnd);
+    window.addEventListener('pointercancel', this.#onTouchCancel);
+  }
+
+  #beginTouchDrag(e: PointerEvent) {
+    const touch = this.#touch;
+    if (!touch) return;
+    const rows = this.#draggedRows(touch.key, touch.row);
+    if (!this.#emit('sub-row-dragstart', { row: touch.row, rows, dataTransfer: null, originalEvent: e }, true)) {
+      this.#endTouch();
+      return;
+    }
+    touch.dragging = true;
+    this.#drag = { rows, keys: new Set(rows.map(this.#model!.keyOf)) };
+    this.#dragPreview = this.#makePreview(rows);
+    this.#movePreview(touch.x, touch.y);
+  }
+
+  #movePreview(x: number, y: number) {
+    if (this.#dragPreview) this.#dragPreview.style.transform = `translate(${x + 12}px, ${y + 12}px)`;
+  }
+
+  /** The row under a point. A mounted cell's content is in the light DOM, so it goes by its slot. */
+  #rowAt(x: number, y: number) {
+    const hit = (this.renderRoot as ShadowRoot).elementFromPoint?.(x, y);
+    const cell = hit?.closest('[data-sub-cell]');
+    const key = (cell?.assignedSlot ?? hit)?.closest<HTMLElement>('tr[data-entry]')?.dataset['entry'];
+    const entry = this.#model?.entries.find((x) => x.id === key);
+    return entry?.kind === 'row' ? entry : undefined;
+  }
+
+  #onTouchMove = (e: PointerEvent) => {
+    const touch = this.#touch;
+    if (!touch || e.pointerId !== touch.pointer) return;
+    if (!touch.dragging) {
+      // Moved before the press came due: this finger is scrolling the list, so leave it alone.
+      if (Math.hypot(e.clientX - touch.x, e.clientY - touch.y) > LONG_PRESS_SLOP) this.#endTouch();
+      return;
+    }
+    this.#movePreview(e.clientX, e.clientY);
+    const over = this.#rowAt(e.clientX, e.clientY);
+    this.#setDropKey(over && this.#acceptsDrop(over.key, over.row) ? over.key : null);
+  };
+
+  #onTouchEnd = (e: PointerEvent) => {
+    const touch = this.#touch;
+    if (!touch || e.pointerId !== touch.pointer) return;
+    if (touch.dragging) {
+      const over = this.#rowAt(e.clientX, e.clientY);
+      if (over && this.#acceptsDrop(over.key, over.row)) this.#reportDrop(over.row, null, e);
+      // The lift can still arrive as a click on the row it started from.
+      this.#swallowClick = true;
+      setTimeout(() => (this.#swallowClick = false), 0);
+    }
+    this.#endTouch();
+  };
+
+  #onTouchCancel = (e: PointerEvent) => {
+    if (e.pointerId === this.#touch?.pointer) this.#endTouch();
+  };
+
+  #endTouch() {
+    if (this.#touch) clearTimeout(this.#touch.timer);
+    const dragging = this.#touch?.dragging;
+    this.#touch = null;
+    window.removeEventListener('pointermove', this.#onTouchMove);
+    window.removeEventListener('pointerup', this.#onTouchEnd);
+    window.removeEventListener('pointercancel', this.#onTouchCancel);
+    this.#dragPreview?.remove();
+    this.#dragPreview = null;
+    if (dragging) this.#endDrag();
   }
 
   #unmount(slot: string) {
@@ -409,6 +1011,7 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
       --sub-table-row-hover: var(--wa-color-neutral-fill-quiet);
       --sub-table-row-selected: var(--wa-color-brand-fill-quiet);
       --sub-table-max-height: none;
+      --sub-table-indent: var(--wa-space-l);
       display: block;
       font-family: var(--wa-font-family-body);
       color: var(--wa-color-text-normal);
@@ -580,6 +1183,96 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
     :host([row-click]) tbody tr:not(.detail) {
       cursor: pointer;
     }
+    :host([row-open]) tbody tr[data-entry],
+    :host([row-select]) tbody tr[data-entry] {
+      cursor: default;
+    }
+    tbody tr[data-entry] {
+      scroll-margin-block-start: var(--sub-table-row-height);
+    }
+    tbody tr[data-entry]:focus-visible {
+      outline: var(--wa-focus-ring);
+      outline-offset: calc(-1 * var(--wa-focus-ring-width, 2px));
+    }
+    /* A long press is the drag; the phone's own callout and text selection would be in its way. */
+    tbody tr[draggable='true'] {
+      -webkit-touch-callout: none;
+    }
+    @media (pointer: coarse) {
+      tbody tr[draggable='true'] {
+        user-select: none;
+      }
+    }
+    tbody tr.drop-target td {
+      background: var(--sub-table-row-selected);
+      box-shadow:
+        inset 0 var(--wa-border-width-m) 0 var(--wa-color-brand-border-loud),
+        inset 0 calc(-1 * var(--wa-border-width-m)) 0 var(--wa-color-brand-border-loud);
+    }
+    /* Parked off screen until the browser photographs it; a finger's drag moves it into view. */
+    .drag-preview {
+      position: fixed;
+      top: 0;
+      left: 0;
+      transform: translateX(-200vw);
+      z-index: var(--wa-z-index-tooltip, 1000);
+      pointer-events: none;
+      padding: var(--wa-space-2xs) var(--wa-space-s);
+      border-radius: var(--wa-border-radius-m);
+      background: var(--wa-color-brand-fill-loud);
+      color: var(--wa-color-brand-on-loud);
+      font-size: var(--wa-font-size-s);
+      white-space: nowrap;
+    }
+    .nested {
+      display: flex;
+      align-items: center;
+      gap: var(--wa-space-2xs);
+      padding-inline-start: calc(var(--sub-level, 0) * var(--sub-table-indent));
+    }
+    .nested-body {
+      min-width: 0;
+      flex: 1;
+    }
+    .twisty-gap {
+      flex: none;
+      width: 1.25em;
+      height: 1.25em;
+    }
+    .twisty {
+      all: unset;
+      flex: none;
+      width: 1.25em;
+      height: 1.25em;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--wa-color-text-quiet);
+      border-radius: var(--wa-border-radius-s);
+    }
+    .twisty svg {
+      width: 0.75em;
+      height: 0.75em;
+      fill: currentColor;
+      transition: rotate var(--wa-transition-fast) var(--wa-transition-easing);
+    }
+    .twisty[data-open='true'] svg {
+      rotate: 90deg;
+    }
+    tr.level-line td {
+      color: var(--wa-color-text-quiet);
+      font-size: var(--wa-font-size-xs);
+    }
+    .level-note {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--wa-space-xs);
+    }
+    /* Where the list ends, for the observer behind paging="scroll". It needs a box to intersect. */
+    .sentinel {
+      height: 1px;
+    }
     tr.detail td {
       white-space: normal;
       height: auto;
@@ -735,8 +1428,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
 
   #toolbar(state: TableState<T, S>) {
     const model = this.#model!;
-    if (this.selectable && state.selected.size > 0) {
-      const bulk = actionsIn(this.actions, state.query.view, true);
+    const bulk = actionsIn(this.actions, state.query.view, true);
+    // A click on a row selects it, so without a bulk action to offer the bar would only be in the way.
+    if ((this.selectable || (this.rowSelect && bulk.length > 0)) && state.selected.size > 0) {
       return html`<div part="toolbar bulk-bar" class="toolbar bulk" role="toolbar" aria-label="Selection">
         <strong>${state.selected.size} selected</strong>
         ${bulk.map(
@@ -999,15 +1693,36 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
   #table(state: TableState<T, S>) {
     const model = this.#model!;
     const rowActions = actionsIn(this.actions, state.query.view);
-    const keys = state.rows.map(model.keyOf);
+    const entries = model.entries;
+    const keys = entries.flatMap((e) => (e.kind === 'row' ? [e.key] : []));
     const picked = keys.filter((k) => state.selected.has(k)).length;
-    const now = new Date();
     const columns = this.#shown;
+    const navigable = this.#navigable;
+    const focusable = this.#focusable;
+    const nested = Boolean(this.childrenOf) && state.mode === 'page';
+    const line: RowLine<T, S> = {
+      state,
+      columns,
+      rowActions,
+      now: new Date(),
+      navigable,
+      nested,
+      picks: this.rowSelect || this.selectable,
+      tabStop: focusable.some((e) => e.id === this.#current) ? this.#current : (focusable[0]?.id ?? null),
+      span: columns.length + (this.selectable ? 1 : 0) + (rowActions.length ? 1 : 0),
+    };
+    const draw = (entry: TableEntry<T>, index: number) => (entry.kind === 'row' ? this.#row(entry, index, line) : this.#levelLine(entry, index, line));
     return html`<div class="scroll">
-        <table part="table" class=${state.refreshing ? 'refreshing' : ''}>
+        <table
+          part="table"
+          class=${state.refreshing ? 'refreshing' : ''}
+          role=${navigable ? (nested ? 'treegrid' : 'grid') : nothing}
+          aria-rowcount=${navigable ? entries.length + 1 : nothing}
+          aria-multiselectable=${navigable && line.picks ? 'true' : nothing}
+        >
           ${this.label ? html`<caption class="vh">${this.label}</caption>` : nothing}
           <thead>
-            <tr>
+            <tr aria-rowindex=${navigable ? 1 : nothing}>
               ${this.selectable
                 ? html`<th scope="col" class="pick">
                     <wa-checkbox
@@ -1023,46 +1738,149 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
               ${rowActions.length ? html`<th scope="col" class="actions"><span class="vh">Actions</span></th>` : nothing}
             </tr>
           </thead>
-          <tbody>
-            ${state.rows.map((row, r) => {
-              const key = keys[r]!;
-              const selected = state.selected.has(key);
-              const name = this.columns[0] ? cellText(this.columns[0], row, now).text : key;
-              const open = this.expanded === key;
-              return html`<tr
-                  part=${selected ? 'row selected' : 'row'}
-                  class=${[selected ? 'selected' : '', open ? 'expanded' : ''].join(' ').trim()}
-                  @click=${(e: Event) => this.#onRowClick(e, row)}
-                >
-                ${this.selectable
-                  ? html`<td class="pick">
-                      <wa-checkbox size="s" .checked=${selected} @change=${() => model.toggle(key)}
-                        ><span class="vh">Select ${name}</span></wa-checkbox
-                      >
-                    </td>`
-                  : nothing}
-                ${columns.map(
-                  (c, i) => html`<td part="cell" class=${this.#cellClass(c, i)} style=${widthOf(c)}>${this.#cell(c, row, key, state, now)}</td>`,
-                )}
-                ${rowActions.length ? html`<td class="actions">${this.#rowActions(rowActions, row, key, name, state)}</td>` : nothing}
-              </tr>
-              ${open && this.detail
-                ? html`<tr class="detail">
-                    <td part="detail" colspan=${columns.length + (this.selectable ? 1 : 0) + (rowActions.length ? 1 : 0)}>
-                      <slot name=${detailSlotOf(key)}></slot>
-                    </td>
-                  </tr>`
-                : nothing}`;
-            })}
+          <tbody
+            @keydown=${navigable ? (e: KeyboardEvent) => this.#onRowKey(e) : nothing}
+            @focusin=${navigable ? (e: FocusEvent) => this.#onRowFocus(e) : nothing}
+            @dragleave=${this.rowDraggable ? (e: DragEvent) => this.#onDragLeave(e) : nothing}
+            @touchmove=${this.rowDraggable ? this.#holdScroll : nothing}
+          >
+            ${navigable ? repeat(entries, (e) => e.id, draw) : entries.map(draw)}
           </tbody>
         </table>
+        ${this.paging === 'scroll' && state.mode === 'page' && state.next ? html`<div class="sentinel" aria-hidden="true"></div>` : nothing}
       </div>
       ${this.#footer(state)}`;
   }
 
+  /** Focus moved to a row, or into one: that row now holds the Tab stop. */
+  #onRowFocus(e: FocusEvent) {
+    const row = e.composedPath().find((n): n is HTMLTableRowElement => n instanceof HTMLTableRowElement && Boolean(n.dataset['entry']));
+    if (row && row.dataset['entry'] !== this.#current) {
+      this.#current = row.dataset['entry']!;
+      this.requestUpdate();
+    }
+  }
+
+  #row(entry: RowEntry<T>, index: number, line: RowLine<T, S>) {
+    const { key, row } = entry;
+    const { state, columns, rowActions, now, navigable, nested, picks, tabStop, span } = line;
+    const model = this.#model!;
+    const selected = state.selected.has(key);
+    const name = this.columns[0] ? cellText(this.columns[0], row, now).text : key;
+    const open = this.expanded === key;
+    const dropping = this.#dropKey === key;
+    const part = ['row', selected ? 'selected' : '', dropping ? 'drop-target' : ''].filter(Boolean).join(' ');
+    return html`<tr
+        part=${part}
+        class=${[selected ? 'selected' : '', open ? 'expanded' : '', dropping ? 'drop-target' : ''].filter(Boolean).join(' ')}
+        data-entry=${navigable ? entry.id : nothing}
+        tabindex=${navigable ? (entry.id === tabStop ? '0' : '-1') : nothing}
+        draggable=${this.#canDragRow(row) ? 'true' : nothing}
+        aria-selected=${navigable && picks ? String(selected) : nothing}
+        aria-rowindex=${navigable ? index + 2 : nothing}
+        aria-level=${nested ? entry.level : nothing}
+        aria-setsize=${nested ? entry.siblings : nothing}
+        aria-posinset=${nested ? entry.position : nothing}
+        aria-expanded=${nested && entry.expandable ? String(entry.open) : nothing}
+        @click=${(e: MouseEvent) => this.#onRowClick(e, entry)}
+        @mousedown=${(e: MouseEvent) => this.#onRowMouseDown(e)}
+        @dblclick=${(e: MouseEvent) => this.#onRowDoubleClick(e, row)}
+        @contextmenu=${(e: MouseEvent) => this.#onContextMenu(e, entry)}
+        @dragstart=${(e: DragEvent) => this.#onDragStart(e, key, row)}
+        @dragenter=${(e: DragEvent) => this.#onDragOver(e, key, row)}
+        @dragover=${(e: DragEvent) => this.#onDragOver(e, key, row)}
+        @drop=${(e: DragEvent) => this.#onDrop(e, key, row)}
+        @dragend=${() => this.#endDrag()}
+        @pointerdown=${(e: PointerEvent) => this.#onPointerDown(e, key, row)}
+      >
+        ${this.selectable
+          ? html`<td class="pick" @click=${this.#notePickClick}>
+              <wa-checkbox size="s" .checked=${selected} @change=${() => this.#onPick(key)}
+                ><span class="vh">Select ${name}</span></wa-checkbox
+              >
+            </td>`
+          : nothing}
+        ${columns.map((c, i) => {
+          const cell = this.#cell(c, row, key, state, now);
+          return html`<td part="cell" class=${this.#cellClass(c, i)} style=${widthOf(c)}>${nested && i === 0 ? this.#nested(entry, cell) : cell}</td>`;
+        })}
+        ${rowActions.length ? html`<td class="actions">${this.#rowActions(rowActions, row, key, name, state)}</td>` : nothing}
+      </tr>
+      ${open && this.detail
+        ? html`<tr class="detail">
+            <td part="detail" colspan=${span}>
+              <slot name=${detailSlotOf(key)}></slot>
+            </td>
+          </tr>`
+        : nothing}`;
+  }
+
+  #onPick(key: string) {
+    const model = this.#model!;
+    if (this.rowSelect && this.#shiftOnCheckbox) model.extendTo(key);
+    else model.toggle(key);
+    this.#shiftOnCheckbox = false;
+  }
+
+  /** The first cell of a nested list: its indent, and the control that opens the row. */
+  #nested(entry: RowEntry<T>, body: unknown) {
+    return html`<div class="nested" style="--sub-level:${entry.level - 1}">
+      ${entry.expandable
+        ? html`<button
+            class="twisty"
+            tabindex="-1"
+            aria-hidden="true"
+            data-open=${String(entry.open)}
+            @click=${() => {
+              this.#toggleRow(entry);
+              this.#focus(entry.id);
+            }}
+          >
+            ${twisty}
+          </button>`
+        : html`<span class="twisty-gap"></span>`}
+      <div class="nested-body">${body}</div>
+    </div>`;
+  }
+
+  /** What stands in an open row's level: a status in place of its rows, or its "Load more". */
+  #levelLine(entry: Exclude<TableEntry<T>, { kind: 'row' }>, index: number, line: RowLine<T, S>) {
+    const model = this.#model!;
+    const aria = (body: TemplateResult) => html`<td colspan=${line.span}>
+      <div class="nested" style="--sub-level:${entry.level - 1}"><span class="twisty-gap"></span>${body}</div>
+    </td>`;
+    if (entry.kind === 'more') {
+      return html`<tr
+        class="level-line"
+        data-entry=${entry.id}
+        tabindex=${entry.id === line.tabStop ? '0' : '-1'}
+        aria-rowindex=${index + 2}
+        aria-level=${entry.level}
+      >
+        ${aria(html`<span class="level-note">
+          <wa-button size="s" appearance="plain" ?loading=${entry.loading} @click=${() => model.moreIn(entry.parent)}>Load more</wa-button>
+          ${entry.message ? html`<span role="status">${entry.message}</span>` : nothing}
+        </span>`)}
+      </tr>`;
+    }
+    const body =
+      entry.phase === 'loading'
+        ? html`<span class="level-note"><wa-spinner></wa-spinner> Loading…</span>`
+        : entry.phase === 'empty'
+          ? html`<span class="level-note">${this.empty}</span>`
+          : entry.phase === 'forbidden'
+            ? html`<span class="level-note" role="status">${this.forbiddenText}</span>`
+            : html`<span class="level-note" role="alert">
+                <strong>Could not load.</strong> ${entry.message ?? ''}
+                <wa-button size="s" appearance="outlined" @click=${() => model.reloadLevel(entry.parent)}>Try again</wa-button>
+              </span>`;
+    return html`<tr class="level-line" aria-rowindex=${index + 2} aria-level=${entry.level}>${aria(body)}</tr>`;
+  }
+
   #rowActions(actions: RowAction<T>[], row: T, key: string, name: string, state: TableState<T, S>) {
-    const inline = actions.length <= INLINE_ACTIONS ? actions : actions.slice(0, 1);
-    const more = actions.slice(inline.length);
+    const chosen = actions.some((a) => a.menu);
+    const inline = chosen ? actions.filter((a) => !a.menu) : actions.length <= INLINE_ACTIONS ? actions : actions.slice(0, 1);
+    const more = actions.filter((a) => !inline.includes(a));
     const busy = state.busy === key;
     const blocked = state.busy !== null && !busy;
     return html`${inline.map(
@@ -1072,8 +1890,9 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         variant=${a.tone === 'danger' ? 'danger' : 'neutral'}
         ?loading=${busy}
         ?disabled=${blocked}
+        title=${a.icon ? a.label : nothing}
         @click=${() => this.#run(a, row)}
-        >${a.label}<span class="vh"> ${name}</span></wa-button
+        >${a.icon ? html`${this.#icon(a.icon)}<span class="vh">${a.label} ${name}</span>` : html`${a.label}<span class="vh"> ${name}</span>`}</wa-button
       >`,
     )}${more.length
       ? html`<wa-dropdown
@@ -1088,11 +1907,17 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
           ${more.map(
             (a) =>
               html`<wa-dropdown-item value=${a.id} variant=${a.tone === 'danger' ? 'danger' : 'default'}
-                >${a.label}</wa-dropdown-item
+                >${a.icon ? this.#icon(a.icon, 'icon') : nothing}${a.label}</wa-dropdown-item
               >`,
           )}
         </wa-dropdown>`
       : nothing}`;
+  }
+
+  #icon(icon: NonNullable<RowAction<T>['icon']>, slot?: string) {
+    return typeof icon === 'string'
+      ? html`<wa-icon slot=${slot ?? nothing} name=${icon} aria-hidden="true"></wa-icon>`
+      : html`<wa-icon slot=${slot ?? nothing} src=${icon.src} aria-hidden="true"></wa-icon>`;
   }
 
   #footer(state: TableState<T, S>) {
@@ -1103,14 +1928,14 @@ export class SubEntityTable<T = unknown, S extends string = string> extends Subs
         : `${n} ${n === 1 ? 'match' : 'matches'}`;
       return html`<footer part="footer"><span>${said}</span></footer>`;
     }
-    return this.paging === 'more' ? this.#more(state) : this.#pager(state);
+    return this.paging === 'more' || this.paging === 'scroll' ? this.#more(state) : this.#pager(state);
   }
 
   #more(state: TableState<T, S>) {
     if (!state.next && state.total === null) return nothing;
     const shown = state.total === null ? `${state.rows.length} shown` : `${state.rows.length} of ${state.total}`;
     return html`<footer part="footer">
-      <span>${shown}</span>
+      <span aria-live=${this.paging === 'scroll' ? 'polite' : nothing}>${shown}</span>
       ${state.next
         ? html`<wa-button size="s" appearance="outlined" ?loading=${state.loadingMore} ?disabled=${state.refreshing} @click=${() => this.#model!.more()}
             >Load more</wa-button

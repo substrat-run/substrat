@@ -1,7 +1,7 @@
 # @substrat-run/elements
 
-Web components for a vertical's screens: a table of one paged read, an account menu and an
-avatar. They are [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s
+Web components for a vertical's screens: a table of one paged read, an account menu, an avatar
+and a conversation with an assistant. They are [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s
 free core, styled only through its `--wa-*` tokens, so they follow whatever theme the page sets.
 Web components work in React, Vue, Svelte or a plain HTML page, so a vertical's app does not
 have to be written in any one framework to use them.
@@ -108,13 +108,60 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 - **Row detail.** `detail(cell, row)` draws below a row, across the whole table, the way `mount`
   draws a cell. `expanded` is the key of the open row, or null. The table never opens one itself,
   so a screen keeps that state and decides what opens it.
+- **Selection the screen owns (opt-in).** `selection` is the selected row keys, and a screen can
+  read or set it at any time. `sub-selection-change` fires with `{ keys, rows, parents }` when the
+  person or a re-read changes it, not when the screen set it. `row-select` makes the row itself
+  select: a click selects that row alone, cmd/ctrl-click toggles it, shift-click extends from
+  the last anchor, cmd/ctrl+A selects the rows loaded now, and Escape clears. Rows that load
+  after a cmd/ctrl+A are not added to it.
+- **What happens to a selection (opt-in).** Under `row-select`, or once a screen sets
+  `selection`, a selection survives a page turn and a shift-click ranges over the pages walked so
+  far. A row a re-read no longer returns leaves it. A new sort, filter, search or page size keeps
+  only the selected rows its first read still has, and a new view clears it. A `selectable` table
+  with neither keeps its original rule: the selection is the rows on screen.
+- **Opening a row (opt-in).** `row-open` fires `sub-row-open` with `{ row }` on a double-click or
+  Enter. With `row-click` as well, `sub-row-click` waits `doubleClickMs` (300) and does not fire
+  for a double-click, so a single click can preview and a double-click can open. A double-click
+  slower than that window reports both.
+- **Keyboard (opt-in).** Any of `row-select`, `row-open`, `row-draggable` or `childrenOf` makes the
+  table an ARIA grid with one focusable row. Up and Down move, Home and End jump, Shift+Up and
+  Shift+Down extend the selection, and Space toggles it. Controls inside a row stay in the Tab order.
+- **Loading on scroll (opt-in).** `paging="scroll"` loads the next page as the end of the list comes
+  into view, with no total needed. It keeps a real "Load more" for a keyboard or screen reader, and
+  Down on the last row loads too. A re-read keeps every page already loaded.
+- **Row action icons.** A `RowAction` takes `icon`, a Web Awesome icon name or `{ src }` for your own
+  SVG, drawn with `label` as its accessible name and tooltip. `menu: true` puts it in the "More"
+  menu at the end of the row. Once any action says so, the others all stay on the row.
+- **Right-click.** `sub-row-contextmenu` fires with `{ row, x, y, originalEvent }`. Call
+  `preventDefault()` on it to keep the browser's own menu away and draw yours. Under `row-select`, a
+  right-click on an unselected row selects it first.
+- **Drag and drop (opt-in).** `row-draggable`, narrowed by `canDrag(row)`, makes rows draggable.
+  `sub-row-dragstart` carries `{ row, rows, dataTransfer, originalEvent }`, where `rows` is the whole
+  selection if the row is part of it. Set `dataTransfer` on it, or call `preventDefault()` to refuse.
+  `canDrop(row, dragged)` says which rows take a drop. Without it no row does, and a dragged row
+  never takes itself. It runs on every pointer move, so keep it cheap. A hovered target has the
+  `drop-target` part, and `sub-row-drop` fires with `{ target, dragged, dataTransfer, originalEvent }`.
+  The preview says how many are moving; `dragLabel(rows)` words it. On touch a long press
+  (`longPressMs`, 500) starts the drag with `dataTransfer` null, and a finger that moves first scrolls.
+  What a drop means is up to the screen.
+- **Nested rows (opt-in).** `childrenOf(row)` returns a read in the same shape as `source`, made
+  with the table's query when the row first opens, so each level sorts on its own. `canExpand(row)`
+  says which rows can open, and `rowRank(row)` keeps some first within a level (lower first, such as
+  folders before files). `open` is the open row keys, and `sub-row-toggle` fires with
+  `{ row, key, open, keys }`. Right opens a row or moves to its first child; Left closes it or moves
+  to its parent. Row keys must be unique across every level. Use `paging="scroll"` for the top
+  level. Each open row gets its own "Load more" line. A search is a flat list of matches, with no
+  levels. `reload()` reads every open level again, and `reload(key)` reads one. A failed or refused
+  child read shows inside its row. Selecting a parent does not select its children: the selection is
+  exactly what was picked, `parents` on the event says what is under what, and `topmost: true` on a
+  bulk action skips a row whose parent is selected too.
 - **Narrow screens.** Columns with `priority` 3, then 2, are dropped while the table is wider than
   its frame.
 - **Styling** goes from the outside in. First the theme's `--wa-*` tokens. Then `--sub-table-*`:
   `row-height`, `cell-padding-inline`, `cell-padding-block`, `header-background`, `row-hover`,
-  `row-selected` and `max-height` (setting a max height makes the header stick). Then
+  `row-selected`, `indent` (one level of nesting) and `max-height` (setting a max height makes the header stick). Then
   `density="compact"`. Last, `::part()`: `frame`, `toolbar`, `bulk-bar`, `table`, `header-cell`,
-  `row` (plus `selected`), `cell`, `detail`, `footer` and `empty`.
+  `row` (plus `selected` and `drop-target`), `cell`, `detail`, `footer` and `empty`.
 - The `empty` slot replaces the empty text, for example with a "Create" button.
 - **Events.** `sub-query-change` fires with `{ query }` whenever the person changes the view,
   sort, filters or search, so a screen can keep the query in its URL and hand it back through the
@@ -140,6 +187,115 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 
 `EntityTableModel` is everything here except the drawing, with no DOM in it.
 
+## `<sub-assistant>`
+
+A conversation with an assistant: the transcript and the box to type in, and nothing around them.
+It has no popup, modal or sidebar mode. It fills the box you give it, so give it a height, and put
+it in whatever container the screen wants.
+
+Your app creates the model and keeps it. Closing a dialog then keeps the conversation, and a new
+model is a new conversation.
+
+```ts
+import '@substrat-run/elements/assistant';
+import { AssistantModel } from '@substrat-run/elements/assistant-model';
+
+const model = new AssistantModel({
+  source: {
+    async *send({ text, history }) {
+      const { answer } = await api.ask({ messages: [...history, { role: 'user', text }] });
+      yield { t: 'text-delta', pid: 'answer', delta: answer };
+      yield { t: 'turn-finish', reason: 'done' };
+    },
+  },
+});
+
+document.querySelector('sub-assistant').model = model;
+```
+
+A source is one method that yields the events of `@substrat-run/contracts/assistant-stream`. A
+plain request and response is the short generator above, and a streaming backend is another source
+for the same model. If your source receives events over the wire, read them with
+`readAssistantStreamEvent` so that a newer server cannot break an older page. Add `cancel()` to
+offer a Stop button; without it, none is drawn.
+
+| | |
+|---|---|
+| Properties | `model`; `labels`, a partial `AssistantLabels` over the English defaults |
+| Attributes | `label` (the transcript's accessible name), `placeholder`, `max-length`, `heading-level`, `hide-composer` |
+| Slot | `empty`, shown before the first question |
+| Event | `sub-assistant-source`, with `{ citation, turn }`, when a source is clicked |
+| Method | `focus()`: the input, or the transcript under `hide-composer` |
+
+Answers are plain text, and the model's output is never treated as markup.
+
+**Your own input.** Under `hide-composer` the element draws no box, and your input calls
+`model.send(text)`. It returns `false` when there is nothing to send or an answer is still coming,
+so you know to keep what was typed.
+
+**Tool calls and notes.** Tool events are drawn as one quiet line, such as "Used list findings".
+To say it in your own words, yield `{ t: 'host-event', kind: 'read', text: 'Read 3 customers' }`
+instead. The same event records something your app did because of the answer, like "Updated the
+canvas".
+
+**Sources.** Yield `{ t: 'source', sid, title, ref }` and the element draws a button, and tells you
+through `sub-assistant-source`; `ref` is your own handle on the record. With an `http(s)` `url` it
+draws a link instead, and `preventDefault()` on the event keeps it from opening. Take `url` from
+your server, never from the model's text.
+
+**Words.** `labels` replaces any string the element says, including what a screen reader hears:
+
+```ts
+element.labels = { retry: 'Försök igen', working: 'Arbetar…' };
+```
+
+**Keys.** The element listens to nothing above itself. Enter on one of its own buttons is handled
+there and marked with `preventDefault()`, so a command palette listening at `window` should start
+with `if (event.defaultPrevented) return;`. Don't use Tab to switch a palette's modes once there is
+a conversation, or keyboard users can't reach Retry or a source.
+
+### Putting it somewhere
+
+```html
+<!-- A ⌘K modal. Your code binds the shortcut. -->
+<wa-dialog label="Ask"><sub-assistant style="height: 28rem"></sub-assistant></wa-dialog>
+
+<!-- A sidebar. `wa-split-panel` or `wa-page` docks it instead. -->
+<wa-drawer label="Ask" placement="end"><sub-assistant style="height: 100%"></sub-assistant></wa-drawer>
+
+<!-- A chat popup. Your code adds the launcher and any unread badge. -->
+<div style="position: fixed; inset: auto 1rem 1rem auto; width: 24rem; height: 32rem">
+  <sub-assistant style="height: 100%"></sub-assistant>
+</div>
+```
+
+### Without Web Awesome
+
+The element loads no Web Awesome component, only reads its tokens, and each token has a readable
+fallback. An app on another stack maps its own colours and is done:
+
+```css
+sub-assistant {
+  --wa-color-text-normal: hsl(var(--foreground));
+  --wa-color-text-quiet: hsl(var(--muted-foreground));
+  --wa-color-neutral-fill-quiet: hsl(var(--muted));
+  --wa-color-surface-border: hsl(var(--border));
+  --wa-color-surface-default: hsl(var(--background));
+  --wa-form-control-border-color: hsl(var(--border));
+  --wa-color-brand-fill-loud: hsl(var(--primary));
+  --wa-color-brand-on-loud: hsl(var(--primary-foreground));
+  --wa-color-brand-fill-quiet: hsl(var(--accent));
+  --wa-color-brand-on-quiet: hsl(var(--primary));
+  --wa-color-danger-on-quiet: hsl(var(--destructive));
+  --wa-border-radius-m: var(--radius);
+  --wa-font-family-body: inherit;
+}
+```
+
+Beyond the tokens, `--sub-assistant-gap` sets the spacing and `::part()` reaches `transcript`,
+`turn`, `question`, `ai-marker`, `answer`, `trace`, `working`, `sources`, `source`, `provenance`,
+`note`, `failure`, `retry`, `jump`, `composer`, `input`, `send` and `stop`.
+
 ## The session read
 
 `sessionAt(url)` returns the one `SessionStore` per URL that every element on the page shares,
@@ -158,6 +314,8 @@ import '@substrat-run/elements/user-menu';
 
 | Subpath | What it brings |
 |---|---|
+| `/assistant` | `<sub-assistant>` |
+| `/assistant-model` | `AssistantModel` and its helpers, with no element |
 | `/avatar` | `<sub-avatar>` |
 | `/user-menu` | `<sub-user-menu>`, and the `<sub-avatar>` it draws |
 | `/entity-table` | `<sub-entity-table>` |

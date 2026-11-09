@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { AssistantModel } from '@substrat-run/elements/assistant-model';
 import { openSupport } from '@substrat-run/ui';
-import { Badge, Button, Input, Segmented, type FieldHandle } from '@substrat-run/ui/wa';
-import { foldTurn, historyFor, type AskTurn } from '../lib/ask';
-import { writtenAtLabel } from '../lib/explanations';
+import { Assistant, Button, Input, Segmented, type FieldHandle } from '@substrat-run/ui/wa';
+import { ASK_LABELS, askSource, type AskFn } from '../lib/ask';
 import { Ic, type IconName } from '../lib/icons';
 import { useEscapeLayer } from '../lib/escape-stack';
 import { paletteItems, type PaletteContext, type PaletteGo, type PaletteGroup, type PaletteItem } from '../lib/palette';
 
 /**
  * The ⌘K overlay (#1921, design "⌘K overlay"): one place to jump anywhere and to reach
- * support. Opened by ⌘K / Ctrl+K or the top-bar field; Esc closes, Tab switches mode, the
- * arrows move and Enter opens.
+ * support. Opened by ⌘K / Ctrl+K or the top-bar field; Esc closes, Tab switches mode until
+ * Ask has a conversation to move through, the arrows move and Enter opens.
  *
  * **Jump** lists apps, their process maps, the dashboard's pages and a few actions, the
  * reader's app first; a pasted id opens that request or that record in the app the reader
@@ -21,15 +21,14 @@ import { paletteItems, type PaletteContext, type PaletteGo, type PaletteGroup, t
  *
  * **Ask** (#2283, #1749) is a question to the dashboard's assistant, answered from what it read
  * through the dashboard's own reads: each answer carries the AI marker, the reads it made and
- * when it was written. It is offered only where the deployment writes AI text (`ask` is null
- * otherwise), and the conversation lasts as long as the overlay is open: nothing records a
- * thread yet.
+ * when it was written. `<sub-assistant>` draws it, and the overlay's own field is its input. It
+ * is offered only where the deployment writes AI text (`ask` is null otherwise), and the
+ * conversation lasts as long as the overlay is open: nothing records a thread yet.
  */
 
 export type PaletteMode = 'jump' | 'ask' | 'support';
 
-/** What the overlay calls to ask: the dashboard's `dashboard/ask` route, or the preview's stand-in. */
-export type AskFn = (input: { messages: Array<{ role: 'user' | 'assistant'; text: string }> }) => Promise<{ events: Array<Record<string, unknown>> }>;
+export type { AskFn };
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };
 
@@ -65,20 +64,14 @@ export function CommandPalette({
   const [support, setSupport] = useState<'idle' | 'bubble' | 'none'>('idle');
   const modes: PaletteMode[] = ask ? ['jump', 'ask', 'support'] : ['jump', 'support'];
   const [question, setQuestion] = useState('');
-  const [turns, setTurns] = useState<AskTurn[]>([]);
-  const [asking, setAsking] = useState(false);
+  const conversation = useMemo(() => (ask ? new AssistantModel({ source: askSource(ask) }) : null), [ask]);
+  const [asked, setAsked] = useState(false);
+  useEffect(() => conversation?.subscribe((s) => setAsked(s.turns.length > 0)), [conversation]);
   const send = () => {
-    const text = question.trim();
-    if (!ask || !text || asking) return;
-    setAsking(true);
-    setQuestion('');
-    ask({ messages: historyFor(turns, text) })
-      .then(({ events }) => setTurns((t) => [...t, foldTurn(events)]))
-      .catch((e: unknown) =>
-        setTurns((t) => [...t, { question: text, looks: [], answer: '', provenance: null, budgetExhausted: false, error: e instanceof Error ? e.message : String(e) }]),
-      )
-      .finally(() => setAsking(false));
+    if (conversation?.send(question)) setQuestion('');
   };
+  // Once there is a conversation Tab moves through it, since Retry and a source are controls too.
+  const tabSwitches = !(mode === 'ask' && asked);
 
   const run = (item: PaletteItem | undefined) => {
     if (!item) return;
@@ -98,7 +91,10 @@ export function CommandPalette({
   useEscapeLayer(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // A control inside the answer has already taken this Enter.
+      if (e.defaultPrevented) return;
       if (e.key === 'Tab') {
+        if (!tabSwitches) return;
         e.preventDefault();
         setMode((m) => modes[(modes.indexOf(m) + 1) % modes.length]!);
         input.current?.focus();
@@ -175,7 +171,10 @@ export function CommandPalette({
           <Key>esc</Key>
         </div>
 
-        <div ref={list} style={{ overflowY: 'auto', padding: '6px 0', minHeight: 120 }}>
+        <div
+          ref={list}
+          style={mode === 'ask' ? { display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 120 } : { overflowY: 'auto', padding: '6px 0', minHeight: 120 }}
+        >
           {mode === 'jump' ? (
             items.length === 0 ? (
               <Quiet>Nothing matches “{q}”. An id opens a request or a record once you are in an app.</Quiet>
@@ -203,8 +202,19 @@ export function CommandPalette({
                 </div>
               ))
             )
-          ) : mode === 'ask' ? (
-            <AskThread turns={turns} asking={asking} />
+          ) : mode === 'ask' && conversation ? (
+            <Assistant
+              model={conversation}
+              labels={ASK_LABELS}
+              hideComposer
+              style={{ minHeight: 0 }}
+              empty={
+                <span style={{ fontSize: 12.5 }}>
+                  Ask about your apps, their findings and failures. The assistant reads what you can read here, and only reads: it changes
+                  nothing. The conversation ends when you close this.
+                </span>
+              }
+            />
           ) : (
             <div style={{ padding: '14px 20px', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
               <div style={{ fontSize: 13.5, fontWeight: 600 }}>Substrat support</div>
@@ -222,57 +232,10 @@ export function CommandPalette({
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, height: 40, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', background: 'var(--surface-inset)', fontSize: 11.5, color: 'var(--text-tertiary)', flexShrink: 0 }}>
           {mode === 'jump' && <span><Key>↑↓</Key> move</span>}
           <span><Key>↵</Key> {mode === 'jump' ? 'open' : mode === 'ask' ? 'ask' : 'write to support'}</span>
-          <span><Key>tab</Key> {modes[(modes.indexOf(mode) + 1) % modes.length]}</span>
+          {tabSwitches && <span><Key>tab</Key> {modes[(modes.indexOf(mode) + 1) % modes.length]}</span>}
           <span><Key>esc</Key> close</span>
         </div>
       </div>
-    </div>
-  );
-}
-
-/**
- * The conversation so far: each question, the reads the assistant made, and its answer under the
- * AI marker with when it was written and from how many reads. Rendered as text, so markup a
- * model wrote is never markup.
- */
-function AskThread({ turns, asking }: { turns: readonly AskTurn[]; asking: boolean }) {
-  if (turns.length === 0 && !asking) {
-    return (
-      <Quiet>
-        Ask about your apps, their findings and failures. The assistant reads what you can read here, and only reads: it changes
-        nothing. The conversation ends when you close this.
-      </Quiet>
-    );
-  }
-  return (
-    <div style={{ padding: '10px 20px', display: 'flex', flexDirection: 'column', gap: 14 }} aria-live="polite">
-      {turns.map((t, i) => (
-        <div key={i} data-ask-turn={i} style={{ display: 'grid', gap: 6 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{t.question}</div>
-          {t.looks.length > 0 && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t.looks.map((l) => l.label).join(' · ')}</div>}
-          {t.answer && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-              <Badge status="brand" dot={false} style={{ flexShrink: 0 }}>
-                AI
-              </Badge>
-              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-primary)' }}>{t.answer}</p>
-            </div>
-          )}
-          {t.provenance && (
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-              Answered {writtenAtLabel(t.provenance.producedAt)} from {t.provenance.sources} {t.provenance.sources === 1 ? 'read' : 'reads'}
-              {t.provenance.model && <> · model {t.provenance.model.split('/').pop()}</>}
-            </div>
-          )}
-          {t.error && (
-            <div role="alert" style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
-              {t.error}
-            </div>
-          )}
-          {!t.error && t.budgetExhausted && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>That was today’s last AI answer.</div>}
-        </div>
-      ))}
-      {asking && <Quiet inline>Reading…</Quiet>}
     </div>
   );
 }
