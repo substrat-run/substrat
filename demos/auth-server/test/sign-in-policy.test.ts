@@ -81,7 +81,7 @@ function call(path: string, init?: RequestInit): Promise<Response> {
 }
 
 /** A top-level browser navigation (the plugin answers these with a 302). */
-const NAVIGATE = { 'sec-fetch-mode': 'navigate' } as const;
+const NAVIGATE = { 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' } as const;
 /** What the SPA's `authClient` sends: an ordinary same-origin `fetch`. */
 const FROM_FETCH = { 'content-type': 'application/json', 'sec-fetch-mode': 'cors' } as const;
 
