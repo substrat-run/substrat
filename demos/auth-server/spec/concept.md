@@ -383,10 +383,11 @@ key (`account` row, provider `bankid`), so signing in twice lands in the same ac
 asserts identity, not an email address, so with **Require a verified email** on (the default)
 a first sign-in makes no account: `collect` parks the verified identity and the person proves
 an address with an emailed code (`src/bankid-email-step.ts`). A free address creates the
-account (the panel's "create accounts" toggle). A taken one joins that account, unless the code
-is weaker than what the account already requires: an admin, an SMS factor, an unverified
-address, another BankID, or `ACCOUNT_LINKING=block` are refused, and connecting BankID from
-`/account` is the way in, the session being the proof of that side.
+account (the panel's "create accounts" toggle). A taken one joins that account and emails the
+address a notice, unless the code is weaker than what the account already requires: an SMS
+factor, an unverified address, another BankID, or `ACCOUNT_LINKING=block` are refused, and
+connecting BankID from `/account` is the way in, the session being the proof of that side. An
+admin is not refused, since the code proves what a password reset proves.
 
 An account from before this step has a placeholder address, which never carries the personal
 number and is never released as a claim. At its next sign-in it takes the same step, and may

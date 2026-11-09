@@ -90,6 +90,17 @@ export function bankidEmailCode(input: { to: string; from: EmailAddress; code: s
   };
 }
 
+/** Tells an account's address that an emailed code joined a BankID to it. Names no person. */
+export function bankidJoinedNotice(input: { to: string; from: EmailAddress }): EmailMessage {
+  const lead = 'A BankID was connected to your account using a code sent to this address. It can now be used to sign in.';
+  const warning = 'If this was not you, contact your administrator right away.';
+  return {
+    to: input.to, from: input.from, subject: 'BankID was connected to your account',
+    text: `${lead}\n\n${warning}`,
+    html: `<p>${escapeHtml(lead)}</p><p>${escapeHtml(warning)}</p>`,
+  };
+}
+
 function actionEmailHtml(lead: string, cta: string, url: string): string {
   return `<!-- ${escapeHtml(cta)} -->
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1a1a1a">

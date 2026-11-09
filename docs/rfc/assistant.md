@@ -399,42 +399,44 @@ The UI is part of `@substrat-run/elements` (§16 Q8), built the way `<sub-entity
 tracked in [#2970](https://github.com/substrat-run/substrat/issues/2970). Three layers, the first
 being the one that matters most:
 
-1. **`AssistantModel`** (headless, at `/assistant-model`): message tree state, optimistic send,
-   approvals, derived UI state (idle, thinking, streaming, awaiting-approval, handed-off,
-   offline). Framework-free TypeScript, as `EntityTableModel` is. A mobile app or a bespoke chat
-   tab uses this directly.
-2. **`AssistantSource`**, what the model reads from, injected the way a `TableSource` is. It sends
-   a turn, yields events, and owns the connection and resume. The stateless POST behind the
-   dashboard's Ask and the resumable thread of §5.3 are then two sources for one model, so the
-   element does not wait for the thread object or `mountAssistant`.
-3. **`<sub-assistant>`** (at `/assistant`), a custom element over the model. It draws the
+1. **`AssistantModel`** (headless, at `/assistant-model`): turns, optimistic send, retry, and
+   `stop` beside `detach`, which only stops listening. It imports nothing at run time. A host
+   creates it and keeps it, so closing an overlay keeps the conversation. Approvals, branches and
+   a history read arrive with the first host that needs them. A mobile app or a bespoke chat tab
+   uses this directly.
+2. **`AssistantSource`**, what the model reads from, injected the way a `TableSource` is: one
+   method that sends a turn and returns an `AsyncIterable` of events, and an optional `cancel`.
+   The stateless POST behind the dashboard's Ask and the resumable thread of §5.3 are then two
+   sources for one model, so the element does not wait for the thread object or `mountAssistant`.
+3. **`<sub-assistant>`** (at `/assistant`), a custom element taking `.model`. It draws the
    transcript and the composer and no chrome: the host supplies the palette, drawer or panel
-   around it, because Ask already lives inside a ⌘K overlay. Shadow DOM isolates it from host CSS,
-   and the `--wa-*` tokens theme it, as they do every element.
+   around it, because Ask already lives inside a ⌘K overlay, and `hide-composer` leaves the input
+   to a host that has its own. Shadow DOM isolates it from host CSS, and the `--wa-*` tokens theme
+   it, as they do every element.
 
 There is no React wrapper. The package has no React in it, and a custom element in React is
 handled the same way for every element (`apps/docs/elements/frameworks.md`).
 
-**Tooling: Lit on Web Awesome's free core**, which the package already runs on, unless the set of
-components outgrows it. Stencil's strength is generated Angular/Vue/React wrappers and lazy
+**Tooling: Lit, styled by Web Awesome's tokens**, which the package already runs on, unless the
+set of components outgrows it. This element draws native controls and loads no Web Awesome
+component, so a host on another stack needs only a mapping onto the tokens. Stencil's strength is generated Angular/Vue/React wrappers and lazy
 loading for large sets; with a handful of components it adds a toolchain and generated files that
 each need the repo's three generated-file marks. Switching later rewrites a thin shell, not the
 product, because the logic is in the model.
 
-**Weight** (JS, minified and gzipped, each piece bundled alone; Web Awesome 3.14.0, zod 4.4.3,
-2026-11-07). The spike's 7.5 KB floor had no Web Awesome, markdown or zod in it. A likely Web
-Awesome set is 37.9 KB; `marked` and DOMPurify, which the builder renders model text with, are
-23.1 KB; `readAssistantStreamEvent` is 64.6 KB, of which zod is 63.1 KB. That is 125.7 KB
-together and 61.0 KB without the reader. So the element should not import the reader: a source
-hands the model events it has already read, and the model takes only types from `contracts`. How
-a vertical's source reads without zod, while an unknown event stays skipped rather than fatal
-(§5.1), is open in the issue above.
+**Weight** (JS, minified and gzipped KiB, under Vite 8.3.5, 2026-11-09). `/assistant` with
+`/assistant-model` is 14.4, of which Lit is 6.3, and the model alone is 1.9. The budget is 18, and nothing gates it yet. An
+earlier draft of this section quoted 125.7: that added a Web Awesome set the element does not load,
+a markdown parser the first version does not need, and a reader measured under esbuild, whose
+`import { z }` does not shake zod's namespace. A source hands the model events it has already read
+and the model takes only types from `contracts`, so no zod reaches the element. A source that
+parses events in a bundle without zod is the case for generating a dependency-free reader (#2970).
 
 **The embedded case waits.** An earlier draft had one artifact serve the in-app case and the
 embedded case. ticket0's widget is 13.2 KB and has no framework on purpose, because it runs on
-somebody else's page. Even 61.0 KB is more than four times that, and in an app the cost is shared
-with the rest of the page, which on somebody else's page it is not. The element serves the in-app
-case; whether the widget moves onto it is weighed at P5.
+somebody else's page. It also carries a person taking over and messages the server sends unprompted,
+which a pull-based source cannot give. The element serves the in-app case; whether the widget moves
+onto it is weighed at P5.
 
 **Rich results.** A workout card or a customer summary needs a vertical's own rendering.
 Provide a renderer registry keyed by tool name, and named slots. The default renderer is a

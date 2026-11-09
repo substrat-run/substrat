@@ -2265,10 +2265,16 @@ importers:
       '@awesome.me/webawesome':
         specifier: 3.14.0
         version: 3.14.0(@floating-ui/utils@0.2.12)(@types/node@24.19.2)(@types/react@18.3.31)
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../contracts
       lit:
         specifier: ^3.3.0
         version: 3.3.3
     devDependencies:
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

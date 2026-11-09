@@ -494,6 +494,15 @@ describe('delivery', () => {
     expect(new Uint8Array(opened!.body as Uint8Array)).toEqual(raw);
   });
 
+  it('still lands the attachments when the answer carries a raw field of its own', async () => {
+    const w = await world({ raw: '<the source of a row>' });
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
+    if (!accepted.accepted) throw new Error('refused');
+    expect(await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).toEqual({ status: 'delivered', attachments: 1 });
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
+  });
+
   it('stores the original once when its change fails, and tells the scope again on the retry', async () => {
     const w = await world({ raw: true, failRawTimes: 1 });
     const a = await w.request();
@@ -521,15 +530,6 @@ describe('delivery', () => {
     await sweepMailIn(w.host, w.deps, a.connectionId);
     expect(w.landed.map((c) => c.change)).toEqual(['message', 'message']);
     expect(w.store.keys()).toHaveLength(1);
-  });
-
-  it('still lands the entity when raw is not a boolean', async () => {
-    const w = await world({ raw: '<the source>' });
-    const a = await w.request();
-    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
-    if (!accepted.accepted) throw new Error('refused');
-    expect(await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).toEqual({ status: 'delivered', attachments: 1 });
-    expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
   });
 
   it('lands no original when the answer does not ask for it', async () => {
