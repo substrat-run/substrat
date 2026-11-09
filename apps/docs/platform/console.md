@@ -68,6 +68,16 @@ a filter recipe over Fleet.
   tenant sees their own connection, staff see the whole fleet's units on one page, so "the
   Tuesday cron never ran anywhere" reads at a glance rather than as a per-tenant tour. Rows
   are kept for 14 days.
+- **Builder turns** — every builder studio turn across every team, newest first, read over
+  `/builder-turns`. It is staff-only: a turn names a team and a project and carries what someone typed into the
+  studio, so the route refuses everyone else and answers `501` where no builder is configured. Each row is the
+  summary a turn leaves when it closes — end time, team, project, outcome (`done`, `error`, `stopped` or
+  `interrupted`), the **red gates** (the gates its last run left failing, after the repair passes), repair
+  count and tokens. The page opens on **Only turns that went wrong** — an error, a stop, an interrupted turn
+  or a last run that stayed red — and a picker switches to all turns. It also narrows by outcome, by red gate
+  (offered from the gates the loaded turns name) and by team. A row opens the turn: the failing gates' output
+  lines, then everything the turn recorded, in order (`/builder-turns/:turnId`), with each red gate's full
+  output expandable. Older turns load a page at a time.
 
 ## Auth
 
