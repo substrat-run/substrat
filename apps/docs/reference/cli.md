@@ -51,6 +51,7 @@ whatever the setting says.
 | `substrat scope rebind <scopeId> --to <vertical>` | Move **one** scope onto another vertical's serving version, data carried. |
 | `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
+| `substrat store-driver publish --driver <d> …` | Staff: upload a scope-store driver release, wait for its separate approval, and roll it out — [one command](#store-driver-publish), safe to run again. |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
 | `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — pseudonymized by default (recognised PII columns get plausible fake values, stable across the whole pull; free text stays `[masked]`), `--full` is break-glass. |
 
@@ -360,6 +361,20 @@ too old to hand the platform's sweeper its host. `push --check` makes the same c
 sweeper you wired in some other shape already runs them, `--allow-unswept-schedules` says so
 and the push proceeds.
 
+**Push judges declared scope stores before it uploads.** A tree that declares `scopeStores` in
+`runtimeNeeds` has each one checked against the scope-store **registry** — the drivers the
+platform knows — before any upload, so a refusal costs no build. The CLI reads that registry
+from the control plane the push goes to, and falls back to the CLI's built-in registry only when
+the plane answers `403` (a builder's routes are default-deny) or `404` (a plane without the
+route). A network failure, a `5xx` or a malformed answer stops the push instead, since the push
+would fail on the same plane a moment later. This is a pre-check: the control plane judges again
+on upload and stays the authority. A tree declaring no scope stores asks the plane nothing.
+
+`--store-drivers <file.json>` judges by your own registry instead: a JSON array of registrations,
+held to the same schema the plane's are. On a push it replaces the plane's registry, so nothing
+is read from the plane; on [`push --check`](#push-check-the-local-gate-without-pushing) it
+replaces the built-in one. Use it for a fork or a driver the platform registry does not hold yet.
+
 #### `push --check` (the local gate, without pushing)
 
 ```bash
@@ -371,7 +386,9 @@ Checks the tree **locally** and stops there: the layer rules, then your declared
 permission surface — resolve `"substrat": { "permissions" }`, import the entry, derive the
 registry, print every key with the module that declares it and its description, every role,
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
-registry request**, so it belongs in a pull-request job. A configured Wrangler build command
+registry request**, so it belongs in a pull-request job. Scope stores are judged by the CLI's
+built-in registry; `--store-drivers <file.json>` swaps in a registry of your own, which is how a
+target plane's validation is reproduced offline. A configured Wrangler build command
 still runs locally and may make its own network calls:
 
 It also bundles the Worker entry under workerd export conditions and refuses static, dynamic,
@@ -613,6 +630,36 @@ substrat unpublish helpdesk    # remove the listing (staff)
 `publish` is a **request**: any owner may ask, and a Substrat operator reviews before the
 vertical is listed — once listed, every tenant can install it from the catalog. Flipping the
 listing itself is staff-only, so `unpublish` works for staff and is refused for builders.
+
+### `store-driver publish`
+
+```bash
+substrat store-driver publish --driver <d> --dir <dir> --entry <driver_x/…/module.py> \
+  [--commit <sha>] [--wait <90s|30m|2h>]
+```
+
+**Staff only**, and made from a person's sign-in (`substrat login`): the control plane refuses a
+service token for a write. It is `store-driver upload`, a wait for approval and `store-driver
+rollout` in one command, over the same routes:
+
+1. **Upload** the driver's package from `--dir` (`--entry` names its module; `--commit` defaults
+   to the tree's git commit). The release is named by its sha256; identical bytes are the same
+   release.
+2. **Wait for approval**, polling for up to `--wait` (a number and `s`, `m` or `h`; the default
+   is not to wait). The command **never grants an approval**: a staff person approves those bytes
+   separately, with `store-driver approve`.
+3. **Roll out** to the fleet after a canary. A large fleet takes more than one request; the
+   command keeps going, and stops with an error if the rollout walks no further in three requests.
+
+**Waiting for approval is not a successful publish.** If the release is not approved within
+`--wait`, nothing is rolled out, the command prints the approval step and exits **2**. Approve
+it, then run the same command again. Running it again is always safe: it finds the stored release,
+reads the approval, and continues a partial rollout; if the driver already runs those bytes it
+says so and exits 0. Any other failure, such as a rollout that ends in a state other than
+`good`, exits non-zero.
+
+`upload`, `approve`, `revoke`, `rollout`, `rollback`, `status` and `rebuild` are the individual
+steps; `substrat --help` lists their flags.
 
 ### `scope pull`
 
