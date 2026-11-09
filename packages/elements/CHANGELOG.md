@@ -1,5 +1,20 @@
 # @substrat-run/elements
 
+## 0.6.0
+
+### Minor Changes
+
+- 1e8ccbb: `<sub-assistant>`: a conversation with the assistant as one element, with `AssistantModel` beside it at `/assistant-model`.
+- 7f8573e: `<sub-entity-table>` can back a list people work in: screen-owned selection with range gestures, double-click and keyboard open, `paging="scroll"`, row action icons and a "More" menu, right-click and drag hooks, and nested rows.
+
+### Patch Changes
+
+- cd1c0d4: `<sub-entity-table>`: a re-read keeps every batch "Load more" added, and "Load more" waits for a re-read in flight instead of appending rows from the old order.
+- Updated dependencies [c9db03c]
+- Updated dependencies [f0dd3fe]
+- Updated dependencies [3c0c8e8]
+  - @substrat-run/contracts@0.190.1
+
 ## 0.5.0
 
 ### Minor Changes
