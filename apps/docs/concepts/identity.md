@@ -235,6 +235,26 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   Documents** (CIMD, under the MCP profile) — the mechanism [MCP clients](/concepts/mcp)
   use: a client identifies itself by an HTTPS URL that *is* its metadata document, so
   nothing is registered, stored or rotated per client until one actually arrives.
+- **Machine applications and their scope ceiling.** An unattended client that signs in
+  with `client_credentials` — nobody authenticates into it — is registered as a *machine*
+  application and holds a subset of one issuer-wide list, `MACHINE_SCOPES`: the ceiling on
+  what any machine client may be granted. It starts **empty**, and an empty ceiling is a
+  decision rather than a gap: no machine application can be registered and none can get a
+  token, until an administrator names the scopes. An administrator sets it under **APIs →
+  Machine access** in the dashboard, or from the scope picker on a machine application's own
+  form when the ceiling is still empty. Both write through `PATCH /api/admin/settings` with
+  `machineScopes: string[]`, which replaces the whole list and is gated, like the rest of the
+  admin API, to a signed-in account holding the `admin` role. It writes the same delivered
+  config key the platform's Env setting does (`MACHINE_SCOPES`, space- or comma-separated),
+  so there is one answer whichever set it last. The issuer judges the list before storing
+  anything: an entry that is not a valid scope token, or one of the sign-in scopes
+  (`openid`, `profile`, `email`, `offline_access`), is refused with the reason, because a
+  machine token has no person behind it. The ceiling is enforced on every token request, not
+  only at registration: a scope asked for outside it is refused (`invalid_scope`), a request
+  that names none gets what the client holds *and* the ceiling still lists, and an empty
+  result is refused. So **removing a scope stops it being minted from the next token
+  request** — for every machine application that held it — but does not revoke a token
+  already issued, which stays valid until it expires.
 - **Your places.** Every signed-in account, administrator or not, has a **Your account**
   page on the issuer that lists the apps it is a member of, across every team whose apps
   sign in here, each with a link into it. No app can answer "where else am I": a login is a
