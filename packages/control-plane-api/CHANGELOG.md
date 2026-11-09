@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-api
 
+## 0.189.0
+
+### Patch Changes
+
+- c1f40c2: A connection bind that fails in the connector or in its audit record answers which connector failed and a reference, not a bare 500.
+- c1f40c2: Pushed verticals upload with Workers invocation logs off, and log reads drop the platform credential headers from runtime records already written.
+- Updated dependencies [4e3086b]
+- Updated dependencies [3632ef6]
+- Updated dependencies [1da4079]
+  - @substrat-run/contracts@0.189.0
+  - @substrat-run/kernel@0.189.0
+  - @substrat-run/control-plane-client@0.6.11
+
 ## 0.188.0
 
 ### Minor Changes

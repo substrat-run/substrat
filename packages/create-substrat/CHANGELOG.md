@@ -1,5 +1,18 @@
 # create-substrat
 
+## 0.15.1
+
+### Patch Changes
+
+- dde9f11: `mountOperations` serves the OpenAPI document its `/api/docs` page renders, at `/api/openapi.json`, derived from the operations it mounts and read through `resolveStub`. The page read a root `/openapi.json` that the template and every generated app never served, and that a dev server's Vite proxy and a hosted app's worker-first routes did not reach, so the reference said the specification was unavailable. `docs: { info }` names the derived document, and `docs: { document }` serves one the app already builds.
+- 4e3086b: A CSV export a spreadsheet opens as data, never as a formula.
+
+  - `csvTable(header, rows)` and `csvCell(value)` from `@substrat-run/contracts`. A cell starting with `=`, `+`, `-`, `@`, a tab, CR or LF gets a leading `'`, then RFC 4180 quoting; a decimal string such as `-12.50` and a number are written as they are, and `null` is an empty cell.
+  - `boundary-lint` rule **R13** refuses CSV cells joined by hand with `','` in module code, and names `csvTable`. A join that is not a CSV row opts out in a `boundary-lint-allow R13` … `boundary-lint-end R13` block.
+  - The scaffold's `AGENTS.md` gains rule 12: a CSV is written by `csvTable`.
+
+- c5aedc8: `devMailOutbox(host, { dataDir, actor })` writes each mail a dev server's scopes queue with `requestEmail` to `.data/outbox/<request>.eml` (or `MAIL_OUTBOX_DIR`), logs one line naming the file, and settles it with `email.sent` as the platform's drain does hosted. Spread `outbox.kick(caller)` into `getScope` to write a mail as soon as the call that queued it commits. Locally a queued invitation went nowhere and said so nowhere. The template's `src/server.ts` wires it.
+
 ## 0.15.0
 
 ### Minor Changes

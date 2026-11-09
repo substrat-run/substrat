@@ -1,5 +1,15 @@
 # @substrat-run/kernel
 
+## 0.189.0
+
+### Patch Changes
+
+- 3632ef6: A derived list narrowed to a parent pages only that parent's rows. `defineOperations` refuses a second input field over the parent's link column (`deal_id` beside the checked `dealId`), which let a caller pass the check on one parent and page another's rows, and the derived handler pins the link column to the checked id even for a plan built before that refusal.
+- Updated dependencies [4e3086b]
+- Updated dependencies [3632ef6]
+- Updated dependencies [1da4079]
+  - @substrat-run/contracts@0.189.0
+
 ## 0.188.0
 
 ### Minor Changes

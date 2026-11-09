@@ -1,5 +1,19 @@
 # @substrat-run/adapter-sqlite
 
+## 0.189.0
+
+### Minor Changes
+
+- c5aedc8: `devMailOutbox(host, { dataDir, actor })` writes each mail a dev server's scopes queue with `requestEmail` to `.data/outbox/<request>.eml` (or `MAIL_OUTBOX_DIR`), logs one line naming the file, and settles it with `email.sent` as the platform's drain does hosted. Spread `outbox.kick(caller)` into `getScope` to write a mail as soon as the call that queued it commits. Locally a queued invitation went nowhere and said so nowhere. The template's `src/server.ts` wires it.
+
+### Patch Changes
+
+- Updated dependencies [4e3086b]
+- Updated dependencies [3632ef6]
+- Updated dependencies [1da4079]
+  - @substrat-run/contracts@0.189.0
+  - @substrat-run/kernel@0.189.0
+
 ## 0.188.0
 
 ### Minor Changes

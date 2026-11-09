@@ -1,5 +1,21 @@
 # @substrat-run/contracts
 
+## 0.189.0
+
+### Minor Changes
+
+- 4e3086b: A CSV export a spreadsheet opens as data, never as a formula.
+
+  - `csvTable(header, rows)` and `csvCell(value)` from `@substrat-run/contracts`. A cell starting with `=`, `+`, `-`, `@`, a tab, CR or LF gets a leading `'`, then RFC 4180 quoting; a decimal string such as `-12.50` and a number are written as they are, and `null` is an empty cell.
+  - `boundary-lint` rule **R13** refuses CSV cells joined by hand with `','` in module code, and names `csvTable`. A join that is not a CSV row opts out in a `boundary-lint-allow R13` … `boundary-lint-end R13` block.
+  - The scaffold's `AGENTS.md` gains rule 12: a CSV is written by `csvTable`.
+
+- 1da4079: **Breaking:** `defineOperations` refuses, at module load, an operation whose `permission` is `{ entity, idFrom }` and whose input takes a second field spelling the same id: a field equal to `idFrom`, or to `<entity>Id`, when case, `_` and `-` are ignored (`deal_id` beside `dealId`). The check reads `idFrom`, so a derived page filtering by the other field served any record the caller named. A vertical that declares such an input stops loading after upgrading; take the id once, in the field the path names. A bare `id` beside another `idFrom` is not refused.
+
+### Patch Changes
+
+- 3632ef6: A derived list narrowed to a parent pages only that parent's rows. `defineOperations` refuses a second input field over the parent's link column (`deal_id` beside the checked `dealId`), which let a caller pass the check on one parent and page another's rows, and the derived handler pins the link column to the checked id even for a plan built before that refusal.
+
 ## 0.188.0
 
 ### Minor Changes
