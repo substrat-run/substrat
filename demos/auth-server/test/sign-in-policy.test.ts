@@ -129,7 +129,7 @@ async function pkceChallenge(): Promise<string> {
   return base64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
 }
 
-async function authorize(clientId: string, cookie: string, extra: Record<string, string> = {}): Promise<Response> {
+async function authorize(clientId: string, cookie: string, extra: Record<string, string> = {}, fetchHeaders: Record<string, string> = NAVIGATE): Promise<Response> {
   const q = new URLSearchParams({
     response_type: 'code',
     client_id: clientId,
@@ -140,7 +140,7 @@ async function authorize(clientId: string, cookie: string, extra: Record<string,
     code_challenge_method: 'S256',
     ...extra,
   });
-  return call(`/api/auth/oauth2/authorize?${q.toString()}`, { headers: { ...NAVIGATE, cookie } });
+  return call(`/api/auth/oauth2/authorize?${q.toString()}`, { headers: { ...fetchHeaders, cookie } });
 }
 
 /** Where a 302 went — the path alone, which is the thing each case is about. */
@@ -154,7 +154,7 @@ function landedOn(res: Response): string {
  * Better Auth over the CURRENT provider rows, as both runtimes rebuild it per request — so a
  * test that saves an upstream mid-way gets an issuer that offers it.
  */
-function rebuild(): Auth {
+function rebuild(overrides: Partial<Parameters<typeof buildAuth>[0]> = {}): Auth {
   const rows = readProviders(sql);
   return buildAuth({
     database: drizzleAdapter(drizzle(db, { schema }), { provider: 'sqlite', schema }),
@@ -172,6 +172,7 @@ function rebuild(): Auth {
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
     straightThroughFor: (clientId) =>
       straightThroughProvider(clientSignIn(sql, clientId, publicProvidersFrom(readProviders(sql)))),
+    ...overrides,
   });
 }
 
@@ -458,6 +459,23 @@ describe('a session established through the provider the client names', () => {
     });
     // The pending request rode along as `oauth_query`, so the callback resumes it.
     expect(landedOn(back)).toBe('/consent');
+  });
+
+  it('starts nothing for a fetch that is not a navigation', async () => {
+    const adminCookie = await signInAs(ADMIN);
+    const acmeOnly = await register('Scanned RP', adminCookie, { signIn: { providers: ['acme'], password: false } });
+    saveAcme();
+    const before = db.prepare('SELECT count(*) AS n FROM verification').get() as { n: number };
+    expect(landedOn(await authorize(acmeOnly, '', {}, {}))).toBe('/login');
+    expect(db.prepare('SELECT count(*) AS n FROM verification').get()).toEqual(before);
+  });
+
+  it('falls back to the login screen when the upstream cannot be decided', async () => {
+    const adminCookie = await signInAs(ADMIN);
+    const acmeOnly = await register('Broken RP', adminCookie, { signIn: { providers: ['acme'], password: false } });
+    saveAcme();
+    auth = rebuild({ straightThroughFor: () => { throw new Error('policy read failed'); } });
+    expect(landedOn(await authorize(acmeOnly, ''))).toBe('/login');
   });
 
   it('still refuses the same session at a client that names a DIFFERENT provider', async () => {

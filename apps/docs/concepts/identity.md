@@ -229,8 +229,8 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   QR code or same-device start, approval in the BankID app, and the verified personal
   number as the account key. With **Require a verified email** on, which is the default, a
   first sign-in proves an email address with an emailed code, and joins the account
-  already holding it. Joining is automatic only for an ordinary account. It refuses an
-  `admin`, an account with an SMS factor, an address nobody has verified, one already
+  already holding it, and the address is emailed a notice that it happened. It refuses an
+  account with an SMS factor, an address nobody has verified, one already
   holding another BankID, and a banned account; so does the issuer-wide
   `ACCOUNT_LINKING=block`, which never joins implicitly. The person is told to sign in
   to the existing account first and connect BankID from `/account` — a refusal there is

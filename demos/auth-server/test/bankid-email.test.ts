@@ -160,9 +160,31 @@ describe('a first BankID sign-in', () => {
     expect(count('user')).toBe(1);
   });
 
+  it('joins an administrator, who stays one, and tells the address without naming the person', async () => {
+    const id = await emailAccount();
+    db.prepare("UPDATE user SET role = 'admin' WHERE id = ?").run(id);
+    const done = await prove((await emailStep()).token);
+    expect((await sessionOf(done))?.user.id).toBe(id);
+    expect(bankidOwner()).toBe(id);
+    expect((db.prepare('SELECT role FROM user WHERE id = ?').get(id) as { role: string }).role).toBe('admin');
+    const notice = mail.sent.at(-1)!;
+    expect(notice.subject).toBe('BankID was connected to your account');
+    expect(notice.to).toEqual([{ email: ANNA }]);
+    expect(`${notice.text}${notice.html}`).not.toContain(PNR);
+  });
+
+  it('keeps the join when the notice cannot be sent', async () => {
+    const id = await emailAccount();
+    const { token } = await emailStep();
+    expect((await call('/bankid/email/send', { token, email: ANNA })).status).toBe(200);
+    const code = lastCode();
+    mail.failWith = 'transport down';
+    expect((await call('/bankid/email/verify', { token, code })).status).toBe(200);
+    expect(bankidOwner()).toBe(id);
+  });
+
   it.each([
     ['another BankID holds the account', () => db.prepare("INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) SELECT 'other', '190001019999', 'bankid', id, 1, 1 FROM user").run()],
-    ['the account is an administrator', () => db.prepare("UPDATE user SET role = 'admin'").run()],
     ['the account has an SMS factor', () => db.prepare("UPDATE user SET phone_number = '+46700000000'").run()],
     ['the account never verified its address', () => db.prepare('UPDATE user SET email_verified = 0').run()],
     ['the account is banned', () => db.prepare('UPDATE user SET banned = 1').run()],

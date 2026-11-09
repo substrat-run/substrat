@@ -489,6 +489,26 @@ describe('RP-initiated logout', () => {
     expect(await sessionExists(admin)).toBe(false);
   });
 
+  it.each([
+    ['a link naming no client, which the client gate never judges', (_clientId: string, cookie: string) =>
+      call('/api/auth/oauth2/end-session', { headers: { 'sec-fetch-mode': 'navigate', accept: 'text/html', cookie } })],
+    // A cross-site form carries no Lax session cookie, so answering it would report a sign-out
+    // that ended nothing. `cookie` is left off for that reason.
+    ['a form post from another site', (clientId: string) =>
+      call('/api/auth/oauth2/end-session', {
+        method: 'POST',
+        headers: { 'sec-fetch-mode': 'navigate', accept: 'text/html', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: clientId, post_logout_redirect_uri: POST_LOGOUT }).toString(),
+      })],
+  ])('keeps the confirmation page for %s', async (_name, send) => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Form RP', admin, { enable_end_session: true, post_logout_redirect_uris: [POST_LOGOUT] });
+    const res = await send(client.client_id, admin);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-oidc-logout-confirmation');
+    expect(await sessionExists(admin)).toBe(true);
+  });
+
   it('ends the session but ignores a post-logout URI that is not registered', async () => {
     const admin = await signInAs(ADMIN);
     const client = await register('Half Configured', admin, { redirect_uris: [RP_REDIRECT] });
