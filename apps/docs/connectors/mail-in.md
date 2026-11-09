@@ -47,7 +47,7 @@ const receiveMail: OperationHandler = async (ctx, raw) => {
     const id = upsertDocumentFor(ctx, change.messageId, change.subject);   // keyed by messageId
     return { entity: { entityType: 'document', entityId: id } };
   }
-  recordFile(ctx, change.messageId, change.attachment);
+  if (change.change === 'attachment') recordFile(ctx, change.messageId, change.attachment);
   return {};
 };
 ```
@@ -75,12 +75,16 @@ third change follows, before any `attachment` change:
 
 - **`raw`** — the original message is stored, as `attachment`, on the entity you named.
 
+Handle it beside the other two, in the same operation:
+
 ```ts
 if (change.change === 'raw') recordOriginal(ctx, change.messageId, change.attachment);   // keyed by messageId
 ```
 
 It is at least once like the others: key it on `messageId`. Answer without `raw` and nothing
-changes — no original is stored and no `raw` change arrives.
+changes — no original is stored and no `raw` change arrives. `raw: true` needs an `entity` to land
+on: answered without one, the delivery fails and is retried, and it dead-letters if the answer
+never names one, so the original is not deleted unnoticed.
 
 ## Getting an address
 

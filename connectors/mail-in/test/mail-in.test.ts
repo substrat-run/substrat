@@ -113,7 +113,7 @@ function mail(o: {
 
 const PDF = new TextEncoder().encode('%PDF-1.7 a supplier invoice, as bytes');
 
-async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number; raw?: boolean | string; failRawTimes?: number } = {}) {
+async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number; raw?: unknown; noEntity?: boolean; failRawTimes?: number } = {}) {
   dir = mkdtempSync(join(tmpdir(), 'substrat-mail-in-'));
   const landed: MailInChange[] = [];
   const fail = { times: opts.failTimes ?? 0, attachmentTimes: opts.failAttachmentTimes ?? 0, rawTimes: opts.failRawTimes ?? 0 };
@@ -149,7 +149,8 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number;
         }
         landed.push(change);
         if (change.change === 'message') {
-          return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` }, ...(opts.raw ? { raw: opts.raw } : {}) };
+          if (opts.noEntity) return { raw: true };
+          return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` }, ...(opts.raw !== undefined ? { raw: opts.raw } : {}) };
         }
         return { ok: true };
       }) as OperationHandler<never, unknown>,
@@ -514,6 +515,21 @@ describe('delivery', () => {
     const stored = await w.files(`doc-${accepted.messageId.slice(0, 12)}`);
     expect(stored).toHaveLength(1);
     expect(w.landed[1]).toMatchObject({ change: 'raw', attachment: { id: stored[0]!.id } });
+  });
+
+  it('fails the delivery, asking again and keeping the bytes, when raw: true names no entity', async () => {
+    const w = await world({ noEntity: true });
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address }));
+    if (!accepted.accepted) throw new Error('refused');
+    expect(await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).toMatchObject({
+      status: 'retrying',
+      error: expect.stringContaining('named no entity'),
+    });
+    w.advance(7 * 60 * 60 * 1000);
+    await sweepMailIn(w.host, w.deps, a.connectionId);
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'message']);
+    expect(w.store.keys()).toHaveLength(1);
   });
 
   it('lands no original when the answer does not ask for it', async () => {

@@ -280,7 +280,11 @@ export async function deliverInboundMail(
         receivedAt: entry.receivedAt,
       });
       const answer = mailInMessageAnswer.safeParse(await scope.invoke(binding.operation, change));
-      entry.invoked = { entity: answer.success ? (answer.data.entity ?? null) : null, raw: answer.success && answer.data.raw === true };
+      const invoked = { entity: answer.success ? (answer.data.entity ?? null) : null, raw: answer.success && answer.data.raw === true };
+      // Delivered with nowhere to land it, the only copy of what it asked to keep would be deleted
+      // below. Thrown before the save, so a retry asks the operation again.
+      if (invoked.raw && !invoked.entity) throw new Error('the answer asked to keep the original (raw: true) but named no entity');
+      entry.invoked = invoked;
       await save();
     }
     const entity = entry.invoked.entity;
