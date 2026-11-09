@@ -91,7 +91,7 @@ Substrat is pre-release (0.x). What exists today:
 | Absence engine | [`@substrat-run/engine-absence`](/engines/absence/) | Seed |
 | Metering engine | [`@substrat-run/engine-metering`](/engines/metering/) | Seed |
 | Notifications engine | [`@substrat-run/engine-notifications`](/engines/notifications/) | Seed |
-| Assistant engine | [`@substrat-run/engine-assistant`](/engines/assistant/) | Seed; first npm release pending |
+| Assistant engine | [`@substrat-run/engine-assistant`](/engines/assistant/) | Seed; published on npm |
 | Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published |
 | Fortnox connector (accounting, SIE4 on a poll) | [`@substrat-run/connector-fortnox`](/connectors/fortnox) | Published |
 | Planima connector (planned facility maintenance, read-only) | [`@substrat-run/connector-planima`](/connectors/planima) | Published |
