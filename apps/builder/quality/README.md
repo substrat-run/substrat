@@ -5,6 +5,8 @@ asked for, which is a different question: one run passed every gate with a UI th
 its server. [docs/architecture/builder/quality-runs.md](../../../docs/architecture/builder/quality-runs.md)
 has the method and the results.
 
+The checks that run a build, and the plain-Claude comparison battery, are in [CHECKS.md](CHECKS.md).
+
 | File | What |
 |---|---|
 | `queue.sh` | Runs the `todo` eval N times and grades each run |

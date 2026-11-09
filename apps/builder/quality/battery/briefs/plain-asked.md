@@ -1,0 +1,9 @@
+I want to create a todo app.
+
+- Who uses it: I share lists with people. I own my lists and can invite specific people to some of them; the rest stay private.
+- Screens: a web UI.
+- Anything automatic: no. Nothing on a timer — no due dates, no reminders, no recurring tasks.
+- What a share allows: they can add items and tick them off, but not delete the list or share it onward.
+- Accounts: I invite them by email. Nobody signs themselves up.
+
+Build it with Node.js and SQLite so it runs on my machine. I won't be around to answer questions, so make the calls yourself and keep going until it works.

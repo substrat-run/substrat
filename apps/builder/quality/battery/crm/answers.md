@@ -1,0 +1,13 @@
+- **Who uses it:** my sales team. I run sales, I have two sales managers, and each of them has a few reps. We'd also like to offer it to a partner company: each company gets its own space with its own people and data, and must never see the other's.
+- **Teams and roles:** in each company there's an admin (me, in ours), managers, and reps. Each manager leads one team, and each rep belongs to one team.
+- **Accounts:** the admin invites people by email and chooses their role and team. Nobody signs themselves up.
+- **What we keep track of:** the companies we sell to, the people at them (contacts), the deals we're working on, and notes on any of those: calls, meetings, emails we want to remember.
+- **Deals:** a deal belongs to a company, has an owner (a rep), a value and a currency (we sell in SEK and EUR), and moves through stages: lead, qualified, proposal, then won or lost. Once a deal is won or lost it's locked; only a manager can reopen it.
+- **Who sees what:** companies and contacts are shared by everyone in our company. Deals are not: a rep sees the deals they own and the ones a colleague has shared with them; a manager sees every deal in their team; the admin sees everything and can hand a deal to another rep. Notes on a deal follow the deal.
+- **History:** on a deal I want to see who changed what and when (the stage, the value, the owner). Nobody can edit or delete that history.
+- **Report:** one report, the pipeline: the total value of open deals per stage, for the deals you're allowed to see. Show each currency on its own; don't convert.
+- **Search:** one search box that finds companies, contacts and deals, as long as you're allowed to see them.
+- **Import and export:** I want to bring our contacts in from a spreadsheet (a CSV file) and export them to one again.
+- **Personal data:** if a contact asks us to forget them, the admin can erase them. Their details have to be gone everywhere, but we keep a note that we erased someone, and when.
+- **Screens:** a web UI.
+- **Anything automatic:** no. No email syncing, no reminders, no automations.
