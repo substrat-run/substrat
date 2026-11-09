@@ -479,6 +479,41 @@ describe('RP-initiated logout', () => {
     expect(await sessionExists(admin)).toBe(false);
   });
 
+  describe('without the confirmation page', () => {
+    const navigate = { 'sec-fetch-mode': 'navigate' };
+    const unsignedHint = (claims: Record<string, unknown>): string =>
+      `${[{ alg: 'none' }, claims].map((part) => Buffer.from(JSON.stringify(part)).toString('base64url')).join('.')}.x`;
+    const mayEnd = async (admin: string) => {
+      const client = await register('Ender', admin);
+      await adminCall(`/clients/${client.client_id}`, admin, {
+        method: 'PATCH',
+        body: JSON.stringify({ enable_end_session: true, post_logout_redirect_uris: [POST_LOGOUT] }),
+      });
+      return client;
+    };
+
+    it.each([
+      ['no client at all', {}],
+      ['a hint that cannot be read', { id_token_hint: 'not-a-jwt' }],
+      ['a client that does not exist', { client_id: 'no-such-client', id_token_hint: 'not-a-jwt' }],
+    ])('keeps the page for %s', async (_name, params: Record<string, string>) => {
+      const admin = await signInAs(ADMIN);
+      const res = await endSession(params, admin, navigate);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('data-oidc-logout-confirmation');
+      expect(await sessionExists(admin)).toBe(true);
+    });
+
+    it('confirms for an expired-style hint whose audience may end a session', async () => {
+      const admin = await signInAs(ADMIN);
+      const client = await mayEnd(admin);
+      const res = await endSession({ id_token_hint: unsignedHint({ aud: client.client_id, sub: 'x' }) }, admin, navigate);
+      expect(res.status).toBe(200);
+      expect(await res.text()).not.toContain('data-oidc-logout-confirmation');
+      expect(await sessionExists(admin)).toBe(false);
+    });
+  });
+
   it('ends the session but ignores a post-logout URI that is not registered', async () => {
     const admin = await signInAs(ADMIN);
     const client = await register('Half Configured', admin, { redirect_uris: [RP_REDIRECT] });

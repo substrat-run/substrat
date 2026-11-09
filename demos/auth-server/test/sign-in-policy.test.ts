@@ -5,7 +5,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
 import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { buildAuth, type Auth } from '../src/auth.js';
+import { buildAuth, straightToUpstream, withoutLogoutConfirmation, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import {
   assertSignInPolicy,
@@ -471,6 +471,29 @@ describe('a session established through the provider the client names', () => {
     // The stamp is a real id now, so this refusal is the policy doing its job rather than
     // the fail-closed answer an unstamped session gets — the distinction the pass above buys.
     expect(landedOn(await authorize(microsoftOnly, cookie))).toBe('/login');
+  });
+});
+
+describe('when a shortcut past a screen fails, the screen stands', () => {
+  it('keeps the redirect to the login screen when asking for the upstream throws', async () => {
+    const toLogin = new Response(null, { status: 302, headers: { location: 'http://localhost/login?sig=s&client_id=c' } });
+    const answer = await straightToUpstream(
+      () => Promise.reject(new Error('discovery failed')),
+      new Request('http://localhost/api/auth/oauth2/authorize?client_id=c') as never,
+      toLogin as never,
+      () => 'microsoft',
+    );
+    expect(answer).toBe(toLogin);
+  });
+
+  it('keeps the logout confirmation page when the confirmation is refused', async () => {
+    const page = new Response('<form data-oidc-logout-confirmation></form>', { headers: { 'content-type': 'text/html' } });
+    const answer = await withoutLogoutConfirmation(
+      async (request) => (new URL(request.url).pathname.endsWith('/confirm') ? (new Response(null, { status: 403 }) as never) : (page as never)),
+      new Request('http://localhost/api/auth/oauth2/end-session?client_id=c') as never,
+      async () => true,
+    );
+    expect(answer).toBe(page);
   });
 });
 

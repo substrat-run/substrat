@@ -6,6 +6,7 @@ import { cimd } from '@better-auth/cimd';
 import { jwt } from 'better-auth/plugins/jwt';
 import { admin } from 'better-auth/plugins/admin';
 import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
+import { decodeJwt } from 'jose';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { resetPasswordEmail, verifyEmail } from './email.js';
@@ -324,35 +325,65 @@ const END_SESSION_PATH = '/api/auth/oauth2/end-session';
  * `/confirm` with the signed state cookie the page just set, and answers with that result —
  * the session ended and a 302 to the registered post-logout URI.
  *
- * Only the confirmation is skipped. The client gate, `enable_end_session` and the exact match
- * on `post_logout_redirect_uris` are all still the plugin's, judged on the first request. The
- * price is that any page can now sign a browser out of this issuer by linking here; that is
- * an annoyance, not an exposure, and it is the price every app's sign-out button already asks.
+ * Only the confirmation is skipped, and only for a request naming a client allowed to end a
+ * session (`logoutClientId`, `mayEndSession`). The plugin judges a client only when it can
+ * find one, so a request naming none reaches this same page, and there the page stays: it is
+ * the only thing between a bare link and a signed-out browser. The exact match on
+ * `post_logout_redirect_uris` is still the plugin's. The price is that a page knowing a real
+ * client id can sign a browser out of this issuer by linking here; that is an annoyance, not
+ * an exposure, and it is the price every app's sign-out button already asks. If the
+ * confirmation is refused, the page stands and the person can press the button.
  */
-async function withoutLogoutConfirmation(
+export async function withoutLogoutConfirmation(
   handle: (request: Request) => Promise<Response>,
   request: Request,
+  mayEndSession: (clientId: string) => Promise<boolean>,
 ): Promise<Response> {
   const response = await handle(request);
-  if (response.status !== 200 || new URL(request.url).pathname !== END_SESSION_PATH) return response;
+  const url = new URL(request.url);
+  if (response.status !== 200 || url.pathname !== END_SESSION_PATH) return response;
   if (!response.headers.get('content-type')?.includes('text/html')) return response;
   if (!(await response.clone().text()).includes('data-oidc-logout-confirmation')) return response;
+  const clientId = logoutClientId(url.searchParams);
+  if (!clientId || !(await mayEndSession(clientId))) return response;
   const state = response.headers.getSetCookie().map((c) => c.split(';')[0] ?? '');
   const headers = new Headers(request.headers);
   headers.set('cookie', [request.headers.get('cookie'), ...state].filter(Boolean).join('; '));
   headers.set('content-type', 'application/x-www-form-urlencoded');
   // The page's form is same-origin, so its post would carry this issuer's own origin.
-  headers.set('origin', new URL(request.url).origin);
+  headers.set('origin', url.origin);
   headers.delete('content-length');
   // Same constructor reasoning as `advertiseExtensions`: the handler's own class, not the global.
   const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
-  return handle(
+  const confirmed = await handle(
     new Request_(new URL(`${END_SESSION_PATH}/confirm`, request.url).toString(), {
       method: 'POST',
       headers,
       body: 'action=confirm',
     }),
   );
+  return confirmed.status < 400 ? confirmed : response;
+}
+
+/**
+ * The client a logout request names, picked as the plugin picks it: `client_id`, else the
+ * audience of the `id_token_hint`. Unverified, because an expired hint is the case this is
+ * for, and all it decides is whose `enable_end_session` to read. Query only: a POSTed logout
+ * keeps the page.
+ */
+function logoutClientId(params: URLSearchParams): string | undefined {
+  const named = params.get('client_id');
+  if (named) return named;
+  const hint = params.get('id_token_hint');
+  if (!hint) return undefined;
+  try {
+    const { aud, azp } = decodeJwt(hint);
+    if (typeof aud === 'string' && aud) return aud;
+    if (typeof azp === 'string' && azp) return azp;
+    return Array.isArray(aud) && aud.length === 1 ? aud[0] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -366,9 +397,9 @@ async function withoutLogoutConfirmation(
  * back through authorize with `max_age=0`, which is the re-authentication it asks for, and a
  * refused upstream sign-in returns to `/login?…&social_error=1` (`socialErrorTarget` in the
  * app), never through here, so the person reads why. If the upstream URL cannot be had, the
- * plugin's own redirect stands and the screen offers the button.
+ * plugin's own redirect stands and the screen makes the same request itself.
  */
-async function straightToUpstream(
+export async function straightToUpstream(
   handle: (request: Request) => Promise<Response>,
   request: Request,
   response: Response,
@@ -402,7 +433,8 @@ async function straightToUpstream(
         oauth_query: oauthQuery,
       }),
     }),
-  );
+  ).catch(() => null);
+  if (!started) return response;
   const upstream = started.ok ? ((await started.json().catch(() => null)) as { url?: unknown } | null)?.url : undefined;
   if (typeof upstream !== 'string') return response;
   const redirect = new Headers({ location: upstream, 'cache-control': 'no-store' });
@@ -552,6 +584,14 @@ async function machineGrantCeiling(ctx: ScopeHookCtx, machineScopes: readonly st
 export function buildAuth(deps: AuthDeps) {
   const auth = betterAuthFor(deps);
   const handle = auth.handler;
+  const mayEndSession = async (clientId: string): Promise<boolean> => {
+    const { adapter } = await auth.$context;
+    const client = await adapter.findOne<{ disabled?: boolean | null; enableEndSession?: boolean | null }>({
+      model: 'oauthClient',
+      where: [{ field: 'clientId', value: clientId }],
+    });
+    return client?.enableEndSession === true && !client.disabled;
+  };
   // `fetch` is Better Auth's alias for the same function; both are replaced so neither
   // spelling serves a document without the flag.
   auth.handler = auth.fetch = async (request: Request) => {
@@ -559,7 +599,7 @@ export function buildAuth(deps: AuthDeps) {
       const response = await straightToUpstream(
         handle,
         request,
-        await withoutLogoutConfirmation(handle, request),
+        await withoutLogoutConfirmation(handle, request, mayEndSession),
         deps.straightThroughFor,
       );
       // Better Auth's HTTP router can turn an unexpected exception into a 500 before it
