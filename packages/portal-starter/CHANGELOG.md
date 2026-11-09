@@ -1,5 +1,14 @@
 # @substrat-run/portal-starter
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [1e8ccbb]
+- Updated dependencies [cd1c0d4]
+- Updated dependencies [7f8573e]
+  - @substrat-run/elements@0.6.0
+
 ## 0.1.0
 
 ### Minor Changes
