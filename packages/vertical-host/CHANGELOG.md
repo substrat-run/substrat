@@ -1,5 +1,21 @@
 # @substrat-run/vertical-host
 
+## 0.189.0
+
+### Minor Changes
+
+- dde9f11: `mountOperations` serves the OpenAPI document its `/api/docs` page renders, at `/api/openapi.json`, derived from the operations it mounts and read through `resolveStub`. The page read a root `/openapi.json` that the template and every generated app never served, and that a dev server's Vite proxy and a hosted app's worker-first routes did not reach, so the reference said the specification was unavailable. `docs: { info }` names the derived document, and `docs: { document }` serves one the app already builds.
+
+### Patch Changes
+
+- Updated dependencies [4e3086b]
+- Updated dependencies [3632ef6]
+- Updated dependencies [1da4079]
+  - @substrat-run/contracts@0.189.0
+  - @substrat-run/kernel@0.189.0
+  - @substrat-run/model-providers@0.5.79
+  - @substrat-run/vertical-auth@0.32.2
+
 ## 0.188.0
 
 ### Minor Changes

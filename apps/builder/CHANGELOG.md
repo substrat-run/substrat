@@ -1,5 +1,30 @@
 # @substrat-run/builder
 
+## 0.13.3
+
+### Patch Changes
+
+- 334849e: Generated builds write their migrations from the model, put an action on one row in that row with what it changes shown beside it, and offer every operation that changes data on a screen, unless the project's host code calls it or the app marks it `api-only`. A build is refused when a package.json script runs a JavaScript or TypeScript file under `src/` the project does not have, or when `runtimeNeeds` is not what `substrat push` reads. Builds on Workers AI models run: one system message where a host accepts only one, a stream that goes silent is abandoned and retried, a rate limit is waited out longer (5 s doubling to 90 s), and a response whose body cannot be read is retried instead of ending the build.
+- Updated dependencies [dde9f11]
+- Updated dependencies [c1f40c2]
+- Updated dependencies [334849e]
+- Updated dependencies [4e3086b]
+- Updated dependencies [3632ef6]
+- Updated dependencies [c5aedc8]
+- Updated dependencies [c1f40c2]
+- Updated dependencies [1da4079]
+  - create-substrat@0.15.1
+  - @substrat-run/control-plane-api@0.189.0
+  - @substrat-run/builder-workspace@0.13.1
+  - @substrat-run/builder-generator@0.12.2
+  - @substrat-run/contracts@0.189.0
+  - @substrat-run/kernel@0.189.0
+  - @substrat-run/adapter-cloudflare@0.189.0
+  - @substrat-run/engine-assistant@0.1.41
+  - @substrat-run/engine-metering@0.6.73
+  - @substrat-run/cli@0.58.3
+  - @substrat-run/model-providers@0.5.79
+
 ## 0.13.2
 
 ### Patch Changes
