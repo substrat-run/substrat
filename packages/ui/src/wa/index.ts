@@ -22,6 +22,8 @@ export { AccountMenu } from './AccountMenu';
 export type { AccountMenuItem, AccountMenuProps } from './AccountMenu';
 export { Badge, Breadcrumbs, Card, Tag, Toast } from './display';
 export type { BadgeProps, CardProps, TagProps, ToastProps } from './display';
+export { Assistant } from './Assistant';
+export type { AssistantProps } from './Assistant';
 export { Dialog } from './Dialog';
 export type { DialogProps } from './Dialog';
 export { Table } from './Table';

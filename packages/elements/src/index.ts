@@ -28,6 +28,27 @@ export {
   type TableState,
   type Tone,
 } from './entity-table-model.js';
+export { SubAssistant, type AssistantLabels } from './assistant.js';
+export {
+  AssistantModel,
+  answerOf,
+  historyOf,
+  reduceTurn,
+  scriptedSource,
+  turnChange,
+  type AssistantCitation,
+  type AssistantEvent,
+  type AssistantFailure,
+  type AssistantHistoryEntry,
+  type AssistantPart,
+  type AssistantProvenance,
+  type AssistantSend,
+  type AssistantSnapshot,
+  type AssistantSource,
+  type AssistantTurn,
+  type AssistantTurnChange,
+  type AssistantTurnStatus,
+} from './assistant-model.js';
 export { SubAvatar, type AvatarShow } from './avatar.js';
 export { SubUserMenu } from './user-menu.js';
 export {

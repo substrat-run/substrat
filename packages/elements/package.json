@@ -17,6 +17,14 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./assistant": {
+      "types": "./dist/assistant.d.ts",
+      "default": "./dist/assistant.js"
+    },
+    "./assistant-model": {
+      "types": "./dist/assistant-model.d.ts",
+      "default": "./dist/assistant-model.js"
+    },
     "./avatar": {
       "types": "./dist/avatar.d.ts",
       "default": "./dist/avatar.js"
@@ -59,9 +67,11 @@
   },
   "dependencies": {
     "@awesome.me/webawesome": "3.14.0",
+    "@substrat-run/contracts": "workspace:^",
     "lit": "^3.3.0"
   },
   "devDependencies": {
+    "jsdom": "^26.1.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
