@@ -54,6 +54,7 @@
   },
   "dependencies": {
     "@better-auth/cimd": "^1.7.18",
+    "@better-auth/i18n": "^1.7.18",
     "@better-auth/oauth-provider": "^1.7.18",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-email": "workspace:^",

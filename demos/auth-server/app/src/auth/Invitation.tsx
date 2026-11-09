@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { acceptAccountInvitation, invitationPassword, setupState, type ClientTheme } from '../api';
 import { Card, Centered, Field } from '../primitives';
 import { BankIdSignIn } from './SignIn';
+import { useT } from './locale';
 import { PhoneFactor } from './PhoneFactor';
 import { saveInvitation, type InvitationRecovery } from './invitation-recovery';
 
 export function Invitation({ recovery, theme }: { recovery: InvitationRecovery; theme: ClientTheme }) {
+  const t = useT();
   const [phase, setPhase] = useState<'accept' | 'choose' | 'bankid' | 'phone' | 'done' | 'failed'>(recovery.phase);
   const [email, setEmail] = useState('email' in recovery ? recovery.email : '');
   const [password, setPassword] = useState('');
@@ -26,9 +28,9 @@ export function Invitation({ recovery, theme }: { recovery: InvitationRecovery; 
   };
   if (phase === 'bankid') return <BankIdSignIn link oauthQuery={null} theme={theme} onDone={complete} onBack={() => setPhase('choose')} />;
   if (phase === 'phone') return <PhoneFactor oauthQuery={null} theme={theme} onDone={complete} onBack={() => { window.location.assign('/login'); }} />;
-  return <Centered><Card title="Set up your account" logo={theme.logoUrl}>
+  return <Centered><Card title={t('invite.title')} logo={theme.logoUrl}>
     {phase === 'accept' && <>
-      <p>Confirm your email invitation to choose BankID or a password with SMS verification.</p>
+      <p>{t('invite.confirm')}</p>
       <button className="btn primary" disabled={busy} onClick={() => void act(async () => {
         const state = await setupState();
         if (recovery.phase !== 'accept') return;
@@ -45,16 +47,16 @@ export function Invitation({ recovery, theme }: { recovery: InvitationRecovery; 
         saveInvitation({ phase: 'choose', email: result.email });
         window.history.replaceState({}, '', '/accept-invitation');
         setEmail(result.email); setBankid(state.providers.some((p) => p.id === 'bankid')); setPhase('choose');
-      })}>Accept invitation</button>
+      })}>{t('invite.accept')}</button>
     </>}
     {phase === 'choose' && <>
-      <p>{email} is verified. Choose how to sign in.</p>
-      {bankid && <button className="btn primary" disabled={busy} onClick={() => setPhase('bankid')}>Connect BankID</button>}
-      <Field label="Create a password" type="password" value={password} onChange={setPassword} hint="At least 8 characters" />
-      <button className="btn" disabled={busy} onClick={() => void act(async () => { await invitationPassword(password); setPassword(''); saveInvitation({ phase: 'phone', email }); setPhase('phone'); })}>Continue with password and SMS</button>
+      <p>{t('invite.verified', { email })}</p>
+      {bankid && <button className="btn primary" disabled={busy} onClick={() => setPhase('bankid')}>{t('invite.connectBankid')}</button>}
+      <Field label={t('invite.createPassword')} type="password" value={password} onChange={setPassword} hint={t('common.passwordHint')} />
+      <button className="btn" disabled={busy} onClick={() => void act(async () => { await invitationPassword(password); setPassword(''); saveInvitation({ phase: 'phone', email }); setPhase('phone'); })}>{t('invite.passwordAndSms')}</button>
     </>}
-    {phase === 'failed' && <p className="error">Invitation acceptance could not be completed. The link may already have been used. Try signing in, or ask your administrator for help with a new invitation.</p>}
-    {phase === 'done' && <p className="notice">Your account is ready. Return to your publisher’s invitation or sign-in page to continue.</p>}
+    {phase === 'failed' && <p className="error">{t('invite.failed')}</p>}
+    {phase === 'done' && <p className="notice">{t('invite.done')}</p>}
     {err && <p className="error">{err}</p>}
   </Card></Centered>;
 }

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { authClient, phoneStatus, sendPhoneCode, verifyPhoneCode, type ClientTheme } from '../api';
 import { Card, Centered, Field } from '../primitives';
+import { useT } from './locale';
 import { isExpiredSignIn, restartUrl, signInDeadline } from './sign-in-window';
 
-const EXPIRED = 'This sign-in has expired. Start again from the application.';
-
 export function PhoneFactor({ oauthQuery, theme, onDone, onBack }: { oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onBack: () => void }) {
+  const t = useT();
   const [status, setStatus] = useState<Awaited<ReturnType<typeof phoneStatus>> | null>(null);
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
@@ -33,29 +33,29 @@ export function PhoneFactor({ oauthQuery, theme, onDone, onBack }: { oauthQuery:
       else setErr(message);
     } finally { setBusy(false); }
   };
-  return <Centered><Card title="Verify your phone" logo={theme.logoUrl}>
-    {!status && !err && <p>Loading…</p>}
-    {status && !status.available && <p className="notice">SMS verification is unavailable. Contact your publisher or use BankID.</p>}
+  return <Centered><Card title={t('phone.title')} logo={theme.logoUrl}>
+    {!status && !err && <p>{t('common.loading')}</p>}
+    {status && !status.available && <p className="notice">{t('phone.unavailable')}</p>}
     {expired && <>
-      <p className="error">{EXPIRED}</p>
-      {oauthQuery && <button className="btn primary" onClick={() => window.location.assign(restartUrl(oauthQuery))}>Start again</button>}
+      <p className="error">{t('phone.expired')}</p>
+      {oauthQuery && <button className="btn primary" onClick={() => window.location.assign(restartUrl(oauthQuery))}>{t('phone.startAgain')}</button>}
     </>}
     {status?.available && !expired && <>
-      <p>{status.enrolled ? `Send a code to your registered phone ending in ${status.suffix}.` : 'Register your phone using an international number, then enter the SMS code.'}</p>
-      {!status.enrolled && <Field label="Phone number" value={phone} onChange={setPhone} type="tel" hint="For example +46701234567" />}
-      <button className="btn" disabled={busy || (!status.enrolled && !status.emailVerified)} onClick={() => void act(async () => { await sendPhoneCode(status.enrolled ? undefined : phone, oauthQuery); setSent(true); })}>{sent ? 'Send another code' : 'Send SMS code'}</button>
+      <p>{status.enrolled ? t('phone.sendToRegistered', { suffix: String(status.suffix) }) : t('phone.register')}</p>
+      {!status.enrolled && <Field label={t('phone.number')} value={phone} onChange={setPhone} type="tel" hint={t('phone.numberHint')} />}
+      <button className="btn" disabled={busy || (!status.enrolled && !status.emailVerified)} onClick={() => void act(async () => { await sendPhoneCode(status.enrolled ? undefined : phone, oauthQuery); setSent(true); })}>{sent ? t('phone.sendAnother') : t('phone.send')}</button>
       {sent && <>
-        <Field label="SMS code" value={code} onChange={setCode} />
-        <button className="btn primary" disabled={busy} onClick={() => void act(async () => { await verifyPhoneCode(code, oauthQuery); if (!oauthQuery) onDone(); })}>Verify and continue</button>
+        <Field label={t('phone.code')} value={code} onChange={setCode} />
+        <button className="btn primary" disabled={busy} onClick={() => void act(async () => { await verifyPhoneCode(code, oauthQuery); if (!oauthQuery) onDone(); })}>{t('phone.verify')}</button>
       </>}
       {!status.emailVerified && <button className="btn" disabled={busy} onClick={() => void act(async () => {
         const { error } = await authClient.sendVerificationEmail({ email: (await authClient.getSession()).data?.user.email ?? '', callbackURL: window.location.href });
-        if (error) throw new Error(error.message ?? 'Could not send verification email');
-        setNotice('Check your email and verify your address before registering your phone.');
-      })}>Verify my email</button>}
+        if (error) throw new Error(error.message ?? t('phone.verifyEmailFailed'));
+        setNotice(t('phone.checkEmail'));
+      })}>{t('phone.verifyEmail')}</button>}
     </>}
     {notice && <p className="notice">{notice}</p>}
     {err && <p className="error">{err}</p>}
-    <button className="btn" disabled={busy} onClick={onBack}>Back</button>
+    <button className="btn" disabled={busy} onClick={onBack}>{t('common.back')}</button>
   </Card></Centered>;
 }
