@@ -184,13 +184,33 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   may be missing lines) — the permission surface, the append-only audit history, operational failures,
   billable readings, and fleet telemetry.
 - **Tenant metered usage** — `GET /tenants/:tenantId/metered-usage` is a path-pinned,
-  read-only answer for that tenant's dashboard owner or admin. It returns the stored
-  scope-database gauge, estimated daily router requests, and recorded model calls and
-  provider-reported tokens for the last 30 closed UTC days, with coverage and freshness.
-  `days` holds one row per closed day; a null there is a day with no reading, not zero.
-  It exposes no prices, person or scope identifiers. Capped scans and breakdowns are
-  labelled as truncated; an absent source is not returned as zero. The fleet meter and
-  model-usage routes above remain staff-only.
+  read-only answer for that tenant's dashboard owner or admin (the dashboard's **Billing**
+  view). It meters usage and does not charge: it carries no prices, person or scope identifiers.
+  It returns, for the last 30 closed UTC days, four sections, each with its own `state`
+  (`complete`, `partial`, `truncated`, `empty`, `unavailable`, and for storage also `stale`,
+  `failing` and `not-sampled`), a `lowerBound` flag and a breakdown by vertical:
+  `storage` (the stored scope-database gauge), `requests` (estimated daily router requests, with
+  `coveredDays` of `totalDays`), `models` (recorded calls and provider-reported tokens) and
+  `builds`. `builds` answers `builds` (a count), `ms` (milliseconds) and `byVertical`
+  `{ vertical, builds, ms }`, over the window `since`..`until`. It counts successful hosted source
+  builds, from leaving the queue to collecting the release; queue time and failed builds are not
+  counted, and a later deployment refusal does not undo a build's usage. No successful build is
+  `empty` with null totals; at 500 rows the section is `truncated` and a lower bound; the
+  breakdown is cut at 50 entries and says so in `breakdownTruncated`. `days` holds one row per
+  closed day; a null there is a day with no reading, not zero. `retention` states how long each
+  source is kept. Capped scans are labelled as truncated, and an absent source is `unavailable`,
+  never zero. The fleet meter and model-usage routes above remain staff-only.
+- **Model usage for a call outside a scope** — `POST /model-usage` (staff-only) records one
+  line for a model call that ran in no tenant's scope, so no intent could carry it to the drain.
+  The body is validated as a model-usage record; a tenant the directory does not hold answers
+  `404`, and a non-staff caller `403`. The studio's turns reach a team's usage through this door.
+- **Source build records** — `GET /builder-builds/:tenantId/:buildId` (staff client:
+  `getBuilderBuild(tenantId, buildId)`) returns the retained record of one hosted source build:
+  its outcome, the steps it reached, each command's exit code, duration and output, and what
+  interrupted it when something did. It is a source-build record, not a studio turn
+  (`/builder-turns`). Staff-only, because a record carries what the tenant's build printed, so
+  any other caller gets `403`; `501` when the host has no source-build service; `404` for a build
+  with no retained record. Keep its contents out of tenant-facing instructions.
 - **Sweep runs** — `/sweep-runs`: the durable record of what a sweep pass touched, one row
   per unit (a connection swept, skipped or failed, a schedule run, a freshness verdict).
   Staff read fleet-wide; a builder's tenant is forced from the principal, the
@@ -212,11 +232,14 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   `DELETE /tenants/:t/finding-rules/:ruleId` revokes one. Builders have no access to these
   routes. The dashboard checks its member's findings permissions before making the
   tenant-scoped call; see [the Findings inbox](/platform/dashboard#findings).
-- **Lake reads** — `GET /tenants/:t/lake/events`: an audited, staff-only read of one tenant's
-  event envelopes, with no event payload. It returns `501` unless the host supplies
-  `lakeQuery`. The gateway forces the tenant and refuses a result containing another
-  tenant's row. The R2 SQL transport is implemented but remains unverified against the
-  real lake; this is not yet a tenant-facing history browser.
+- **Lake reads** — `GET /tenants/:t/lake/events`: an audited read of one tenant's event
+  envelopes, with no event payload. It returns `501` unless the host supplies `lakeQuery`. The
+  gateway forces the tenant and refuses a result containing another tenant's row. **Staff** reads
+  are unwindowed. A **tenant** credential reaches its own path only, and its read must carry
+  `since` and span at most 31 days, ending at the earlier of `until` and now; otherwise it is
+  refused with a validation error. The dashboard's team route checks `dashboard:read-event-lake`
+  (held by owner and admin) before it makes that call. Builders are refused. The R2 SQL transport
+  is implemented but remains unverified against the real lake; this is not yet a history browser.
 - **Capabilities** — `/tenants/:t/scopes/:s/capabilities` (#1686): the operator's read of the
   directory behind link shares and claim links — what each may do (mode, entity, keys, operation
   allowlist, or the principal a claim link yields), who minted and revoked it, its expiry, use
