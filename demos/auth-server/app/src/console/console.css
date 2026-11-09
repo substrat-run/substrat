@@ -51,8 +51,7 @@
  * cannot reach a themed hand-off screen — re-point them at the Substrat ramp.
  *
  * The theme is `data-theme` on the console root (`theme.ts`), which flips every Substrat
- * token beneath it. tokens.css's own vocabulary is dark by construction (it is the hand-off
- * screens' default), so inside the console each of its custom properties is redefined in
+ * token beneath it. tokens.css's own vocabulary is the hand-off screens' default, so inside the console each of its custom properties is redefined in
  * terms of a Substrat token: everything tokens.css draws here then follows the theme with
  * no per-theme rule. Redefined on `.console-root`, never `:root` — a relying party's stored
  * theme is applied to these same names, and the console is not its to restyle, nor its to
@@ -77,8 +76,8 @@
 /*
  * The page behind the console, before it mounts and around it after (`data-console-theme`, set
  * by index.html's pre-paint script and kept by `useConsoleTheme`). Without it the first paint
- * is tokens.css's dark `--bg`, the hand-off screens' default, and a light console flashed
- * black on every reload. The two values are `--surface-page` in each theme, written as the
+ * is tokens.css's `--bg`, the hand-off screens' default, and the console flashed the wrong
+ * page colour on every reload. The two values are `--surface-page` in each theme, written as the
  * primitives because the `[data-theme]` that flips it lives on the console root, not <html>.
  */
 html[data-console-theme='light'] { color-scheme: light; }

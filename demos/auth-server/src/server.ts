@@ -28,7 +28,7 @@ import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
-import { clientBranding } from './branding.js';
+import { ISSUER_THEME, clientBranding } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
@@ -281,7 +281,7 @@ app.get('/api/account/places', async (c) => {
 app.get('/api/client-options', (c) => {
   // Absent `client_id` is the console asking about itself — see `clientIdOrConsole`.
   const clientId = clientIdOrConsole(c.req.query('client_id'));
-  return c.json({ ...clientBranding(sql, clientId), signIn: clientSignIn(sql, clientId, offeredProviders()) });
+  return c.json({ ...clientBranding(sql, clientId, config()[ISSUER_THEME]), signIn: clientSignIn(sql, clientId, offeredProviders()) });
 });
 
 // The identifier-first screen's second step: which way does THIS address sign in to THIS

@@ -93,7 +93,7 @@ export function SignIn({
 
   // BankID is in the same providers list but is not a redirect: the browser stays here while
   // the person approves in the app, so its button opens a screen instead of leaving.
-  if (phoneOpen) return <PhoneFactor oauthQuery={oauthQuery} onDone={onDone} onBack={() => setPhoneOpen(false)} />;
+  if (phoneOpen) return <PhoneFactor oauthQuery={oauthQuery} theme={theme} onDone={onDone} onBack={() => setPhoneOpen(false)} />;
   if (bankidOpen) {
     return <BankIdSignIn oauthQuery={oauthQuery} theme={theme} onDone={onDone} onBack={() => setBankidOpen(false)} />;
   }

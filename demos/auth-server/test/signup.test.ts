@@ -167,7 +167,7 @@ describe('the dashboard toggle', () => {
     const cookie = await adminCookie();
 
     const before = await api.request('http://localhost/settings', { headers: { cookie } });
-    expect(await before.json()).toEqual({ allowSignup: false, accountLinking: 'link', machineScopes: [] });
+    expect(await before.json()).toEqual({ allowSignup: false, accountLinking: 'link', machineScopes: [], issuerTheme: {} });
 
     const patched = await api.request('http://localhost/settings', {
       method: 'PATCH',
@@ -175,7 +175,7 @@ describe('the dashboard toggle', () => {
       body: JSON.stringify({ allowSignup: true }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ allowSignup: true, accountLinking: 'link', machineScopes: [] });
+    expect(await patched.json()).toEqual({ allowSignup: true, accountLinking: 'link', machineScopes: [], issuerTheme: {} });
 
     // It landed on the SAME declared key the platform's Env tab and a wrangler var write to,
     // so there is only ever one answer to "is sign-up open".
@@ -184,6 +184,25 @@ describe('the dashboard toggle', () => {
     const res = await signUpCall(NEWCOMER);
     expect(res.status).toBe(200);
     expect(db.prepare('SELECT COUNT(*) AS c FROM user').get()).toEqual({ c: 2 });
+  });
+
+  it('stores an issuer theme, and refuses one it would not serve', async () => {
+    const api = adminApi();
+    const cookie = await adminCookie();
+    const patch = (issuerTheme: unknown) =>
+      api.request('http://localhost/settings', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ issuerTheme }),
+      });
+
+    expect((await patch({ colorPrimary: '#e5833a', css: '.card { width: 440px; }' })).status).toBe(200);
+    expect(JSON.parse(config().ISSUER_THEME!)).toEqual({ colorPrimary: '#e5833a', css: '.card { width: 440px; }' });
+
+    const refused = await patch({ css: '@import "https://evil.example/x.css";' });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain('@import');
+    expect(JSON.parse(config().ISSUER_THEME!).css).toBe('.card { width: 440px; }');
   });
 
   it('closes sign-up again', async () => {
@@ -228,7 +247,7 @@ describe('the account-linking mode', () => {
       body: JSON.stringify({ accountLinking: 'block' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ allowSignup: true, accountLinking: 'block', machineScopes: [] });
+    expect(await res.json()).toEqual({ allowSignup: true, accountLinking: 'block', machineScopes: [], issuerTheme: {} });
     // Same declared key the platform's Env tab and a wrangler var write to — one answer.
     expect(config()[ACCOUNT_LINKING]).toBe('block');
   });

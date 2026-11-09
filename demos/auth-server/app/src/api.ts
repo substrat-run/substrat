@@ -3,6 +3,7 @@ import { adminClient } from 'better-auth/client/plugins';
 import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
 import { isPlacesAnswer, placesOf, type Place } from './places';
 import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
+import type { ClientTheme } from '../../src/theme-wire.js';
 
 export type { Place } from './places';
 
@@ -691,22 +692,11 @@ export async function disconnectProvider(accountId: string): Promise<void> {
 /**
  * The theme a relying party's operator stored in its client `metadata.theme` — the
  * vocabulary `src/branding.ts` defines and sanitizes (Clerk-shaped names, one CSS custom
- * property each; see `applyClientTheme` in App.tsx for the mapping). Every key optional;
+ * property each; see `applyClientTheme` in theme-apply.ts for the mapping). Every key optional;
  * an empty object is the unbranded default, and is also what an unknown or disabled
  * client id answers — deliberately indistinguishable, so this read is not a registry oracle.
  */
-export interface ClientTheme {
-  colorPrimary?: string;
-  colorPrimaryForeground?: string;
-  colorBackground?: string;
-  colorPanel?: string;
-  colorInput?: string;
-  colorText?: string;
-  colorMutedText?: string;
-  borderRadius?: string;
-  logoUrl?: string;
-  title?: string;
-}
+export type { ClientTheme };
 
 /**
  * The sign-in methods ONE relying party accepts — the issuer's own live providers already
@@ -1065,6 +1055,8 @@ export interface IssuerSettings {
   machineScopes: string[];
   /** Why `MACHINE_SCOPES` was refused, when it was — `machineScopes` is then empty. */
   machineScopesError?: string;
+  /** `ISSUER_THEME` — what every hosted screen starts from, as a theme file. */
+  issuerTheme: Record<string, unknown>;
 }
 
 export async function issuerSettings(): Promise<IssuerSettings> {
@@ -1073,7 +1065,7 @@ export async function issuerSettings(): Promise<IssuerSettings> {
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
 export async function setIssuerSettings(
-  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes'>>,
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes' | 'issuerTheme'>>,
 ): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }

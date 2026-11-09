@@ -53,8 +53,8 @@
     "gen:schema": "tsx scripts/gen-schema.mts"
   },
   "dependencies": {
-    "@better-auth/cimd": "^1.7.3",
-    "@better-auth/oauth-provider": "^1.7.3",
+    "@better-auth/cimd": "^1.7.18",
+    "@better-auth/oauth-provider": "^1.7.18",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
@@ -62,7 +62,7 @@
     "@substrat-run/oidc-rp": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
     "bcryptjs": "^3.0.3",
-    "better-auth": "^1.7.3",
+    "better-auth": "^1.7.18",
     "better-sqlite3": "catalog:",
     "drizzle-orm": "^0.45.2",
     "hono": "catalog:",

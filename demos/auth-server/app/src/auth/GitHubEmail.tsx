@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { githubEmailStatus, sendGithubEmail, verifyGithubEmail } from '../api';
+import { githubEmailStatus, sendGithubEmail, verifyGithubEmail, type ClientTheme } from '../api';
 import { Card, Centered, Field } from '../primitives';
 
-export function GitHubEmail() {
+export function GitHubEmail({ theme }: { theme: ClientTheme }) {
   const [pending, setPending] = useState<Awaited<ReturnType<typeof githubEmailStatus>> | null>(null);
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
@@ -23,7 +23,7 @@ export function GitHubEmail() {
     githubEmailStatus(token).then((value) => { if (live) { setPending(value); setEmail(value.email ?? ''); } }).catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); });
     return () => { live = false; };
   }, [token]);
-  return <Centered><Card title="Verify your email">
+  return <Centered><Card title="Verify your email" logo={theme.logoUrl}>
     {pending && <>
       <p className="muted">You signed in with the GitHub account <strong>{pending.name}</strong>. {pending.linking ? 'Verify your existing account email to connect GitHub.' : 'Verify your email to continue. This becomes your account email; your GitHub sign-in stays connected.'}</p>
       {token && <p>Verify <strong>{pending.email}</strong> for this account.</p>}

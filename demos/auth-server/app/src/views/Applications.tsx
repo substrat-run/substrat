@@ -145,7 +145,7 @@ function CreateApplication({
   const [busy, setBusy] = useState(false);
   const core = useCoreForm(null, setErr);
   const signIn = useSignInForm(null);
-  const theme = useThemeForm(null);
+  const theme = useThemeForm({}, 'How the sign-in, sign-up and consent screens look when this application sends someone here. A key left out comes from the issuer’s Branding.');
 
   const register = async () => {
     setErr(null);
@@ -155,7 +155,7 @@ function CreateApplication({
     if (!built.value.machine) {
       const policy = signIn.build();
       if (!policy.ok) return setErr(policy.error);
-      metadata = withKey(withKey(metadata, 'theme', theme.build(null)), 'signIn', policy.value);
+      metadata = withKey(withKey(metadata, 'theme', theme.build({})), 'signIn', policy.value);
     }
     setBusy(true);
     try {

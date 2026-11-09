@@ -1,5 +1,7 @@
-import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
+import { sanitizeTheme, type ClientTheme } from './theme-wire.js';
+
+export { sanitizeTheme, type ClientTheme };
 
 /**
  * Per-client theming for the hosted OIDC pages (`/login`, `/signup`, `/consent`).
@@ -13,7 +15,13 @@ import type { SqlExec } from './introspect.js';
  * The vocabulary is deliberately Clerk-shaped (`colorPrimary`, `borderRadius`, …): it is
  * the best-known theming contract in the auth space, and a developer who has themed Clerk
  * should not need docs here. Each key maps onto one CSS custom property in the SPA's
- * `tokens.css` (the mapping lives in `app/src/api.ts`, beside the fetch).
+ * `tokens.css` (the mapping lives in `app/src/theme-apply.ts`). The vocabulary and its checks
+ * are in `theme-wire.ts`.
+ *
+ * An issuer has a theme of its own too (`ISSUER_THEME`, a declared config key like every other
+ * setting): it is what every screen starts from, and the only theme a screen with no relying
+ * party behind it — an invitation, a password reset — has to go on. A client's keys win over it
+ * one at a time.
  *
  * Two decisions that are security posture, not style:
  *
@@ -22,91 +30,53 @@ import type { SqlExec } from './introspect.js';
  *    validly SIGNED authorize query, precisely so the registry cannot be enumerated by a
  *    stranger; a branding endpoint that answered "unknown client" differently from "no
  *    theme" would be the oracle that design refused. So unknown, disabled and unthemed
- *    clients all answer `{ theme: {} }`, indistinguishably.
+ *    clients all answer with the issuer's theme alone, indistinguishably.
  *  - **Every value is validated on the way out, key by key.** Metadata is operator-written
  *    JSON; these values land in CSS custom properties and an <img src>. A key that fails
  *    its check is dropped while the rest survive — a typo in one color must not turn the
  *    whole login screen back to defaults.
  */
 
-/** `#rgb` or `#rrggbb` — the only color form accepted, so a value can never smuggle CSS. */
-const hexColor = z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+/** The declared key holding the issuer's own theme, as one JSON document. */
+export const ISSUER_THEME = 'ISSUER_THEME';
 
-/** A pixel length for the corner radius: `0px` – `32px`. */
-const radius = z.string().regex(/^(?:[0-9]|[12][0-9]|3[0-2])px$/);
-
-/** The logo must be https (or a data: image, which cannot reach the network at all). */
-const logoUrl = z
-  .string()
-  .max(2048)
-  .refine((v) => v.startsWith('https://') || v.startsWith('data:image/'), {
-    message: 'logoUrl must be https:// or data:image/',
-  });
-
-/**
- * The theme vocabulary, v1. Every key optional; unknown keys are ignored rather than
- * refused, so a future key round-trips through an older issuer unharmed.
- */
-export const clientThemeSchema = z.object({
-  /** Buttons, links, focus — the brand color. */
-  colorPrimary: hexColor,
-  /** Text ON the primary color (the sign-in button's label). */
-  colorPrimaryForeground: hexColor,
-  /** The page behind the card. */
-  colorBackground: hexColor,
-  /** The card and panels. */
-  colorPanel: hexColor,
-  /** Input fields. */
-  colorInput: hexColor,
-  /** Body text. */
-  colorText: hexColor,
-  /** Secondary text and hints. */
-  colorMutedText: hexColor,
-  /** Corner radius for inputs and buttons; the card derives its own from this. */
-  borderRadius: radius,
-  /** Shown above the card title on the sign-in screen. */
-  logoUrl,
-  /** Replaces the default "Substrat Auth" heading on the sign-in screen. */
-  title: z.string().min(1).max(60),
-});
-
-export type ClientTheme = Partial<z.infer<typeof clientThemeSchema>>;
-
-/**
- * Sanitize an operator-written theme object: keep each key that passes its own check, drop
- * the rest silently. Not a whole-object `safeParse` — that would let one invalid value
- * discard nine valid ones.
- */
-export function sanitizeTheme(value: unknown): ClientTheme {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const raw = value as Record<string, unknown>;
-  const theme: Record<string, string> = {};
-  for (const [key, schema] of Object.entries(clientThemeSchema.shape)) {
-    if (raw[key] === undefined) continue;
-    const parsed = (schema as z.ZodType<string>).safeParse(raw[key]);
-    if (parsed.success) theme[key] = parsed.data;
+/** The issuer's theme from its config value. Anything that does not parse is no theme. */
+export function issuerTheme(value: string | undefined): ClientTheme {
+  if (!value) return {};
+  try {
+    return sanitizeTheme(JSON.parse(value));
+  } catch {
+    return {};
   }
-  return theme as ClientTheme;
 }
 
 /**
- * The public branding answer for a client id: `{ theme }`, always 200-shaped. Unknown id,
- * disabled client, absent or malformed metadata all yield `{ theme: {} }` — deliberately
- * indistinguishable (see the header).
+ * The public branding answer for a client id: `{ theme }`, always 200-shaped, the client's
+ * keys over the issuer's one by one. Unknown id, disabled client, absent or malformed metadata
+ * all yield the issuer's theme alone — deliberately indistinguishable (see the header).
  */
-export function clientBranding(sql: SqlExec, clientId: string | null | undefined): { theme: ClientTheme } {
-  if (!clientId) return { theme: {} };
+export function clientBranding(
+  sql: SqlExec,
+  clientId: string | null | undefined,
+  issuerThemeValue: string | undefined,
+): { theme: ClientTheme } {
+  const issuer = issuerTheme(issuerThemeValue);
+  return { theme: { ...issuer, ...ownTheme(sql, clientId) } };
+}
+
+function ownTheme(sql: SqlExec, clientId: string | null | undefined): ClientTheme {
+  if (!clientId) return {};
   const row = sql
     .exec('SELECT metadata, disabled FROM oauth_client WHERE client_id = ?', clientId)
     .toArray()[0] as { metadata: string | null; disabled: number | null } | undefined;
-  if (!row || row.disabled) return { theme: {} };
-  if (!row.metadata) return { theme: {} };
+  if (!row || row.disabled) return {};
+  if (!row.metadata) return {};
   let metadata: unknown;
   try {
     metadata = JSON.parse(row.metadata);
   } catch {
-    return { theme: {} };
+    return {};
   }
   const theme = (metadata as Record<string, unknown> | null)?.theme;
-  return { theme: sanitizeTheme(theme) };
+  return sanitizeTheme(theme);
 }

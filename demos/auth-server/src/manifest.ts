@@ -104,6 +104,15 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     group: 'Supabase',
   },
   {
+    key: 'ISSUER_THEME',
+    label: 'Login theme',
+    description: 'How every hosted sign-in screen looks unless an application overrides it: one JSON theme file (see THEMING.md in the auth-server). Also editable from the dashboard (Branding), which writes this same value. A value that does not parse is ignored and the built-in look is used.',
+    placeholder: '{"colorPrimary":"#0a6847"}',
+    required: false,
+    secret: false,
+    group: 'Branding',
+  },
+  {
     key: 'EMAIL_FROM',
     label: 'Sender address',
     description: 'The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent ⇒ a safe default; without an EMAIL binding, mail is dropped.',

@@ -134,7 +134,7 @@ beforeEach(async () => {
 describe('the seeded console row', () => {
   it('changes nothing about the screen it is seeded onto', () => {
     // The backwards-compatibility claim, stated as the two reads the login screen makes.
-    expect(clientBranding(sql, CONSOLE_CLIENT_ID)).toEqual({ theme: {} });
+    expect(clientBranding(sql, CONSOLE_CLIENT_ID, undefined)).toEqual({ theme: {} });
     expect(clientSignIn(sql, CONSOLE_CLIENT_ID, offered)).toEqual({
       providers: offered,
       password: true,
@@ -172,7 +172,7 @@ describe('the seeded console row', () => {
 
     const rows = db.prepare('SELECT client_id FROM oauth_client WHERE client_id = ?').all(CONSOLE_CLIENT_ID);
     expect(rows).toHaveLength(1);
-    expect(clientBranding(sql, CONSOLE_CLIENT_ID)).toEqual({ theme: { title: 'Acme Admin' } });
+    expect(clientBranding(sql, CONSOLE_CLIENT_ID, undefined)).toEqual({ theme: { title: 'Acme Admin' } });
   });
 
   it('is flagged on the wire, so the dashboard can draw it as this issuer rather than an app', async () => {
@@ -359,11 +359,11 @@ describe('the ways back in', () => {
     expect(
       (await patchConsole(cookie, { metadata: { theme: { title: 'Acme Admin' }, signIn: { providers: [], password: true } } })).status,
     ).toBe(200);
-    expect(clientBranding(sql, CONSOLE_CLIENT_ID)).toEqual({ theme: { title: 'Acme Admin' } });
+    expect(clientBranding(sql, CONSOLE_CLIENT_ID, undefined)).toEqual({ theme: { title: 'Acme Admin' } });
 
     expect((await patchConsole(cookie, { disabled: true })).status).toBe(200);
     // Both reads revert to the issuer's defaults — the Disable button IS an escape hatch.
-    expect(clientBranding(sql, CONSOLE_CLIENT_ID)).toEqual({ theme: {} });
+    expect(clientBranding(sql, CONSOLE_CLIENT_ID, undefined)).toEqual({ theme: {} });
     expect(clientSignIn(sql, CONSOLE_CLIENT_ID, offered)).toEqual({
       providers: offered,
       password: true,

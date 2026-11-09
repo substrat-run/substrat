@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { authClient, phoneStatus, sendPhoneCode, verifyPhoneCode } from '../api';
+import { authClient, phoneStatus, sendPhoneCode, verifyPhoneCode, type ClientTheme } from '../api';
 import { Card, Centered, Field } from '../primitives';
 import { isExpiredSignIn, restartUrl, signInDeadline } from './sign-in-window';
 
 const EXPIRED = 'This sign-in has expired. Start again from the application.';
 
-export function PhoneFactor({ oauthQuery, onDone, onBack }: { oauthQuery: string | null; onDone: () => void; onBack: () => void }) {
+export function PhoneFactor({ oauthQuery, theme, onDone, onBack }: { oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onBack: () => void }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof phoneStatus>> | null>(null);
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
@@ -33,7 +33,7 @@ export function PhoneFactor({ oauthQuery, onDone, onBack }: { oauthQuery: string
       else setErr(message);
     } finally { setBusy(false); }
   };
-  return <Centered><Card title="Verify your phone">
+  return <Centered><Card title="Verify your phone" logo={theme.logoUrl}>
     {!status && !err && <p>Loading…</p>}
     {status && !status.available && <p className="notice">SMS verification is unavailable. Contact your publisher or use BankID.</p>}
     {expired && <>

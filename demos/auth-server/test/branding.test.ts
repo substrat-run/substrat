@@ -8,6 +8,8 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import { clientBranding, sanitizeTheme } from '../src/branding.js';
+import { cssProblems, schemeOf, themeProblems } from '../src/theme-wire.js';
+import { drawsForRelyingParty } from '../app/src/auth/hand-off.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 import { publicProvidersFrom, readProviders } from '../src/providers.js';
@@ -133,7 +135,7 @@ const THEME = {
 describe('clientBranding', () => {
   it('returns the stored theme for a registered client', async () => {
     const clientId = await register('Themed RP', await signInAs(ADMIN), { theme: THEME, plan: 'internal' });
-    expect(clientBranding(sql, clientId)).toEqual({ theme: THEME });
+    expect(clientBranding(sql, clientId, undefined)).toEqual({ theme: THEME });
   });
 
   it('answers identically for an unknown, an unthemed, and a disabled client', async () => {
@@ -148,10 +150,10 @@ describe('clientBranding', () => {
     expect(disable.status).toBe(200);
 
     const answers = [
-      clientBranding(sql, 'no-such-client'),
-      clientBranding(sql, unthemed),
-      clientBranding(sql, disabledId),
-      clientBranding(sql, null),
+      clientBranding(sql, 'no-such-client', undefined),
+      clientBranding(sql, unthemed, undefined),
+      clientBranding(sql, disabledId, undefined),
+      clientBranding(sql, null, undefined),
     ];
     // Byte-identical, not merely all empty — indistinguishability IS the property.
     for (const answer of answers) expect(JSON.stringify(answer)).toBe('{"theme":{}}');
@@ -166,7 +168,7 @@ describe('clientBranding', () => {
         borderRadius: '900px', // out of range
       },
     });
-    expect(clientBranding(sql, clientId)).toEqual({
+    expect(clientBranding(sql, clientId, undefined)).toEqual({
       theme: {
         colorPrimary: THEME.colorPrimary,
         colorPrimaryForeground: THEME.colorPrimaryForeground,
@@ -200,5 +202,101 @@ describe('sanitizeTheme', () => {
     expect(sanitizeTheme('dark')).toEqual({});
     expect(sanitizeTheme(['#123456'])).toEqual({});
     expect(sanitizeTheme(null)).toEqual({});
+  });
+});
+
+describe('the issuer theme', () => {
+  const ISSUER = JSON.stringify({ colorPrimary: '#111111', title: 'Issuer' });
+
+  it('answers identically for an unknown, an unthemed and a disabled client', async () => {
+    const cookie = await signInAs(ADMIN);
+    const unthemed = await register('Plain RP', cookie);
+    const disabledId = await register('Disabled RP', cookie, { theme: THEME });
+    await api.request(`http://localhost/clients/${disabledId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ disabled: true }),
+    });
+    for (const id of ['no-such-client', unthemed, disabledId, null]) {
+      expect(JSON.stringify(clientBranding(sql, id, ISSUER))).toBe(`{"theme":${ISSUER}}`);
+    }
+  });
+
+  it('is overridden by a client one key at a time', async () => {
+    const clientId = await register('Partly themed RP', await signInAs(ADMIN), { theme: { colorPrimary: '#222222' } });
+    expect(clientBranding(sql, clientId, ISSUER)).toEqual({ theme: { title: 'Issuer', colorPrimary: '#222222' } });
+  });
+
+  it('reads as no theme when the config value does not parse', () => {
+    expect(clientBranding(sql, null, '{nope')).toEqual({ theme: {} });
+  });
+});
+
+describe('cssProblems', () => {
+  it('admits a realistic theme, inlined images and fonts included', () => {
+    expect(
+      cssProblems(`
+        @font-face { font-family: Brand; src: url("data:font/woff2;base64,AAAA") format("woff2"); }
+        @media (max-width: 480px) { .card { padding: 16px; } }
+        .card > h1 { display: none; }
+        .card .brand-logo { margin: 0 auto 28px; background: url(data:image/png;base64,AAAA); }
+        .btn.primary::before { content: "→"; }
+      `),
+    ).toEqual([]);
+  });
+
+  // Each of these is a way for a stylesheet on a password page to make a request.
+  it.each([
+    ['a remote url', '.a { background: url(https://evil.example/x) }'],
+    ['an uppercase, quoted, spaced url', '.a { background: URL( "//evil.example/x" ) }'],
+    ['a relative url', '.a { background: url(/x) }'],
+    ['an import', '@import "https://evil.example/x.css";'],
+    ['a mixed-case import', '@ImPoRt "x.css";'],
+    ['an escape spelling url', '.a { background: \\75 rl(https://evil.example/x) }'],
+    ['image-set with a bare string', '.a { background: image-set("https://evil.example/x" 1x) }'],
+    ['a markup break-out', '</style><script>x</script>'],
+  ])('refuses %s', (_name, css) => {
+    expect(cssProblems(css)).not.toEqual([]);
+  });
+
+  it('refuses a stylesheet over the size limit', () => {
+    expect(cssProblems(' '.repeat(100_001))).not.toEqual([]);
+  });
+});
+
+describe('a theme file', () => {
+  it('drops refused CSS alone on the way out', () => {
+    expect(sanitizeTheme({ title: 'Acme', css: '@import "x.css";' })).toEqual({ title: 'Acme' });
+  });
+
+  it('names each bad value and each unknown key', () => {
+    expect(themeProblems({ colorPrimary: 'red', colorPrimry: '#111111', title: 'Fine' })).toEqual([
+      'colorPrimary must be a hex color like #0a6847',
+      'colorPrimry is not a theme key',
+    ]);
+  });
+
+  it('admits an inlined logo larger than a URL may be', () => {
+    const logoUrl = `data:image/svg+xml;base64,${'A'.repeat(50_000)}`;
+    expect(sanitizeTheme({ logoUrl })).toEqual({ logoUrl });
+    expect(sanitizeTheme({ logoUrl: `https://cdn.example.com/${'a'.repeat(3000)}` })).toEqual({});
+  });
+});
+
+describe('the built-in palette', () => {
+  it.each([
+    [{}, 'light'],
+    [{ colorPrimary: '#000000' }, 'light'],
+    [{ colorPanel: '#ffffff' }, 'light'],
+    [{ colorPanel: '#171a21' }, 'dark'],
+    [{ colorBackground: '#000' }, 'dark'],
+    [{ colorPanel: '#171a21', colorScheme: 'light' as const }, 'light'],
+  ])('%j reads as %s', (theme, scheme) => {
+    expect(schemeOf(theme)).toBe(scheme);
+  });
+
+  it('is never applied to the console', () => {
+    expect(['dashboard', 'not-admin', 'loading'].filter(drawsForRelyingParty)).toEqual([]);
+    expect(['signin', 'signup', 'consent', 'reset', 'invitation', 'github-email'].every(drawsForRelyingParty)).toBe(true);
   });
 });
