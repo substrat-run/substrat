@@ -287,6 +287,18 @@ export async function adminRemoveSignInMethod(userId: string, accountId: string)
 }
 
 /**
+ * Join `fromUserId` into `userId`: its sign-in methods move here and it is removed. The server
+ * refuses a join that would strand an app's binding, remove an admin, or leave two passwords or
+ * two BankIDs on one account — those come back as the error's message.
+ */
+export async function adminMergeUser(userId: string, fromUserId: string): Promise<void> {
+  await admin<{ merged: string }>(`/users/${encodeURIComponent(userId)}/merge`, {
+    method: 'POST',
+    body: JSON.stringify({ from: fromUserId }),
+  });
+}
+
+/**
  * Bring people over from another issuer, keeping their ids. A real call writes one batch of at
  * most `IMPORT_BATCH_LIMIT`, whole or not at all; a `dryRun` checks up to `DRY_RUN_LIMIT` and
  * writes nothing. The server holds every rule — this only carries them.

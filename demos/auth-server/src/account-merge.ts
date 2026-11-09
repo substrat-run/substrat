@@ -19,6 +19,7 @@ import { isPlaceholderAddress } from './placeholder-address.js';
 interface AccountFacts {
   id: string;
   email: string;
+  email_verified: number | null;
   role: string | null;
   banned: number | null;
   phone_number: string | null;
@@ -27,7 +28,7 @@ interface AccountFacts {
 export type MergeOutcome = { survivor: string } | { refused: string };
 
 const factsOf = (sql: SqlExec, id: string): AccountFacts | undefined =>
-  sql.exec('SELECT id, email, role, banned, phone_number FROM user WHERE id = ?', id).toArray()[0] as AccountFacts | undefined;
+  sql.exec('SELECT id, email, email_verified, role, banned, phone_number FROM user WHERE id = ?', id).toArray()[0] as AccountFacts | undefined;
 
 const appsOf = (sql: SqlExec, sub: string): string[] =>
   (
@@ -59,7 +60,45 @@ export function mergeAccounts(sql: SqlExec, placeholderId: string, otherId: stri
   const survivor = placeholderApps.length ? placeholder : other;
   const retired = placeholderApps.length ? other : placeholder;
   if (retired.role === 'admin') return { refused: 'These accounts cannot be joined' };
+  moveAccount(sql, survivor, retired, nowMs);
+  return { survivor: survivor.id };
+}
 
+/**
+ * An administrator joining two accounts by hand: `retiredId`'s sign-in methods move to
+ * `survivorId`, and `retiredId` is removed. The operator picks the survivor, so nothing here
+ * chooses one; what it refuses is a join that would lose something nobody asked to lose.
+ *
+ *  - A retired `sub` an app has bound: that app would hold a principal nobody can sign in to.
+ *    Merging the other way keeps it, and the refusal says so.
+ *  - A retired admin: removing an admin is a decision of its own, not a side effect.
+ *  - Two passwords, or two BankIDs: Better Auth reads one `credential` row per user, and two
+ *    personal numbers on one account is two people.
+ */
+export function adminMergeAccounts(sql: SqlExec, survivorId: string, retiredId: string, nowMs: number): MergeOutcome {
+  const survivor = factsOf(sql, survivorId);
+  const retired = factsOf(sql, retiredId);
+  if (!survivor || !retired) return { refused: 'unknown user' };
+  if (survivorId === retiredId) return { refused: 'an account cannot be merged into itself' };
+  if (survivor.banned || retired.banned) return { refused: 'unban the account before merging it' };
+  if (retired.role === 'admin') return { refused: `${retired.email} is an administrator — remove the role first, or merge the other way` };
+  const retiredApps = appsOf(sql, retiredId);
+  if (retiredApps.length) {
+    return { refused: `${retired.email} is in use (${retiredApps.join(', ')}); merging would strand it there — merge the other way` };
+  }
+  const providers = (id: string) =>
+    new Set((sql.exec('SELECT provider_id FROM account WHERE user_id = ?', id).toArray() as { provider_id: string }[]).map((r) => r.provider_id));
+  const theirs = providers(retiredId);
+  const clash = [...providers(survivorId)].filter((p) => (p === 'credential' || p === 'bankid') && theirs.has(p));
+  if (clash.length) {
+    return { refused: `both accounts have ${clash.map((p) => (p === 'credential' ? 'a password' : 'a BankID')).join(' and ')} — remove one first` };
+  }
+  moveAccount(sql, survivor, retired, nowMs);
+  return { survivor: survivor.id };
+}
+
+/** Move everything `retired` signs in with to `survivor`, and remove `retired`. */
+function moveAccount(sql: SqlExec, survivor: AccountFacts, retired: AccountFacts, nowMs: number): void {
   // A password row is keyed on the user's own id (`user-import.ts` writes the same shape).
   sql.exec(
     `UPDATE account SET user_id = ?, account_id = CASE WHEN provider_id = 'credential' THEN ? ELSE account_id END, updated_at = ?
@@ -73,11 +112,11 @@ export function mergeAccounts(sql: SqlExec, placeholderId: string, otherId: stri
   }
   sql.exec('DELETE FROM user WHERE id = ?', retired.id);
   // After the delete: `user.email` is unique, and the retired row held the address until now.
-  if (survivor === placeholder) {
+  // A survivor with a placeholder takes the retired account's real address.
+  if (isPlaceholderAddress(survivor.email) && !isPlaceholderAddress(retired.email)) {
     sql.exec(
-      'UPDATE user SET email = ?, email_verified = 1, phone_number = COALESCE(phone_number, ?), updated_at = ? WHERE id = ?',
-      other.email, other.phone_number, nowMs, survivor.id,
+      'UPDATE user SET email = ?, email_verified = ?, phone_number = COALESCE(phone_number, ?), updated_at = ? WHERE id = ?',
+      retired.email, retired.email_verified ? 1 : 0, retired.phone_number, nowMs, survivor.id,
     );
   }
-  return { survivor: survivor.id };
 }

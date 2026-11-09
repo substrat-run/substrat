@@ -6,7 +6,7 @@ import { MockEmailTransport } from '@substrat-run/adapter-email';
 import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
-import { mergeAccounts } from '../src/account-merge.js';
+import { adminMergeAccounts, mergeAccounts } from '../src/account-merge.js';
 import { bankidPlaceholderAddress } from '../src/placeholder-address.js';
 import type { BankIdTransport } from '../src/bankid.js';
 import type { SqlExec } from '../src/introspect.js';
@@ -310,5 +310,44 @@ describe('connecting BankID from inside an account', () => {
     await emailAccount();
     const cookie = cookieOf(await auth.api.signInEmail({ body: { email: ANNA, password: PASSWORD }, asResponse: true }));
     expect((await connect(cookie)).status).toBe(409);
+  });
+});
+
+describe('an administrator merging two accounts', () => {
+  it('moves the BankID onto the account the operator keeps, which keeps its address and password', async () => {
+    const placeholder = placeholderAccount();
+    const id = await emailAccount();
+    expect(adminMergeAccounts(sql, id, placeholder, 1)).toEqual({ survivor: id });
+    expect(bankidOwner()).toBe(id);
+    expect(count('user')).toBe(1);
+    const signIn = await auth.api.signInEmail({ body: { email: ANNA, password: PASSWORD }, asResponse: true });
+    expect((await sessionOf(signIn))?.user.id).toBe(id);
+  });
+
+  it('gives a kept placeholder the real address, verified only if it was', async () => {
+    const placeholder = placeholderAccount();
+    const id = await emailAccount();
+    db.prepare('UPDATE user SET email_verified = 0 WHERE id = ?').run(id);
+    adminMergeAccounts(sql, placeholder, id, 1);
+    expect(db.prepare('SELECT email, email_verified FROM user WHERE id = ?').get(placeholder)).toEqual({ email: ANNA, email_verified: 0 });
+  });
+
+  it.each([
+    ['the merged account is bound in an app', (_keep: string, gone: string) => bindInApp(gone, 'ticket0'), /ticket0/],
+    ['the merged account is an admin', (_keep: string, gone: string) => void db.prepare("UPDATE user SET role = 'admin' WHERE id = ?").run(gone), /administrator/],
+    ['both have a password', async (keep: string) => {
+      db.prepare("INSERT INTO account (id, account_id, provider_id, user_id, password, created_at, updated_at) VALUES ('pw2', ?, 'credential', ?, 'x', 1, 1)").run(keep, keep);
+    }, /a password/],
+    ['both have a BankID', async (_keep: string, gone: string) => {
+      db.prepare("INSERT INTO account (id, account_id, provider_id, user_id, created_at, updated_at) VALUES ('b2', '199001011234', 'bankid', ?, 1, 1)").run(gone);
+    }, /a BankID/],
+  ])('refuses when %s, and changes nothing', async (_name, arrange, message) => {
+    const keep = placeholderAccount();
+    const gone = await emailAccount();
+    await arrange(keep, gone);
+    const before = count('account');
+    expect(adminMergeAccounts(sql, keep, gone, 1)).toEqual({ refused: expect.stringMatching(message) });
+    expect(count('user')).toBe(2);
+    expect(count('account')).toBe(before);
   });
 });

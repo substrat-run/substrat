@@ -395,6 +395,12 @@ put it off three times. A taken address merges the two, as does connecting that 
 two accounts bound in apps are refused, since joining their principals needs a rebind nothing
 offers yet.
 
+An administrator joins two accounts by hand from a user's **Identities** tab (`POST
+/api/admin/users/:id/merge`): the other account's sign-in methods move here and it is removed.
+The operator picks the survivor, so the refusals are about loss: the merged account bound in an
+app or an admin, or both holding a password or a BankID. Unlinking is removing one sign-in
+method, which never takes the last way in.
+
 The pieces (`src/bankid.ts`, `src/bankid-plugin.ts`): the flow is a Better Auth **plugin**
 (`/bankid/start`, `/qr`, `/collect`, `/cancel` under `/api/auth`), because completion must end
 in a real Better Auth session — which also picks up the `admin` plugin's ban check (a hook on

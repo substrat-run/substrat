@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Badge, Button, DetailHeader, EmptyState, LinkTabs, initials } from '@substrat-run/ui';
 import {
+  adminMergeUser,
   adminRemoveSignInMethod,
   adminSignInMethods,
   banUserWithReason,
   getUser,
+  listUsers,
   listUserSessions,
   markEmailVerified,
   removeUser,
@@ -125,7 +127,12 @@ export function UserDetailView({ userId, tab, me }: { userId: string; tab: UserT
           <div hidden={tab !== 'details'} style={{ display: tab === 'details' ? 'flex' : undefined, flexDirection: 'column', gap: 20 }}>
             <DetailsTab user={user} me={me} onChanged={onChanged} banning={banning} setBanning={setBanning} />
           </div>
-          {tab === 'identities' && <SignInMethodsPanel userId={userId} email={user.email} reloadKey={changed} onChanged={onChanged} />}
+          {tab === 'identities' && (
+            <>
+              <SignInMethodsPanel userId={userId} email={user.email} reloadKey={changed} onChanged={onChanged} />
+              <MergePanel userId={userId} email={user.email} onChanged={onChanged} />
+            </>
+          )}
           {tab === 'sessions' && <SessionsPanel userId={userId} />}
           {tab === 'logs' && <LogTable userId={userId} />}
           {tab === 'raw' && <RawJson value={user} />}
@@ -375,6 +382,73 @@ function SignInMethodsPanel({
           )}
         </>
       )}
+    </section>
+  );
+}
+
+/* ---- one person, two accounts ---- */
+
+/**
+ * Join another account into this one — for a person who signed in two ways before either was
+ * connected to the other (BankID first, Microsoft later), which they cannot undo from
+ * `/account` because each method already belongs to an account. The other account's methods
+ * move here and it is removed; the server holds every refusal and its message is shown as is.
+ */
+function MergePanel({ userId, email, onChanged }: { userId: string; email: string; onChanged: () => void }) {
+  const [others, setOthers] = useState<AdminUser[] | null>(null);
+  const [from, setFrom] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    listUsers()
+      .then((users) => live && setOthers(users.filter((u) => u.id !== userId)))
+      .catch((e: unknown) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [userId]);
+
+  // A BankID-only account's address is a placeholder, so its name is what an operator knows it by.
+  const describe = (u: AdminUser): string => (isPlaceholderAddress(u.email) ? `${u.name} — BankID only` : `${u.name} — ${u.email}`);
+
+  const merge = async () => {
+    const other = others?.find((u) => u.id === from);
+    if (!other) return;
+    if (!window.confirm(`Merge ${describe(other)} into ${email}? Its sign-in methods move to this account and it is removed. Its sessions end. This cannot be undone.`)) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await adminMergeUser(userId, from);
+      setFrom('');
+      setOthers((list) => list?.filter((u) => u.id !== from) ?? null);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Merge another account into this one</h2></div>
+      <p className="muted">
+        For one person with two accounts. The other account&rsquo;s sign-in methods move here, and it is removed.
+      </p>
+      {err && <p className="error">{err}</p>}
+      <div className="row">
+        <select value={from} onChange={(e) => setFrom(e.target.value)} disabled={busy || others === null} aria-label="Account to merge into this one">
+          <option value="">{others === null ? 'Loading accounts…' : 'Choose an account…'}</option>
+          {others?.map((u) => (
+            <option key={u.id} value={u.id}>{describe(u)}</option>
+          ))}
+        </select>
+        <button className="btn" disabled={busy || !from} onClick={() => void merge()}>
+          {busy ? 'Merging…' : 'Merge'}
+        </button>
+      </div>
     </section>
   );
 }
