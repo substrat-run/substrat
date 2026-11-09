@@ -29,7 +29,6 @@ src/personas.ts        the local dev cast, read by the dev issuer and the seed
 src/routes.ts          the HTTP API, DERIVED from the operations — it holds no table
 src/server.ts          the Node dev server (SQLite adapter, OIDC against the dev issuer)
 src/worker.ts          the deployable Cloudflare worker
-src/config-do.ts       the per-instance config store (Cloudflare only)
 spec/concept.md        the design document you approve before any code; `substrat concept sync` writes its generated sections
 test/scenario.test.ts  the scenario, including the denials
 test/entities.test.ts  the entity registry held to the tables its migrations create
@@ -47,7 +46,8 @@ on its operation, never a handler added to one entrypoint. Two kinds of route st
 and are meant to: the generic `POST /api/invoke` transport `routes.ts` registers above the
 derived table, which keeps an operation that declares no `http` of its own reachable on both
 hosts; and each entrypoint's own auth-shaped routes, which answer "who am I on THIS host" and
-cannot be shared — `/api/auth/*` and `/api/me` in `server.ts`, `/api/me` in `worker.ts`. The permission keys `defineOperations`
+cannot be shared — `/api/auth/*` and `/api/me` in `server.ts`, and in `worker.ts` the ones
+`workerDoor` mounts (below). The permission keys `defineOperations`
 takes are the same array `src/provision.ts` hands `definePermissions({ …, keys })`, which throws
 at module load when those keys and `MODULES` disagree. [Agent rules](/guide/agent-rules) is
 the same layout, emitted from the `AGENTS.md` the scaffolder writes.
@@ -94,16 +94,24 @@ Keycloak or your own issuer is a change of `OIDC_ISSUER`, not of code. A script 
 to act as someone mints a bearer at the issuer instead —
 `curl -XPOST localhost:8879/dev/token -d '{"sub":"dev|greta"}'`.
 
-The **worker** is the honest half of that story. `src/worker.ts` — what
-[`substrat push`](/reference/cli) deploys — ships **no auth**: every `/api/*` request is
-`401` until you wire its `authenticatedPrincipal` seam. Nothing in it resolves a caller in
-any environment, so there is nothing to accidentally deploy; a hosted instance whose
-`substrat:auth` issuer is configured answers with a 401 body that names this exact
-function. The shape to fill in is the one `server.ts` already has: verify the request
-against the issuer with [`@substrat-run/vertical-auth`](/reference/vertical-auth)'s
-`oidcRpAuthProvider`, then map the subject to a `PrincipalId` per scope — locally through
-`host.admin`, hosted through the per-tenant `IdentityDO`, which also brings the owner-claim
-and invite flows a fresh install needs.
+The **worker** carries the same sign-in. `src/worker.ts` — what [`substrat push`](/reference/cli)
+deploys — composes `workerDoor` from `@substrat-run/vertical-host/worker-door`, so a hosted
+install answers a signed-in request without any auth code of yours. It supplies what is the
+worker's own: the `AUTH` binding (the tenant's identity directory), how a request routes to a
+`(tenant, scope)`, `hostFor`, and the vertical's `envSpec`. The worker exports `IdentityDO`, the
+Durable Object behind `AUTH`, because workerd resolves a DO class from the entry module's
+exports; it is declared as a store in `substrat.runtimeNeeds.stores` beside `SCOPE` and
+`SWEEPER`. `door.mount(app)` then adds the login round-trip at `/api/auth/*`, who is signed in
+at `/api/me`, and the owner seat at `/api/claim-owner`, and `door.scope(c)` hands a route the
+caller's scope stub — `401` when nobody is signed in. The issuer is the one the dashboard
+delivers for the install (`substrat:auth`, read through
+[`@substrat-run/vertical-auth`](/reference/vertical-auth)'s `instanceAuthFor`); the worker
+holds no credential store and no dev header. `door.platform` fills the provision, configure and
+delete hooks of `mountPlatformSurface`, including seating the first owner.
+
+One thing stays yours: **member invites**. Who may invite is the vertical's own rule, so the
+template does not mount them; add `mountInviteRoutes` from `@substrat-run/vertical-auth` behind
+your own admin gate.
 
 The worker's **first** registration is the invocation log, and it must stay first:
 

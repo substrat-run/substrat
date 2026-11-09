@@ -19,7 +19,7 @@ npx @substrat-run/boundary-lint
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
 consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness and exempt,
 and so are the Durable Object classes a hosted vertical ships by filename — `auth-do.ts`,
-`config-do.ts` (the `*-do.ts` shape `create-substrat` scaffolds): they import `DurableObject`
+`config-do.ts` (the `*-do.ts` shape): they import `DurableObject`
 from `cloudflare:workers` because the runtime requires the base class, not to reach the
 ambient env.
 

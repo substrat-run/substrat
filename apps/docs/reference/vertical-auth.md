@@ -5,9 +5,10 @@ three interchangeable implementations behind it. It is the concrete form of the
 [identity seam](/concepts/identity) for verticals, the counterpart to
 [`@substrat-run/oidc-rp`](/reference/oidc-rp), which serves the platform's own surfaces.
 
-A vertical scaffolded with `create-substrat` answers `/api/*` with `401` until real auth is
-wired into `authenticatedPrincipal`. This package fills that seam without the vertical
-hand-rolling session handling or the owner-claim logic.
+A vertical scaffolded with `create-substrat` gets sign-in from `workerDoor`
+(`@substrat-run/vertical-host/worker-door`), which is built on this package: it calls
+`instanceAuthFor`, mounts the login, session and owner-claim routes, and leaves the vertical
+without any session handling or owner-claim logic of its own.
 
 ## The `AuthProvider` contract
 
@@ -111,10 +112,12 @@ try {
 }
 ```
 
-`meridian`, `manyfold` and `ticket0` all mount it. The `create-substrat` template
-deliberately does **not**: its `config-do.ts` mirrors the same `scope_config` table shape so a
-project can swap the binding and adopt vertical-auth later, which is why the scaffold and a
-demo look different here.
+`meridian`, `manyfold` and `ticket0` all mount it, and so does the `create-substrat` template —
+through `workerDoor` rather than by calling it: the door takes the `AUTH` directory binding, reads
+the instance's configuration with `instanceAuthFor`, and mounts `/api/auth/*`, `/api/me` and
+`/api/claim-owner`. A worker that wants something other than the door's composition calls
+`instanceAuthFor` itself, as above. Member invites are not in the door: mount `mountInviteRoutes`
+from `@substrat-run/vertical-auth` with your own admin gate.
 
 ## What it selects between
 
