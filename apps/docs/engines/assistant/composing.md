@@ -23,7 +23,7 @@ The engine never calls a model. A host runs the loop and writes the result throu
 
 ## Registering the engine
 
-The package is private and available in the repository; it is not yet published to npm.
+The package is public on npm; add it to the vertical like any other engine dependency.
 
 ```ts
 import { assistantModule } from '@substrat-run/engine-assistant';

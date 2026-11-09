@@ -9,8 +9,8 @@ separate scopes. Crossing the second boundary changes the transaction and the id
 
 There are nine in the repository: work orders, invoicing, booking, protocols, invites,
 metering, absence, notifications and assistant. Notifications arrived in the week of
-5–11 October; assistant's first implementation landed on 15 October 2026. Those two
-packages are not yet published to npm. Each engine is headless: the vertical supplies
+5–11 October; assistant's first implementation landed on 15 October 2026. Both
+are published to npm. Each engine is headless: the vertical supplies
 the screens and the words people read.
 
 What an engine owns is the set of statements that must never be false:
@@ -274,7 +274,7 @@ at-least-once**: if the provider accepts a message and recording that outcome fa
 a later attempt can send it again. This is the transaction boundary from chapter 5
 made visible in a feature people use.
 
-As of this edition, the engine is used by Handlebar and remains unpublished to npm.
+As of this edition, the engine is used by Handlebar and is published to npm.
 It supports email, with no digest or other channel yet. The
 [notifications reference](/engines/notifications/) has the calling shape and prerequisites.
 

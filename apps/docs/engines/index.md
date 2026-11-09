@@ -140,8 +140,8 @@ are missing.
 | [Invites](/engines/invites/) | `@substrat-run/engine-invites` | single-use invitations to join an org with a role — invited → accepted; the plaintext identifier is never stored, the per-scope salted hash is |
 | [Absence](/engines/absence/) | `@substrat-run/engine-absence` | the append-only absence ledger over an opaque subject — balance as a fold, approval as the only mint for bookings, per-type floors |
 | [Metering](/engines/metering/) | `@substrat-run/engine-metering` | the billable-usage ledger — idempotent ingest, counters vs gauges, period close as frozen billing evidence; quantities, never prices |
-| [Notifications](/engines/notifications/) | `@substrat-run/engine-notifications` (not yet published) | turning an occasion a vertical names into email: per-person preferences, escaped templates, one tracked delivery per occasion, topic and person |
-| [Assistant](/engines/assistant/) | `@substrat-run/engine-assistant` (not yet published) | the record of a chat with an assistant: an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input |
+| [Notifications](/engines/notifications/) | `@substrat-run/engine-notifications` | turning an occasion a vertical names into email: per-person preferences, escaped templates, one tracked delivery per occasion, topic and person |
+| [Assistant](/engines/assistant/) | `@substrat-run/engine-assistant` | the record of a chat with an assistant: an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input |
 
 The first seven are **product seeds** — small deliberately, hardened as real verticals
 consume them. Six were extracted from the demo verticals; metering is the one exception,
