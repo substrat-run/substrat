@@ -1,5 +1,13 @@
 # @substrat-run/social-relay
 
+## 0.2.36
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.2.35
 
 ### Patch Changes

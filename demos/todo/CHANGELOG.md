@@ -1,5 +1,16 @@
 # @substrat-run/demo-todo
 
+## 1.0.3
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/adapter-sqlite@0.190.0
+  - @substrat-run/dev-issuer@0.4.3
+  - @substrat-run/kernel@0.190.0
+  - @substrat-run/vertical-host@0.190.0
+
 ## 1.0.2
 
 ### Patch Changes

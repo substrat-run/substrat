@@ -1,5 +1,20 @@
 # @substrat-run/template-check
 
+## 0.0.105
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/engine-invoicing@0.11.74
+  - @substrat-run/engine-workorder@0.13.15
+  - @substrat-run/adapter-cloudflare@0.190.0
+  - @substrat-run/adapter-sqlite@0.190.0
+  - @substrat-run/dev-issuer@0.4.3
+  - @substrat-run/kernel@0.190.0
+  - @substrat-run/vertical-host@0.190.0
+  - @substrat-run/attachment-extractors@0.2.51
+
 ## 0.0.104
 
 ### Patch Changes

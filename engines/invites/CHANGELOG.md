@@ -1,5 +1,13 @@
 # @substrat-run/engine-invites
 
+## 0.9.67
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.9.66
 
 ### Patch Changes

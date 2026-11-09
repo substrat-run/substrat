@@ -1,5 +1,13 @@
 # @substrat-run/engine-assistant
 
+## 0.1.42
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.1.41
 
 ### Patch Changes

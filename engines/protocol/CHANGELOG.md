@@ -1,5 +1,13 @@
 # @substrat-run/engine-protocol
 
+## 0.13.75
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.13.74
 
 ### Patch Changes

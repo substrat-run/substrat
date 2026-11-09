@@ -1,5 +1,13 @@
 # @substrat-run/dev-issuer
 
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/vertical-auth@0.32.3
+
 ## 0.4.2
 
 ### Patch Changes

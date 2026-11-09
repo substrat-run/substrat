@@ -1,5 +1,14 @@
 # @substrat-run/console
 
+## 0.14.105
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/control-plane-api@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.14.104
 
 ### Patch Changes

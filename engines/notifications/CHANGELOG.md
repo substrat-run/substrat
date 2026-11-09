@@ -1,5 +1,13 @@
 # @substrat-run/engine-notifications
 
+## 0.3.35
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.3.34
 
 ### Patch Changes

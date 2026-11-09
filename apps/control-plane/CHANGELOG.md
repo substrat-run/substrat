@@ -1,5 +1,23 @@
 # @substrat-run/control-plane
 
+## 0.18.26
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/connector-bolagsverket@0.0.13
+  - @substrat-run/connector-fortnox@0.7.13
+  - @substrat-run/connector-mail-in@0.1.26
+  - @substrat-run/connector-microsoft365@0.0.51
+  - @substrat-run/connector-planima@0.2.87
+  - @substrat-run/connector-scrive@0.14.96
+  - @substrat-run/adapter-cloudflare@0.190.0
+  - @substrat-run/control-plane-api@0.190.0
+  - @substrat-run/kernel@0.190.0
+  - @substrat-run/model-providers@0.5.80
+  - @substrat-run/vertical-host@0.190.0
+
 ## 0.18.25
 
 ### Patch Changes

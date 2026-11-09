@@ -1,5 +1,13 @@
 # @substrat-run/router
 
+## 0.6.26
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/adapter-cloudflare@0.190.0
+
 ## 0.6.25
 
 ### Patch Changes

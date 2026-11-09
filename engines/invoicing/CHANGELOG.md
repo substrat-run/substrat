@@ -1,5 +1,13 @@
 # @substrat-run/engine-invoicing
 
+## 0.11.74
+
+### Patch Changes
+
+- Updated dependencies [de51bee]
+  - @substrat-run/contracts@0.190.0
+  - @substrat-run/kernel@0.190.0
+
 ## 0.11.73
 
 ### Patch Changes
