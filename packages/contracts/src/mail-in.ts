@@ -135,9 +135,10 @@ export type MailInChange = z.infer<typeof mailInChange>;
 /**
  * What the operation answers to a `message` change: the entity its attachments land on, and whether
  * the original message lands there too (`raw: true`, opt-in). Parsed by the platform, not the
- * vertical, so an answer carrying more than these is accepted.
+ * vertical, so an answer carrying more than these is accepted. That includes a `raw` field of the
+ * vertical's own: it reads as not opting in, rather than failing the parse and losing the entity.
  */
-export const mailInMessageAnswer = z.object({ entity: entityRef.nullable().optional(), raw: z.boolean().optional() }).passthrough();
+export const mailInMessageAnswer = z.object({ entity: entityRef.nullable().optional(), raw: z.boolean().optional().catch(undefined) }).passthrough();
 export type MailInMessageAnswer = z.infer<typeof mailInMessageAnswer>;
 
 /** One scope's address, as the relay and the dashboard show it. */
