@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared lists</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .error { color: #b00020; }
+  li.done span { text-decoration: line-through; color: #777; }
+  section { border-top: 1px solid #ddd; margin-top: 16px; padding-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Shared lists</h1>
+<p id="who"></p>
+<p id="error" class="error" role="alert"></p>
+<main id="app"></main>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k.startsWith('on') ? e.addEventListener(k.slice(2), v) : e.setAttribute(k, v);
+  for (const c of kids) e.append(c);
+  return e;
+};
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error ?? `request failed (${r.status})`);
+  return data;
+}
+const show = (e) => { $('#error').textContent = e ? e.message : ''; };
+let current = null;
+
+async function render() {
+  show(null);
+  let me;
+  try { me = await api('GET', '/api/me'); }
+  catch { $('#who').replaceChildren(el('a', { href: '/login' }, 'Sign in')); $('#app').replaceChildren(); return; }
+  $('#who').replaceChildren(`Signed in as ${me.name} (${me.email}) `, el('button', { onclick: async () => { await api('POST', '/logout'); render(); } }, 'Sign out'));
+  if (!me.member) { $('#app').replaceChildren(el('p', {}, 'This app is by invitation only.')); return; }
+  const hash = new URLSearchParams(location.hash.slice(1)).get('list');
+  if (hash) current = hash;
+  try {
+    const { lists } = await api('GET', '/api/lists');
+    const name = el('input', { placeholder: 'New list', 'aria-label': 'New list name' });
+    const app = [
+      el('h2', {}, 'Your lists'),
+      el('ul', {}, ...lists.map((l) => el('li', {}, el('a', { href: `#list=${l.id}`, onclick: () => { current = l.id; setTimeout(render); } }, l.name), l.role === 'shared' ? ' (shared with you)' : ''))),
+      el('div', { class: 'row' }, name, el('button', { onclick: async () => { try { const l = await api('POST', '/api/lists', { name: name.value }); current = l.id; location.hash = `list=${l.id}`; render(); } catch (e) { show(e); } } }, 'Create list')),
+    ];
+    if (lists.length === 0) app.splice(1, 1, el('p', {}, 'No lists yet.'));
+    if (current) app.push(await listView(lists.find((l) => l.id === current)));
+    $('#app').replaceChildren(...app);
+  } catch (e) { show(e); }
+}
+
+async function listView(meta) {
+  const box = el('section');
+  if (!meta) return box;
+  try {
+    const { list, items } = await api('GET', `/api/lists/${meta.id}/items`);
+    const text = el('input', { placeholder: 'New item', 'aria-label': 'New item text' });
+    box.append(
+      el('h2', {}, list.name),
+      el('ul', {}, ...items.map((i) => el('li', { class: i.done ? 'done' : '' },
+        el('input', { type: 'checkbox', 'aria-label': `Done: ${i.text}`, ...(i.done ? { checked: '' } : {}), onchange: async (ev) => { try { await api('POST', `/api/items/${i.id}/done`, { done: ev.target.checked }); render(); } catch (e) { show(e); } } }),
+        el('span', {}, ` ${i.text} `),
+        meta.role === 'owner' ? el('button', { onclick: async () => { try { await api('DELETE', `/api/items/${i.id}`); render(); } catch (e) { show(e); } } }, 'Delete item') : ''))),
+      el('div', { class: 'row' }, text, el('button', { onclick: async () => { try { await api('POST', `/api/lists/${meta.id}/items`, { text: text.value }); render(); } catch (e) { show(e); } } }, 'Add item')),
+    );
+    if (meta.role === 'owner') {
+      const email = el('input', { type: 'email', placeholder: 'friend@example.com', 'aria-label': 'Email to share with' });
+      const [{ shares }, { invites }] = await Promise.all([api('GET', `/api/lists/${meta.id}/shares`), api('GET', `/api/lists/${meta.id}/invites`)]);
+      box.append(
+        el('h3', {}, 'Sharing'),
+        el('div', { class: 'row' }, email, el('button', { onclick: async () => { try { await api('POST', `/api/lists/${meta.id}/invites`, { email: email.value }); render(); } catch (e) { show(e); } } }, 'Share')),
+        el('ul', {}, ...shares.map((s) => el('li', {}, `${s.name} (${s.email}) `, el('button', { onclick: async () => { try { await api('DELETE', `/api/shares/${s.id}`); render(); } catch (e) { show(e); } } }, 'Revoke'))),
+          ...invites.filter((i) => !i.accepted).map((i) => el('li', {}, `${i.email} — invited `, el('button', { onclick: async () => { try { await api('DELETE', `/api/invites/${i.id}`); render(); } catch (e) { show(e); } } }, 'Cancel invite')))),
+        el('button', { onclick: async () => { try { await api('DELETE', `/api/lists/${meta.id}`); current = null; location.hash = ''; render(); } catch (e) { show(e); } } }, 'Delete list'),
+      );
+    }
+  } catch (e) { show(e); }
+  return box;
+}
+window.addEventListener('hashchange', render);
+render();
+</script>
+</body>
+</html>

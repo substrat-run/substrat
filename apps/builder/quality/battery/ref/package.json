@@ -1,0 +1,7 @@
+{
+  "name": "shared-lists",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": { "start": "node --no-warnings server.mjs" }
+}

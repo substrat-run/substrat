@@ -1,0 +1,58 @@
+{
+ "h_private_read": {
+  "result": "HELD",
+  "evidence": "rest 404"
+ },
+ "h_private_write": {
+  "result": "HELD",
+  "evidence": "[404, 404, 404, 404]"
+ },
+ "h_anonymous": {
+  "result": "HELD",
+  "evidence": "[401, 401, 401, 401, 401]"
+ },
+ "h_first_join": {
+  "result": "HOLE",
+  "evidence": "items 200"
+ },
+ "h_revoke": {
+  "result": "HELD",
+  "evidence": "[404, 404, 404, 404, 404]"
+ },
+ "h_shared_delete": {
+  "result": "HELD",
+  "evidence": "rest 403"
+ },
+ "h_shared_reshare": {
+  "result": "HELD",
+  "evidence": "rest 403"
+ },
+ "f_signin": {
+  "result": "PASS",
+  "evidence": "me 200"
+ },
+ "f_lists": {
+  "result": "PASS",
+  "evidence": "create 200 delete 200"
+ },
+ "f_items": {
+  "result": "PASS",
+  "evidence": "{'milk': True, 'eggs': False}"
+ },
+ "f_invite_email": {
+  "result": "PASS",
+  "evidence": "2 mails"
+ },
+ "f_shared_use": {
+  "result": "PASS",
+  "evidence": "200 200 200"
+ },
+ "f_openapi": {
+  "result": "PASS",
+  "evidence": "200"
+ },
+ "f_mcp": {
+  "result": "PASS",
+  "evidence": "200"
+ }
+}

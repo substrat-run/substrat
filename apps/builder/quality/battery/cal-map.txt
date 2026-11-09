@@ -1,0 +1,8 @@
+cal-01 clean
+cal-02 join-typed-email
+cal-03 items-unchecked
+cal-04 revoke-ignored
+cal-05 shared-deletes
+cal-06 shared-reshares
+cal-07 mcp-items-unchecked
+cal-08 tick-anonymous
