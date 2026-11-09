@@ -305,47 +305,65 @@ export function resolveSignInRoute(
  * An empty list with `password: false` is a client nobody can sign into, and the screen says
  * that plainly — falling back to the unrestricted list would be the one behaviour that turns
  * a misconfiguration into an open door.
+ *
+ * `straightThrough` is the method a client sends everyone to because it leaves nothing to
+ * choose: an operator narrowed it (no policy, no shortcut, so an issuer that merely has one
+ * provider still shows its form) to exactly one provider, with no password, no identifier-first
+ * step and no domain routes. A route counts even on a client that never asks for an address:
+ * it can refuse that one provider's session (`policyAdmits`), and sending the person back to
+ * the same provider would then go round forever. It is decided here, once, because the routes
+ * are deliberately not something the screen is told.
  */
 export function effectiveSignIn(
   policy: SignInPolicy | undefined,
   issuerProviders: readonly { id: string; label: string }[],
 ): EffectiveSignIn {
   if (!policy) return { providers: [...issuerProviders], password: true, restricted: false };
+  const providers = issuerProviders.filter((p) => policy.providers === null || policy.providers.includes(p.id));
+  const leavesNoChoice = !policy.password && !policy.identifierFirst && !policy.domainRoutes?.length && providers.length === 1;
   return {
-    providers: issuerProviders.filter((p) => policy.providers === null || policy.providers.includes(p.id)),
+    providers,
     password: policy.password,
     restricted: true,
     ...(policy.passwordSecondFactor ? { passwordSecondFactor: policy.passwordSecondFactor } : {}),
     // Which domains are routed where is deliberately NOT here: the screen asks per address
     // (`resolveSignInRoute`), so the list of an organisation's domains is not published.
     ...(policy.identifierFirst ? { identifierFirst: true as const } : {}),
+    ...(leavesNoChoice ? { straightThrough: providers[0]!.id } : {}),
   };
 }
 
 /**
- * The upstream a client sends everyone straight to, when it leaves nothing to choose: an
- * operator narrowed it (`restricted`, so an issuer that merely has one provider still shows
- * its form) to exactly one provider, no password and no identifier-first routing. BankID is
- * never one, because it is not a redirect: the person approves on this issuer's own screen.
- * The authorize answer reads this to skip the login screen (`auth.ts`), and the screen keeps
- * the same rule for the request it is still handed (`app/src/auth/SignIn.tsx`).
+ * The upstream the authorize answer goes to itself, skipping the login screen (`auth.ts`).
+ * BankID is never one, because it is not a redirect: the person approves on this issuer's own
+ * screen, which opens it from the same `straightThrough` (`app/src/auth/SignIn.tsx`).
  */
 export function straightThroughProvider(signIn: EffectiveSignIn): string | undefined {
-  if (!signIn.restricted || signIn.password || signIn.identifierFirst || signIn.providers.length !== 1) return undefined;
-  const only = signIn.providers[0]!.id;
-  return only === BANKID_METHOD ? undefined : only;
+  return signIn.straightThrough === BANKID_METHOD ? undefined : signIn.straightThrough;
+}
+
+/** `straightThroughProvider` for one client: each runtime's `straightThroughFor` is one line
+ *  over this. The policy is read first, because a client with none has no shortcut and this
+ *  runs on every signed-out authorize, so the issuer's providers need not be read for it. */
+export function clientStraightThrough(
+  sql: SqlExec,
+  clientId: string,
+  issuerProviders: () => readonly { id: string; label: string }[],
+): string | undefined {
+  const policy = readSignInPolicy(sql, clientId);
+  return policy ? straightThroughProvider(effectiveSignIn(policy, issuerProviders())) : undefined;
 }
 
 /** What the signed-out login screen is told about one client. `restricted` is what lets it
- *  say "this application accepts Microsoft" rather than "this issuer offers Microsoft" — and
- *  what gates the straight-through redirect, which must never fire on the console's own
- *  unrestricted sign-in. */
+ *  say "this application accepts Microsoft" rather than "this issuer offers Microsoft". */
 export interface EffectiveSignIn {
   providers: { id: string; label: string }[];
   password: boolean;
   restricted: boolean;
   passwordSecondFactor?: 'sms';
   identifierFirst?: true;
+  /** The one method this client sends everyone to, when it leaves nothing to choose. */
+  straightThrough?: string;
 }
 
 /** The whole read for one client: the policy from the registry, intersected with what the

@@ -165,10 +165,14 @@ token as `id_token_hint`. The mounted callback keeps that token in its own cooki
 it on its one use — so the hint rides one request in the session's life, not every one.
 It is not sent on every federated sign-out, deliberately: `Strict` withholds the cookie
 from a cross-site navigation, so a hostile page linking to `?federated` cannot hand the
-issuer a valid hint (logout CSRF against the issuer session) and gets the confirmation
-page instead; and the route withholds the hint from an `http:` end-session endpoint
-(loopback excepted, for the dev issuer), because it is a signed assertion about who is
-signed in, travelling in a URL the browser keeps in history and `Referer`. A session minted
+issuer a valid hint (logout CSRF against the issuer session). What that link gets is
+whatever the issuer does without one: a confirmation page where the issuer asks. The
+platform's auth server does not ask for a request naming an enabled client, so there the
+link does end the issuer session, and every app signed in through it hears by back-channel
+logout. It signs the person out and exposes nothing. The route also withholds the hint from
+an `http:` end-session endpoint (loopback excepted, for the dev issuer), because it is a
+signed assertion about who is signed in, travelling in a URL the browser keeps in history
+and `Referer`. A session minted
 before the callback began keeping the token has no hint either, until the next sign-in.
 Local sign-out happens **first, always** — an issuer that is down, advertises no
 end-session endpoint, or refuses the redirect URI can only leave its own session standing,

@@ -194,6 +194,7 @@ describe('narrowing the console', () => {
       providers: [{ id: 'microsoft', label: 'Microsoft' }],
       password: false,
       restricted: true,
+      straightThrough: 'microsoft',
     });
   });
 

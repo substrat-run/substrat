@@ -47,13 +47,11 @@ export function SignIn({
   const forOidc = oauthQuery !== null;
 
   /**
-   * The one method, when there IS only one — no choice to present, so no screen to present it
-   * on. Every clause of this condition is load-bearing:
+   * The one method, when the client leaves no choice — no choice to present, so no screen to
+   * present it on. The server decides that (`straightThrough`, `effectiveSignIn`), because a
+   * domain route can rule it out and the routes are not published here. Two more clauses are
+   * this screen's own, and both are load-bearing:
    *
-   *  - `restricted`: the narrowing was an operator's decision about this application. An
-   *    issuer that merely happens to have one provider still shows the password form, and a
-   *    screen that skipped itself for that reason would be skipping a choice the visitor has.
-   *  - `!passwordEnabled` and exactly one provider: anything else is a choice.
    *  - `!socialError`: this screen is where a refused sign-in comes back to. Redirecting
    *    again from here would send the person round the same failing loop with the reason
    *    flashing past unread — the ONE case where the automatic thing must not happen.
@@ -63,8 +61,8 @@ export function SignIn({
    *    reach `?builtin=0` — an auto-navigation is a bad place to have to interrupt. One click
    *    is the whole cost of not doing that.
    */
-  const only = providers.length === 1 && !passwordEnabled ? providers[0] : undefined;
-  const straightThrough = forOidc && signIn.restricted && !signIn.identifierFirst && only !== undefined && !socialError;
+  const only = providers.find((p) => p.id === signIn.straightThrough);
+  const straightThrough = forOidc && only !== undefined && !socialError;
   const [redirecting, setRedirecting] = useState(straightThrough);
   /** Fired once per mount, whatever React does with the effect. Without this, StrictMode's
    *  double-invoke starts two sign-ins, each minting its own OAuth state — the last

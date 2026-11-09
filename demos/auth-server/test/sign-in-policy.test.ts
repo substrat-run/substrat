@@ -5,16 +5,18 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
 import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { buildAuth, type Auth } from '../src/auth.js';
+import { buildAuth, withoutLogoutConfirmation, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import {
   assertSignInPolicy,
   clientSignIn,
+  clientStraightThrough,
   effectiveSignIn,
   policyAdmits,
   readSignInPolicy,
   resolveSignInRoute,
   sanitizeSignInPolicy,
+  type SignInPolicy,
   signInMethodOfPath,
   straightThroughProvider,
 } from '../src/sign-in-policy.js';
@@ -170,8 +172,7 @@ function rebuild(overrides: Partial<Parameters<typeof buildAuth>[0]> = {}): Auth
     // The wiring both runtimes do (`auth-do.ts`, `server.ts`): the policy is read from the
     // registry per request, so a client narrowed a moment ago decides the next authorize.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
-    straightThroughFor: (clientId) =>
-      straightThroughProvider(clientSignIn(sql, clientId, publicProvidersFrom(readProviders(sql)))),
+    straightThroughFor: (clientId) => clientStraightThrough(sql, clientId, () => publicProvidersFrom(readProviders(sql))),
     ...overrides,
   });
 }
@@ -490,6 +491,15 @@ describe('a session established through the provider the client names', () => {
     // the fail-closed answer an unstamped session gets — the distinction the pass above buys.
     expect(landedOn(await authorize(microsoftOnly, cookie))).toBe('/login');
   });
+
+  it('keeps the logout confirmation page when the confirmation is refused', async () => {
+    const page = new Response('<form data-oidc-logout-confirmation></form>', { headers: { 'content-type': 'text/html' } });
+    const answer = await withoutLogoutConfirmation(
+      async (request) => (new URL(request.url).pathname.endsWith('/confirm') ? (new Response(null, { status: 403 }) as never) : (page as never)),
+      new Request('http://localhost/api/auth/oauth2/end-session?client_id=c') as never,
+    );
+    expect(answer).toBe(page);
+  });
 });
 
 describe('what the login screen is told', () => {
@@ -507,6 +517,7 @@ describe('what the login screen is told', () => {
       providers: [{ id: 'microsoft', label: 'Microsoft' }],
       password: false,
       restricted: true,
+      straightThrough: 'microsoft',
     });
   });
 
@@ -536,6 +547,31 @@ describe('what the login screen is told', () => {
       password: false,
       restricted: true,
     });
+  });
+});
+
+describe('a client that leaves nothing to choose', () => {
+  const OFFERED = [
+    { id: 'microsoft', label: 'Microsoft' },
+    { id: 'google', label: 'Google' },
+  ];
+
+  it.each<[string, SignInPolicy | undefined, string | undefined]>([
+    ['one provider and nothing else', { providers: ['microsoft'], password: false }, 'microsoft'],
+    ['no policy at all', undefined, undefined],
+    ['a password form beside it', { providers: ['microsoft'], password: true }, undefined],
+    ['an identifier-first step', { providers: ['microsoft'], password: false, identifierFirst: true }, undefined],
+    // The route can refuse the session the only provider makes, and back there is the same provider.
+    ['a domain route', { providers: ['microsoft'], password: false, domainRoutes: [{ domains: ['acme.test'], provider: 'google' }] }, undefined],
+    ['two providers', { providers: null, password: false }, undefined],
+  ])('%s', (_case, policy, expected) => {
+    expect(straightThroughProvider(effectiveSignIn(policy, OFFERED))).toBe(expected);
+  });
+
+  it('leaves BankID to the screen, which opens it from the same answer', () => {
+    const signIn = effectiveSignIn({ providers: ['bankid'], password: false }, [{ id: 'bankid', label: 'BankID' }]);
+    expect(signIn.straightThrough).toBe('bankid');
+    expect(straightThroughProvider(signIn)).toBeUndefined();
   });
 });
 

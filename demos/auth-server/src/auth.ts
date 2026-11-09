@@ -330,9 +330,10 @@ const END_SESSION_PATH = '/api/auth/oauth2/end-session';
  * too: from another site it arrives without the Lax session cookie, and answering it here
  * would report a sign-out that ended nothing. The price is that any page can sign a browser
  * out of this issuer by linking here with a client's id; that is an annoyance, not an
- * exposure, and it is the price every app's sign-out button already asks.
+ * exposure, and it is the price every app's sign-out button already asks. If the confirmation
+ * is refused, the page stands and the person can press the button.
  */
-async function withoutLogoutConfirmation(
+export async function withoutLogoutConfirmation(
   handle: (request: Request) => Promise<Response>,
   request: Request,
 ): Promise<Response> {
@@ -350,13 +351,14 @@ async function withoutLogoutConfirmation(
   headers.delete('content-length');
   // Same constructor reasoning as `advertiseExtensions`: the handler's own class, not the global.
   const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
-  return handle(
+  const confirmed = await handle(
     new Request_(new URL(`${END_SESSION_PATH}/confirm`, request.url).toString(), {
       method: 'POST',
       headers,
       body: 'action=confirm',
     }),
   );
+  return confirmed.status < 400 ? confirmed : response;
 }
 
 /**
@@ -394,7 +396,6 @@ async function straightToUpstream(
   headers.set('content-type', 'application/json');
   headers.set('accept', 'application/json');
   headers.set('origin', url.origin);
-  headers.set('sec-fetch-mode', 'cors');
   // Same constructor reasoning as `advertiseExtensions`: the handler's own classes.
   const Request_ = request.constructor as new (url: string, init: RequestInit) => Request;
   let started: Response;
@@ -936,7 +937,8 @@ function betterAuthFor(deps: AuthDeps) {
         const narrowed = scope === undefined ? undefined : { context: { query: { ...query, scope } } };
         const policy = deps.signInPolicyFor?.(clientId);
         // No session is not this hook's business: the plugin already sends that person to the
-        // login screen, which applies the same policy to what it draws.
+        // login screen, which applies the same policy to what it draws (`straightToUpstream`
+        // answers past it for a client with one way in).
         const session = await getSessionFromCtx(ctx);
         if (!session) return narrowed;
         const method = (session.session as Record<string, unknown>).signInProvider;
