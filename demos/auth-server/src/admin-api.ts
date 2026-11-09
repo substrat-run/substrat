@@ -54,7 +54,7 @@ import {
   type BankIdTransportKind,
 } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, readSignInLogEntry, signInLogQuery } from './sign-in-log.js';
-import { importBody, importUsers } from './user-import.js';
+import { importBody, importUsers, wallClock } from './user-import.js';
 import { platformOwnerOf } from './resources.js';
 
 /**
@@ -1113,7 +1113,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.post('/users/:userId/merge', async (c) => {
     const parsed = z.object({ from: z.string().min(1) }).safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw new HTTPException(400, { message: 'body must be { from: <user id> }' });
-    const outcome = deps.transaction(() => adminMergeAccounts(deps.sql, c.req.param('userId'), parsed.data.from, Date.now()));
+    const outcome = deps.transaction(() => adminMergeAccounts(deps.sql, c.req.param('userId'), parsed.data.from, wallClock()));
     if ('refused' in outcome) throw new HTTPException(outcome.refused === 'unknown user' ? 404 : 409, { message: outcome.refused });
     return c.json({ merged: parsed.data.from, into: outcome.survivor });
   });
