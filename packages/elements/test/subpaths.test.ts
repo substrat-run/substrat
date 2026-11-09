@@ -8,10 +8,12 @@
 import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 
-const ELEMENTS = ['avatar', 'entity-table', 'user-menu'];
+const ELEMENTS = ['assistant', 'avatar', 'entity-table', 'user-menu'];
 
 /** Which elements each subpath ships. `./user-menu` draws a `<sub-avatar>`, so it carries one. */
 const CARRIES: Record<string, string[]> = {
+  './assistant': ['assistant'],
+  './assistant-model': [],
   './avatar': ['avatar'],
   './user-menu': ['avatar', 'user-menu'],
   './entity-table': ['entity-table'],
@@ -67,8 +69,12 @@ describe('subpaths', () => {
     expect(ELEMENTS.filter((element) => reached.has(element))).toEqual([...elements].sort());
   });
 
-  it.each(['./entity-table-model', './session'])('%s imports nothing, so a helper costs no element', (path) => {
+  it.each(['./assistant-model', './entity-table-model', './session'])('%s imports nothing, so a helper costs no element', (path) => {
     expect([...reach(path.slice(2))]).toEqual([path.slice(2)]);
+  });
+
+  it('keeps Web Awesome out of the assistant, so a host on another stack loads none of it', () => {
+    expect([...reach('assistant')].filter((spec) => spec.startsWith('@awesome.me'))).toEqual([]);
   });
 
   it('gives every module the root exports a subpath, so no helper forces the root import', () => {

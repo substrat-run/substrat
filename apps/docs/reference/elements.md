@@ -1,7 +1,7 @@
 # @substrat-run/elements
 
-Web components for a vertical's screens: a table of one paged read, an account menu and an
-avatar. They are [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s
+Web components for a vertical's screens: a table of one paged read, an account menu, an avatar
+and a conversation with an assistant. They are [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s
 free core, styled only through its `--wa-*` tokens, so they follow whatever theme the page sets.
 Web components work in React, Vue, Svelte or a plain HTML page, so a vertical's app does not
 have to be written in any one framework to use them.
@@ -140,6 +140,115 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 
 `EntityTableModel` is everything here except the drawing, with no DOM in it.
 
+## `<sub-assistant>`
+
+A conversation with an assistant: the transcript and the box to type in, and nothing around them.
+It has no popup, modal or sidebar mode. It fills the box you give it, so give it a height, and put
+it in whatever container the screen wants.
+
+Your app creates the model and keeps it. Closing a dialog then keeps the conversation, and a new
+model is a new conversation.
+
+```ts
+import '@substrat-run/elements/assistant';
+import { AssistantModel } from '@substrat-run/elements/assistant-model';
+
+const model = new AssistantModel({
+  source: {
+    async *send({ text, history }) {
+      const { answer } = await api.ask({ messages: [...history, { role: 'user', text }] });
+      yield { t: 'text-delta', pid: 'answer', delta: answer };
+      yield { t: 'turn-finish', reason: 'done' };
+    },
+  },
+});
+
+document.querySelector('sub-assistant').model = model;
+```
+
+A source is one method that yields the events of `@substrat-run/contracts/assistant-stream`. A
+plain request and response is the short generator above, and a streaming backend is another source
+for the same model. If your source receives events over the wire, read them with
+`readAssistantStreamEvent` so that a newer server cannot break an older page. Add `cancel()` to
+offer a Stop button; without it, none is drawn.
+
+| | |
+|---|---|
+| Properties | `model`; `labels`, a partial `AssistantLabels` over the English defaults |
+| Attributes | `label` (the transcript's accessible name), `placeholder`, `max-length`, `heading-level`, `hide-composer` |
+| Slot | `empty`, shown before the first question |
+| Event | `sub-assistant-source`, with `{ citation, turn }`, when a source is clicked |
+| Method | `focus()`: the input, or the transcript under `hide-composer` |
+
+Answers are plain text, and the model's output is never treated as markup.
+
+**Your own input.** Under `hide-composer` the element draws no box, and your input calls
+`model.send(text)`. It returns `false` when there is nothing to send or an answer is still coming,
+so you know to keep what was typed.
+
+**Tool calls and notes.** Tool events are drawn as one quiet line, such as "Used list findings".
+To say it in your own words, yield `{ t: 'host-event', kind: 'read', text: 'Read 3 customers' }`
+instead. The same event records something your app did because of the answer, like "Updated the
+canvas".
+
+**Sources.** Yield `{ t: 'source', sid, title, ref }` and the element draws a button, and tells you
+through `sub-assistant-source`; `ref` is your own handle on the record. With an `http(s)` `url` it
+draws a link instead, and `preventDefault()` on the event keeps it from opening. Take `url` from
+your server, never from the model's text.
+
+**Words.** `labels` replaces any string the element says, including what a screen reader hears:
+
+```ts
+element.labels = { retry: 'Försök igen', working: 'Arbetar…' };
+```
+
+**Keys.** The element listens to nothing above itself. Enter on one of its own buttons is handled
+there and marked with `preventDefault()`, so a command palette listening at `window` should start
+with `if (event.defaultPrevented) return;`. Don't use Tab to switch a palette's modes once there is
+a conversation, or keyboard users can't reach Retry or a source.
+
+### Putting it somewhere
+
+```html
+<!-- A ⌘K modal. Your code binds the shortcut. -->
+<wa-dialog label="Ask"><sub-assistant style="height: 28rem"></sub-assistant></wa-dialog>
+
+<!-- A sidebar. `wa-split-panel` or `wa-page` docks it instead. -->
+<wa-drawer label="Ask" placement="end"><sub-assistant style="height: 100%"></sub-assistant></wa-drawer>
+
+<!-- A chat popup. Your code adds the launcher and any unread badge. -->
+<div style="position: fixed; inset: auto 1rem 1rem auto; width: 24rem; height: 32rem">
+  <sub-assistant style="height: 100%"></sub-assistant>
+</div>
+```
+
+### Without Web Awesome
+
+The element loads no Web Awesome component, only reads its tokens, and each token has a readable
+fallback. An app on another stack maps its own colours and is done:
+
+```css
+sub-assistant {
+  --wa-color-text-normal: hsl(var(--foreground));
+  --wa-color-text-quiet: hsl(var(--muted-foreground));
+  --wa-color-neutral-fill-quiet: hsl(var(--muted));
+  --wa-color-surface-border: hsl(var(--border));
+  --wa-color-surface-default: hsl(var(--background));
+  --wa-form-control-border-color: hsl(var(--border));
+  --wa-color-brand-fill-loud: hsl(var(--primary));
+  --wa-color-brand-on-loud: hsl(var(--primary-foreground));
+  --wa-color-brand-fill-quiet: hsl(var(--accent));
+  --wa-color-brand-on-quiet: hsl(var(--primary));
+  --wa-color-danger-on-quiet: hsl(var(--destructive));
+  --wa-border-radius-m: var(--radius);
+  --wa-font-family-body: inherit;
+}
+```
+
+Beyond the tokens, `--sub-assistant-gap` sets the spacing and `::part()` reaches `transcript`,
+`turn`, `question`, `ai-marker`, `answer`, `trace`, `working`, `sources`, `source`, `provenance`,
+`note`, `failure`, `retry`, `jump`, `composer`, `input`, `send` and `stop`.
+
 ## The session read
 
 `sessionAt(url)` returns the one `SessionStore` per URL that every element on the page shares,
@@ -158,6 +267,8 @@ import '@substrat-run/elements/user-menu';
 
 | Subpath | What it brings |
 |---|---|
+| `/assistant` | `<sub-assistant>` |
+| `/assistant-model` | `AssistantModel` and its helpers, with no element |
 | `/avatar` | `<sub-avatar>` |
 | `/user-menu` | `<sub-user-menu>`, and the `<sub-avatar>` it draws |
 | `/entity-table` | `<sub-entity-table>` |

@@ -1,7 +1,7 @@
 # @substrat-run/elements
 
 Web components for a vertical's screens, built so a project gets a table that is good and
-looks like *its* theme without writing either. Three components so far, dogfooded in
+looks like *its* theme without writing either. Four components so far, dogfooded in
 `demos/todo/app` (`#/table`, and its header). Still `0.x`: a minor release may change an
 element's attributes or slots.
 
@@ -26,6 +26,10 @@ element's attributes or slots.
 - **`<sub-avatar>`** — the same identity without a menu: picture or initials (by grapheme,
   coloured by principal), optionally the name or email beside it. Reads the session itself,
   or draws the `session` property you hand it.
+- **`<sub-assistant>`** — a conversation with an assistant: the transcript and the box to type
+  in, and no chrome, so it goes in a dialog, a drawer or a palette. The host keeps the
+  `AssistantModel`, and injects a source that yields the protocol's events. It loads no Web
+  Awesome component, so an app on another stack only maps its colours onto the tokens.
 - **`SessionStore` / `sessionAt(url)`** — the session read both share: once per URL per
   page, re-read when the tab comes back into view, and a failed refresh never signs
   anybody out on screen.
@@ -49,8 +53,9 @@ import '@substrat-run/elements/themes/ledger.css';
 ```
 
 The package root registers every element, and a bundler cannot remove them. An app that uses only
-some imports those by subpath: `@substrat-run/elements/avatar`, `/user-menu` or `/entity-table`.
-`/entity-table-model` and `/session` carry the helpers with no element.
+some imports those by subpath: `@substrat-run/elements/assistant`, `/avatar`, `/user-menu` or
+`/entity-table`. `/assistant-model`, `/entity-table-model` and `/session` carry the helpers with
+no element.
 
 ## How it is built
 
