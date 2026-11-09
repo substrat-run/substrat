@@ -337,3 +337,250 @@ describe('column layout', () => {
     expect(moveColumn(columns, null, 'name', { by: 1 }).order).toEqual(defaultLayout(columns).order);
   });
 });
+
+describe('EntityTableModel: a selection a screen works with', () => {
+  const pagedModel = () => {
+    const model = modelOver({
+      read: async () => page(['a', 'b'], 'p2'),
+      follow: async (next) => (next === 'p2' ? page(['c', 'd'], 'p3') : page(['e'])),
+    });
+    model.configure({ retainSelection: true });
+    return model;
+  };
+  const selected = (model: EntityTableModel<Row>) => [...model.state.selected].sort();
+
+  it('draws a shift range across pages, in reading order, and acts on rows no longer on screen', async () => {
+    const model = pagedModel();
+    await model.load();
+    model.selectOnly('b');
+    await model.nextPage();
+    expect(selected(model)).toEqual(['b']);
+    model.extendTo('c');
+    expect(selected(model)).toEqual(['b', 'c']);
+    expect(model.selectedRows.map((r) => r.id)).toEqual(['b', 'c']);
+    model.extendTo('d');
+    expect(selected(model)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('shift with no anchor selects the one row, and cmd-shift adds the range to what is there', async () => {
+    const model = pagedModel();
+    await model.load();
+    model.extendTo('b');
+    expect(selected(model)).toEqual(['b']);
+    await model.more();
+    model.toggle('d');
+    model.setAnchor('a');
+    model.extendTo('b', { additive: true });
+    expect(selected(model)).toEqual(['a', 'b', 'd']);
+  });
+
+  it('without the option a page turn drops the selection, as it always has', async () => {
+    const model = modelOver({ read: async () => page(['a'], 'p2'), follow: async () => page(['b']) });
+    await model.load();
+    model.toggle('a');
+    await model.nextPage();
+    expect(selected(model)).toEqual([]);
+  });
+
+  it('select-all takes the loaded rows only: rows loaded afterwards stay out of it', async () => {
+    const model = pagedModel();
+    await model.load();
+    model.selectLoaded();
+    await model.more();
+    expect(model.state.rows).toHaveLength(4);
+    expect(selected(model)).toEqual(['a', 'b']);
+  });
+
+  it('a re-read drops a row it no longer returns and leaves another page alone; the checkbox too', async () => {
+    let first = ['a', 'b'];
+    const model = modelOver({ read: async () => page(first, 'p2'), follow: async () => page(['c']) });
+    model.configure({ retainSelection: true });
+    await model.load();
+    model.selectOnly('a');
+    await model.nextPage();
+    model.toggle('c');
+    await model.prevPage();
+    first = ['b'];
+    await model.load();
+    expect(selected(model)).toEqual(['c']);
+    model.toggleAll();
+    expect(selected(model)).toEqual(['b', 'c']);
+    model.toggleAll();
+    expect(selected(model)).toEqual(['c']);
+  });
+
+  it('a changed sort keeps only what its first read has, and a changed view keeps nothing', async () => {
+    const model = pagedModel();
+    await model.load();
+    model.selectOnly('a');
+    await model.nextPage();
+    model.toggle('c');
+    await model.sortBy('name');
+    expect(selected(model)).toEqual(['a']);
+    await model.setQuery({ view: 'other' });
+    expect(selected(model)).toEqual([]);
+  });
+
+  it('keeps a key the screen restored until a read has actually shown the row gone', async () => {
+    const model = new EntityTableModel<Row>({ read: async () => page(['a']), follow: async () => page([]) }, () => {}, { selected: ['z'] });
+    model.configure({ retainSelection: true });
+    await model.load();
+    expect(selected(model)).toEqual(['z']);
+    expect(model.selectedRows).toEqual([]);
+  });
+
+  it('with keepAppended a re-read walks every page shown; without it, only the first', async () => {
+    const walked = pagedModel();
+    walked.configure({ retainSelection: true, keepAppended: true });
+    const plain = pagedModel();
+    for (const model of [walked, plain]) {
+      await model.load();
+      await model.more();
+      await model.load();
+    }
+    expect(walked.state.rows.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(walked.state.next).toBe('p3');
+    expect(plain.state.rows.map((r) => r.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('EntityTableModel: nested rows', () => {
+  const ids = (model: EntityTableModel<Row>) => model.entries.map((e) => (e.kind === 'row' ? e.key : e.id));
+
+  const nested = (reads: Record<string, () => Promise<Page<Row>>>, options: { canExpand?: (r: Row) => boolean; rank?: (r: Row) => number } = {}) => {
+    const read = vi.fn(async (_query: TableQuery) => page(['a', 'b']));
+    const childRead = vi.fn((parent: string, query: TableQuery) => {
+      void query;
+      return reads[parent]!();
+    });
+    const follow = vi.fn(async (next: string) => page([next]));
+    const model = modelOver({ read });
+    model.configure({
+      tree: {
+        childrenOf: (row) => ({ read: (query) => childRead(row.id, query), follow }),
+        ...(options.canExpand ? { canExpand: options.canExpand } : {}),
+      },
+      ...(options.rank ? { rank: options.rank } : {}),
+    });
+    return { model, read, childRead, follow };
+  };
+
+  it('reads a level only when its row opens, with the table query, and once', async () => {
+    const { model, childRead } = nested({ a: async () => page(['a1', 'a2']) });
+    await model.load();
+    expect(childRead).not.toHaveBeenCalled();
+    await model.setOpen(['a']);
+    expect(ids(model)).toEqual(['a', 'a1', 'a2', 'b']);
+    expect(model.entries[1]).toMatchObject({ level: 2, parent: 'a', position: 1, siblings: 2 });
+    await model.setOpen(['a']);
+    expect(childRead).toHaveBeenCalledTimes(1);
+    expect(childRead.mock.calls[0]![1]).toBe(model.state.query);
+  });
+
+  it('opens a key the top level has not loaded yet once the row arrives, nested levels too', async () => {
+    const { model } = nested({ a: async () => page(['a1']), a1: async () => page(['deep']) });
+    await model.setOpen(['a', 'a1']);
+    await model.load();
+    expect(ids(model)).toEqual(['a', 'a1', 'deep', 'b']);
+    expect(model.entries[2]).toMatchObject({ level: 3 });
+  });
+
+  it('keeps a refused or failed child read inside its row, and a retry recovers it', async () => {
+    let failing = true;
+    const { model } = nested({
+      a: () => Promise.reject(new Refusal(403)),
+      b: () => (failing ? Promise.reject(new Error('boom')) : Promise.resolve(page(['b1']))),
+    });
+    await model.load();
+    await model.setOpen(['a', 'b']);
+    expect(model.state).toMatchObject({ phase: 'ready', problem: null });
+    expect(model.state.rows).toHaveLength(2);
+    expect(model.entries.filter((e) => e.kind === 'status')).toMatchObject([
+      { parent: 'a', phase: 'forbidden' },
+      { parent: 'b', phase: 'error', message: 'boom' },
+    ]);
+    failing = false;
+    await model.reloadLevel('b');
+    expect(ids(model)).toContain('b1');
+  });
+
+  it('pages a level on its own, and a failed page keeps the rows and says so', async () => {
+    const { model, follow } = nested({ a: async () => page(['a1'], 'a2') });
+    await model.load();
+    await model.setOpen(['a']);
+    expect(ids(model)).toEqual(['a', 'a1', 'more:a', 'b']);
+    follow.mockRejectedValueOnce(new Error('nope'));
+    await model.moreIn('a');
+    expect(model.entries[2]).toMatchObject({ kind: 'more', message: 'nope', loading: false });
+    await model.moreIn('a');
+    expect(ids(model)).toEqual(['a', 'a1', 'a2', 'b']);
+  });
+
+  it('a top-level reload re-reads open levels, forgets closed ones, and drops a child that went', async () => {
+    let children = ['a1', 'a2'];
+    const { model, childRead } = nested({ a: async () => page(children), b: async () => page(['b1']) });
+    await model.load();
+    await model.setOpen(['a', 'b']);
+    model.selectLoaded();
+    children = ['a1'];
+    await model.setOpen(['a']);
+    await model.load();
+    expect(childRead.mock.calls.map((c) => c[0])).toEqual(['a', 'b', 'a']);
+    expect(model.state.levels.has('b')).toBe(false);
+    expect([...model.state.selected].sort()).toEqual(['a', 'a1', 'b']);
+  });
+
+  it('ranks within each level and never across one, and only offers what can open', async () => {
+    const rank = (r: Row) => (r.id.endsWith('2') ? 0 : 1);
+    const { model } = nested({ a: async () => page(['a1', 'a2']) }, { rank, canExpand: (r) => r.id === 'a' });
+    await model.load();
+    await model.setOpen(['a', 'b']);
+    expect(ids(model)).toEqual(['a', 'a2', 'a1', 'b']);
+    expect(model.entries.at(-1)).toMatchObject({ key: 'b', expandable: false, open: false });
+  });
+
+  it('a level with no rows is a status line, and a row listed under itself does not hang', async () => {
+    const { model } = nested({ a: async () => page(['a']), b: async () => page([]) });
+    await model.load();
+    await model.setOpen(['a', 'b']);
+    expect(ids(model)).toEqual(['a', 'b', 'status:b']);
+  });
+
+  it('drops a child answer that a newer read of the same level has overtaken', async () => {
+    let release!: (p: Page<Row>) => void;
+    let call = 0;
+    const { model } = nested({
+      a: () => (call++ === 0 ? new Promise<Page<Row>>((resolve) => (release = resolve)) : Promise.resolve(page(['fresh']))),
+    });
+    await model.load();
+    const first = model.setOpen(['a']);
+    await model.reloadLevel('a');
+    release(page(['stale']));
+    await first;
+    expect(ids(model)).toEqual(['a', 'fresh', 'b']);
+  });
+
+  it('a topmost bulk action skips a child whose parent is selected; a plain one does not', async () => {
+    const run = vi.fn(async () => undefined);
+    const { model } = nested({ a: async () => page(['a1']) });
+    await model.load();
+    await model.setOpen(['a']);
+    model.setSelection(['a', 'a1']);
+    expect(model.parentOf('a1')).toBe('a');
+    await model.runBulk({ id: 'x', label: 'X', bulk: true, topmost: true, run });
+    expect(run.mock.calls.flat()).toEqual([{ id: 'a' }]);
+    model.setSelection(['a', 'a1']);
+    run.mockClear();
+    await model.runBulk({ id: 'x', label: 'X', bulk: true, run });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('a search is flat: no levels, whatever is open', async () => {
+    const model = modelOver({ read: async () => page(['a']), search: async () => ({ results: [{ id: 'a' }], capped: false }) });
+    model.configure({ tree: { childrenOf: () => ({ read: async () => page(['x']), follow: async () => page([]) }) } });
+    await model.load();
+    await model.setOpen(['a']);
+    await model.search('term');
+    expect(ids(model)).toEqual(['a']);
+  });
+});
