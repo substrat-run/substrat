@@ -290,7 +290,30 @@ yet, so they reach the lake on the sweep's schedule.
 
 Shipping does not remove anything. The outbox is also what consumers are delivered from, what
 [an entity's history](#reading-one-entity-s-history) is read from, and where an entity's
-version comes from, so a shipped event stays in the scope.
+version comes from, so a shipped event stays in the scope for a retention window: 90 days after
+it was marked shipped, unless the deployment sets `outboxRetentionDays`.
+
+**Retention is what removes it, later.** Past the window the sweep prunes an event this scope
+emitted, in bounded batches, once nothing in the scope still needs it. An event is kept while:
+
+- a consumer or executor registered for its type has not finished with it. Not delivered yet,
+  still retrying, dead-lettered and refused all count;
+- its type is exported to another vertical, whose readers keep their own cursors elsewhere;
+- nothing newer has been emitted about its entity, apart from a kernel state move such as an
+  archive, because an entity's version is read from that event;
+- it is the newest event of its type, which is how "when did this last happen" is answered;
+- its cause chain reaches an event imported from another vertical, because an export's hop count
+  walks that chain.
+
+A deployment with no lake never marks anything shipped, so it never prunes.
+
+**So the scope holds a recent window, and the lake holds the history.** `readTimeline`,
+`readHistory`, the scope walks and the views built on the outbox cover what the scope still has:
+at least the retention window, and past it only the kept events above, which are not a complete
+record. An entity whose earlier events were pruned reads as found mid-life. Anything older is read
+from the lake. A consumer added later is delivered the events of its type the scope still holds,
+and never the ones already pruned, so a new consumer cannot rebuild unlimited history from the
+scope.
 
 ## Audit as a product feature
 
@@ -425,6 +448,12 @@ const changesOp = async (ctx, input) => {
 - **Keep the last applied `id`, not `nextCursor`.** `nextCursor` is `null` on a short page,
   which means *caught up*. A mirror that stores it restarts from the beginning on its next
   poll.
+- **A walk cannot resume below what [retention](#drain) removed.** The prune records the highest
+  id it has deleted, and resuming from an id below that floor throws `WatermarkPruned` rather
+  than answering with a silent hole. Restart with no cursor, which returns what the scope still
+  holds, and take anything older from the lake. While a restarted walk is below the floor, page
+  with the `nextCursor` it hands you, not the last id: there it is an opaque continuation, and it
+  is refused the same way if a later prune moves the floor.
 - **`entityType`** narrows the walk to one kind of entity. It is the only filter, and it is
   equality only.
 - Every field decodes exactly as `readTimeline` / `readHistory` decode it, so the nullables
