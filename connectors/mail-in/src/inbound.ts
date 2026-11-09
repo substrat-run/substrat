@@ -57,7 +57,8 @@ import type { MailInStore } from './store.js';
  *
  * Parse the MIME, land a `message` change through the vertical's declared operation as the
  * connection, then each attachment's bytes on the entity it answered, each with its own
- * `attachment` change. Progress is written after every step, so a retry resumes where the last
+ * `attachment` change — preceded, when the operation answered `raw: true`, by the original message
+ * itself as `message.eml` and a `raw` change. Progress is written after every step, so a retry resumes where the last
  * attempt stopped instead of landing a file twice. A delivery that fails is retried with backoff by
  * the connector sweep; after {@link MAX_DELIVERY_ATTEMPTS} it is dead-lettered and its raw message
  * kept for an operator.
@@ -79,6 +80,9 @@ const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 export const SWEEP_BATCH = 10;
 /** How long a delivered message's dedupe record is kept. */
 export const DEDUPE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The progress slot the original message lands under, beside each attachment's index. */
+const RAW_SLOT = 'raw';
 
 /** What every refusal says to the sending server. Plain, and no oracle. */
 export const SMTP_REFUSALS = {
@@ -276,30 +280,38 @@ export async function deliverInboundMail(
         receivedAt: entry.receivedAt,
       });
       const answer = mailInMessageAnswer.safeParse(await scope.invoke(binding.operation, change));
-      entry.invoked = { entity: answer.success ? (answer.data.entity ?? null) : null };
+      entry.invoked = { entity: answer.success ? (answer.data.entity ?? null) : null, raw: answer.success && answer.data.raw === true };
       await save();
     }
     const entity = entry.invoked.entity;
     if (entity) {
       let attachments: ScopeAttachments | undefined;
+      // Two steps, each saved: the bytes are stored once, and a failed invoke retries the invoke.
+      const uploadOnce = async (slot: string, filename: string, contentType: string, bytes: Uint8Array): Promise<MailInUploaded> => {
+        const done = uploads[slot];
+        if (done) return done;
+        attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
+        const record = await attachments.upload({ entity, filename, contentType, visibility: 'internal', body: connectorUploadBody(bytes) });
+        const uploaded = { id: record.id, filename: record.filename, contentType: record.contentType, size: record.size, sha256: record.sha256 };
+        uploads[slot] = uploaded;
+        await save();
+        return uploaded;
+      };
+      if (entry.invoked.raw && !entry.landed[RAW_SLOT]) {
+        const uploaded = await uploadOnce(RAW_SLOT, 'message.eml', 'message/rfc822', raw);
+        await scope.invoke(binding.operation, mailInChange.parse({ change: 'raw', connectionId, messageId, attachment: uploaded }));
+        entry.landed[RAW_SLOT] = uploaded.id;
+        await save();
+      }
       for (const [index, file] of files.entries()) {
         if (index >= MAIL_IN_MAX_ATTACHMENTS) break;
         if (entry.landed[String(index)]) continue;
-        // Two steps, each saved: the bytes are stored once, and a failed invoke retries the invoke.
-        let uploaded = uploads[String(index)];
-        if (!uploaded) {
-          attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
-          const record = await attachments.upload({
-            entity,
-            filename: file.filename ?? `attachment-${index + 1}`,
-            contentType: file.mimeType || 'application/octet-stream',
-            visibility: 'internal',
-            body: connectorUploadBody(bytesOf(file.content)),
-          });
-          uploaded = { id: record.id, filename: record.filename, contentType: record.contentType, size: record.size, sha256: record.sha256 };
-          uploads[String(index)] = uploaded;
-          await save();
-        }
+        const uploaded = await uploadOnce(
+          String(index),
+          file.filename ?? `attachment-${index + 1}`,
+          file.mimeType || 'application/octet-stream',
+          bytesOf(file.content),
+        );
         await scope.invoke(binding.operation, mailInChange.parse({ change: 'attachment', connectionId, messageId, index, attachment: uploaded }));
         entry.landed[String(index)] = uploaded.id;
         await save();
@@ -315,7 +327,7 @@ export async function deliverInboundMail(
     await deps.store.delete(entry.objectKey);
     await bumpStats(host, connectionId, (s) => ({ ...s, delivered: s.delivered + 1 }));
     await host.admin.recordConnectionUse(connectionId, { ok: true }).catch(() => undefined);
-    return { status: 'delivered', attachments: Object.keys(entry.landed).length };
+    return { status: 'delivered', attachments: Object.keys(entry.landed).filter((slot) => slot !== RAW_SLOT).length };
   } catch (err) {
     const error = (err instanceof Error ? err.message : String(err)).slice(0, 300);
     entry.attempts += 1;

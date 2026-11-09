@@ -71,9 +71,12 @@ const commonChange = {
  *   is named with its `index`; when the operation answers `{ entity }`, each one's bytes land on
  *   that entity and an `attachment` change follows per file. Answer anything else and no bytes land.
  * - `attachment`: one file's bytes landed as `attachment` on the entity the message change named.
+ * - `raw`: the original message's bytes landed as an attachment on that entity, `message.eml` as
+ *   `message/rfc822` — only when the operation answered `{ entity, raw: true }`, and before any
+ *   `attachment` change. It is the whole message as received, HTML body and all.
  *
- * Delivery is **at least once**, keyed by `messageId` (and `index` within it): an operation upserts,
- * and may see either change twice.
+ * Delivery is **at least once**, keyed by `messageId` (and `index` within it for an attachment): an
+ * operation upserts, and may see any change twice.
  */
 export const mailInChange = z.discriminatedUnion('change', [
   z.object({
@@ -121,14 +124,20 @@ export const mailInChange = z.discriminatedUnion('change', [
     index: z.number().int().nonnegative(),
     attachment: attachmentRecord.pick({ id: true, filename: true, contentType: true, size: true, sha256: true }),
   }),
+  z.object({
+    change: z.literal('raw'),
+    ...commonChange,
+    attachment: attachmentRecord.pick({ id: true, filename: true, contentType: true, size: true, sha256: true }),
+  }),
 ]);
 export type MailInChange = z.infer<typeof mailInChange>;
 
 /**
- * What the operation answers to a `message` change: the entity its attachments land on. Parsed by
- * the platform, not the vertical, so an answer carrying more than `entity` is accepted.
+ * What the operation answers to a `message` change: the entity its attachments land on, and whether
+ * the original message lands there too (`raw: true`, opt-in). Parsed by the platform, not the
+ * vertical, so an answer carrying more than these is accepted.
  */
-export const mailInMessageAnswer = z.object({ entity: entityRef.nullable().optional() }).passthrough();
+export const mailInMessageAnswer = z.object({ entity: entityRef.nullable().optional(), raw: z.boolean().optional() }).passthrough();
 export type MailInMessageAnswer = z.infer<typeof mailInMessageAnswer>;
 
 /** One scope's address, as the relay and the dashboard show it. */

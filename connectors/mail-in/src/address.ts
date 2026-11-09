@@ -149,14 +149,18 @@ export interface MailInMessageEntry {
   attempts: number;
   nextAttemptAt: string;
   lastError?: string;
-  /** Set once the message change landed: the entity the operation answered, if any. */
-  invoked?: { entity: { entityType: string; entityId: string } | null };
   /**
-   * Attachment index → what its bytes were stored as, recorded before the `attachment` change is
-   * invoked, so a retry after a failed invoke tells the scope again rather than storing again.
+   * Set once the message change landed: the entity the operation answered, if any, and whether it
+   * asked for the original message (`raw`; absent on an entry written before it existed ⇒ false).
+   */
+  invoked?: { entity: { entityType: string; entityId: string } | null; raw?: boolean };
+  /**
+   * Attachment index (or `raw`, the original message) → what its bytes were stored as, recorded
+   * before its change is invoked, so a retry after a failed invoke tells the scope again rather
+   * than storing again.
    */
   uploaded?: Record<string, MailInUploaded>;
-  /** Attachment index → the attachment id it landed as: stored, and the scope told. */
+  /** Attachment index (or `raw`) → the attachment id it landed as: stored, and the scope told. */
   landed: Record<string, string>;
   deliveredAt?: string;
 }
