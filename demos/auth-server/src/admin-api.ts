@@ -6,6 +6,7 @@ import type { SessionSubject } from './do-contract.js';
 import { adminMergeAccounts } from './account-merge.js';
 import { ISSUER_THEME, issuerTheme } from './branding.js';
 import { themeProblems } from './theme-wire.js';
+import { ISSUER_LOCALE, LOCALES, issuerLocale } from './locale-wire.js';
 import {
   ACCOUNT_LINKING,
   ALLOW_SIGNUP,
@@ -545,6 +546,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       machineScopesError: machine.error,
       /** The issuer's theme file, as served: a value set elsewhere and refused reads as `{}`. */
       issuerTheme: issuerTheme(cfg[ISSUER_THEME]),
+      defaultLocale: issuerLocale(cfg[ISSUER_LOCALE]),
     };
   };
 
@@ -569,6 +571,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         accountLinking: z.enum(['link', 'block']).optional(),
         machineScopes: z.array(z.string()).optional(),
         issuerTheme: z.unknown().optional(),
+        defaultLocale: z.enum(LOCALES).optional(),
       })
       .refine((v) => Object.values(v).some((field) => field !== undefined), {
         message: 'name at least one setting to change',
@@ -588,6 +591,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     putDeliveredConfig(deps.sql, [
       ...(theme !== undefined ? [{ key: ISSUER_THEME, value: JSON.stringify(theme) }] : []),
+      ...(parsed.data.defaultLocale !== undefined ? [{ key: ISSUER_LOCALE, value: parsed.data.defaultLocale }] : []),
       ...(machine ? [{ key: MACHINE_SCOPES, value: machine.value }] : []),
       ...(parsed.data.allowSignup !== undefined
         ? [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]

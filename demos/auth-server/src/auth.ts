@@ -8,7 +8,11 @@ import { admin } from 'better-auth/plugins/admin';
 import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
-import { resetPasswordEmail, verifyEmail } from './email.js';
+import { i18n } from '@better-auth/i18n';
+import { sv } from '@better-auth/i18n/locales';
+import { resetPasswordEmail, verifyEmail, type EmailBrand, type MailStyle } from './email.js';
+import { LOCALE_COOKIE, requestLocale, type Locale } from './locale-wire.js';
+import { localizedRefusals } from './server-messages.js';
 import { legacyAwarePassword } from './legacy-password.js';
 import { invitationPlugin } from './invitation-plugin.js';
 import { githubEmailPlugin, withGithubEmailFallback } from './github-email-plugin.js';
@@ -75,6 +79,10 @@ export interface AuthDeps {
   transport: EmailTransport;
   /** The sender address for password-reset / verification mail. */
   sender: EmailAddress;
+  /** The issuer's default language: for a request offering none we speak, and for no request. */
+  defaultLocale?: Locale;
+  /** What the issuer's theme contributes to the mail it sends. */
+  emailBrand?: EmailBrand;
   /**
    * How CIMD fetches a client's metadata document — injected, because the guarantee it has
    * to make is runtime-specific and this module is runtime-agnostic.
@@ -620,6 +628,13 @@ async function refuseVerifiedPlaceholder(ctx: {
 }
 
 function betterAuthFor(deps: AuthDeps) {
+  const defaultLocale = deps.defaultLocale ?? 'en';
+  // An invitation is sent by an administrator, about someone else: nothing in that request says
+  // what its reader speaks, so it passes no headers and takes the issuer's language.
+  const mailStyle = (headers?: Headers | null): MailStyle => ({
+    locale: requestLocale(headers, defaultLocale),
+    ...(deps.emailBrand ? { brand: deps.emailBrand } : {}),
+  });
   const machineScopes = deps.machineScopes ?? [];
   return betterAuth({
     database: deps.database,
@@ -637,8 +652,8 @@ function betterAuthFor(deps: AuthDeps) {
       password: legacyAwarePassword,
       // The primary ask: password reset via the email adapter. Better Auth builds the
       // one-time reset URL; we wrap it in the transactional template and send it.
-      sendResetPassword: async ({ user, url }) => {
-        await deps.transport.send(resetPasswordEmail({ to: user.email, from: deps.sender, url }));
+      sendResetPassword: async ({ user, url }, request) => {
+        await deps.transport.send(resetPasswordEmail({ to: user.email, from: deps.sender, url, style: mailStyle(request?.headers) }));
       },
     },
     emailVerification: {
@@ -646,11 +661,19 @@ function betterAuthFor(deps: AuthDeps) {
       // Verification is offered (mail goes out through the same adapter) but not required to
       // sign in — this is a demo, not a compliance gate. Flip `requireEmailVerification` on
       // in emailAndPassword to make it mandatory.
-      sendVerificationEmail: async ({ user, url }) => {
-        await deps.transport.send(verifyEmail({ to: user.email, from: deps.sender, url }));
+      sendVerificationEmail: async ({ user, url }, request) => {
+        await deps.transport.send(verifyEmail({ to: user.email, from: deps.sender, url, style: mailStyle(request?.headers) }));
       },
     },
     plugins: [
+      // Better Auth's own errors, by their codes; our plugins' refusals carry none (`server-messages.ts`).
+      i18n({
+        translations: { sv },
+        defaultLocale,
+        detection: ['cookie', 'header'],
+        localeCookie: LOCALE_COOKIE,
+      }),
+      localizedRefusals(defaultLocale),
       // The issuer identity, pinned to the CLEAN origin. `oauthProvider` derives it from the
       // jwt plugin, falling back to Better Auth's `baseURL` — which includes the base path,
       // so discovery would advertise `{origin}/api/auth` while every relying party was
@@ -798,12 +821,12 @@ function betterAuthFor(deps: AuthDeps) {
         ? [bankidPlugin({
             ...deps.bankid,
             ...(deps.bankid.requireEmail
-              ? { emailStep: { transport: deps.transport, sender: deps.sender, autoLinkAccounts: deps.autoLinkAccounts !== false, merge: deps.bankid.requireEmail.merge } }
+              ? { emailStep: { transport: deps.transport, sender: deps.sender, mailStyle, autoLinkAccounts: deps.autoLinkAccounts !== false, merge: deps.bankid.requireEmail.merge } }
               : {}),
           })]
         : []),
-      invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
-      githubEmailPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
+      invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL, style: mailStyle() }),
+      githubEmailPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL, mailStyle }),
       phonePlugin(deps.phoneVerifier),
       admin(),
     ],

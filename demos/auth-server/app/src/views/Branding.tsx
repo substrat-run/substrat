@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { PageHeader } from '@substrat-run/ui';
-import { issuerSettings, setIssuerSettings } from '../api';
+import { issuerSettings, setIssuerSettings, type IssuerSettings } from '../api';
 import { useThemeForm } from './applications/client-forms';
 
 /**
@@ -10,12 +10,12 @@ import { useThemeForm } from './applications/client-forms';
  * was set here, on the platform's Env tab or as a `wrangler` var.
  */
 export function BrandingView() {
-  const [stored, setStored] = useState<Record<string, unknown> | null>(null);
+  const [settings, setSettings] = useState<IssuerSettings | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     void issuerSettings()
-      .then((s) => setStored(s.issuerTheme))
+      .then(setSettings)
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
   }, []);
 
@@ -23,12 +23,14 @@ export function BrandingView() {
     <>
       <PageHeader title="Branding" description="How sign-in looks for everyone this issuer serves." />
       {err && <p className="error">{err}</p>}
-      {stored ? <BrandingForm stored={stored} /> : !err && <p className="muted">Loading…</p>}
+      {settings ? <BrandingForm settings={settings} /> : !err && <p className="muted">Loading…</p>}
     </>
   );
 }
 
-function BrandingForm({ stored }: { stored: Record<string, unknown> }) {
+function BrandingForm({ settings }: { settings: IssuerSettings }) {
+  const stored = settings.issuerTheme;
+  const [defaultLocale, setDefaultLocale] = useState(settings.defaultLocale);
   const theme = useThemeForm(
     stored,
     'The look of every hosted screen. An application can override any of it on its own Branding tab.',
@@ -42,7 +44,7 @@ function BrandingForm({ stored }: { stored: Record<string, unknown> }) {
     setSaved(false);
     setBusy(true);
     try {
-      await setIssuerSettings({ issuerTheme: theme.build(stored) ?? {} });
+      await setIssuerSettings({ issuerTheme: theme.build(stored) ?? {}, defaultLocale });
       setSaved(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -53,6 +55,17 @@ function BrandingForm({ stored }: { stored: Record<string, unknown> }) {
 
   return (
     <section className="panel editor">
+      <label className="field">
+        <span>Default language</span>
+        <select value={defaultLocale} onChange={(e) => setDefaultLocale(e.target.value as IssuerSettings['defaultLocale'])}>
+          <option value="sv">Svenska</option>
+          <option value="en">English</option>
+        </select>
+        <em className="hint">
+          Used when a browser offers neither language, and for mail with no browser behind it, such as an invitation.
+          Anyone signing in can switch language at the foot of the screen.
+        </em>
+      </label>
       {theme.view}
       {err && <p className="error">{err}</p>}
       {saved && <p className="notice">Saved. It applies the next time a screen is opened.</p>}

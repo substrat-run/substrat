@@ -72,6 +72,7 @@ These class names are stable. Anything else in the markup can change without not
 | `.error` / `.notice` | Error and confirmation text |
 | `.muted` | Secondary text |
 | `.scopes li` | A permission on the consent screen |
+| `.lang-switch` | The language choice at the foot of every card |
 | `.bankid-qr` | The BankID QR code. Keep its white background, or phones cannot scan it. |
 
 The custom properties behind the color keys are `--bg`, `--panel`, `--panel-2`, `--line`,

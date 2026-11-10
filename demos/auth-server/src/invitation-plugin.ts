@@ -3,7 +3,7 @@ import { APIError, createAuthEndpoint, sessionMiddleware } from 'better-auth/api
 import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
-import { invitationEmail } from './email.js';
+import { invitationEmail, type MailStyle } from './email.js';
 
 async function digest(token: string): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
@@ -12,7 +12,7 @@ async function digest(token: string): Promise<string> {
 
 /** Auth account invitations. Membership/role invitations remain the vertical's concern.
  * The emailed single-use capability proves the address before either identity is linked. */
-export const invitationPlugin = (opts: { transport: EmailTransport; sender: EmailAddress; baseURL: string }) => ({
+export const invitationPlugin = (opts: { transport: EmailTransport; sender: EmailAddress; baseURL: string; style?: MailStyle }) => ({
   id: 'account-invitations',
   endpoints: {
     createAccountInvitation: createAuthEndpoint('/invitation/create', {
@@ -33,7 +33,7 @@ export const invitationPlugin = (opts: { transport: EmailTransport; sender: Emai
       // The token is only delivered by email, never returned to the caller or logged here.
       const url = `${new URL(opts.baseURL).origin}/accept-invitation#token=${token}`;
       try {
-        const sent = await opts.transport.send(invitationEmail({ to: email, from: opts.sender, url }));
+        const sent = await opts.transport.send(invitationEmail({ to: email, from: opts.sender, url, style: opts.style }));
         if (sent.bounced.includes(email)) throw new Error('Invitation bounced');
       } catch {
         await adapter.deleteVerificationByIdentifier(key);

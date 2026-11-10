@@ -20,7 +20,8 @@ import { mergeAccounts } from './account-merge.js';
 import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { buildAuth, DEMO_CLIENT, seedDemoClient, type Auth } from './auth.js';
-import { senderFor } from './email.js';
+import { emailBrandOf, senderFor } from './email.js';
+import { ISSUER_LOCALE, issuerLocale } from './locale-wire.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
@@ -28,7 +29,7 @@ import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
-import { ISSUER_THEME, clientBranding } from './branding.js';
+import { ISSUER_THEME, clientBranding, issuerTheme } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
@@ -148,7 +149,9 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     baseURL: ORIGIN,
     trustedOrigins: [ORIGIN, `http://localhost:${WEB_PORT}`],
     transport,
-    sender: senderFor(cfg.EMAIL_FROM),
+    sender: senderFor(cfg.EMAIL_FROM, cfg.EMAIL_FROM_NAME),
+    defaultLocale: issuerLocale(cfg[ISSUER_LOCALE]),
+    emailBrand: emailBrandOf(issuerTheme(cfg[ISSUER_THEME])),
     // Node can honour the transport contract in full — resolve once, reject special-use
     // answers, pin the address, refuse redirects — so the shipped implementation is used
     // rather than the workerd one this vertical also carries.
@@ -281,7 +284,7 @@ app.get('/api/account/places', async (c) => {
 app.get('/api/client-options', (c) => {
   // Absent `client_id` is the console asking about itself — see `clientIdOrConsole`.
   const clientId = clientIdOrConsole(c.req.query('client_id'));
-  return c.json({ ...clientBranding(sql, clientId, config()[ISSUER_THEME]), signIn: clientSignIn(sql, clientId, offeredProviders()) });
+  return c.json({ ...clientBranding(sql, clientId, config()[ISSUER_THEME]), defaultLocale: issuerLocale(config()[ISSUER_LOCALE]), signIn: clientSignIn(sql, clientId, offeredProviders()) });
 });
 
 // The identifier-first screen's second step: which way does THIS address sign in to THIS
