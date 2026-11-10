@@ -66,7 +66,9 @@ function groupItems(items: ChatItem[]): Rendered[] {
 	return out;
 }
 
-function groupSummary(events: BuildEvent[]): { label: string; meta: string } {
+/** A collapsed group still says what went wrong: `failed` counts the red rows
+ * inside it, so a failure is visible without expanding the group. */
+export function groupSummary(events: BuildEvent[]): { label: string; meta: string; failed: number } {
 	const files = new Set(
 		events.filter((e): e is Extract<BuildEvent, { type: 'file-written' }> => e.type === 'file-written')
 			.map((e) => e.path),
@@ -75,7 +77,8 @@ function groupSummary(events: BuildEvent[]): { label: string; meta: string } {
 		? `Edited ${files.size} file${files.size === 1 ? '' : 's'}`
 		: 'Explored the project';
 	const calls = events.filter((e) => e.type !== 'tool-result').length;
-	return { label, meta: `${calls} call${calls === 1 ? '' : 's'}` };
+	const failed = events.filter((e) => groupRow(e).bad).length;
+	return { label, meta: `${calls} call${calls === 1 ? '' : 's'}`, failed };
 }
 
 function groupRow(e: BuildEvent): { text: string; bad: boolean } {
@@ -99,13 +102,16 @@ function groupRow(e: BuildEvent): { text: string; bad: boolean } {
 function ToolGroup(props: { events: BuildEvent[]; live: boolean }) {
 	const [open, setOpen] = useState(false);
 	const expanded = open || props.live;
-	const { label, meta } = groupSummary(props.events);
+	const { label, meta, failed } = groupSummary(props.events);
 	return (
 		<div className="tool-group">
 			<div className="tool-group-head" onClick={() => setOpen((o) => !o)}>
 				<span className="chev">{expanded ? '▾' : '▸'}</span>
 				<span className="label">{props.live ? `${label}…` : label}</span>
-				<span className="meta">{meta}</span>
+				<span className="meta">
+					{failed > 0 && <span className="bad">{failed} failed · </span>}
+					{meta}
+				</span>
 			</div>
 			{expanded && (
 				<div className="tool-group-body">

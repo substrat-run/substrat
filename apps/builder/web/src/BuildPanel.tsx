@@ -52,6 +52,14 @@ export function derivePhases(events: BuildEvent[], live: boolean): PhaseRow[] {
 	return rows;
 }
 
+/** The tools that failed this turn. The panel owns a plan turn's work events,
+ * so a failure the chat suppresses has to show here or nowhere. */
+export function failedTools(events: BuildEvent[]): string[] {
+	return events
+		.filter((e): e is Extract<BuildEvent, { type: 'tool-result' }> => e.type === 'tool-result' && !e.ok)
+		.map((e) => e.tool);
+}
+
 const GLYPH: Record<PhaseRow['state'], string> = {
 	done: '✓',
 	active: '●',
@@ -77,6 +85,7 @@ export function BuildPanel(props: BuildPanelProps) {
 	if (!plan) return null;
 
 	const phases = derivePhases(props.events, props.live);
+	const failed = failedTools(props.events);
 	const queuedIds = new Set(props.queued.map((q) => q.id));
 
 	return (
@@ -116,6 +125,14 @@ export function BuildPanel(props: BuildPanelProps) {
 						</div>
 					))}
 			</div>
+
+			{failed.length > 0 && (
+				<div className="bp-failures">
+					{failed.map((tool, i) => (
+						<div key={i} className="bp-failure">✗ {tool} failed</div>
+					))}
+				</div>
+			)}
 
 			{plan.dependencies.length > 0 && (
 				<div className="bp-deps mono">deps: {plan.dependencies.join(' · ')}</div>
