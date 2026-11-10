@@ -211,6 +211,8 @@ describe('standaloneGates — when each gate applies', () => {
 		expect((await runGate(w, gate('dev-mail'), PROJECT)).status).toBe('passed');
 		await w.writeFile(`${PROJECT}/src/server.ts`, server('getScope(p, t, s, { /* ...outbox.kick(caller) */ });'));
 		expect((await runGate(w, gate('dev-mail'), PROJECT)).status).toBe('failed');
+		await w.writeFile(`${PROJECT}/src/server.ts`, server('log(`${/* outbox.kick(caller) */ \'\'} /* kept */`);'));
+		expect((await runGate(w, gate('dev-mail'), PROJECT)).status).toBe('failed');
 		await w.dispose();
 	});
 
