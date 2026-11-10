@@ -128,6 +128,15 @@ Ask what a person may *do*, with concrete verbs, and the denials fall out:
 > *When you share a list, what can they do?*
 > — see it · see and tick things off · add their own items too · full control
 
+**A power stays with the role the answers give it.** "The admin can hand a deal to
+another rep" makes reassigning the admin's in §4, and no one else's. Do not widen
+it to a role the answers did not name ("and managers, within their team"): that is
+a decision the builder has not made. Ask, or leave it with the role named. The rule
+only keeps a power from spreading; it never takes one away. Every role keeps all the
+brief and the answers give it, and a role that invites people keeps everything the
+roles it invites at can do: the platform lets someone invite only at a role whose
+permissions they hold.
+
 ## Readiness
 
 Propose the concept when the frontier is empty, or when the builder exits early.
