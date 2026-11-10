@@ -118,6 +118,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   private authSecret!: string;
   constructor(ctx: DurableObjectState, env: AuthServerDoEnv) {
     super(ctx, env);
+    // Before anything below can log: the DO may run in an isolate the worker's middleware
+    // never reached, so it records the version from its own env (`src/log.ts`).
+    noteVersion(env);
     ctx.blockConcurrencyWhile(async () => {
       // BEFORE the DDL: `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed,
       // and `oauthProvider` reuses two of the old plugin's table names with new columns.
