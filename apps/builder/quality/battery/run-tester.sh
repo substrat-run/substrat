@@ -9,11 +9,13 @@ PLAYWRIGHT=${PLAYWRIGHT_CORE:-$(node -e 'try { console.log(require("path").dirna
 mkdir -p $OUT $APP/battery/checks
 cp $P/battery.py $APP/battery/_harness.py
 sed "s|{{PLAYWRIGHT_CORE}}|$PLAYWRIGHT|g" $P/tester.md > $OUT/tester.md
-hash() { (cd $APP && find . -path ./battery -prune -o -name node_modules -prune -o -name .git -prune -o -type f -print | sort | grep -vE '\.(db|sqlite3?|db-wal|db-shm|log)$|/data/|/outbox/|/\.data/' | xargs shasum 2>/dev/null) }
-hash > $OUT/before.sha
+# Not `hash`: this runs under `zsh -i`, and a profile cd hook calling the `hash` builtin would call
+# this function instead, which cds and calls the hook again, spawning the script without end.
+app_sums() { (cd $APP && find . -path ./battery -prune -o -name node_modules -prune -o -name .git -prune -o -type f -print | sort | grep -vE '\.(db|sqlite3?|db-wal|db-shm|log)$|/data/|/outbox/|/\.data/' | xargs shasum 2>/dev/null) }
+app_sums > $OUT/before.sha
 ALLOW=$PLAYWRIGHT${TESTER_ALLOW:+:$TESTER_ALLOW}
 PORT=$PORT OIDC_ISSUER=http://localhost:18800 node $P/run-agent.mjs --cwd $APP --prompt $OUT/tester.md --out $OUT --model $M --max-turns 300 --minutes 60 --allow $ALLOW > $OUT/stdout.log 2>&1
-hash > $OUT/after.sha
+app_sums > $OUT/after.sha
 diff $OUT/before.sha $OUT/after.sha > $OUT/tampered.diff && rm $OUT/tampered.diff
 OIDC_ISSUER=http://localhost:18800 python3 $P/battery.py replay $APP $PORT $OUT/battery.json > $OUT/replay.txt 2>&1
 echo "== tested $APP $(date +%T) $(tail -1 $OUT/stdout.log)"
