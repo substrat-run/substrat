@@ -68,10 +68,21 @@ const INSERT_INVITE =
   'INSERT INTO invite (token_hash, scope_id, principal, role_key, email, capability_id) VALUES (?, ?, ?, ?, ?, ?)';
 
 /**
+ * What `createInvite` throws when an open invite here already names the address (K-61 phase 3),
+ * and what the invite routes answer 409 with. Checked by its text, since it crosses an RPC.
+ */
+export const INVITE_ADDRESS_OPEN = 'an invite to this address is already open here — withdraw it before inviting again';
+
+/**
  * Record an invite under its token's hash. `capabilityId` names the `become` capability whose
  * secret the token is (#1686), and is required: a row with none would be redeemable by hash
  * alone, the path being retired (#2175). The type says so; the check is for a caller the type
  * cannot see — an RPC from untyped code, a cast — and throws before anything is written.
+ *
+ * An address has at most one open invite per scope (K-61 phase 3), since an open invite admits
+ * whoever verifies its address: a second would let a person a removal unbound back in by the
+ * older one, and shadow it while its link is dead. A second is refused (`INVITE_ADDRESS_OPEN`)
+ * until the first is accepted or withdrawn. One naming no address is a bearer link and is not held.
  */
 export function createInvite(
   sql: RegistrySql, scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string,
@@ -80,7 +91,14 @@ export function createInvite(
   if (typeof capabilityId !== 'string' || capabilityId === '') {
     throw new Error('an invite names the become capability its link is; a hash-only invite can no longer be written');
   }
+  if (email !== null && openInviteNaming(sql, scopeId, email)) throw new Error(INVITE_ADDRESS_OPEN);
   sql.exec(INSERT_INVITE, tokenHash, scopeId, principal, roleKey, email, capabilityId);
+}
+
+/** Does an open invite here — legacy rows included — name `email`? */
+function openInviteNaming(sql: RegistrySql, scopeId: string, email: string): boolean {
+  return [...sql.exec('SELECT email FROM invite WHERE scope_id = ? AND claimed = 0 AND email IS NOT NULL', scopeId)]
+    .some((r) => addressAdmits(r.email as string, email));
 }
 
 /**

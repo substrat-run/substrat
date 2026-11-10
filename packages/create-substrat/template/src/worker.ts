@@ -14,8 +14,8 @@
  * Sign-in is `workerDoor`'s, from @substrat-run/vertical-host: the issuer the dashboard delivers
  * for this instance, the tenant's identity directory (the `AUTH` store), and the owner seat the
  * first person takes. There is no credential store here and no dev header: a request names no
- * caller, the session does. Member invites are yours to add: who may invite is your own rule, so
- * mount `mountInviteRoutes` from @substrat-run/vertical-auth with your admin gate.
+ * caller, the session does. Member invites go through the door too: name your invite operations
+ * in `workerDoor({ invites })` (below).
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -142,7 +142,21 @@ function hostFor(env: Env): CloudflareScopeHost {
  *
  *   join: (scope, who) => scope.invoke('shop/join', { displayName: who.display }),
  *
- * This shop has neither: its people are added by staff, and its portal shape is a customer's.
+ * A person a member invite names is let in by the address their issuer verified, with no link: the
+ * first time they sign in they are bound to the invited account, with its role, and then joined. A
+ * vertical whose people invite each other names its invite operations here, and the door mounts
+ * `POST /api/member-invites` and `POST /api/member-invites/:principal/withdraw` for its screens:
+ *
+ *   invites: {
+ *     roles: ['mechanic', 'front-desk'],
+ *     send: (scope, i) => scope.invoke('shop/invite-member', { principal: i.principal, email: i.email, roleKey: i.roleKey }),
+ *     cancel: (scope, i) => scope.invoke('shop/cancel-invite', { principal: i.principal }),
+ *   },
+ *
+ * `send` checks who may invite, records the invite for the screens and queues the mail ("sign in
+ * with this address"); it must not grant anything to `i.principal`. server.ts names the same three.
+ *
+ * This shop has none of these: its people are added by staff, and its portal shape is a customer's.
  */
 const door = workerDoor<Env>({
   directory: (env, node) => env.AUTH.get(env.AUTH.idFromName(node.tenantId)),

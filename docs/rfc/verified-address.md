@@ -166,7 +166,9 @@ link. That half of this section runs ahead of phase 2 (§8), and is what a gener
 Once an invite names an address, the link is for that address: it is accepted only from a session
 whose issuer verified it, so a forwarded link opens nothing and its one use stays for the person
 named. An invite naming no address is the bearer link it was, for an issuer that verifies no address.
-A member invite's link now expires 14 days after it is minted.
+A member invite's link now expires 14 days after it is minted, and is exchanged by id only if it
+carries the member-invite label. An address has one open invite per scope, so a removal cannot be
+undone by an older invite still open for the same address.
 
 ## 5. Trusting an address
 

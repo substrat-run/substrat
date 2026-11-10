@@ -41,8 +41,9 @@
  *    the same principal, once it holds a role, is minted for.
  * 11. **The exchange by id** (K-61 phase 3, the door admitting a verified address). It yields the
  *    principal once and is on the spine as the secret's exchange is; the secret is spent with it.
- *    Every other kind of capability — the platform's own `become`, an `act` share — answers null
- *    with its use untaken, and so do a revoked link, a changed principal's, and another scope's.
+ *    Every other kind of capability — the platform's own `become`, an `act` share, a principal's
+ *    `become` minted under another label — answers null with its use untaken, and so do a revoked
+ *    link, a changed principal's, and another scope's.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -85,8 +86,8 @@ export interface BecomeMintVerbs {
   ): Promise<BoundedBecomeMint>;
   revokeBecomeCapability(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
   becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]>;
-  /** K-61 phase 3: the door's exchange of a member invite's link, named by id. */
-  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null>;
+  /** K-61 phase 3: the door's exchange of a member invite's link, named by id and its label. */
+  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, label: string): Promise<CapabilityExchange | null>;
 }
 
 const READ = permissionKey.parse('cap:read');
@@ -377,7 +378,8 @@ export function becomeMintContractSuite(
     });
 
     describe('the exchange by id (K-61 phase 3)', () => {
-      const byId = (id: CapabilityId, scope: ScopeId = s1) => fixture.verbs.exchangeBecomeLinkById(t1, scope, id);
+      const byId = (id: CapabilityId, scope: ScopeId = s1, label = 'member invite') =>
+        fixture.verbs.exchangeBecomeLinkById(t1, scope, id, label);
 
       it('yields the principal once, on the spine as an exchange — and spends the secret with it', async () => {
         const target = await seat();
@@ -414,6 +416,13 @@ export function becomeMintContractSuite(
         await change(cap, target);
         expect(await byId(cap.id)).toBeNull();
         expect((await records()).find((r) => r.id === cap.id)?.uses).toBe(0);
+      });
+
+      it('refuses a principal\'s become minted under another label, its use untaken', async () => {
+        const out = await fixture.verbs.mintBecomeCapabilityBounded(t1, s1, owner, { principal: await seat(), maxUses: 1, label: 'hand-over' });
+        if (!out.ok) throw new Error(`expected a mint, refused: ${JSON.stringify(out)}`);
+        expect(await byId(out.minted.id)).toBeNull();
+        expect(await byId(out.minted.id, s1, 'hand-over')).toEqual(expect.objectContaining({ kind: 'principal' }));
       });
 
       it('another scope of the tenant does not know the id; its own scope still does', async () => {

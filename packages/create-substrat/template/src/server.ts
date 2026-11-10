@@ -9,14 +9,16 @@ import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { devMailOutbox } from '@substrat-run/adapter-sqlite';
-import { devLogin } from '@substrat-run/dev-issuer';
+import Database from 'better-sqlite3';
+import { devLogin, devMemberInvites } from '@substrat-run/dev-issuer';
 import { buildBikeShopHost, linkDevPersonas, seedBikeShop, type BikeShopWorld } from './seed.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 
 // ============================================================================
-// The DEV entrypoint. It owns exactly four things — a SQLite host on disk, the
-// relying-party login, where queued mail goes, and the port — and then mounts `routes.ts`, the same
+// The DEV entrypoint. It owns exactly five things — a SQLite host on disk, the
+// relying-party login, where queued mail goes, where member invites are kept, and the port — and
+// then mounts `routes.ts`, the same
 // route table `worker.ts` mounts. There is no business logic here and no route
 // here either: a route added to this file would exist in dev and 404 in
 // production, which is the one failure this split exists to prevent.
@@ -59,6 +61,18 @@ const staffActor = platformActorId.parse(ulid());
 const outbox = devMailOutbox(host, { dataDir, actor: staffActor });
 await outbox.drain();
 
+// ── MEMBER INVITES ──────────────────────────────────────────────────────────
+// A person a member invite names gets in by the address the issuer verified, as they do hosted:
+// the first time they sign in, `login` finds the invite and links them to the invited account,
+// with its role. The invites are kept in `.data/members.sqlite`. A vertical whose people invite
+// each other mounts the routes below, naming the same operations worker.ts names in `workerDoor`.
+const members = devMemberInvites({
+  db: new Database(join(dataDir, 'members.sqlite')),
+  host,
+  actor: staffActor,
+  provider: DEV_PROVIDER,
+});
+
 /**
  * The relying party — login, callback, logout, plus `sub` → principal through the
  * identity directory. The persona's tenant and scope come out of the link the seed
@@ -79,6 +93,7 @@ const login = devLogin({
   actor: staffActor,
   provider: DEV_PROVIDER,
   issuer: process.env.OIDC_ISSUER ?? `http://localhost:${ISSUER_PORT}`,
+  admit: members.admit,
 });
 
 const app = new Hono();
@@ -106,6 +121,20 @@ async function stub(c: Context): Promise<ScopeStub> {
     ...outbox.kick(caller),
   });
 }
+
+// `POST /api/member-invites` and its withdrawal, for a vertical that invites its people:
+//
+//   members.mount(app, {
+//     login,
+//     scope: stub,
+//     invites: {
+//       roles: ['mechanic', 'front-desk'],
+//       send: (scope, i) => scope.invoke('shop/invite-member', { principal: i.principal, email: i.email, roleKey: i.roleKey }),
+//       cancel: (scope, i) => scope.invoke('shop/cancel-invite', { principal: i.principal }),
+//     },
+//   });
+//
+// This shop invites nobody: its people are added by staff.
 
 // Everything else — including `/api/invoke` and the shared error envelope.
 mountApi(app, stub);

@@ -54,6 +54,12 @@ export interface DevLoginOptions {
    * it protects a localhost cookie, and being logged out on every file save buys nothing.
    */
   sessionSecret?: string;
+  /**
+   * A subject no link names yet, admitted by a member invite naming the address their issuer
+   * verified (K-61 phase 3) — `devMemberInvites(…).admit`. Asked once per request from such a
+   * subject; a subject it admits is linked in the pool, so the next request resolves as anyone does.
+   */
+  admit?: (sub: string, verifiedEmail: string | null) => Promise<{ principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId } | null>;
 }
 
 export interface DevCaller {
@@ -111,20 +117,23 @@ export function devLogin(opts: DevLoginOptions): DevLogin {
     async caller(headers) {
       const subject = await auth.resolve(headers);
       if (!subject) return null;
+      const verifiedEmail = verifiedEmailOf(subject);
       // Which tenant this login exists in. A central pool, so this is a legitimate
       // question; a persona is linked in exactly one, and that link carries their scope.
       const [tenantId] = await opts.directory.listIdentityTenants(opts.actor, opts.provider, subject.sub);
-      if (!tenantId) return null;
-      const identity = await opts.directory.resolveIdentity(tenantId, opts.provider, subject.sub);
-      if (!identity?.scopeId) return null;
+      const identity = tenantId ? await opts.directory.resolveIdentity(tenantId, opts.provider, subject.sub) : undefined;
+      const home = tenantId && identity?.scopeId
+        ? { principal: identity.principal, tenantId, scopeId: identity.scopeId }
+        : tenantId
+          ? null
+          : ((await opts.admit?.(subject.sub, verifiedEmail)) ?? null);
+      if (!home) return null;
       return {
-        principal: identity.principal,
-        tenantId,
-        scopeId: identity.scopeId,
+        ...home,
         sub: subject.sub,
         display: subject.name ?? subject.email ?? subject.sub,
         email: subject.email,
-        verifiedEmail: verifiedEmailOf(subject),
+        verifiedEmail,
       };
     },
   };
