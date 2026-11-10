@@ -123,6 +123,28 @@ policy, so it returns `null`.
 `subject()` returns the issuer's answer *before* any directory lookup, for verticals whose
 tenant is not the directory's to choose — a multi-venue app knows which tenant to ask about.
 
+### Member invites
+
+A person a member invite names gets in locally the way they do hosted: by the address this
+issuer verified, with no link. `devMemberInvites` keeps a dev server's invites in a SQLite file
+of its own, and its `admit` is what `devLogin` asks about a subject no link names yet. It finds
+the open invite naming their address, has the scope exchange that invite's link by id, and links
+them in the pool, so their next request resolves as anyone's does:
+
+```ts
+import Database from 'better-sqlite3';
+import { devLogin, devMemberInvites } from '@substrat-run/dev-issuer';
+
+const members = devMemberInvites({ db: new Database('.data/members.sqlite'), host, actor: staff, provider: 'oidc:dev-issuer' });
+const login = devLogin({ directory: host.admin, actor: staff, provider: 'oidc:dev-issuer', admit: members.admit });
+
+// The routes the worker's door mounts, with the operations it names in workerDoor({ invites }).
+members.mount(app, { login, scope: stub, invites: { roles, send, cancel } });
+```
+
+`mount` adds `POST /api/member-invites` and `POST /api/member-invites/:principal/withdraw`, the
+same routes, written once in `@substrat-run/vertical-auth`'s `mountMemberInvites`.
+
 ::: tip A proxy in front of the API must set `changeOrigin: false`
 A dev server derives its OIDC `redirect_uri` from the request origin, which under a Vite
 proxy is the *browser's* origin — that is what lands the callback back on your app. A proxy

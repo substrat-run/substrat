@@ -59,6 +59,7 @@ export type GateName =
 	| 'hosted-entry'
 	| 'hosted-assets'
 	| 'hosted-join'
+	| 'member-invites'
 	| 'dev-join'
 	| 'dev-mail'
 	| 'migration-replay';
@@ -429,6 +430,35 @@ async function hostedJoinUnnamed(ws: Workspace, projectDir: string): Promise<str
 }
 
 /**
+ * A person invited to join gets in because the door admits the address a member invite names
+ * (K-61 phase 3), and a member invite exists only when the worker and the dev server name the
+ * vertical's invite operations, so the door makes the platform's half before the vertical mails.
+ * A build that records invitations in its own table and mails them passes every other gate, and
+ * the person it invited is answered 401 at sign-in, hosted and locally: the one feature every
+ * builder CRM build failed (13 of 13).
+ */
+async function memberInvitesUnwired(ws: Workspace, projectDir: string): Promise<string | null> {
+	const declared = withoutComments(`${await readTree(ws, `${projectDir}/spec`)}\n${await readTree(ws, `${projectDir}/src`)}`);
+	const op = /['"]([a-z][a-z0-9-]*\/invite-member)['"]\s*:/.exec(declared)?.[1];
+	if (!op) return null;
+	const ns = op.split('/')[0];
+	const wiring = `invites: { roles: [...], send: (scope, i) => scope.invoke('${op}', { principal: i.principal, email: i.email, roleKey: i.roleKey }), cancel: (scope, i) => scope.invoke('${ns}/cancel-invite', { principal: i.principal }) }`;
+	const worker = withoutComments(await ws.readFile(`${projectDir}/src/worker.ts`).catch(() => ''));
+	if (!/\binvites\s*:/.test(worker) || !worker.includes(op)) {
+		return `The model declares ${op}, and src/worker.ts does not name it in workerDoor, so a person you invite is answered 401 when they sign in to the deployed app. Add to the workerDoor options: ${wiring}, as the template's src/worker.ts shows.`;
+	}
+	const dev = withoutComments(await ws.readFile(`${projectDir}/src/server.ts`).catch(() => ''));
+	if (!/\.mount\(/.test(dev) || !/\binvites\s*:/.test(dev) || !dev.includes(op)) {
+		return `The model declares ${op}, and src/server.ts does not mount the member invites with it, so a person you invite cannot sign in locally. Mount them as the template's src/server.ts shows: members.mount(app, { login, scope: stub, ${wiring} }).`;
+	}
+	const app = withoutComments(await readTree(ws, `${projectDir}/app/src`));
+	if (app && !app.includes('member-invites')) {
+		return `The model declares ${op}, and nothing in app/src calls POST /api/member-invites, so an invitation made from the screen never lets anyone in. The invite dialog posts { email, roleKey } to /api/member-invites (the door runs ${op} itself), and a withdrawal posts to /api/member-invites/<principal>/withdraw.`;
+	}
+	return null;
+}
+
+/**
  * The dev server joins a person when they sign in, as the worker's door does hosted. A build that
  * never runs the join there passes every gate, and in the browser every create is refused with
  * "join first": the scenario suite drives the module and never signs in.
@@ -684,6 +714,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/worker.ts`),
 			note: 'no src/worker.ts yet',
 			refuse: (ws) => hostedJoinUnnamed(ws, projectDir),
+		},
+		{
+			name: 'member-invites',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/worker.ts`),
+			note: 'no src/worker.ts yet',
+			refuse: (ws) => memberInvitesUnwired(ws, projectDir),
 		},
 		{
 			name: 'migration-replay',

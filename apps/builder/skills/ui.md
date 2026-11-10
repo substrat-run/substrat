@@ -11,6 +11,9 @@ visible control: a `wa-button`, a checkbox. So is every operation in spec/model.
 data, on the screen where §4 of the concept lets someone do it: rename, edit and delete included.
 One that only another program calls (the host's join, an operation the invite dialog already
 covers) says so in app/src, `// api-only: <operation> — <why>`; the app-writes gate holds both.
+An invite to join at a role posts `{ email, roleKey }` to `/api/member-invites`, and its withdraw
+button posts to `/api/member-invites/<principal>/withdraw`; the door runs `<ns>/invite-member`
+and `<ns>/cancel-invite` itself, so both are api-only.
 A row that opens its record does it as the starter's does, `row-click @sub-row-click=${…}` to
 a screen with `nav: false`, and a row
 click does nothing else: never tick, delete or revoke on a row click. Those, and any action on

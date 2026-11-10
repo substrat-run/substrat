@@ -309,7 +309,7 @@ describe('an invited person (K-61 phase 3)', () => {
     it('invite: the vertical\'s refusal is the answer, no row is ever written, and the link and role go', async () => {
       const { app, calls } = withInvites('send');
       expect((await post(app, '/api/member-invites', { email: 'cleo@acme.example', roleKey: 'rep' })).status).toBe(403);
-      expect(calls).toEqual(['grant', 'mint', 'send', 'revokeLink', 'revokeRole']);
+      expect(calls).toEqual(['grant', 'mint', 'send', 'revokeLink', 'revokeRoles']);
     });
 
     it('invite: a row that cannot be written after the vertical agreed takes the vertical\'s record back too', async () => {
@@ -320,7 +320,7 @@ describe('an invited person (K-61 phase 3)', () => {
       const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
       expect((await post(app, '/api/member-invites', { email: 'cleo@acme.example', roleKey: 'rep' })).status).toBe(500);
       errors.mockRestore();
-      expect(calls).toEqual(['grant', 'mint', 'send', 'cancel', 'revokeLink', 'revokeRole']);
+      expect(calls).toEqual(['grant', 'mint', 'send', 'cancel', 'revokeLink', 'revokeRoles']);
     });
 
     it.each([

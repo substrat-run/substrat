@@ -196,6 +196,33 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.dispose();
 	});
 
+	it('member-invites refuses an invite the worker, the dev server or the screen leaves unwired, then passes', async () => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'crm/invite-member': { input }, 'crm/cancel-invite': { input } })");
+		const send = "send: (scope, i) => scope.invoke('crm/invite-member', i)";
+		await w.writeFile(`${PROJECT}/src/worker.ts`, 'workerDoor({ hostFor }) // invites: crm/invite-member');
+		await w.writeFile(`${PROJECT}/src/server.ts`, 'devLogin({})');
+		await w.writeFile(`${PROJECT}/app/src/invite.ts`, "invoke('crm/invite-member', { email })");
+		const says = async () => {
+			const r = await runGate(w, gate('member-invites'), PROJECT);
+			return r.status === 'passed' ? 'passed' : r.output;
+		};
+
+		expect(await says()).toContain('src/worker.ts does not name it in workerDoor');
+		await w.writeFile(`${PROJECT}/src/worker.ts`, `workerDoor({ hostFor, invites: { roles, ${send} } })`);
+		expect(await says()).toContain('src/server.ts does not mount the member invites');
+		await w.writeFile(`${PROJECT}/src/server.ts`, `members.mount(app, { login, scope: stub, invites: { roles, ${send} } })`);
+		expect(await says()).toContain('nothing in app/src calls POST /api/member-invites');
+		await w.writeFile(`${PROJECT}/app/src/invite.ts`, "post('/api/member-invites', { email, roleKey })");
+		expect(await says()).toBe('passed');
+
+		// A model with no member invite asks nothing of the worker.
+		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'crm/join': { input } })");
+		await w.writeFile(`${PROJECT}/src/worker.ts`, 'workerDoor({ hostFor })');
+		expect(await says()).toBe('passed');
+		await w.dispose();
+	});
+
 	it('app-writes refuses a write no screen offers, and passes once the app, the host or an api-only mark names it', async () => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');

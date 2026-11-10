@@ -21,6 +21,15 @@ own record is host code: the seed locally, and the worker's door when a hosted p
 signs in, after the join the worker names (`workerDoor({ join })`). That is the normal path,
 not a defect in the model.
 
+Someone who is not a member yet cannot sign in to anything: the door answers them 401 until a
+member invite names their verified address. So joining a team at a role goes through the door:
+the worker names the invite operations in `workerDoor({ invites })`, `src/server.ts` mounts the
+same with `members.mount(app, { login, scope: stub, invites })`, and the screen posts
+`{ email, roleKey }` to `/api/member-invites`. The door makes the account and its role, runs
+the vertical's `<ns>/invite-member`, and lets the person in when they sign in; a withdrawal
+posts to `/api/member-invites/<principal>/withdraw`. The template's `src/worker.ts` and
+`src/server.ts` show both.
+
 **Tier 1 — engines you compose** (imported; their in-scope functions run in
 YOUR transaction):
 

@@ -249,7 +249,13 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   address (`openInviteFor`), has the scope exchange that invite's link by id
   (`exchangeBecomeLinkById`, with every judgement the secret's exchange makes), and binds them
   (`admitInvite`, which never re-binds a subject a racing admission bound first). The worker door
-  runs it on every request from such a subject. `GET /api/invites` shows each invite's
+  runs it on every request from such a subject. `mountMemberInvites(app, deps)`, from the same
+  subpath, is the pair of routes a door mounts to make and withdraw such invites
+  (`POST /api/member-invites` and `POST /api/member-invites/:principal/withdraw`): the worker door
+  when it is given `invites`, and a dev server through `@substrat-run/dev-issuer`'s
+  `devMemberInvites`. An invite runs the vertical's `send` as the inviter before it records the row
+  anything admits by, so an invite the vertical refuses never admits anyone; a withdrawal takes the
+  platform's half first, then runs the vertical's `cancel`. `GET /api/invites` shows each invite's
   `link` (`open`, `used`, `expired`, or `revoked` with its reason), so a dead link never
   reads as open. Withdrawing the invite revokes the link first, then removes
   the row. An invite
