@@ -75,7 +75,9 @@ third change follows, before any `attachment` change:
 
 - **`raw`** — the original message is stored, as `attachment`, on the entity you named.
 
-Handle it beside the other two, in the same operation:
+Handle it beside the other two, in the same operation. Name each change you handle, as the
+samples here do: since `raw` joined the union, a handler that reads `change.index` after ruling out
+only `message` no longer compiles, even if it never asks for the original.
 
 ```ts
 if (change.change === 'raw') recordOriginal(ctx, change.messageId, change.attachment);   // keyed by messageId
