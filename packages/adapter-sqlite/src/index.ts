@@ -349,6 +349,8 @@ import {
   type EntityStatePlan,
   type UpdatedStampPlan,
   exchangeCapability as exchangeCapabilitySecret,
+  exchangeBecomeLinkById,
+  type CapabilityExchangeDeps,
   guardSecrets,
   mintBecomeCapability,
   plausibleSessionToken,
@@ -5867,6 +5869,32 @@ export class SqliteScopeHost implements ScopeHost {
     secret: string,
     options?: CapabilityExchangeOptions,
   ): Promise<CapabilityExchange | null> {
+    return this.exchangeIn(tenantId, scopeId, (deps) =>
+      exchangeCapabilitySecret(
+        deps,
+        secret,
+        options?.mode,
+        options?.mode === 'bind' ? principalId.parse(options.presenter) : undefined,
+      ),
+    );
+  }
+
+  /**
+   * A member invite's link exchanged by its id (K-61 phase 3) — for the worker door, which found
+   * the invite by the address the issuer verified and holds no secret. The kernel's
+   * `exchangeBecomeLinkById`: a principal-minted plain `become` only, every other judgement the
+   * secret's exchange makes, in the same scope task and transaction.
+   */
+  async exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null> {
+    return this.exchangeIn(tenantId, scopeId, (deps) => exchangeBecomeLinkById(deps, capabilityId));
+  }
+
+  /** One exchange: one serialized scope task, one transaction, then the consumers its event wakes. */
+  private async exchangeIn(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    exchange: (deps: CapabilityExchangeDeps) => Promise<CapabilityExchange | null>,
+  ): Promise<CapabilityExchange | null> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(async () => {
       // ONE instant for the whole exchange: the row's `last_used_at`, the session's times and
@@ -5875,7 +5903,7 @@ export class SqliteScopeHost implements ScopeHost {
       rt.db.exec('BEGIN IMMEDIATE');
       let outcome: CapabilityExchange | null;
       try {
-        outcome = await exchangeCapabilitySecret(
+        outcome = await exchange(
           {
             sql: spineSql(rt.db),
             now,
@@ -5896,9 +5924,6 @@ export class SqliteScopeHost implements ScopeHost {
             holdings: this.holdingsAt(tenantId, scopeId),
             allowed: (principal, permission, entity) => allowedFor(this.checker, principal, { tenantId, scopeId })(permission, entity),
           },
-          secret,
-          options?.mode,
-          options?.mode === 'bind' ? principalId.parse(options.presenter) : undefined,
         );
         rt.db.exec('COMMIT');
       } catch (err) {

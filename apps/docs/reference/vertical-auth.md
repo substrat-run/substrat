@@ -224,10 +224,11 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   removes it in the app.
   Wire both as vertical-host's hooks of the same names, which seat and revoke between them.
 - `createInvite` / `listInvites` / `getInvite` / `revokeInvite` / `inviteMatches` / `inviteLink` /
-  `claimInviteByCapability` — member invites, the post-setup join path. An invite pre-mints a
+  `claimInviteByCapability` / `openInviteFor` / `admitInvite` — member invites, the post-setup join path. An invite pre-mints a
   member principal, grants it a role at scope level, and mints its link: a `become` capability
-  in the scope's own storage, minted by the member who invites. It works once, has no expiry
-  (an invite never had one), can be revoked, and its mint and its use are on the scope's event
+  in the scope's own storage, minted by the member who invites. It works once, expires 14 days
+  after it is minted (`MEMBER_INVITE_TTL_MS`; `mintMemberInvite`'s `expiresAt: null` keeps one open
+  until withdrawn), can be revoked, and its mint and its use are on the scope's event
   log (`capability.become-minted`, `capability.exercised`). The inviter may mint it only while
   they hold everything the invited principal holds at the scope, entity-narrowed grants
   included, and never for a principal holding nothing there (an invite at a role that confers
@@ -236,7 +237,19 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   invitee's verified `sub` to that principal. The inviter is not re-checked at accept, but the
   link is: if what the invited principal holds (its role keys, direct and narrowed grants) has
   changed since the link was minted, the link is revoked and refused. A role's definition is
-  not part of that, since it is the vertical's code. `GET /api/invites` shows each invite's
+  not part of that, since it is the vertical's code. An invite naming an address is for that
+  address: accepting it is refused, before the scope is asked, for a session whose issuer did not
+  verify that address, so a forwarded link opens nothing and its use stays for the person named.
+  Addresses are compared Unicode-normalised (NFC), with ASCII letters lowercased; other letters
+  are compared as written, since a full lowercase merges characters no normalisation equates.
+  A refused accept says the invite may be for another address, without saying which step
+  refused. An invite naming no address is a
+  bearer link, for an issuer that verifies no address. `admitByAddress` needs no link at all: given
+  a signed-in subject bound to nobody in the scope, it finds the open invite naming their verified
+  address (`openInviteFor`), has the scope exchange that invite's link by id
+  (`exchangeBecomeLinkById`, with every judgement the secret's exchange makes), and binds them
+  (`admitInvite`, which never re-binds a subject a racing admission bound first). The worker door
+  runs it on every request from such a subject. `GET /api/invites` shows each invite's
   `link` (`open`, `used`, `expired`, or `revoked` with its reason), so a dead link never
   reads as open. Withdrawing the invite revokes the link first, then removes
   the row. An invite

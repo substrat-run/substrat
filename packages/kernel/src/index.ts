@@ -334,6 +334,7 @@ export {
   checkBecomeInput,
   createCapabilityVerbs,
   exchangeCapability,
+  exchangeBecomeLinkById,
   guardSecrets,
   mintBecomeCapability,
   mintCapabilitySecret,
@@ -356,6 +357,7 @@ export {
   mintBindLinkAsPrincipal,
 } from './capability.js';
 export type {
+  CapabilityExchangeDeps,
   CapabilityGrantView,
   CapabilityRow,
   CapabilityVerbDeps,

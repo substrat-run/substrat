@@ -158,16 +158,63 @@ export function inviteLink(sql: RegistrySql, scopeId: string, principal: string)
 }
 
 /**
+ * Does a session whose issuer verified `verified` (null: no address, or none it vouched for) answer
+ * an invite naming `invited` (K-61 phase 3)? An invite naming NO address is a bearer link, for
+ * whoever presents it: the path for an issuer that verifies no address. One naming an address is
+ * for a verified holder of that address and nobody else, so a forwarded link and a sign-in whose
+ * address the issuer did not verify are both refused. Compared as docs/rfc/verified-address.md §5
+ * says, with surrounding space ignored and no provider's own rules applied: Unicode-normalised (NFC,
+ * so two spellings of one character match) and lowercased — ASCII letters only, because a full
+ * Unicode lowercase merges characters no normalisation equates (U+03F4, the theta symbol, becomes
+ * U+03B8), and an address an issuer verified must not answer for another one.
+ */
+export function addressAdmits(invited: string | null, verified: string | null): boolean {
+  if (invited === null) return true;
+  return verified !== null && addressKey(invited) === addressKey(verified);
+}
+
+const addressKey = (address: string): string =>
+  address.trim().normalize('NFC').replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
+/**
  * Is `tokenHash` an open capability-era invite here (#1686)? Asked BEFORE the secret is
  * exchanged, so a secret that is no open invite — withdrawn, already accepted, or a `become`
  * capability minted for something else — is refused without spending its use. The exchange is
  * still the authority: this only decides whether to ask it.
+ *
+ * `verifiedEmail` is the presenting session's verified address, and with it an invite naming
+ * another address does not match either (`addressAdmits`), so the wrong person cannot spend the
+ * right person's link. Omitted, the address is not judged: a caller written before K-61 phase 3
+ * (the support desk's own invite flow) keeps the answer it had.
  */
-export function inviteMatches(sql: RegistrySql, scopeId: string, tokenHash: string): boolean {
-  return [...sql.exec(
-    'SELECT 1 FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0 AND capability_id IS NOT NULL',
+export function inviteMatches(sql: RegistrySql, scopeId: string, tokenHash: string, verifiedEmail?: string | null): boolean {
+  const open = [...sql.exec(
+    'SELECT email FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0 AND capability_id IS NOT NULL',
     scopeId, tokenHash,
-  )].length > 0;
+  )][0];
+  if (!open) return false;
+  return verifiedEmail === undefined || addressAdmits((open.email as string | null) ?? null, verifiedEmail);
+}
+
+/**
+ * The open invite here naming `verifiedEmail`, for the door to admit a signed-in person who holds
+ * no binding in the scope yet (K-61 phase 3) — the invite's principal and the `become` capability
+ * the door then exchanges by id. Newest first, when the address was invited twice. Null when none
+ * names it, or the address is null. A legacy hash-only invite is never answered: it has no
+ * capability to exchange, and nothing it names was ever meant to be redeemed without its token.
+ */
+export function openInviteFor(
+  sql: RegistrySql, scopeId: string, verifiedEmail: string | null,
+): { principal: string; capabilityId: string } | null {
+  if (verifiedEmail === null) return null;
+  const rows = [...sql.exec(
+    `SELECT principal, email, capability_id FROM invite
+     WHERE scope_id = ? AND claimed = 0 AND capability_id IS NOT NULL AND email IS NOT NULL
+     ORDER BY created_at DESC, rowid DESC`,
+    scopeId,
+  )];
+  const hit = rows.find((r) => addressAdmits(r.email as string, verifiedEmail));
+  return hit ? { principal: hit.principal as string, capabilityId: hit.capability_id as string } : null;
 }
 
 /**
@@ -186,6 +233,19 @@ export function claimInviteByCapability(
   return inv ? bindInvite(sql, scopeId, sub, principal, inv.token_hash as string) : null;
 }
 
+/**
+ * Admit a subject by an invite whose link the scope has just exchanged by id (K-61 phase 3) — the
+ * door's bind, after `openInviteFor`. As `claimInviteByCapability`, and refused besides when the
+ * subject is already bound in this scope: two first requests racing over two invites to one address
+ * would otherwise each bind, the second replacing the first, and leave a principal with no login.
+ */
+export function admitInvite(
+  sql: RegistrySql, scopeId: string, sub: string, capabilityId: string, principal: string,
+): string | null {
+  if ([...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)].length > 0) return null;
+  return claimInviteByCapability(sql, scopeId, sub, capabilityId, principal);
+}
+
 /** Bind the subject to the invite's principal and consume the invite — the write both claims share. */
 function bindInvite(sql: RegistrySql, scopeId: string, sub: string, principal: string, tokenHash: string): string {
   sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
@@ -198,7 +258,8 @@ function bindInvite(sql: RegistrySql, scopeId: string, sub: string, principal: s
  * token's hash: bind the verified subject to the invite's pre-minted principal and consume the
  * invite, with no await between the read and the writes — so in the Durable Object a withdrawal
  * (`revokeInvite`) and a claim are serialized, and a claim after a withdrawal finds nothing.
- * Returns the principal, or null when no unclaimed legacy invite matches. It writes nothing to
+ * Returns the principal, or null when no unclaimed legacy invite matches, or (given
+ * `verifiedEmail`) when it names an address the session does not hold. It writes nothing to
  * the scope: the role was granted when the invite was minted.
  *
  * A capability-era row is NEVER claimed here, whatever hash is presented: its secret goes
@@ -208,12 +269,17 @@ function bindInvite(sql: RegistrySql, scopeId: string, sub: string, principal: s
  * the cut-off — the first vertical-auth release published on or after 2027-01-09 stops admitting
  * here (#2497). No new row can join it (`createInvite` refuses one, #2496).
  */
-export function claimInvite(sql: RegistrySql, scopeId: string, sub: string, tokenHash: string): string | null {
+export function claimInvite(
+  sql: RegistrySql, scopeId: string, sub: string, tokenHash: string, verifiedEmail?: string | null,
+): string | null {
   const inv = [...sql.exec(
-    'SELECT principal FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0 AND capability_id IS NULL',
+    'SELECT principal, email FROM invite WHERE scope_id = ? AND token_hash = ? AND claimed = 0 AND capability_id IS NULL',
     scopeId, tokenHash,
   )][0];
-  return inv ? bindInvite(sql, scopeId, sub, inv.principal as string, tokenHash) : null;
+  if (!inv) return null;
+  // The address rule `inviteMatches` applies, applied here too: a legacy row names an address as often.
+  if (verifiedEmail !== undefined && !addressAdmits((inv.email as string | null) ?? null, verifiedEmail)) return null;
+  return bindInvite(sql, scopeId, sub, inv.principal as string, tokenHash);
 }
 
 /**

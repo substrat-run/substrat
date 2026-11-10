@@ -35,6 +35,7 @@ import {
   type ManualClock,
   type ScopeHost,
 } from '@substrat-run/kernel';
+import type { BecomeMintVerbs } from './become-mint-suite.js';
 import { capMod } from './modules.js';
 
 const CAP_READ = permissionKey.parse('cap:read');
@@ -49,6 +50,8 @@ const folder = (id: string): EntityRef => ({ entityType: 'folder', entityId: id 
 export interface CapabilityExpiryFixture {
   host: ScopeHost;
   clock: ManualClock;
+  /** The host's own verbs a member invite's link is minted and exchanged by id with (K-61 phase 3). */
+  verbs: Pick<BecomeMintVerbs, 'mintBecomeCapabilityBounded' | 'exchangeBecomeLinkById'>;
   cleanup: () => Promise<void>;
 }
 
@@ -199,6 +202,17 @@ export function capabilityExpiryContractSuite(
       await exchange();
       expect(await count()).toBe(exchangesToDrain + 1);
     }, 15_000);
+
+    it('a member invite\'s link is not exchanged by id after its expiry (K-61 phase 3), its use untaken', async () => {
+      const invited = principalId.parse(ulid());
+      await host.admin.assignRole(staff, { principalId: invited, roleKey: 'owner', node: { tenantId: t1, scopeId: s1 } });
+      const out = await fixture.verbs.mintBecomeCapabilityBounded(t1, s1, alice, { principal: invited, maxUses: 1, expiresAt: at(10 * MINUTE) });
+      if (!out.ok) throw new Error(`expected a mint, refused: ${JSON.stringify(out)}`);
+      clock.advance(11 * MINUTE);
+      expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, out.minted.id)).toBeNull();
+      const record = (await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true })).entries.find((r) => r.id === out.minted.id);
+      expect(record?.uses).toBe(0);
+    });
 
     it('a platform `become` exchanges until its expiry, and not after', async () => {
       const early = await host.admin.mintCapability(staff, t1, s1, {

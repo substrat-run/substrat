@@ -295,7 +295,10 @@ export function mountInvites(
         revokeCapability: (link) => desk.revokeLink(caller, link),
         rollback: (principal) => desk.revokeRole(principal, roleKey),
       },
-      { roleKey, email: email ?? null, origin: opts.appOrigin(c) },
+      // No expiry: the desk's staff and customer links stay open until withdrawn, as they always
+      // have. A member invite expires by default since K-61 phase 3; whether the desk's should is
+      // the desk's own decision, not one to make for it in passing.
+      { roleKey, email: email ?? null, origin: opts.appOrigin(c), expiresAt: null },
     );
     if (!minted.ok) throw uncovered(minted.coverage.missing, customer ? `contact:${contactId}` : roleKey, 'invite at');
     return c.json({ ...minted.invite, created_at: now() }, 201);

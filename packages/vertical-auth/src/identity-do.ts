@@ -42,6 +42,8 @@ import {
   claimInvite as claimInviteRow,
   claimInviteByCapability as claimInviteByCapabilityRow,
   inviteMatches as inviteMatchesRow,
+  openInviteFor as openInviteForRow,
+  admitInvite as admitInviteRow,
   countLegacyInvites as countLegacyInvitesRow,
   inviteLink as inviteLinkRow,
   migrateInvites,
@@ -331,8 +333,8 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * token hash. The role was granted at scope level when the invite was created, so the
    * bound principal resolves its permissions immediately.
    */
-  async claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
-    return claimInviteRow(this.registrySql, scopeId, sub, tokenHash);
+  async claimInvite(scopeId: string, sub: string, tokenHash: string, verifiedEmail?: string | null): Promise<string | null> {
+    return claimInviteRow(this.registrySql, scopeId, sub, tokenHash, verifiedEmail);
   }
 
   /** The `become` capability an open invite's link is (#1686), or null — what a withdrawal revokes first. */
@@ -340,9 +342,22 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return inviteLinkRow(this.registrySql, scopeId, principal);
   }
 
-  /** Is this hash an open capability-era invite (#1686)? Asked before the scope spends its use. */
-  async inviteMatches(scopeId: string, tokenHash: string): Promise<boolean> {
-    return inviteMatchesRow(this.registrySql, scopeId, tokenHash);
+  /**
+   * Is this hash an open capability-era invite (#1686)? Asked before the scope spends its use.
+   * Given the session's verified address, one naming another address does not match (K-61).
+   */
+  async inviteMatches(scopeId: string, tokenHash: string, verifiedEmail?: string | null): Promise<boolean> {
+    return inviteMatchesRow(this.registrySql, scopeId, tokenHash, verifiedEmail);
+  }
+
+  /** The open invite naming this verified address, for the door to admit by (K-61 phase 3), or null. */
+  async openInviteFor(scopeId: string, verifiedEmail: string | null): Promise<{ principal: string; capabilityId: string } | null> {
+    return openInviteForRow(this.registrySql, scopeId, verifiedEmail);
+  }
+
+  /** Bind a subject bound to nobody here by an invite exchanged by id (K-61 phase 3) — `admitInvite`. */
+  async admitInvite(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null> {
+    return admitInviteRow(this.registrySql, scopeId, sub, capabilityId, principal);
   }
 
   /** Accept an invite with an exchanged `become` capability (#1686) — `claimInviteByCapability`. */
@@ -409,8 +424,10 @@ export type IdentityStub = {
   legacyInviteCount(scopeId: string): Promise<number>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;
   revokeInvite(scopeId: string, principal: string): Promise<string | null>;
-  claimInvite(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
-  inviteMatches(scopeId: string, tokenHash: string): Promise<boolean>;
+  claimInvite(scopeId: string, sub: string, tokenHash: string, verifiedEmail?: string | null): Promise<string | null>;
+  inviteMatches(scopeId: string, tokenHash: string, verifiedEmail?: string | null): Promise<boolean>;
+  openInviteFor(scopeId: string, verifiedEmail: string | null): Promise<{ principal: string; capabilityId: string } | null>;
+  admitInvite(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   inviteLink(scopeId: string, principal: string): Promise<string | null>;
   claimInviteByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   unbind(scopeId: string, sub: string): Promise<boolean>;

@@ -38,6 +38,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { BIND_INVITE, BIND_MEMBER, BIND_READ_OWN, BIND_SHAPE, bindMod } from './bind-module.js';
+import type { BecomeMintVerbs } from './become-mint-suite.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeQuery } from './subject-erasure-suite.js';
 
@@ -46,6 +47,8 @@ export interface BindLinkVerbs {
   mintBindLinkBounded(tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBindLinkInput): Promise<BoundedBindLinkMint>;
   mintBecomeCapabilityBounded(tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput): Promise<BoundedBecomeMint>;
   unbindEntityHolderBounded(tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, entity: EntityRef): Promise<BoundedUnbind>;
+  /** K-61 phase 3: a bind link is never exchanged by id — only its member, presenting it. */
+  exchangeBecomeLinkById: BecomeMintVerbs['exchangeBecomeLinkById'];
 }
 
 type Row = Record<string, unknown>;
@@ -144,6 +147,7 @@ export function bindLinkContractSuite(
       });
 
       const link = await minted(clerk, joined, rec(id));
+      expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, link.id)).toBeNull();
       expect(await capOf(link.id)).toMatchObject({ mode: 'bind', principal: joined, action: { kind: 'bind', entity: rec(id) }, maxUses: 1, uses: 0 });
       expect((await outbox(CAPABILITY_BIND_MINTED)).filter((e) => e.payload.capabilityId === link.id)).toEqual([
         {

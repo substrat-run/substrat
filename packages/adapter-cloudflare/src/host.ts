@@ -1644,6 +1644,8 @@ interface ScopeStubRpc {
     mode?: 'act' | 'become' | 'bind',
     presenter?: PrincipalId,
   ): Promise<CapabilityExchange | null>;
+  /** A member invite's link exchanged by its id (K-61 phase 3) — the kernel's `exchangeBecomeLinkById`. */
+  exchangeBecomeLinkById(capabilityId: CapabilityId, tenantId: TenantId, scopeId: ScopeId): Promise<CapabilityExchange | null>;
   /** The platform's `become` mint (#1672), serialized in this scope's own storage. */
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
   mintBecomeCapabilityAndAuditIntent(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
@@ -6551,6 +6553,19 @@ export class CloudflareScopeHost implements ScopeHost {
       options?.mode,
       options?.mode === 'bind' ? principalId.parse(options.presenter) : undefined,
     );
+    return capabilityExchange.nullable().parse(outcome);
+  }
+
+  /**
+   * A member invite's link exchanged by its id (K-61 phase 3) — for the worker door, which found
+   * the invite by the address the issuer verified and holds no secret. The same fail-closed
+   * (tenant, scope) and lifecycle gate as the secret's exchange, then the kernel's
+   * `exchangeBecomeLinkById` inside the ScopeDO: a principal-minted plain `become` only.
+   */
+  async exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null> {
+    await this.assertLive(tenantId, scopeId, 'exchangeBecomeLinkById');
+    await this.migrateAndRecord(scopeId);
+    const outcome = await this.scopeStub(scopeId).exchangeBecomeLinkById(capabilityId, tenantId, scopeId);
     return capabilityExchange.nullable().parse(outcome);
   }
 

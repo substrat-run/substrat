@@ -109,9 +109,15 @@ delivers for the install (`substrat:auth`, read through
 holds no credential store and no dev header. `door.platform` fills the provision, configure and
 delete hooks of `mountPlatformSurface`, including seating the first owner.
 
-One thing stays yours: **member invites**. Who may invite is the vertical's own rule, so the
-template does not mount them; add `mountInviteRoutes` from `@substrat-run/vertical-auth` behind
-your own admin gate.
+**Member invites** go through the door too. A person a member invite names is admitted by the
+address their issuer verified, with no link: the first time they sign in, the door finds the open
+invite naming that address, binds them to its principal, and they arrive with its role. Name your
+`invites` and the door mounts `POST /api/member-invites` (`{ email, roleKey }`) and
+`POST /api/member-invites/:principal/withdraw`. It sets up the platform's half first, bounded by
+the inviter's own role, then runs your operation as the inviter: who may invite is your rule, and
+the mail it queues says "sign in with this address". If your operation refuses, the invite is
+withdrawn. To hand out links instead, add `mountInviteRoutes` from `@substrat-run/vertical-auth`
+behind your own admin gate; a link naming an address opens only for a verified holder of it.
 
 The worker's **first** registration is the invocation log, and it must stay first:
 
