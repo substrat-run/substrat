@@ -210,7 +210,16 @@ async function readTree(ws: Workspace, dir: string): Promise<string> {
 	return parts.join('\n');
 }
 
-const withoutComments = (source: string): string => source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/.*$/gm, '$1');
+/**
+ * The source with its comments removed and its string and template literals kept. A literal is
+ * matched first, so the `/*` of a route glob (`'/api/auth/*'`) opens no comment: read as one, it
+ * hid every line up to the next `*\/`, and the gates refused code they could not see.
+ */
+const withoutComments = (source: string): string =>
+	source.replace(
+		/('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\[\s\S]|[^`\\])*`)|\/\*[\s\S]*?\*\/|(^|[^:])\/\/.*$/gm,
+		(_, literal: string | undefined, before: string | undefined) => literal ?? before ?? '',
+	);
 
 /** The API port a file falls back to. `ISSUER_PORT` and `WEB_PORT` are other ports. */
 const apiPortIn = (source: string): string | undefined => /(?<![A-Z_])PORT\s*\?\?\s*['"]?(\d+)/.exec(source)?.[1];

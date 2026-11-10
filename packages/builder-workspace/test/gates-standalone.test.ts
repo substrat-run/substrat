@@ -196,6 +196,24 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.dispose();
 	});
 
+	it('reads code after a glob in a string, and still not code in a comment', async () => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/src/module.ts`, 'requestEmail(ctx, message);');
+		const server = (kick: string) =>
+			[
+				"app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));",
+				'const outbox = devMailOutbox(host, { dataDir, actor });',
+				kick,
+				'/** Who is signed in. */',
+			].join('\n');
+
+		await w.writeFile(`${PROJECT}/src/server.ts`, server('getScope(p, t, s, { ...outbox.kick(caller) });'));
+		expect((await runGate(w, gate('dev-mail'), PROJECT)).status).toBe('passed');
+		await w.writeFile(`${PROJECT}/src/server.ts`, server('getScope(p, t, s, { /* ...outbox.kick(caller) */ });'));
+		expect((await runGate(w, gate('dev-mail'), PROJECT)).status).toBe('failed');
+		await w.dispose();
+	});
+
 	it('member-invites refuses an invite the worker, the dev server or the screen leaves unwired, then passes', async () => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'crm/invite-member': { input }, 'crm/cancel-invite': { input } })");
