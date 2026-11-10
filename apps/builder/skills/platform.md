@@ -28,7 +28,9 @@ same with `members.mount(app, { login, scope: stub, invites })`, and the screen 
 `{ email, roleKey }` to `/api/member-invites`. The door makes the account and its role, runs
 the vertical's `<ns>/invite-member`, and lets the person in when they sign in; a withdrawal
 posts to `/api/member-invites/<principal>/withdraw`. The template's `src/worker.ts` and
-`src/server.ts` show both.
+`src/server.ts` show both. Locally, a person signs in through the dev issuer, which offers only
+the people in `src/personas.ts`; so the cast holds one person the seed does not link, who gets in
+the way anyone does hosted: by being invited.
 
 **Tier 1 — engines you compose** (imported; their in-scope functions run in
 YOUR transaction):

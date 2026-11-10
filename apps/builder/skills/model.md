@@ -284,7 +284,11 @@ that breaks them:
   already cancelled as a success, since a retried withdrawal runs it again) and a list of open
   invites. The door runs the first two itself, so a screen never calls them. Never grant
   anything to `principal` in the invite: the account's role is what it holds, and a grant
-  made there voids the invite.
+  made there voids the invite. Whoever invites at a role must already hold every permission
+  that role carries, or the platform refuses the invite ("you cannot invite at 'rep': you do
+  not hold deal:create"). So the role that invites holds what each role it invites at holds:
+  an admin who invites reps holds the reps' keys too, even when the screens never offer them
+  the action.
 
 Finding people by email makes the joined address a credential: a member who joins
 with someone else's address receives that person's shares. So a join never takes the
