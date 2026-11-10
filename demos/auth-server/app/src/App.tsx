@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import {
   clientOptions,
   currentSession,
@@ -22,6 +22,8 @@ import { GitHubEmail } from './auth/GitHubEmail';
 import { recoverInvitation, saveInvitation, type InvitationRecovery } from './auth/invitation-recovery';
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
+import { drawsForRelyingParty } from './auth/hand-off';
+import { applyClientTheme, paintHandOff } from './theme-apply';
 
 // The console is its own chunk. Everyone a relying party sends to /login downloads this
 // bundle, and none of them will ever see the operator's screens — so the shell, the views
@@ -58,40 +60,6 @@ type Phase =
   | { t: 'dashboard'; session: Session };
 
 /**
- * The wire vocabulary (`src/branding.ts`) mapped onto the custom properties `tokens.css`
- * declares — the ENTIRE contract between a client's `metadata.theme` and these screens.
- * Values arrive sanitized (hex colors, a px radius), so setting them is safe; `setProperty`
- * takes them as one CSS value, never as parseable stylesheet text.
- */
-const THEME_VARS: [keyof ClientTheme, string][] = [
-  ['colorPrimary', '--accent'],
-  ['colorPrimaryForeground', '--accent-contrast'],
-  ['colorBackground', '--bg'],
-  ['colorPanel', '--panel'],
-  ['colorInput', '--panel-2'],
-  ['colorText', '--text'],
-  ['colorMutedText', '--muted'],
-  ['borderRadius', '--radius'],
-];
-
-/**
- * Apply (or, with `{}`, fully remove) a client theme. Removal matters: `refresh()` runs
- * again after sign-in, and the dashboard must come back in the issuer's own colors rather
- * than whichever relying party's flow ran last.
- */
-function applyClientTheme(theme: ClientTheme): void {
-  const root = document.documentElement.style;
-  for (const [key, cssVar] of THEME_VARS) {
-    const value = theme[key];
-    if (value) root.setProperty(cssVar, value);
-    else root.removeProperty(cssVar);
-  }
-  // The card's larger radius follows the input radius instead of being its own key.
-  if (theme.borderRadius) root.setProperty('--radius-lg', `${parseInt(theme.borderRadius, 10) + 6}px`);
-  else root.removeProperty('--radius-lg');
-}
-
-/**
  * This app is TWO surfaces behind one origin: the admin console, and the issuer's own
  * user-facing OIDC pages. `src/auth.ts` configures `loginPage: '/login'` and
  * `consentPage: '/consent'`, and Better Auth redirects people there mid-authorize — so those
@@ -114,16 +82,31 @@ export default function App() {
   const refresh = useCallback(async () => {
     // A password-reset link lands the user here with a token — handle that first.
     const url = new URL(window.location.href);
-    if (url.pathname === '/github-email') return setPhase({ t: 'github-email' });
+    // These three have no relying party behind them, so they take the theme the console's own
+    // sign-in does, which is where the issuer's lands (`clientBranding`). The read has its own
+    // fallback, so a link someone was emailed still opens if it fails.
+    const paintWithoutClient = async () => {
+      const { theme: issuer } = await clientOptions(null, []);
+      applyClientTheme(issuer);
+      setTheme(issuer);
+    };
+    if (url.pathname === '/github-email') {
+      await paintWithoutClient();
+      return setPhase({ t: 'github-email' });
+    }
     const invitation = recoverInvitation(url);
     if (invitation) {
       // Clear the capability from the address bar only after tab-scoped storage succeeds.
       if (saveInvitation(invitation)) window.history.replaceState({}, '', '/accept-invitation');
+      await paintWithoutClient();
       return setPhase({ t: 'invitation', recovery: invitation });
     }
     if (url.pathname === '/reset-password') {
       const token = url.searchParams.get('token');
-      if (token) return setPhase({ t: 'reset', token });
+      if (token) {
+        await paintWithoutClient();
+        return setPhase({ t: 'reset', token });
+      }
     }
     const { needsSetup, signupEnabled, providers } = await setupState();
     // A social sign-in that was refused comes back to `/` carrying its reason. Read it before
@@ -210,10 +193,15 @@ export default function App() {
   // A hand-off screen is the relying party's to theme, so the console's page colour (set before
   // the first paint by index.html, kept by `useConsoleTheme`) comes off as soon as one renders.
   useEffect(() => {
-    if (phase.t !== 'loading' && phase.t !== 'dashboard' && phase.t !== 'not-admin') {
-      document.documentElement.removeAttribute('data-console-theme');
-    }
+    if (drawsForRelyingParty(phase.t)) document.documentElement.removeAttribute('data-console-theme');
   }, [phase.t]);
+
+  // A theme's palette and raw CSS exist only on those screens. The console is never theirs to
+  // restyle: an operator who pasted something broken has to be able to get in and undo it.
+  // Before the paint, so a themed screen does not flash the built-in one.
+  useLayoutEffect(() => {
+    paintHandOff(drawsForRelyingParty(phase.t) ? theme : null);
+  }, [phase.t, theme]);
 
   /**
    * Sign-in finished without an OIDC request to resume — hand the URL to the console.
@@ -244,8 +232,8 @@ export default function App() {
   }, [run]);
 
   switch (phase.t) {
-    case 'github-email': return <GitHubEmail />;
-    case 'invitation': return <Invitation recovery={phase.recovery} />;
+    case 'github-email': return <GitHubEmail theme={theme} />;
+    case 'invitation': return <Invitation recovery={phase.recovery} theme={theme} />;
     case 'loading':
       return <Centered>Loading…</Centered>;
     case 'failed':
@@ -267,7 +255,7 @@ export default function App() {
         </Centered>
       );
     case 'reset':
-      return <ResetPassword token={phase.token} onDone={() => { window.history.replaceState({}, '', '/'); run(); }} />;
+      return <ResetPassword token={phase.token} theme={theme} onDone={() => { window.history.replaceState({}, '', '/'); run(); }} />;
     case 'setup':
       return <Setup onDone={doneSigningIn} />;
     case 'signin':

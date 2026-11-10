@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import {
   authClient,
+  type ClientTheme,
 } from '../api';
 import { Centered, Card, Field } from '../primitives';
 
-export function ResetPassword({ token, onDone }: { token: string; onDone: () => void }) {
+export function ResetPassword({ token, theme, onDone }: { token: string; theme: ClientTheme; onDone: () => void }) {
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   return (
     <Centered>
-      <Card title="Set a new password">
+      <Card title="Set a new password" logo={theme.logoUrl}>
         {done ? (
           <>
             <p className="notice">Your password has been reset. You can sign in now.</p>

@@ -18,7 +18,7 @@ import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.
 import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
-import { clientBranding } from './branding.js';
+import { ISSUER_THEME, clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
@@ -702,7 +702,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // the dev server's cannot come to disagree.
       const clientId = clientIdOrConsole(url.searchParams.get('client_id'));
       return Response.json({
-        ...clientBranding(this.ctx.storage.sql, clientId),
+        ...clientBranding(this.ctx.storage.sql, clientId, this.effectiveCfg()[ISSUER_THEME]),
         signIn: clientSignIn(this.ctx.storage.sql, clientId, this.offeredProviders()),
       });
     }

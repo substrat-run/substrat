@@ -12,6 +12,7 @@ import { LogEntryView } from '../views/LogEntry';
 import { LogsView } from '../views/Logs';
 import { OverviewView } from '../views/Overview';
 import { SecurityView } from '../views/Security';
+import { BrandingView } from '../views/Branding';
 import { SettingsView } from '../views/Settings';
 import { UserDetailView } from '../views/UserDetail';
 import { UsersView } from '../views/Users';
@@ -28,6 +29,7 @@ import {
   OVERVIEW_PATH,
   ROUTES,
   SECURITY_PATH,
+  BRANDING_PATH,
   SETTINGS_PATH,
   USERS_PATH,
   applicationDetail,
@@ -194,6 +196,8 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
           <ConnectionsView issuer={disc?.issuer ?? null} />
         ) : active.path === SECURITY_PATH ? (
           <SecurityView />
+        ) : active.path === BRANDING_PATH ? (
+          <BrandingView />
         ) : active.path === USERS_PATH ? (
           <UsersView me={session.sub} />
         ) : active.path === LOGS_PATH ? (

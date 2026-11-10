@@ -13,7 +13,7 @@ import { LogTable } from './Logs';
 import { RawJson } from './RawJson';
 import { CopyId } from './applications/CopyId';
 import { SecretOnce } from './applications/SecretOnce';
-import { useCoreForm, useSignInForm, useThemeForm, withKey } from './applications/client-forms';
+import { themeOf, useCoreForm, useSignInForm, useThemeForm, withKey } from './applications/client-forms';
 
 const TAB_LABELS: Record<ApplicationTab, string> = {
   settings: 'Settings',
@@ -392,14 +392,19 @@ function ConnectionsTab({ client, onSaved, onDirty }: TabProps) {
 /** Branding: the per-client theme (`metadata.theme`). Writes only `metadata`, every other key as stored. */
 function BrandingTab({ client, onSaved, onDirty }: TabProps) {
   const [err, setErr] = useState<string | null>(null);
-  const theme = useThemeForm(client);
+  const theme = useThemeForm(
+    themeOf(client),
+    client.builtin
+      ? 'How this console’s own sign-in screen looks.'
+      : 'How the sign-in, sign-up and consent screens look when this application sends someone here. A key left out comes from the issuer’s Branding.',
+  );
   return (
     <FormTab
       err={err}
       setErr={setErr}
       onDirty={onDirty}
       onSave={async () => {
-        await updateOAuthClient(client.client_id, { metadata: withKey(client.metadata, 'theme', theme.build(client)) });
+        await updateOAuthClient(client.client_id, { metadata: withKey(client.metadata, 'theme', theme.build(themeOf(client))) });
         await onSaved();
         return true;
       }}

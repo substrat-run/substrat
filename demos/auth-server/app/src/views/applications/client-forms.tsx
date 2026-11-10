@@ -11,9 +11,12 @@ import {
   type RegisteredClient,
 } from '../../api';
 import { Field } from '../../primitives';
+import { themeProblems } from '../../../../src/theme-wire.js';
 import { SignInPolicyEditor } from '../SignInPolicyEditor';
 import { MachineScopesEditor } from '../MachineScopesEditor';
 import { draftFromStored, draftProblems, draftToStored, resolveAny, type PolicyDraft } from '../sign-in-draft';
+
+const THEMING_GUIDE = 'https://github.com/substrat-run/substrat/blob/main/demos/auth-server/THEMING.md';
 
 /**
  * An application's form, in the three halves the detail screen's tabs save separately —
@@ -240,9 +243,7 @@ export function useCoreForm(client: RegisteredClient | null, onError: (message: 
         <textarea rows={4} value={meta} onChange={(e) => setMeta(e.target.value)} placeholder={'{\n  "plan": "internal"\n}'} />
         <em className="hint">
           Stored as-is on the client. The <code>theme</code> and <code>signIn</code> keys are owned by the
-          Branding and Connections {client ? 'tabs' : 'sections'} (further theme keys: <code>colorInput</code>,{' '}
-          <code>colorText</code>, <code>colorMutedText</code>, <code>borderRadius</code> — settable via the API);
-          everything else the issuer never reads.
+          Branding and Connections {client ? 'tabs' : 'sections'}; everything else the issuer never reads.
         </em>
       </label>
     </>
@@ -377,51 +378,112 @@ export function useSignInForm(client: RegisteredClient | null) {
 /* ---- Branding: the per-client theme ---- */
 
 /**
- * The stored theme (`metadata.theme` — the vocabulary src/branding.ts sanitizes). The common
- * keys get a field each; theme keys without one (colorInput, colorText, …) are carried through
- * a save untouched, read from the row as it is when the save happens.
+ * A theme, in the two ways of editing one: a field per common key, or the whole file as JSON
+ * (`THEMING.md`) for one that was written or generated elsewhere. Raw CSS has no field, so the
+ * form carries it, and any other key without one, through a save untouched.
  */
-const THEME_FIELDS = ['title', 'logoUrl', 'colorPrimary', 'colorPrimaryForeground', 'colorBackground', 'colorPanel'] as const;
+const THEME_FIELDS = [
+  'title', 'logoUrl', 'colorPrimary', 'colorPrimaryForeground', 'colorBackground', 'colorPanel',
+  'colorInput', 'colorText', 'colorMutedText', 'colorBorder', 'colorDanger', 'borderRadius',
+] as const;
 type ThemeField = (typeof THEME_FIELDS)[number];
+type StoredTheme = Record<string, unknown>;
 
-const themeOf = (client: RegisteredClient | null): Record<string, unknown> =>
-  (client?.metadata?.theme ?? {}) as Record<string, unknown>;
+export const themeOf = (client: RegisteredClient | null): StoredTheme =>
+  (client?.metadata?.theme ?? {}) as StoredTheme;
 
-export function useThemeForm(client: RegisteredClient | null) {
-  const builtin = Boolean(client?.builtin);
-  const [values, setValues] = useState<Record<ThemeField, string>>(() => {
-    const stored = themeOf(client);
-    return Object.fromEntries(
-      THEME_FIELDS.map((key) => [key, typeof stored[key] === 'string' ? (stored[key] as string) : '']),
-    ) as Record<ThemeField, string>;
-  });
+const isField = (key: string) => (THEME_FIELDS as readonly string[]).includes(key);
+const withoutFields = (theme: StoredTheme): StoredTheme =>
+  Object.fromEntries(Object.entries(theme).filter(([key]) => !isField(key)));
+const fieldsOf = (theme: StoredTheme) =>
+  Object.fromEntries(
+    THEME_FIELDS.map((key) => [key, typeof theme[key] === 'string' ? (theme[key] as string) : '']),
+  ) as Record<ThemeField, string>;
+
+/** The parsed theme file, or what stops it being one. */
+function readThemeFile(text: string): { theme: StoredTheme; problems: string[] } {
+  if (!text.trim()) return { theme: {}, problems: [] };
+  try {
+    const theme = JSON.parse(text) as StoredTheme;
+    return { theme, problems: themeProblems(theme) };
+  } catch (e) {
+    return { theme: {}, problems: [`not JSON: ${e instanceof Error ? e.message : String(e)}`] };
+  }
+}
+
+export function useThemeForm(stored: StoredTheme, intro: string) {
+  const [values, setValues] = useState(() => fieldsOf(stored));
+  const [rawText, setRawText] = useState<string | null>(null);
+  // Set once the raw editor has been used; until then the keys without a field are read from
+  // the row as it is when the save happens.
+  const [carried, setCarried] = useState<StoredTheme | null>(null);
   const field = (key: ThemeField) => ({ value: values[key], onChange: (v: string) => setValues((cur) => ({ ...cur, [key]: v })) });
 
-  /** The `theme` value to store, or `undefined` for "no key" (the issuer's default look). */
-  const build = (stored: RegisteredClient | null): unknown => {
-    // Reassemble the theme: the untouched extra keys, then the fields (empty = remove).
-    const theme: Record<string, unknown> = Object.fromEntries(
-      Object.entries(themeOf(stored)).filter(([key]) => !(THEME_FIELDS as readonly string[]).includes(key)),
-    );
+  const fromForm = (current: StoredTheme): StoredTheme => {
+    const theme = { ...(carried ?? withoutFields(current)) };
     for (const key of THEME_FIELDS) if (values[key].trim()) theme[key] = values[key].trim();
+    return theme;
+  };
+  const problems = rawText === null ? [] : readThemeFile(rawText).problems;
+
+  /** The theme to store, or `undefined` for none. Throws what is wrong with a raw file. */
+  const build = (current: StoredTheme): StoredTheme | undefined => {
+    if (rawText !== null && problems.length) throw new Error(problems.join('; '));
+    const theme = rawText === null ? fromForm(current) : readThemeFile(rawText).theme;
     return Object.keys(theme).length ? theme : undefined;
+  };
+
+  const toggleRaw = () => {
+    if (rawText === null) return setRawText(JSON.stringify(fromForm(stored), null, 2));
+    if (problems.length) return;
+    const { theme } = readThemeFile(rawText);
+    setValues(fieldsOf(theme));
+    setCarried(withoutFields(theme));
+    setRawText(null);
   };
 
   const view: ReactNode = (
     <>
-      <h3>Appearance</h3>
-      <p className="muted small">
-        {builtin
-          ? 'How this console’s own sign-in screen looks. '
-          : 'How the sign-in, sign-up and consent screens look when this application sends someone here. '}
-        Colors are hex (<code>#0a6847</code>); blank means the issuer&apos;s default.
-      </p>
-      <Field label="Sign-in title" {...field('title')} hint="Replaces “Substrat Auth” as the sign-in heading." />
-      <Field label="Logo URL" {...field('logoUrl')} hint="https:// or data:image/ — shown above the heading." />
-      <Field label="Primary color" {...field('colorPrimary')} hint="Buttons and links." />
-      <Field label="Primary text color" {...field('colorPrimaryForeground')} hint="Text on the primary color — keep the contrast readable." />
-      <Field label="Background color" {...field('colorBackground')} />
-      <Field label="Card color" {...field('colorPanel')} />
+      <div className="panel-head">
+        <h3>Appearance</h3>
+        <button type="button" className="btn tiny" onClick={toggleRaw} disabled={problems.length > 0}>
+          {rawText === null ? 'Edit raw' : 'Edit fields'}
+        </button>
+      </div>
+      <p className="muted small">{intro}</p>
+      {rawText !== null ? (
+        <label className="field">
+          <span>Theme file (JSON)</span>
+          <textarea rows={20} spellCheck={false} value={rawText} onChange={(e) => setRawText(e.target.value)} />
+          <em className="hint">
+            The same keys as the fields, plus <code>colorScheme</code> and <code>css</code> for raw CSS. CSS may not load
+            anything from the network, so inline images and fonts as <code>data:</code>.{' '}
+            <a href={THEMING_GUIDE} target="_blank" rel="noreferrer">The theme file guide</a> lists every key and
+            selector, and is written to be handed to Claude.
+          </em>
+          {problems.length > 0 && (
+            <ul className="error">
+              {problems.map((p) => <li key={p}>{p}</li>)}
+            </ul>
+          )}
+        </label>
+      ) : (
+        <>
+          <p className="muted small">Colors are hex (<code>#0a6847</code>); blank means the default.</p>
+          <Field label="Sign-in title" {...field('title')} hint="Replaces “Substrat Auth” as the sign-in heading." />
+          <Field label="Logo URL" {...field('logoUrl')} hint="https:// or data:image/ — shown above the heading." />
+          <Field label="Primary color" {...field('colorPrimary')} hint="Buttons and links." />
+          <Field label="Primary text color" {...field('colorPrimaryForeground')} hint="Text on the primary color — keep the contrast readable." />
+          <Field label="Background color" {...field('colorBackground')} />
+          <Field label="Card color" {...field('colorPanel')} />
+          <Field label="Input color" {...field('colorInput')} />
+          <Field label="Text color" {...field('colorText')} />
+          <Field label="Secondary text color" {...field('colorMutedText')} />
+          <Field label="Border color" {...field('colorBorder')} />
+          <Field label="Error color" {...field('colorDanger')} />
+          <Field label="Corner radius" {...field('borderRadius')} hint="0px to 32px." />
+        </>
+      )}
     </>
   );
   return { view, build };

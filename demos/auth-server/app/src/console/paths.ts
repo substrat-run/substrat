@@ -18,6 +18,7 @@ export const APPLICATIONS_PATH = '/applications';
 export const APIS_PATH = '/apis';
 export const CONNECTIONS_PATH = '/connections';
 export const SECURITY_PATH = '/security';
+export const BRANDING_PATH = '/branding';
 export const USERS_PATH = '/users';
 export const LOGS_PATH = '/logs';
 export const SETTINGS_PATH = '/settings';

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { acceptAccountInvitation, invitationPassword, setupState } from '../api';
+import { acceptAccountInvitation, invitationPassword, setupState, type ClientTheme } from '../api';
 import { Card, Centered, Field } from '../primitives';
 import { BankIdSignIn } from './SignIn';
 import { PhoneFactor } from './PhoneFactor';
 import { saveInvitation, type InvitationRecovery } from './invitation-recovery';
 
-export function Invitation({ recovery }: { recovery: InvitationRecovery }) {
+export function Invitation({ recovery, theme }: { recovery: InvitationRecovery; theme: ClientTheme }) {
   const [phase, setPhase] = useState<'accept' | 'choose' | 'bankid' | 'phone' | 'done' | 'failed'>(recovery.phase);
   const [email, setEmail] = useState('email' in recovery ? recovery.email : '');
   const [password, setPassword] = useState('');
@@ -24,9 +24,9 @@ export function Invitation({ recovery }: { recovery: InvitationRecovery }) {
     setBusy(true); setErr(null);
     try { await fn(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
-  if (phase === 'bankid') return <BankIdSignIn link oauthQuery={null} theme={{}} onDone={complete} onBack={() => setPhase('choose')} />;
-  if (phase === 'phone') return <PhoneFactor oauthQuery={null} onDone={complete} onBack={() => { window.location.assign('/login'); }} />;
-  return <Centered><Card title="Set up your account">
+  if (phase === 'bankid') return <BankIdSignIn link oauthQuery={null} theme={theme} onDone={complete} onBack={() => setPhase('choose')} />;
+  if (phase === 'phone') return <PhoneFactor oauthQuery={null} theme={theme} onDone={complete} onBack={() => { window.location.assign('/login'); }} />;
+  return <Centered><Card title="Set up your account" logo={theme.logoUrl}>
     {phase === 'accept' && <>
       <p>Confirm your email invitation to choose BankID or a password with SMS verification.</p>
       <button className="btn primary" disabled={busy} onClick={() => void act(async () => {

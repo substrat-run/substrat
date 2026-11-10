@@ -4,6 +4,8 @@ import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { adminMergeAccounts } from './account-merge.js';
+import { ISSUER_THEME, issuerTheme } from './branding.js';
+import { themeProblems } from './theme-wire.js';
 import {
   ACCOUNT_LINKING,
   ALLOW_SIGNUP,
@@ -541,6 +543,8 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
        */
       machineScopes: machine.scopes,
       machineScopesError: machine.error,
+      /** The issuer's theme file, as served: a value set elsewhere and refused reads as `{}`. */
+      issuerTheme: issuerTheme(cfg[ISSUER_THEME]),
     };
   };
 
@@ -564,6 +568,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         allowSignup: z.boolean().optional(),
         accountLinking: z.enum(['link', 'block']).optional(),
         machineScopes: z.array(z.string()).optional(),
+        issuerTheme: z.unknown().optional(),
       })
       .refine((v) => Object.values(v).some((field) => field !== undefined), {
         message: 'name at least one setting to change',
@@ -576,7 +581,13 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     const machine = parsed.data.machineScopes && machineScopesValue(parsed.data.machineScopes);
     if (machine && 'error' in machine) throw new HTTPException(400, { message: machine.error });
+    // Judged whole, where a read drops one bad key: here someone is waiting to hear about it.
+    const theme = parsed.data.issuerTheme;
+    if (theme !== undefined && themeProblems(theme).length) {
+      throw new HTTPException(400, { message: themeProblems(theme).join('; ') });
+    }
     putDeliveredConfig(deps.sql, [
+      ...(theme !== undefined ? [{ key: ISSUER_THEME, value: JSON.stringify(theme) }] : []),
       ...(machine ? [{ key: MACHINE_SCOPES, value: machine.value }] : []),
       ...(parsed.data.allowSignup !== undefined
         ? [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]

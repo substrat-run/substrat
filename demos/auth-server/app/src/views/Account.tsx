@@ -173,7 +173,7 @@ export function SignInMethods() {
   const onlyOne = (methods?.length ?? 0) < 2;
 
   if (linkBankid) return <BankIdSignIn link oauthQuery={null} theme={{}} onDone={() => { setLinkBankid(false); void reload(); }} onBack={() => setLinkBankid(false)} />;
-  if (verifyPhone) return <PhoneFactor oauthQuery={null} onDone={() => setVerifyPhone(false)} onBack={() => setVerifyPhone(false)} />;
+  if (verifyPhone) return <PhoneFactor oauthQuery={null} theme={{}} onDone={() => setVerifyPhone(false)} onBack={() => setVerifyPhone(false)} />;
   return (
     <>
       {err && <p className="error">{err}</p>}
