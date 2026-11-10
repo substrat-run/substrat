@@ -62,6 +62,7 @@ import type {
   PreviewClientRetire,
   RetiredPreviewClients,
 } from '@substrat-run/contracts';
+import { log, noteVersion } from './log.js';
 
 /**
  * One issuer, as one Durable Object. STANDALONE (own worker, own hostname): a single
@@ -78,6 +79,8 @@ import type {
  */
 
 export interface AuthServerDoEnv {
+  /** The id of the version being served, injected by the platform (`src/log.ts`). */
+  SUBSTRAT_VERSION_ID?: string;
   /** The Cloudflare Email Service `send_email` binding (password-reset / verification mail).
    *  Present only in a STANDALONE deploy; a hosted dispatch instance has no such binding and
    *  sends through the platform relay below instead. */
@@ -115,21 +118,24 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   private authSecret!: string;
   constructor(ctx: DurableObjectState, env: AuthServerDoEnv) {
     super(ctx, env);
+    // Before anything below can log: the DO may run in an isolate the worker's middleware
+    // never reached, so it records the version from its own env (`src/log.ts`).
+    noteVersion(env);
     ctx.blockConcurrencyWhile(async () => {
       // BEFORE the DDL: `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed,
       // and `oauthProvider` reuses two of the old plugin's table names with new columns.
       const upgrade = upgradeLegacySchema(ctx.storage.sql);
       if (upgrade.renamed.length || upgrade.added.length || upgrade.dropped.length) {
-        console.log('auth-server: schema upgraded', JSON.stringify(upgrade));
+        log.info('schema upgraded', { upgrade });
       }
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
       const rewritten = rewritePlaceholderAddresses(ctx.storage.sql, Date.now());
-      if (rewritten) console.log(`auth-server: rewrote ${rewritten} BankID placeholder addresses`);
+      if (rewritten) log.info('rewrote BankID placeholder addresses', { rewritten });
       // The issuer's own console, as a row in its own registry (`console-client.ts`).
       // Seeded here rather than at provisioning time because a STANDALONE deploy is never
       // provisioned, and both shapes need it — waking the DO is the one thing every install
       // does. Idempotent, and it never overwrites what an operator has put on the row.
-      if (ensureConsoleClient(ctx.storage.sql)) console.log('auth-server: seeded the admin console client');
+      if (ensureConsoleClient(ctx.storage.sql)) log.info('seeded the admin console client');
       const row = [...ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'auth_secret'")][0] as
         | { value: string }
         | undefined;
@@ -160,7 +166,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     const count = ([...this.ctx.storage.sql.exec('SELECT count(*) AS n FROM user')][0] as { n: number }).n;
     if (count > 0) return;
     if (password.length < 8) {
-      console.warn('auth-server: ADMIN_PASSWORD is shorter than 8 characters — skipping env admin seed');
+      log.warn('ADMIN_PASSWORD is shorter than 8 characters — skipping env admin seed');
       return;
     }
     try {
@@ -171,7 +177,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       const created = await auth.api.signUpEmail({ body: { email, password, name: 'Administrator' } });
       this.ctx.storage.sql.exec("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?", created.user.id);
     } catch (e) {
-      console.error('auth-server: env admin seed failed', e);
+      log.error('env admin seed failed', { error: e });
     }
   }
 
@@ -238,7 +244,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // else — so without this line a new user's verification email is awaited inside the
       // callback and the browser's redirect waits on the platform mail relay.
       runInBackground: (promise) => {
-        this.ctx.waitUntil(promise.catch((e: unknown) => console.error('auth-server: background task failed', e)));
+        this.ctx.waitUntil(promise.catch((e: unknown) => log.error('background task failed', { error: e })));
       },
     });
   }
@@ -495,27 +501,27 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       return { results, placeResults, delegationResults, socialRelayResults, redirectResults };
     });
     for (const sync of synced.redirectResults) {
-      if (sync.added.length || sync.removed.length) console.log('auth-server: client redirects synced', JSON.stringify(sync));
+      if (sync.added.length || sync.removed.length) log.info('client redirects synced', { sync });
     }
     // Logged only once committed, so a line never describes writes that rolled back.
     for (const sync of synced.results) {
       if (sync.added.length || sync.removed.length || sync.operatorOwned.length) {
-        console.log('auth-server: platform resources synced', JSON.stringify(sync));
+        log.info('platform resources synced', { sync });
       }
     }
     for (const sync of synced.placeResults) {
       if (sync.registered.length || sync.updated.length || sync.cleared.length) {
-        console.log('auth-server: place registrations synced', JSON.stringify(sync));
+        log.info('place registrations synced', { sync });
       }
     }
     for (const sync of synced.delegationResults) {
       if (sync.granted.length || sync.updated.length || sync.revoked.length) {
-        console.log('auth-server: delegation grants synced', JSON.stringify(sync));
+        log.info('delegation grants synced', { sync });
       }
     }
     for (const sync of synced.socialRelayResults) {
       if (sync.secretNeeded || sync.created.length || sync.switchedOff.length || sync.operatorOwned.length) {
-        console.log('auth-server: social relay providers synced', JSON.stringify(sync));
+        log.info('social relay providers synced', { sync });
       }
     }
     await this.seedEnvAdmin();
@@ -599,7 +605,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           }
         },
         sign: async (payload) => (await auth.api.signJWT({ body: { payload } })).token,
-        log: (line) => console.log(line),
+        log: (line) => log.info(line),
       },
       form,
       request.headers.get('authorization'),
@@ -690,7 +696,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         origin: url.origin,
         body: await request.json().catch(() => null),
         transaction: (fn) => this.ctx.storage.transactionSync(fn),
-        log: (line) => console.log(line),
+        log: (line) => log.info(line),
       });
     }
     // RFC 8693 token exchange (#1824, `token-exchange.ts`). The worker sends a token-endpoint

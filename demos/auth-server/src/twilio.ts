@@ -1,3 +1,5 @@
+import { log } from './log.js';
+
 /** Twilio Verify transport shared by Node and workerd; no Node SDK is needed. */
 export interface PhoneVerifier {
   send(phone: string): Promise<void>;
@@ -12,7 +14,7 @@ export function twilioFrom(
   const token = cfg.TWILIO_AUTH_TOKEN?.trim();
   const service = cfg.TWILIO_VERIFY_SERVICE_SID?.trim();
   if (!account || !token || !service) {
-    if (account || token || service) console.warn('SMS verification disabled: incomplete Twilio configuration; configure all three settings');
+    if (account || token || service) log.warn('SMS verification disabled: incomplete Twilio configuration; configure all three settings');
     return undefined;
   }
   if (!/^AC[0-9a-f]{32}$/i.test(account) || !/^VA[0-9a-f]{32}$/i.test(service)) {
@@ -52,7 +54,7 @@ export function optionalTwilioFrom(cfg: Record<string, string | undefined>): Pho
   try {
     return twilioFrom(cfg);
   } catch {
-    console.error('SMS verification disabled: invalid Twilio account or Verify service SID');
+    log.error('SMS verification disabled: invalid Twilio account or Verify service SID');
     return undefined;
   }
 }

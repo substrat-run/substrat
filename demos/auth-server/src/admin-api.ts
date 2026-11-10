@@ -59,6 +59,7 @@ import {
 import { SIGN_IN_LOG_RETENTION, countSignInsByWindow, readSignInLog, signInLogCutAt, readSignInLogEntry, signInLogQuery, signInWindowQuery } from './sign-in-log.js';
 import { importBody, importUsers, wallClock } from './user-import.js';
 import { platformOwnerOf } from './resources.js';
+import { servedVersion } from './log.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -551,6 +552,9 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   };
 
   app.get('/settings', (c) => c.json(settingsView()));
+
+  /** The version this issuer is serving (`src/log.ts`): the id every log line carries. */
+  app.get('/version', (c) => c.json({ versionId: servedVersion() }));
 
   /**
    * A real PATCH: every field is optional and only what arrives is written, so a panel that

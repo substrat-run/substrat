@@ -48,6 +48,7 @@ import {
 } from '@substrat-run/vertical-host';
 import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
 import { serveAsset } from './assets.js';
+import { noteVersion } from './log.js';
 
 /**
  * The worker env, structurally: `AUTH` is the real `DurableObjectNamespace<AuthServerDO>`
@@ -63,6 +64,8 @@ export interface Env {
   ROUTER_SECRET?: string;
   /** Shared secret the platform presents to provision here (K-31). Unset ⇒ refused. */
   PLATFORM_SECRET?: string;
+  /** The id of the version being served, injected by the platform (`src/log.ts`). */
+  SUBSTRAT_VERSION_ID?: string;
 }
 
 /** The STANDALONE issuer's fixed DO name — one deployment, one issuer (the original shape). */
@@ -136,6 +139,12 @@ app.use(
     routerSecret: (env) => env.ROUTER_SECRET,
   }),
 );
+
+// Second: every line this isolate writes names the version that wrote it (`src/log.ts`).
+app.use('*', async (c, next) => {
+  noteVersion(c.env);
+  await next();
+});
 
 /**
  * Pre-auth state: is the issuer awaiting its first administrator, and is self-service

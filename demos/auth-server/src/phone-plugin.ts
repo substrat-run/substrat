@@ -3,6 +3,7 @@ import { APIError, createAuthEndpoint, sessionMiddleware } from 'better-auth/api
 import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { PhoneVerifier } from './twilio.js';
+import { log } from './log.js';
 
 const phoneNumber = z.string().regex(/^\+[1-9]\d{7,14}$/, 'Use an international phone number, such as +46701234567');
 const FRESH_MS = 10 * 60_000;
@@ -92,7 +93,7 @@ export const phonePlugin = (verifier: PhoneVerifier | undefined) => ({
       }
       const updatedUser = enrolled ? user : await adapter.updateUser(user.id, { phoneNumber: phone }).catch(async (error: unknown) => {
         await adapter.deleteVerificationByIdentifier(`phone-enrollment:${user.id}`).catch(() => {
-          console.error('Could not release failed phone-enrollment reservation');
+          log.error('Could not release failed phone-enrollment reservation');
         });
         throw error;
       });
