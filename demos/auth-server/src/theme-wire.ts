@@ -40,6 +40,8 @@ export interface ClientTheme {
   css?: string;
   /** Replacement wording, per language and per key of `messages.ts`. */
   text?: ThemeText;
+  /** The languages the screens may use, the first being the default. Absent: every one. */
+  languages?: Locale[];
 }
 
 export type ThemeText = Partial<Record<Locale, TextOverrides>>;
@@ -203,6 +205,10 @@ const THEME_CHECKS: Record<keyof ClientTheme, (v: unknown) => string | null> = {
     return cssProblems(v).join('; ') || null;
   },
   text: (v) => readText(v).problems.join('; ') || null,
+  languages: (v) =>
+    Array.isArray(v) && v.length > 0 && new Set(v).size === v.length && v.every((l) => (LOCALES as readonly unknown[]).includes(l))
+      ? null
+      : `must be a list of distinct languages from ${LOCALES.map((l) => `"${l}"`).join(', ')}`,
 };
 
 /**

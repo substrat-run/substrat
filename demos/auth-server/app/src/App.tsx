@@ -94,8 +94,8 @@ export default function App() {
     // These three have no relying party behind them, so they take the theme the console's own
     // sign-in does, which is where the issuer's lands (`clientBranding`). The read has its own
     // fallback, so a link someone was emailed still opens if it fails.
-    const settleLocale = (issuerDefault: Locale) => {
-      const settled = detectLocale(issuerDefault);
+    const settleLocale = (issuerDefault: Locale, allowed?: readonly Locale[]) => {
+      const settled = detectLocale(issuerDefault, allowed);
       storeLocale(settled, false);
       setLocale(settled);
     };
@@ -103,7 +103,7 @@ export default function App() {
       const { theme: issuer, defaultLocale } = await clientOptions(null, []);
       applyClientTheme(issuer);
       setTheme(issuer);
-      settleLocale(defaultLocale);
+      settleLocale(defaultLocale, issuer.languages);
     };
     if (url.pathname === '/github-email') {
       await paintWithoutClient();
@@ -151,7 +151,7 @@ export default function App() {
      * so its policy was never enforced against anything; a relying party's is, and this
      * escape hatch cannot touch that one.
      */
-    const plainDefaults = { theme: {}, defaultLocale: 'en' as const, signIn: { providers, password: true, restricted: false } };
+    const plainDefaults = { theme: {} as ClientTheme, defaultLocale: 'en' as const, signIn: { providers, password: true, restricted: false } };
     // The relying party mid-authorize; `null` is the console asking about itself.
     const clientId = forOidc ? url.searchParams.get('client_id') : null;
     // Two ways to end up on the plain screen: the operator asked for it, or an authorize
@@ -160,7 +160,7 @@ export default function App() {
     const options = plain ? plainDefaults : await clientOptions(clientId, providers);
     applyClientTheme(options.theme);
     setTheme(options.theme);
-    settleLocale(options.defaultLocale);
+    settleLocale(options.defaultLocale, options.theme.languages);
     const signIn = options.signIn;
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
@@ -317,5 +317,5 @@ export default function App() {
       );
   } };
 
-  return <LocaleContext.Provider value={{ locale, choose, overrides: theme.text?.[locale] }}>{screen()}</LocaleContext.Provider>;
+  return <LocaleContext.Provider value={{ locale, choose, overrides: theme.text?.[locale], languages: theme.languages }}>{screen()}</LocaleContext.Provider>;
 }

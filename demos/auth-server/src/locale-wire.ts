@@ -27,24 +27,33 @@ export function issuerLocale(value: string | undefined): Locale {
  * The language to use: what the application asked for (OIDC `ui_locales`, an ordered,
  * space-separated list), then what was chosen or settled on in this browser, then the browser's
  * own languages in order, then the issuer's default.
+ *
+ * `allowed` is the application's own list (a theme's `languages`). A language outside it is
+ * skipped wherever it came from, and the list's first entry replaces the issuer's default.
  */
 export function resolveLocale(input: {
   uiLocales?: string | null;
   cookie?: string | null;
   browser?: readonly string[];
   issuerDefault: Locale;
+  allowed?: readonly Locale[];
 }): Locale {
-  for (const tag of input.uiLocales?.split(/\s+/) ?? []) {
+  const allowed = input.allowed?.length ? input.allowed : null;
+  const usable = (tag: string | null | undefined) => {
     const locale = supportedLocale(tag);
+    return locale && (!allowed || allowed.includes(locale)) ? locale : null;
+  };
+  for (const tag of input.uiLocales?.split(/\s+/) ?? []) {
+    const locale = usable(tag);
     if (locale) return locale;
   }
-  const chosen = supportedLocale(input.cookie);
+  const chosen = usable(input.cookie);
   if (chosen) return chosen;
   for (const tag of input.browser ?? []) {
-    const locale = supportedLocale(tag);
+    const locale = usable(tag);
     if (locale) return locale;
   }
-  return input.issuerDefault;
+  return allowed ? allowed[0]! : input.issuerDefault;
 }
 
 /** The value of one cookie in a `Cookie` header or `document.cookie`. */

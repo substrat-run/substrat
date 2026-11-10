@@ -31,6 +31,14 @@ describe('resolveLocale', () => {
     expect(resolveLocale({ ...input, issuerDefault: 'sv' })).toBe(expected);
   });
 
+  it.each([
+    [{ uiLocales: 'en', cookie: 'en', browser: ['en-US'] }, 'sv'],
+    [{ cookie: 'en', browser: ['en', 'sv-SE'] }, 'sv'],
+    [{ uiLocales: 'en sv' }, 'sv'],
+  ])('%j reads as %s for an application allowing only Swedish, under an English issuer', (input, expected) => {
+    expect(resolveLocale({ ...input, issuerDefault: 'en', allowed: ['sv'] })).toBe(expected);
+  });
+
   it('takes the issuer default from config, English unless it says otherwise', () => {
     expect([issuerLocale('sv'), issuerLocale('en'), issuerLocale('de'), issuerLocale(undefined)]).toEqual(['sv', 'en', 'en', 'en']);
   });
@@ -143,6 +151,14 @@ describe('a theme file\'s text', () => {
       'text has no language "de"; use sv or en; .sv has no key "nope"; .sv.common.continueWith uses {provder}, which nothing fills; .sv.common.back must be 1 to 500 characters',
     ]);
     expect(sanitizeTheme(file)).toEqual({ text: { sv: { 'common.signIn': 'Kom in' } } });
+  });
+
+  it('allows a list of distinct languages and nothing else', () => {
+    expect(sanitizeTheme({ languages: ['sv'] })).toEqual({ languages: ['sv'] });
+    for (const languages of [[], ['sv', 'sv'], ['de'], 'sv']) {
+      expect(themeProblems({ languages })).toEqual(['languages must be a list of distinct languages from "sv", "en"']);
+      expect(sanitizeTheme({ languages })).toEqual({});
+    }
   });
 
   it('cannot reach an object\'s prototype through a key', () => {

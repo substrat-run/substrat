@@ -477,7 +477,8 @@ export function useThemeForm(stored: StoredTheme, intro: string) {
           <em className="hint">
             The same keys as the fields, plus <code>colorScheme</code>, <code>css</code> for raw CSS and{' '}
             <code>text</code> for the wording in each language (<strong>Show all text</strong> lists it; anything left
-            as it was is not saved). CSS may not load anything from the network, so inline images and fonts as{' '}
+            as it was is not saved), and <code>languages</code> to limit the languages offered, the first being the
+            default (<code>["sv"]</code> is Swedish only). CSS may not load anything from the network, so inline images and fonts as{' '}
             <code>data:</code>.{' '}
             <a href={THEMING_GUIDE} target="_blank" rel="noreferrer">The theme file guide</a> lists every key and
             selector, and is written to be handed to Claude.

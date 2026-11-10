@@ -4,12 +4,13 @@ import { translate, type MessageKey, type TextOverrides } from '../../../src/mes
 import { themeTitle, type ClientTheme } from '../../../src/theme-wire.js';
 
 /** A browser's language for these screens, before the issuer's default is known. */
-export function detectLocale(issuerDefault: Locale): Locale {
+export function detectLocale(issuerDefault: Locale, allowed?: readonly Locale[]): Locale {
   return resolveLocale({
     uiLocales: new URLSearchParams(window.location.search).get('ui_locales'),
     cookie: cookieValue(document.cookie, LOCALE_COOKIE),
     browser: navigator.languages,
     issuerDefault,
+    allowed,
   });
 }
 
@@ -23,7 +24,13 @@ export function storeLocale(locale: Locale, chosen: boolean): void {
   document.cookie = `${LOCALE_COOKIE}=${locale}; path=/; SameSite=Lax${lifetime}`;
 }
 
-export const LocaleContext = createContext<{ locale: Locale; choose: (locale: Locale) => void; overrides?: TextOverrides }>({
+export const LocaleContext = createContext<{
+  locale: Locale;
+  choose: (locale: Locale) => void;
+  overrides?: TextOverrides;
+  /** The theme's `languages`; absent means every one. */
+  languages?: readonly Locale[];
+}>({
   locale: 'en',
   choose: () => {},
 });
@@ -39,12 +46,14 @@ export function useTitle(theme: ClientTheme): string {
 
 const NAMES: Record<Locale, string> = { sv: 'Svenska', en: 'English' };
 
-/** At the foot of every card, each language named in itself. */
+/** At the foot of every card, each language the application allows named in itself; none for one. */
 export function LanguageSwitch() {
-  const { locale, choose } = useContext(LocaleContext);
+  const { locale, choose, languages } = useContext(LocaleContext);
+  const offered = languages?.length ? languages : LOCALES;
+  if (offered.length < 2) return null;
   return (
     <div className="lang-switch">
-      {LOCALES.map((l) => (
+      {offered.map((l) => (
         <button key={l} type="button" lang={l} aria-pressed={l === locale} onClick={() => choose(l)}>
           {NAMES[l]}
         </button>

@@ -32,6 +32,7 @@ All optional. Colors are `#rgb` or `#rrggbb`, and nothing else.
 | `title` | The sign-in heading, 1 to 60 characters |
 | `css` | Raw CSS, under the rules below |
 | `text` | Replacement wording per language, described below |
+| `languages` | The languages offered, the first being the default, described below |
 
 ## Raw CSS
 
@@ -104,6 +105,22 @@ wording. The keys are defined in `src/messages.ts`.
 - `common.title` is the sign-in heading, and wins over the theme's `title` for that language.
 - An application's entries override the issuer's one at a time.
 - This covers the screens. The errors from the server and the emails keep the built-in wording.
+
+## Languages
+
+`languages` limits the languages an application's screens offer. Without it, both are offered.
+
+```json
+{ "languages": ["sv"] }
+```
+
+- A list of distinct codes from `"sv"` and `"en"`, in order of preference.
+- The first is the default: it is used when neither the application's `ui_locales`, the
+  person's earlier choice nor the browser's languages name an allowed one, and it takes the
+  place of the issuer's `ISSUER_LOCALE` for this application.
+- With one language the language switch is not shown.
+- The server's errors and the emails follow the screen, so they keep to the list too.
+- An application's list replaces the issuer's.
 
 ## Example
 
