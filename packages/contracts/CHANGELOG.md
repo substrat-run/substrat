@@ -1,5 +1,13 @@
 # @substrat-run/contracts
 
+## 0.190.1
+
+### Patch Changes
+
+- c9db03c: A mail-in operation answering with a non-boolean `raw` of its own keeps its entity instead of losing the landing.
+- f0dd3fe: A mail-in answer whose `raw` field is not a boolean keeps its entity, and reads as not asking for the original.
+- 3c0c8e8: A mail-in answer whose `raw` is not a boolean keeps its `entity`, and `raw` is read as not asked for.
+
 ## 0.190.0
 
 ### Minor Changes

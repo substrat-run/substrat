@@ -437,6 +437,16 @@ describe('RP-initiated logout', () => {
   const sessionExists = async (cookie: string): Promise<boolean> =>
     Boolean(await auth.api.getSession({ headers: new Headers({ cookie }) as never }));
 
+  it.each([
+    ['no client_id', {}],
+    ['a hint it cannot resolve', { id_token_hint: 'junk' }],
+  ])('leaves the confirmation page up for a logout naming %s, because no client was judged', async (_name, params) => {
+    const admin = await signInAs(ADMIN);
+    const page = await endSession(params, admin, { 'sec-fetch-mode': 'navigate' });
+    expect(await page.text()).toContain('data-oidc-logout-confirmation');
+    expect(await sessionExists(admin)).toBe(true);
+  });
+
   it('refuses a client that was never allowed to end a session', async () => {
     const admin = await signInAs(ADMIN);
     const client = await register('Quiet', admin);
