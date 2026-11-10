@@ -17,8 +17,8 @@ export type ChatItem =
 
 export function appendEvent(items: ChatItem[], e: BuildEvent): ChatItem[] {
 	// A tool's timing is for the turn record; the tool-call row already says
-	// what ran, and a row here would also split its tool group in two.
-	if (e.type === 'tool-result') return items;
+	// what ran. Only a failure is news to the person watching.
+	if (e.type === 'tool-result' && e.ok) return items;
 	if (e.type === 'assistant-text') {
 		const last = items[items.length - 1];
 		if (last?.kind === 'assistant') {
@@ -30,7 +30,7 @@ export function appendEvent(items: ChatItem[], e: BuildEvent): ChatItem[] {
 }
 
 /** Event types that collapse into a Lovable-style tool-call group. */
-const GROUPABLE = new Set<BuildEvent['type']>(['tool-call', 'file-written', 'command', 'check']);
+const GROUPABLE = new Set<BuildEvent['type']>(['tool-call', 'tool-result', 'file-written', 'command', 'check']);
 
 type Rendered =
 	| { kind: 'item'; item: ChatItem; index: number }
@@ -74,13 +74,16 @@ function groupSummary(events: BuildEvent[]): { label: string; meta: string } {
 	const label = files.size > 0
 		? `Edited ${files.size} file${files.size === 1 ? '' : 's'}`
 		: 'Explored the project';
-	return { label, meta: `${events.length} call${events.length === 1 ? '' : 's'}` };
+	const calls = events.filter((e) => e.type !== 'tool-result').length;
+	return { label, meta: `${calls} call${calls === 1 ? '' : 's'}` };
 }
 
 function groupRow(e: BuildEvent): { text: string; bad: boolean } {
 	switch (e.type) {
 		case 'tool-call':
 			return { text: `${e.tool}: ${e.summary}`, bad: false };
+		case 'tool-result':
+			return { text: `${e.tool} failed`, bad: true };
 		case 'file-written':
 			return { text: `wrote ${e.path} (${e.bytes}b)`, bad: false };
 		case 'command':
@@ -120,6 +123,8 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 	switch (e.type) {
 		case 'tool-call':
 			return { text: `${e.tool}: ${e.summary}`, cls: '' };
+		case 'tool-result':
+			return { text: `${e.tool} failed`, cls: 'error' };
 		case 'file-written':
 			return { text: `wrote ${e.path}`, cls: '' };
 		case 'command':
