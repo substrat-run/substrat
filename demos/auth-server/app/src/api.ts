@@ -1075,6 +1075,14 @@ export async function issuerSettings(): Promise<IssuerSettings> {
   return admin('/settings');
 }
 
+/**
+ * The version this issuer is serving — the platform's id for the push, the same one every log
+ * line carries and the console admits and promotes. `null` on a standalone or local issuer.
+ */
+export async function issuerVersion(): Promise<{ versionId: string | null }> {
+  return admin('/version');
+}
+
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
 export async function setIssuerSettings(
   patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes' | 'issuerTheme' | 'defaultLocale'>>,

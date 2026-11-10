@@ -4,6 +4,7 @@ import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { invitationEmail, type MailStyle } from './email.js';
+import { log } from './log.js';
 
 async function digest(token: string): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
@@ -74,7 +75,7 @@ export const invitationPlugin = (opts: { transport: EmailTransport; sender: Emai
         await adapter.linkAccount({ userId: user.id, providerId: 'credential', accountId: user.id, password: await ctx.context.password.hash(ctx.body.password) });
       } catch (error) {
         await adapter.deleteVerificationByIdentifier(`invite-password:${user.id}`).catch(() => {
-          console.error('Could not release failed invite-password reservation');
+          log.error('Could not release failed invite-password reservation');
         });
         throw error;
       }

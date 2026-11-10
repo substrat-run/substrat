@@ -322,7 +322,7 @@ describe('Twilio Verify wire contract', () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       expect(optionalTwilioFrom({ ...cfg, TWILIO_ACCOUNT_SID: 'invalid-secret-sid' })).toBeUndefined();
-      expect(log).toHaveBeenCalledWith('SMS verification disabled: invalid Twilio account or Verify service SID');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('"message":"SMS verification disabled: invalid Twilio account or Verify service SID"'));
       expect(log.mock.calls.flat().join(' ')).not.toContain('invalid-secret-sid');
     } finally { log.mockRestore(); }
   });

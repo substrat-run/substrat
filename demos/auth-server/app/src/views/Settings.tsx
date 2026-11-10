@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { GridTable, PageHeader, Row } from '@substrat-run/ui';
-import type { Discovery } from '../api';
+import { issuerVersion, type Discovery } from '../api';
 
 const COLUMNS = '150px minmax(0, 1fr) 80px';
 
@@ -30,6 +30,7 @@ export function SettingsView({ disc }: { disc: Discovery | null }) {
   return (
     <>
       <PageHeader title="Settings" description="This issuer, as a relying party sees it: the URLs to configure one with." />
+      <VersionLine />
       {!disc ? (
         <section className="panel">
           <p className="muted">Discovery unavailable — this issuer did not answer its own discovery document.</p>
@@ -59,6 +60,30 @@ export function SettingsView({ disc }: { disc: Discovery | null }) {
         </>
       )}
     </>
+  );
+}
+
+/**
+ * Which push this issuer is running — the id its log lines carry as `version`, so a line in
+ * the runtime's log view can be matched to the screen an operator is looking at.
+ */
+function VersionLine() {
+  const [version, setVersion] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    // A failed read leaves the line out: the version is a courtesy, not this page's subject.
+    issuerVersion()
+      .then((v) => live && setVersion(v.versionId))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (version === undefined) return null;
+  return (
+    <p className="muted small" style={{ margin: 0 }}>
+      Version <code>{version ?? 'local build'}</code>
+    </p>
   );
 }
 

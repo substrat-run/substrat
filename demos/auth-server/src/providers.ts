@@ -2,6 +2,7 @@ import { socialProviderList } from 'better-auth/social-providers';
 import type { GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
 import { isAllowedEndpoint, issuerRefusal, sameIssuer } from '@substrat-run/oidc-rp/discovery';
 import type { SqlExec } from './introspect.js';
+import { log } from './log.js';
 
 /**
  * The UPSTREAM identity providers this issuer federates to — "sign in with Microsoft" —
@@ -424,7 +425,7 @@ export function genericProvidersFrom(rows: ProviderRow[]): GenericOAuthConfig[] 
     if (refusal && !warned.has(seen)) {
       if (warned.size >= WARNED_CAP) warned.clear();
       warned.add(seen);
-      console.warn('auth-server: provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
+      log.warn('provider not offered', { providerId: row.provider_id, reason: refusal, fix: 're-save to re-discover' });
     }
   }
   const enabled = live(rows).filter(isGenericRow);

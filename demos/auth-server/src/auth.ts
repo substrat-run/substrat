@@ -38,6 +38,7 @@ import {
   stateOfAuthorizationUrl,
   type SignInLogger,
 } from './sign-in-log.js';
+import { log } from './log.js';
 
 /**
  * The Better Auth instance that IS this standalone OIDC provider. Runtime-agnostic: the
@@ -640,6 +641,16 @@ function betterAuthFor(deps: AuthDeps) {
   const machineScopes = deps.machineScopes ?? [];
   return betterAuth({
     database: deps.database,
+    // Better Auth's own lines, version-stamped like the issuer's (`src/log.ts`). It filters by
+    // level before calling this, so only warnings and errors arrive.
+    logger: {
+      log: (level, message, ...args) => {
+        const detail = args.length ? { args } : undefined;
+        if (level === 'error') log.error(message, detail);
+        else if (level === 'warn') log.warn(message, detail);
+        else log.info(message, detail);
+      },
+    },
     emailAndPassword: {
       enabled: true,
       // Self-service registration is a policy decision, so it is opt-in. `autoSignIn` means a
