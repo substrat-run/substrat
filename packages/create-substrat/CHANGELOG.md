@@ -1,5 +1,16 @@
 # create-substrat
 
+## 0.16.0
+
+### Minor Changes
+
+- 86e51bd: A person a member invite names gets in on a local dev server too: `devMemberInvites` keeps a dev server's invites and admits the invitee by the address the issuer verified, through `devLogin({ admit })`, and mounts the same `/api/member-invites` routes the worker door does (now `mountMemberInvites` in vertical-auth). The template's dev server admits invited people, both entry files show how to name `invites`, and the builder wires them for a model with an invite: its skills say how, and the `member-invites` gate refuses a build that leaves the worker, the dev server or the screen unwired.
+
+### Patch Changes
+
+- 2bb8c5b: The builder's instructions say that withdrawing an invite needs the same permissions as making it, that widening the inviting role is a permission change, that a role holding a system-reserved key cannot be invited at, and that the local person to invite stays unlinked by the seed and is invited at their persona's address. The template's dev server comment says how.
+- dd32e79: The builder's instructions say that the role that invites must hold every permission of each role it invites at, as the platform refuses an invite otherwise, and that a local cast holds one unseeded person to invite. The template's dev server says the same about its cast.
+
 ## 0.15.4
 
 ### Patch Changes

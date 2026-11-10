@@ -1,5 +1,19 @@
 # @substrat-run/demo-auth-server
 
+## 0.17.20
+
+### Patch Changes
+
+- 9df9fc2: The sign-in log records password, BankID and every other sign-in the issuer decides itself, refusals included, and keeps 30 days.
+- ddb42c6: Every log line names the version that wrote it, and the console's Settings page shows the version the issuer is serving.
+- Updated dependencies [5464d57]
+- Updated dependencies [ca94c35]
+- Updated dependencies [86e51bd]
+- Updated dependencies [86e51bd]
+  - @substrat-run/kernel@0.191.0
+  - @substrat-run/vertical-host@0.191.0
+  - @substrat-run/contracts@0.191.0
+
 ## 0.17.19
 
 ### Patch Changes

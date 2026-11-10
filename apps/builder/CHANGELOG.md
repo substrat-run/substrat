@@ -1,5 +1,32 @@
 # @substrat-run/builder
 
+## 0.13.7
+
+### Patch Changes
+
+- 926237e: The chat no longer prints a raw JSON line after every tool call, and a turn cut off at its step or token ceiling reads as a warning.
+- 2bb8c5b: The builder's instructions say that withdrawing an invite needs the same permissions as making it, that widening the inviting role is a permission change, that a role holding a system-reserved key cannot be invited at, and that the local person to invite stays unlinked by the seed and is invited at their persona's address. The template's dev server comment says how.
+- dd32e79: The builder's instructions say that the role that invites must hold every permission of each role it invites at, as the platform refuses an invite otherwise, and that a local cast holds one unseeded person to invite. The template's dev server says the same about its cast.
+- 4a62748: Builder: the migrations emitter runs from the platform toolchain in a hosted build, so a model turn before the scaffold no longer goes red with `tsx` not found.
+- 86e51bd: A person a member invite names gets in on a local dev server too: `devMemberInvites` keeps a dev server's invites and admits the invitee by the address the issuer verified, through `devLogin({ admit })`, and mounts the same `/api/member-invites` routes the worker door does (now `mountMemberInvites` in vertical-auth). The template's dev server admits invited people, both entry files show how to name `invites`, and the builder wires them for a model with an invite: its skills say how, and the `member-invites` gate refuses a build that leaves the worker, the dev server or the screen unwired.
+- Updated dependencies [2bb8c5b]
+- Updated dependencies [dd32e79]
+- Updated dependencies [5464d57]
+- Updated dependencies [ca94c35]
+- Updated dependencies [86e51bd]
+- Updated dependencies [86e51bd]
+  - create-substrat@0.16.0
+  - @substrat-run/kernel@0.191.0
+  - @substrat-run/adapter-cloudflare@0.191.0
+  - @substrat-run/builder-workspace@0.13.5
+  - @substrat-run/engine-assistant@0.1.43
+  - @substrat-run/engine-metering@0.6.75
+  - @substrat-run/control-plane-api@0.191.0
+  - @substrat-run/builder-generator@0.12.6
+  - @substrat-run/contracts@0.191.0
+  - @substrat-run/cli@0.58.5
+  - @substrat-run/model-providers@0.5.81
+
 ## 0.13.6
 
 ### Patch Changes

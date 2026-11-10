@@ -1,5 +1,15 @@
 # @substrat-run/engine-assistant
 
+## 0.1.43
+
+### Patch Changes
+
+- Updated dependencies [5464d57]
+- Updated dependencies [ca94c35]
+- Updated dependencies [86e51bd]
+  - @substrat-run/kernel@0.191.0
+  - @substrat-run/contracts@0.191.0
+
 ## 0.1.42
 
 ### Patch Changes

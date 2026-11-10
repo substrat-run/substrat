@@ -1,5 +1,21 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.191.0
+
+### Minor Changes
+
+- 5464d57: `HostAdmin.swapConnectorState` writes a connector's state row only if it still holds the value read, so two writers that raced on one row cannot both win.
+- ca94c35: An invited person is let in by the address their sign-in provider verified, with no link to click: the worker door finds the open member invite naming that address and binds them to it (`admitByAddress`, both hosts' `exchangeBecomeLinkById`). `workerDoor({ invites })` mounts `POST /api/member-invites` and its withdrawal, which run the vertical's own operation as the caller. A member invite's link now expires after 14 days, and one naming an address is accepted only from a verified holder of that address.
+
+### Patch Changes
+
+- 86e51bd: Member invites: `exchangeBecomeLinkById` exchanges only a link carrying the label it is given, and the door passes the member invite's. An address has one open invite per scope (a second is 409), a withdrawal asks who may withdraw before it takes anything, accepting a link answers someone already in with their principal, and the door asks the directory again only after a contested exchange.
+- Updated dependencies [5464d57]
+- Updated dependencies [ca94c35]
+- Updated dependencies [86e51bd]
+  - @substrat-run/kernel@0.191.0
+  - @substrat-run/contracts@0.191.0
+
 ## 0.190.2
 
 ### Patch Changes
