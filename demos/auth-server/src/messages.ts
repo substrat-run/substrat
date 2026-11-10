@@ -1,10 +1,12 @@
-import type { Locale } from '../../../src/locale-wire.js';
+import type { Locale } from './locale-wire.js';
 
 /**
  * Every word on the hosted screens. English is the source; `sv` is typed against it, so a key
- * missing from either language does not compile.
+ * missing from either language does not compile. Dependency-free: the server checks a theme's
+ * `text` against these keys, and the browser draws them.
  */
 const en = {
+  'common.title': 'Substrat Auth',
   'common.email': 'Email',
   'common.password': 'Password',
   'common.signIn': 'Sign in',
@@ -115,6 +117,7 @@ const en = {
 export type MessageKey = keyof typeof en;
 
 const sv: Record<MessageKey, string> = {
+  'common.title': 'Substrat Auth',
   'common.email': 'E-post',
   'common.password': 'Lösenord',
   'common.signIn': 'Logga in',
@@ -224,8 +227,20 @@ const sv: Record<MessageKey, string> = {
 
 const MESSAGES: Record<Locale, Record<MessageKey, string>> = { en, sv };
 
-export function translate(locale: Locale, key: MessageKey, vars: Record<string, string> = {}): string {
-  return MESSAGES[locale][key].replace(/\{(\w+)\}/g, (whole, name: string) => vars[name] ?? whole);
+/** One language's replacements for the built-in wording. */
+export type TextOverrides = Partial<Record<MessageKey, string>>;
+
+export function isMessageKey(key: string): key is MessageKey {
+  return Object.hasOwn(en, key);
 }
 
-export const messagesFor = (locale: Locale) => MESSAGES[locale];
+export const defaultMessages = (locale: Locale): Readonly<Record<MessageKey, string>> => MESSAGES[locale];
+
+export function translate(
+  locale: Locale,
+  key: MessageKey,
+  vars: Record<string, string> = {},
+  overrides?: TextOverrides,
+): string {
+  return (overrides?.[key] ?? MESSAGES[locale][key]).replace(/\{(\w+)\}/g, (whole, name: string) => vars[name] ?? whole);
+}

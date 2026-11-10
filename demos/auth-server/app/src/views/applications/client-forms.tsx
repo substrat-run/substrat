@@ -11,7 +11,7 @@ import {
   type RegisteredClient,
 } from '../../api';
 import { Field } from '../../primitives';
-import { themeProblems } from '../../../../src/theme-wire.js';
+import { themeProblems, withAllText, withoutDefaultText, type ThemeText } from '../../../../src/theme-wire.js';
 import { SignInPolicyEditor } from '../SignInPolicyEditor';
 import { MachineScopesEditor } from '../MachineScopesEditor';
 import { draftFromStored, draftProblems, draftToStored, resolveAny, type PolicyDraft } from '../sign-in-draft';
@@ -400,6 +400,14 @@ const fieldsOf = (theme: StoredTheme) =>
     THEME_FIELDS.map((key) => [key, typeof theme[key] === 'string' ? (theme[key] as string) : '']),
   ) as Record<ThemeField, string>;
 
+/** A raw file as it is stored: wording left at the default is not an override. */
+function readableFile(theme: StoredTheme): StoredTheme {
+  if (theme.text === undefined) return theme;
+  const { text: _text, ...rest } = theme;
+  const text = withoutDefaultText(theme.text as ThemeText);
+  return Object.keys(text).length ? { ...rest, text } : rest;
+}
+
 /** The parsed theme file, or what stops it being one. */
 function readThemeFile(text: string): { theme: StoredTheme; problems: string[] } {
   if (!text.trim()) return { theme: {}, problems: [] };
@@ -429,8 +437,14 @@ export function useThemeForm(stored: StoredTheme, intro: string) {
   /** The theme to store, or `undefined` for none. Throws what is wrong with a raw file. */
   const build = (current: StoredTheme): StoredTheme | undefined => {
     if (rawText !== null && problems.length) throw new Error(problems.join('; '));
-    const theme = rawText === null ? fromForm(current) : readThemeFile(rawText).theme;
+    const theme = rawText === null ? fromForm(current) : readableFile(readThemeFile(rawText).theme);
     return Object.keys(theme).length ? theme : undefined;
+  };
+
+  const showAllText = () => {
+    if (rawText === null || problems.length) return;
+    const { theme } = readThemeFile(rawText);
+    setRawText(JSON.stringify({ ...theme, text: withAllText(theme.text as ThemeText | undefined) }, null, 2));
   };
 
   const toggleRaw = () => {
@@ -446,9 +460,14 @@ export function useThemeForm(stored: StoredTheme, intro: string) {
     <>
       <div className="panel-head">
         <h3>Appearance</h3>
-        <button type="button" className="btn tiny" onClick={toggleRaw} disabled={problems.length > 0}>
-          {rawText === null ? 'Edit raw' : 'Edit fields'}
-        </button>
+        <span>
+          {rawText !== null && (
+            <button type="button" className="btn tiny" onClick={showAllText} disabled={problems.length > 0}>Show all text</button>
+          )}
+          <button type="button" className="btn tiny" onClick={toggleRaw} disabled={problems.length > 0}>
+            {rawText === null ? 'Edit raw' : 'Edit fields'}
+          </button>
+        </span>
       </div>
       <p className="muted small">{intro}</p>
       {rawText !== null ? (
@@ -456,8 +475,11 @@ export function useThemeForm(stored: StoredTheme, intro: string) {
           <span>Theme file (JSON)</span>
           <textarea rows={20} spellCheck={false} value={rawText} onChange={(e) => setRawText(e.target.value)} />
           <em className="hint">
-            The same keys as the fields, plus <code>colorScheme</code> and <code>css</code> for raw CSS. CSS may not load
-            anything from the network, so inline images and fonts as <code>data:</code>.{' '}
+            The same keys as the fields, plus <code>colorScheme</code>, <code>css</code> for raw CSS and{' '}
+            <code>text</code> for the wording in each language (<strong>Show all text</strong> lists it; anything left
+            as it was is not saved), and <code>languages</code> to limit the languages offered, the first being the
+            default (<code>["sv"]</code> is Swedish only). CSS may not load anything from the network, so inline images and fonts as{' '}
+            <code>data:</code>.{' '}
             <a href={THEMING_GUIDE} target="_blank" rel="noreferrer">The theme file guide</a> lists every key and
             selector, and is written to be handed to Claude.
           </em>

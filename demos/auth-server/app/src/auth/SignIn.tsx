@@ -20,8 +20,8 @@ import {
 } from '../api';
 import { returnTarget } from '../console/routes';
 import { Centered, Card, Field } from '../primitives';
-import { useT } from './locale';
-import type { MessageKey } from './messages';
+import { useT, useTitle } from './locale';
+import type { MessageKey } from '../../../src/messages.js';
 import { PhoneFactor } from './PhoneFactor';
 
 export function SignIn({
@@ -37,6 +37,7 @@ export function SignIn({
   theme: ClientTheme;
 }) {
   const t = useT();
+  const signInTitle = useTitle(theme);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(socialError);
@@ -103,7 +104,7 @@ export function SignIn({
   if (redirecting && only) {
     return (
       <Centered>
-        <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+        <Card title={signInTitle} logo={theme.logoUrl}>
           <p className="muted">{t('common.continuingTo', { provider: only.label })}</p>
         </Card>
       </Centered>
@@ -123,7 +124,7 @@ export function SignIn({
   if (!providers.length && !passwordEnabled) {
     return (
       <Centered>
-        <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+        <Card title={signInTitle} logo={theme.logoUrl}>
           <p className="error">{t('signin.noMethod')}</p>
           {/* The console can reach this state the slow way — restricted to an upstream that
               was deleted or broke afterwards — and it is the one case where the person
@@ -140,7 +141,7 @@ export function SignIn({
   }
   return (
     <Centered>
-      <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+      <Card title={signInTitle} logo={theme.logoUrl}>
         <p className="muted">
           {forOidc ? t('signin.forOidc') : t('signin.forConsole')}
         </p>
@@ -257,7 +258,7 @@ function IdentifierFirst({
   const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
   const clientId = new URLSearchParams(window.location.search).get('client_id');
-  const title = theme.title ?? 'Substrat Auth';
+  const title = useTitle(theme);
 
   const goToProvider = async (provider: { id: string }, hint?: string) => {
     setErr(null);

@@ -24,7 +24,8 @@ import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
 import { drawsForRelyingParty } from './auth/hand-off';
 import { LocaleContext, detectLocale, storeLocale } from './auth/locale';
-import { translate } from './auth/messages';
+import { translate } from '../../src/messages.js';
+import { themeTitle } from '../../src/theme-wire.js';
 import type { Locale } from '../../src/locale-wire.js';
 import { applyClientTheme, paintHandOff } from './theme-apply';
 
@@ -93,8 +94,8 @@ export default function App() {
     // These three have no relying party behind them, so they take the theme the console's own
     // sign-in does, which is where the issuer's lands (`clientBranding`). The read has its own
     // fallback, so a link someone was emailed still opens if it fails.
-    const settleLocale = (issuerDefault: Locale) => {
-      const settled = detectLocale(issuerDefault);
+    const settleLocale = (issuerDefault: Locale, allowed?: readonly Locale[]) => {
+      const settled = detectLocale(issuerDefault, allowed);
       storeLocale(settled, false);
       setLocale(settled);
     };
@@ -102,7 +103,7 @@ export default function App() {
       const { theme: issuer, defaultLocale } = await clientOptions(null, []);
       applyClientTheme(issuer);
       setTheme(issuer);
-      settleLocale(defaultLocale);
+      settleLocale(defaultLocale, issuer.languages);
     };
     if (url.pathname === '/github-email') {
       await paintWithoutClient();
@@ -150,7 +151,7 @@ export default function App() {
      * so its policy was never enforced against anything; a relying party's is, and this
      * escape hatch cannot touch that one.
      */
-    const plainDefaults = { theme: {}, defaultLocale: 'en' as const, signIn: { providers, password: true, restricted: false } };
+    const plainDefaults = { theme: {} as ClientTheme, defaultLocale: 'en' as const, signIn: { providers, password: true, restricted: false } };
     // The relying party mid-authorize; `null` is the console asking about itself.
     const clientId = forOidc ? url.searchParams.get('client_id') : null;
     // Two ways to end up on the plain screen: the operator asked for it, or an authorize
@@ -159,7 +160,7 @@ export default function App() {
     const options = plain ? plainDefaults : await clientOptions(clientId, providers);
     applyClientTheme(options.theme);
     setTheme(options.theme);
-    settleLocale(options.defaultLocale);
+    settleLocale(options.defaultLocale, options.theme.languages);
     const signIn = options.signIn;
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
@@ -252,7 +253,7 @@ export default function App() {
     case 'github-email': return <GitHubEmail theme={theme} />;
     case 'invitation': return <Invitation recovery={phase.recovery} theme={theme} />;
     case 'loading':
-      return <Centered>{translate(locale, 'common.loading')}</Centered>;
+      return <Centered>{translate(locale, 'common.loading', {}, theme.text?.[locale])}</Centered>;
     case 'failed':
       // Named as the issuer's problem rather than the person's, because it is: nothing they
       // typed reaches these two reads. Retry is the whole remedy and is worth offering — the
@@ -260,11 +261,11 @@ export default function App() {
       // not, and before this the only retry available was the one the person guessed at.
       return (
         <Centered>
-          <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+          <Card title={themeTitle(theme, locale)} logo={theme.logoUrl}>
             <p className="error">{phase.message}</p>
-            <p className="muted">{translate(locale, 'failed.notYou')}</p>
+            <p className="muted">{translate(locale, 'failed.notYou', {}, theme.text?.[locale])}</p>
             <button className="btn primary" onClick={() => { setPhase({ t: 'loading' }); run(); }}>
-              {translate(locale, 'common.tryAgain')}
+              {translate(locale, 'common.tryAgain', {}, theme.text?.[locale])}
             </button>
           </Card>
         </Centered>
@@ -316,5 +317,5 @@ export default function App() {
       );
   } };
 
-  return <LocaleContext.Provider value={{ locale, choose }}>{screen()}</LocaleContext.Provider>;
+  return <LocaleContext.Provider value={{ locale, choose, overrides: theme.text?.[locale], languages: theme.languages }}>{screen()}</LocaleContext.Provider>;
 }

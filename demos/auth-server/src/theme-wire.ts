@@ -1,3 +1,6 @@
+import { LOCALES, type Locale } from './locale-wire.js';
+import { defaultMessages, isMessageKey, type MessageKey, type TextOverrides } from './messages.js';
+
 /**
  * The theme vocabulary and its checks — what `branding.ts` applies on the way out of the
  * registry, and what the console's raw editor shows an operator before they save. Free of
@@ -35,7 +38,13 @@ export interface ClientTheme {
   title?: string;
   /** Raw CSS for the hosted screens, under the rules `cssProblems` holds. */
   css?: string;
+  /** Replacement wording, per language and per key of `messages.ts`. */
+  text?: ThemeText;
+  /** The languages the screens may use, the first being the default. Absent: every one. */
+  languages?: Locale[];
 }
+
+export type ThemeText = Partial<Record<Locale, TextOverrides>>;
 
 /** `#rgb` or `#rrggbb` — the only color form accepted, so a value can never smuggle CSS. */
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -105,6 +114,69 @@ export function schemeOf(theme: ClientTheme): 'light' | 'dark' {
   return surface && lightness(surface) < 0.5 ? 'dark' : 'light';
 }
 
+const MAX_TEXT = 500;
+const PLACEHOLDER = /\{(\w+)\}/g;
+const placeholdersOf = (text: string) => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]!);
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * A theme's `text`: the entries that may be served, and what is wrong with the rest. Plain text
+ * either way, since React renders it as such. A placeholder the built-in wording does not have
+ * is refused because nothing would fill it, and the braces would reach the screen.
+ */
+function readText(value: unknown): { text: ThemeText; problems: string[] } {
+  const text: ThemeText = {};
+  const problems: string[] = [];
+  if (value === undefined) return { text, problems };
+  if (!isObject(value)) return { text, problems: ['must be an object of languages'] };
+  for (const [language, entries] of Object.entries(value)) {
+    const locale = LOCALES.find((l) => l === language);
+    if (!locale) problems.push(`has no language "${language}"; use ${LOCALES.join(' or ')}`);
+    else if (!isObject(entries)) problems.push(`.${locale} must be an object of text keys`);
+    else {
+      const kept: TextOverrides = {};
+      for (const [key, entry] of Object.entries(entries)) {
+        if (!isMessageKey(key)) problems.push(`.${locale} has no key "${key}"`);
+        else if (typeof entry !== 'string' || !entry.trim() || entry.length > MAX_TEXT) problems.push(`.${locale}.${key} must be 1 to ${MAX_TEXT} characters`);
+        else {
+          const known = new Set(placeholdersOf(defaultMessages(locale)[key]));
+          const stray = placeholdersOf(entry).filter((p) => !known.has(p));
+          if (stray.length) problems.push(`.${locale}.${key} uses {${stray.join('}, {')}}, which nothing fills`);
+          else kept[key] = entry;
+        }
+      }
+      if (Object.keys(kept).length) text[locale] = kept;
+    }
+  }
+  return { text, problems };
+}
+
+/** The issuer's wording with a client's laid over it, entry by entry. */
+export function mergeText(issuer: ThemeText | undefined, own: ThemeText | undefined): ThemeText | undefined {
+  if (!issuer || !own) return own ?? issuer;
+  return Object.fromEntries(LOCALES.flatMap((l) => (issuer[l] || own[l] ? [[l, { ...issuer[l], ...own[l] }]] : [])));
+}
+
+/** Every built-in string under `text`, with this file's own wording kept: the thing to reword. */
+export function withAllText(text: ThemeText | undefined): ThemeText {
+  return Object.fromEntries(LOCALES.map((l) => [l, { ...defaultMessages(l), ...text?.[l] }]));
+}
+
+/** `text` without the entries that say what the built-in does, so a default stays one. */
+export function withoutDefaultText(text: ThemeText | undefined): ThemeText {
+  const kept: ThemeText = {};
+  for (const locale of LOCALES) {
+    const changed = Object.entries(text?.[locale] ?? {}).filter(([key, entry]) => entry !== defaultMessages(locale)[key as MessageKey]);
+    if (changed.length) kept[locale] = Object.fromEntries(changed);
+  }
+  return kept;
+}
+
+/** The sign-in heading: a language's own wording, then the theme's one title, then the default. */
+export function themeTitle(theme: ClientTheme, locale: Locale): string {
+  return theme.text?.[locale]?.['common.title'] ?? theme.title ?? defaultMessages(locale)['common.title'];
+}
+
 const hexCheck = (v: unknown): string | null =>
   typeof v === 'string' && HEX_COLOR.test(v) ? null : 'must be a hex color like #0a6847';
 
@@ -132,6 +204,11 @@ const THEME_CHECKS: Record<keyof ClientTheme, (v: unknown) => string | null> = {
     if (typeof v !== 'string') return 'must be a string';
     return cssProblems(v).join('; ') || null;
   },
+  text: (v) => readText(v).problems.join('; ') || null,
+  languages: (v) =>
+    Array.isArray(v) && v.length > 0 && new Set(v).size === v.length && v.every((l) => (LOCALES as readonly unknown[]).includes(l))
+      ? null
+      : `must be a list of distinct languages from ${LOCALES.map((l) => `"${l}"`).join(', ')}`,
 };
 
 /**
@@ -144,8 +221,10 @@ export function sanitizeTheme(value: unknown): ClientTheme {
   const raw = value as Record<string, unknown>;
   const theme: Record<string, unknown> = {};
   for (const [key, check] of Object.entries(THEME_CHECKS)) {
-    if (raw[key] !== undefined && check(raw[key]) === null) theme[key] = raw[key];
+    if (key !== 'text' && raw[key] !== undefined && check(raw[key]) === null) theme[key] = raw[key];
   }
+  const { text } = readText(raw.text);
+  if (Object.keys(text).length) theme.text = text;
   return theme as ClientTheme;
 }
 
