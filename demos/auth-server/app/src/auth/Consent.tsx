@@ -7,16 +7,18 @@ import {
   type OAuthClient,
 } from '../api';
 import { Centered, Card } from '../primitives';
+import { useT } from './locale';
+import type { MessageKey } from '../../../src/messages.js';
 
 /**
  * What each requested scope means, in the words of the person being asked. An unknown scope
  * is shown verbatim rather than hidden: consenting to something unnamed is not consent.
  */
-const SCOPE_TEXT: Record<string, string> = {
-  openid: 'Confirm who you are',
-  profile: 'Your name and profile details',
-  email: 'Your email address',
-  offline_access: 'Stay signed in while you are away',
+const SCOPE_TEXT: Record<string, MessageKey> = {
+  openid: 'scope.openid',
+  profile: 'scope.profile',
+  email: 'scope.email',
+  offline_access: 'scope.offline_access',
 };
 
 /**
@@ -28,6 +30,7 @@ const SCOPE_TEXT: Record<string, string> = {
  * this screen existed, both answers were "you are now looking at an admin dashboard" (#898).
  */
 export function Consent({ request, theme }: { request: ConsentRequest; theme: ClientTheme }) {
+  const t = useT();
   const [client, setClient] = useState<OAuthClient | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,29 +59,28 @@ export function Consent({ request, theme }: { request: ConsentRequest; theme: Cl
 
   return (
     <Centered>
-      <Card title="Authorize access" logo={theme.logoUrl}>
+      <Card title={t('consent.title')} logo={theme.logoUrl}>
         <p className="muted">
-          <strong>{who}</strong> wants to sign you in with your Substrat Auth account.
+          <strong>{who}</strong> {t('consent.wants')}
         </p>
         {request.scopes.length > 0 && (
           <ul className="scopes">
             {request.scopes.map((scope) => (
-              <li key={scope}>{SCOPE_TEXT[scope] ?? scope}</li>
+              <li key={scope}>{Object.hasOwn(SCOPE_TEXT, scope) ? t(SCOPE_TEXT[scope]!) : scope}</li>
             ))}
           </ul>
         )}
         {err && <p className="error">{err}</p>}
         <div className="consent-actions">
           <button className="btn primary" disabled={busy} onClick={() => void answer(true)}>
-            {busy ? 'Working…' : 'Allow'}
+            {busy ? t('consent.working') : t('consent.allow')}
           </button>
           <button className="btn" disabled={busy} onClick={() => void answer(false)}>
-            Deny
+            {t('consent.deny')}
           </button>
         </div>
         <p className="muted small">
-          Requested by client <code>{request.clientId}</code>. Only continue if you started this
-          from an application you trust.
+          {t('consent.requestedBy')} <code>{request.clientId}</code>. {t('consent.trust')}
         </p>
       </Card>
     </Centered>

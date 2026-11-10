@@ -1,5 +1,13 @@
 # @substrat-run/contract-tests
 
+## 0.190.2
+
+### Patch Changes
+
+- Updated dependencies [e2a6b1f]
+  - @substrat-run/contracts@0.190.2
+  - @substrat-run/kernel@0.190.2
+
 ## 0.190.1
 
 ### Patch Changes

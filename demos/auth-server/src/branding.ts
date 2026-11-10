@@ -1,5 +1,5 @@
 import type { SqlExec } from './introspect.js';
-import { sanitizeTheme, type ClientTheme } from './theme-wire.js';
+import { mergeText, sanitizeTheme, type ClientTheme } from './theme-wire.js';
 
 export { sanitizeTheme, type ClientTheme };
 
@@ -61,7 +61,9 @@ export function clientBranding(
   issuerThemeValue: string | undefined,
 ): { theme: ClientTheme } {
   const issuer = issuerTheme(issuerThemeValue);
-  return { theme: { ...issuer, ...ownTheme(sql, clientId) } };
+  const own = ownTheme(sql, clientId);
+  const text = mergeText(issuer.text, own.text);
+  return { theme: { ...issuer, ...own, ...(text ? { text } : {}) } };
 }
 
 function ownTheme(sql: SqlExec, clientId: string | null | undefined): ClientTheme {

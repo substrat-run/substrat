@@ -130,6 +130,7 @@ export const mailInChange = z.discriminatedUnion('change', [
     attachment: attachmentRecord.pick({ id: true, filename: true, contentType: true, size: true, sha256: true }),
   }),
 ]);
+/** Narrow on `change` by name: a handler that assumes what is left after `message` breaks when a kind is added. */
 export type MailInChange = z.infer<typeof mailInChange>;
 
 /**

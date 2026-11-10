@@ -1,5 +1,18 @@
 # @substrat-run/demo-auth-server
 
+## 0.17.19
+
+### Patch Changes
+
+- 5631f4c: The hosted sign-in screens are light by default, an issuer has a theme of its own, and a theme can carry raw CSS. Better Auth 1.7.18.
+- cbc3465: The hosted sign-in screens, their errors and their mail are in Swedish and English, chosen from the application's request, the person's choice, the browser and the issuer's default.
+- ffe4764: A theme file can limit an application's sign-in to some languages with `languages`, the first being its default.
+- ffe4764: A theme file can reword any hosted screen, per language, alongside its colors and CSS.
+- Updated dependencies [e2a6b1f]
+  - @substrat-run/contracts@0.190.2
+  - @substrat-run/kernel@0.190.2
+  - @substrat-run/vertical-host@0.190.2
+
 ## 0.17.18
 
 ### Patch Changes

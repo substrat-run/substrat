@@ -8,11 +8,13 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { genericProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from '../src/providers.js';
 import {
-  SIGN_IN_LOG_LIMIT,
+  SIGN_IN_LOG_RETENTION,
   authorityOf,
+  countSignInsByWindow,
   correlationOfState,
   readSignInLog,
   recordSignInAttempt,
+  signInLogCutAt,
   signInLoggerFor,
   signInLogTypeOf,
   type SignInAttempt,
@@ -384,17 +386,52 @@ describe('what a row may never carry', () => {
   });
 });
 
-describe('the ring', () => {
-  it('keeps the newest attempts and prunes the rest, so a debugging aid cannot grow unbounded', () => {
-    for (let i = 0; i < SIGN_IN_LOG_LIMIT + 25; i += 1) {
-      recordSignInAttempt(sql, { method: 'acme', outcome: 'started', phase: 'sign-in', authority: `host/${i}` });
-    }
+describe('a direct sign-in — one this issuer decides by itself', () => {
+  const signIn = (email: string, password: string) =>
+    call('/api/auth/sign-in/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
 
-    const { total, attempts } = readSignInLog(sql, { limit: 1 });
-    expect(total).toBe(SIGN_IN_LOG_LIMIT);
-    // The newest survives; the oldest is gone.
-    expect(attempts[0]?.authority).toBe(`host/${SIGN_IN_LOG_LIMIT + 24}`);
-    expect(readSignInLog(sql, { limit: 100 }).attempts.some((a) => a.authority === 'host/0')).toBe(false);
+  it('records the outcome and the account, and never the address of an account that does not exist', async () => {
+    expect((await signIn(ADMIN.email, 'not-the-password')).status).toBe(401);
+    expect((await signIn('stranger@guess.test', 'not-the-password')).status).toBe(401);
+    expect((await signIn(ADMIN.email, ADMIN.password)).status).toBe(200);
+
+    expect(log().map((a) => [a.method, a.phase, a.outcome, a.error, a.userId])).toEqual([
+      ['password', 'direct', 'succeeded', null, adminId],
+      ['password', 'direct', 'failed', 'INVALID_EMAIL_OR_PASSWORD', null],
+      ['password', 'direct', 'failed', 'INVALID_EMAIL_OR_PASSWORD', adminId],
+    ]);
+    // Neither a guessed address nor a password reaches a row.
+    const stored = JSON.stringify(db.prepare('SELECT * FROM sign_in_attempt').all());
+    expect(stored).not.toContain('stranger@guess.test');
+    expect(stored).not.toContain('not-the-password');
+  });
+});
+
+describe('retention', () => {
+  const small = { days: 30, rows: 5 };
+  const record = (authority: string) =>
+    recordSignInAttempt(sql, { method: 'acme', outcome: 'started', phase: 'sign-in', authority }, small);
+
+  it('keeps 30 days, at most 100 000 rows — a flood cannot evict this morning in minutes', () => {
+    expect(SIGN_IN_LOG_RETENTION).toEqual({ days: 30, rows: 100_000 });
+  });
+
+  it('drops what is older than the retention, and past the row cap the oldest first', () => {
+    const day = 24 * 60 * 60 * 1000;
+    db.prepare("INSERT INTO sign_in_attempt (at, method, outcome, phase, authority) VALUES (?, 'acme', 'started', 'sign-in', 'expired')").run(Date.now() - 31 * day);
+    db.prepare("INSERT INTO sign_in_attempt (at, method, outcome, phase, authority) VALUES (?, 'acme', 'started', 'sign-in', 'kept')").run(Date.now() - 29 * day);
+    record('new/0');
+    expect(log().map((a) => a.authority)).toEqual(['new/0', 'kept']);
+
+    for (let i = 1; i < 8; i += 1) record(`new/${i}`);
+    expect(log().map((a) => a.authority)).toEqual(['new/7', 'new/6', 'new/5', 'new/4', 'new/3']);
+    // At the cap, the log says where it now starts — a chart must not draw the days before as quiet.
+    expect(signInLogCutAt(sql, small)).toBe(log().at(-1)!.at);
+    expect(signInLogCutAt(sql)).toBeNull();
   });
 
   it('cannot fail a sign-in, whatever the store does', () => {
@@ -422,7 +459,7 @@ describe('reading the log', () => {
     ]);
   });
 
-  it('pages by id rather than offset, because the ring moves underneath a reader', () => {
+  it('pages by id rather than offset, because retention prunes underneath a reader', () => {
     const first = readSignInLog(sql, { limit: 2 }).attempts;
     expect(first).toHaveLength(2);
     const next = readSignInLog(sql, { limit: 2, before: first[1]!.id }).attempts;
@@ -497,7 +534,19 @@ describe('the admin read — what the Logs screens ask for', () => {
     expect(body.related).toMatchObject([{ outcome: 'started', clientId: 'crm', correlation: 'aaaa' }]);
   });
 
-  it('answers 404 for an entry the ring no longer holds, and 400 for one that is not an id', async () => {
+  it('counts succeeded and failed hops per window, never a hop out', async () => {
+    const now = Date.now();
+    const { body } = await get(`/sign-in-log/windows?bounds=${now - 60_000},${now + 60_000},${now + 120_000}`);
+    expect(body).toEqual({
+      windows: [{ succeeded: 1, failed: 1 }, { succeeded: 0, failed: 0 }],
+      cutAt: null,
+      retention: SIGN_IN_LOG_RETENTION,
+    });
+    expect(countSignInsByWindow(sql, [0, now - 60_000])).toEqual([{ succeeded: 0, failed: 0 }]);
+    expect((await get('/sign-in-log/windows?bounds=5,4')).status).toBe(400);
+  });
+
+  it('answers 404 for an entry retention no longer holds, and 400 for one that is not an id', async () => {
     expect(await get('/sign-in-log/999999')).toEqual({ status: 404, body: { error: 'not found' } });
     expect((await get('/sign-in-log/abc')).status).toBe(400);
   });

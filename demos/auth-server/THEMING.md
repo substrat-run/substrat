@@ -1,8 +1,8 @@
 # Theming the hosted sign-in screens
 
-Every screen a person sees while signing in is styled by one **theme file**: a JSON object.
-This page is the whole contract, so it can be handed to Claude with a screenshot or a brand
-guide and the answer pasted straight in.
+Every screen a person sees while signing in is styled and worded by one **theme file**: a JSON
+object. This page is the whole contract, so it can be handed to Claude with a screenshot or a
+brand guide and the answer pasted straight in.
 
 **Where a theme goes.** In the console, either *Branding* (the issuer's theme, used everywhere)
 or an application's *Branding* tab (that application only). Press **Edit raw** and paste the
@@ -31,6 +31,8 @@ All optional. Colors are `#rgb` or `#rrggbb`, and nothing else.
 | `logoUrl` | `https://…` (up to 2,048 characters), or a `data:image/…` up to 256,000 |
 | `title` | The sign-in heading, 1 to 60 characters |
 | `css` | Raw CSS, under the rules below |
+| `text` | Replacement wording per language, described below |
+| `languages` | The languages offered, the first being the default, described below |
 
 ## Raw CSS
 
@@ -72,12 +74,53 @@ These class names are stable. Anything else in the markup can change without not
 | `.error` / `.notice` | Error and confirmation text |
 | `.muted` | Secondary text |
 | `.scopes li` | A permission on the consent screen |
+| `.lang-switch` | The language choice at the foot of every card |
 | `.bankid-qr` | The BankID QR code. Keep its white background, or phones cannot scan it. |
 
 The custom properties behind the color keys are `--bg`, `--panel`, `--panel-2`, `--line`,
 `--text`, `--muted`, `--accent`, `--accent-contrast`, `--danger`, `--radius` and `--radius-lg`.
 The card's shadow is `--card-shadow`. Prefer the keys, and use `css` for what they cannot say:
 layout, logo placement, type.
+
+## Text
+
+`text` replaces any built-in string, per language. Leave out whatever should stay as it is.
+
+```json
+{
+  "text": {
+    "sv": { "common.title": "Logga in", "signin.forOidc": "Välkommen tillbaka." },
+    "en": { "common.title": "Sign in", "signin.forOidc": "Welcome back." }
+  }
+}
+```
+
+In the raw editor, **Show all text** fills in every key in both languages, which is the list to
+give Claude. Anything left unchanged is dropped on save, so it keeps following the built-in
+wording. The keys are defined in `src/messages.ts`.
+
+- Plain text, 1 to 500 characters. Markup is shown as typed.
+- `{provider}`, `{email}` and the like are filled in at run time. A string may leave one out but
+  cannot use one its built-in does not have.
+- `common.title` is the sign-in heading, and wins over the theme's `title` for that language.
+- An application's entries override the issuer's one at a time.
+- This covers the screens. The errors from the server and the emails keep the built-in wording.
+
+## Languages
+
+`languages` limits the languages an application's screens offer. Without it, both are offered.
+
+```json
+{ "languages": ["sv"] }
+```
+
+- A list of distinct codes from `"sv"` and `"en"`, in order of preference.
+- The first is the default: it is used when neither the application's `ui_locales`, the
+  person's earlier choice nor the browser's languages name an allowed one, and it takes the
+  place of the issuer's `ISSUER_LOCALE` for this application.
+- With one language the language switch is not shown.
+- The server's errors and the emails follow the screen, so they keep to the list too.
+- An application's list replaces the issuer's.
 
 ## Example
 

@@ -20,6 +20,8 @@ import {
 } from '../api';
 import { returnTarget } from '../console/routes';
 import { Centered, Card, Field } from '../primitives';
+import { useT, useTitle } from './locale';
+import type { MessageKey } from '../../../src/messages.js';
 import { PhoneFactor } from './PhoneFactor';
 
 export function SignIn({
@@ -34,6 +36,8 @@ export function SignIn({
   socialError: string | null;
   theme: ClientTheme;
 }) {
+  const t = useT();
+  const signInTitle = useTitle(theme);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(socialError);
@@ -100,8 +104,8 @@ export function SignIn({
   if (redirecting && only) {
     return (
       <Centered>
-        <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
-          <p className="muted">Continuing to {only.label}…</p>
+        <Card title={signInTitle} logo={theme.logoUrl}>
+          <p className="muted">{t('common.continuingTo', { provider: only.label })}</p>
         </Card>
       </Centered>
     );
@@ -120,18 +124,15 @@ export function SignIn({
   if (!providers.length && !passwordEnabled) {
     return (
       <Centered>
-        <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
-          <p className="error">
-            This application accepts no sign-in method this issuer currently offers. Its
-            administrator has to enable one before anyone can sign in to it.
-          </p>
+        <Card title={signInTitle} logo={theme.logoUrl}>
+          <p className="error">{t('signin.noMethod')}</p>
           {/* The console can reach this state the slow way — restricted to an upstream that
               was deleted or broke afterwards — and it is the one case where the person
               reading has the power to fix it, if they can get to a screen. */}
           {!forOidc && (
             <p className="muted">
-              Administrator? <a href="/login?builtin=0">Sign in with this issuer’s own defaults</a> to
-              change it.
+              {t('signin.adminPrompt')} <a href="/login?builtin=0">{t('signin.adminLink')}</a>{' '}
+              {t('signin.adminSuffix')}
             </p>
           )}
         </Card>
@@ -140,9 +141,9 @@ export function SignIn({
   }
   return (
     <Centered>
-      <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+      <Card title={signInTitle} logo={theme.logoUrl}>
         <p className="muted">
-          {forOidc ? 'Sign in to continue to the application that sent you here.' : 'Sign in to the admin dashboard.'}
+          {forOidc ? t('signin.forOidc') : t('signin.forConsole')}
         </p>
         {providers.length > 0 && (
           <div className="providers">
@@ -165,17 +166,17 @@ export function SignIn({
                   }
                 }}
               >
-                Continue with {provider.label}
+                {t('common.continueWith', { provider: provider.label })}
               </button>
             ))}
-            {passwordEnabled && <div className="or"><span>or</span></div>}
+            {passwordEnabled && <div className="or"><span>{t('common.or')}</span></div>}
           </div>
         )}
         {err && !passwordEnabled && <p className="error">{err}</p>}
         {passwordEnabled && (
           <>
-          <Field label="Email" value={email} onChange={setEmail} type="email" />
-          <Field label="Password" value={password} onChange={setPassword} type="password" />
+          <Field label={t('common.email')} value={email} onChange={setEmail} type="email" />
+          <Field label={t('common.password')} value={password} onChange={setPassword} type="password" />
           {err && <p className="error">{err}</p>}
           {notice && <p className="notice">{notice}</p>}
           <button
@@ -194,23 +195,23 @@ export function SignIn({
               }
             }}
           >
-            Sign in
+            {t('common.signIn')}
           </button>
           <button
             className="btn link"
             onClick={async () => {
               setErr(null);
               setNotice(null);
-              if (!email) return setErr('Enter your email first, then request a reset.');
+              if (!email) return setErr(t('signin.enterEmailFirst'));
               try {
                 await requestPasswordReset(email);
-                setNotice('If that email has an account, a reset link is on its way.');
+                setNotice(t('signin.resetSent'));
               } catch (e) {
                 setErr(e instanceof Error ? e.message : String(e));
               }
             }}
           >
-            Forgot password?
+            {t('signin.forgot')}
           </button>
           </>
         )}
@@ -218,7 +219,7 @@ export function SignIn({
             does not offer it — the endpoint would make an account nobody could use it with. */}
         {signupEnabled && passwordEnabled && (
           <button className="btn link" onClick={onSignUp}>
-            Create an account
+            {t('signin.createAccount')}
           </button>
         )}
       </Card>
@@ -251,12 +252,13 @@ function IdentifierFirst({
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const t = useT();
   const [route, setRoute] = useState<SignInRoute | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
   const clientId = new URLSearchParams(window.location.search).get('client_id');
-  const title = theme.title ?? 'Substrat Auth';
+  const title = useTitle(theme);
 
   const goToProvider = async (provider: { id: string }, hint?: string) => {
     setErr(null);
@@ -287,7 +289,7 @@ function IdentifierFirst({
   };
 
   if (route?.kind === 'provider' && busy) {
-    return <Centered><Card title={title} logo={theme.logoUrl}><p className="muted">Continuing to {route.provider.label}…</p></Card></Centered>;
+    return <Centered><Card title={title} logo={theme.logoUrl}><p className="muted">{t('common.continuingTo', { provider: route.provider.label })}</p></Card></Centered>;
   }
 
   // Step 2 — the address is not routed.
@@ -296,25 +298,22 @@ function IdentifierFirst({
       <Centered>
         <Card title={title} logo={theme.logoUrl}>
           <p className="muted identifier">
-            {email.trim()} <button className="btn link" onClick={() => { setRoute(null); setPassword(''); setErr(null); }}>Change</button>
+            {email.trim()} <button className="btn link" onClick={() => { setRoute(null); setPassword(''); setErr(null); }}>{t('signin.change')}</button>
           </p>
           {route.kind === 'none' && (
-            <p className="error">
-              This application does not accept sign-in for that address. Check it for typos, or use
-              the account your organisation gave you.
-            </p>
+            <p className="error">{t('signin.noRoute')}</p>
           )}
           {route.kind === 'provider' && (
             <>
               {err && <p className="error">{err}</p>}
               <button className="btn primary" onClick={() => void goToProvider(route.provider, email.trim())}>
-                Continue with {route.provider.label}
+                {t('common.continueWith', { provider: route.provider.label })}
               </button>
             </>
           )}
           {route.kind === 'password' && (
             <>
-              <Field label="Password" value={password} onChange={setPassword} type="password" />
+              <Field label={t('common.password')} value={password} onChange={setPassword} type="password" />
               {err && <p className="error">{err}</p>}
               {notice && <p className="notice">{notice}</p>}
               <button
@@ -332,9 +331,9 @@ function IdentifierFirst({
                   }
                 }}
               >
-                {route.secondFactor === 'sms' ? 'Continue' : 'Sign in'}
+                {route.secondFactor === 'sms' ? t('common.continue') : t('common.signIn')}
               </button>
-              {route.secondFactor === 'sms' && <p className="muted small">We will text you a code in the next step.</p>}
+              {route.secondFactor === 'sms' && <p className="muted small">{t('signin.smsNext')}</p>}
               <button
                 className="btn link"
                 onClick={async () => {
@@ -342,15 +341,15 @@ function IdentifierFirst({
                   setNotice(null);
                   try {
                     await requestPasswordReset(email.trim());
-                    setNotice('If that email has an account, a reset link is on its way.');
+                    setNotice(t('signin.resetSent'));
                   } catch (e) {
                     setErr(e instanceof Error ? e.message : String(e));
                   }
                 }}
               >
-                Forgot password?
+                {t('signin.forgot')}
               </button>
-              {signupEnabled && <button className="btn link" onClick={onSignUp}>Create an account</button>}
+              {signupEnabled && <button className="btn link" onClick={onSignUp}>{t('signin.createAccount')}</button>}
             </>
           )}
         </Card>
@@ -362,21 +361,21 @@ function IdentifierFirst({
   return (
     <Centered>
       <Card title={title} logo={theme.logoUrl}>
-        <p className="muted">Sign in to continue to the application that sent you here.</p>
+        <p className="muted">{t('signin.forOidc')}</p>
         {signIn.providers.length > 0 && (
           <div className="providers">
             {signIn.providers.map((provider) => (
               <button key={provider.id} className="btn" onClick={() => void goToProvider(provider)}>
-                Continue with {provider.label}
+                {t('common.continueWith', { provider: provider.label })}
               </button>
             ))}
-            <div className="or"><span>or</span></div>
+            <div className="or"><span>{t('common.or')}</span></div>
           </div>
         )}
-        <Field label="Email" value={email} onChange={setEmail} type="email" />
+        <Field label={t('common.email')} value={email} onChange={setEmail} type="email" />
         {err && <p className="error">{err}</p>}
         <button className="btn primary" disabled={busy || !email.includes('@')} onClick={() => void identify()}>
-          Continue
+          {t('common.continue')}
         </button>
       </Card>
     </Centered>
@@ -388,15 +387,15 @@ function IdentifierFirst({
  * falls back to the scan instruction while pending and a plain failure once failed —
  * BankID adds codes over time, and an unmapped one must degrade to something true.
  */
-const BANKID_HINTS: Record<string, string> = {
-  outstandingTransaction: 'Open the BankID app and scan the QR code.',
-  noClient: 'Open the BankID app and scan the QR code.',
-  started: 'Looking for your BankID…',
-  userSign: 'Confirm with your security code in the BankID app.',
-  userCancel: 'The sign-in was cancelled in the BankID app.',
-  expiredTransaction: 'The BankID sign-in timed out. Start again.',
-  certificateErr: 'This BankID is blocked or invalid. Contact your bank.',
-  startFailed: 'The BankID app could not be reached. Start again.',
+const BANKID_HINTS: Record<string, MessageKey> = {
+  outstandingTransaction: 'bankid.scan',
+  noClient: 'bankid.scan',
+  started: 'bankid.started',
+  userSign: 'bankid.userSign',
+  userCancel: 'bankid.userCancel',
+  expiredTransaction: 'bankid.expired',
+  certificateErr: 'bankid.certificateErr',
+  startFailed: 'bankid.startFailed',
 };
 
 /**
@@ -416,7 +415,8 @@ export function BankIdSignIn({
 }: { oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onBack: () => void; link?: boolean }) {
   const [order, setOrder] = useState<BankIdStart | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
-  const [hint, setHint] = useState('Open the BankID app and scan the QR code.');
+  const t = useT();
+  const [hint, setHint] = useState<MessageKey>('bankid.scan');
   const [err, setErr] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [emailStep, setEmailStep] = useState<BankIdEmailRequired | null>(null);
@@ -428,7 +428,7 @@ export function BankIdSignIn({
   const begin = useCallback(async () => {
     setErr(null);
     setFailed(false);
-    setHint('Open the BankID app and scan the QR code.');
+    setHint('bankid.scan');
     try {
       const started = await bankidStart(link);
       liveOrder.current = started.orderRef;
@@ -483,9 +483,9 @@ export function BankIdSignIn({
           onDone();
         } else if (poll.status === 'failed') {
           setFailed(true);
-          setHint(BANKID_HINTS[poll.hintCode ?? ''] ?? 'The sign-in failed. Start again.');
+          setHint(BANKID_HINTS[poll.hintCode ?? ''] ?? 'bankid.failed');
         } else if (poll.hintCode) {
-          setHint(BANKID_HINTS[poll.hintCode] ?? 'Open the BankID app and scan the QR code.');
+          setHint(BANKID_HINTS[poll.hintCode] ?? 'bankid.scan');
         }
       } catch (e) {
         // A refusal with words (no account linked, banned) — show it and stop polling.
@@ -500,23 +500,23 @@ export function BankIdSignIn({
 
   return (
     <Centered>
-      <Card title="Sign in with BankID" logo={theme.logoUrl}>
+      <Card title={t('bankid.title')} logo={theme.logoUrl}>
         {!failed && qrImage && (
           <div className="bankid-qr">
-            <img src={qrImage} alt="BankID QR code" width={208} height={208} />
+            <img src={qrImage} alt={t('bankid.qrAlt')} width={208} height={208} />
           </div>
         )}
-        {!failed && <p className="muted">{hint}</p>}
-        {failed && !err && <p className="error">{hint}</p>}
+        {!failed && <p className="muted">{t(hint)}</p>}
+        {failed && !err && <p className="error">{t(hint)}</p>}
         {err && <p className="error">{err}</p>}
         {!failed && order && (
           <a className="btn" href={order.autoStartUrl}>
-            Open BankID on this device
+            {t('bankid.openHere')}
           </a>
         )}
         {failed && (
           <button className="btn primary" onClick={() => void begin()}>
-            Try again
+            {t('common.tryAgain')}
           </button>
         )}
         <button
@@ -527,7 +527,7 @@ export function BankIdSignIn({
             onBack();
           }}
         >
-          Back
+          {t('common.back')}
         </button>
       </Card>
     </Centered>
@@ -538,6 +538,7 @@ export function BankIdSignIn({
 function BankIdEmail({
   step, oauthQuery, theme, onDone,
 }: { step: BankIdEmailRequired; oauthQuery: string | null; theme: ClientTheme; onDone: () => void }) {
+  const t = useT();
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [sent, setSent] = useState(false);
@@ -562,12 +563,9 @@ function BankIdEmail({
 
   return (
     <Centered>
-      <Card title="Add your email" logo={theme.logoUrl}>
-        <p className="muted">
-          BankID does not share an email address. If you already have an account here, use its
-          address and we will connect them.
-        </p>
-        <Field label="Email" type="email" value={email} onChange={setEmail} />
+      <Card title={t('bankidEmail.title')} logo={theme.logoUrl}>
+        <p className="muted">{t('bankidEmail.intro')}</p>
+        <Field label={t('common.email')} type="email" value={email} onChange={setEmail} />
         <button
           className={sent ? 'btn' : 'btn primary'}
           disabled={busy || !email.trim()}
@@ -577,17 +575,17 @@ function BankIdEmail({
             setSent(true);
           })}
         >
-          {sent ? 'Send a new code' : 'Send code'}
+          {sent ? t('bankidEmail.resend') : t('bankidEmail.send')}
         </button>
         {sent && (
           <>
-            <Field label="Code from the email" value={code} onChange={setCode} />
+            <Field label={t('bankidEmail.code')} value={code} onChange={setCode} />
             <button
               className="btn primary"
               disabled={busy || !/^\d{6}$/.test(code.trim())}
               onClick={() => void act(async () => finish(await bankidEmailVerify(step.token, code.trim(), oauthQuery)))}
             >
-              Continue
+              {t('common.continue')}
             </button>
           </>
         )}
@@ -598,7 +596,7 @@ function BankIdEmail({
             disabled={busy}
             onClick={() => void act(async () => finish(await bankidEmailSkip(step.token, oauthQuery)))}
           >
-            Not now
+            {t('bankidEmail.skip')}
           </button>
         )}
       </Card>

@@ -18,7 +18,7 @@ import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.
 import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
-import { ISSUER_THEME, clientBranding } from './branding.js';
+import { ISSUER_THEME, clientBranding, issuerTheme } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
@@ -36,7 +36,8 @@ import {
 } from './bankid.js';
 import { hopBankIdTransport } from './bankid-transport-hop.js';
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
-import { transportFor, senderFor } from './email.js';
+import { transportFor, senderFor, emailBrandOf } from './email.js';
+import { ISSUER_LOCALE, issuerLocale } from './locale-wire.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
 import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './resources.js';
 import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
@@ -195,7 +196,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // EMAIL is a Cloudflare binding (infra, not a declared string key), so it's read from
       // env directly; the sender address is the manifest-declared EMAIL_FROM.
       transport: this.transport(),
-      sender: senderFor(cfg.EMAIL_FROM),
+      sender: senderFor(cfg.EMAIL_FROM, cfg.EMAIL_FROM_NAME),
+      defaultLocale: issuerLocale(cfg[ISSUER_LOCALE]),
+      emailBrand: emailBrandOf(issuerTheme(cfg[ISSUER_THEME])),
       // workerd has no DNS API, so this honours three of the transport contract's four
       // clauses and says which one it cannot. `cimd-fetch.ts` carries the reasoning.
       fetchClientMetadataResource,
@@ -703,6 +706,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       const clientId = clientIdOrConsole(url.searchParams.get('client_id'));
       return Response.json({
         ...clientBranding(this.ctx.storage.sql, clientId, this.effectiveCfg()[ISSUER_THEME]),
+        defaultLocale: issuerLocale(this.effectiveCfg()[ISSUER_LOCALE]),
         signIn: clientSignIn(this.ctx.storage.sql, clientId, this.offeredProviders()),
       });
     }

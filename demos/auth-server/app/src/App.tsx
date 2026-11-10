@@ -23,6 +23,10 @@ import { recoverInvitation, saveInvitation, type InvitationRecovery } from './au
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
 import { drawsForRelyingParty } from './auth/hand-off';
+import { LocaleContext, detectLocale, storeLocale } from './auth/locale';
+import { translate } from '../../src/messages.js';
+import { themeTitle } from '../../src/theme-wire.js';
+import type { Locale } from '../../src/locale-wire.js';
 import { applyClientTheme, paintHandOff } from './theme-apply';
 
 // The console is its own chunk. Everyone a relying party sends to /login downloads this
@@ -78,6 +82,11 @@ type Phase =
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ t: 'loading' });
   const [theme, setTheme] = useState<ClientTheme>({});
+  const [locale, setLocale] = useState<Locale>(() => detectLocale('en'));
+  const choose = useCallback((next: Locale) => {
+    storeLocale(next, true);
+    setLocale(next);
+  }, []);
 
   const refresh = useCallback(async () => {
     // A password-reset link lands the user here with a token — handle that first.
@@ -85,10 +94,16 @@ export default function App() {
     // These three have no relying party behind them, so they take the theme the console's own
     // sign-in does, which is where the issuer's lands (`clientBranding`). The read has its own
     // fallback, so a link someone was emailed still opens if it fails.
+    const settleLocale = (issuerDefault: Locale, allowed?: readonly Locale[]) => {
+      const settled = detectLocale(issuerDefault, allowed);
+      storeLocale(settled, false);
+      setLocale(settled);
+    };
     const paintWithoutClient = async () => {
-      const { theme: issuer } = await clientOptions(null, []);
+      const { theme: issuer, defaultLocale } = await clientOptions(null, []);
       applyClientTheme(issuer);
       setTheme(issuer);
+      settleLocale(defaultLocale, issuer.languages);
     };
     if (url.pathname === '/github-email') {
       await paintWithoutClient();
@@ -111,7 +126,7 @@ export default function App() {
     const { needsSetup, signupEnabled, providers } = await setupState();
     // A social sign-in that was refused comes back to `/` carrying its reason. Read it before
     // anything else re-renders, so the sign-in screen can say what happened.
-    const socialError = socialErrorFrom(url);
+    const socialError = socialErrorFrom(url, detectLocale('en'));
     if (needsSetup) return setPhase({ t: 'setup' });
     const session = await currentSession();
     // The pending authorize request, if one sent this person here. The server does NOT
@@ -136,7 +151,7 @@ export default function App() {
      * so its policy was never enforced against anything; a relying party's is, and this
      * escape hatch cannot touch that one.
      */
-    const plainDefaults = { theme: {}, signIn: { providers, password: true, restricted: false } };
+    const plainDefaults = { theme: {} as ClientTheme, defaultLocale: 'en' as const, signIn: { providers, password: true, restricted: false } };
     // The relying party mid-authorize; `null` is the console asking about itself.
     const clientId = forOidc ? url.searchParams.get('client_id') : null;
     // Two ways to end up on the plain screen: the operator asked for it, or an authorize
@@ -145,6 +160,7 @@ export default function App() {
     const options = plain ? plainDefaults : await clientOptions(clientId, providers);
     applyClientTheme(options.theme);
     setTheme(options.theme);
+    settleLocale(options.defaultLocale, options.theme.languages);
     const signIn = options.signIn;
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
@@ -200,8 +216,10 @@ export default function App() {
   // restyle: an operator who pasted something broken has to be able to get in and undo it.
   // Before the paint, so a themed screen does not flash the built-in one.
   useLayoutEffect(() => {
-    paintHandOff(drawsForRelyingParty(phase.t) ? theme : null);
-  }, [phase.t, theme]);
+    const handOff = drawsForRelyingParty(phase.t);
+    paintHandOff(handOff ? theme : null);
+    document.documentElement.lang = handOff ? locale : 'en';
+  }, [phase.t, theme, locale]);
 
   /**
    * Sign-in finished without an OIDC request to resume — hand the URL to the console.
@@ -231,11 +249,11 @@ export default function App() {
     run();
   }, [run]);
 
-  switch (phase.t) {
+  const screen = () => { switch (phase.t) {
     case 'github-email': return <GitHubEmail theme={theme} />;
     case 'invitation': return <Invitation recovery={phase.recovery} theme={theme} />;
     case 'loading':
-      return <Centered>Loading…</Centered>;
+      return <Centered>{translate(locale, 'common.loading', {}, theme.text?.[locale])}</Centered>;
     case 'failed':
       // Named as the issuer's problem rather than the person's, because it is: nothing they
       // typed reaches these two reads. Retry is the whole remedy and is worth offering — the
@@ -243,13 +261,11 @@ export default function App() {
       // not, and before this the only retry available was the one the person guessed at.
       return (
         <Centered>
-          <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+          <Card title={themeTitle(theme, locale)} logo={theme.logoUrl}>
             <p className="error">{phase.message}</p>
-            <p className="muted">
-              This is the issuer, not you — signing in cannot be offered until it answers.
-            </p>
+            <p className="muted">{translate(locale, 'failed.notYou', {}, theme.text?.[locale])}</p>
             <button className="btn primary" onClick={() => { setPhase({ t: 'loading' }); run(); }}>
-              Try again
+              {translate(locale, 'common.tryAgain', {}, theme.text?.[locale])}
             </button>
           </Card>
         </Centered>
@@ -299,5 +315,7 @@ export default function App() {
           <Console session={phase.session} admin onSignOut={signOutAndRefresh} />
         </Suspense>
       );
-  }
+  } };
+
+  return <LocaleContext.Provider value={{ locale, choose, overrides: theme.text?.[locale], languages: theme.languages }}>{screen()}</LocaleContext.Provider>;
 }

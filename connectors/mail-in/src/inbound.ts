@@ -12,7 +12,7 @@ import {
   type ConnectionId,
   type PlatformActorId,
 } from '@substrat-run/contracts';
-import { connectorUploadBody, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
+import { bytesStream, connectorUploadBody, ulid, type ByteBody, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
 import {
   MESSAGE_PREFIX,
   bumpStats,
@@ -63,6 +63,14 @@ import type { MailInStore } from './store.js';
  * the connector sweep; after {@link MAX_DELIVERY_ATTEMPTS} it is dead-lettered and its raw message
  * kept for an operator.
  *
+ * A delivery claims its message first, because the one started at acceptance and the sweep can
+ * otherwise reach the same pending message together and each store the files. Every write of the
+ * entry, the claim among them, is a compare-and-set (`swapConnectorState`) from the value this run
+ * last read or wrote: of two runs that read the same entry, one claims it and the other stops, and a
+ * run another has overtaken writes nothing over it. The claim also counts the attempt, so a run
+ * killed outright, which never reaches its `catch`, still spends one and the message cannot be
+ * retried forever.
+ *
  * ## The sender check
  *
  * Cloudflare already refuses mail that fails the sender's DMARC policy, or passes neither SPF nor
@@ -74,6 +82,11 @@ import type { MailInStore } from './store.js';
 
 /** Deliveries tried before a message is dead-lettered. */
 export const MAX_DELIVERY_ATTEMPTS = 8;
+/**
+ * How long one delivery holds a message: past any run the platform lets finish. A delivery runs in
+ * the `waitUntil` after acceptance (about 30 s) or in the connector sweep's cron (up to 15 minutes).
+ */
+const CLAIM_MS = 20 * 60 * 1000;
 /** The longest wait between two attempts. */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 /** Messages one sweep of one address delivers, at most. */
@@ -177,9 +190,8 @@ export async function acceptInboundMail(host: ScopeHost, deps: MailInInboundDeps
   const headerMessageId = firstHeader(fields, 'message-id')?.trim().toLowerCase();
   const messageId = await sha256Hex(headerMessageId ? new TextEncoder().encode(headerMessageId) : raw);
   const key = `${MESSAGE_PREFIX}${messageId}`;
-  if (await host.admin.getConnectorState(connection.id, key)) {
-    return { accepted: true, connectionId: connection.id, messageId, duplicate: true };
-  }
+  const duplicate = { accepted: true, connectionId: connection.id, messageId, duplicate: true } as const;
+  if (await host.admin.getConnectorState(connection.id, key)) return duplicate;
   const objectKey = objectKeyOf(binding, connection.id, messageId);
   // The bytes first: a state row that names an object that never landed would be a pending
   // message nothing can deliver, where a stored object with no row is only re-stored by a retry.
@@ -195,7 +207,8 @@ export async function acceptInboundMail(host: ScopeHost, deps: MailInInboundDeps
     nextAttemptAt: at,
     landed: {},
   };
-  await host.admin.putConnectorState(connection.id, key, entry);
+  // Only if still absent: two copies accepted together both store the same object, and count once.
+  if (!(await host.admin.swapConnectorState(connection.id, key, undefined, entry))) return duplicate;
   await bumpStats(host, connection.id, (s) => ({ ...s, received: s.received + 1, lastReceivedAt: at }));
   return { accepted: true, connectionId: connection.id, messageId, duplicate: false };
 }
@@ -220,6 +233,11 @@ const addressesOf = (list: Address[] | undefined): string[] =>
 const bytesOf = (content: Attachment['content']): Uint8Array =>
   typeof content === 'string' ? new TextEncoder().encode(content) : content instanceof Uint8Array ? content : new Uint8Array(content);
 
+/** Thrown by a save that finds the entry changed under it: another delivery has the message, and this run stops. */
+class ClaimLost extends Error {}
+
+const isClaimed = (entry: MailInMessageEntry, now: number): boolean => entry.claim !== undefined && Date.parse(entry.claim.until) > now;
+
 const isoOrNull = (date: string | undefined): string | null => {
   if (!date) return null;
   const ms = Date.parse(date);
@@ -238,9 +256,34 @@ export async function deliverInboundMail(
   if (!stored || stored.status !== 'pending') return { status: 'skipped', why: stored ? stored.status : 'unknown message' };
   const binding = await readBinding(host, connectionId);
   if (!binding) return { status: 'skipped', why: 'the address has no binding' };
+  const now = nowOf(deps).getTime();
+  if (isClaimed(stored, now)) return { status: 'skipped', why: 'another delivery holds it' };
   const uploads: Record<string, MailInUploaded> = { ...stored.uploaded };
   const entry: MailInMessageEntry = { ...stored, uploaded: uploads, landed: { ...stored.landed } };
-  const save = () => host.admin.putConnectorState(connectionId, key, entry);
+  /** What the row held after this run's last read or write: every save swaps from it. */
+  let held: unknown = stored;
+  const save = async () => {
+    const next: unknown = JSON.parse(JSON.stringify(entry));
+    if (!(await host.admin.swapConnectorState(connectionId, key, held, next))) throw new ClaimLost('another delivery took the message over');
+    held = next;
+  };
+  /** A save that must not throw: false when another delivery has the message. */
+  const saved = () => save().then(() => true, (err: unknown) => (err instanceof ClaimLost ? false : Promise.reject(err)));
+  const taken: DeliveryOutcome = { status: 'skipped', why: 'another delivery took the message over' };
+  const deadLetter = async (error: string): Promise<DeliveryOutcome> => {
+    entry.status = 'dead-lettered';
+    entry.lastError = error;
+    delete entry.claim;
+    if (!(await saved())) return taken;
+    await host.admin.recordConnectionUse(connectionId, { ok: false, error }).catch(() => undefined);
+    await bumpStats(host, connectionId, (s) => ({ ...s, deadLettered: s.deadLettered + 1 }));
+    return { status: 'dead-lettered', attempts: entry.attempts, error };
+  };
+  // Only a killed run leaves a pending message out of attempts: every other failure dead-letters it.
+  if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) return deadLetter(entry.lastError ?? 'the delivery was interrupted on every attempt');
+  entry.claim = { token: ulid(), until: instant.parse(new Date(now + CLAIM_MS).toISOString()) };
+  entry.attempts += 1;
+  if (!(await saved())) return taken;
   try {
     const raw = await deps.store.get(entry.objectKey);
     if (!raw) throw new Error('the stored message is gone');
@@ -291,18 +334,20 @@ export async function deliverInboundMail(
     if (entity) {
       let attachments: ScopeAttachments | undefined;
       // Two steps, each saved: the bytes are stored once, and a failed invoke retries the invoke.
-      const uploadOnce = async (slot: string, filename: string, contentType: string, bytes: Uint8Array): Promise<MailInUploaded> => {
+      const uploadOnce = async (slot: string, filename: string, contentType: string, body: () => ByteBody): Promise<MailInUploaded> => {
         const done = uploads[slot];
         if (done) return done;
         attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
-        const record = await attachments.upload({ entity, filename, contentType, visibility: 'internal', body: connectorUploadBody(bytes) });
+        const record = await attachments.upload({ entity, filename, contentType, visibility: 'internal', body: body() });
         const uploaded = { id: record.id, filename: record.filename, contentType: record.contentType, size: record.size, sha256: record.sha256 };
         uploads[slot] = uploaded;
         await save();
         return uploaded;
       };
       if (entry.invoked.raw && !entry.landed[RAW_SLOT]) {
-        const uploaded = await uploadOnce(RAW_SLOT, 'message.eml', 'message/rfc822', raw);
+        // Always the streamed route: a buffered upload copies the whole file again on its way, where
+        // the stream copies 1 MiB at a time. The bytes themselves stay held either way.
+        const uploaded = await uploadOnce(RAW_SLOT, 'message.eml', 'message/rfc822', () => bytesStream(raw));
         await scope.invoke(binding.operation, mailInChange.parse({ change: 'raw', connectionId, messageId, attachment: uploaded }));
         entry.landed[RAW_SLOT] = uploaded.id;
         await save();
@@ -314,7 +359,7 @@ export async function deliverInboundMail(
           String(index),
           file.filename ?? `attachment-${index + 1}`,
           file.mimeType || 'application/octet-stream',
-          bytesOf(file.content),
+          () => connectorUploadBody(bytesOf(file.content)),
         );
         await scope.invoke(binding.operation, mailInChange.parse({ change: 'attachment', connectionId, messageId, index, attachment: uploaded }));
         entry.landed[String(index)] = uploaded.id;
@@ -323,6 +368,7 @@ export async function deliverInboundMail(
     }
     entry.status = 'delivered';
     entry.deliveredAt = instant.parse(nowOf(deps).toISOString());
+    delete entry.claim;
     delete entry.lastError;
     delete entry.envelopeFrom;
     delete entry.uploaded;
@@ -333,19 +379,15 @@ export async function deliverInboundMail(
     await host.admin.recordConnectionUse(connectionId, { ok: true }).catch(() => undefined);
     return { status: 'delivered', attachments: Object.keys(entry.landed).filter((slot) => slot !== RAW_SLOT).length };
   } catch (err) {
+    if (err instanceof ClaimLost) return taken;
     const error = (err instanceof Error ? err.message : String(err)).slice(0, 300);
-    entry.attempts += 1;
+    if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) return deadLetter(error);
+    delete entry.claim;
     entry.lastError = error;
-    await host.admin.recordConnectionUse(connectionId, { ok: false, error }).catch(() => undefined);
-    if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) {
-      entry.status = 'dead-lettered';
-      await save();
-      await bumpStats(host, connectionId, (s) => ({ ...s, deadLettered: s.deadLettered + 1 }));
-      return { status: 'dead-lettered', attempts: entry.attempts, error };
-    }
     const wait = Math.min(60_000 * 2 ** entry.attempts, MAX_BACKOFF_MS);
     entry.nextAttemptAt = instant.parse(new Date(nowOf(deps).getTime() + wait).toISOString());
-    await save();
+    if (!(await saved())) return taken;
+    await host.admin.recordConnectionUse(connectionId, { ok: false, error }).catch(() => undefined);
     return { status: 'retrying', attempts: entry.attempts, error, nextAttemptAt: entry.nextAttemptAt };
   }
 }
@@ -380,7 +422,7 @@ export async function sweepMailIn(
     }
   }
   const due = entries
-    .filter((e) => e.entry.status === 'pending' && Date.parse(e.entry.nextAttemptAt) <= now)
+    .filter((e) => e.entry.status === 'pending' && Date.parse(e.entry.nextAttemptAt) <= now && !isClaimed(e.entry, now))
     .sort((a, b) => a.entry.receivedAt.localeCompare(b.entry.receivedAt))
     .slice(0, opts.batch ?? SWEEP_BATCH);
   for (const { key } of due) {

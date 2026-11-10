@@ -1,5 +1,12 @@
 # create-substrat
 
+## 0.15.4
+
+### Patch Changes
+
+- A new project now installs the package versions released alongside this one:
+  - `@substrat-run/kernel` and the runtime packages versioned with it: `^0.190.2`
+
 ## 0.15.3
 
 ### Patch Changes

@@ -5919,6 +5919,30 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
+  /** Compare-and-set, atomic because the DO runs one call at a time. `expected` null: only if absent. */
+  swapConnectorState(id: string, key: string, expected: string | null, value: string, at: string): boolean {
+    const cursor =
+      expected === null
+        ? this.sql.exec(
+            `INSERT INTO _substrat_connector_state (connection_id, state_key, value, updated_at)
+             VALUES (?, ?, ?, ?) ON CONFLICT (connection_id, state_key) DO NOTHING`,
+            id,
+            key,
+            value,
+            at,
+          )
+        : this.sql.exec(
+            `UPDATE _substrat_connector_state SET value = ?, updated_at = ?
+             WHERE connection_id = ? AND state_key = ? AND value = ?`,
+            value,
+            at,
+            id,
+            key,
+            expected,
+          );
+    return cursor.rowsWritten > 0;
+  }
+
   getConnectorState(id: string, key: string): string | undefined {
     const row = this.sql
       .exec(

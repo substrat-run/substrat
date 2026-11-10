@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-auth-server",
-  "version": "0.17.18",
+  "version": "0.17.19",
   "private": true,
   "license": "Apache-2.0",
   "description": "Standalone Better Auth OIDC provider demo (auth-server) — see spec/concept.md",
@@ -54,6 +54,7 @@
   },
   "dependencies": {
     "@better-auth/cimd": "^1.7.18",
+    "@better-auth/i18n": "^1.7.18",
     "@better-auth/oauth-provider": "^1.7.18",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-email": "workspace:^",

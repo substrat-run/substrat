@@ -4,6 +4,8 @@ import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
 import { isPlacesAnswer, placesOf, type Place } from './places';
 import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
 import type { ClientTheme } from '../../src/theme-wire.js';
+import type { Locale } from '../../src/locale-wire.js';
+import { translate } from '../../src/messages.js';
 
 export type { Place } from './places';
 
@@ -594,9 +596,14 @@ function refusalText(url: URL, fallback: string): string {
  * The reason a social sign-in came back refused, as Better Auth puts it on the error redirect.
  * Read on the SIGNED-OUT screen: `signInSocial` sends refusals to `/?social_error=1`.
  */
-export function socialErrorFrom(url: URL): string | null {
+export function socialErrorFrom(url: URL, locale: Locale): string | null {
   if (!url.searchParams.has('social_error') && !url.searchParams.has('error')) return null;
-  return refusalText(url, 'sign-in was refused');
+  // The one refusal someone signing in meets. The rest are about connecting a provider, on the
+  // account screen, which is the console's and in English.
+  if (locale === 'sv' && (url.searchParams.get('error') ?? '').replace(/[_-]/g, ' ') === 'account not linked') {
+    return translate(locale, 'refusal.notLinked');
+  }
+  return refusalText(url, translate(locale, 'refusal.refused'));
 }
 
 /**
@@ -748,6 +755,8 @@ export async function resolveSignInRoute(clientId: string | null, identifier: st
 /** Theme + sign-in methods for a client id, in one read. */
 export interface ClientOptions {
   theme: ClientTheme;
+  /** The issuer's language, for a browser that offers none we speak. */
+  defaultLocale: Locale;
   signIn: ClientSignIn;
 }
 
@@ -770,6 +779,7 @@ export interface ClientOptions {
 export async function clientOptions(clientId: string | null, issuerProviders: PublicProvider[]): Promise<ClientOptions> {
   const fallback: ClientOptions = {
     theme: {},
+    defaultLocale: 'en',
     signIn: { providers: issuerProviders, password: true, restricted: false },
   };
   try {
@@ -780,7 +790,7 @@ export async function clientOptions(clientId: string | null, issuerProviders: Pu
     const res = await fetch(`/api/client-options${query}`);
     if (!res.ok) return fallback;
     const body = (await res.json()) as Partial<ClientOptions>;
-    return { theme: body.theme ?? {}, signIn: body.signIn ?? fallback.signIn };
+    return { theme: body.theme ?? {}, defaultLocale: body.defaultLocale ?? 'en', signIn: body.signIn ?? fallback.signIn };
   } catch {
     return fallback;
   }
@@ -1057,6 +1067,8 @@ export interface IssuerSettings {
   machineScopesError?: string;
   /** `ISSUER_THEME` — what every hosted screen starts from, as a theme file. */
   issuerTheme: Record<string, unknown>;
+  /** `ISSUER_LOCALE` — the language when a browser's languages are none we speak. */
+  defaultLocale: Locale;
 }
 
 export async function issuerSettings(): Promise<IssuerSettings> {
@@ -1065,7 +1077,7 @@ export async function issuerSettings(): Promise<IssuerSettings> {
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
 export async function setIssuerSettings(
-  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes' | 'issuerTheme'>>,
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking' | 'machineScopes' | 'issuerTheme' | 'defaultLocale'>>,
 ): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }
@@ -1231,14 +1243,19 @@ export interface SignInAttempt {
   type: SignInLogType | null;
 }
 
-/** The Auth0 log type codes this log can carry — it records federated round trips only. */
+/** The Auth0 log type codes this log can carry: `s` and `f`, with the refusal's own code beside `f`. */
 export type SignInLogType = 's' | 'f';
 
 export interface SignInLogPage {
   attempts: SignInAttempt[];
   total: number;
-  /** How many rows the issuer keeps at all — the log is a ring, and the screen says so. */
-  retained: number;
+  /** How long the issuer keeps a row, and the most rows it keeps — the screen says so. */
+  retention: SignInLogRetention;
+}
+
+export interface SignInLogRetention {
+  days: number;
+  rows: number;
 }
 
 export interface SignInLogFilter {
@@ -1271,8 +1288,21 @@ export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLog
 }
 
 /**
+ * Succeeded and failed sign-ins in each window between consecutive `bounds` (ms) — counted by
+ * the issuer, so a busy week is not a page walk. `cutAt` is where the log starts when its row
+ * cap, not its age, decided that; windows before it were not kept.
+ */
+export async function signInWindows(bounds: number[]): Promise<{
+  windows: { succeeded: number; failed: number }[];
+  cutAt: number | null;
+  retention: SignInLogRetention;
+}> {
+  return admin(`/sign-in-log/windows?bounds=${bounds.join(',')}`);
+}
+
+/**
  * One log row by id, with the other hops of the same attempt (`correlation`) — the pair is the
- * diagnosis, so the entry's own screen shows both. `null` once the ring has pruned it.
+ * diagnosis, so the entry's own screen shows both. `null` once retention has pruned it.
  */
 export async function signInLogEntry(id: number): Promise<{ attempt: SignInAttempt; related: SignInAttempt[] } | null> {
   try {

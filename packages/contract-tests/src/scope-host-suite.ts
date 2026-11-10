@@ -6339,6 +6339,26 @@ export function scopeHostContractSuite(
         });
       });
 
+      it('swaps a row only from the value it still holds', async () => {
+        const id = connectionId.parse(ulid());
+        await host.admin.createConnection(staff, {
+          id,
+          tenantId: t1,
+          vertical: 'connector-vertical',
+          provider: 'swappable',
+          label: 'swap test',
+          secret: { accessToken: 'x' },
+        });
+        // `undefined` expects no row: the first creates it, the second finds one.
+        expect(await host.admin.swapConnectorState(id, 'k', undefined, { claim: 'a' })).toBe(true);
+        expect(await host.admin.swapConnectorState(id, 'k', undefined, { claim: 'b' })).toBe(false);
+        // Two writers that read the same row: only the first swap lands.
+        const read = await host.admin.getConnectorState(id, 'k');
+        expect(await host.admin.swapConnectorState(id, 'k', read, { claim: 'c' })).toBe(true);
+        expect(await host.admin.swapConnectorState(id, 'k', read, { claim: 'd' })).toBe(false);
+        expect(await host.admin.getConnectorState(id, 'k')).toEqual({ claim: 'c' });
+      });
+
       it('enumerates state by prefix, ordered by key — the poll driver read', async () => {
         const id = connectionId.parse(ulid());
         await host.admin.createConnection(staff, {

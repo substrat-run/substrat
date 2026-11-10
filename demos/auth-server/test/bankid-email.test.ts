@@ -10,6 +10,7 @@ import { adminMergeAccounts, mergeAccounts } from '../src/account-merge.js';
 import { bankidPlaceholderAddress } from '../src/placeholder-address.js';
 import type { BankIdTransport } from '../src/bankid.js';
 import type { SqlExec } from '../src/introspect.js';
+import { readSignInLog, signInLoggerFor } from '../src/sign-in-log.js';
 
 const ORIGIN = 'http://localhost:8800';
 const PNR = '198001019876';
@@ -62,6 +63,7 @@ function rebuild(overrides?: { allowSignup?: boolean; autoLinkAccounts?: boolean
     sender: { email: 'no-reply@send.substrat.test', name: 'Substrat Auth' },
     allowSignup: true,
     ...(overrides?.autoLinkAccounts === false ? { autoLinkAccounts: false } : {}),
+    recordSignIn: signInLoggerFor(sql),
     bankid: {
       apiUrl: 'https://bankid.test/rp/v6.0',
       transport,
@@ -198,6 +200,22 @@ describe('a first BankID sign-in', () => {
 
     const other = await prove(token, 'anna.private@example.com');
     expect((await sessionOf(other))?.user.email).toBe('anna.private@example.com');
+  });
+
+  it('logs the refused join against the account it matched, and never the personal number', async () => {
+    const anna = await emailAccount();
+    auth = rebuild({ autoLinkAccounts: false });
+    const { token } = await emailStep();
+    await prove(token);
+    await prove(token, 'anna.private@example.com');
+
+    const rows = readSignInLog(sql, { limit: 10 }).attempts.filter((a) => a.method === 'bankid');
+    expect(rows.map((a) => [a.phase, a.outcome, a.error, a.userId === anna])).toEqual([
+      ['direct', 'succeeded', null, false],
+      ['direct', 'failed', 'conflict', true],
+    ]);
+    expect(rows[1]!.errorDescription).toMatch(/Sign in to it first/);
+    expect(JSON.stringify(db.prepare('SELECT * FROM sign_in_attempt').all())).not.toContain(PNR);
   });
 
   it('creates no account from a free address when account creation is off', async () => {

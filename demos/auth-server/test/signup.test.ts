@@ -167,7 +167,7 @@ describe('the dashboard toggle', () => {
     const cookie = await adminCookie();
 
     const before = await api.request('http://localhost/settings', { headers: { cookie } });
-    expect(await before.json()).toEqual({ allowSignup: false, accountLinking: 'link', machineScopes: [], issuerTheme: {} });
+    expect(await before.json()).toEqual({ allowSignup: false, accountLinking: 'link', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
 
     const patched = await api.request('http://localhost/settings', {
       method: 'PATCH',
@@ -175,7 +175,7 @@ describe('the dashboard toggle', () => {
       body: JSON.stringify({ allowSignup: true }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ allowSignup: true, accountLinking: 'link', machineScopes: [], issuerTheme: {} });
+    expect(await patched.json()).toEqual({ allowSignup: true, accountLinking: 'link', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
 
     // It landed on the SAME declared key the platform's Env tab and a wrangler var write to,
     // so there is only ever one answer to "is sign-up open".
@@ -247,7 +247,7 @@ describe('the account-linking mode', () => {
       body: JSON.stringify({ accountLinking: 'block' }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ allowSignup: true, accountLinking: 'block', machineScopes: [], issuerTheme: {} });
+    expect(await res.json()).toEqual({ allowSignup: true, accountLinking: 'block', machineScopes: [], issuerTheme: {}, defaultLocale: 'en' });
     // Same declared key the platform's Env tab and a wrangler var write to — one answer.
     expect(config()[ACCOUNT_LINKING]).toBe('block');
   });

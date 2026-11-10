@@ -8,7 +8,11 @@ import { admin } from 'better-auth/plugins/admin';
 import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
-import { resetPasswordEmail, verifyEmail } from './email.js';
+import { i18n } from '@better-auth/i18n';
+import { sv } from '@better-auth/i18n/locales';
+import { resetPasswordEmail, verifyEmail, type EmailBrand, type MailStyle } from './email.js';
+import { LOCALE_COOKIE, requestLocale, type Locale } from './locale-wire.js';
+import { localizedRefusals } from './server-messages.js';
 import { legacyAwarePassword } from './legacy-password.js';
 import { invitationPlugin } from './invitation-plugin.js';
 import { githubEmailPlugin, withGithubEmailFallback } from './github-email-plugin.js';
@@ -23,6 +27,8 @@ import { isPlaceholderAddress } from './placeholder-address.js';
 import { basicCredentialsOf } from './token-exchange.js';
 import { diagnoseSignInCallback, recordRefusedCallback, recordSignInException } from './sign-in-diagnostics.js';
 import {
+  DIRECT_SIGN_IN_PATHS,
+  attributedSignInOf,
   authorityOf,
   callbackProviderOf,
   clientIdOfSignedQuery,
@@ -75,6 +81,10 @@ export interface AuthDeps {
   transport: EmailTransport;
   /** The sender address for password-reset / verification mail. */
   sender: EmailAddress;
+  /** The issuer's default language: for a request offering none we speak, and for no request. */
+  defaultLocale?: Locale;
+  /** What the issuer's theme contributes to the mail it sends. */
+  emailBrand?: EmailBrand;
   /**
    * How CIMD fetches a client's metadata document — injected, because the guarantee it has
    * to make is runtime-specific and this module is runtime-agnostic.
@@ -620,6 +630,13 @@ async function refuseVerifiedPlaceholder(ctx: {
 }
 
 function betterAuthFor(deps: AuthDeps) {
+  const defaultLocale = deps.defaultLocale ?? 'en';
+  // An invitation is sent by an administrator, about someone else: nothing in that request says
+  // what its reader speaks, so it passes no headers and takes the issuer's language.
+  const mailStyle = (headers?: Headers | null): MailStyle => ({
+    locale: requestLocale(headers, defaultLocale),
+    ...(deps.emailBrand ? { brand: deps.emailBrand } : {}),
+  });
   const machineScopes = deps.machineScopes ?? [];
   return betterAuth({
     database: deps.database,
@@ -637,8 +654,8 @@ function betterAuthFor(deps: AuthDeps) {
       password: legacyAwarePassword,
       // The primary ask: password reset via the email adapter. Better Auth builds the
       // one-time reset URL; we wrap it in the transactional template and send it.
-      sendResetPassword: async ({ user, url }) => {
-        await deps.transport.send(resetPasswordEmail({ to: user.email, from: deps.sender, url }));
+      sendResetPassword: async ({ user, url }, request) => {
+        await deps.transport.send(resetPasswordEmail({ to: user.email, from: deps.sender, url, style: mailStyle(request?.headers) }));
       },
     },
     emailVerification: {
@@ -646,11 +663,19 @@ function betterAuthFor(deps: AuthDeps) {
       // Verification is offered (mail goes out through the same adapter) but not required to
       // sign in — this is a demo, not a compliance gate. Flip `requireEmailVerification` on
       // in emailAndPassword to make it mandatory.
-      sendVerificationEmail: async ({ user, url }) => {
-        await deps.transport.send(verifyEmail({ to: user.email, from: deps.sender, url }));
+      sendVerificationEmail: async ({ user, url }, request) => {
+        await deps.transport.send(verifyEmail({ to: user.email, from: deps.sender, url, style: mailStyle(request?.headers) }));
       },
     },
     plugins: [
+      // Better Auth's own errors, by their codes; our plugins' refusals carry none (`server-messages.ts`).
+      i18n({
+        translations: { sv },
+        defaultLocale,
+        detection: ['cookie', 'header'],
+        localeCookie: LOCALE_COOKIE,
+      }),
+      localizedRefusals(defaultLocale),
       // The issuer identity, pinned to the CLEAN origin. `oauthProvider` derives it from the
       // jwt plugin, falling back to Better Auth's `baseURL` — which includes the base path,
       // so discovery would advertise `{origin}/api/auth` while every relying party was
@@ -798,12 +823,12 @@ function betterAuthFor(deps: AuthDeps) {
         ? [bankidPlugin({
             ...deps.bankid,
             ...(deps.bankid.requireEmail
-              ? { emailStep: { transport: deps.transport, sender: deps.sender, autoLinkAccounts: deps.autoLinkAccounts !== false, merge: deps.bankid.requireEmail.merge } }
+              ? { emailStep: { transport: deps.transport, sender: deps.sender, mailStyle, autoLinkAccounts: deps.autoLinkAccounts !== false, merge: deps.bankid.requireEmail.merge } }
               : {}),
           })]
         : []),
-      invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
-      githubEmailPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
+      invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL, style: mailStyle() }),
+      githubEmailPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL, mailStyle }),
       phonePlugin(deps.phoneVerifier),
       admin(),
     ],
@@ -946,7 +971,8 @@ function betterAuthFor(deps: AuthDeps) {
         return { context: { query: { ...(narrowed?.context.query ?? query), max_age: '0' } } };
       }),
       /**
-       * THE SIGN-IN LOG (`src/sign-in-log.ts`) — both ends of a federated round trip, recorded.
+       * THE SIGN-IN LOG (`src/sign-in-log.ts`) — both ends of a federated round trip, and the
+       * outcome of every sign-in this issuer decides by itself, recorded.
        *
        * An after-hook is the only place either end is observable, and the reason is Better
        * Auth's control flow: `/callback/:id` finishes by THROWING `c.redirect(…)` on every path
@@ -972,6 +998,10 @@ function betterAuthFor(deps: AuthDeps) {
         if (!record) return;
         if (ctx.path === '/github-email/verify' && ctx.context.newSession) {
           record({ method: 'github', outcome: 'succeeded', phase: 'callback', userId: ctx.context.newSession.user.id });
+          return;
+        }
+        if (DIRECT_SIGN_IN_PATHS.includes(ctx.path)) {
+          await recordDirectSignIn(ctx, record);
           return;
         }
         // `/sign-in/social` serves BOTH kinds of upstream: `genericOAuth` registers its
@@ -1049,6 +1079,63 @@ function betterAuthFor(deps: AuthDeps) {
     baseURL: deps.baseURL,
     trustedOrigins: deps.trustedOrigins,
   });
+}
+
+/**
+ * One `direct` row for a sign-in this issuer decided by itself (`DIRECT_SIGN_IN_PATHS`).
+ *
+ * The outcome is read the way the federated rows read theirs: a thrown `APIError` reaches the
+ * after-hook as `context.returned`, and a session reaches it as `context.newSession`. Anything
+ * else is a step that has not finished — a BankID poll still pending, an order parked for its
+ * email, a password accepted with an SMS code still to come — and writes nothing. The one
+ * refusal that is NOT thrown is BankID's own (the person cancelled, the order expired), which
+ * `/bankid/collect` answers as `{ status: 'failed', hintCode }` so the screen can say why.
+ *
+ * A refusal names the account it matched when that is known without trusting the browser: the
+ * endpoint noted it (`attributeSignIn`), or the password form named an address that holds one.
+ * The address itself is never written — for an account that does not exist it is a stranger's
+ * typo or someone's guess list.
+ */
+async function recordDirectSignIn(
+  ctx: { path: string; body?: unknown; context: Record<string, unknown> & { internalAdapter: { findUserByEmail(email: string): Promise<{ user: { id: string } } | null> } } },
+  record: SignInLogger,
+): Promise<void> {
+  const method = signInMethodOfPath(ctx.path);
+  if (!method) return;
+  const body = ctx.body as { email?: unknown; oauth_query?: unknown } | undefined;
+  const clientId = clientIdOfSignedQuery(body?.oauth_query);
+  const returned = ctx.context.returned;
+  const signedIn = (ctx.context.newSession as { user?: { id?: string } } | null | undefined)?.user?.id;
+  if (signedIn) {
+    record({ method, outcome: 'succeeded', phase: 'direct', clientId, userId: signedIn });
+    return;
+  }
+  if (returned instanceof Error) {
+    record({ method, outcome: 'failed', phase: 'direct', clientId, userId: await refusedAccountOf(ctx, body), ...refusalOf(returned) });
+    return;
+  }
+  const answer = returned as { status?: unknown; hintCode?: unknown } | undefined;
+  if (ctx.path === '/bankid/collect' && answer?.status === 'failed') {
+    const hint = typeof answer.hintCode === 'string' ? answer.hintCode : null;
+    record({ method, outcome: 'failed', phase: 'direct', clientId, userId: attributedSignInOf(ctx.context), error: hint ?? 'failed' });
+  }
+}
+
+/** The account a refused direct sign-in was about — see `recordDirectSignIn`. */
+async function refusedAccountOf(
+  ctx: Parameters<typeof recordDirectSignIn>[0],
+  body: { email?: unknown } | undefined,
+): Promise<string | null> {
+  const noted = attributedSignInOf(ctx.context);
+  if (noted) return noted;
+  if ((ctx.path !== '/sign-in/email' && ctx.path !== '/sign-up/email') || typeof body?.email !== 'string') return null;
+  try {
+    const found = await ctx.context.internalAdapter.findUserByEmail(body.email.trim().toLowerCase());
+    return found?.user.id ?? null;
+  } catch {
+    // The row is worth more than the attribution.
+    return null;
+  }
 }
 
 export type Auth = ReturnType<typeof betterAuthFor>;

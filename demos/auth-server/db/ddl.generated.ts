@@ -219,11 +219,11 @@ export const SCHEMA_STATEMENTS: string[] = [
     disabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
   // WHAT HAPPENED when someone tried to sign in (`src/sign-in-log.ts`). Not a Better Auth
-  // table and deliberately not one: the library keeps no record of a refused federated
-  // sign-in — the reason goes onto a redirect and is gone — so an operator debugging
-  // "Microsoft does not work" had only the browser's address bar to go on. A RING, pruned on
-  // write to `SIGN_IN_LOG_LIMIT`, so a debugging aid cannot grow without bound. `id` is the
-  // rowid, which is what makes the ring trim by identity rather than by clock.
+  // table and deliberately not one: the library keeps no record of a refused sign-in — a
+  // federated one's reason goes onto a redirect and is gone, a direct one's to the browser — so
+  // an operator debugging "it does not work" had only the person's memory to go on. Pruned on
+  // write to `SIGN_IN_LOG_RETENTION` (an age, and a row cap so it cannot grow without bound).
+  // `id` is the rowid, which is what makes the cap trim by identity rather than by clock.
   `CREATE TABLE IF NOT EXISTS sign_in_attempt (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
@@ -242,6 +242,9 @@ export const SCHEMA_STATEMENTS: string[] = [
   // produce two `started` rows and one answer, and nothing says which of them is still
   // missing — which is the single inference the table exists to support.
   `CREATE INDEX IF NOT EXISTS sign_in_attempt_correlation_idx ON sign_in_attempt (correlation)`,
+  // Counting a window of days (the Overview's chart, `countSignInsByWindow`) without reading
+  // every row the issuer keeps.
+  `CREATE INDEX IF NOT EXISTS sign_in_attempt_at_idx ON sign_in_attempt (at)`,
   // A login's PLACES (#1670, `src/places.ts`): which apps signing in here are places, and
   // which `sub` is bound in which. Not Better Auth tables — the pool's own index. `place_app`
   // is written ONLY by the platform's delivery (`substrat:places:<tenant>`), one row per app

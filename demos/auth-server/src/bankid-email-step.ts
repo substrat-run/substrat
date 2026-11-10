@@ -3,8 +3,9 @@ import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import type { MergeOutcome } from './account-merge.js';
-import { bankidEmailCode, bankidJoinedNotice } from './email.js';
+import { bankidEmailCode, bankidJoinedNotice, type MailStyle } from './email.js';
 import { isPlaceholderAddress } from './placeholder-address.js';
+import { attributeSignIn } from './sign-in-log.js';
 
 /**
  * The address a BankID sign-in has to prove before it becomes an account (#2939, #2940).
@@ -26,6 +27,7 @@ import { isPlaceholderAddress } from './placeholder-address.js';
  */
 
 export interface BankIdEmailStepOptions {
+  mailStyle?: (headers?: Headers | null) => MailStyle;
   transport: EmailTransport;
   sender: EmailAddress;
   /** May a proven address that matches nothing create an account? */
@@ -154,7 +156,7 @@ export const bankidEmailEndpoints = (opts: BankIdEmailStepOptions) => {
           expiresAt: new Date(Date.now() + STEP_TTL_MS),
         });
         try {
-          const sent = await opts.transport.send(bankidEmailCode({ to: email, from: opts.sender, code }));
+          const sent = await opts.transport.send(bankidEmailCode({ to: email, from: opts.sender, code, style: opts.mailStyle?.(ctx.headers) }));
           if (sent.bounced.includes(email)) throw new Error('bounced');
         } catch {
           await adapter.deleteVerificationByIdentifier(challengeKey(tokenHash));
@@ -186,7 +188,10 @@ export const bankidEmailEndpoints = (opts: BankIdEmailStepOptions) => {
 
         // A refusal leaves the step open, so the person can prove a different address.
         const existing = await adapter.findUserByEmail(challenge.email, { includeAccounts: true });
+        // The sign-in log names the account a refusal below was about (`sign-in-log.ts`).
+        if (identity.userId) attributeSignIn(ctx.context, identity.userId);
         if (existing) {
+          attributeSignIn(ctx.context, existing.user.id);
           const refused = joinRefusal(existing as never, opts.autoLinkAccounts);
           if (refused) throw new APIError('CONFLICT', { message: refused });
         } else if (!identity.userId && !opts.allowSignup) {
@@ -217,7 +222,7 @@ export const bankidEmailEndpoints = (opts: BankIdEmailStepOptions) => {
         // address hears about it. The join has happened: a failed notice must not fail the sign-in.
         if (existing) {
           try {
-            await opts.transport.send(bankidJoinedNotice({ to: challenge.email, from: opts.sender }));
+            await opts.transport.send(bankidJoinedNotice({ to: challenge.email, from: opts.sender, style: opts.mailStyle?.(ctx.headers) }));
           } catch {
             // Nothing to undo, and the person is already signed in.
           }

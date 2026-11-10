@@ -4302,6 +4302,18 @@ export interface HostAdmin {
   putConnectorState(id: ConnectionId, key: string, value: unknown): Promise<void>;
   getConnectorState(id: ConnectionId, key: string): Promise<unknown | undefined>;
   /**
+   * Compare-and-set on one state row: write `value` only if the row still holds
+   * `expected` — the value a `getConnectorState` returned, or `undefined` for a
+   * row that must not exist yet. True when it wrote. Two writers that read the
+   * same row and both swap cannot both win, which a get-then-put cannot promise:
+   * mail-in's delivery claims a message this way, so the run started at
+   * acceptance and the sweep never both deliver it.
+   *
+   * The comparison is of the JSON the row holds, so `expected` is the parsed
+   * value handed back unchanged, never one rebuilt from parts.
+   */
+  swapConnectorState(id: ConnectionId, key: string, expected: unknown, value: unknown): Promise<boolean>;
+  /**
    * Every state row for a connection, optionally narrowed to keys under a
    * `prefix`, ordered by key.
    *

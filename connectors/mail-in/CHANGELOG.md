@@ -1,5 +1,14 @@
 # @substrat-run/connector-mail-in
 
+## 0.1.27
+
+### Patch Changes
+
+- e2a6b1f: A mail-in delivery claims its message, so a sweep overlapping the first attempt stores nothing twice, a run that outlasted its claim writes nothing over the next one, and a killed run still counts as an attempt. The original message always uploads by the streamed route. `mailInChange` has had a `raw` kind since it was added: a handler that reads `change.index` after ruling out only `message` must now name `attachment`.
+- Updated dependencies [e2a6b1f]
+  - @substrat-run/contracts@0.190.2
+  - @substrat-run/kernel@0.190.2
+
 ## 0.1.26
 
 ### Patch Changes

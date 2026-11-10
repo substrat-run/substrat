@@ -50,7 +50,7 @@ identity provider already has (`console-redesign.md` §3 has the reasoning).
 | Authentication | Connections | One list over three stores: the password database, the upstream providers, BankID |
 | Authentication | Security | How an upstream sign-in links to an existing account |
 | User management | Users | The people this issuer knows; create, invite, import, promote, ban, remove |
-| Monitoring | Logs | The federated round trips, and why a failed one failed |
+| Monitoring | Logs | Every sign-in — federated round trips and direct ones — and why a failed one failed |
 | Issuer | Settings | The discovery document and what an RP needs to integrate |
 | You | Your account | Shown in the nav only to a non-administrator; an administrator reaches it from the account menu |
 

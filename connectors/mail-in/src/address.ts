@@ -148,6 +148,11 @@ export interface MailInMessageEntry {
   envelopeFrom?: string;
   attempts: number;
   nextAttemptAt: string;
+  /**
+   * The delivery working on this message, and when its claim lapses. Absent when none is. A claim
+   * still here after it lapses is an attempt that was killed before it could say so.
+   */
+  claim?: { token: string; until: string };
   lastError?: string;
   /**
    * Set once the message change landed: the entity the operation answered, if any, and whether it

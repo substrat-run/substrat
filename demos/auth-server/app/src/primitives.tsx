@@ -1,3 +1,5 @@
+import { LanguageSwitch } from './auth/locale';
+
 /*
  * The little building blocks both surfaces share.
  *
@@ -19,6 +21,7 @@ export function Card({ title, logo, children }: { title: string; logo?: string; 
       {logo && <img className="brand-logo" src={logo} alt="" />}
       <h1>{title}</h1>
       {children}
+      <LanguageSwitch />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   type ClientTheme,
 } from '../api';
 import { Centered, Card, Field } from '../primitives';
+import { useT } from './locale';
 
 /**
  * Self-service registration. Shown only while an administrator has sign-up turned on — and
@@ -17,6 +18,7 @@ import { Centered, Card, Field } from '../primitives';
 export function SignUp({
   forOidc, oauthQuery, theme, onDone, onSignIn,
 }: { forOidc: boolean; oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onSignIn: () => void }) {
+  const t = useT();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,15 +26,13 @@ export function SignUp({
   const [busy, setBusy] = useState(false);
   return (
     <Centered>
-      <Card title="Create your account" logo={theme.logoUrl}>
+      <Card title={t('signup.title')} logo={theme.logoUrl}>
         <p className="muted">
-          {forOidc
-            ? 'Create an account to continue to the application that sent you here.'
-            : 'Create an account on this issuer.'}
+          {forOidc ? t('signup.forOidc') : t('signup.forIssuer')}
         </p>
-        <Field label="Name" value={name} onChange={setName} />
-        <Field label="Email" value={email} onChange={setEmail} type="email" />
-        <Field label="Password" value={password} onChange={setPassword} type="password" hint="At least 8 characters" />
+        <Field label={t('signup.name')} value={name} onChange={setName} />
+        <Field label={t('common.email')} value={email} onChange={setEmail} type="email" />
+        <Field label={t('common.password')} value={password} onChange={setPassword} type="password" hint={t('common.passwordHint')} />
         {err && <p className="error">{err}</p>}
         <button
           className="btn primary"
@@ -49,10 +49,10 @@ export function SignUp({
             }
           }}
         >
-          {busy ? 'Creating…' : 'Create account'}
+          {busy ? t('signup.creating') : t('signup.create')}
         </button>
         <button className="btn link" onClick={onSignIn}>
-          I already have an account
+          {t('signup.haveAccount')}
         </button>
       </Card>
     </Centered>

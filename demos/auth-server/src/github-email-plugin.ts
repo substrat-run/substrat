@@ -4,7 +4,7 @@ import { APIError, addOAuthServerContext, createAuthEndpoint, createAuthMiddlewa
 import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
-import { githubEmailVerification } from './email.js';
+import { githubEmailVerification, type MailStyle } from './email.js';
 import { routeFor, sanitizeSignInPolicy } from './sign-in-policy.js';
 
 const githubProfile = z.object({ id: z.number().int().positive().safe(), login: z.string().min(1), name: z.string().nullable().optional(), email: z.string().nullable().optional(), avatar_url: z.string().optional() }).passthrough();
@@ -61,7 +61,7 @@ interface Pending {
 /** No user, account, session or OIDC code is created from an unverified address.
  * The browser's opaque cookie and the separately emailed secret must both be presented.
  * Only the authenticated GitHub profile supplies the stable account id. */
-export const githubEmailPlugin = (opts: { transport: EmailTransport; sender: EmailAddress; baseURL: string }) => {
+export const githubEmailPlugin = (opts: { transport: EmailTransport; sender: EmailAddress; baseURL: string; mailStyle?: (headers?: Headers | null) => MailStyle }) => {
   const cookieName = (ctx: { context: { createAuthCookie(name: string): { name: string } } }) => ctx.context.createAuthCookie('github_email').name;
   // Use the endpoint's inferred context for the adapter and cookie APIs.
   const status = createAuthEndpoint('/github-email/status', { method: ['GET', 'POST'], body: z.object({ token: z.string().min(64).max(200) }).optional() }, async (ctx) => {
@@ -171,7 +171,7 @@ export const githubEmailPlugin = (opts: { transport: EmailTransport; sender: Ema
         const key = `github-email-proof:${await digest(token)}`;
         await adapter.createVerificationValue({ identifier: key, value: JSON.stringify({ pendingKey, email: ctx.body.email }), expiresAt: row.expiresAt });
         try {
-          const sent = await opts.transport.send(githubEmailVerification({ to: ctx.body.email, from: opts.sender, name: pending.githubLogin, url: `${new URL(opts.baseURL).origin}/github-email#token=${token}` }));
+          const sent = await opts.transport.send(githubEmailVerification({ to: ctx.body.email, from: opts.sender, style: opts.mailStyle?.(ctx.headers), name: pending.githubLogin, url: `${new URL(opts.baseURL).origin}/github-email#token=${token}` }));
           if (sent.bounced.includes(ctx.body.email)) throw new Error('Verification bounced');
         } catch {
           await adapter.deleteVerificationByIdentifier(key);

@@ -223,6 +223,19 @@ explicitly identifies it as a follow-up check rather
 than the adapter's original response. These summaries contain no tokens, addresses, profiles
 or raw exception messages, and use the existing bounded log without a schema migration.
 
+The log holds **every way in**, not only the federated round trip. A sign-in this issuer decides
+by itself — password, sign-up, invitation, SMS code, BankID, the Supabase bridge — is one
+`direct` row: succeeded with the account, or failed with the refusal and the account it matched
+when the endpoint knew it. It first held federated hops alone, on the argument that a narrower
+table is less of somebody's activity to hold; then a BankID sign-in refused at the email step
+left no row anywhere, and the empty log read as "they never tried". The issuer already holds every
+session, so the refusal nobody can see was the worse cost. What stays out is the material: no
+password, no code, no personal number, and no address typed for an account that does not exist.
+Rows are kept **30 days, at most 100 000** (`SIGN_IN_LOG_RETENTION`). Age is the rule a reader
+relies on; the row cap only bounds a flood of failed passwords, and is high enough that one
+cannot evict the morning's rows in minutes the way the old 500-row ring could. The Overview's
+chart is counted by the issuer (`/sign-in-log/windows`) rather than walked in pages.
+
 ### GitHub email fallback
 
 GitHub authentication can finish without GitHub's email API. If a new GitHub profile has
