@@ -13455,6 +13455,26 @@ export class SqliteScopeHost implements ScopeHost {
           .run(id, key, JSON.stringify(value ?? null), new Date().toISOString());
       },
 
+      swapConnectorState: async (id: ConnectionId, key: string, expected: unknown, value: unknown) => {
+        const at = new Date().toISOString();
+        const next = JSON.stringify(value ?? null);
+        const result =
+          expected === undefined
+            ? this.directory
+                .prepare(
+                  `INSERT INTO _substrat_connector_state (connection_id, state_key, value, updated_at)
+                   VALUES (?, ?, ?, ?) ON CONFLICT (connection_id, state_key) DO NOTHING`,
+                )
+                .run(id, key, next, at)
+            : this.directory
+                .prepare(
+                  `UPDATE _substrat_connector_state SET value = ?, updated_at = ?
+                   WHERE connection_id = ? AND state_key = ? AND value = ?`,
+                )
+                .run(next, at, id, key, JSON.stringify(expected));
+        return result.changes > 0;
+      },
+
       getConnectorState: async (id: ConnectionId, key: string) => {
         const row = this.directory
           .prepare('SELECT value FROM _substrat_connector_state WHERE connection_id = ? AND state_key = ?')

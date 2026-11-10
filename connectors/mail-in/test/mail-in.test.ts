@@ -457,10 +457,21 @@ describe('delivery', () => {
     const a = await w.request();
     const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
     if (!accepted.accepted) throw new Error('refused');
-    const outcomes = await Promise.all([
-      deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId),
-      deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId),
-    ]);
+    // The second run reads the unclaimed entry, then acts on it only once the first has delivered:
+    // no overlap a write and a read-back could see.
+    const key = `${MESSAGE_PREFIX}${accepted.messageId}`;
+    const admin = w.host.admin;
+    const get = admin.getConnectorState.bind(admin);
+    let reads = 0;
+    let first: ReturnType<typeof deliverInboundMail> | undefined;
+    admin.getConnectorState = async (id, k) => {
+      const n = k === key ? reads++ : -1;
+      const value = await get(id, k);
+      if (n === 1) await first;
+      return value;
+    };
+    first = deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId);
+    const outcomes = await Promise.all([first, deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)]);
     expect(outcomes.map((o) => o.status).sort()).toEqual(['delivered', 'skipped']);
     expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
     expect(await w.files(`doc-${accepted.messageId.slice(0, 12)}`)).toHaveLength(1);

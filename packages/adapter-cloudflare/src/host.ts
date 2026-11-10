@@ -1257,6 +1257,7 @@ interface ControlPlaneStub {
   ): Promise<{ tenantId: string; vertical: string; provider: string } | null | void>;
   putConnectorState(id: string, key: string, value: string, at: string): Promise<void>;
   getConnectorState(id: string, key: string): Promise<string | undefined>;
+  swapConnectorState(id: string, key: string, expected: string | null, value: string, at: string): Promise<boolean>;
   listConnectorState(id: string, prefix?: string): Promise<{ key: string; value: string }[]>;
   linkIdentity(
     provider: string,
@@ -10853,6 +10854,12 @@ export class CloudflareScopeHost implements ScopeHost {
         // JSON on the coordinator; the DO stores an opaque string, the same
         // division that keeps the SecretBox off the DO.
         await this.cp.putConnectorState(id, key, JSON.stringify(value ?? null), new Date().toISOString());
+      },
+
+      swapConnectorState: async (id: ConnectionId, key: string, expected: unknown, value: unknown) => {
+        // The DO compares the stored string; `null` stands for "no row yet".
+        const prior = expected === undefined ? null : JSON.stringify(expected);
+        return this.cp.swapConnectorState(id, key, prior, JSON.stringify(value ?? null), new Date().toISOString());
       },
 
       getConnectorState: async (id: ConnectionId, key: string) => {
