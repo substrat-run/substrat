@@ -32,7 +32,8 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { mintCapabilitySecret, ulid, unknownRoleError } from '@substrat-run/kernel';
-import { LEGACY_INVITES_LIST_REPORT_MS, legacyInviteListReporter, legacyInvitesLine, mountBindLinkRoutes, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
+import { INVITE_REFUSED, LEGACY_INVITES_LIST_REPORT_MS, MEMBER_INVITE_TTL_MS, admitByAddress, legacyInviteListReporter, legacyInvitesLine, mintMemberInvite, mountBindLinkRoutes, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
+import { addressAdmits } from '../src/member-directory.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
 
@@ -84,9 +85,9 @@ class MemoryDirectory implements InviteDirectory {
     return link;
   }
   /** LEGACY: a hash-only row (no capability), as `member-directory.ts`'s `claimInvite`. */
-  async claimInvite(_scopeId: string, sub: string, tokenHash: string) {
+  async claimInvite(_scopeId: string, sub: string, tokenHash: string, verifiedEmail?: string | null) {
     const row = [...this.invites.values()].find((r) => r.tokenHash === tokenHash && r.capabilityId === null);
-    if (!row) return null;
+    if (!row || (verifiedEmail !== undefined && !addressAdmits(row.email, verifiedEmail))) return null;
     this.invites.delete(row.principal);
     this.bound.set(sub, row.principal);
     return row.principal;
@@ -94,9 +95,11 @@ class MemoryDirectory implements InviteDirectory {
   async inviteLink(_scopeId: string, principal: string) {
     return this.invites.get(principal)?.capabilityId ?? null;
   }
-  async inviteMatches(_scopeId: string, tokenHash: string) {
+  async inviteMatches(_scopeId: string, tokenHash: string, verifiedEmail?: string | null) {
     this.log.push('inviteMatches');
-    return [...this.invites.values()].some((r) => r.tokenHash === tokenHash && r.capabilityId !== null);
+    return [...this.invites.values()].some(
+      (r) => r.tokenHash === tokenHash && r.capabilityId !== null && (verifiedEmail === undefined || addressAdmits(r.email, verifiedEmail)),
+    );
   }
   async claimInviteByCapability(_scopeId: string, sub: string, capabilityId: string, principal: string) {
     const row = [...this.invites.values()].find((r) => r.capabilityId === capabilityId && r.principal === principal);
@@ -148,6 +151,8 @@ const env = (): Env => ({
   SUBJECTS: {
     'tok-owner': { sub: 'sub-owner', email: 'owner@acme.example', name: 'Owner' },
     'tok-newcomer': { sub: 'sub-newcomer', email: 'new@acme.example', name: 'Newcomer' },
+    'tok-newcomer-verified': { sub: 'sub-newcomer', email: 'New@acme.example', name: 'Newcomer', emailVerified: true },
+    'tok-eve': { sub: 'sub-eve', email: 'eve@acme.example', name: 'Eve', emailVerified: true },
   },
 });
 
@@ -740,7 +745,7 @@ describe('mountInviteRoutes — the link is a become capability', () => {
     expect(directory.bound.get('sub-newcomer')).toBe(principal);
 
     const replay = await accept(token, { authorization: 'Bearer tok-owner' });
-    expect([replay.status, await replay.text()]).toEqual([400, 'this invite is invalid or already used']);
+    expect([replay.status, await replay.text()]).toEqual([400, INVITE_REFUSED]);
     expect(capOf(principal).uses).toBe(1);
   });
 
@@ -884,12 +889,108 @@ describe('mountInviteRoutes — the link is a become capability', () => {
  * hash-only invite is pending (absence is the signal) and at most hourly per scope; the legacy
  * accept always writes one; a capability accept writes none. A line carries a count and a scope id.
  */
+describe('the address an invite names (K-61 phase 3)', () => {
+  const invite = async (email: string) => {
+    const created = (await (await app.request('http://app.example/api/invites', json({ roleKey: 'editor', email }), env())).json()) as {
+      principal: string;
+      acceptUrl: string;
+    };
+    return { principal: created.principal, token: new URL(created.acceptUrl).searchParams.get('invite')! };
+  };
+  const accept = (token: string, bearer: string) =>
+    app.request('http://app.example/api/accept-invite', json({ token }, { authorization: `Bearer ${bearer}` }), env());
+  const capOf = (principal: string) => [...capabilities.values()].find((c) => c.principal === principal)!;
+
+  it.each([
+    ['another verified address (a forwarded link)', 'tok-eve'],
+    ['no verified address', 'tok-newcomer'],
+  ])('a link naming an address is refused for a session holding %s, before the exchange — its use untaken', async (_label, bearer) => {
+    const { principal, token } = await invite('new@acme.example');
+    log.length = 0;
+    expect((await accept(token, bearer)).status).toBe(400);
+    expect(log).toEqual(['inviteMatches']);
+    expect(capOf(principal).uses).toBe(0);
+    expect((await accept(token, 'tok-newcomer-verified')).status).toBe(200);
+    expect(directory.bound.get('sub-newcomer')).toBe(principal);
+  });
+
+  it('mints its link to expire MEMBER_INVITE_TTL_MS (14 days) after now, unless told when', async () => {
+    const at = Date.UTC(2026, 10, 10);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(at);
+    const inputs: unknown[] = [];
+    const steps = {
+      grant: async () => ({ covered: true as const, missing: [] as [] }),
+      mint: async (input: unknown): Promise<BoundedBecomeMint> => {
+        inputs.push(input);
+        return { ok: true, minted: { id: capabilityId.parse(ulid()), secret: mintCapabilitySecret(), expiresAt: null } };
+      },
+      record: async () => undefined,
+      revokeCapability: async () => undefined,
+      rollback: async () => undefined,
+    };
+    const minted = await mintMemberInvite(steps, { roleKey: 'editor', email: null, origin: 'http://app.example' }).finally(() => clock.mockRestore());
+    expect(MEMBER_INVITE_TTL_MS).toBe(14 * 24 * 60 * 60 * 1000);
+    expect(minted).toMatchObject({ ok: true, expiresAt: new Date(at + MEMBER_INVITE_TTL_MS).toISOString() });
+    expect(inputs[0]).toMatchObject({ maxUses: 1, expiresAt: new Date(at + MEMBER_INVITE_TTL_MS).toISOString() });
+  });
+
+  describe('admitByAddress', () => {
+    const OPEN = { principal: principalId.parse(ulid()), capabilityId: capabilityId.parse(ulid()) };
+    const run = (exchanged: CapabilityExchange | null, open: typeof OPEN | null = OPEN) => {
+      const calls: string[] = [];
+      const admitted = admitByAddress(
+        {
+          directory: {
+            openInviteFor: async (_scope, email) => {
+              calls.push(`openInviteFor ${email}`);
+              return open;
+            },
+            admitInvite: async (_scope, sub, id, principal) => {
+              calls.push(`claim ${sub} ${id} ${principal}`);
+              return principal;
+            },
+          },
+          exchangeById: async (id) => {
+            calls.push(`exchange ${id}`);
+            return exchanged;
+          },
+        },
+        'scope-1',
+        'sub-ann',
+        'ann@acme.example',
+      );
+      return { admitted, calls };
+    };
+
+    it('binds the subject to the principal the scope\'s exchange of the invite\'s link yields', async () => {
+      const { admitted, calls } = run({ kind: 'principal', capabilityId: OPEN.capabilityId, principal: OPEN.principal });
+      expect(await admitted).toBe(OPEN.principal);
+      expect(calls).toEqual([
+        'openInviteFor ann@acme.example',
+        `exchange ${OPEN.capabilityId}`,
+        `claim sub-ann ${OPEN.capabilityId} ${OPEN.principal}`,
+      ]);
+    });
+
+    it.each([
+      ['no invite names the address: the scope is not asked', null, null, ['openInviteFor ann@acme.example']],
+      ['the scope refuses the link (expired, withdrawn, used): nothing is bound', OPEN, null, ['openInviteFor ann@acme.example', 'exchange']],
+    ])('answers null when %s', async (_label, open, exchanged, expected) => {
+      const { admitted, calls } = run(exchanged, open);
+      expect(await admitted).toBeNull();
+      expect(calls.map((c) => c.replace(/ [0-9A-Z]{26}$/, ''))).toEqual(expected);
+    });
+  });
+});
+
 describe('legacy invite measurement (#2175)', () => {
   let lines: string[];
   let clock: number;
   const parsed = () => lines.map((l) => JSON.parse(l) as Record<string, unknown>);
   const list = () => app.request('http://app.example/api/invites', { headers: admin }, env());
-  const legacy = async (email: string | null = 'legacy@acme.example') => {
+  // No address by default: these cases measure the legacy line, and an address would hold the accept to a
+  // verified holder of it (K-61 phase 3), which `tok-newcomer` is not.
+  const legacy = async (email: string | null = null) => {
     const principal = ulid();
     const token = 'cd'.repeat(32);
     await directory.createLegacyInvite('scope-1', principal, 'editor', email, await sha256Hex(token + principal));

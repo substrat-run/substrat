@@ -847,6 +847,7 @@ capabilityExpiryContractSuite('adapter-sqlite', async () => {
   return {
     host,
     clock,
+    verbs: host,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

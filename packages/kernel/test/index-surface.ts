@@ -408,6 +408,8 @@ export const INDEX_VALUE_EXPORTS = [
   'entityVersionOf',
   'entityVersionQuery',
   'eraseSubjectFromModules',
+  // K-61 phase 3: a member invite's link exchanged by id, for the door admitting a verified address — both adapters run it.
+  'exchangeBecomeLinkById',
   'exchangeCapability',
   'executableSqlStatements',
   'executorOutcomeOf',

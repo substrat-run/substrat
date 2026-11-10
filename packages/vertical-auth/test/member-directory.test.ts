@@ -1,7 +1,8 @@
 /**
  * The invite half of the identity directory (#1150, #1686), against a real SQLite through the
  * same `exec` seam the IdentityDO's storage has — the rules behind `inviteMatches`,
- * `claimInviteByCapability`, the legacy `claimInvite`, `revokeInvite` and the column migration.
+ * `claimInviteByCapability`, the legacy `claimInvite`, `revokeInvite` and the column migration,
+ * and the address an invite names (K-61 phase 3): who may spend its link, and whom it admits.
  * Each refusal is paired with the case that goes through.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +10,7 @@ import Database from 'better-sqlite3';
 import {
   INVITE_DDL,
   MEMBER_DIRECTORY_DDL,
+  admitInvite,
   claimInvite,
   claimInviteByCapability,
   countLegacyInvites,
@@ -19,6 +21,7 @@ import {
   inviteMatches,
   listInvites,
   migrateInvites,
+  openInviteFor,
   revokeInvite,
 } from '../src/member-directory.js';
 import { migrateOwnerSeat, resolvePrincipal } from '../src/owner-seat.js';
@@ -96,6 +99,73 @@ describe('a capability-era invite (#1686)', () => {
     ]);
     expect(getInvite(sql, SCOPE, ANN)).toMatchObject({ principal: ANN, roleKey: 'editor' });
     expect(inviteExists(sql, SCOPE, 'hash-ann')).toBe(true);
+  });
+});
+
+describe('the address an invite names (K-61 phase 3)', () => {
+  beforeEach(() => createInvite(sql, SCOPE, ANN, 'editor', 'Ann@Acme.example', 'hash-ann', CAP));
+
+  it.each([
+    ['the invited address, in any case', ' ann@acme.EXAMPLE ', true],
+    ['another verified address', 'eve@acme.example', false],
+    ['no verified address', null, false],
+  ])('a link matches a session holding %s: %s', (_label, verified, matches) => {
+    expect(inviteMatches(sql, SCOPE, 'hash-ann', verified)).toBe(matches);
+  });
+
+  it('compares Unicode-normalised: a composed and a decomposed accent are one address', () => {
+    const composed = `jos${String.fromCodePoint(0xe9)}@acme.example`;
+    const decomposed = `jose${String.fromCodePoint(0x301)}@acme.example`;
+    createInvite(sql, SCOPE, BOB, 'editor', composed, 'hash-jose', '01CAPABILITYJOSE');
+    expect(inviteMatches(sql, SCOPE, 'hash-jose', decomposed)).toBe(true);
+    expect(openInviteFor(sql, SCOPE, decomposed)).toEqual({ principal: BOB, capabilityId: '01CAPABILITYJOSE' });
+  });
+
+  it('lowercases ASCII only: two letters a full lowercase would merge stay two addresses', () => {
+    // U+03F4 (the theta symbol) and U+03B8 (small theta) are distinct, and no normalisation joins
+    // them; `toLowerCase()` would, since it maps U+03F4 to U+03B8.
+    const symbol = `${String.fromCodePoint(0x3f4)}eo@acme.example`;
+    const small = `${String.fromCodePoint(0x3b8)}eo@acme.example`;
+    createInvite(sql, SCOPE, BOB, 'editor', symbol, 'hash-theta', '01CAPABILITYTHETA');
+    expect(inviteMatches(sql, SCOPE, 'hash-theta', small)).toBe(false);
+    expect(openInviteFor(sql, SCOPE, small)).toBeNull();
+    expect(openInviteFor(sql, SCOPE, symbol)).toEqual({ principal: BOB, capabilityId: '01CAPABILITYTHETA' });
+  });
+
+  it('admits a subject bound to nobody here, and never re-binds one a racing admission bound first', () => {
+    createInvite(sql, SCOPE, BOB, 'viewer', 'ann@acme.example', 'hash-ann-2', '01CAPABILITYANN2');
+    expect(admitInvite(sql, SCOPE, 'sub-ann', '01CAPABILITYANN2', BOB)).toBe(BOB);
+    expect(admitInvite(sql, SCOPE, 'sub-ann', CAP, ANN)).toBeNull();
+    expect(resolvePrincipal(sql, SCOPE, 'sub-ann', NOW)).toBe(BOB);
+    expect(listInvites(sql, SCOPE).map((r) => r.principal)).toEqual([ANN]);
+  });
+
+  it('an invite naming no address is a bearer link, and a caller that passes no address is not judged', () => {
+    createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob', '01CAPABILITYBOB');
+    expect(inviteMatches(sql, SCOPE, 'hash-bob', null)).toBe(true);
+    expect(inviteMatches(sql, SCOPE, 'hash-ann')).toBe(true);
+  });
+
+  it('a legacy invite is held to the same rule', () => {
+    createLegacyInvite(sql, SCOPE, BOB, 'editor', 'bob@acme.example', 'legacy-bob');
+    expect(claimInvite(sql, SCOPE, 'sub-eve', 'legacy-bob', 'eve@acme.example')).toBeNull();
+    expect(claimInvite(sql, SCOPE, 'sub-bob', 'legacy-bob', 'BOB@acme.example')).toBe(BOB);
+  });
+
+  it('admits the invited address in its own scope only, newest invite first', () => {
+    createInvite(sql, SCOPE, BOB, 'viewer', 'ann@acme.example', 'hash-ann-2', '01CAPABILITYANN2');
+    sql.exec('UPDATE invite SET created_at = created_at + 1 WHERE principal = ?', BOB);
+    expect(openInviteFor(sql, SCOPE, 'ANN@acme.example')).toEqual({ principal: BOB, capabilityId: '01CAPABILITYANN2' });
+    expect(openInviteFor(sql, OTHER_SCOPE, 'ann@acme.example')).toBeNull();
+    expect(openInviteFor(sql, SCOPE, 'eve@acme.example')).toBeNull();
+    expect(openInviteFor(sql, SCOPE, null)).toBeNull();
+  });
+
+  it('admits by no invite that is claimed, legacy, or names no address', () => {
+    claimInviteByCapability(sql, SCOPE, 'sub-ann', CAP, ANN);
+    createLegacyInvite(sql, SCOPE, BOB, 'editor', 'ann@acme.example', 'legacy-ann');
+    createInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal', '01CAPABILITYCAL');
+    expect(openInviteFor(sql, SCOPE, 'ann@acme.example')).toBeNull();
   });
 });
 

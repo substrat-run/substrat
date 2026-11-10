@@ -27,7 +27,7 @@ import {
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { OWNER_CLAIM_LABEL, OWNER_CLAIM_TTL_MS, mintOwnerClaimLink, sha256Hex } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
-import { MEMBER_INVITE_LABEL, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
+import { MEMBER_INVITE_LABEL, MEMBER_INVITE_TTL_MS, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 import { createLegacyInvite, type RegistrySql } from '@substrat-run/vertical-auth/member-directory';
 import { CloudflareScopeHost } from './test-host.js';
 
@@ -343,7 +343,7 @@ describe('member invite link as a become capability (#1686)', () => {
     await host.assignScopeRole(s, agent, 'agent');
   });
 
-  it('mints a single-use, unexpiring become capability by the inviter; the link binds once, to the invited principal only', async () => {
+  it('mints a single-use become capability by the inviter, expiring in 14 days; the link binds once, to the invited principal only', async () => {
     const res = await invite(owner, 'agent');
     expect(res.status).toBe(201);
     const { principal, token } = await linkOf(res);
@@ -354,11 +354,13 @@ describe('member invite link as a become capability (#1686)', () => {
       principal,
       mintedBy: owner,
       label: MEMBER_INVITE_LABEL,
-      expiresAt: null,
+      expiresAt: expect.any(String),
       maxUses: 1,
       uses: 0,
       revokedAt: null,
     });
+    // K-61 phase 3: a member invite's link expires MEMBER_INVITE_TTL_MS after its mint.
+    expect(Math.abs(Date.parse(cap!.expiresAt!) - (Date.now() + MEMBER_INVITE_TTL_MS))).toBeLessThan(60_000);
 
     // Signed out: refused before anything is read, the use not spent.
     expect((await accept(token, null)).status).toBe(401);

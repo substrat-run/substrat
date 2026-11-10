@@ -731,6 +731,25 @@ export function createCapabilityVerbs(deps: CapabilityVerbDeps): CapabilityVerbs
 export const CAPABILITY_EXCHANGE_OPERATION = 'capabilities.exchange';
 const CAPABILITY_ATTACHMENT_READ_OPERATIONS = new Set(['attachments.list', 'attachments.open', 'attachments.search']);
 
+/** What an exchange runs against — one scope's storage, its clock, its spine, and its checker. */
+export interface CapabilityExchangeDeps {
+  sql: ScopedSql;
+  now: Instant;
+  emit: (capability: CapabilityId, event: DomainEventInput) => void;
+  /**
+   * What a principal holds now (#1686) — the checker's `holdings` at this scope. A
+   * principal-minted `become` is exchanged only while its principal's holdings digest is the
+   * one recorded at mint; absent, such a link is refused.
+   */
+  holdings?: (principal: PrincipalId) => Promise<Holdings>;
+  /**
+   * Does `principal` hold `permission` on `entity` now (#1686) — the checker's `check`. A link
+   * carrying a `bind` is exchanged only while its minter still holds the binding's key on the
+   * record; absent, such a link is refused.
+   */
+  allowed?: (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => Promise<boolean>;
+}
+
 /**
  * Trade a secret for what it grants — ONE counted use. Runs inside the scope's
  * serialization domain and a transaction the adapter opened; `emit` writes the
@@ -746,23 +765,7 @@ const CAPABILITY_ATTACHMENT_READ_OPERATIONS = new Set(['attachments.list', 'atta
  * there is nothing a record of guesses would ever show (#130 is the rate control).
  */
 export async function exchangeCapability(
-  deps: {
-    sql: ScopedSql;
-    now: Instant;
-    emit: (capability: CapabilityId, event: DomainEventInput) => void;
-    /**
-     * What a principal holds now (#1686) — the checker's `holdings` at this scope. A
-     * principal-minted `become` is exchanged only while its principal's holdings digest is the
-     * one recorded at mint; absent, such a link is refused.
-     */
-    holdings?: (principal: PrincipalId) => Promise<Holdings>;
-    /**
-     * Does `principal` hold `permission` on `entity` now (#1686) — the checker's `check`. A link
-     * carrying a `bind` is exchanged only while its minter still holds the binding's key on the
-     * record; absent, such a link is refused.
-     */
-    allowed?: (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => Promise<boolean>;
-  },
+  deps: CapabilityExchangeDeps,
   secret: unknown,
   /**
    * The only mode the caller can handle. A secret of the OTHER mode answers `null` without
@@ -783,7 +786,43 @@ export async function exchangeCapability(
     `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities WHERE token_hash = ?`,
     [tokenHash],
   )[0];
-  if (!row || !capabilityExchangeable(row, deps.now)) return null;
+  return row ? exchangeRow(deps, row, mode, presenter) : null;
+}
+
+/**
+ * A MEMBER INVITE's link, exchanged by its id rather than its secret (K-61 phase 3): for the door
+ * that found the invite by the address the issuer verified, and so holds no secret to present.
+ * The address is the door's judgement; everything the capability judges is judged here exactly
+ * as `exchangeCapability` judges it — expiry, revocation, the single use, the principal's holdings
+ * unchanged since the mint — and the exchange is on the spine the same way, as
+ * `capability.exercised` with the capability as its actor.
+ *
+ * Narrower than the secret's exchange, on purpose: only a plain `become` a PRINCIPAL minted — the
+ * shape a member invite has — is exchanged. The platform's own `become` (an owner claim link), a
+ * binding invite (a `become` carrying a `bind`), a `bind` link and an `act` share answer `null`
+ * with their use untaken: each of those is redeemed by its secret, by whoever presents it. A host
+ * verb, never a module one — `ctx` has no way to name a capability to exchange.
+ */
+export async function exchangeBecomeLinkById(deps: CapabilityExchangeDeps, id: unknown): Promise<CapabilityExchange | null> {
+  const parsed = capabilityIdSchema.safeParse(id);
+  if (!parsed.success) return null;
+  const row = deps.sql.query<CapabilityRow>(
+    `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities WHERE id = ?`,
+    [parsed.data],
+  )[0];
+  if (!row || row.mode !== 'become' || actionOf(row) !== null) return null;
+  if (typeof capabilityAuthor.parse(JSON.parse(row.minted_by)) !== 'string') return null;
+  return exchangeRow(deps, row, 'become');
+}
+
+/** The exchange of a row already found — by its secret's hash, or (a member invite) by its id. */
+async function exchangeRow(
+  deps: CapabilityExchangeDeps,
+  row: CapabilityRow,
+  mode?: 'act' | 'become' | 'bind',
+  presenter?: PrincipalId,
+): Promise<CapabilityExchange | null> {
+  if (!capabilityExchangeable(row, deps.now)) return null;
   if (mode !== undefined && row.mode !== mode) return null;
   const author = capabilityAuthor.parse(JSON.parse(row.minted_by));
   const minter = typeof author === 'string' ? author : null;

@@ -449,6 +449,8 @@ import {
   type EntityStatePlan,
   type UpdatedStampPlan,
   exchangeCapability,
+  exchangeBecomeLinkById,
+  type CapabilityExchangeDeps,
   guardSecrets,
   mintBecomeCapability,
   redactSecrets,
@@ -6012,6 +6014,27 @@ export function defineScopeDO(
       /** #2817: a `bind` link's presenter, as the caller's own authentication resolved it. */
       presenter?: PrincipalId,
     ): Promise<CapabilityExchange | null> {
+      return this.exchangeIn(tenantId, scopeId, (deps) =>
+        exchangeCapability(deps, secret, mode, presenter === undefined ? undefined : principalId.parse(presenter)),
+      );
+    }
+
+    /**
+     * A member invite's link exchanged by its id (K-61 phase 3) — the kernel's
+     * `exchangeBecomeLinkById`, for the worker door that found the invite by a verified address:
+     * a principal-minted plain `become` only, every judgement the secret's exchange makes, in the
+     * same queued body and storage transaction.
+     */
+    async exchangeBecomeLinkById(capabilityId: CapabilityId, tenantId: TenantId, scopeId: ScopeId): Promise<CapabilityExchange | null> {
+      return this.exchangeIn(tenantId, scopeId, (deps) => exchangeBecomeLinkById(deps, capabilityId));
+    }
+
+    /** One exchange: one queued body, one storage transaction, then what its event settles. */
+    private async exchangeIn(
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      exchange: (deps: CapabilityExchangeDeps) => Promise<CapabilityExchange | null>,
+    ): Promise<CapabilityExchange | null> {
       await this.ensureMigrations();
       return await this.queue.enqueue(async () => {
         const liveSince = this.liveHighWaterMark();
@@ -6020,7 +6043,7 @@ export function defineScopeDO(
         const now = instant.parse(new Date().toISOString());
         let outcome: CapabilityExchange | null = null;
         await this.revision.transaction(async () => {
-          outcome = await exchangeCapability(
+          outcome = await exchange(
             {
               sql: doSpineSql(this.sql),
               now,
@@ -6047,9 +6070,6 @@ export function defineScopeDO(
                 : undefined,
               allowed: (principal, permission, entity) => allowedFor(this.checker, principal, { tenantId, scopeId })(permission, entity),
             },
-            secret,
-            mode,
-            presenter === undefined ? undefined : principalId.parse(presenter),
           );
         });
         if (outcome) await this.settleCommitted(tenantId, scopeId, liveSince, null);

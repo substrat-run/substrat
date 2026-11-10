@@ -21,9 +21,14 @@
  * Object, minted by the inviter under a bound (they must hold everything the invited
  * principal holds): single use, revocable, and on the spine — its mint as
  * `capability.become-minted` with the inviter as actor, its accept as `capability.exercised`.
- * It has no expiry, as an invite never had, and the inviter is not re-checked at accept:
- * the role was bounded when it was granted, and withdrawing the invite is the lever. An
+ * It expires `MEMBER_INVITE_TTL_MS` after it is minted, and the inviter is not re-checked at
+ * accept: the role was bounded when it was granted, and withdrawing the invite is the lever. An
  * invite minted before #1686 is redeemed the old way, by hash (`claimInvite`).
+ *
+ * An invite naming an address is for that address (K-61 phase 3): it is accepted only from a
+ * session whose issuer verified that address, so a forwarded link opens nothing, and the door
+ * admits that person without the link at all (`admitByAddress`). An invite naming no address is
+ * the bearer link it always was — what an issuer that verifies no address needs.
  *
  * Who may invite, and at which role, are two questions (#1931). The vertical's admin gate
  * answers the first — may this caller manage members at all. The second is the kernel's
@@ -71,14 +76,19 @@ import {
   type MemberInviteLink,
   type PrincipalBecomeCapabilityInput,
   type PrincipalId,
+  type Instant,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
 import { capabilityTokenHash, plausibleCapabilitySecret, ulid } from '@substrat-run/kernel';
 import { redeemBecomeLink } from './become-link.js';
+import { verifiedEmailOf } from './oidc-rp-provider.js';
 import type { IdentityStub, InviteRow } from './identity-do.js';
 import { invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
+
+/** The one request-body parser, for a door that mounts its own invite routes beside these (K-61 phase 3). */
+export { bodyOf };
 import type { AuthProvider } from './provider.js';
 
 /** The slice of the identity directory the invite routes touch. */
@@ -159,6 +169,16 @@ export function legacyInviteListReporter(opts: { log?: (line: string) => void; n
 
 /** The label every member invite's capability carries — what an operator's capability read shows. */
 export const MEMBER_INVITE_LABEL = 'member invite';
+
+/**
+ * The one refusal an accept answers, whichever step said no. It names the wrong-address case among
+ * the others because that one is the person's to fix, by signing in as the address the invite went
+ * to; which step refused is still not said.
+ */
+export const INVITE_REFUSED = 'this invite is invalid, already used, or for another address — sign in with the address it was sent to';
+
+/** How long a member invite stays open: 14 days from its mint. Withdrawing it ends it sooner. */
+export const MEMBER_INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 const inviteCaller = z.object({ principal: principalId });
 
@@ -261,9 +281,9 @@ export const uncovered = (missing: readonly string[], roleKey: string, act: stri
  * Pre-mint a principal, then three writes, each failing closed:
  *   1. grant it the role through `grant`, which MUST be the bounded grant (check and write in one
  *      scope task) — a refusal returns its coverage and nothing else is written;
- *   2. mint its link (#1686): a `become` capability for that principal, single use and with no
- *      expiry (an invite has never had one), bounded by what the inviter holds — the scope's own
- *      record, on the spine as `capability.become-minted`. A refusal takes the grant back;
+ *   2. mint its link (#1686): a `become` capability for that principal, single use and expiring
+ *      at `expiresAt` (`MEMBER_INVITE_TTL_MS` by default), bounded by what the inviter holds — the
+ *      scope's own record, on the spine as `capability.become-minted`. A refusal takes the grant back;
  *   3. record the invite under the secret's hash, naming the capability.
  * The grant comes first: a row whose principal holds nothing is a link to no access, while a
  * grant with no row is inert — nobody can bind to it, and a capability with no row is refused
@@ -280,8 +300,20 @@ export async function mintMemberInvite(
     revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
     rollback: (principal: PrincipalId) => Promise<unknown>;
   },
-  input: { roleKey: string; email: string | null; origin: string },
-): Promise<{ ok: true; invite: MemberInviteLink } | { ok: false; coverage: Coverage }> {
+  input: {
+    roleKey: string;
+    email: string | null;
+    origin: string;
+    /**
+     * When the link stops opening. Omitted: `MEMBER_INVITE_TTL_MS` from now. Null: never, which is
+     * what an invite was before K-61 phase 3, kept for a desk flow that has not chosen otherwise.
+     */
+    expiresAt?: Instant | null;
+  },
+): Promise<{ ok: true; invite: MemberInviteLink; expiresAt: Instant | null } | { ok: false; coverage: Coverage }> {
+  const expiresAt = input.expiresAt === undefined
+    ? instant.parse(new Date(Date.now() + MEMBER_INVITE_TTL_MS).toISOString())
+    : input.expiresAt;
   const principal = principalId.parse(ulid());
   const bound = coverage.safeParse(await steps.grant(principal));
   if (!bound.success) {
@@ -291,7 +323,9 @@ export async function mintMemberInvite(
   const ungrant = () => steps.rollback(principal).catch(() => undefined);
   let minted: BoundedBecomeMint;
   try {
-    minted = boundedBecomeMint.parse(await steps.mint({ principal, maxUses: 1, label: MEMBER_INVITE_LABEL }));
+    minted = boundedBecomeMint.parse(
+      await steps.mint({ principal, maxUses: 1, label: MEMBER_INVITE_LABEL, ...(expiresAt === null ? {} : { expiresAt }) }),
+    );
   } catch (err) {
     await ungrant();
     throw err;
@@ -319,7 +353,11 @@ export async function mintMemberInvite(
     throw err;
   }
   const origin = input.origin.replace(/\/$/, '');
-  return { ok: true, invite: { principal, roleKey: input.roleKey, email: input.email, acceptUrl: `${origin}${invitePath(link.secret)}` } };
+  return {
+    ok: true,
+    invite: { principal, roleKey: input.roleKey, email: input.email, acceptUrl: `${origin}${invitePath(link.secret)}` },
+    expiresAt,
+  };
 }
 
 /** An open invite as a list shows it (#1686): the row, without its capability id, and where its link stands. */
@@ -354,6 +392,11 @@ export async function withLinkStates(
  * the scope spends its use, exchanged, then bound only while the row still names that capability
  * and principal. A token that is not a capability secret is a LEGACY hash-only invite, redeemed by
  * hash (`claimInvite`). Null for every refusal, one answer.
+ *
+ * `verifiedEmail` is the presenting session's verified address (null: none). An invite naming an
+ * address other than it — or any address, when it is null — is refused before the scope is asked,
+ * so its use stays for the person it names (`addressAdmits`). Omitted, the address is not judged:
+ * a desk flow written before K-61 phase 3 keeps the answer it had.
  */
 export async function acceptMemberInvite(
   deps: {
@@ -365,10 +408,11 @@ export async function acceptMemberInvite(
   scopeId: string,
   sub: string,
   token: string,
+  verifiedEmail?: string | null,
 ): Promise<string | null> {
   if (!plausibleCapabilitySecret(token)) {
     // LEGACY — a hash-only invite (see `claimInvite`).
-    const principal = await deps.directory.claimInvite(scopeId, sub, await sha256Hex(token));
+    const principal = await deps.directory.claimInvite(scopeId, sub, await sha256Hex(token), verifiedEmail);
     // #2175: a legacy claim that SUCCEEDED proves the branch still serves; the count is what is left.
     // A failed claim or a garbage token writes nothing, so a line always means a real invite.
     const count = deps.directory.legacyInviteCount;
@@ -380,12 +424,47 @@ export async function acceptMemberInvite(
   }
   return redeemBecomeLink(
     {
-      matches: (hash) => deps.directory.inviteMatches(scopeId, hash),
+      matches: (hash) => deps.directory.inviteMatches(scopeId, hash, verifiedEmail),
       exchange: deps.exchange,
       bind: (capabilityId, principal) => deps.directory.claimInviteByCapability(scopeId, sub, capabilityId, principal),
     },
     token,
   );
+}
+
+/**
+ * Admit a signed-in person by the address their issuer verified (K-61 phase 3) — the worker door's
+ * half of a member invite, which needs no link. Asked only for a session bound to nobody in the
+ * scope, so it never gives a member a second principal. The same three steps a link's redemption
+ * takes, with the address standing in for the secret:
+ *   1. the directory names the open invite for that address in this scope (`openInviteFor`), and
+ *      its capability — newest first if the address was invited twice;
+ *   2. the scope exchanges that capability by its id (`exchangeBecomeLinkById`): expiry,
+ *      withdrawal, the single use and the invited principal's holdings judged atomically, the
+ *      exchange on the spine as `capability.exercised` — so the link in a mail is spent with it;
+ *   3. the directory binds, only while the invite still names that capability and principal, and
+ *      only a subject still bound to nobody here (`admitInvite`).
+ * Null for every refusal, one answer: the caller answers it as it answers nobody bound. Two first
+ * requests at once: one is bound; the other can lose the single use before that binding is
+ * written, and is answered as nobody bound once — its next request finds the binding.
+ *
+ * As strong as the issuer's `email_verified`, and no stronger: the scope trusts what its issuer
+ * vouches for (docs/rfc/verified-address.md §5).
+ */
+export async function admitByAddress(
+  deps: {
+    directory: Pick<IdentityStub, 'openInviteFor' | 'admitInvite'>;
+    exchangeById: (capabilityId: CapabilityId) => Promise<CapabilityExchange | null>;
+  },
+  scopeId: string,
+  sub: string,
+  verifiedEmail: string | null,
+): Promise<string | null> {
+  const open = await deps.directory.openInviteFor(scopeId, verifiedEmail);
+  if (!open) return null;
+  const exchanged = capabilityExchange.nullable().parse(await deps.exchangeById(capabilityId.parse(open.capabilityId)));
+  if (exchanged?.kind !== 'principal') return null;
+  return deps.directory.admitInvite(scopeId, sub, exchanged.capabilityId, exchanged.principal);
 }
 
 /**
@@ -417,7 +496,7 @@ export async function withdrawMemberInvite(
  *   GET  /api/invites                    → { roles, invites }            (admin)
  *   POST /api/invites                    → 201 { principal, roleKey, email, acceptUrl } (admin)
  *   POST /api/invites/:principal/revoke  → 204                           (admin)
- *   POST /api/accept-invite              → { ok: true, principal }       (any signed-in subject)
+ *   POST /api/accept-invite              → { ok: true, principal }       (a signed-in subject the invite admits)
  *
  * Every error these routes raise themselves is an `HTTPException` — a body that is not
  * JSON or does not fit its schema included, which `bodyOf` turns into a 400 rather than
@@ -537,8 +616,9 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
       node.scopeId,
       subject.sub,
       token,
+      verifiedEmailOf(subject),
     );
-    if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
+    if (!principal) throw new HTTPException(400, { message: INVITE_REFUSED });
     return c.json({ ok: true, principal });
   });
 }

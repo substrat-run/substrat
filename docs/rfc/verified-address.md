@@ -154,6 +154,20 @@ door never searches the scopes.
 
 This is the expensive part, so it is its own phase (§8). Phases 1 and 2 stand without it.
 
+**A member invite does not need the index.** A member invite is already filed in the tenant's identity
+directory under its scope, with the address it names, and every request arrives naming its scope. So
+the door asks that one directory whether an open invite in this scope names the session's verified
+address. There is no index to write and no scope to search. If one does, the door exchanges the
+invite's link by its id, in the scope, with every judgement the secret's exchange makes (expiry,
+withdrawal, the single use, the invited principal's holdings unchanged since the mint). Then it binds
+the session to the invite's principal, which already holds the invite's role. The mail carries no
+link. That half of this section runs ahead of phase 2 (§8), and is what a generated app's invite uses.
+
+Once an invite names an address, the link is for that address: it is accepted only from a session
+whose issuer verified it, so a forwarded link opens nothing and its one use stays for the person
+named. An invite naming no address is the bearer link it was, for an issuer that verifies no address.
+A member invite's link now expires 14 days after it is minted.
+
 ## 5. Trusting an address
 
 Everything here is as strong as the issuer's `email_verified`, and three limits should be stated:
@@ -206,7 +220,10 @@ new build never meets `join` at all.
    vertical's own tables, so a typed address looked up there still reaches `ctx.grant`.
 2. **Address grants.** The spine table on both adapters, the verbs, erasure, a contract suite.
    `demos/todo` moves over, then the template and skills.
-3. **Admission by address** (§4), once the first two have run in a real vertical.
+3. **Admission by address** (§4), once the first two have run in a real vertical. Its member-invite
+   half needs no index and lands first: the worker door's `admitByAddress`, both hosts'
+   `exchangeBecomeLinkById`, and the door's own invite routes, which a vertical names with
+   `workerDoor({ invites })`.
 
 Until phase 1 lands, the builder keeps a gate that refuses a project whose join trusts its input. It
 sits in the builder, not in the project, and the refusal in phase 1 replaces it.

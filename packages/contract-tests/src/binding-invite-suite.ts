@@ -53,6 +53,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { BIND_DUP_SHAPE, BIND_INVITE, BIND_MEMBER, BIND_OLD, BIND_READ_OWN, BIND_SHAPE, bindMod } from './bind-module.js';
+import type { BecomeMintVerbs } from './become-mint-suite.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import type { RawScopeQuery } from './subject-erasure-suite.js';
 
@@ -60,6 +61,8 @@ import type { RawScopeQuery } from './subject-erasure-suite.js';
 export interface BindingVerbs {
   mintBecomeCapabilityBounded(tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, input: PrincipalBecomeCapabilityInput): Promise<BoundedBecomeMint>;
   unbindEntityHolderBounded(tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, entity: EntityRef): Promise<BoundedUnbind>;
+  /** K-61 phase 3: a binding invite is never exchanged by id — only its secret's holder claims it. */
+  exchangeBecomeLinkById: BecomeMintVerbs['exchangeBecomeLinkById'];
 }
 
 type Row = Record<string, unknown>;
@@ -237,6 +240,8 @@ export function bindingInviteContractSuite(
         const target = await invitee();
         const link = await minted(clerk, target, rec(id));
         expect(await reads(target, id)).toBe(false);
+        // Never by its id (K-61 phase 3), which leaves it as it was: the claim below spends its one use.
+        expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, link.id)).toBeNull();
         expect(await exchange(link.secret)).toEqual({ kind: 'principal', capabilityId: link.id, principal: target, bound: rec(id) });
         expect((await rowOf(id))?.principal).toBe(target);
         expect(await tuplesOn(id)).toEqual([

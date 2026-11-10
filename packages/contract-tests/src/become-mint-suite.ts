@@ -39,6 +39,10 @@
  * 10. **Nothing to become.** A target holding nothing at the node is refused outright, whoever
  *    mints — the bound is evaluated at mint, and an empty set would cover trivially. Its twin:
  *    the same principal, once it holds a role, is minted for.
+ * 11. **The exchange by id** (K-61 phase 3, the door admitting a verified address). It yields the
+ *    principal once and is on the spine as the secret's exchange is; the secret is spent with it.
+ *    Every other kind of capability — the platform's own `become`, an `act` share — answers null
+ *    with its use untaken, and so do a revoked link, a changed principal's, and another scope's.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -56,6 +60,7 @@ import {
   type BoundedBecomeMint,
   type BoundedBecomeRevoke,
   type BecomeLinkState,
+  type CapabilityExchange,
   type CapabilityId,
   type CapabilityRecord,
   type EntityRef,
@@ -80,6 +85,8 @@ export interface BecomeMintVerbs {
   ): Promise<BoundedBecomeMint>;
   revokeBecomeCapability(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, by: PrincipalId): Promise<BoundedBecomeRevoke>;
   becomeLinkStates(tenantId: TenantId, scopeId: ScopeId, ids: readonly CapabilityId[]): Promise<BecomeLinkState[]>;
+  /** K-61 phase 3: the door's exchange of a member invite's link, named by id. */
+  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null>;
 }
 
 const READ = permissionKey.parse('cap:read');
@@ -366,6 +373,53 @@ export function becomeMintContractSuite(
         const cap = await minted(owner, await seat());
         expect(await fixture.verbs.revokeBecomeCapability(t1, s2, cap.id, owner)).toEqual({ ok: true, revoked: false });
         expect((await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' }))?.kind).toBe('principal');
+      });
+    });
+
+    describe('the exchange by id (K-61 phase 3)', () => {
+      const byId = (id: CapabilityId, scope: ScopeId = s1) => fixture.verbs.exchangeBecomeLinkById(t1, scope, id);
+
+      it('yields the principal once, on the spine as an exchange — and spends the secret with it', async () => {
+        const target = await seat();
+        const cap = await minted(owner, target);
+        expect(await byId(cap.id)).toEqual({ kind: 'principal', capabilityId: cap.id, principal: target });
+        expect((await outbox()).at(-1)).toMatchObject({ type: 'capability.exercised', entity_type: 'capability', entity_id: cap.id });
+        expect(await byId(cap.id)).toBeNull();
+        expect(await host.exchangeCapability(t1, s1, cap.secret, { mode: 'become' })).toBeNull();
+      });
+
+      it.each([
+        ['the platform\'s own become (a claim link)', 'become'],
+        ['an act share', 'act'],
+      ] as const)('refuses %s, its use untaken', async (_label, mode) => {
+        const cap = mode === 'become'
+          ? await host.admin.mintCapability(staff, t1, s1, {
+            principal: await seat(),
+            maxUses: 1,
+            expiresAt: new Date(Date.now() + 60_000).toISOString() as Instant,
+          })
+          : await (await host.getScope(owner, t1, s1)).invoke<MintedCapability>('cap/share', { entity: folder('F'), permissions: [READ] });
+        expect(await byId(cap.id)).toBeNull();
+        expect((await records()).find((r) => r.id === cap.id)?.uses).toBe(0);
+      });
+
+      it.each([
+        ['revoked', async (cap: MintedCapability) => { await fixture.verbs.revokeBecomeCapability(t1, s1, cap.id, owner); }],
+        ['whose principal was raised since', async (_cap: MintedCapability, target: PrincipalId) => {
+          await host.admin.assignRole(staff, { principalId: target, roleKey: 'writer', node: node() });
+        }],
+      ])('refuses a link %s', async (_label, change) => {
+        const target = await seat();
+        const cap = await minted(owner, target);
+        await change(cap, target);
+        expect(await byId(cap.id)).toBeNull();
+        expect((await records()).find((r) => r.id === cap.id)?.uses).toBe(0);
+      });
+
+      it('another scope of the tenant does not know the id; its own scope still does', async () => {
+        const cap = await minted(owner, await seat());
+        expect(await byId(cap.id, s2)).toBeNull();
+        expect((await byId(cap.id))?.kind).toBe('principal');
       });
     });
 

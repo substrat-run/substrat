@@ -32,7 +32,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { permMod } from '@substrat-run/contract-tests';
 import * as invites from '@substrat-run/vertical-auth/member-directory';
 import { MEMBER_DIRECTORY_DDL, migrateOwnerSeat, unbindPrincipal, type RegistrySql } from '@substrat-run/vertical-auth/member-directory';
-import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
+import { MEMBER_INVITE_TTL_MS, membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 
 const SECRET = 'sekret';
@@ -229,11 +229,14 @@ describe('/internal/members — an installed vertical’s members, managed from 
     expect(after.invites).toEqual([]);
     expect(after.members).toContainEqual({ principal: minted.principal, roles: ['agent'], logins: 1, email: 'kim@example.test', owner: false });
     expect(await holds(minted.principal)).toBe(true);
-    // #1686: the link was a single-use, never-expiring `become` capability the owner minted, now spent.
-    expect(await linkOf(minted.principal)).toMatchObject({
+    // #1686: the link was a single-use `become` capability the owner minted, now spent; since K-61
+    // phase 3 it would have expired MEMBER_INVITE_TTL_MS after its mint.
+    const link = await linkOf(minted.principal);
+    expect(link).toMatchObject({
       mode: 'become', principal: minted.principal, mintedBy: owner, label: 'member invite',
-      expiresAt: null, maxUses: 1, uses: 1, revokedAt: null,
+      expiresAt: expect.any(String), maxUses: 1, uses: 1, revokedAt: null,
     });
+    expect(Math.abs(Date.parse(link!.expiresAt!) - (Date.now() + MEMBER_INVITE_TTL_MS))).toBeLessThan(60_000);
   });
 
   it('lists an invite whose principal was raised since as a dead link, with the reason — never as open', async () => {
