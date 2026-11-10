@@ -6022,11 +6022,13 @@ export function defineScopeDO(
     /**
      * A member invite's link exchanged by its id (K-61 phase 3) — the kernel's
      * `exchangeBecomeLinkById`, for the worker door that found the invite by a verified address:
-     * a principal-minted plain `become` only, every judgement the secret's exchange makes, in the
-     * same queued body and storage transaction.
+     * a principal-minted plain `become` carrying `label` only, every judgement the secret's exchange
+     * makes, in the same queued body and storage transaction.
      */
-    async exchangeBecomeLinkById(capabilityId: CapabilityId, tenantId: TenantId, scopeId: ScopeId): Promise<CapabilityExchange | null> {
-      return this.exchangeIn(tenantId, scopeId, (deps) => exchangeBecomeLinkById(deps, capabilityId));
+    async exchangeBecomeLinkById(
+      capabilityId: CapabilityId, tenantId: TenantId, scopeId: ScopeId, label: string,
+    ): Promise<CapabilityExchange | null> {
+      return this.exchangeIn(tenantId, scopeId, (deps) => exchangeBecomeLinkById(deps, capabilityId, label));
     }
 
     /** One exchange: one queued body, one storage transaction, then what its event settles. */

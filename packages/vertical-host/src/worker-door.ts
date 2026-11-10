@@ -34,9 +34,11 @@
  * minted first. Then the vertical's own operation runs as the inviter: it decides who may invite,
  * records what its screens show, and queues the mail, which carries no secret. Only after it agrees
  * is the invite recorded where the door looks, so nobody is admitted by an invite the vertical
- * refused; a refusal takes the rest back. A withdrawal takes the platform's half first, bounded by
- * the roles the invited principal holds, so no later failure leaves an invite that still admits; the
- * vertical's operation then updates its own record. Listing is the vertical's own read.
+ * refused; a refusal takes the rest back. An address has one open invite at a time (a second is
+ * 409). A withdrawal decides who may withdraw before anything is withdrawn: the platform's bound
+ * over the invite's role, then the vertical's operation, which updates its own record; then the
+ * platform's half goes, bounded by the roles the invited principal holds. Listing is the vertical's
+ * own read.
  *
  * A worker that hands out invite LINKS instead mounts `mountInviteRoutes` beside this, with its own
  * admin gate; an invite naming an address is accepted there only by a verified holder of it.
@@ -44,7 +46,6 @@
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
-  instant,
   principalId,
   z,
   type BoundedBecomeMint,
@@ -76,13 +77,14 @@ import {
   type OwnerClaimMintHost,
 } from '@substrat-run/vertical-auth';
 import {
-  MEMBER_INVITE_TTL_MS,
+  MEMBER_INVITE_LABEL,
   admitByAddress,
   bodyOf,
   mintMemberInvite,
   uncovered,
   withdrawMemberInvite,
 } from '@substrat-run/vertical-auth/invite-routes';
+import { INVITE_ADDRESS_OPEN } from '@substrat-run/vertical-auth/member-directory';
 import { mountOwnerClaim, type OwnerClaimRouteDeps } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { mountSession, sessionAnswer } from '@substrat-run/vertical-auth/session-route';
 import type { PlatformSurfaceDeps } from './index.js';
@@ -139,9 +141,12 @@ export interface DoorInvites {
    */
   send: (scope: ScopeStub, invitation: DoorInvitation & { email: string; expiresAt: Instant }) => Promise<unknown>;
   /**
-   * The vertical's withdrawal, as the caller, once the platform's half is taken: its own record.
-   * Also run when the invite's row could not be written after `send` agreed. `email` is null for an
-   * invite the dashboard made without one. A throw is the route's answer; the invite is gone by then.
+   * The vertical's withdrawal, as the caller, before the platform's half is taken: its own check of
+   * who may withdraw, and its own record. A throw is the route's answer, and the invite stays open.
+   * It must answer an invite it already withdrew as a success, as a join returns the row it already
+   * wrote: a withdrawal whose platform half then fails is retried, and runs it again. Also run when
+   * the invite's row could not be written after `send` agreed. `email` is null for an invite the
+   * dashboard made without one.
    */
   cancel: (scope: ScopeStub, invitation: DoorInvitation) => Promise<unknown>;
 }
@@ -164,7 +169,9 @@ export interface SelfShapeHost {
  * where a person is the one asking. `CloudflareScopeHost` has every one.
  */
 export interface DoorInviteHost {
-  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null>;
+  /** A member invite's link exchanged by id, for one carrying `label` (`MEMBER_INVITE_LABEL`) only. */
+  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, label: string): Promise<CapabilityExchange | null>;
+  canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage>;
   assignScopeRoleBounded(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
   ): Promise<Coverage>;
@@ -281,17 +288,18 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     const email = verifiedEmailOf(subject);
     if (email === null) return null;
     const host = deps.hostFor(env);
-    const admitted = await admitByAddress(
-      { directory, exchangeById: (id) => host.exchangeBecomeLinkById(node.tenantId, node.scopeId, id) },
+    const { principal, contested } = await admitByAddress(
+      { directory, exchangeById: (id) => host.exchangeBecomeLinkById(node.tenantId, node.scopeId, id, MEMBER_INVITE_LABEL) },
       node.scopeId,
       subject.sub,
       email,
     );
-    if (admitted) {
-      console.log(JSON.stringify({ host: 'door-admitted', ...node, principal: admitted }));
-      return admitted;
+    if (principal) {
+      console.log(JSON.stringify({ host: 'door-admitted', ...node, principal }));
+      return principal;
     }
-    return directory.resolvePrincipal(node.scopeId, subject.sub);
+    // Only a refused exchange or bind can mean a racing request bound them meanwhile.
+    return contested ? directory.resolvePrincipal(node.scopeId, subject.sub) : null;
   };
 
   /** The caller, bound here, with their stub — 401 for nobody. */
@@ -309,7 +317,9 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       if (!invites.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
       const host = deps.hostFor(c.env);
       const directory = deps.directory(c.env, node);
-      const expiresAt = instant.parse(new Date(Date.now() + MEMBER_INVITE_TTL_MS).toISOString());
+      // One open invite per address (`createInvite` refuses a second): asked before anything is
+      // minted or mailed, so a second invite is a plain 409 and not a mail for nothing.
+      if (await directory.openInviteFor(node.scopeId, email)) throw new HTTPException(409, { message: INVITE_ADDRESS_OPEN });
       const minted = await mintMemberInvite(
         {
           grant: (assignee) => host.assignScopeRoleBounded(node.tenantId, node.scopeId, caller, assignee, roleKey),
@@ -318,9 +328,9 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
           // anyone by it, so a refusal here leaves nobody bound. A throw from either step takes the
           // link and the grant back (`mintMemberInvite`); a row that cannot be written after the
           // vertical said yes asks the vertical to take its own record back too.
-          record: async (principal, tokenHash, link) => {
+          record: async (principal, tokenHash, link, expiresAt) => {
             const invitation = { principal, email, roleKey };
-            await invites.send(scope, { ...invitation, expiresAt });
+            await invites.send(scope, { ...invitation, expiresAt: expiresAt! });
             try {
               await directory.createInvite(node.scopeId, principal, roleKey, email, tokenHash, link);
             } catch (err) {
@@ -333,11 +343,11 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
           revokeCapability: (link) => host.revokeBecomeCapability(node.tenantId, node.scopeId, link, caller),
           rollback: (principal) => host.revokeScopeRole(node.scopeId, principal, roleKey),
         },
-        { roleKey, email, origin: new URL(c.req.url).origin, expiresAt },
+        { roleKey, email, origin: new URL(c.req.url).origin },
       );
       if (!minted.ok) throw uncovered(minted.coverage.missing, roleKey, 'invite at');
       // The link's secret goes no further than this: the person is admitted by their address.
-      return c.json({ principal: principalId.parse(minted.invite.principal), email, roleKey, expiresAt }, 201);
+      return c.json({ principal: principalId.parse(minted.invite.principal), email, roleKey, expiresAt: minted.expiresAt }, 201);
     });
 
     app.post('/api/member-invites/:principal/withdraw', async (c) => {
@@ -347,10 +357,18 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       const invite = invited.success ? await directory.getInvite(node.scopeId, invited.data) : null;
       // No open invite: nothing to withdraw, answered as `mountInviteRoutes` answers it.
       if (!invited.success || !invite) return c.body(null, 204);
-      // The platform's half goes FIRST, so no failure after it can leave an invite that still admits:
-      // its roles, bounded by every role the invited principal holds now (a role the tenant no longer
-      // defines is taken without one), then its link, then its row (`withdrawMemberInvite`'s order).
       const host = deps.hostFor(c.env);
+      // Who may withdraw is decided before anything is withdrawn. First the platform's bound, early,
+      // over the role the invite was made at — so a caller it would refuse never has the vertical's
+      // row changed under an invite that stays open (a role the tenant no longer defines has no
+      // bound to ask, and is left to the revoke below). Then the vertical's own check and record.
+      const early = await host.canAssign(node.tenantId, node.scopeId, caller, invite.roleKey).catch(() => null);
+      if (early && !early.covered) throw uncovered(early.missing, invite.roleKey, 'withdraw an invite at');
+      await invites.cancel(scope, { principal: invited.data, email: invite.email, roleKey: invite.roleKey });
+      // Then the platform's half: its roles, bounded by every role the invited principal holds now,
+      // then its link, then its row (`withdrawMemberInvite`'s order). A failure here leaves the
+      // invite open with the vertical's record already withdrawn; a retry runs `cancel` again, which
+      // is why it must answer an invite it already withdrew as a success.
       const taken = await host.revokeScopeRolesBounded(node.tenantId, node.scopeId, caller, invited.data);
       if (!taken.coverage.covered) throw uncovered(taken.coverage.missing, invited.data, 'withdraw the invite of');
       await withdrawMemberInvite(
@@ -358,11 +376,9 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
         node.scopeId,
         invited.data,
       );
-      // Someone admitted by the invite between the read and the revoke holds nothing now; the
-      // principal was minted for this invite alone, so they go too, as a member removal unbinds.
+      // Someone admitted by the invite before its row went holds nothing now; the principal was
+      // minted for this invite alone, so they go too, as a member removal unbinds.
       await directory.unbindPrincipal(node.scopeId, invited.data);
-      // Then the vertical's own record. Its refusal is the answer, though the invite is gone by now.
-      await invites.cancel(scope, { principal: invited.data, email: invite.email, roleKey: invite.roleKey });
       return c.body(null, 204);
     });
   };

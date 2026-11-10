@@ -84,6 +84,7 @@ import { capabilityTokenHash, plausibleCapabilitySecret, ulid } from '@substrat-
 import { redeemBecomeLink } from './become-link.js';
 import { verifiedEmailOf } from './oidc-rp-provider.js';
 import type { IdentityStub, InviteRow } from './identity-do.js';
+import { INVITE_ADDRESS_OPEN } from './member-directory.js';
 import { invitePath, sha256Hex } from './owner-claim-link.js';
 import { bodyOf } from './request-body.js';
 
@@ -97,8 +98,8 @@ export type InviteDirectory = Pick<
   | 'listInvites' | 'getInvite' | 'createInvite' | 'revokeInvite' | 'claimInvite' | 'inviteMatches' | 'claimInviteByCapability'
   | 'inviteLink'
 > &
-  // Optional so a directory written before #2175 still mounts; the identity DO's stub has it.
-  Partial<Pick<IdentityStub, 'legacyInviteCount'>>;
+  // Optional so a directory written before #2175 (or K-61 phase 3) still mounts; the identity DO's stub has both.
+  Partial<Pick<IdentityStub, 'legacyInviteCount' | 'resolvePrincipal'>>;
 
 /**
  * #2175: the line that measures the legacy hash-only invite branch — one JSON line, `substrat`
@@ -296,7 +297,8 @@ export async function mintMemberInvite(
   steps: {
     grant: (assignee: PrincipalId) => Promise<Coverage>;
     mint: (input: PrincipalBecomeCapabilityInput) => Promise<BoundedBecomeMint>;
-    record: (principal: PrincipalId, tokenHash: string, capabilityId: CapabilityId) => Promise<void>;
+    /** `expiresAt` is when the link stops opening, null for never — what the route tells the vertical. */
+    record: (principal: PrincipalId, tokenHash: string, capabilityId: CapabilityId, expiresAt: Instant | null) => Promise<void>;
     revokeCapability: (capabilityId: CapabilityId) => Promise<unknown>;
     rollback: (principal: PrincipalId) => Promise<unknown>;
   },
@@ -346,10 +348,12 @@ export async function mintMemberInvite(
   }
   const link = minted.minted;
   try {
-    await steps.record(principal, await capabilityTokenHash(link.secret), link.id);
+    await steps.record(principal, await capabilityTokenHash(link.secret), link.id, expiresAt);
   } catch (err) {
     await steps.revokeCapability(link.id).catch(() => undefined);
     await ungrant();
+    // The directory's one refusal a person can act on (K-61 phase 3), answered as one.
+    if (err instanceof Error && err.message.includes(INVITE_ADDRESS_OPEN)) throw new HTTPException(409, { message: INVITE_ADDRESS_OPEN });
     throw err;
   }
   const origin = input.origin.replace(/\/$/, '');
@@ -444,9 +448,11 @@ export async function acceptMemberInvite(
  *      exchange on the spine as `capability.exercised` — so the link in a mail is spent with it;
  *   3. the directory binds, only while the invite still names that capability and principal, and
  *      only a subject still bound to nobody here (`admitInvite`).
- * Null for every refusal, one answer: the caller answers it as it answers nobody bound. Two first
- * requests at once: one is bound; the other can lose the single use before that binding is
- * written, and is answered as nobody bound once — its next request finds the binding.
+ * `principal` is null for every refusal, one answer: the caller answers it as it answers nobody
+ * bound. `contested` says an invite named the address and was refused at the exchange or the bind:
+ * a second first request racing this one may have bound the subject meanwhile, so a caller asks
+ * the directory again then, and only then. It can lose the single use before the winner's binding
+ * is written, and is answered as nobody bound once — its next request finds the binding.
  *
  * As strong as the issuer's `email_verified`, and no stronger: the scope trusts what its issuer
  * vouches for (docs/rfc/verified-address.md §5).
@@ -459,12 +465,13 @@ export async function admitByAddress(
   scopeId: string,
   sub: string,
   verifiedEmail: string | null,
-): Promise<string | null> {
+): Promise<{ principal: string | null; contested: boolean }> {
   const open = await deps.directory.openInviteFor(scopeId, verifiedEmail);
-  if (!open) return null;
+  if (!open) return { principal: null, contested: false };
   const exchanged = capabilityExchange.nullable().parse(await deps.exchangeById(capabilityId.parse(open.capabilityId)));
-  if (exchanged?.kind !== 'principal') return null;
-  return deps.directory.admitInvite(scopeId, sub, exchanged.capabilityId, exchanged.principal);
+  if (exchanged?.kind !== 'principal') return { principal: null, contested: true };
+  const principal = await deps.directory.admitInvite(scopeId, sub, exchanged.capabilityId, exchanged.principal);
+  return { principal, contested: principal === null };
 }
 
 /**
@@ -618,7 +625,15 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
       token,
       verifiedEmailOf(subject),
     );
-    if (!principal) throw new HTTPException(400, { message: INVITE_REFUSED });
+    if (!principal) {
+      // Already let in: a worker door admits the address an invite names on the person's first
+      // request (K-61 phase 3), which an accept page posting its token comes after, so the invite is
+      // spent by then. Answer who they are rather than refuse someone who is in. The same read every
+      // screen's `/api/me` makes first, so it seats nobody that read would not.
+      const own = await deps.directory(c.env, node).resolvePrincipal?.(node.scopeId, subject.sub);
+      if (own) return c.json({ ok: true, principal: own });
+      throw new HTTPException(400, { message: INVITE_REFUSED });
+    }
     return c.json({ ok: true, principal });
   });
 }

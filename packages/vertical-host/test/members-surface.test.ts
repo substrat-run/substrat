@@ -350,6 +350,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
    * vertical's own withdrawal and the platform's removal both ask what the principal holds.
    */
   describe('a role move landing between an invite\'s grant and its row', () => {
+    let races = 0;
     const heldInvite = async () => {
       let release!: () => void;
       let entered!: (principal: string) => void;
@@ -358,7 +359,8 @@ describe('/internal/members — an installed vertical’s members, managed from 
         entered(principal);
         return new Promise<void>((r) => (release = r));
       };
-      const minting = invite(owner, 'agent', 'race@example.test');
+      // Its own address each time: an address has one open invite at a time (K-61 phase 3).
+      const minting = invite(owner, 'agent', `race-${++races}@example.test`);
       const principal = principalId.parse(await inWindow); // granted in the scope, no row yet
       recording = null;
       expect(await rolesOf(principal)).toEqual(['agent']);

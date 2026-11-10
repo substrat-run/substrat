@@ -205,6 +205,7 @@ describe('an invited person (K-61 phase 3)', () => {
         calls.push('exchangeById');
         return over.exchanged === undefined ? { kind: 'principal', capabilityId: link, principal: invited } : over.exchanged;
       }),
+      canAssign: vi.fn(async () => { calls.push('canAssign'); return COVERED; }),
       assignScopeRoleBounded: vi.fn(async () => { calls.push('grant'); return COVERED; }),
       mintBecomeCapabilityBounded: vi.fn(async () => {
         calls.push('mint');
@@ -237,7 +238,7 @@ describe('an invited person (K-61 phase 3)', () => {
     expect((await app.request('/')).status).toBe(200);
     logged.mockRestore();
     expect(calls).toEqual(['openInviteFor Cleo@Acme.example', 'exchangeById', 'bind cleo']);
-    expect(host.exchangeBecomeLinkById).toHaveBeenCalledWith(node.tenantId, node.scopeId, link);
+    expect(host.exchangeBecomeLinkById).toHaveBeenCalledWith(node.tenantId, node.scopeId, link, 'member invite');
     expect(host.getScope).toHaveBeenCalledWith(invited, node.tenantId, node.scopeId, { verifiedEmail: 'Cleo@Acme.example' });
   });
 
@@ -249,13 +250,14 @@ describe('an invited person (K-61 phase 3)', () => {
   });
 
   it.each([
-    ['no invite names the address', null, undefined],
-    ['the scope refuses its link (expired, withdrawn, used)', undefined, null],
-  ])('answers 401 when %s', async (_label, open, exchanged) => {
+    ['no invite names the address — and the directory is not asked twice', null, undefined, 1],
+    ['the scope refuses its link (expired, withdrawn, used) — and the directory is asked again for a racing binding', undefined, null, 2],
+  ])('answers 401 when %s', async (_label, open, exchanged, resolves) => {
     subject = signedIn({ sub: 'cleo' });
-    const { app, host } = admitting({ open, exchanged });
+    const { app, host, directory } = admitting({ open, exchanged });
     expect((await app.request('/')).status).toBe(401);
     expect(host.getScope).not.toHaveBeenCalled();
+    expect(directory.resolvePrincipal).toHaveBeenCalledTimes(resolves);
   });
 
   it('a first request that loses the single use to a concurrent one finds the binding it made', async () => {
@@ -280,6 +282,7 @@ describe('an invited person (K-61 phase 3)', () => {
       let named!: { roles: string[]; send: ReturnType<typeof op>; cancel: ReturnType<typeof op> };
       const door = admitting({
         boundAfter: ann,
+        open: null,
         invites: (calls) => (named = { roles: ['rep', 'manager'], send: op(calls, 'send'), cancel: op(calls, 'cancel') }),
       });
       return { ...door, named };
@@ -301,7 +304,7 @@ describe('an invited person (K-61 phase 3)', () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body).toEqual({ principal: expect.any(String), email: 'cleo@acme.example', roleKey: 'rep', expiresAt: expect.any(String) });
       expect(JSON.stringify(body)).not.toContain('sbcap_');
-      expect(calls).toEqual(['grant', 'mint', 'send', 'record']);
+      expect(calls).toEqual(['openInviteFor cleo@acme.example', 'grant', 'mint', 'send', 'record']);
       expect(host.assignScopeRoleBounded).toHaveBeenCalledWith(node.tenantId, node.scopeId, ann, body.principal, 'rep');
       expect(named.send).toHaveBeenCalledWith(stub, body);
     });
@@ -309,7 +312,7 @@ describe('an invited person (K-61 phase 3)', () => {
     it('invite: the vertical\'s refusal is the answer, no row is ever written, and the link and role go', async () => {
       const { app, calls } = withInvites('send');
       expect((await post(app, '/api/member-invites', { email: 'cleo@acme.example', roleKey: 'rep' })).status).toBe(403);
-      expect(calls).toEqual(['grant', 'mint', 'send', 'revokeLink', 'revokeRole']);
+      expect(calls).toEqual(['openInviteFor cleo@acme.example', 'grant', 'mint', 'send', 'revokeLink', 'revokeRole']);
     });
 
     it('invite: a row that cannot be written after the vertical agreed takes the vertical\'s record back too', async () => {
@@ -320,7 +323,7 @@ describe('an invited person (K-61 phase 3)', () => {
       const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
       expect((await post(app, '/api/member-invites', { email: 'cleo@acme.example', roleKey: 'rep' })).status).toBe(500);
       errors.mockRestore();
-      expect(calls).toEqual(['grant', 'mint', 'send', 'cancel', 'revokeLink', 'revokeRole']);
+      expect(calls).toEqual(['openInviteFor cleo@acme.example', 'grant', 'mint', 'send', 'cancel', 'revokeLink', 'revokeRole']);
     });
 
     it.each([
@@ -339,27 +342,41 @@ describe('an invited person (K-61 phase 3)', () => {
       expect(calls).not.toContain('send');
     });
 
-    it('withdraw: the platform\'s half first, anyone it admitted unbound, then the vertical\'s record', async () => {
+    it('invite: an address an open invite already names is a 409, before anything is minted or mailed', async () => {
+      const { app, calls, directory } = withInvites();
+      directory.openInviteFor.mockResolvedValueOnce({ principal: invited, capabilityId: link });
+      expect((await post(app, '/api/member-invites', { email: 'cleo@acme.example', roleKey: 'rep' })).status).toBe(409);
+      expect(calls).toEqual([]);
+    });
+
+    it('withdraw: who may withdraw first — the bound, then the vertical — then the platform\'s half, and anyone it admitted', async () => {
       const { app, calls, stub, named } = withInvites();
       expect((await post(app, `/api/member-invites/${invited}/withdraw`)).status).toBe(204);
-      expect(calls).toEqual(['revokeRoles', 'revokeLink', 'revokeInvite', 'unbind', 'cancel']);
+      expect(calls).toEqual(['canAssign', 'cancel', 'revokeRoles', 'revokeLink', 'revokeInvite', 'unbind']);
       expect(named.cancel).toHaveBeenCalledWith(stub, { principal: invited, email: 'cleo@acme.example', roleKey: 'rep' });
     });
 
     it('withdraw: a caller the bound refuses changes nothing, and the vertical is never asked', async () => {
       const { app, calls, host } = withInvites();
-      host.revokeScopeRolesBounded.mockImplementationOnce(async () => {
-        calls.push('revokeRoles');
-        return { coverage: LACKS, revoked: [] };
+      host.canAssign.mockImplementationOnce(async () => {
+        calls.push('canAssign');
+        return LACKS;
       });
       expect((await post(app, `/api/member-invites/${invited}/withdraw`)).status).toBe(403);
-      expect(calls).toEqual(['revokeRoles']);
+      expect(calls).toEqual(['canAssign']);
     });
 
-    it('withdraw: the vertical\'s refusal is the answer, and the invite is already gone', async () => {
+    it('withdraw: the vertical\'s refusal is the answer, and nothing of the invite is taken', async () => {
       const { app, calls } = withInvites('cancel');
       expect((await post(app, `/api/member-invites/${invited}/withdraw`)).status).toBe(403);
-      expect(calls).toEqual(['revokeRoles', 'revokeLink', 'revokeInvite', 'unbind', 'cancel']);
+      expect(calls).toEqual(['canAssign', 'cancel']);
+    });
+
+    it('withdraw: an invite at a role the tenant no longer defines has no early bound, and still goes', async () => {
+      const { app, calls, host } = withInvites();
+      host.canAssign.mockRejectedValueOnce(new Error("unknown role 'rep'"));
+      expect((await post(app, `/api/member-invites/${invited}/withdraw`)).status).toBe(204);
+      expect(calls).toEqual(['cancel', 'revokeRoles', 'revokeLink', 'revokeInvite', 'unbind']);
     });
 
     it('withdraw: no open invite is answered 204, and nothing is asked', async () => {

@@ -5882,11 +5882,13 @@ export class SqliteScopeHost implements ScopeHost {
   /**
    * A member invite's link exchanged by its id (K-61 phase 3) — for the worker door, which found
    * the invite by the address the issuer verified and holds no secret. The kernel's
-   * `exchangeBecomeLinkById`: a principal-minted plain `become` only, every other judgement the
-   * secret's exchange makes, in the same scope task and transaction.
+   * `exchangeBecomeLinkById`: a principal-minted plain `become` carrying `label` only, every other
+   * judgement the secret's exchange makes, in the same scope task and transaction.
    */
-  async exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null> {
-    return this.exchangeIn(tenantId, scopeId, (deps) => exchangeBecomeLinkById(deps, capabilityId));
+  async exchangeBecomeLinkById(
+    tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, label: string,
+  ): Promise<CapabilityExchange | null> {
+    return this.exchangeIn(tenantId, scopeId, (deps) => exchangeBecomeLinkById(deps, capabilityId, label));
   }
 
   /** One exchange: one serialized scope task, one transaction, then the consumers its event wakes. */
