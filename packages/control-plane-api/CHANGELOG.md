@@ -1,5 +1,14 @@
 # @substrat-run/control-plane-api
 
+## 0.190.2
+
+### Patch Changes
+
+- 5631f4c: The hosted sign-in screens are light by default, an issuer has a theme of its own, and a theme can carry raw CSS. Better Auth 1.7.18.
+- Updated dependencies [e2a6b1f]
+  - @substrat-run/contracts@0.190.2
+  - @substrat-run/kernel@0.190.2
+
 ## 0.190.1
 
 ### Patch Changes

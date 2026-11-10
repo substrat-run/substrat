@@ -1,5 +1,11 @@
 # @substrat-run/builder-generator
 
+## 0.12.5
+
+### Patch Changes
+
+- @substrat-run/builder-workspace@0.13.4
+
 ## 0.12.4
 
 ### Patch Changes
