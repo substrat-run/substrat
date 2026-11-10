@@ -1243,14 +1243,19 @@ export interface SignInAttempt {
   type: SignInLogType | null;
 }
 
-/** The Auth0 log type codes this log can carry — it records federated round trips only. */
+/** The Auth0 log type codes this log can carry: `s` and `f`, with the refusal's own code beside `f`. */
 export type SignInLogType = 's' | 'f';
 
 export interface SignInLogPage {
   attempts: SignInAttempt[];
   total: number;
-  /** How many rows the issuer keeps at all — the log is a ring, and the screen says so. */
-  retained: number;
+  /** How long the issuer keeps a row, and the most rows it keeps — the screen says so. */
+  retention: SignInLogRetention;
+}
+
+export interface SignInLogRetention {
+  days: number;
+  rows: number;
 }
 
 export interface SignInLogFilter {
@@ -1283,8 +1288,21 @@ export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLog
 }
 
 /**
+ * Succeeded and failed sign-ins in each window between consecutive `bounds` (ms) — counted by
+ * the issuer, so a busy week is not a page walk. `cutAt` is where the log starts when its row
+ * cap, not its age, decided that; windows before it were not kept.
+ */
+export async function signInWindows(bounds: number[]): Promise<{
+  windows: { succeeded: number; failed: number }[];
+  cutAt: number | null;
+  retention: SignInLogRetention;
+}> {
+  return admin(`/sign-in-log/windows?bounds=${bounds.join(',')}`);
+}
+
+/**
  * One log row by id, with the other hops of the same attempt (`correlation`) — the pair is the
- * diagnosis, so the entry's own screen shows both. `null` once the ring has pruned it.
+ * diagnosis, so the entry's own screen shows both. `null` once retention has pruned it.
  */
 export async function signInLogEntry(id: number): Promise<{ attempt: SignInAttempt; related: SignInAttempt[] } | null> {
   try {

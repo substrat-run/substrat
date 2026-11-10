@@ -27,6 +27,8 @@ import { isPlaceholderAddress } from './placeholder-address.js';
 import { basicCredentialsOf } from './token-exchange.js';
 import { diagnoseSignInCallback, recordRefusedCallback, recordSignInException } from './sign-in-diagnostics.js';
 import {
+  DIRECT_SIGN_IN_PATHS,
+  attributedSignInOf,
   authorityOf,
   callbackProviderOf,
   clientIdOfSignedQuery,
@@ -969,7 +971,8 @@ function betterAuthFor(deps: AuthDeps) {
         return { context: { query: { ...(narrowed?.context.query ?? query), max_age: '0' } } };
       }),
       /**
-       * THE SIGN-IN LOG (`src/sign-in-log.ts`) — both ends of a federated round trip, recorded.
+       * THE SIGN-IN LOG (`src/sign-in-log.ts`) — both ends of a federated round trip, and the
+       * outcome of every sign-in this issuer decides by itself, recorded.
        *
        * An after-hook is the only place either end is observable, and the reason is Better
        * Auth's control flow: `/callback/:id` finishes by THROWING `c.redirect(…)` on every path
@@ -995,6 +998,10 @@ function betterAuthFor(deps: AuthDeps) {
         if (!record) return;
         if (ctx.path === '/github-email/verify' && ctx.context.newSession) {
           record({ method: 'github', outcome: 'succeeded', phase: 'callback', userId: ctx.context.newSession.user.id });
+          return;
+        }
+        if (DIRECT_SIGN_IN_PATHS.includes(ctx.path)) {
+          await recordDirectSignIn(ctx, record);
           return;
         }
         // `/sign-in/social` serves BOTH kinds of upstream: `genericOAuth` registers its
@@ -1072,6 +1079,63 @@ function betterAuthFor(deps: AuthDeps) {
     baseURL: deps.baseURL,
     trustedOrigins: deps.trustedOrigins,
   });
+}
+
+/**
+ * One `direct` row for a sign-in this issuer decided by itself (`DIRECT_SIGN_IN_PATHS`).
+ *
+ * The outcome is read the way the federated rows read theirs: a thrown `APIError` reaches the
+ * after-hook as `context.returned`, and a session reaches it as `context.newSession`. Anything
+ * else is a step that has not finished — a BankID poll still pending, an order parked for its
+ * email, a password accepted with an SMS code still to come — and writes nothing. The one
+ * refusal that is NOT thrown is BankID's own (the person cancelled, the order expired), which
+ * `/bankid/collect` answers as `{ status: 'failed', hintCode }` so the screen can say why.
+ *
+ * A refusal names the account it matched when that is known without trusting the browser: the
+ * endpoint noted it (`attributeSignIn`), or the password form named an address that holds one.
+ * The address itself is never written — for an account that does not exist it is a stranger's
+ * typo or someone's guess list.
+ */
+async function recordDirectSignIn(
+  ctx: { path: string; body?: unknown; context: Record<string, unknown> & { internalAdapter: { findUserByEmail(email: string): Promise<{ user: { id: string } } | null> } } },
+  record: SignInLogger,
+): Promise<void> {
+  const method = signInMethodOfPath(ctx.path);
+  if (!method) return;
+  const body = ctx.body as { email?: unknown; oauth_query?: unknown } | undefined;
+  const clientId = clientIdOfSignedQuery(body?.oauth_query);
+  const returned = ctx.context.returned;
+  const signedIn = (ctx.context.newSession as { user?: { id?: string } } | null | undefined)?.user?.id;
+  if (signedIn) {
+    record({ method, outcome: 'succeeded', phase: 'direct', clientId, userId: signedIn });
+    return;
+  }
+  if (returned instanceof Error) {
+    record({ method, outcome: 'failed', phase: 'direct', clientId, userId: await refusedAccountOf(ctx, body), ...refusalOf(returned) });
+    return;
+  }
+  const answer = returned as { status?: unknown; hintCode?: unknown } | undefined;
+  if (ctx.path === '/bankid/collect' && answer?.status === 'failed') {
+    const hint = typeof answer.hintCode === 'string' ? answer.hintCode : null;
+    record({ method, outcome: 'failed', phase: 'direct', clientId, userId: attributedSignInOf(ctx.context), error: hint ?? 'failed' });
+  }
+}
+
+/** The account a refused direct sign-in was about — see `recordDirectSignIn`. */
+async function refusedAccountOf(
+  ctx: Parameters<typeof recordDirectSignIn>[0],
+  body: { email?: unknown } | undefined,
+): Promise<string | null> {
+  const noted = attributedSignInOf(ctx.context);
+  if (noted) return noted;
+  if ((ctx.path !== '/sign-in/email' && ctx.path !== '/sign-up/email') || typeof body?.email !== 'string') return null;
+  try {
+    const found = await ctx.context.internalAdapter.findUserByEmail(body.email.trim().toLowerCase());
+    return found?.user.id ?? null;
+  } catch {
+    // The row is worth more than the attribution.
+    return null;
+  }
 }
 
 export type Auth = ReturnType<typeof betterAuthFor>;

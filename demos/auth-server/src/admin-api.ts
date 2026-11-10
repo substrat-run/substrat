@@ -56,7 +56,7 @@ import {
   type BankIdTransport,
   type BankIdTransportKind,
 } from './bankid.js';
-import { SIGN_IN_LOG_LIMIT, readSignInLog, readSignInLogEntry, signInLogQuery } from './sign-in-log.js';
+import { SIGN_IN_LOG_RETENTION, countSignInsByWindow, readSignInLog, signInLogCutAt, readSignInLogEntry, signInLogQuery, signInWindowQuery } from './sign-in-log.js';
 import { importBody, importUsers, wallClock } from './user-import.js';
 import { platformOwnerOf } from './resources.js';
 
@@ -1184,9 +1184,9 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    * issuer addressed on their behalf. None of it is a credential; all of it is somebody's
    * sign-in activity.
    *
-   * `limit`/`before` page by id rather than by offset, because the table is a RING pruned on
-   * write — an offset walks rows that have moved underneath the reader. `retained` is sent so
-   * the screen can say how far back the window reaches instead of implying the log is complete.
+   * `limit`/`before` page by id rather than by offset, because the table is pruned on write —
+   * an offset walks rows that have moved underneath the reader. `retention` is sent so the
+   * screen can say how far back the log reaches instead of implying it is complete.
    */
   app.get('/sign-in-log', (c) => {
     const parsed = signInLogQuery.safeParse({
@@ -1205,7 +1205,14 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       });
     }
     const { attempts, total } = readSignInLog(deps.sql, parsed.data);
-    return c.json({ attempts, total, retained: SIGN_IN_LOG_LIMIT });
+    return c.json({ attempts, total, retention: SIGN_IN_LOG_RETENTION });
+  });
+
+  /** Succeeded and failed sign-ins per window — the Overview's chart (`countSignInsByWindow`). */
+  app.get('/sign-in-log/windows', (c) => {
+    const parsed = signInWindowQuery.safeParse({ bounds: c.req.query('bounds') });
+    if (!parsed.success) throw new HTTPException(400, { message: parsed.error.issues.map((i) => i.message).join('; ') });
+    return c.json({ windows: countSignInsByWindow(deps.sql, parsed.data.bounds), cutAt: signInLogCutAt(deps.sql), retention: SIGN_IN_LOG_RETENTION });
   });
 
   /**

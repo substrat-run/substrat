@@ -13,6 +13,7 @@ import {
 } from './bankid.js';
 import { bankidEmailEndpoints, parkIdentity, type BankIdEmailStepOptions } from './bankid-email-step.js';
 import { bankidPlaceholderAddress, isPlaceholderAddress } from './placeholder-address.js';
+import { attributeSignIn } from './sign-in-log.js';
 
 /**
  * The BankID sign-in flow, as a Better Auth plugin — four endpoints under the issuer's own
@@ -174,6 +175,8 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
           // would otherwise let anyone use this issuer as a proxy onto BankID's API.
           const pending = await readOrder(ctx, ctx.body.orderRef);
           if (pending.linkUserId) {
+            // The sign-in log names the account a refusal below was about (`sign-in-log.ts`).
+            attributeSignIn(ctx.context, pending.linkUserId);
             const linking = await getSessionFromCtx(ctx);
             if (!linking || linking.user.id !== pending.linkUserId || linking.session.id !== pending.linkSessionId || !linking.user.emailVerified) {
               throw new APIError('FORBIDDEN', { message: 'This BankID order belongs to another setup session' });
@@ -244,6 +247,7 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
           }
           // The `admin` plugin's banned check runs inside this create, so a banned user is
           // refused here with its own FORBIDDEN — completed order or not.
+          attributeSignIn(ctx.context, user.id);
           const session = await ctx.context.internalAdapter.createSession(user.id);
           if (!session) throw new APIError('INTERNAL_SERVER_ERROR', { message: 'could not create a session' });
           await setSessionCookie(ctx, { session, user });

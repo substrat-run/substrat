@@ -5,6 +5,7 @@ import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import type { MergeOutcome } from './account-merge.js';
 import { bankidEmailCode, bankidJoinedNotice, type MailStyle } from './email.js';
 import { isPlaceholderAddress } from './placeholder-address.js';
+import { attributeSignIn } from './sign-in-log.js';
 
 /**
  * The address a BankID sign-in has to prove before it becomes an account (#2939, #2940).
@@ -187,7 +188,10 @@ export const bankidEmailEndpoints = (opts: BankIdEmailStepOptions) => {
 
         // A refusal leaves the step open, so the person can prove a different address.
         const existing = await adapter.findUserByEmail(challenge.email, { includeAccounts: true });
+        // The sign-in log names the account a refusal below was about (`sign-in-log.ts`).
+        if (identity.userId) attributeSignIn(ctx.context, identity.userId);
         if (existing) {
+          attributeSignIn(ctx.context, existing.user.id);
           const refused = joinRefusal(existing as never, opts.autoLinkAccounts);
           if (refused) throw new APIError('CONFLICT', { message: refused });
         } else if (!identity.userId && !opts.allowSignup) {
