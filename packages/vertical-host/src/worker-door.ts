@@ -34,9 +34,11 @@
  * minted first. Then the vertical's own operation runs as the inviter: it decides who may invite,
  * records what its screens show, and queues the mail, which carries no secret. Only after it agrees
  * is the invite recorded where the door looks, so nobody is admitted by an invite the vertical
- * refused; a refusal takes the rest back. A withdrawal takes the platform's half first, bounded by
- * the roles the invited principal holds, so no later failure leaves an invite that still admits; the
- * vertical's operation then updates its own record. Listing is the vertical's own read.
+ * refused; a refusal takes the rest back. An address has one open invite at a time (a second is
+ * 409). A withdrawal decides who may withdraw before anything is withdrawn: the platform's bound
+ * over the invite's role, then the vertical's operation, which updates its own record; then the
+ * platform's half goes, bounded by the roles the invited principal holds. Listing is the vertical's
+ * own read.
  *
  * A worker that hands out invite LINKS instead mounts `mountInviteRoutes` beside this, with its own
  * admin gate; an invite naming an address is accepted there only by a verified holder of it.
@@ -69,6 +71,7 @@ import {
   type OwnerClaimMintHost,
 } from '@substrat-run/vertical-auth';
 import {
+  MEMBER_INVITE_LABEL,
   admitByAddress,
   mountMemberInvites,
   type MemberInvitation,
@@ -130,7 +133,8 @@ export interface SelfShapeHost {
  * where a person is the one asking. `CloudflareScopeHost` has every one.
  */
 export interface DoorInviteHost extends MemberInviteHost {
-  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null>;
+  /** A member invite's link exchanged by id, for one carrying `label` (`MEMBER_INVITE_LABEL`) only. */
+  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, label: string): Promise<CapabilityExchange | null>;
 }
 
 type DoorHooks<E> = Required<
@@ -233,17 +237,18 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     const email = verifiedEmailOf(subject);
     if (email === null) return null;
     const host = deps.hostFor(env);
-    const admitted = await admitByAddress(
-      { directory, exchangeById: (id) => host.exchangeBecomeLinkById(node.tenantId, node.scopeId, id) },
+    const { principal, contested } = await admitByAddress(
+      { directory, exchangeById: (id) => host.exchangeBecomeLinkById(node.tenantId, node.scopeId, id, MEMBER_INVITE_LABEL) },
       node.scopeId,
       subject.sub,
       email,
     );
-    if (admitted) {
-      console.log(JSON.stringify({ host: 'door-admitted', ...node, principal: admitted }));
-      return admitted;
+    if (principal) {
+      console.log(JSON.stringify({ host: 'door-admitted', ...node, principal }));
+      return principal;
     }
-    return directory.resolvePrincipal(node.scopeId, subject.sub);
+    // Only a refused exchange or bind can mean a racing request bound them meanwhile.
+    return contested ? directory.resolvePrincipal(node.scopeId, subject.sub) : null;
   };
 
   /** The caller, bound here, with their stub — 401 for nobody. */

@@ -206,10 +206,10 @@ export function capabilityExpiryContractSuite(
     it('a member invite\'s link is not exchanged by id after its expiry (K-61 phase 3), its use untaken', async () => {
       const invited = principalId.parse(ulid());
       await host.admin.assignRole(staff, { principalId: invited, roleKey: 'owner', node: { tenantId: t1, scopeId: s1 } });
-      const out = await fixture.verbs.mintBecomeCapabilityBounded(t1, s1, alice, { principal: invited, maxUses: 1, expiresAt: at(10 * MINUTE) });
+      const out = await fixture.verbs.mintBecomeCapabilityBounded(t1, s1, alice, { principal: invited, maxUses: 1, expiresAt: at(10 * MINUTE), label: 'member invite' });
       if (!out.ok) throw new Error(`expected a mint, refused: ${JSON.stringify(out)}`);
       clock.advance(11 * MINUTE);
-      expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, out.minted.id)).toBeNull();
+      expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, out.minted.id, 'member invite')).toBeNull();
       const record = (await host.admin.listCapabilities(staff, t1, s1, { includeRevoked: true })).entries.find((r) => r.id === out.minted.id);
       expect(record?.uses).toBe(0);
     });

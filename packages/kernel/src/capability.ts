@@ -797,20 +797,25 @@ export async function exchangeCapability(
  * unchanged since the mint — and the exchange is on the spine the same way, as
  * `capability.exercised` with the capability as its actor.
  *
- * Narrower than the secret's exchange, on purpose: only a plain `become` a PRINCIPAL minted — the
- * shape a member invite has — is exchanged. The platform's own `become` (an owner claim link), a
- * binding invite (a `become` carrying a `bind`), a `bind` link and an `act` share answer `null`
- * with their use untaken: each of those is redeemed by its secret, by whoever presents it. A host
- * verb, never a module one — `ctx` has no way to name a capability to exchange.
+ * Narrower than the secret's exchange, on purpose: only a plain `become` a PRINCIPAL minted with
+ * the `label` the caller names — a member invite's shape and label — is exchanged. The platform's
+ * own `become` (an owner claim link), a binding invite (a `become` carrying a `bind`), a `bind`
+ * link, an `act` share and a principal's `become` minted for anything else answer `null` with their
+ * use untaken: each of those is redeemed by its secret, by whoever presents it. A host verb, never a
+ * module one — `ctx` has no way to name a capability to exchange.
  */
-export async function exchangeBecomeLinkById(deps: CapabilityExchangeDeps, id: unknown): Promise<CapabilityExchange | null> {
+export async function exchangeBecomeLinkById(
+  deps: CapabilityExchangeDeps,
+  id: unknown,
+  label: string,
+): Promise<CapabilityExchange | null> {
   const parsed = capabilityIdSchema.safeParse(id);
   if (!parsed.success) return null;
   const row = deps.sql.query<CapabilityRow>(
     `SELECT ${CAPABILITY_COLUMNS} FROM _substrat_capabilities WHERE id = ?`,
     [parsed.data],
   )[0];
-  if (!row || row.mode !== 'become' || actionOf(row) !== null) return null;
+  if (!row || row.mode !== 'become' || row.label !== label || actionOf(row) !== null) return null;
   if (typeof capabilityAuthor.parse(JSON.parse(row.minted_by)) !== 'string') return null;
   return exchangeRow(deps, row, 'become');
 }

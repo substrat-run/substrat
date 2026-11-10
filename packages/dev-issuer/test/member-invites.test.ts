@@ -64,6 +64,7 @@ describe('member invites on a dev server (K-61 phase 3)', () => {
     calls = [];
     const minted = new Set<string>();
     host = {
+      canAssign: async () => ({ covered: true, missing: [] }),
       assignScopeRoleBounded: async () => ({ covered: true, missing: [] }),
       revokeScopeRolesBounded: async () => ({ coverage: { covered: true, missing: [] }, revoked: ['rep'] }),
       mintBecomeCapabilityBounded: async (_t, _s, _caller, input) => {
@@ -72,8 +73,8 @@ describe('member invites on a dev server (K-61 phase 3)', () => {
         return { ok: true, minted: { id: link, secret: `sbcap_${crypto.randomUUID()}`, expiresAt: input.expiresAt ?? null } };
       },
       revokeBecomeCapability: async () => ({ ok: true, revoked: true }),
-      exchangeBecomeLinkById: async (tenantId, scopeId, link) => {
-        calls.push(`exchange ${tenantId} ${scopeId}`);
+      exchangeBecomeLinkById: async (tenantId, scopeId, link, label) => {
+        calls.push(`exchange ${tenantId} ${scopeId} ${label}`);
         const entry = [...minted].find((m) => m.startsWith(`${link} `));
         if (!entry) return null;
         minted.delete(entry);
@@ -124,7 +125,7 @@ describe('member invites on a dev server (K-61 phase 3)', () => {
     const invited = await invite('cleo@example.test');
     const headers = await bearer('dev|cleo');
     expect(await login.caller(headers)).toMatchObject({ principal: invited, tenantId: T1, scopeId: S1, verifiedEmail: 'Cleo@Example.test' });
-    expect(calls).toEqual([`exchange ${T1} ${S1}`, 'link dev|cleo']);
+    expect(calls).toEqual([`exchange ${T1} ${S1} member invite`, 'link dev|cleo']);
     expect(await login.caller(headers)).toMatchObject({ principal: invited });
     expect(admit).toHaveBeenCalledOnce();
   });

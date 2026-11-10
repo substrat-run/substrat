@@ -116,8 +116,11 @@ invite naming that address, binds them to its principal, and they arrive with it
 `POST /api/member-invites/:principal/withdraw`. It sets up the platform's half first, bounded by
 the inviter's own role, then runs your operation as the inviter: who may invite is your rule, and
 the mail it queues says "sign in with this address". If your operation refuses, the invite is
-withdrawn. `src/server.ts` does the same locally: its `devMemberInvites` admits an invited person
-when they sign in, and `members.mount` takes the same `invites` the worker names. To hand out links instead, add `mountInviteRoutes` from `@substrat-run/vertical-auth`
+withdrawn. An address has one open invite at a time (a second is `409`). A withdrawal runs your
+cancel operation first, as the caller, then takes the platform's half, so it must succeed for an
+invite it already withdrew, as a join returns the row it already wrote. `src/server.ts` does the
+same locally: its `devMemberInvites` admits an invited person when they sign in, and
+`members.mount` takes the same `invites` the worker names. To hand out links instead, add `mountInviteRoutes` from `@substrat-run/vertical-auth`
 behind your own admin gate; a link naming an address opens only for a verified holder of it.
 
 The worker's **first** registration is the invocation log, and it must stay first:

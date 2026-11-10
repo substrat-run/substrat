@@ -147,7 +147,7 @@ export function bindLinkContractSuite(
       });
 
       const link = await minted(clerk, joined, rec(id));
-      expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, link.id)).toBeNull();
+      expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, link.id, 'member invite')).toBeNull();
       expect(await capOf(link.id)).toMatchObject({ mode: 'bind', principal: joined, action: { kind: 'bind', entity: rec(id) }, maxUses: 1, uses: 0 });
       expect((await outbox(CAPABILITY_BIND_MINTED)).filter((e) => e.payload.capabilityId === link.id)).toEqual([
         {

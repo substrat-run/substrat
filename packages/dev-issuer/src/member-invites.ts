@@ -26,6 +26,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { DevLogin } from './harness.js';
 import {
+  MEMBER_INVITE_LABEL,
   admitByAddress,
   mountMemberInvites,
   type MemberInviteHost,
@@ -54,7 +55,7 @@ export interface DevSqliteDatabase {
 
 /** What it needs of the dev server's host: the member invite verbs, the exchange by id, and the pool. */
 export interface DevInviteHost extends MemberInviteHost {
-  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId): Promise<CapabilityExchange | null>;
+  exchangeBecomeLinkById(tenantId: TenantId, scopeId: ScopeId, capabilityId: CapabilityId, label: string): Promise<CapabilityExchange | null>;
   admin: {
     linkIdentity(
       actor: PlatformActorId,
@@ -136,13 +137,13 @@ export function devMemberInvites(opts: DevMemberInvitesOptions): DevMemberInvite
         const scopeId = scope_id as ScopeId;
         const tenantId = tenantOf(scopeId);
         if (!tenantId) continue;
-        const principal = await admitByAddress(
+        const { principal } = await admitByAddress(
           {
             directory: {
               openInviteFor: async (scope, email) => openInviteFor(sql, scope, email),
               admitInvite: async (scope, subject, capabilityId, invited) => admitInvite(sql, scope, subject, capabilityId, invited),
             },
-            exchangeById: (id) => opts.host.exchangeBecomeLinkById(tenantId, scopeId, id),
+            exchangeById: (id) => opts.host.exchangeBecomeLinkById(tenantId, scopeId, id, MEMBER_INVITE_LABEL),
           },
           scopeId,
           sub,
@@ -169,6 +170,7 @@ export function devMemberInvites(opts: DevMemberInvitesOptions): DevMemberInvite
             createInvite(sql, scopeId, principal, roleKey, email, tokenHash, capabilityId);
           },
           getInvite: async (scopeId, principal) => getInvite(sql, scopeId, principal),
+          openInviteFor: async (scopeId, email) => openInviteFor(sql, scopeId, email),
           inviteLink: async (scopeId, principal) => inviteLink(sql, scopeId, principal),
           revokeInvite: async (scopeId, principal) => revokeInvite(sql, scopeId, principal),
           // The pool is where a local login lives, so a withdrawal unlinks there too.

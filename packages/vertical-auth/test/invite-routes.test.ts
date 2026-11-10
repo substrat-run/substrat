@@ -33,7 +33,7 @@ import {
 } from '@substrat-run/contracts';
 import { mintCapabilitySecret, ulid, unknownRoleError } from '@substrat-run/kernel';
 import { INVITE_REFUSED, LEGACY_INVITES_LIST_REPORT_MS, MEMBER_INVITE_TTL_MS, admitByAddress, legacyInviteListReporter, legacyInvitesLine, mintMemberInvite, mountBindLinkRoutes, mountInviteRoutes, withLinkStates, type InviteDirectory, type InviteRouteDeps } from '../src/invite-routes.js';
-import { addressAdmits } from '../src/member-directory.js';
+import { INVITE_ADDRESS_OPEN, addressAdmits } from '../src/member-directory.js';
 import { sha256Hex } from '../src/owner-claim-link.js';
 import type { AuthProvider, AuthSubject } from '../src/provider.js';
 
@@ -100,6 +100,9 @@ class MemoryDirectory implements InviteDirectory {
     return [...this.invites.values()].some(
       (r) => r.tokenHash === tokenHash && r.capabilityId !== null && (verifiedEmail === undefined || addressAdmits(r.email, verifiedEmail)),
     );
+  }
+  async resolvePrincipal(_scopeId: string, sub: string) {
+    return this.bound.get(sub) ?? null;
   }
   async claimInviteByCapability(_scopeId: string, sub: string, capabilityId: string, principal: string) {
     const row = [...this.invites.values()].find((r) => r.capabilityId === capabilityId && r.principal === principal);
@@ -914,6 +917,30 @@ describe('the address an invite names (K-61 phase 3)', () => {
     expect(directory.bound.get('sub-newcomer')).toBe(principal);
   });
 
+  it('accepting answers who they are, not a refusal, for someone already in (a door admitted them by address first)', async () => {
+    const { token } = await invite('new@acme.example');
+    directory.bound.set('sub-newcomer', 'already-in');
+    const res = await accept(token, 'tok-newcomer');
+    expect([res.status, await res.json()]).toEqual([200, { ok: true, principal: 'already-in' }]);
+  });
+
+  it('a second open invite to one address is a 409, and its role and link are taken back', async () => {
+    const steps = {
+      grant: async () => ({ covered: true as const, missing: [] as [] }),
+      mint: async (): Promise<BoundedBecomeMint> => ({ ok: true, minted: { id: capabilityId.parse(ulid()), secret: mintCapabilitySecret(), expiresAt: null } }),
+      record: async () => {
+        throw new Error(`Error: ${INVITE_ADDRESS_OPEN}`);
+      },
+      revokeCapability: vi.fn(async () => undefined),
+      rollback: vi.fn(async () => undefined),
+    };
+    const refused = await mintMemberInvite(steps, { roleKey: 'editor', email: 'ann@acme.example', origin: 'http://app.example' }).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(HTTPException);
+    expect([(refused as HTTPException).status, (refused as HTTPException).message]).toEqual([409, INVITE_ADDRESS_OPEN]);
+    expect(steps.revokeCapability).toHaveBeenCalledOnce();
+    expect(steps.rollback).toHaveBeenCalledOnce();
+  });
+
   it('mints its link to expire MEMBER_INVITE_TTL_MS (14 days) after now, unless told when', async () => {
     const at = Date.UTC(2026, 10, 10);
     const clock = vi.spyOn(Date, 'now').mockReturnValue(at);
@@ -964,7 +991,7 @@ describe('the address an invite names (K-61 phase 3)', () => {
 
     it('binds the subject to the principal the scope\'s exchange of the invite\'s link yields', async () => {
       const { admitted, calls } = run({ kind: 'principal', capabilityId: OPEN.capabilityId, principal: OPEN.principal });
-      expect(await admitted).toBe(OPEN.principal);
+      expect(await admitted).toEqual({ principal: OPEN.principal, contested: false });
       expect(calls).toEqual([
         'openInviteFor ann@acme.example',
         `exchange ${OPEN.capabilityId}`,
@@ -973,11 +1000,11 @@ describe('the address an invite names (K-61 phase 3)', () => {
     });
 
     it.each([
-      ['no invite names the address: the scope is not asked', null, null, ['openInviteFor ann@acme.example']],
-      ['the scope refuses the link (expired, withdrawn, used): nothing is bound', OPEN, null, ['openInviteFor ann@acme.example', 'exchange']],
-    ])('answers null when %s', async (_label, open, exchanged, expected) => {
+      ['no invite names the address: the scope is not asked, and nothing was contested', null, null, ['openInviteFor ann@acme.example'], false],
+      ['the scope refuses the link (expired, withdrawn, used): nothing is bound, and it was contested', OPEN, null, ['openInviteFor ann@acme.example', 'exchange'], true],
+    ])('answers no principal when %s', async (_label, open, exchanged, expected, contested) => {
       const { admitted, calls } = run(exchanged, open);
-      expect(await admitted).toBeNull();
+      expect(await admitted).toEqual({ principal: null, contested });
       expect(calls.map((c) => c.replace(/ [0-9A-Z]{26}$/, ''))).toEqual(expected);
     });
   });
@@ -1070,7 +1097,8 @@ describe('legacy invite measurement (#2175)', () => {
     const { token } = await legacy();
     expect((await accept(token)).status).toBe(200);
     lines.length = 0;
-    expect((await accept(token)).status).toBe(400);
+    // The same person replaying it is in already, and is told so (K-61 phase 3); nothing is claimed.
+    expect((await accept(token)).status).toBe(200);
     expect(lines).toEqual([]);
   });
 

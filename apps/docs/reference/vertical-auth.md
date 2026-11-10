@@ -243,19 +243,22 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   Addresses are compared Unicode-normalised (NFC), with ASCII letters lowercased; other letters
   are compared as written, since a full lowercase merges characters no normalisation equates.
   A refused accept says the invite may be for another address, without saying which step
-  refused. An invite naming no address is a
+  refused; someone already in (a worker door admitted them by address first) is answered with
+  their principal instead. An address has one open invite per scope: `createInvite` refuses a
+  second until the first is accepted or withdrawn, and the routes answer that `409`. An invite naming no address is a
   bearer link, for an issuer that verifies no address. `admitByAddress` needs no link at all: given
   a signed-in subject bound to nobody in the scope, it finds the open invite naming their verified
   address (`openInviteFor`), has the scope exchange that invite's link by id
-  (`exchangeBecomeLinkById`, with every judgement the secret's exchange makes), and binds them
+  (`exchangeBecomeLinkById`, for a link labelled `MEMBER_INVITE_LABEL` only, with every judgement
+  the secret's exchange makes), and binds them
   (`admitInvite`, which never re-binds a subject a racing admission bound first). The worker door
   runs it on every request from such a subject. `mountMemberInvites(app, deps)`, from the same
   subpath, is the pair of routes a door mounts to make and withdraw such invites
   (`POST /api/member-invites` and `POST /api/member-invites/:principal/withdraw`): the worker door
   when it is given `invites`, and a dev server through `@substrat-run/dev-issuer`'s
   `devMemberInvites`. An invite runs the vertical's `send` as the inviter before it records the row
-  anything admits by, so an invite the vertical refuses never admits anyone; a withdrawal takes the
-  platform's half first, then runs the vertical's `cancel`. `GET /api/invites` shows each invite's
+  anything admits by, so an invite the vertical refuses never admits anyone; a withdrawal asks the
+  platform's bound and runs the vertical's `cancel` before it takes the platform's half. `GET /api/invites` shows each invite's
   `link` (`open`, `used`, `expired`, or `revoked` with its reason), so a dead link never
   reads as open. Withdrawing the invite revokes the link first, then removes
   the row. An invite

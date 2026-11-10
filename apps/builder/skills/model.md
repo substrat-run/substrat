@@ -280,7 +280,8 @@ that breaks them:
   made for the invite, holding the role, and then runs the join. Declare
   `<ns>/invite-member` (input `{ principal, email, roleKey }`, checked with the vertical's own
   invite key: it records the invite for the screens and queues the mail, "sign in with this
-  address", with no link), `<ns>/cancel-invite` (input `{ principal }`) and a list of open
+  address", with no link), `<ns>/cancel-invite` (input `{ principal }`, answering an invite it
+  already cancelled as a success, since a retried withdrawal runs it again) and a list of open
   invites. The door runs the first two itself, so a screen never calls them. Never grant
   anything to `principal` in the invite: the account's role is what it holds, and a grant
   made there voids the invite.

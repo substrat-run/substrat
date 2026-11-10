@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import {
+  INVITE_ADDRESS_OPEN,
   INVITE_DDL,
   MEMBER_DIRECTORY_DDL,
   admitInvite,
@@ -104,6 +105,24 @@ describe('a capability-era invite (#1686)', () => {
 
 describe('the address an invite names (K-61 phase 3)', () => {
   beforeEach(() => createInvite(sql, SCOPE, ANN, 'editor', 'Ann@Acme.example', 'hash-ann', CAP));
+  /** A second open invite to one address, as one written before `createInvite` refused it. */
+  const duplicate = (principal: string, email: string, hash: string, capability: string) =>
+    sql.exec(
+      'INSERT INTO invite (token_hash, scope_id, principal, role_key, email, capability_id) VALUES (?, ?, ?, ?, ?, ?)',
+      hash, SCOPE, principal, 'viewer', email, capability,
+    );
+
+  it('keeps one open invite per address: a second is refused, until the first is accepted or withdrawn', () => {
+    expect(() => createInvite(sql, SCOPE, BOB, 'viewer', 'ANN@acme.example', 'hash-bob', '01CAPABILITYBOB')).toThrow(INVITE_ADDRESS_OPEN);
+    expect(listInvites(sql, SCOPE).map((r) => r.principal)).toEqual([ANN]);
+    createInvite(sql, OTHER_SCOPE, BOB, 'viewer', 'ann@acme.example', 'hash-other', '01CAPABILITYOTHER');
+    createInvite(sql, SCOPE, '01PRINCIPALCAL', 'viewer', null, 'hash-cal', '01CAPABILITYCAL');
+    createInvite(sql, SCOPE, '01PRINCIPALDEB', 'viewer', null, 'hash-deb', '01CAPABILITYDEB');
+    revokeInvite(sql, SCOPE, ANN);
+    createInvite(sql, SCOPE, BOB, 'viewer', 'ann@acme.example', 'hash-bob', '01CAPABILITYBOB');
+    expect(claimInviteByCapability(sql, SCOPE, 'sub-ann', '01CAPABILITYBOB', BOB)).toBe(BOB);
+    createInvite(sql, SCOPE, '01PRINCIPALEVE', 'viewer', 'ann@acme.example', 'hash-eve', '01CAPABILITYEVE');
+  });
 
   it.each([
     ['the invited address, in any case', ' ann@acme.EXAMPLE ', true],
@@ -133,7 +152,7 @@ describe('the address an invite names (K-61 phase 3)', () => {
   });
 
   it('admits a subject bound to nobody here, and never re-binds one a racing admission bound first', () => {
-    createInvite(sql, SCOPE, BOB, 'viewer', 'ann@acme.example', 'hash-ann-2', '01CAPABILITYANN2');
+    duplicate(BOB, 'ann@acme.example', 'hash-ann-2', '01CAPABILITYANN2');
     expect(admitInvite(sql, SCOPE, 'sub-ann', '01CAPABILITYANN2', BOB)).toBe(BOB);
     expect(admitInvite(sql, SCOPE, 'sub-ann', CAP, ANN)).toBeNull();
     expect(resolvePrincipal(sql, SCOPE, 'sub-ann', NOW)).toBe(BOB);
@@ -153,7 +172,7 @@ describe('the address an invite names (K-61 phase 3)', () => {
   });
 
   it('admits the invited address in its own scope only, newest invite first', () => {
-    createInvite(sql, SCOPE, BOB, 'viewer', 'ann@acme.example', 'hash-ann-2', '01CAPABILITYANN2');
+    duplicate(BOB, 'ann@acme.example', 'hash-ann-2', '01CAPABILITYANN2');
     sql.exec('UPDATE invite SET created_at = created_at + 1 WHERE principal = ?', BOB);
     expect(openInviteFor(sql, SCOPE, 'ANN@acme.example')).toEqual({ principal: BOB, capabilityId: '01CAPABILITYANN2' });
     expect(openInviteFor(sql, OTHER_SCOPE, 'ann@acme.example')).toBeNull();

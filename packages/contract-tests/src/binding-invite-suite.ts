@@ -241,7 +241,7 @@ export function bindingInviteContractSuite(
         const link = await minted(clerk, target, rec(id));
         expect(await reads(target, id)).toBe(false);
         // Never by its id (K-61 phase 3), which leaves it as it was: the claim below spends its one use.
-        expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, link.id)).toBeNull();
+        expect(await fixture.verbs.exchangeBecomeLinkById(t1, s1, link.id, 'member invite')).toBeNull();
         expect(await exchange(link.secret)).toEqual({ kind: 'principal', capabilityId: link.id, principal: target, bound: rec(id) });
         expect((await rowOf(id))?.principal).toBe(target);
         expect(await tuplesOn(id)).toEqual([
