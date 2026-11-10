@@ -39,7 +39,7 @@
   "devDependencies": {
     "@substrat-run/engine-workorder": "workspace:*",
     "@types/node": "catalog:",
-    "ai": "7.0.159",
+    "ai": "7.0.164",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

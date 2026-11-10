@@ -139,8 +139,8 @@
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
-    "oxlint": "1.90.0",
-    "oxlint-tsgolint": "7.0.2005",
+    "oxlint": "1.92.0",
+    "oxlint-tsgolint": "7.0.2006",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
     "wrangler": "^4.156.1"
