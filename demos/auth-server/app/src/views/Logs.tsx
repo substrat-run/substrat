@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react';
 import { PageHeader } from '@substrat-run/ui';
-import { signInLog, type SignInAttempt, type SignInLogFilter, type SignInLogType } from '../api';
+import { signInLog, type SignInAttempt, type SignInLogFilter, type SignInLogRetention, type SignInLogType } from '../api';
 import { logEntryPath } from '../console/paths';
 import { navigate } from '../console/router';
 
@@ -18,20 +18,20 @@ import { navigate } from '../console/router';
  * sign-ins are in flight at once (see `correlation` in `src/sign-in-log.ts`).
  */
 export function LogsView() {
-  const [retained, setRetained] = useState<number | null>(null);
+  const [retention, setRetention] = useState<SignInLogRetention | null>(null);
   return (
     <>
       <PageHeader
         title="Logs"
         description={
-          // The narrowness is a decision (`src/sign-in-log.ts`, "What is NOT here"), so the header
-          // says it: an empty screen after a password sign-in must not read as a broken log.
-          `Federated sign-ins only — each round trip to an upstream provider, as the hop out and the hop back. Password and BankID sign-ins are not recorded${
-            retained ? `, and the issuer keeps the last ${retained} hops` : ''
+          // How far back the log reaches is said up front, so an empty screen for an older attempt
+          // reads as "not kept" rather than "never happened".
+          `Every sign-in: a federated one as the hop out to its provider and the hop back, a password, BankID or other direct one as its outcome${
+            retention ? `. The issuer keeps ${retention.days} days, at most ${retention.rows.toLocaleString()} entries` : ''
           }.`
         }
       />
-      <LogList filters onRetained={setRetained} />
+      <LogList filters onRetention={setRetention} />
     </>
   );
 }
@@ -68,6 +68,7 @@ export function outcomeText(attempt: SignInAttempt): string {
   if (attempt.error === 'email_verification_required') return 'Email verification required';
   if (attempt.outcome === 'started') return 'Sent to the provider';
   if (attempt.outcome === 'succeeded') return 'Signed in';
+  if (attempt.phase === 'direct') return 'Refused';
   return attempt.phase === 'sign-in' ? 'Refused before leaving' : 'Refused on the way back';
 }
 
@@ -100,17 +101,17 @@ function LogList({
   userId,
   limit = 50,
   filters = false,
-  onRetained,
+  onRetention,
 }: {
   clientId?: string;
   userId?: string;
   limit?: number;
   filters?: boolean;
-  onRetained?: (retained: number) => void;
+  onRetention?: (retention: SignInLogRetention) => void;
 }) {
   const [attempts, setAttempts] = useState<SignInAttempt[] | null>(null);
   const [total, setTotal] = useState(0);
-  const [retained, setRetained] = useState(0);
+  const [retention, setRetention] = useState<SignInLogRetention | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<SignInLogFilter['outcome']>(undefined);
   const [method, setMethod] = useState<string | undefined>(undefined);
@@ -146,8 +147,8 @@ function LogList({
       const page = await signInLog(filter());
       setAttempts(page.attempts);
       setTotal(page.total);
-      setRetained(page.retained);
-      onRetained?.(page.retained);
+      setRetention(page.retention);
+      onRetention?.(page.retention);
       setMore(page.attempts.length === limit);
       seen(page.attempts);
       setErr(null);
@@ -156,7 +157,7 @@ function LogList({
     } finally {
       setBusy(false);
     }
-  }, [filter, limit, onRetained]);
+  }, [filter, limit, onRetention]);
 
   /**
    * The page before the oldest row on screen. Keyed on that row's `id` rather than on a count,
@@ -243,7 +244,7 @@ function LogList({
           {narrowed
             ? 'Nothing recorded matches these filters. Choose “All” to see every hop.'
             : clientId || userId
-              ? 'No federated sign-ins recorded here yet.'
+              ? 'No sign-ins recorded here yet.'
               : 'Nothing recorded yet. Press a provider button on the sign-in screen and this fills in.'}
         </p>
       ) : (
@@ -272,8 +273,8 @@ function LogList({
             </button>
           )}
           <p className="muted small">
-            Showing {attempts.length} of {total}. The log keeps the most recent {retained} hops and
-            then rolls over — it is a debugging aid, not an audit trail.
+            Showing {attempts.length} of {total}.
+            {retention && ` The log keeps ${retention.days} days, at most ${retention.rows.toLocaleString()} entries — it is a debugging aid, not an audit trail.`}
           </p>
         </>
       )}

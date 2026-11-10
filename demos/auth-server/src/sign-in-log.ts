@@ -52,9 +52,21 @@ import type { SqlExec } from './introspect.js';
  * leaks the material of one is a worse bug than the one it was added to diagnose, so the
  * writer takes a fixed, narrow set of fields and nothing reaches it by spread.
  *
- * Nor passwords or BankID: what went missing was the federated round trip, and a narrower table
- * is a smaller amount of somebody's sign-in activity to hold. Stated so the absence reads as a
- * decision rather than as "passwords are not working either".
+ * Nor the material of a DIRECT sign-in (below): no password, no emailed or texted code, no BankID
+ * personal number, and no address typed for an account that does not exist — that last one is a
+ * stranger's typo or an attacker's guess list, and neither is this issuer's to keep.
+ *
+ * ## Every way in, not only the federated one
+ *
+ * This table first held the federated round trip alone, on the argument that a narrower table is
+ * less of somebody's sign-in activity to hold. A BankID sign-in refused at the email step then
+ * left no row anywhere, and an operator read the empty log as "they never tried". The issuer
+ * already holds every session; a refusal nobody can see costs more than the row would. So a
+ * sign-in this issuer decides by itself — password, sign-up, invitation, SMS code, BankID, the
+ * Supabase bridge — is recorded too, as one `direct` hop: `succeeded` with the account, or
+ * `failed` with the refusal and, where the endpoint knew it, the account it matched
+ * (`attributeSignIn`). Steps that are neither — a BankID poll still pending, an order parked for
+ * its email — write nothing, since they are not an outcome yet.
  *
  * ## The one blind spot, named
  *
@@ -73,10 +85,13 @@ export type SignInOutcome = 'started' | 'succeeded' | 'failed';
 export interface SignInAttempt {
   id: number;
   at: number;
-  /** The provider id — `microsoft`, a generic row's id, or `password` / `bankid`. */
+  /** The provider id — `microsoft`, a generic row's id — or a direct method: `password`, `bankid`, … */
   method: string;
   outcome: SignInOutcome;
-  /** The hop: `sign-in` (we handed out an authorization URL) or `callback` (it came back). */
+  /**
+   * The hop: `sign-in` (we handed out an authorization URL), `callback` (it came back), or
+   * `direct` (a sign-in this issuer decided by itself, with no upstream to go to).
+   */
   phase: string;
   /**
    * Where the person was sent, for a `started` hop — the authorization endpoint with its query
@@ -91,7 +106,10 @@ export interface SignInAttempt {
   errorDescription: string | null;
   /** The relying party that sent this person here, when the flow carried one. */
   clientId: string | null;
-  /** The account this resolved to, once there is one. Null on a refusal — by definition. */
+  /**
+   * The account this resolved to, once there is one. On a federated refusal, null by definition;
+   * on a direct one, the account the refused sign-in matched when the endpoint knew it.
+   */
   userId: string | null;
   /**
    * Which ATTEMPT this hop belongs to — see `correlationOfState`. The two rows of one round trip
@@ -104,9 +122,9 @@ export interface SignInAttempt {
 }
 
 /**
- * The Auth0 log type codes this log can carry. Two, because it records the federated round trip
- * only (see "What is NOT here"): `fp`, `ss`, `slo` and the rest would need rows this table
- * deliberately does not hold.
+ * The Auth0 log type codes this log can carry. Two: Auth0 splits a failure further (`fp` for a
+ * wrong password, `fu` for an unknown user, …), and the refusal's own code in `error` already
+ * says which, so borrowing those codes would add a second spelling of one fact.
  */
 export type SignInLogType = 's' | 'f';
 
@@ -127,7 +145,7 @@ export function signInLogTypeOf(outcome: SignInOutcome): SignInLogType | null {
 export interface SignInAttemptInput {
   method: string;
   outcome: SignInOutcome;
-  phase: 'sign-in' | 'callback';
+  phase: 'sign-in' | 'callback' | 'direct';
   authority?: string | null;
   error?: string | null;
   errorDescription?: string | null;
@@ -140,18 +158,32 @@ export interface SignInAttemptInput {
 export type SignInLogger = (attempt: SignInAttemptInput) => void;
 
 /**
- * How many rows one issuer keeps. A Durable Object's SQLite is small and nobody pays for an
- * unbounded debugging aid, so the log is a RING: the write prunes everything past this.
+ * How long one issuer keeps a row, and the most rows it keeps whatever their age. The write
+ * prunes past both.
  *
- * 500 is chosen against the question the log answers. An operator reads it while a person is
- * on the phone saying "it does not work", so what must survive is today's attempts on a
- * normally-sized issuer — not a month of history, which is the audit log's job and not this
- * table's. A busy issuer rolling this over in an hour is a real limit, stated rather than
- * hidden: `at` is on every row, so a reader can always see how far back the window reaches.
+ * TIME is the rule a reader can rely on: "what happened to this person last week" has an answer
+ * for 30 days, however busy the issuer. The ROW cap is only the bound — a flood of failed
+ * passwords must not grow the table without limit — and it is set high enough that the same
+ * flood cannot evict this morning's rows in minutes, which a 500-row ring could (it was one
+ * when only federated hops were written, and a hop out takes more effort to fake). A row is
+ * about 200 bytes, so the cap is around 20 MB of a Durable Object's 10 GB.
  */
-export const SIGN_IN_LOG_LIMIT = 500;
+export const SIGN_IN_LOG_RETENTION = { days: 30, rows: 100_000 } as const;
 
-/** How many rows one read may ask for. The console pages; nothing needs the whole ring. */
+/** What `recordSignInAttempt` prunes against. Tests pass a small one; nothing else does. */
+export interface SignInLogRetention {
+  days: number;
+  rows: number;
+}
+
+/**
+ * How many expired rows one write removes, at most. Expired rows are always the OLDEST, so they
+ * sit at the head of the rowid order and are found without a scan; a bounded batch keeps the
+ * write cheap after a quiet month, and the next writes finish the job.
+ */
+const EXPIRED_BATCH = 50;
+
+/** How many rows one read may ask for. The console pages; nothing needs the whole log. */
 export const SIGN_IN_LOG_PAGE_MAX = 100;
 
 const COLUMNS =
@@ -188,12 +220,16 @@ export function authorityOf(url: string | null | undefined): string | null {
 }
 
 /**
- * Record one hop, and prune the ring. Never throws: this is a debugging aid bolted to the side
+ * Record one hop, and prune past the retention. Never throws: this is a debugging aid bolted to the side
  * of the sign-in path, and a full disk or a schema that predates the table must cost an
  * operator their log rather than costing a user their login. The swallow is the point, and it
  * is the reason the caller in `auth.ts` needs no `try` of its own.
  */
-export function recordSignInAttempt(sql: SqlExec, attempt: SignInAttemptInput): void {
+export function recordSignInAttempt(
+  sql: SqlExec,
+  attempt: SignInAttemptInput,
+  retention: SignInLogRetention = SIGN_IN_LOG_RETENTION,
+): void {
   try {
     sql.exec(
       `INSERT INTO sign_in_attempt
@@ -209,12 +245,21 @@ export function recordSignInAttempt(sql: SqlExec, attempt: SignInAttemptInput): 
       attempt.userId ?? null,
       attempt.correlation ?? null,
     );
-    // `id` is the rowid, so "the newest N" is an id comparison rather than a sort: the ring
+    // `at` rises with `id`, so the expired rows are the first few in rowid order: read the head,
+    // never the table. `at` has no index and needs none.
+    sql.exec(
+      `DELETE FROM sign_in_attempt
+        WHERE id IN (SELECT id FROM (SELECT id, at FROM sign_in_attempt ORDER BY id LIMIT ?)
+                      WHERE at < cast(unixepoch('subsecond') * 1000 as integer) - ?)`,
+      EXPIRED_BATCH,
+      retention.days * 24 * 60 * 60 * 1000,
+    );
+    // `id` is the rowid, so "the newest N" is an id comparison rather than a sort: the cap
     // trims by identity and cannot be confused by two rows landing in the same millisecond.
     sql.exec(
       `DELETE FROM sign_in_attempt
         WHERE id <= (SELECT max(id) FROM sign_in_attempt) - ?`,
-      SIGN_IN_LOG_LIMIT,
+      retention.rows,
     );
   } catch {
     // Deliberately silent — see above.
@@ -224,8 +269,8 @@ export function recordSignInAttempt(sql: SqlExec, attempt: SignInAttemptInput): 
 /**
  * How much of the refusal's detail is kept. Entra's `error_description` carries the message,
  * a correlation id, a request id and a timestamp, and runs to several hundred characters; the
- * diagnosis is the first clause. Capped rather than unbounded because this is a RING in a
- * Durable Object's SQLite, and the cap is generous enough to keep the `AADSTS…` code and the
+ * diagnosis is the first clause. Capped rather than unbounded because every row lives in a
+ * Durable Object's SQLite for a month, and the cap is generous enough to keep the `AADSTS…` code and the
  * sentence after it.
  */
 export const DESCRIPTION_MAX = 500;
@@ -280,13 +325,16 @@ export function errorOfRedirect(location: string | null | undefined): {
 
 /**
  * The refusal behind a thrown `APIError` — what `/sign-in/social` answers when the provider is
- * not configured at all. The library's own code (`PROVIDER_NOT_FOUND`) when it set one, and the
- * message otherwise, so a row never says only "failed".
+ * not configured at all, and what a direct sign-in answers when it refuses. The library's own
+ * code (`PROVIDER_NOT_FOUND`, `INVALID_EMAIL_OR_PASSWORD`) when it set one; otherwise the
+ * error's status (`conflict`, `forbidden`), since this issuer's own plugins throw with a message
+ * and no code. The message rides beside it, so a row never says only "failed".
  */
 export function refusalOf(error: Error): { error: string; errorDescription: string | null } {
   const code = (error as { body?: { code?: unknown } }).body?.code;
+  const status = (error as { status?: unknown }).status;
   return {
-    error: typeof code === 'string' && code ? code : 'error',
+    error: typeof code === 'string' && code ? code : typeof status === 'string' && status ? status.toLowerCase() : 'error',
     errorDescription: clamp(error.message),
   };
 }
@@ -321,7 +369,7 @@ export function clientIdOfSignedQuery(value: unknown): string | null {
  * checks the returning request against — it is the CSRF defence of the flow — so a log holding
  * it in plaintext would be a log of live single-use tokens, which is precisely the class of
  * thing this table refuses to carry. SHA-256 truncated to 16 hex characters is 64 bits: far too
- * much to collide across a 500-row ring, and not reversible to the value it came from.
+ * much to collide across the rows one issuer keeps, and not reversible to the value it came from.
  *
  * Web Crypto — the same API in Node, workerd and a browser — which is what lets one function
  * serve both runtimes with no import. Spelled as the bare `crypto`, as `bankid.ts` and
@@ -349,6 +397,45 @@ export function stateOfAuthorizationUrl(url: string | null | undefined): string 
   }
 }
 
+/**
+ * The paths that sign someone in with no upstream to go to — each recorded as one `direct` hop by
+ * the after-hook in `auth.ts`, under the method `signInMethodOfPath` stamps the session with.
+ * `/github-email/verify` is not here: it finishes a federated sign-in, and that hook records it as
+ * the callback it completes.
+ */
+export const DIRECT_SIGN_IN_PATHS: readonly string[] = [
+  '/sign-in/email',
+  '/sign-up/email',
+  '/invitation/accept',
+  '/invitation/password',
+  '/phone/verify',
+  '/bankid/collect',
+  '/bankid/email/verify',
+  '/bankid/email/skip',
+  '/supabase/session',
+];
+
+/**
+ * The account a refused direct sign-in matched, as the endpoint that refused it knew it.
+ *
+ * A refusal is a thrown `APIError`, and what it says goes to the browser — so the account cannot
+ * ride on it without telling a stranger which account an address or a personal number belongs
+ * to. Better Auth hands the endpoint and the after-hooks the SAME per-request `context` object
+ * (it is how `setSessionCookie`'s `newSession` reaches a hook), so the endpoint notes the account
+ * against that object and the hook reads it back. Keyed weakly, so nothing outlives the request.
+ */
+const attributed = new WeakMap<object, string>();
+
+/** Note, from inside an endpoint, which account this sign-in is about. The latest note wins. */
+export function attributeSignIn(context: object, userId: string): void {
+  attributed.set(context, userId);
+}
+
+/** The account an endpoint noted for this request, if it noted one. */
+export function attributedSignInOf(context: object): string | null {
+  return attributed.get(context) ?? null;
+}
+
 /** A `SignInLogger` over one store. What both runtimes hand to `buildAuth`. */
 export function signInLoggerFor(sql: SqlExec): SignInLogger {
   return (attempt) => recordSignInAttempt(sql, attempt);
@@ -363,15 +450,15 @@ export const signInLogQuery = z.object({
   outcome: z.enum(['started', 'succeeded', 'failed']).optional(),
   /** One relying party's sign-ins — the Application's Logs tab. */
   clientId: z.string().min(1).max(256).optional(),
-  /** One account's sign-ins — the User's Logs tab. Only a succeeded callback names an account,
-   *  so a refusal is never attributed to one: by definition nobody was resolved. */
+  /** One account's sign-ins — the User's Logs tab. A succeeded hop names its account, and so
+   *  does a refused direct sign-in that matched one; a federated refusal resolved nobody. */
   userId: z.string().min(1).max(256).optional(),
 });
 
 export type SignInLogQuery = z.infer<typeof signInLogQuery>;
 
 /** One page of the log, newest first. `before` is a previous page's last `id` — keyset rather
- *  than offset, because the ring is pruned underneath a reader and an offset would skip rows. */
+ *  than offset, because the log is pruned underneath a reader and an offset would skip rows. */
 export function readSignInLog(sql: SqlExec, query: SignInLogQuery): { attempts: SignInAttempt[]; total: number } {
   const where: string[] = [];
   const bindings: unknown[] = [];
@@ -413,8 +500,53 @@ export function readSignInLog(sql: SqlExec, query: SignInLogQuery): { attempts: 
 }
 
 /**
+ * How many sign-ins succeeded and failed in each window — the Overview's chart. The caller passes
+ * the window BOUNDS (`bounds[i]` to `bounds[i + 1]`, ms), because "a day" is the reader's local
+ * day and only the browser knows where that starts. Only `s` and `f` hops count: a hop out is
+ * half an attempt, and counting it would make every federated sign-in look like two.
+ *
+ * Counted here rather than walked in pages on the screen: the log now holds every way in for a
+ * month, so a week can be more rows than any page walk should read. `sign_in_attempt_at_idx`
+ * makes each window a range read.
+ */
+export const signInWindowQuery = z.object({
+  bounds: z
+    .string()
+    .transform((raw) => raw.split(',').map(Number))
+    .pipe(z.array(z.number().int().nonnegative()).min(2).max(32))
+    .refine((b) => b.every((v, i) => i === 0 || v > b[i - 1]!), 'bounds must increase'),
+});
+
+/**
+ * Where the log starts, when the row cap rather than the age has decided it — the windows before
+ * that are not counted, and a chart must say so rather than draw them as quiet days. Null while
+ * the log is under its cap: then everything inside the retention is still there.
+ */
+export function signInLogCutAt(sql: SqlExec, retention: SignInLogRetention = SIGN_IN_LOG_RETENTION): number | null {
+  const row = sql.exec('SELECT count(*) AS n, min(at) AS oldest FROM sign_in_attempt').toArray()[0] as
+    | { n: number; oldest: number | null }
+    | undefined;
+  return row && Number(row.n) >= retention.rows && row.oldest !== null ? Number(row.oldest) : null;
+}
+
+export function countSignInsByWindow(sql: SqlExec, bounds: readonly number[]): { succeeded: number; failed: number }[] {
+  return bounds.slice(1).map((end, i) => {
+    const rows = sql
+      .exec(
+        `SELECT outcome, count(*) AS n FROM sign_in_attempt
+          WHERE at >= ? AND at < ? AND outcome IN ('succeeded', 'failed') GROUP BY outcome`,
+        bounds[i],
+        end,
+      )
+      .toArray() as unknown as { outcome: string; n: number }[];
+    const of = (outcome: string) => Number(rows.find((r) => r.outcome === outcome)?.n ?? 0);
+    return { succeeded: of('succeeded'), failed: of('failed') };
+  });
+}
+
+/**
  * One row by id, with the other hops of the same attempt, oldest first — the pair is the
- * diagnosis, so the entry's own screen needs both. Null once the ring has pruned it (or it never
+ * diagnosis, so the entry's own screen needs both. Null once retention has pruned it (or it never
  * was). A row with no `correlation` has nothing to join on and so no related hops, rather than
  * being joined to every other uncorrelated row.
  */

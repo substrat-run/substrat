@@ -7,7 +7,7 @@ import { EntryLink, LogType, logTypeLabel, outcomeText } from './Logs';
 import { RawJson } from './RawJson';
 
 /**
- * `/logs/<id>` — one hop of a federated sign-in, with the other hops of the same attempt.
+ * `/logs/<id>` — one hop of a sign-in, with the other hops of the same attempt.
  *
  * The related hops are on the same screen because a single row is rarely the answer: a refusal
  * on the way back says what the upstream objected to, but WHICH authority this issuer sent the

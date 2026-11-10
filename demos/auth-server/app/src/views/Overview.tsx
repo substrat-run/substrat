@@ -6,8 +6,8 @@ import {
   listOAuthClients,
   listUsers,
   signInLog,
+  signInWindows,
   type RegisteredClient,
-  type SignInAttempt,
 } from '../api';
 import { APPLICATIONS_PATH, CONNECTIONS_PATH, LOGS_PATH, USERS_PATH } from '../console/paths';
 import { navigate } from '../console/router';
@@ -24,7 +24,7 @@ export function OverviewView() {
   const clients = useRead(listOAuthClients);
   return (
     <>
-      <PageHeader title="Overview" description="What this issuer holds, and how federated sign-ins have gone this week." />
+      <PageHeader title="Overview" description="What this issuer holds, and how sign-ins have gone this week." />
       <GetStarted clients={clients} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
         <UsersTile />
@@ -177,11 +177,9 @@ function ConnectionsTile() {
   );
 }
 
-/* ---- federated sign-ins, last 7 days ---- */
+/* ---- sign-ins, last 7 days ---- */
 
 const DAYS = 7;
-const PAGE = 100;
-const MAX_PAGES = 5;
 
 interface Day {
   start: number;
@@ -192,16 +190,13 @@ interface Day {
 
 interface Week {
   days: Day[];
-  /** The oldest row the walk reached, when the log stops before the window does. */
+  /** Where the log starts, when its row cap rather than its age cut it inside this window. */
   reachesBackTo: number | null;
-  retained: number;
 }
 
 /**
- * The window, walked newest-first with keyset paging until it passes the window's start, the log
- * runs out, or 5 × 100 rows — the ring's own size, so a walk that stops on the page cap has read
- * everything the log holds. Only `s` and `f` hops count: a hop out is half an attempt, and
- * counting it would make every sign-in look like two.
+ * The window's days, counted by the issuer (`countSignInsByWindow`). The bounds are local
+ * midnights, so they are computed here: only the browser knows where its day starts.
  */
 async function readWeek(): Promise<Week> {
   const today = new Date();
@@ -211,33 +206,11 @@ async function readWeek(): Promise<Week> {
     d.setDate(d.getDate() - (DAYS - 1 - i));
     return { start: d.getTime(), label: d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' }), succeeded: 0, failed: 0 };
   });
-  const windowStart = days[0]!.start;
-  let before: number | undefined;
-  let oldest: SignInAttempt | undefined;
-  let reachedStart = false;
-  let retained = 0;
-  for (let i = 0; i < MAX_PAGES; i += 1) {
-    const page = await signInLog({ limit: PAGE, ...(before !== undefined ? { before } : {}) });
-    retained = page.retained;
-    for (const a of page.attempts) {
-      if (a.at < windowStart) {
-        reachedStart = true;
-        break;
-      }
-      const day = [...days].reverse().find((d) => a.at >= d.start);
-      if (day && a.type === 's') day.succeeded += 1;
-      if (day && a.type === 'f') day.failed += 1;
-    }
-    oldest = page.attempts[page.attempts.length - 1] ?? oldest;
-    if (reachedStart) break;
-    // A short page is the end of the log. The window is then cut short only if the ring is full —
-    // an issuer with three sign-ins all week has simply had three.
-    if (page.attempts.length < PAGE) {
-      return { days, reachesBackTo: page.total >= page.retained && oldest ? oldest.at : null, retained };
-    }
-    before = oldest?.id;
-  }
-  return { days, reachesBackTo: !reachedStart && oldest ? oldest.at : null, retained };
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const { windows, cutAt } = await signInWindows([...days.map((d) => d.start), tomorrow.getTime()]);
+  days.forEach((d, i) => Object.assign(d, windows[i]));
+  return { days, reachesBackTo: cutAt !== null && cutAt > days[0]!.start ? cutAt : null };
 }
 
 function SignInsChart() {
@@ -246,11 +219,11 @@ function SignInsChart() {
   const succeeded = w?.days.reduce((n, d) => n + d.succeeded, 0) ?? 0;
   const failed = w?.days.reduce((n, d) => n + d.failed, 0) ?? 0;
   const peak = Math.max(1, ...(w?.days.map((d) => Math.max(d.succeeded, d.failed)) ?? [1]));
-  const summary = `Federated sign-ins in the last ${DAYS} days: ${succeeded} succeeded, ${failed} failed.`;
+  const summary = `Sign-ins in the last ${DAYS} days: ${succeeded} succeeded, ${failed} failed.`;
   return (
     <section className="panel">
       <div className="panel-head">
-        <h2>Federated sign-ins, last {DAYS} days</h2>
+        <h2>Sign-ins, last {DAYS} days</h2>
         <PlaceLink href={LOGS_PATH}>Logs</PlaceLink>
       </div>
       {week.err ? (
@@ -291,13 +264,10 @@ function SignInsChart() {
           </div>
           {w.reachesBackTo !== null && (
             <p className="muted small" style={{ marginBottom: 0 }}>
-              The log only reaches back to {new Date(w.reachesBackTo).toLocaleString()} — it keeps the
-              last {w.retained} hops — so the days before that are not counted here.
+              The log only reaches back to {new Date(w.reachesBackTo).toLocaleString()} — it is at its
+              row limit — so the days before that are not counted here.
             </p>
           )}
-          <p className="muted small" style={{ marginBottom: 0 }}>
-            Password and BankID sign-ins are not logged, so they are not counted.
-          </p>
         </>
       )}
     </section>
@@ -344,7 +314,7 @@ function RecentFailures() {
       ) : !failures.data ? (
         <p className="muted">Loading…</p>
       ) : failures.data.attempts.length === 0 ? (
-        <p className="muted">No failed federated sign-ins are in the log.</p>
+        <p className="muted">No failed sign-ins are in the log.</p>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 10 }}>
           {failures.data.attempts.map((a) => (
