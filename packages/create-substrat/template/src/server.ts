@@ -66,6 +66,8 @@ await outbox.drain();
 // the first time they sign in, `login` finds the invite and links them to the invited account,
 // with its role. The invites are kept in `.data/members.sqlite`. A vertical whose people invite
 // each other mounts the routes below, naming the same operations worker.ts names in `workerDoor`.
+// The dev issuer signs in only the people in src/personas.ts, so give the cast one person the seed
+// does not link: the one you invite, who then gets in as they would hosted.
 const members = devMemberInvites({
   db: new Database(join(dataDir, 'members.sqlite')),
   host,
