@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { ContainerWorkspace, type SandboxLike } from '../src/container.js';
 import { standaloneGates } from '../src/gates.js';
 import { emitProjectModel } from '../src/model.js';
+import { emitProjectMigrations } from '../src/migrations.js';
 import { WorkspacePathError } from '../src/workspace.js';
 
 function fake(extra: readonly string[] = []): { sb: SandboxLike; calls: string[] } {
@@ -75,6 +76,12 @@ describe('ContainerWorkspace (§3 seam, mode C)', () => {
 		const ws = new ContainerWorkspace({ sandbox: sb, root: '/w/p', toolchainRoot: '/tc' });
 		expect(await emitProjectModel(ws, '.')).toEqual({ status: 'emitted', output: '' });
 		expect(calls.at(-1)).toBe('exec:\'/tc/node_modules/.bin/tsx\' \'/tc/tools/model-diff.mts\' --root "."@/w/p');
+	});
+	it('runs the migrations emitter from the toolchain too — a project before its scaffold has no tsx', async () => {
+		const { sb, calls } = fake(['/w/p/spec/model.ts', '/tc/tools/migrations-emit.mts']);
+		const ws = new ContainerWorkspace({ sandbox: sb, root: '/w/p', toolchainRoot: '/tc' });
+		expect(await emitProjectMigrations(ws, '.', { check: true })).toEqual({ status: 'emitted', output: '' });
+		expect(calls.at(-1)).toBe('exec:\'/tc/node_modules/.bin/tsx\' \'/tc/tools/migrations-emit.mts\' --root "." --check@/w/p');
 	});
 
 	it('confines paths exactly like LocalWorkspace — escapes throw', async () => {
