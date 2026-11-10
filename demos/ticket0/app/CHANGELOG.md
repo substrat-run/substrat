@@ -1,5 +1,11 @@
 # @substrat-run/demo-ticket0-app
 
+## 0.1.49
+
+### Patch Changes
+
+- @substrat-run/contracts@0.191.0
+
 ## 0.1.48
 
 ### Patch Changes

@@ -1,5 +1,21 @@
 # @substrat-run/vertical-auth
 
+## 0.33.0
+
+### Minor Changes
+
+- ca94c35: An invited person is let in by the address their sign-in provider verified, with no link to click: the worker door finds the open member invite naming that address and binds them to it (`admitByAddress`, both hosts' `exchangeBecomeLinkById`). `workerDoor({ invites })` mounts `POST /api/member-invites` and its withdrawal, which run the vertical's own operation as the caller. A member invite's link now expires after 14 days, and one naming an address is accepted only from a verified holder of that address.
+- 86e51bd: A person a member invite names gets in on a local dev server too: `devMemberInvites` keeps a dev server's invites and admits the invitee by the address the issuer verified, through `devLogin({ admit })`, and mounts the same `/api/member-invites` routes the worker door does (now `mountMemberInvites` in vertical-auth). The template's dev server admits invited people, both entry files show how to name `invites`, and the builder wires them for a model with an invite: its skills say how, and the `member-invites` gate refuses a build that leaves the worker, the dev server or the screen unwired.
+
+### Patch Changes
+
+- 86e51bd: Member invites: `exchangeBecomeLinkById` exchanges only a link carrying the label it is given, and the door passes the member invite's. An address has one open invite per scope (a second is 409), a withdrawal asks who may withdraw before it takes anything, accepting a link answers someone already in with their principal, and the door asks the directory again only after a contested exchange.
+- Updated dependencies [5464d57]
+- Updated dependencies [ca94c35]
+- Updated dependencies [86e51bd]
+  - @substrat-run/kernel@0.191.0
+  - @substrat-run/contracts@0.191.0
+
 ## 0.32.3
 
 ### Patch Changes

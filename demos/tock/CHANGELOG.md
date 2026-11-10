@@ -1,5 +1,19 @@
 # @substrat-run/demo-tock
 
+## 0.0.84
+
+### Patch Changes
+
+- Updated dependencies [5464d57]
+- Updated dependencies [ca94c35]
+- Updated dependencies [86e51bd]
+- Updated dependencies [86e51bd]
+  - @substrat-run/kernel@0.191.0
+  - @substrat-run/adapter-sqlite@0.191.0
+  - @substrat-run/vertical-host@0.191.0
+  - @substrat-run/dev-issuer@0.5.0
+  - @substrat-run/contracts@0.191.0
+
 ## 0.0.83
 
 ### Patch Changes
