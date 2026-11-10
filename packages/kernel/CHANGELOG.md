@@ -1,5 +1,14 @@
 # @substrat-run/kernel
 
+## 0.190.1
+
+### Patch Changes
+
+- Updated dependencies [c9db03c]
+- Updated dependencies [f0dd3fe]
+- Updated dependencies [3c0c8e8]
+  - @substrat-run/contracts@0.190.1
+
 ## 0.190.0
 
 ### Patch Changes

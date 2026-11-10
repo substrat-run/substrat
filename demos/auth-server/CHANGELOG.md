@@ -1,5 +1,18 @@
 # @substrat-run/demo-auth-server
 
+## 0.17.18
+
+### Patch Changes
+
+- c9db03c: Sign-out skips the confirmation page only for a request that names its client. An authorize link fetched by anything other than a page load no longer starts an upstream sign-in, and a failure starting one falls back to the login screen.
+- 30bc0ec: A client with domain routes no longer skips the login screen, which could send a person round the same upstream forever, and a refused logout confirmation leaves the page up instead of an error.
+- Updated dependencies [c9db03c]
+- Updated dependencies [f0dd3fe]
+- Updated dependencies [3c0c8e8]
+  - @substrat-run/contracts@0.190.1
+  - @substrat-run/kernel@0.190.1
+  - @substrat-run/vertical-host@0.190.1
+
 ## 0.17.17
 
 ### Patch Changes

@@ -1,5 +1,21 @@
 # @substrat-run/dashboard-web
 
+## 0.21.26
+
+### Patch Changes
+
+- 1e8ccbb: The ⌘K Ask panel draws through `<sub-assistant>`: the question shows at once, and Tab moves through a conversation rather than switching modes.
+- Updated dependencies [1e8ccbb]
+- Updated dependencies [cd1c0d4]
+- Updated dependencies [7f8573e]
+- Updated dependencies [c9db03c]
+- Updated dependencies [f0dd3fe]
+- Updated dependencies [3c0c8e8]
+  - @substrat-run/elements@0.6.0
+  - @substrat-run/contracts@0.190.1
+  - @substrat-run/ui@0.4.2
+  - @substrat-run/model-view@0.6.39
+
 ## 0.21.25
 
 ### Patch Changes
