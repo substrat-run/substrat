@@ -16,6 +16,9 @@ export type ChatItem =
 	| { kind: 'event'; e: BuildEvent };
 
 export function appendEvent(items: ChatItem[], e: BuildEvent): ChatItem[] {
+	// A tool's timing is for the turn record; the tool-call row already says
+	// what ran, and a row here would also split its tool group in two.
+	if (e.type === 'tool-result') return items;
 	if (e.type === 'assistant-text') {
 		const last = items[items.length - 1];
 		if (last?.kind === 'assistant') {
@@ -148,6 +151,13 @@ function eventLine(e: BuildEvent): { text: string; cls: string } {
 			return {
 				text: `${e.reason} — retrying in ${Math.round(e.delayMs / 1000)}s (${e.attempt}/${e.maxAttempts})`,
 				cls: '',
+			};
+		case 'truncated':
+			return {
+				text: e.reason === 'tokens'
+					? 'turn cut off at its token budget — work may be unfinished'
+					: `turn cut off at the ${e.maxSteps}-step ceiling — work may be unfinished`,
+				cls: 'error',
 			};
 		case 'error':
 			return { text: e.message, cls: 'error' };
