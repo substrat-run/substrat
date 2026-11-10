@@ -76,7 +76,7 @@ export class ContainerWorkspace implements Workspace {
 		const cwd = opts.cwd ? resolveWithin(this.#root, opts.cwd) : this.#root;
 		if (this.#toolchainRoot) {
 			const quote = (s: string): string => `'${s.replace(/'/g, `'"'"'`)}'`;
-			const tool = /^pnpm exec tsx tools\/(model-diff|permission-diff|api-diff)\.mts(?=\s|$)/.exec(cmd);
+			const tool = /^pnpm exec tsx tools\/(model-diff|migrations-emit|permission-diff|api-diff)\.mts(?=\s|$)/.exec(cmd);
 			if (tool) {
 				cmd = `${quote(`${this.#toolchainRoot}/node_modules/.bin/tsx`)} ${quote(`${this.#toolchainRoot}/tools/${tool[1]}.mts`)}${cmd.slice(tool[0].length)}`;
 			} else if (cmd.startsWith('node packages/boundary-lint/dist/cli.js ')) {
