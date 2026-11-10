@@ -118,6 +118,8 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number;
   dir = mkdtempSync(join(tmpdir(), 'substrat-mail-in-'));
   const landed: MailInChange[] = [];
   const fail = { times: opts.failTimes ?? 0, attachmentTimes: opts.failAttachmentTimes ?? 0, rawTimes: opts.failRawTimes ?? 0 };
+  /** Runs inside the operation as a `message` change lands, while the delivery is mid-run. */
+  const during: { message?: (change: MailInChange) => Promise<void> } = {};
   const docsMod = {
     manifest: moduleManifest.parse({
       id: '@test/docs',
@@ -150,6 +152,7 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number;
         }
         landed.push(change);
         if (change.change === 'message') {
+          await during.message?.(change);
           if (opts.noEntity) return { raw: true };
           return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` }, ...(opts.raw !== undefined ? { raw: opts.raw } : {}) };
         }
@@ -201,7 +204,7 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number;
     await host.admin.putConnectorState(id, BINDING_KEY, { ...binding, address });
     return address;
   };
-  return { host, deps, actor, t, s, reader, store, landed, fail, request, send, advance, files, live, duplicate };
+  return { host, deps, actor, t, s, reader, store, landed, fail, during, request, send, advance, files, live, duplicate };
 }
 
 describe('the address', () => {
@@ -461,6 +464,24 @@ describe('delivery', () => {
     expect(outcomes.map((o) => o.status).sort()).toEqual(['delivered', 'skipped']);
     expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
     expect(await w.files(`doc-${accepted.messageId.slice(0, 12)}`)).toHaveLength(1);
+  });
+
+  it('stops without writing when another delivery took its message over mid-run', async () => {
+    const w = await world({});
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
+    if (!accepted.accepted) throw new Error('refused');
+    const key = `${MESSAGE_PREFIX}${accepted.messageId}`;
+    // As a run that outlasted its claim finds it: a later delivery has claimed the message since.
+    const newer = { token: 'newer', until: '2026-10-26T10:00:00.000Z' };
+    w.during.message = async () => {
+      const entry = (await w.host.admin.getConnectorState(accepted.connectionId, key)) as MailInMessageEntry;
+      await w.host.admin.putConnectorState(accepted.connectionId, key, { ...entry, claim: newer });
+    };
+    expect(await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).toMatchObject({ status: 'skipped' });
+    expect(await w.host.admin.getConnectorState(accepted.connectionId, key)).toMatchObject({ status: 'pending', claim: newer });
+    expect(w.landed.map((c) => c.change)).toEqual(['message']);
+    expect(w.store.keys()).toHaveLength(1);
   });
 
   describe('a run killed before it could record its failure', () => {

@@ -66,8 +66,10 @@ import type { MailInStore } from './store.js';
  * A delivery claims its message first, because the one started at acceptance and the sweep can
  * otherwise reach the same pending message together and each store the files. Connector state has
  * no compare-and-set, so the claim is a write and a read-back: of two that overlap, the last writer
- * goes on. The claim also counts the attempt, so a run killed outright, which never reaches its
- * `catch`, still spends one and the message cannot be retried forever.
+ * goes on. Every later save reads the claim back the same way first, and a run that finds another's
+ * claim there stops without writing, so it cannot put back an entry the newer run has moved on from.
+ * The claim also counts the attempt, so a run killed outright, which never reaches its `catch`,
+ * still spends one and the message cannot be retried forever.
  *
  * ## The sender check
  *
@@ -80,8 +82,11 @@ import type { MailInStore } from './store.js';
 
 /** Deliveries tried before a message is dead-lettered. */
 export const MAX_DELIVERY_ATTEMPTS = 8;
-/** How long one delivery holds a message: past any run the platform lets finish, and under a sweep's period. */
-const CLAIM_MS = 10 * 60 * 1000;
+/**
+ * How long one delivery holds a message: past any run the platform lets finish. A delivery runs in
+ * the `waitUntil` after acceptance (about 30 s) or in the connector sweep's cron (up to 15 minutes).
+ */
+const CLAIM_MS = 20 * 60 * 1000;
 /** The longest wait between two attempts. */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 /** Messages one sweep of one address delivers, at most. */
@@ -228,6 +233,9 @@ const addressesOf = (list: Address[] | undefined): string[] =>
 const bytesOf = (content: Attachment['content']): Uint8Array =>
   typeof content === 'string' ? new TextEncoder().encode(content) : content instanceof Uint8Array ? content : new Uint8Array(content);
 
+/** Thrown by a save that finds another delivery's claim on the message: this run stops and writes nothing. */
+class ClaimLost extends Error {}
+
 const isClaimed = (entry: MailInMessageEntry, now: number): boolean => entry.claim !== undefined && Date.parse(entry.claim.until) > now;
 
 const isoOrNull = (date: string | undefined): string | null => {
@@ -252,7 +260,14 @@ export async function deliverInboundMail(
   if (isClaimed(stored, now)) return { status: 'skipped', why: 'another delivery holds it' };
   const uploads: Record<string, MailInUploaded> = { ...stored.uploaded };
   const entry: MailInMessageEntry = { ...stored, uploaded: uploads, landed: { ...stored.landed } };
-  const save = () => host.admin.putConnectorState(connectionId, key, entry);
+  let claim: MailInMessageEntry['claim'];
+  const holds = async () => ((await host.admin.getConnectorState(connectionId, key)) as MailInMessageEntry | undefined)?.claim?.token === claim?.token;
+  const save = async () => {
+    if (claim && !(await holds())) throw new ClaimLost('another delivery took the message over');
+    await host.admin.putConnectorState(connectionId, key, entry);
+  };
+  /** A save from the `catch`, which must not throw: false when another delivery has the message. */
+  const saveUnlessLost = () => save().then(() => true, (err: unknown) => (err instanceof ClaimLost ? false : Promise.reject(err)));
   // Only a killed run leaves a pending message out of attempts: every other failure dead-letters it.
   if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) {
     const error = entry.lastError ?? 'the delivery was interrupted on every attempt';
@@ -262,12 +277,11 @@ export async function deliverInboundMail(
     await bumpStats(host, connectionId, (s) => ({ ...s, deadLettered: s.deadLettered + 1 }));
     return { status: 'dead-lettered', attempts: entry.attempts, error };
   }
-  const claim = { token: ulid(), until: instant.parse(new Date(now + CLAIM_MS).toISOString()) };
-  entry.claim = claim;
+  entry.claim = { token: ulid(), until: instant.parse(new Date(now + CLAIM_MS).toISOString()) };
   entry.attempts += 1;
   await save();
-  const held = (await host.admin.getConnectorState(connectionId, key)) as MailInMessageEntry | undefined;
-  if (held?.claim?.token !== claim.token) return { status: 'skipped', why: 'another delivery holds it' };
+  claim = entry.claim;
+  if (!(await holds())) return { status: 'skipped', why: 'another delivery holds it' };
   try {
     const raw = await deps.store.get(entry.objectKey);
     if (!raw) throw new Error('the stored message is gone');
@@ -363,19 +377,20 @@ export async function deliverInboundMail(
     await host.admin.recordConnectionUse(connectionId, { ok: true }).catch(() => undefined);
     return { status: 'delivered', attachments: Object.keys(entry.landed).filter((slot) => slot !== RAW_SLOT).length };
   } catch (err) {
+    if (err instanceof ClaimLost) return { status: 'skipped', why: err.message };
     const error = (err instanceof Error ? err.message : String(err)).slice(0, 300);
     delete entry.claim;
     entry.lastError = error;
     await host.admin.recordConnectionUse(connectionId, { ok: false, error }).catch(() => undefined);
     if (entry.attempts >= MAX_DELIVERY_ATTEMPTS) {
       entry.status = 'dead-lettered';
-      await save();
+      if (!(await saveUnlessLost())) return { status: 'skipped', why: 'another delivery took the message over' };
       await bumpStats(host, connectionId, (s) => ({ ...s, deadLettered: s.deadLettered + 1 }));
       return { status: 'dead-lettered', attempts: entry.attempts, error };
     }
     const wait = Math.min(60_000 * 2 ** entry.attempts, MAX_BACKOFF_MS);
     entry.nextAttemptAt = instant.parse(new Date(nowOf(deps).getTime() + wait).toISOString());
-    await save();
+    if (!(await saveUnlessLost())) return { status: 'skipped', why: 'another delivery took the message over' };
     return { status: 'retrying', attempts: entry.attempts, error, nextAttemptAt: entry.nextAttemptAt };
   }
 }
