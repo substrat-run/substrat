@@ -763,6 +763,8 @@ export const INDEX_VALUE_EXPORTS = [
   'searchQuery',
   'searchStateWhere',
   'seatScopeTuple',
+  // #3108: a vertical's sample world, seated alike by the dev server and a seeded preview.
+  'seatWorld',
   'servedFromRow',
   'servesAsFrom',
   'servesNowParams',
