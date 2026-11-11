@@ -237,6 +237,15 @@ board.move = (m) => api.moveTicket({ ticketId: m.key, status: m.to, after: m.aft
   fires `sub-card-add` `{ column, title }` and keeps the field open for the next one, Escape
   closes it. The board makes no card itself — the screen creates it and hands it back in
   `cards`, as the demo above does in memory.
+- **Setting `cards` again.** The board draws the new list as given, in its order, and forgets
+  the moves it made since. So the list a screen hands back must already hold them: re-read it
+  after the saves, or build it from `board.board` — each column's keys in order, a move still
+  saving included:
+
+  ```ts
+  const byId = new Map(board.cards.map((t) => [t.id, t]));
+  board.cards = [...board.board].flatMap(([status, ids]) => ids.map((id) => ({ ...byId.get(id)!, status })));
+  ```
 - `prefers-reduced-motion` turns off the tilt, the sliding and the settle.
 
 ## `<sub-assistant>`

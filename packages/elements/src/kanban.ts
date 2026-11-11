@@ -854,7 +854,8 @@ export class SubKanban<T = any> extends SubstratElement {
     this.#stopPointer();
     let to = cancel || drag.over === null || !this.#takes(drag, drag.at.column) ? drag.from : drag.at;
     const move = moveOf(this.#board, drag.card, drag.key, to);
-    if (move && !this.#emit('sub-card-move', move, true)) to = drag.from;
+    // Carried away and back again: `to` equals `from` by value but is another object.
+    if (!move || !this.#emit('sub-card-move', move, true)) to = drag.from;
     if (to !== drag.at) {
       this.#drag = { ...drag, at: to, over: null };
       this.requestUpdate();
@@ -879,7 +880,7 @@ export class SubKanban<T = any> extends SubstratElement {
       this.requestUpdate();
       return;
     }
-    void this.#commit(move!);
+    if (move) void this.#commit(move);
   }
 
   /** A drop that never finishes: the card it carried is gone from `cards`. */

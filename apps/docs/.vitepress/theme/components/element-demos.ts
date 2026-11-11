@@ -110,10 +110,14 @@ function kanbanDemo(host: HTMLElement, log: (line: string) => void) {
   board.move = () => new Promise((resolve, reject) => setTimeout(() => (failing.checked ? reject(new Error('Saving failed')) : resolve(undefined)), 600));
   board.cards = TICKETS;
   // The board reports a title; the screen makes the card (here, in memory) and hands it back.
+  // New `cards` are drawn as given, so the list handed back is the board as it now stands —
+  // `board.board`, moves made since included, even one still saving.
   let next = 101 + TICKETS.length;
   board.addEventListener('sub-card-add', (e) => {
     const { column, title } = (e as CustomEvent<{ column: string; title: string }>).detail;
-    board.cards = [...board.cards, { id: `T-${next++}`, title, status: column, tag: 'feature' }];
+    const byId = new Map(board.cards.map((t) => [t.id, t]));
+    const now = [...board.board].flatMap(([status, ids]) => ids.map((id) => ({ ...byId.get(id)!, status })));
+    board.cards = [...now, { id: `T-${next++}`, title, status: column, tag: 'feature' }];
   });
   listen(board, ['sub-card-move', 'sub-move-failed', 'sub-card-open', 'sub-card-add'], log);
   wrap.append(fail, board);
