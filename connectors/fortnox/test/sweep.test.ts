@@ -1250,10 +1250,31 @@ describe('fortnox connector — inbound sync', () => {
         expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('write-back of supplier invoice 12:') }]);
       });
 
-      // Measured in the Fortnox sandbox (MEASUREMENTS-writeback.md): a company that books only attested
-      // invoices refuses any change to DisablePaymentFile once the invoice is attested. These pin what
-      // the write-back does there today; it is not what #2827 intended.
-      it('where booking needs attest, books the approved invoice but cannot release its hold, and says so', async () => {
+      // A company that books only approved invoices, as the Fortnox sandbox did with "Simple approve"
+      // (MEASUREMENTS-writeback.md). Approval locks the block over the API, so it is lifted first.
+      const APPROVE = { request: 'PUT /3/supplierinvoices/12/approvalbookkeep' };
+
+      it('where booking needs approval, lifts its hold, approves and books, then comments', async () => {
+        fortnox.requireAttest = true;
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        fortnox.writes.length = 0;
+
+        waiting = { hold: [], decisions: [decided('12')] };
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+        await sweepFortnoxLedger(host, connId, at(NOW + 30 * 60_000));
+
+        // The first booking is the refusal that says approval is needed; the second pass writes nothing.
+        expect(fortnox.writes).toEqual([BOOK, RELEASE, APPROVE, BOOK, COMMENT]);
+        expect(receipts).toEqual([
+          { key: 'decision-12', status: 'done', error: null },
+          { key: 'decision-12', status: 'done', error: null },
+        ]);
+      });
+
+      it('where someone approved the invoice before the decision, says its block must be lifted in Fortnox', async () => {
         fortnox.requireAttest = true;
         await bindWriteback();
         unbooked('12');
@@ -1265,12 +1286,11 @@ describe('fortnox connector — inbound sync', () => {
         waiting = { hold: [], decisions: [decided('12')] };
         await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
-        // Booked, still blocked, and the board's comment never written: release comes before it.
         expect(fortnox.writes).toEqual([BOOK, RELEASE]);
-        expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.stringContaining('attesterad leverantörsfaktura') }]);
+        expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.stringContaining('can be lifted only in Fortnox') }]);
       });
 
-      it('where booking needs attest, cannot hold an invoice attested first, and fails its row every pass', async () => {
+      it('asks once to hold an invoice approved before it could be held, and says why', async () => {
         fortnox.requireAttest = true;
         await bindWriteback();
         unbooked('12');
@@ -1280,11 +1300,9 @@ describe('fortnox connector — inbound sync', () => {
         const first = await sweepFortnoxLedger(host, connId, at(NOW));
         const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
 
-        expect(fortnox.writes).toEqual([HOLD, HOLD]);
-        expect([...first.failed, ...second.failed]).toEqual([
-          { scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') },
-          { scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') },
-        ]);
+        expect(fortnox.writes).toEqual([HOLD]);
+        expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('approved in Fortnox before it could be held') }]);
+        expect(second.failed).toEqual([]);
       });
 
       it('retries an outage for eight passes, then tells the vertical, and a retry starts over', async () => {
