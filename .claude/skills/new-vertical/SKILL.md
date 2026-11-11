@@ -41,8 +41,8 @@ Read these before writing anything, in this order:
 4. `demos/todo/src/routes.ts` + `src/api.ts` — `mountOperations` derives the route table
    at mount time; `apiCatalogFrom` derives the OpenAPI document. Neither is a table you
    maintain.
-5. `demos/todo/src/seed.ts` + `src/provision.ts` + `src/personas.ts` — the world (two
-   tenants, always: the second exists to be attacked), `MODULES` + `ROLES`,
+5. `demos/todo/src/seed.ts` + `src/world.ts` + `src/provision.ts` + `src/personas.ts` —
+   the world (two tenants, always: the second exists to be attacked), `MODULES` + `ROLES`,
    `definePermissions` with the same `keys` array the model took, and the dev cast the
    issuer and the seed both read.
 6. `demos/todo/src/server.ts` — the boot harness. Auth is an ordinary OIDC round-trip
@@ -158,10 +158,16 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
 
 - `src/seed.ts`: `buildHost(dir)` = `new SqliteScopeHost({ dir })` + `registerModule` for
   each engine and the vertical; `MODULES` and `ROLES` exported. An idempotent `seed()`:
-  two tenants, roles **per tenant** from engine `PERM` + the vertical's keys, seed
-  entities created through `stub.invoke` (never raw SQL), the bootstrap grants a person
-  needs on their own entity, and `linkDevPersonas` binding each persona's `sub` to a
-  principal.
+  two tenants, roles **per tenant** from engine `PERM` + the vertical's keys, then
+  `seatWorld` from `@substrat-run/kernel` once per tenant (`seat: 'home'`, then
+  `'elsewhere'`). Seating is the platform's half — a principal per persona, its `role`, the
+  identity link its `sub` signs in by — and is idempotent, so `linkDevPersonas` re-seats on
+  every boot.
+- `src/world.ts`: node-free, `WORLD: SeedWorld` = `{ personas: PERSONAS, build }`. `build`
+  creates the seed entities through `world.as(sub).invoke` (never raw SQL) and the bootstrap
+  grants a person needs on their own entity through `world.grantShape`, looping over
+  `world.personas` — the ones seated where it runs. It is the world a hosted seeded preview
+  runs too (#3108), so it imports nothing node-only.
 - `src/provision.ts`: `definePermissions({ modules, roles, entityGrants, keys })`, with
   `keys` the **same** array `spec/model.ts` handed `defineOperations` — it throws at load
   if the two disagree. `ENTITY_GRANTS` declares the shapes of the grants made outside the
@@ -182,8 +188,9 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   from then on. A sharing shape, reached through `ctx.grant`, carries no flag and is never
   reconciled. `pnpm lint:permissions` renders `PERMISSIONS.md` from this file, checked in,
   `--check`ed in CI.
-- `src/personas.ts`: the dev cast, one per role the scenario needs, including one who
-  lives in the *other* tenant.
+- `src/personas.ts`: the dev cast, one per role the scenario needs, each with the `role` key
+  it holds (none for a portal customer, whose access is a grant `build` makes), including one
+  who lives in the *other* tenant (`elsewhere: true`).
 - `src/server.ts`: copy todo's. Host built once on `.data`, cast persisted, `devLogin`
   from `@substrat-run/dev-issuer` for `/api/auth/*` and `/api/me`, `/openapi.json` served
   from `API_DOCUMENT`, and `mountApi` with a `resolveStub` that reads the caller from the

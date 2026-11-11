@@ -20,4 +20,11 @@ export interface DevPersona {
   email: string;
   /** A one-line hint under the name in the picker — "office-admin", "portal customer @ …". */
   note?: string;
+  /**
+   * The role key, from the vertical's `ROLES`, this persona holds where it is seated
+   * (`seatWorld` in `@substrat-run/kernel`, #3108). Absent: no scope-wide role.
+   */
+  role?: string;
+  /** Belongs to another tenant — the outsider an isolation scenario turns away. */
+  elsewhere?: boolean;
 }

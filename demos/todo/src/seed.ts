@@ -19,9 +19,10 @@ import {
   scopeId,
   tenantId,
 } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { seatWorld, ulid, type ScopeHost, type WorldSeat } from '@substrat-run/kernel';
 import { ENTITY_GRANTS, OWNER_GRANTS, todoManifest } from './manifest.js';
 import { MODULES, ROLES, permissions } from './provision.js';
+import { WORLD } from './world.js';
 
 export { MODULES, ROLES };
 
@@ -48,50 +49,47 @@ export function buildHost(dir: string): ScopeHost {
   return host;
 }
 
-/** Principal ids are ULID-minted; readability lives in `name`, never in the id. */
-const person = (name: string, email: string): Person => ({
-  name,
-  email,
-  principal: principalId.parse(ulid()),
-});
-
+/**
+ * Provision both tenants, then let the kernel seat the cast in each: `WORLD` (`./world.ts`)
+ * says who is where and what they start with, and `seatWorld` gives each persona a principal,
+ * its role and its identity link — the same function a hosted seeded preview runs (#3108).
+ */
 export async function seed(host: ScopeHost): Promise<World> {
-  const world: World = {
-    staff: platformActorId.parse(ulid()),
-    tenant: tenantId.parse(ulid()),
-    scope: scopeId.parse(ulid()),
-    otherTenant: tenantId.parse(ulid()),
-    otherScope: scopeId.parse(ulid()),
-    ada: person('Ada', 'ada@example.com'),
-    bjorn: person('Björn', 'bjorn@example.com'),
-    cleo: person('Cleo', 'cleo@example.com'),
-  };
+  const staff = platformActorId.parse(ulid());
+  const homes = {
+    home: { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()) },
+    elsewhere: { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()) },
+  } as const;
+  await host.admin.registerIdentityPool(staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
 
-  for (const [t, s, people] of [
-    [world.tenant, world.scope, [world.ada, world.bjorn]],
-    [world.otherTenant, world.otherScope, [world.cleo]],
-  ] as const) {
-    await host.admin.createTenant(world.staff, { id: t, slug: `todo-${t.slice(-6).toLowerCase()}`, name: 'Todo' });
-    await host.admin.grantEntitlement(world.staff, t, todoManifest.entitlementKey as string);
-    await host.provisionScope(world.staff, { tenantId: t, scopeId: s, vertical: 'todo' });
-    await host.admin.activateScope(world.staff, t, s);
-    for (const role of ROLES) await host.admin.defineRole(world.staff, t, role);
-
-    for (const p of people) {
-      await host.admin.assignRole(world.staff, {
-        principalId: p.principal,
-        roleKey: 'member',
-        node: { tenantId: t, scopeId: s },
-      });
-      // Claim the account through the operation — never a raw INSERT from here.
-      const stub = await host.getScope(p.principal, t, s, { verifiedEmail: p.email });
-      await stub.invoke('todo/join', { displayName: p.name });
-
-      await grantOwner(host, world.staff, { tenantId: t, scopeId: s }, p.principal);
-    }
+  const seats = new Map<string, WorldSeat>();
+  for (const seat of ['home', 'elsewhere'] as const) {
+    const { tenantId: t, scopeId: s } = homes[seat];
+    await host.admin.createTenant(staff, { id: t, slug: `todo-${t.slice(-6).toLowerCase()}`, name: 'Todo' });
+    await host.admin.grantEntitlement(staff, t, todoManifest.entitlementKey as string);
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'todo' });
+    await host.admin.activateScope(staff, t, s);
+    for (const role of ROLES) await host.admin.defineRole(staff, t, role);
+    const seated = await seatWorld(host, { actor: staff, node: homes[seat], provider: DEV_PROVIDER, world: WORLD, seat, build: true });
+    for (const [sub, at] of seated) seats.set(sub, at);
   }
 
-  return world;
+  const person = (sub: string): Person => {
+    const persona = PERSONAS.find((p) => p.sub === sub);
+    const at = seats.get(sub);
+    if (!persona || !at) throw new Error(`todo seed: persona ${sub} was not seated`);
+    return { name: persona.name, email: persona.email, principal: at.principal };
+  };
+  return {
+    staff,
+    tenant: homes.home.tenantId,
+    scope: homes.home.scopeId,
+    otherTenant: homes.elsewhere.tenantId,
+    otherScope: homes.elsewhere.scopeId,
+    ada: person('dev|ada'),
+    bjorn: person('dev|bjorn'),
+    cleo: person('dev|cleo'),
+  };
 }
 
 /**
@@ -132,27 +130,18 @@ export async function reconcileOwnerGrants(host: ScopeHost, world: World): Promi
 }
 
 /**
- * Bind each dev persona's OIDC `sub` to its principal — the ordinary identity-directory
- * seam, run on every boot rather than only on a fresh seed, because the world is cached in
- * `cast.json` and `seed()` does not run again once it exists. `linkIdentity` is idempotent
- * for an unchanged binding, so re-running costs nothing and a wiped `.data` heals itself.
+ * Seat the cast again on every boot, because the world is cached in `cast.json` and `seed()`
+ * does not run again once it exists. Seating is idempotent — a persona already linked keeps its
+ * principal — so this costs nothing, a wiped `.data` heals itself, and a persona added to
+ * `personas.ts` after the first boot gets a principal, a role and a link (but no `build`: that
+ * runs only on a fresh world).
  */
 export async function linkDevPersonas(host: ScopeHost, world: World): Promise<void> {
   await host.admin.registerIdentityPool(world.staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
-  const homes: Record<string, { person: Person; tenant: typeof world.tenant; scope: typeof world.scope }> = {
-    'dev|ada': { person: world.ada, tenant: world.tenant, scope: world.scope },
-    'dev|bjorn': { person: world.bjorn, tenant: world.tenant, scope: world.scope },
-    'dev|cleo': { person: world.cleo, tenant: world.otherTenant, scope: world.otherScope },
-  };
-  for (const persona of PERSONAS) {
-    const home = homes[persona.sub];
-    if (!home) continue;
-    await host.admin.linkIdentity(world.staff, {
-      provider: DEV_PROVIDER,
-      externalId: persona.sub,
-      principal: home.person.principal,
-      tenantId: home.tenant,
-      scopeId: home.scope,
-    });
+  for (const [seat, node] of [
+    ['home', { tenantId: world.tenant, scopeId: world.scope }],
+    ['elsewhere', { tenantId: world.otherTenant, scopeId: world.otherScope }],
+  ] as const) {
+    await seatWorld(host, { actor: world.staff, node, provider: DEV_PROVIDER, world: WORLD, seat });
   }
 }

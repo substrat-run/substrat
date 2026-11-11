@@ -540,6 +540,14 @@ export {
 export { canonicalInstant, frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
+export {
+  seatWorld,
+  type SeatWorldInput,
+  type SeedWorld,
+  type WorldBuilder,
+  type WorldPersona,
+  type WorldSeat,
+} from './seed-world.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { guardSpine } from './spine-guard.js';
 export {
