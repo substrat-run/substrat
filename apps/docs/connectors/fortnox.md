@@ -631,8 +631,8 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
    [`MEASUREMENTS-writeback.md`](https://github.com/substrat-run/substrat/blob/main/connectors/fortnox/MEASUREMENTS-writeback.md).
    A block set over the API changes nothing else, `bookkeep` books with no body, and the comment log
    keeps its order and takes at least 65,536 characters. The release does not work where booking
-   needs attest (the warning under [writing back](#writing-back)). Still open, for a person in the
-   sandbox's web UI:
-   - Can an unbooked supplier invoice be paid at all?
-   - Does a block set over the API hide the invoice from the payment view?
+   needs attest (the warning under [writing back](#writing-back)). In the sandbox's web UI, an
+   unbooked invoice could not be selected for payment, and the block did not stop a payment
+   registered by hand. Still open:
+   - Does a blocked invoice stay out of a payment file?
    - Without the attest rule, can a booked invoice's block be cleared?

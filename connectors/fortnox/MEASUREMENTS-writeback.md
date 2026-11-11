@@ -209,22 +209,39 @@ F ends `"Booked":true`, `"DisablePaymentFile":true`, `CommentLog: []`.
 The mock's default stays a company that does **not** require attest. That case was not measured, not
 contradicted, so the existing write-back tests keep describing it until someone measures it.
 
+## Checked in the web UI
+
+Checked the same day by a person's browser session in the sandbox. The company's UI is in English, so
+labels are quoted in English. Nothing was changed, approved, booked or paid.
+
+- **The approval setting.** Settings → Supplier invoices → "Supplier invoice approval – General
+  settings": Approval management **"Simple approve"**, Payment approve **off**, Prioritise payment
+  **off**. That is the rule behind `2001109`. On unbooked 32 and 33 the UI shows "The invoice must be
+  approved." with **Post** greyed out.
+- **An unbooked invoice cannot be paid here.** In **Payments out** (registering a payment by hand),
+  unbooked 32 and 33 do not come up in the invoice search ("No results found."). Under the filter
+  "Unpaid" they are not listed. Under "All" they are listed with no checkbox and cannot be selected,
+  blocked or not. Every booked invoice can be selected (25, 27, 29, 30 and 31), so **booking is the
+  gate for paying, in this company**.
+- **The payment block does not stop a payment registered by hand.** Booked invoices 25, 29 and 30,
+  blocked over the API, are selectable in Payments out like 27 and 31. The block is shown on the
+  invoice as an ✗ with the tooltip "Payment file disabled": it is about payment files.
+- **The payment-file view was not reached.** The Supplier invoices list and "Show list" open a setup
+  wizard ("Get started with supplier invoices!") instead. Finishing it changes settings, so it was
+  left alone. Whether a blocked invoice is missing from a payment file is still open.
+- **The UI offers to lift a block the API cannot.** On booked, attested 25 the toolbar shows an
+  active **"Enable payment file"**. Over the API that change is refused (`2003576`). It was not
+  clicked: whether the UI really clears it on a booked invoice is the next check.
+
 ## What a person has to check
 
-In the sandbox's web UI (company "test", 555555-5555):
+Still open, in the sandbox's web UI:
 
-1. **Does an invoice blocked over the API disappear from the payment view** (Leverantörsbetalningar,
-   betalvyn)?
-   - Blocked over the API: **33** (unbooked), **25**, **29**, **30** (booked).
-   - Not blocked, for contrast: **32** (unbooked), **27**, **31** (booked).
-2. **Can an unbooked supplier invoice be paid at all?**
-   - Try to put **32** (unbooked, not blocked, not attested) in a payment proposal or a payment file.
-   - Try to register a manual payment on it.
-   - Try the same for **33** (unbooked, blocked).
-3. **Is "attest before booking" a company setting, and what happens without it?**
-   - Find the setting that makes `bookkeep` answer `2001109`.
-   - Turn it off, and run `pnpm fortnox:measure-writeback` again. That run answers the one question
-     still open: can a booked invoice that nobody attested have its block cleared?
-   - Turn the setting back on afterwards.
-4. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it. A
-   consent that does would let the script register a payment on an unbooked invoice.
+1. **Click "Enable payment file" on booked invoice 25.** If the UI clears the block, the API's
+   `2003576` is a restriction of the API, not of the invoice. Then re-block it the same way.
+2. **Set Approval management to no approval, run `pnpm fortnox:measure-writeback` again, then set it
+   back to "Simple approve".** That run answers the one question still open over the API: can a booked
+   invoice that nobody approved have its block cleared?
+3. **The payment-file view**, once someone decides to finish the supplier-invoice setup wizard. Is
+   blocked 33, 25, 29 or 30 missing from a payment file, where 32, 27 and 31 are not?
+4. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it.
