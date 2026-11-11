@@ -146,8 +146,8 @@ export class FortnoxMock {
   deniedScopes: string[] = [];
   /**
    * The company books only attested invoices: `bookkeep` on one nobody attested answers `2001109`,
-   * as the Fortnox sandbox does. Off by default, because a company can run without Fortnox's attest
-   * routine, and whether a booked invoice's block can be cleared there has not been measured.
+   * as the Fortnox sandbox does with approval set to "Simple approve". Off by default: with approval
+   * set to "None" the sandbox books without it, and clears a booked invoice's block over the API.
    */
   requireAttest = false;
 
@@ -334,6 +334,9 @@ export class FortnoxMock {
     if (match[2] === 'bookkeep' && method === 'PUT') {
       if (entry.invoice['Booked'] === true) return this.json(fortnoxError('Leverantörsfakturan är redan bokförd.', 2000417), 400);
       if (this.requireAttest && !entry.attested) return this.json(fortnoxError('Fakturan måste vara attesterad.', 2001109), 400);
+      if (entry.invoice['Cancelled'] === true) {
+        return this.json(fortnoxError('Leverantörsfakturan är makulerad och kan därför inte bokföras.', 2000418), 400);
+      }
       if (entry.cannotBook) return this.json({ ErrorInformation: { message: entry.cannotBook } }, 400);
       entry.invoice['Booked'] = true;
       return this.json({ SupplierInvoice: entry.invoice });

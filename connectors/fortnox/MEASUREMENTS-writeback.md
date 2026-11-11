@@ -11,6 +11,10 @@ sandbox marker `555555-5555`.
   19–24 (the first measurements, before attest was understood). Invoice 21 was attested and booked
   by hand while working out the attest step. Invoices 1–12 were in the sandbox before this work
   started.
+- **A second company configuration**, the same day: with the company's approval switched to "None"
+  in the web UI, run `WB-202611111621`, invoices **43–51**, then switched back to "Simple approve"
+  ([without approval](#without-approval)). A run in between, invoices 34–42, started before the switch
+  and repeats the first.
 - **Consent:** the credential's token carries
   `"scope":"bookkeeping companyinformation supplierinvoice supplier"`. It has no `archive` or
   `connectfile`, and no scope that admits `/supplierinvoicepayments` or `/settings/company`.
@@ -22,27 +26,31 @@ shortened to the fields that matter, and the script prints every body in full.
 
 ## The verdict
 
-**#2827's payment block cannot be released in this company, because booking requires attest and an
-attested invoice is locked.** This sandbox refuses `bookkeep` on an invoice nobody has attested
-(`2001109`). Once an invoice is attested, Fortnox lets a `PUT` change only `OCR`, the invoice number
-and the due date. So `DisablePaymentFile` can be neither cleared nor set after attest, and therefore
-never after booking (`2003576`).
+**#2827 works as designed in a company that does not require approval before booking, and its release
+cannot work in one that does.** It depends on one company setting: Settings → Supplier invoices →
+"Supplier invoice approval – General settings" → Approval management.
 
-The end-to-end run shows what that does to the write-back:
-- An approved invoice is booked, and stays blocked from payment.
-- The board's comment is never written, because the release comes before it.
-- The vertical receives `failed` for an invoice that is in fact booked.
-- Every later answer of the same decision repeats the refused release.
+- **"None":** `bookkeep` books an invoice nobody approved. The block can be set and cleared before
+  and after booking. The whole write-back runs as intended: hold, book, release, comment, receipt
+  `done`, and a second pass writes nothing ([without approval](#without-approval)).
+- **"Simple approve"** (how the sandbox was set): `bookkeep` refuses an invoice nobody approved
+  (`2001109`). Once an invoice is approved, the API lets a `PUT` change only `OCR`, the invoice number
+  and the due date, so `DisablePaymentFile` can be neither cleared nor set (`2003576`). An approved
+  invoice is booked, stays blocked from payment, and gets no comment. The vertical receives `failed`
+  for an invoice that is booked. Every repeat of the decision repeats the refused release.
+- **The lock is the API's, not the invoice's.** In the web UI a person can clear the block on that
+  same booked, approved invoice ([the web UI](#checked-in-the-web-ui)).
+- **In an approval company the block is not what stops payment.** There an unbooked invoice cannot
+  be selected for payment at all, and approval gates booking.
 
-Per the instruction for this measurement, the write-back's behaviour is **unchanged**, and the
-measurements stopped here. The decision is which way to go:
-- Fortnox's attest module (`approvalbookkeep` / `approvalpayment`), or
-- a block that is only ever set and never released by the connector, or
-- no block in companies that attest.
+The write-back's behaviour is **unchanged** here. What it should do in an approval company is a design
+decision. The options:
+- skip the hold and the release there, since approval already gates payment;
+- leave the release to a person;
+- use Fortnox's approval calls (`approvalbookkeep`).
 
-One case is still open. A company that does **not** require attest before booking may behave
-differently. The error names attest, not booking. That could not be measured here, because the
-setting is not reachable with this consent. See [what a person has to check](#what-a-person-has-to-check).
+The first step is knowing which setting each customer's company has. The API answers
+`approvalbookkeep` with `2001110` when approval is off, which a connector could read as "None".
 
 ## 1. The payment block (`DisablePaymentFile`)
 
@@ -195,19 +203,52 @@ F ends `"Booked":true`, `"DisablePaymentFile":true`, `CommentLog: []`.
   - Nothing was booked twice.
   - The block was never lifted for an invoice the binding did not block.
 
+## Without approval
+
+Run `WB-202611111621`, invoices 43–51, with Approval management set to "None". Every call is the
+same as in the first run. What changed:
+
+| Call | Answer |
+|---|---|
+| `bookkeep` on unbooked, blocked A (43), nobody approved | `200`, `"Booked":true`, `"DisablePaymentFile":true` |
+| clear the block on booked A: `PUT /supplierinvoices/43` `{"SupplierInvoice":{"DisablePaymentFile":false}}` | **`200`, `"DisablePaymentFile":false`**. The diff of the whole invoice changed only that field |
+| set it again on booked A, and on booked C (45), never blocked | `200` both |
+| `approvalbookkeep`, any invoice | `400 {"ErrorInformation":{"error":1,"message":"Inställningen för enkel attest är avstängd.","code":2001110}}` |
+| `bookkeep` on B (44), no cost row | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfaktura 44 balanserar inte.","code":2000755}}` |
+| `bookkeep` on cancelled D (46) | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfakturan är makulerad och kan därför inte bokföras.","code":2000418}}` |
+| `bookkeep` on booked C (45) | `400 … "code":2000417`, as before |
+| `supplierinvoice`-only token, on E (47): block, `bookkeep`, release, comment | `200`, `200`, `200`, `201` |
+
+So without approval, the real reason an invoice cannot be booked comes back from `bookkeep` itself.
+The scope question gets a full answer: with `supplierinvoice` alone the whole write-back's writes
+succeed (only the sweep's `companyinformation` read needs more).
+
+End to end, `syncFortnoxSupplierInvoices` as before:
+
+| Invoice, pass | Writes, in order | Receipt |
+|---|---|---|
+| G (49), pass 1: `{ hold: [49], decisions: [49] }` | `PUT /supplierinvoices/49` (hold) → `200`; `PUT …/49/bookkeep` → `200`; `PUT /supplierinvoices/49` (release) → `200`; `POST …/49/commentlog` → `201` | `done` |
+| G, pass 2, the same decision again | none | `done` |
+| F (48), pass 1: `{ hold: [48], decisions: [48] }` | hold `200`, book `200`, release `200`, comment `201` | `done` |
+| F, passes 2 and 3, the same decision again | none | `done` |
+
+G ends booked, not blocked, with the board's comment. Pass 1 reported `"held":1,"written":1`. **This
+is #2827 doing what it was written to do, against a real Fortnox.**
+
 ## Where `FortnoxMock` disagreed with Fortnox
 
 | What the mock did | What Fortnox does | Change |
 |---|---|---|
 | `bookkeep` books any invoice that has no `cannotBook` | in a company that requires attest, `400 … 2001109` until `approvalbookkeep` | **Mock fixed:** `requireAttest` (off by default) and `attest(n)`, and `PUT …/approvalbookkeep` is served. **Connector:** #2827 never attests, so in such a company a decision books only after the company's own attest routine has run. A design decision, not made here |
 | a `PUT` changes any field, on any invoice | on an attested invoice only `OCR`, `InvoiceNumber`, `DueDate` may change. Anything else is `400 … 2003576`, and re-sending a current value is accepted | **Mock fixed.** **Connector:** the release after booking cannot work in such a company, and nor can a hold of an attested invoice. Behaviour unchanged, by instruction. Two tests now pin what it does there |
+| `bookkeep` on a cancelled invoice books it | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfakturan är makulerad och kan därför inte bokföras.","code":2000418}}` | **Mock fixed.** No connector change: a refusal in Fortnox's words is already `failed` at once |
 | `bookkeep` on a booked invoice answers `200` | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfakturan är redan bokförd.","code":2000417}}` | **Mock fixed.** **Connector:** worth treating `2000417` as done rather than `failed`, for the read-then-book race. Not changed here |
 | errors carry only `message` | `{"error":1,"message":…,"code":…}`: a numeric code a caller could branch on instead of Swedish text | **Mock:** the new answers carry the code |
 | a comment-log entry is `{ Comment }` | `{ Id, Comment, UserName, UserId, CreatedAt, PersistToInvoice }`, in the `POST` answer and in `GET …/commentlog` | **Mock fixed.** No connector change: it reads `Comment` only |
 | the test fixture's booked invoice carries `VoucherNumber: 44` | a booked invoice keeps `VoucherNumber`, `VoucherSeries` and `VoucherYear` `null`, and its voucher is in `Vouchers: [{"Number":6,"Year":1,"Series":"D","ReferenceType":"SUPPLIERINVOICE"}]` | **Connector, the landing, not the write-back:** `voucher` is `null` on every booked invoice it lands. It should read `Vouchers[]`. Not changed here. The landing's tests assert the fixture's shape, so the fixture moves with that fix |
 
-The mock's default stays a company that does **not** require attest. That case was not measured, not
-contradicted, so the existing write-back tests keep describing it until someone measures it.
+The mock's default is a company with approval set to "None". That case is now measured, and the
+existing write-back tests describe what the sandbox did there.
 
 ## Checked in the web UI
 
@@ -240,9 +281,6 @@ labels are quoted in English. Nothing was changed, approved, booked or paid.
 
 Still open, in the sandbox's web UI:
 
-1. **Set Approval management to no approval, run `pnpm fortnox:measure-writeback` again, then set it
-   back to "Simple approve".** That run answers the one question still open over the API: can a booked
-   invoice that nobody approved have its block cleared?
-2. **The payment-file view**, once someone decides to finish the supplier-invoice setup wizard. Is
+1. **The payment-file view**, once someone decides to finish the supplier-invoice setup wizard. Is
    blocked 33, 25, 29 or 30 missing from a payment file, where 32, 27 and 31 are not?
-3. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it.
+2. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it.

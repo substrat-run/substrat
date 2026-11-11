@@ -318,14 +318,21 @@ fifteen minutes and nothing else. The operation answers for the company it is gi
 - **Budget.** A hold costs two calls and a decision up to five, from the pass's 200, and the 90-second
   deadline applies. What does not fit is answered again next pass.
 
-::: warning A company that books only attested invoices cannot use the release yet
-Measured in a Fortnox sandbox on 2026-11-11: there, `bookkeep` refuses an invoice nobody has
-attested, and once an invoice is attested Fortnox lets a write change only its OCR, invoice number
-and due date. So the hold can be set before attest and never cleared after it. An approved invoice
-is booked, stays blocked from payment, and gets no comment, and the vertical receives `failed` with
-Fortnox's message. An invoice attested before it is held cannot be held at all. Whether a company
-without that rule can clear a booked invoice's block is not measured yet. See
-[what's missing](#what-s-missing).
+::: warning In a company that requires approval before booking, the release does not work
+Measured in a Fortnox sandbox on 2026-11-11. The behaviour depends on the company's setting under
+Settings › Supplier invoices › Supplier invoice approval.
+
+**With approval management set to "None",** the write-back works as described above: hold, book,
+release, comment.
+
+**With "Simple approve",** booking needs approval first, and Fortnox's API refuses any change to an
+approved invoice's payment block. The web UI still allows it. So an approved invoice is booked,
+stays blocked from payment, and gets no comment, and the vertical receives `failed` with Fortnox's
+message. An invoice approved before it is held cannot be held at all. Such a company does not need
+the hold to stop an undecided invoice being paid: there, an unbooked invoice cannot be selected for
+payment.
+
+See [what's missing](#what-s-missing).
 :::
 
 ### Bind a hosted connection by hand
@@ -631,8 +638,6 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
    [`MEASUREMENTS-writeback.md`](https://github.com/substrat-run/substrat/blob/main/connectors/fortnox/MEASUREMENTS-writeback.md).
    A block set over the API changes nothing else, `bookkeep` books with no body, and the comment log
    keeps its order and takes at least 65,536 characters. The release does not work where booking
-   needs attest (the warning under [writing back](#writing-back)). In the sandbox's web UI, an
+   needs approval (the warning under [writing back](#writing-back)). In the sandbox's web UI, an
    unbooked invoice could not be selected for payment, and the block did not stop a payment
-   registered by hand. Still open:
-   - Does a blocked invoice stay out of a payment file?
-   - Without the attest rule, can a booked invoice's block be cleared?
+   registered by hand. Still open: does a blocked invoice stay out of a payment file?
