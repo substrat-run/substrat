@@ -28,10 +28,14 @@ import {
 } from './gates.js';
 import { emitProjectModel, type ModelEmitResult } from './model.js';
 import { emitProjectMigrations } from './migrations.js';
+import { isDependencyPath } from './snapshot.js';
 import type { Workspace } from './workspace.js';
 
 const BOT_NAME = 'Substrat Builder Studio';
 const BOT_EMAIL = 'builder@substrat.run';
+
+/** A project's own ignores — build noise, never source. The list `npm create substrat` writes. */
+export const PROJECT_GITIGNORE = ['node_modules/', 'dist/', '*.sqlite', '*.sqlite-*', '*.db', '.data/', '*.log', '.DS_Store', ''].join('\n');
 
 /** Where git commands run and what they may stage. */
 interface GitCtx {
@@ -78,11 +82,7 @@ export async function ensureVerticalRepo(
 	if (init.exitCode !== 0) {
 		throw new Error(`git init failed in ${verticalDir}: ${init.stderr || init.stdout}`);
 	}
-	// The project's own ignores — build noise, never source.
-	await ws.writeFile(
-		`${verticalDir}/.gitignore`,
-		['node_modules/', 'dist/', '.data/', '*.log', ''].join('\n'),
-	);
+	await ws.writeFile(`${verticalDir}/.gitignore`, PROJECT_GITIGNORE);
 	await ws.exec(
 		`git -c user.name='${BOT_NAME}' -c user.email='${BOT_EMAIL}' add -A && ` +
 			`git -c user.name='${BOT_NAME}' -c user.email='${BOT_EMAIL}' commit -q -m 'studio: project created'`,
@@ -102,7 +102,7 @@ export async function changedFiles(ws: Workspace, verticalDir?: string): Promise
 	return stdout
 		.split('\n')
 		.map((l) => l.slice(3).trim())
-		.filter(Boolean);
+		.filter((f) => f && !isDependencyPath(f));
 }
 
 /**
@@ -132,13 +132,21 @@ export interface CommitOptions {
  */
 export async function commitTurn(ws: Workspace, opts: CommitOptions): Promise<string | null> {
 	const ctx = await gitCtx(ws, opts.verticalDir);
+	// A hosted project is a clone of a repository nobody initialised here, so it may have no
+	// ignores at all. Its first turn after an install would otherwise commit node_modules,
+	// and a push that size is refused by the remote: every turn after it fails to save.
+	if (ctx.mode === 'project' && !(await ws.exists(`${opts.verticalDir}/.gitignore`))) {
+		await ws.writeFile(`${opts.verticalDir}/.gitignore`, PROJECT_GITIGNORE);
+	}
 	const files = await changedFiles(ws, opts.verticalDir);
 	if (files.length === 0) return null;
 
 	const name = opts.authorName ?? BOT_NAME;
 	const email = opts.authorEmail ?? BOT_EMAIL;
 
-	await ws.exec(`git add -- ${JSON.stringify(ctx.scope)}`, { cwd: ctx.cwd });
+	// Dependencies are never staged, whatever the project's ignores say (a scoped GitHub
+	// directory is not ours to write a .gitignore into).
+	await ws.exec(`git add -- ${JSON.stringify(ctx.scope)} ':(exclude,glob)**/node_modules/**'`, { cwd: ctx.cwd });
 	const message = opts.message.replace(/'/g, "'\\''");
 	const commit = await ws.exec(
 		`git -c user.name='${name}' -c user.email='${email}' commit -q -m '${message}'`,
