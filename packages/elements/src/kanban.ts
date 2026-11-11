@@ -189,7 +189,8 @@ export class SubKanban<T = any> extends SubstratElement {
   #press: Press | null = null;
   /** Between a release and the move: the card is flying into its gap, and takes no input. */
   #settling = false;
-  #pending = new Set<string>();
+  /** Moves still saving, by card key — laid over a new `cards` until they settle. */
+  #pending = new Map<string, KanbanMove<T>>();
   #said = '';
   /** The card to give focus back to once it is drawn again in another column. */
   #focusKey: string | null = null;
@@ -254,6 +255,7 @@ export class SubKanban<T = any> extends SubstratElement {
     super.willUpdate(changed);
     if (changed.has('cards') || changed.has('columns') || changed.has('keyOf') || changed.has('columnOf')) {
       this.#board = boardOf(this.cards, this.columns, this.keyOf, this.columnOf);
+      for (const m of this.#pending.values()) this.#board = moveCard(this.#board, m.key, { column: m.to, index: m.index });
       this.#byKey = new Map(this.cards.map((c) => [this.keyOf(c), c]));
       const drag = this.#drag;
       if (drag && !this.#byKey.has(drag.key)) this.#abandon();
@@ -1033,7 +1035,7 @@ export class SubKanban<T = any> extends SubstratElement {
       this.requestUpdate();
       return true;
     }
-    this.#pending.add(move.key);
+    this.#pending.set(move.key, move);
     this.requestUpdate();
     try {
       await this.move(move);

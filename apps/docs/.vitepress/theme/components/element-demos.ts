@@ -17,7 +17,7 @@ import '@substrat-run/elements/avatar';
 import '@substrat-run/elements/user-menu';
 import '@substrat-run/elements/assistant';
 import { AssistantModel, scriptedSource, type AssistantEvent } from '@substrat-run/elements/assistant-model';
-import type { Column, RowAction, TableFilter, TableQuery, TableSource, TableView } from '@substrat-run/elements';
+import type { Column, KanbanMove, RowAction, TableFilter, TableQuery, TableSource, TableView } from '@substrat-run/elements';
 import type { Session } from '@substrat-run/elements/session';
 
 export type DemoName = 'kanban' | 'entity-table' | 'avatar' | 'user-menu' | 'assistant';
@@ -107,22 +107,33 @@ function kanbanDemo(host: HTMLElement, log: (line: string) => void) {
     tag.style.justifySelf = 'start';
     el.append(id, title, tag);
   };
-  board.move = () => new Promise((resolve, reject) => setTimeout(() => (failing.checked ? reject(new Error('Saving failed')) : resolve(undefined)), 600));
-  board.cards = TICKETS;
+  // The screen's own list, as a server would keep it: a move lands in it once it is saved.
+  let tickets = TICKETS;
+  board.move = (m) =>
+    new Promise((resolve, reject) => setTimeout(() => (failing.checked ? reject(new Error('Saving failed')) : resolve(undefined)), 600)).then(() => {
+      tickets = placed(tickets, m as KanbanMove<Ticket>);
+    });
+  board.cards = tickets;
   // The board reports a title; the screen makes the card (here, in memory) and hands it back.
-  // New `cards` are drawn as given, so the list handed back is the board as it now stands —
-  // `board.board`, moves made since included, even one still saving.
+  // A move still saving is not in `tickets` yet: the board keeps showing it over the new list.
   let next = 101 + TICKETS.length;
   board.addEventListener('sub-card-add', (e) => {
     const { column, title } = (e as CustomEvent<{ column: string; title: string }>).detail;
-    const byId = new Map(board.cards.map((t) => [t.id, t]));
-    const now = [...board.board].flatMap(([status, ids]) => ids.map((id) => ({ ...byId.get(id)!, status })));
-    board.cards = [...now, { id: `T-${next++}`, title, status: column, tag: 'feature' }];
+    board.cards = tickets = [...tickets, { id: `T-${next++}`, title, status: column, tag: 'feature' }];
   });
   listen(board, ['sub-card-move', 'sub-move-failed', 'sub-card-open', 'sub-card-add'], log);
   wrap.append(fail, board);
   host.append(wrap);
   return wrap;
+}
+
+/** `list` with a saved move in it: the card's new status, between its new neighbours. */
+function placed(list: Ticket[], m: KanbanMove<Ticket>): Ticket[] {
+  const rest = list.filter((t) => t.id !== m.key);
+  const card = rest.length === list.length ? m.card : list.find((t) => t.id === m.key)!;
+  const at = m.before !== null ? rest.findIndex((t) => t.id === m.before) : m.after !== null ? rest.findIndex((t) => t.id === m.after) + 1 : -1;
+  rest.splice(at < 0 ? rest.length : at, 0, { ...card, status: m.to });
+  return rest;
 }
 
 // ── <sub-entity-table> ──────────────────────────────────────────────────────────────────

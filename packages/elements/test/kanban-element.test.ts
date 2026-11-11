@@ -100,6 +100,18 @@ describe('<sub-kanban>', () => {
     expect(failed).toHaveLength(1);
   });
 
+  it('keeps a move still saving over new cards, and takes it back from them when it fails', async () => {
+    let fail!: (e: Error) => void;
+    const { board } = await boardWith({ move: () => new Promise((_, reject) => (fail = reject)) });
+    const done = board.moveTo('a', 'done');
+    board.cards = [...board.cards, { id: 'd', title: 'Delta', status: 'doing' }];
+    await board.updateComplete;
+    expect(columns(board)).toEqual({ todo: ['b'], doing: ['c', 'd'], done: ['a'] });
+    fail(new Error('conflict'));
+    expect(await done).toBe(false);
+    expect(columns(board)).toEqual({ todo: ['a', 'b'], doing: ['c', 'd'], done: [] });
+  });
+
   it('counts a column against its limit', async () => {
     const { board } = await boardWith({ columns: [{ key: 'todo', label: 'To do', limit: 2 }, { key: 'doing', label: 'Doing', limit: 2 }] });
     const counts = [...board.shadowRoot!.querySelectorAll<HTMLElement>('.count')].map((c) => `${c.textContent} ${c.dataset['load']}`);
