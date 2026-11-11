@@ -33,6 +33,15 @@ import { ISSUER_THEME, clientBranding, issuerTheme } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, clientStraightThrough, readSignInPolicy } from './sign-in-policy.js';
 import { signInLoggerFor } from './sign-in-log.js';
+import { backfillActivity, recordClientToken } from './user-activity.js';
+import {
+  auth0TokenForm,
+  ensureManagementResource,
+  managementApiApp,
+  managementTokenVerifier,
+  tokenAuthMethodOf,
+} from './management-api.js';
+import type { JSONWebKeySet } from 'jose';
 import { placesOf } from './places.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 import { optionalTwilioFrom } from './twilio.js';
@@ -94,6 +103,7 @@ const sql: SqlExec = {
 const upgraded = upgradeLegacySchema(sql);
 for (const stmt of SCHEMA_STATEMENTS) sqlite.exec(stmt);
 rewritePlaceholderAddresses(sql, Date.now());
+backfillActivity(sql);
 // The issuer's own console, as a row in its own registry (`console-client.ts`) — the same
 // call the Durable Object's constructor makes, in the same place, so the dev database and a
 // deployed issuer hold the same row. Idempotent; an operator's edits to it survive a restart.
@@ -176,6 +186,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // The same sign-in log the deployed issuer keeps, over the dev database — so a provider
     // misconfiguration is debugged the same way locally as in production.
     recordSignIn: signInLoggerFor(sql),
+    recordToken: (userId, clientId) => recordClientToken(sql, userId, clientId),
     fetchSignInDiagnostic: (input, init) => globalThis.fetch(input, init),
     // The same promise the worker hands to `ctx.waitUntil`. Node has nothing to hand it to, so
     // it is simply not awaited — which is the behaviour being mirrored: a verification email
@@ -332,7 +343,33 @@ app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => {
   // collision the tsconfig split describes, not a real shape difference.
   const req = new Request(c.req.raw);
   req.headers.set(CLIENT_IP_HEADER, address);
+  if (new URL(req.url).pathname === '/api/auth/oauth2/token') ensureManagementResource(sql, ORIGIN, machineScopesNow());
   return authFor().handler(req as unknown as typeof c.req.raw);
+});
+
+// The Auth0 Management API subset (#3107, `management-api.ts`) — the same two doors the DO
+// serves. This dev server has no token exchange, so `/oauth/token` reaches the plugin alone.
+const machineScopesNow = (): readonly string[] => machineScopesOf(config()[MACHINE_SCOPES]).scopes;
+app.post('/oauth/token', async (c) => {
+  ensureManagementResource(sql, ORIGIN, machineScopesNow());
+  const translated = await auth0TokenForm(c.req.raw, (id) => tokenAuthMethodOf(sql, id));
+  if ('error' in translated) return c.json(translated.error, 400, { 'cache-control': 'no-store' });
+  const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+  if (translated.authorization) headers.authorization = translated.authorization;
+  return authFor().handler(
+    new Request(`${ORIGIN}/api/auth/oauth2/token`, { method: 'POST', headers, body: translated.form.toString() }) as unknown as typeof c.req.raw,
+  );
+});
+app.all('/api/v2/*', (c) => {
+  const auth = authFor();
+  return managementApiApp({
+    sql,
+    verify: managementTokenVerifier(
+      async () => (await auth.handler(new Request(`${ORIGIN}/api/auth/jwks`) as unknown as typeof c.req.raw)).json() as Promise<JSONWebKeySet>,
+      ORIGIN,
+    ),
+    machineScopes: machineScopesNow,
+  }).fetch(c.req.raw);
 });
 
 app.onError((err, c) => {

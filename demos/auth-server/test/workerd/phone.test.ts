@@ -102,3 +102,40 @@ describe('a person imported with a bcrypt hash, in the deployed Durable Object',
     expect(((await session.json()) as { user: { id: string } }).user.id).toBe(id);
   });
 });
+
+describe('the Auth0 Management API subset, in the deployed Durable Object (#3107)', () => {
+  it('mints an Auth0-style token for an opted-in machine client and reads a person with it', async () => {
+    const scope = ulid();
+    const stub = env.AUTH.get(env.AUTH.idFromName(scope));
+    await runInDurableObject(stub, async (instance) => (instance as unknown as import('../../src/auth-do.js').AuthServerDO).provisionInstance({ tenantId: ulid(), scopeId: scope, slug: 'acme-auth', name: 'Acme Auth' }, [
+      { key: 'ADMIN_EMAIL', value: 'admin@example.test' },
+      { key: 'ADMIN_PASSWORD', value: 'admin-test-password' },
+      { key: 'MACHINE_SCOPES', value: 'read:users' },
+    ]));
+    const json = (path: string, body: unknown, cookie = '') => stub.fetch(new Request(`https://auth-server.test${path}`, {
+      method: 'POST', headers: { origin: 'https://auth-server.test', 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
+    }));
+    const cookieOf = (res: Response) => (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie().map((c) => c.split(';')[0]).filter((c) => c && !c.endsWith('=')).join('; ');
+    const admin = cookieOf(await json('/api/auth/sign-in/email', { email: 'admin@example.test', password: 'admin-test-password' }));
+    // Registered as the console registers it (HTTP Basic), then used as Auth0's SDKs use it.
+    const registered = await json('/__admin/clients', { application_type: 'machine', client_name: 'Staff Portal', client_credentials_scopes: ['read:users'] }, admin);
+    expect(registered.status, await registered.clone().text()).toBe(201);
+    const client = (await registered.json()) as { client_id: string; client_secret: string };
+
+    const minted = await json('/__oauth-token', {
+      grant_type: 'client_credentials',
+      client_id: client.client_id,
+      client_secret: client.client_secret,
+      audience: 'https://auth-server.test/api/v2/',
+    });
+    expect(minted.status, await minted.clone().text()).toBe(200);
+    const { access_token: token } = (await minted.json()) as { access_token: string };
+
+    const res = await stub.fetch(new Request('https://auth-server.test/api/v2/users-by-email?email=admin%40example.test', {
+      headers: { authorization: `Bearer ${token}` },
+    }));
+    expect(res.status, await res.clone().text()).toBe(200);
+    // Two: the seeded administrator's sign-up is a sign-in the log records, and so is the one above.
+    expect(await res.json()).toEqual([expect.objectContaining({ email: 'admin@example.test', logins_count: 2, last_login: expect.any(String) })]);
+  });
+});

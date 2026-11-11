@@ -308,6 +308,20 @@ app.post('/api/auth/oauth2/token', async (c) => {
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => issuerFor(c.env, c.req.raw).fetch(c.req.raw));
 
 /**
+ * The Auth0 Management API subset (#3107, `src/management-api.ts`), where Auth0 serves both
+ * halves: `POST /oauth/token` for the machine client's token, and `/api/v2/*` for the API. The
+ * DO answers both, the token request under a control path so it cannot be reached as one of
+ * Better Auth's own. Every method reaches `/api/v2/*`, so one this subset does not serve is
+ * the API's own 501 and never the admin SPA below.
+ */
+app.post('/oauth/token', (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = '/__oauth-token';
+  return issuerFor(c.env, c.req.raw).fetch(new Request(url, c.req.raw));
+});
+app.all('/api/v2/*', (c) => issuerFor(c.env, c.req.raw).fetch(c.req.raw));
+
+/**
  * Provision ONE instance on the platform's instruction (K-31). The shared control plane
  * owns this scope's directory row + entitlements already; the vertical's job is only its
  * OWN state — waking the scope's issuer DO materializes it (schema + signing secret), and

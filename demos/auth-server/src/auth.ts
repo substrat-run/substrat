@@ -182,6 +182,12 @@ export interface AuthDeps {
    * run, which is what the schema-generation config and a test that does not care pass.
    */
   recordSignIn?: SignInLogger;
+  /**
+   * Record that the token endpoint minted a token to `clientId` for the person `userId`
+   * (`user-activity.ts`, #3107): when each application last got a token for somebody. A callback
+   * for the reason `recordSignIn` is one. Undefined ⇒ nothing is recorded.
+   */
+  recordToken?: (userId: string, clientId: string) => void;
   /** Runtime HTTP transport for the bounded GitHub email diagnostic. Omit to skip that check. */
   fetchSignInDiagnostic?: typeof fetch;
   /**
@@ -522,7 +528,10 @@ export function tokenRequestClientId(
   return clientId === undefined ? {} : { clientId };
 }
 
-/** A `private_key_jwt` assertion's `sub`, unverified — or undefined when it has none to read. */
+/**
+ * A compact JWT's `sub`, unverified — or undefined when it has none to read. A `private_key_jwt`
+ * assertion's, and the subject of a token the plugin just minted (`recordTokenIssued`).
+ */
 function assertionSubject(assertion: unknown): string | undefined {
   if (typeof assertion !== 'string') return undefined;
   try {
@@ -1005,6 +1014,10 @@ function betterAuthFor(deps: AuthDeps) {
        */
       after: createAuthMiddleware(async (ctx) => {
         if (ctx.path === '/oauth2/userinfo') return withoutPlaceholderEmail(ctx);
+        if (ctx.path === '/oauth2/token') {
+          if (deps.recordToken) await recordTokenIssued(ctx, deps.recordToken);
+          return;
+        }
         const record = deps.recordSignIn;
         if (!record) return;
         if (ctx.path === '/github-email/verify' && ctx.context.newSession) {
@@ -1147,6 +1160,34 @@ async function refusedAccountOf(
     // The row is worth more than the attribution.
     return null;
   }
+}
+
+/**
+ * Note a token the endpoint just minted for a PERSON (`user-activity.ts`, #3107).
+ *
+ * The client is the one the request authenticated as (`tokenRequestClientId`, which the plugin
+ * has by now held to the credentials, or it would have refused). The person is the `sub` of the
+ * token the plugin just signed: the id token when there is one, else a JWT access token's. No
+ * pairwise secret is configured, so that `sub` is the user's id. A machine grant has nobody
+ * behind it and is skipped, and so is a token whose subject is the client itself. Nothing is
+ * verified here because nothing here is trusted from outside: both tokens are the plugin's own
+ * answer, read before the response leaves.
+ */
+async function recordTokenIssued(
+  ctx: { body?: unknown; headers?: Headers; context: { returned?: unknown } },
+  recordToken: (userId: string, clientId: string) => void,
+): Promise<void> {
+  const body = ctx.body as { grant_type?: unknown } | undefined;
+  if (body?.grant_type === 'client_credentials') return;
+  const claimed = tokenRequestClientId(ctx);
+  if (claimed.conflict || !claimed.clientId) return;
+  let answer = ctx.context.returned;
+  if (answer instanceof Response) answer = answer.ok ? await answer.clone().json().catch(() => null) : null;
+  if (!answer || typeof answer !== 'object' || answer instanceof Error) return;
+  const { id_token: idToken, access_token: accessToken } = answer as { id_token?: unknown; access_token?: unknown };
+  // An opaque access token is no JWT; `assertionSubject` reads nothing from it.
+  const sub = assertionSubject(idToken) ?? assertionSubject(accessToken);
+  if (sub && sub !== claimed.clientId) recordToken(sub, claimed.clientId);
 }
 
 export type Auth = ReturnType<typeof betterAuthFor>;

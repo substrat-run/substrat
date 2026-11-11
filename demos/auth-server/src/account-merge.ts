@@ -1,5 +1,6 @@
 import type { SqlExec } from './introspect.js';
 import { isPlaceholderAddress } from './placeholder-address.js';
+import { foldActivity } from './user-activity.js';
 
 /**
  * Joining a BankID placeholder account to the account the same person holds under a real
@@ -106,6 +107,8 @@ function moveAccount(sql: SqlExec, survivor: AccountFacts, retired: AccountFacts
     survivor.id, survivor.id, nowMs, retired.id,
   );
   sql.exec('UPDATE oauth_client SET user_id = ? WHERE user_id = ?', survivor.id, retired.id);
+  // Before the delete below, which cascades `retired`'s activity away.
+  foldActivity(sql, survivor.id, retired.id);
   // The OAuth tables do not cascade from `user`, and an access token references its refresh token.
   for (const table of ['oauth_access_token', 'oauth_refresh_token', 'oauth_consent', 'session']) {
     sql.exec(`DELETE FROM ${table} WHERE user_id = ?`, retired.id);

@@ -280,6 +280,20 @@ export const ALLOWED = [
     kind: 'protocol',
     reason: 'a static file the inlined app does not have: a 404 for a browser fetching an asset',
   },
+  {
+    area: 'demo: auth-server',
+    path: 'demos/auth-server/src/auth-do.ts',
+    sites: 1,
+    kind: 'protocol',
+    reason: "Auth0's `POST /oauth/token` (#3107): an RFC 6749 §5.2 error body an OAuth client parses",
+  },
+  {
+    area: 'demo: auth-server',
+    path: 'demos/auth-server/src/server.ts',
+    sites: 1,
+    kind: 'protocol',
+    reason: "Auth0's `POST /oauth/token` (#3107): an RFC 6749 §5.2 error body an OAuth client parses",
+  },
 
   // ── pending: not converted yet, and in no open PR ──────────────────────────────────────────
   {
