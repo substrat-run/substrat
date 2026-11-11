@@ -248,7 +248,7 @@ export const ALLOWED = [
   {
     area: 'connectors',
     path: 'connectors/fortnox/src/mock.ts',
-    sites: 16,
+    sites: 19,
     kind: 'protocol',
     reason: "a stand-in for Fortnox's API: it answers Fortnox's own error shape, which the connector parses",
   },

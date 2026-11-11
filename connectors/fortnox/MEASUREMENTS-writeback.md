@@ -1,0 +1,230 @@
+# The supplier-invoice write-back, measured against Fortnox
+
+What a real Fortnox answers to the write-back in [#2827](https://github.com/substrat-run/substrat/pull/2827),
+which until now had only run against `FortnoxMock`. Produced by `pnpm fortnox:measure-writeback`
+(`scripts/measure-writeback.mts`), which refuses any company whose organisation number is not the
+sandbox marker `555555-5555`.
+
+- **Company:** Fortnox sandbox, `CompanyName: "test"`, `OrganizationNumber: "555555-5555"`.
+- **Date:** 2026-11-11. The run this report quotes is `WB-202611111439` (14:39 UTC), invoices
+  **25–33**. Two earlier runs that day left invoices 13–18 (stopped before any measurement) and
+  19–24 (the first measurements, before attest was understood). Invoice 21 was attested and booked
+  by hand while working out the attest step. Invoices 1–12 were in the sandbox before this work
+  started.
+- **Consent:** the credential's token carries
+  `"scope":"bookkeeping companyinformation supplierinvoice supplier"`. It has no `archive` or
+  `connectfile`, and no scope that admits `/supplierinvoicepayments` or `/settings/company`.
+
+Every call below went through the real `FortnoxApi` method named, except those marked **direct**.
+Those are calls #2827 has no method for: creating suppliers and invoices, cancelling, attesting,
+the list filters, and payments. Error bodies are verbatim. A 200 that returns the whole invoice is
+shortened to the fields that matter, and the script prints every body in full.
+
+## The verdict
+
+**#2827's payment block cannot be released in this company, because booking requires attest and an
+attested invoice is locked.** This sandbox refuses `bookkeep` on an invoice nobody has attested
+(`2001109`). Once an invoice is attested, Fortnox lets a `PUT` change only `OCR`, the invoice number
+and the due date. So `DisablePaymentFile` can be neither cleared nor set after attest, and therefore
+never after booking (`2003576`).
+
+The end-to-end run shows what that does to the write-back:
+- An approved invoice is booked, and stays blocked from payment.
+- The board's comment is never written, because the release comes before it.
+- The vertical receives `failed` for an invoice that is in fact booked.
+- Every later answer of the same decision repeats the refused release.
+
+Per the instruction for this measurement, the write-back's behaviour is **unchanged**, and the
+measurements stopped here. The decision is which way to go:
+- Fortnox's attest module (`approvalbookkeep` / `approvalpayment`), or
+- a block that is only ever set and never released by the connector, or
+- no block in companies that attest.
+
+One case is still open. A company that does **not** require attest before booking may behave
+differently. The error names attest, not booking. That could not be measured here, because the
+setting is not reachable with this consent. See [what a person has to check](#what-a-person-has-to-check).
+
+## 1. The payment block (`DisablePaymentFile`)
+
+| Step | Call | Answer |
+|---|---|---|
+| Set on unbooked A (25) | `PUT /supplierinvoices/25` `{"SupplierInvoice":{"DisablePaymentFile":true}}` | `200`, whole invoice back, `"DisablePaymentFile":true` |
+| Read A back, diff of the whole object | `GET /supplierinvoices/25` | **only** `DisablePaymentFile: false → true` changed |
+| Book A (not attested) | `PUT /supplierinvoices/25/bookkeep`, no body | `400 {"ErrorInformation":{"error":1,"message":"Fakturan måste vara attesterad.","code":2001109}}` |
+| Attest A (**direct**) | `PUT /supplierinvoices/25/approvalbookkeep` | `200`, `"Booked":false`, `"DisablePaymentFile":true` |
+| Book A | `PUT /supplierinvoices/25/bookkeep`, no body | `200`, `"Booked":true` |
+| Read A after booking | `GET /supplierinvoices/25` | `"DisablePaymentFile":true`, still set. Changed: `Booked`, `Balance` (number → string), `Vouchers[0]` = `{"Number":6,"Year":1,"Series":"D","ReferenceType":"SUPPLIERINVOICE"}` |
+| Clear on booked A | `PUT /supplierinvoices/25` `{"SupplierInvoice":{"DisablePaymentFile":false}}` | `400 {"ErrorInformation":{"error":1,"message":"Endast OCR, fakturanummer samt förfallodatum kan ändras på en attesterad leverantörsfaktura.","code":2003576}}` |
+| Set on booked A, already set | `PUT … {"DisablePaymentFile":true}` | `200`, accepted, nothing changed |
+| Set on C (27), attested and booked, never blocked | `PUT /supplierinvoices/27` `{"SupplierInvoice":{"DisablePaymentFile":true}}` | `400 … "code":2003576` (same message), `DisablePaymentFile` stays `false` |
+
+- **Is the flag set on an unbooked invoice?** Yes, as long as it is not attested.
+- **Did any other field change?** No. The `PUT` changed exactly the field it named, which is what
+  #2827 assumes.
+- **Is it still set after booking?** Yes.
+- **Can it be cleared on a booked invoice?** **No**, here: refused with `2003576` because the invoice
+  is attested, and in this company it must be attested to be booked.
+- **Can it be set on an already-booked invoice?** **No**, for the same reason. Re-sending the value it
+  already has is accepted.
+
+## 2. `bookkeep`
+
+All sent the way #2827 sends it, `PUT /supplierinvoices/{n}/bookkeep` with **no body**.
+
+| Invoice | Answer |
+|---|---|
+| Any invoice nobody attested (A 25, E 29, F 30, B 26, D 28) | `400 {"ErrorInformation":{"error":1,"message":"Fakturan måste vara attesterad.","code":2001109}}` |
+| B (26), no cost row. Attest first (**direct**) | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfaktura 26 balanserar inte.","code":2000755}}`. It cannot be attested, so it cannot be booked |
+| C (27), already booked | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfakturan är redan bokförd.","code":2000417}}`. **An error, not a no-op.** The invoice is unchanged |
+| D (28), cancelled. Attest first (**direct**) | `400 {"ErrorInformation":{"error":1,"message":"Ange minst två giltiga verifikationsrader.","code":2001111}}`. Then `bookkeep` again: `2001109` |
+| An attested invoice | `200`, the whole invoice with `"Booked":true` |
+
+- **Does `bookkeep` with no body work?** Yes: `200` once the invoice is attested.
+- **An invoice that cannot be booked:** in an attest company the first answer is always `2001109`.
+  The real reason (`2000755` doesn't balance, `2001111` no valid rows) comes from attest.
+- **An already booked invoice:** `2000417`. #2827 reads `Booked` first and never sends it then. If
+  the invoice were booked between that read and the write, the answer is a 4xx, and #2827 would
+  hand the vertical `failed` for an invoice that is booked.
+
+## 3. The comment log
+
+| Call | Answer |
+|---|---|
+| `POST /supplierinvoices/25/commentlog` `{"SupplierInvoiceCommentLog":{"Comment":"Mätning 1: godkänd – åäö"}}` | `201 {"SupplierInvoiceCommentLog":{"Id":"7a35bb2a-318c-4b73-9ddd-0360bf57f7f5","Comment":"Mätning 1: godkänd – åäö","UserName":"Substrat","UserId":2,"CreatedAt":"2026-11-11 15:40:02.629265+01","PersistToInvoice":true}}` |
+| a second comment, then `GET /supplierinvoices/25/commentlog` via `supplierInvoiceComments` | `["Mätning 1: godkänd – åäö","Mätning 2: andra kommentaren"]`: in order, and the Swedish letters intact |
+| the invoice's own `CommentLog` (`GET /supplierinvoices/25`) | the same two entries, each with `Id`, `UserName`, `UserId`, `CreatedAt`, `PersistToInvoice` |
+| 1000, 1001, 2000, 4000, 8000, 16000, 65536 characters | every one `201`, and read back unchanged, length for length |
+| a comment on cancelled D (28), and on unbooked B (26) | `201` both |
+| a comment on booked, attested A (25) | `201`. The log is not locked by attest |
+
+- **Is it there, in order?** Yes.
+- **Max length?** Not found. 65,536 characters were accepted and stored whole, so the limit is not
+  1000.
+
+## 4. Scopes
+
+A client-credentials mint **can** be narrowed. `grant_type=client_credentials&scope=supplierinvoice`
+answers `200 {"expires_in":3600,"token_type":"bearer","scope":"supplierinvoice"}`. A scope the
+consent lacks is refused:
+`400 {"error":"invalid_scope","error_description":"Requested scope is not consented for this tenant"}`.
+With that `supplierinvoice`-only token, on E (29):
+
+| Call | Answer |
+|---|---|
+| `supplierInvoice` (`GET /supplierinvoices/29`) | `200` |
+| `setSupplierInvoicePaymentBlock(true)` | `200` |
+| `bookSupplierInvoice`, before attest | `400 … "code":2001109` (attest, not scope) |
+| `approvalbookkeep` (**direct**, same token) | `200` |
+| `bookSupplierInvoice` | `200`, booked |
+| `setSupplierInvoicePaymentBlock(false)` | `400 … "code":2003576` (attest, not scope) |
+| `addSupplierInvoiceComment`, `supplierInvoiceComments` | `201`, `200` |
+| `companyInformation` | `400 {"ErrorInformation":{"error":1,"message":"Har inte behörighet för scope.","code":2000663}}` |
+
+- **Do `bookkeep` and `commentlog` work with `supplierinvoice` alone?** Yes, and so do the block
+  and attest.
+- **But the write-back as written needs `companyinformation` too.** The sweep reads
+  `companyinformation` before it calls `writeback.read`, to tell the vertical which company it is
+  answering for. With `supplierinvoice` alone that read is refused, and no write happens.
+
+## 5. What `GET /supplierinvoices` lists
+
+- **33 entries**, `{"@TotalResources":33,"@TotalPages":1,"@CurrentPage":1}`, every invoice in the
+  sandbox, cancelled ones included. Each entry carries `@url, Balance, Booked, Cancel, CostCenter,
+  Credit, Currency, CurrencyRate, CurrencyUnit, DueDate, ExternalInvoiceNumber,
+  ExternalInvoiceSeries, GivenNumber, InvoiceDate, InvoiceNumber, Project, SupplierNumber,
+  SupplierName, Total, AuthorizerName, Vouchers, FinalPayDate`. The list says `Cancel`, where the
+  detail says `Cancelled`.
+- **Can an invoice in the list have no cost account?** **Yes.** B (26), created with
+  `"SupplierInvoiceRows":[]`, was accepted (`201`, with only Fortnox's own `TOT` 2440 and `VAT` 2641
+  rows). It is in the list, and in `?filter=unbooked`. It is also what the landing receives.
+- `?filter=unbooked`: 22 entries, B and the unattested ones among them. `?filter=cancelled`:
+  `["10","16","22","28"]`. **`?filter=authorizepending`: `[]`**, although invoices 26, 30, 31, 32 and
+  33 were then unbooked and not attested. So the filter does not mean "waiting for attest" in the
+  sense `2001109` does.
+- `supplierInvoicesModifiedSince("2026-11-10 14:40")`: invoices 13–33, every one changed that day.
+- **Invoices in interpretation (tolkning), and received e-invoices: unanswered.** The sandbox has
+  none of either, so the list cannot show whether they would appear.
+
+## 6. Can an unbooked invoice be paid?
+
+Not answered by the API. `POST /supplierinvoicepayments`
+`{"SupplierInvoicePayment":{"InvoiceNumber":32,"Amount":125,"PaymentDate":"2026-11-11"}}` (**direct**)
+answered `400 {"ErrorInformation":{"error":1,"message":"Har inte behörighet för scope.","code":2000663}}`
+for unbooked H (32), and the same for unbooked, blocked I (33). The consent holds no scope that admits
+payments. Registering a payment would in any case not be the payment file or bank-integration run
+the question is about. That half is in [what a person has to check](#what-a-person-has-to-check).
+
+## 7. The connector's write-back, end to end
+
+`syncFortnoxSupplierInvoices` on a throwaway `SqliteScopeHost`, the way `test/sweep.test.ts` drives
+it, with a hand-written `{ hold, decisions }` answer. Nothing was bound in any real install. Each
+pass also landed the day's invoices through the binding's operation (`"landed":21` on the first).
+Fortnox's real details parsed without a failure.
+
+**G (31), attested before the board decides.** One answer:
+`{ hold: [31], decisions: [{ book, release, comment }] }`.
+
+| Pass | Writes, in order | Receipt | Pass result |
+|---|---|---|---|
+| 1 | `PUT /supplierinvoices/31` (hold) → `400 … 2003576`; `PUT /supplierinvoices/31/bookkeep` → `200`; `POST /supplierinvoices/31/commentlog` → `201` | `done` | threw `hold of supplier invoice 31: … attesterad leverantörsfaktura.` |
+| 2, the same decision again | none | `done` | `{"landed":21,"held":0,"written":1,"pending":false}` |
+
+The release was skipped, correctly: no hold of the binding's own was ever set. G ends booked, not
+blocked, with the comment. **An attested invoice cannot be held at all**, and every pass that lists
+it in `hold` fails the scope's row.
+
+**F (30), not attested.** Pass 1 answers `{ hold: [30], decisions: [30] }`.
+
+| Pass | Writes, in order | Receipt |
+|---|---|---|
+| 1 | `PUT /supplierinvoices/30` (hold) → `200`; `PUT /supplierinvoices/30/bookkeep` → `400 {"ErrorInformation":{"error":1,"message":"Fakturan måste vara attesterad.","code":2001109}}` | `failed`, `"Fortnox PUT /supplierinvoices/30/bookkeep failed: Fakturan måste vara attesterad."` |
+| attested by hand (**direct**) | `PUT /supplierinvoices/30/approvalbookkeep` → `200` | |
+| 2, the vertical answers the decision again | `PUT /supplierinvoices/30/bookkeep` → `200`; `PUT /supplierinvoices/30` (release) → `400 {"ErrorInformation":{"error":1,"message":"Endast OCR, fakturanummer samt förfallodatum kan ändras på en attesterad leverantörsfaktura.","code":2003576}}` | `failed`, the same message |
+| 3, the same decision again | `PUT /supplierinvoices/30` (release) → `400 … 2003576` | `failed` |
+
+F ends `"Booked":true`, `"DisablePaymentFile":true`, `CommentLog: []`.
+
+- **Order: hold, then book, then release, then comment?** The order of attempts is confirmed:
+  hold, book, release, comment. In this company the sequence never completes, because the release
+  is refused and the comment comes after it.
+- **Does a second pass write nothing?** For G, yes: zero writes. For F, no. Every pass that answers
+  the decision again repeats the one refused release. Booking is not repeated.
+- **What #2827 got right here:**
+  - A refusal in Fortnox's words became a `failed` receipt at once.
+  - An invoice that could not be booked stayed held.
+  - Nothing was booked twice.
+  - The block was never lifted for an invoice the binding did not block.
+
+## Where `FortnoxMock` disagreed with Fortnox
+
+| What the mock did | What Fortnox does | Change |
+|---|---|---|
+| `bookkeep` books any invoice that has no `cannotBook` | in a company that requires attest, `400 … 2001109` until `approvalbookkeep` | **Mock fixed:** `requireAttest` (off by default) and `attest(n)`, and `PUT …/approvalbookkeep` is served. **Connector:** #2827 never attests, so in such a company a decision books only after the company's own attest routine has run. A design decision, not made here |
+| a `PUT` changes any field, on any invoice | on an attested invoice only `OCR`, `InvoiceNumber`, `DueDate` may change. Anything else is `400 … 2003576`, and re-sending a current value is accepted | **Mock fixed.** **Connector:** the release after booking cannot work in such a company, and nor can a hold of an attested invoice. Behaviour unchanged, by instruction. Two tests now pin what it does there |
+| `bookkeep` on a booked invoice answers `200` | `400 {"ErrorInformation":{"error":1,"message":"Leverantörsfakturan är redan bokförd.","code":2000417}}` | **Mock fixed.** **Connector:** worth treating `2000417` as done rather than `failed`, for the read-then-book race. Not changed here |
+| errors carry only `message` | `{"error":1,"message":…,"code":…}`: a numeric code a caller could branch on instead of Swedish text | **Mock:** the new answers carry the code |
+| a comment-log entry is `{ Comment }` | `{ Id, Comment, UserName, UserId, CreatedAt, PersistToInvoice }`, in the `POST` answer and in `GET …/commentlog` | **Mock fixed.** No connector change: it reads `Comment` only |
+| the test fixture's booked invoice carries `VoucherNumber: 44` | a booked invoice keeps `VoucherNumber`, `VoucherSeries` and `VoucherYear` `null`, and its voucher is in `Vouchers: [{"Number":6,"Year":1,"Series":"D","ReferenceType":"SUPPLIERINVOICE"}]` | **Connector, the landing, not the write-back:** `voucher` is `null` on every booked invoice it lands. It should read `Vouchers[]`. Not changed here. The landing's tests assert the fixture's shape, so the fixture moves with that fix |
+
+The mock's default stays a company that does **not** require attest. That case was not measured, not
+contradicted, so the existing write-back tests keep describing it until someone measures it.
+
+## What a person has to check
+
+In the sandbox's web UI (company "test", 555555-5555):
+
+1. **Does an invoice blocked over the API disappear from the payment view** (Leverantörsbetalningar,
+   betalvyn)?
+   - Blocked over the API: **33** (unbooked), **25**, **29**, **30** (booked).
+   - Not blocked, for contrast: **32** (unbooked), **27**, **31** (booked).
+2. **Can an unbooked supplier invoice be paid at all?**
+   - Try to put **32** (unbooked, not blocked, not attested) in a payment proposal or a payment file.
+   - Try to register a manual payment on it.
+   - Try the same for **33** (unbooked, blocked).
+3. **Is "attest before booking" a company setting, and what happens without it?**
+   - Find the setting that makes `bookkeep` answer `2001109`.
+   - Turn it off, and run `pnpm fortnox:measure-writeback` again. That run answers the one question
+     still open: can a booked invoice that nobody attested have its block cleared?
+   - Turn the setting back on afterwards.
+4. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it. A
+   consent that does would let the script register a payment on an unbooked invoice.
