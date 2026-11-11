@@ -474,6 +474,14 @@ describe('the Auth0 Management API doors (#3107)', () => {
   });
 });
 
+describe('the SCIM door (#2941)', () => {
+  it('forwards every /scim/v2 method as it came', async () => {
+    const res = await app.request('/scim/v2/Users/u1?dryRun=true', { method: 'DELETE' }, env);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(auth.forwarded).toEqual(['/scim/v2/Users/u1?dryRun=true']);
+  });
+});
+
 describe('issuer addressing (router assertion → DO name)', () => {
   it('routes an asserted request to the SCOPE-NAMED issuer', async () => {
     const scope = ulid();

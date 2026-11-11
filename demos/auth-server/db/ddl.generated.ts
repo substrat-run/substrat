@@ -317,4 +317,17 @@ export const SCHEMA_STATEMENTS: string[] = [
     PRIMARY KEY (user_id, client_id))`,
   // A client's rows, for the cascade when the client is deleted.
   `CREATE INDEX IF NOT EXISTS user_client_activity_client_idx ON user_client_activity (client_id)`,
+  // A person a SCIM client provisioned (#2941, `src/scim.ts`): what SCIM names them by and which
+  // client may write to them. An account with no row here was not provisioned, and SCIM can read
+  // it but never change it. `user_name` is stored lowercased (RFC 7643 `caseExact: false`).
+  // No personal number: that is the `bankid` account row's, as it is for a BankID sign-in.
+  `CREATE TABLE IF NOT EXISTS scim_user (
+    user_id TEXT PRIMARY KEY NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    user_name TEXT NOT NULL UNIQUE,
+    external_id TEXT,
+    given_name TEXT,
+    family_name TEXT,
+    client_id TEXT NOT NULL)`,
+  // `filter=externalId eq "…"`, the lookup a provisioning client makes before it creates.
+  `CREATE INDEX IF NOT EXISTS scim_user_external_id_idx ON scim_user (external_id)`,
 ];

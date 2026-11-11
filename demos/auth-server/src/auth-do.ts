@@ -55,6 +55,7 @@ import {
   managementTokenVerifier,
   tokenAuthMethodOf,
 } from './management-api.js';
+import { ensureScimResource, scimApp, scimTokenVerifier } from './scim.js';
 import {
   PreviewClientRefusal,
   claimsParent,
@@ -725,6 +726,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     const machineScopes = () => machineScopesOf(this.effectiveCfg()[MACHINE_SCOPES]).scopes;
     if (url.pathname === '/__oauth-token' || url.pathname === '/api/auth/oauth2/token') {
       ensureManagementResource(this.ctx.storage.sql, issuer(), machineScopes());
+      ensureScimResource(this.ctx.storage.sql, issuer(), machineScopes());
     }
     // Auth0's `POST /oauth/token`: the worker sends it here, and it becomes an ordinary request
     // to this issuer's own endpoint, token exchange included.
@@ -752,6 +754,19 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           issuer(),
         ),
         machineScopes,
+      }).fetch(request);
+    }
+    // The SCIM server (#2941, `scim.ts`): provisioning people ahead of their first sign-in.
+    if (url.pathname === '/scim/v2' || url.pathname.startsWith('/scim/v2/')) {
+      return scimApp({
+        sql: this.ctx.storage.sql,
+        verify: scimTokenVerifier(
+          async () => (await auth.handler(new Request(`${url.origin}/api/auth/jwks`))).json() as Promise<JSONWebKeySet>,
+          issuer(),
+        ),
+        machineScopes,
+        issuer: issuer(),
+        transaction: (fn) => this.ctx.storage.transactionSync(fn),
       }).fetch(request);
     }
     if (url.pathname === '/__client-options') {

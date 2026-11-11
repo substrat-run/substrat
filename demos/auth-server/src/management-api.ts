@@ -1,7 +1,8 @@
 import { Hono, type Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { createLocalJWKSet, jwtVerify, type JSONWebKeySet, type JWTPayload } from 'jose';
+import type { JSONWebKeySet, JWTPayload } from 'jose';
 import type { SqlExec } from './introspect.js';
+import { ensureMachineResource, machineCaller, machineTokenVerifier, type MachineCallerDeps } from './machine-caller.js';
 import { isPlaceholderAddress } from './placeholder-address.js';
 import { readActivity, readClientActivity } from './user-activity.js';
 
@@ -51,16 +52,10 @@ const RESOURCE_MARKER = JSON.stringify({ substrat: { managementApi: true } });
  * platform marker (`resources.ts`), so a platform delivery never claims or removes it.
  */
 export function ensureManagementResource(sql: SqlExec, issuer: string, machineScopes: readonly string[]): void {
-  if (!MANAGEMENT_API_SCOPES.some((s) => machineScopes.includes(s))) return;
-  const identifier = managementAudience(issuer);
-  sql.exec(
-    `INSERT INTO oauth_resource (id, identifier, name, metadata, created_at, updated_at)
-     SELECT ?, ?, 'Auth0 Management API', ?, cast(unixepoch('subsecond') * 1000 as integer), cast(unixepoch('subsecond') * 1000 as integer)
-     WHERE NOT EXISTS (SELECT 1 FROM oauth_resource WHERE identifier = ?)`,
-    crypto.randomUUID(),
-    identifier,
-    RESOURCE_MARKER,
-    identifier,
+  ensureMachineResource(
+    sql,
+    { identifier: managementAudience(issuer), name: 'Auth0 Management API', marker: RESOURCE_MARKER, scopes: MANAGEMENT_API_SCOPES },
+    machineScopes,
   );
 }
 
@@ -155,26 +150,10 @@ export function managementTokenVerifier(
   jwks: () => Promise<JSONWebKeySet>,
   issuer: string,
 ): (token: string) => Promise<JWTPayload | null> {
-  return async (token) => {
-    try {
-      const { payload } = await jwtVerify(token, createLocalJWKSet(await jwks()), {
-        issuer,
-        audience: managementAudience(issuer),
-        typ: 'at+jwt',
-      });
-      return payload;
-    } catch {
-      return null;
-    }
-  };
+  return machineTokenVerifier(jwks, issuer, managementAudience(issuer));
 }
 
-export interface ManagementApiDeps {
-  sql: SqlExec;
-  verify: (token: string) => Promise<JWTPayload | null>;
-  /** The operator's `MACHINE_SCOPES` ceiling, read per request like everywhere else. */
-  machineScopes: () => readonly string[];
-}
+export type ManagementApiDeps = MachineCallerDeps;
 
 type Env = { Variables: { scopes: readonly string[] } };
 
@@ -191,49 +170,6 @@ const REASON: Partial<Record<number, string>> = {
   500: 'Internal Server Error',
   501: 'Not Implemented',
 };
-
-/** A client's row as the bearer check reads it. */
-interface CallerRow {
-  disabled: number | null;
-  grant_types: string | null;
-  client_credentials_scopes: string | null;
-}
-
-function jsonList(value: string | null): string[] {
-  try {
-    const parsed: unknown = JSON.parse(value ?? '[]');
-    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * The scopes a bearer may use right now: what its token says, narrowed to what its client still
- * holds and the ceiling still allows. Refused, with Auth0's 401 message, when the token is not
- * a live machine client's.
- */
-async function callerScopes(deps: ManagementApiDeps, token: string): Promise<{ scopes: readonly string[] } | { refused: string }> {
-  const claims = await deps.verify(token);
-  if (!claims) return { refused: 'Invalid token' };
-  const clientId = typeof claims.azp === 'string' ? claims.azp : null;
-  // A person's token names the person; a machine token names its own client. Auth0's user-scoped
-  // Management API tokens (`read:current_user`) are not served here.
-  if (!clientId || claims.sub !== clientId) return { refused: 'Invalid token: only a client_credentials token is accepted' };
-  const row = deps.sql
-    .exec('SELECT disabled, grant_types, client_credentials_scopes FROM oauth_client WHERE client_id = ?', clientId)
-    .toArray()[0] as unknown as CallerRow | undefined;
-  if (!row || row.disabled) return { refused: 'Invalid token: the client is disabled or no longer exists' };
-  // The console's own definition of a machine client (`isMachineGrant` in `admin-api.ts`).
-  const grants = jsonList(row.grant_types);
-  if (!grants.includes('client_credentials') || grants.includes('authorization_code')) {
-    return { refused: 'Invalid token: the client is not a machine client' };
-  }
-  const held = jsonList(row.client_credentials_scopes);
-  const ceiling = deps.machineScopes();
-  const asked = typeof claims.scope === 'string' ? claims.scope.split(' ').filter(Boolean) : [];
-  return { scopes: asked.filter((s) => held.includes(s) && ceiling.includes(s)) };
-}
 
 /** Refuse unless the caller holds one of `scopes`, in Auth0's words. */
 function requireScope(c: Context<Env>, ...scopes: ManagementScope[]): Response | undefined {
@@ -384,7 +320,7 @@ export function createManagementApi(deps: ManagementApiDeps): Hono<Env> {
     const header = c.req.header('authorization') ?? '';
     const match = /^Bearer\s+(\S+)$/i.exec(header);
     if (!match?.[1]) return auth0Error(c, 401, 'Missing authentication');
-    const caller = await callerScopes(deps, match[1]);
+    const caller = await machineCaller(deps, match[1]);
     if ('refused' in caller) return auth0Error(c, 401, caller.refused);
     c.set('scopes', caller.scopes);
     await next();
