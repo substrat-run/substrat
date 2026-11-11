@@ -13,7 +13,8 @@
  *
  * Exit 0: written, or current. 1: under `--check`, the journal is behind the model
  * or the module has drifted from the journal. 2: the model will not load, has no
- * entities, or the plan is refused — a change that needs a decision, not a diff.
+ * entities, declares a field no column can hold, or the plan is refused — a change
+ * that needs a decision, not a diff.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -71,8 +72,15 @@ if (existsSync(journalPath)) {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const plan = planMigration(entities as any, journal);
+let plan: ReturnType<typeof planMigration>;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plan = planMigration(entities as any, journal);
+} catch (e) {
+  // A field the SQL emitter cannot map is the model's to change. Thrown, it exited 1, which the
+  // studio reads as a stale journal or a workspace that could not run this, and asks no repair.
+  cannot(`spec/model.ts declares a table no migration can create — ${e instanceof Error ? e.message : String(e)}`);
+}
 if (plan.kind === 'refused') {
   cannot(`the change to spec/model.ts is refused — this is a decision, not a diff:\n${plan.reasons.map((r) => `  • ${r}`).join('\n')}`);
 }

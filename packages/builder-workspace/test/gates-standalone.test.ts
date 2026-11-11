@@ -243,6 +243,33 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.dispose();
 	});
 
+	it('invite-roles refuses a role the worker offers that no inviting role covers, then passes', async () => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'crm/invite-member': { input } })");
+		await w.writeFile(`${PROJECT}/src/worker.ts`, "workerDoor({ invites: { roles: ['rep', 'admin'], send } })");
+		const permissions = (admin: string) =>
+			[
+				"## 2. Roles — as defined by this vertical's provisioning code",
+				'| Role | Permissions |',
+				'| --- | --- |',
+				`| \`admin\` | ${admin} |`,
+				'| `rep` | `deal:create`, `deal:read` |',
+				'## 6. Operations — which key each checks',
+				'| Operation | Key | Narrowed by | Module |',
+				'| --- | --- | --- | --- |',
+				'| `crm/invite-member` | `member:invite` | the scope | `crm` |',
+			].join('\n');
+
+		await w.writeFile(`${PROJECT}/PERMISSIONS.md`, permissions('`deal:read`, `member:invite`'));
+		const refused = await runGate(w, gate('invite-roles'), PROJECT);
+		expect(refused.status).toBe('failed');
+		expect(refused.output).toContain('rep (admin lacks deal:create)');
+
+		await w.writeFile(`${PROJECT}/PERMISSIONS.md`, permissions('`deal:create`, `deal:read`, `member:invite`'));
+		expect((await runGate(w, gate('invite-roles'), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
+
 	it('app-writes refuses a write no screen offers, and passes once the app, the host or an api-only mark names it', async () => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');

@@ -60,6 +60,7 @@ export type GateName =
 	| 'hosted-assets'
 	| 'hosted-join'
 	| 'member-invites'
+	| 'invite-roles'
 	| 'dev-join'
 	| 'dev-mail'
 	| 'migration-replay';
@@ -522,6 +523,48 @@ async function memberInvitesUnwired(ws: Workspace, projectDir: string): Promise<
 	return null;
 }
 
+/** The rows of one `## <n>. <heading>` table in PERMISSIONS.md, each cell's backticked names. */
+function permissionRows(md: string, heading: string): string[][][] {
+	const section = new RegExp(`^## \\d+\\. ${heading}\\b.*$([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm').exec(md)?.[1] ?? '';
+	return section
+		.split('\n')
+		.filter((line) => line.startsWith('|'))
+		.map((line) => line.split('|').slice(1, -1).map((cell) => [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1]!)));
+}
+
+/**
+ * A person may invite only at a role whose every key they hold, so a role the worker offers that
+ * no inviting role covers is one nobody can ever invite at: the door answers 403, and every other
+ * gate passes. A Haiku CRM build gave its admin the invite key and not the reps' `deal:create`
+ * (1 of 4, with the rule in the instructions). Read off PERMISSIONS.md, which the turn renders.
+ */
+async function inviteRolesUncovered(ws: Workspace, projectDir: string): Promise<string | null> {
+	const declared = withoutComments(`${await readTree(ws, `${projectDir}/spec`)}\n${await readTree(ws, `${projectDir}/src`)}`);
+	const op = /['"]([a-z][a-z0-9-]*\/invite-member)['"]\s*:/.exec(declared)?.[1];
+	if (!op) return null;
+	const worker = withoutComments(await ws.readFile(`${projectDir}/src/worker.ts`).catch(() => ''));
+	const offered = /\binvites\s*:\s*\{[\s\S]*?\broles\s*:\s*\[([^\]]*)\]/.exec(worker)?.[1];
+	const md = await ws.readFile(`${projectDir}/PERMISSIONS.md`).catch(() => '');
+	if (!offered || !md) return null;
+	const roles = new Map(
+		permissionRows(md, 'Roles').flatMap(([role, keys]) => (role?.length === 1 ? [[role[0]!, new Set(keys)] as const] : [])),
+	);
+	const key = permissionRows(md, 'Operations').find(([ops]) => ops?.[0] === op)?.[1]?.[0];
+	const inviters = [...roles].filter(([, keys]) => key && keys.has(key));
+	// No role holding it may mean an owner grant holds it, which the roles table does not show.
+	if (!key || inviters.length === 0) return null;
+	const gaps = [...offered.matchAll(/['"]([^'"]+)['"]/g)].flatMap(([, role]) => {
+		const wanted = roles.get(role!);
+		if (!wanted) return [];
+		const missing = inviters
+			.map(([inviter, held]) => ({ inviter, keys: [...wanted].filter((k) => !held.has(k)) }))
+			.sort((a, b) => a.keys.length - b.keys.length)[0]!;
+		return missing.keys.length ? [`${role} (${missing.inviter} lacks ${missing.keys.join(', ')})`] : [];
+	});
+	if (gaps.length === 0) return null;
+	return `src/worker.ts offers invitations at roles no role holding ${key} (the key ${op} checks: ${inviters.map(([r]) => r).join(', ')}) covers: ${gaps.join('; ')}. A person may invite only at a role whose every key they hold, so each of these invitations is refused with 403. Give the inviting role those keys in ROLES, if the answers let it do what that role does; otherwise stop offering the role in the invites' roles.`;
+}
+
 /**
  * The dev server joins a person when they sign in, as the worker's door does hosted. A build that
  * never runs the join there passes every gate, and in the browser every create is refused with
@@ -787,6 +830,13 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			refuse: (ws) => memberInvitesUnwired(ws, projectDir),
 		},
 		{
+			name: 'invite-roles',
+			cmd: 'true',
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/worker.ts`),
+			note: 'no src/worker.ts yet',
+			refuse: (ws) => inviteRolesUncovered(ws, projectDir),
+		},
+		{
 			name: 'migration-replay',
 			cmd: '',
 			appliesWhen: async () => false,
@@ -807,7 +857,8 @@ function trimOutput(stdout: string, stderr: string): string {
 /**
  * What the model gate would say about `spec/model.ts` right now, as one answer the
  * generator's `check_model` tool hands the model mid-turn: the same compile the gate
- * runs and the same loader (`--check`, so nothing is written), every problem at once.
+ * runs, the same loader and the same migrations emitter (`--check`, so nothing is
+ * written), every problem at once.
  * The gate still decides at the end of the turn; this only lets the model meet it
  * green instead of learning its rules from a repair turn.
  */
@@ -832,7 +883,13 @@ export async function checkModel(ws: Workspace, projectDir: string): Promise<str
 		problems.push(`The loader could not run here (${load.status}) — not a problem in your file:\n${load.output}`);
 	}
 	if (problems.length === 0) {
-		return 'ok — spec/model.ts compiles and loads, so the model gate will pass this file.';
+		// The tables come from the same file, and once this phase ends nothing may change it: a field
+		// no column can hold, found when the code is written, is a build that cannot go green.
+		const migrations = await emitProjectMigrations(ws, projectDir, { check: true });
+		if (migrations.status === 'failed') problems.push(`The migrations emitter refused it:\n${migrations.output}`);
+	}
+	if (problems.length === 0) {
+		return 'ok — spec/model.ts compiles, loads and emits its tables, so the model gate will pass this file.';
 	}
 	return `NOT OK — fix every problem below, then call check_model again:\n\n${problems.join('\n\n')}`;
 }
