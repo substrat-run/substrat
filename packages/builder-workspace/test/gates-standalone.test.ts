@@ -27,6 +27,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { checkModel, runGate, runGates, standaloneGates, type GateName, type GateSpec } from '../src/gates.js';
 import { LocalWorkspace } from '../src/local.js';
+import { MIGRATIONS_EMITTER_PATH } from '../src/migrations.js';
 import type { ExecOptions, ExecResult, Workspace } from '../src/workspace.js';
 
 const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
@@ -243,6 +244,33 @@ describe('standaloneGates — when each gate applies', () => {
 		await w.dispose();
 	});
 
+	it('invite-roles refuses a role the worker offers that no inviting role covers, then passes', async () => {
+		const w = await fixtureWorkspace();
+		await w.writeFile(`${PROJECT}/spec/model.ts`, "defineOperations({ 'crm/invite-member': { input } })");
+		await w.writeFile(`${PROJECT}/src/worker.ts`, "workerDoor({ invites: { roles: ['rep', 'admin'], send } })");
+		const permissions = (admin: string) =>
+			[
+				"## 2. Roles — as defined by this vertical's provisioning code",
+				'| Role | Permissions |',
+				'| --- | --- |',
+				`| \`admin\` | ${admin} |`,
+				'| `rep` | `deal:create`, `deal:read` |',
+				'## 6. Operations — which key each checks',
+				'| Operation | Key | Narrowed by | Module |',
+				'| --- | --- | --- | --- |',
+				'| `crm/invite-member` | `member:invite` | the scope | `crm` |',
+			].join('\n');
+
+		await w.writeFile(`${PROJECT}/PERMISSIONS.md`, permissions('`deal:read`, `member:invite`'));
+		const refused = await runGate(w, gate('invite-roles'), PROJECT);
+		expect(refused.status).toBe('failed');
+		expect(refused.output).toContain('rep (admin lacks deal:create)');
+
+		await w.writeFile(`${PROJECT}/PERMISSIONS.md`, permissions('`deal:create`, `deal:read`, `member:invite`'));
+		expect((await runGate(w, gate('invite-roles'), PROJECT)).status).toBe('passed');
+		await w.dispose();
+	});
+
 	it('app-writes refuses a write no screen offers, and passes once the app, the host or an api-only mark names it', async () => {
 		const w = await fixtureWorkspace();
 		await w.writeFile(`${PROJECT}/app/package.json`, '{}');
@@ -352,12 +380,15 @@ async function fixtureProject(): Promise<string> {
 }
 
 describe('checkModel — a checker that cannot run is not a declaration error', () => {
-	it('answers CANNOT CHECK, not NOT OK, when only the loader is missing', async () => {
-		// A compile that passes and a toolchain without the emitter: calling again
-		// changes nothing, so the verdict must not read as "fix it and retry".
+	// A compile that passes and a toolchain without the tool: calling again changes
+	// nothing, so the verdict must not read as "fix it and retry", nor as "ok".
+	it.each([
+		['the loader', () => false],
+		['the migrations emitter', (path: string) => path !== MIGRATIONS_EMITTER_PATH],
+	])('answers CANNOT CHECK, not NOT OK or ok, when %s is missing', async (_, hasTool) => {
 		const ws = {
 			exists: async () => true,
-			hasTool: async () => false,
+			hasTool: async (path: string) => hasTool(path),
 			exec: async (): Promise<ExecResult> => ({ stdout: '', stderr: '', exitCode: 0 }),
 		} as unknown as Workspace;
 		expect(await checkModel(ws, 'proj')).toMatch(/^CANNOT CHECK — .*\(unavailable\)/);
