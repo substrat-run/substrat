@@ -41,6 +41,14 @@
       "types": "./dist/entity-table-model.d.ts",
       "default": "./dist/entity-table-model.js"
     },
+    "./kanban": {
+      "types": "./dist/kanban.d.ts",
+      "default": "./dist/kanban.js"
+    },
+    "./kanban-model": {
+      "types": "./dist/kanban-model.d.ts",
+      "default": "./dist/kanban-model.js"
+    },
     "./session": {
       "types": "./dist/session.d.ts",
       "default": "./dist/session.js"

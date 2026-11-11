@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 
-const ELEMENTS = ['assistant', 'avatar', 'entity-table', 'user-menu'];
+const ELEMENTS = ['assistant', 'avatar', 'entity-table', 'kanban', 'user-menu'];
 
 /** Which elements each subpath ships. `./user-menu` draws a `<sub-avatar>`, so it carries one. */
 const CARRIES: Record<string, string[]> = {
@@ -18,6 +18,8 @@ const CARRIES: Record<string, string[]> = {
   './user-menu': ['avatar', 'user-menu'],
   './entity-table': ['entity-table'],
   './entity-table-model': [],
+  './kanban': ['kanban'],
+  './kanban-model': [],
   './session': [],
   './controls': [],
 };
@@ -69,7 +71,7 @@ describe('subpaths', () => {
     expect(ELEMENTS.filter((element) => reached.has(element))).toEqual([...elements].sort());
   });
 
-  it.each(['./assistant-model', './entity-table-model', './session'])('%s imports nothing, so a helper costs no element', (path) => {
+  it.each(['./assistant-model', './entity-table-model', './kanban-model', './session'])('%s imports nothing, so a helper costs no element', (path) => {
     expect([...reach(path.slice(2))]).toEqual([path.slice(2)]);
   });
 

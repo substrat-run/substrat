@@ -1,7 +1,7 @@
 # @substrat-run/elements
 
 Web components for a vertical's screens, built so a project gets a table that is good and
-looks like *its* theme without writing either. Four components so far, dogfooded in
+looks like *its* theme without writing either. Five components so far, dogfooded in
 `demos/todo/app` (`#/table`, and its header). Still `0.x`: a minor release may change an
 element's attributes or slots.
 
@@ -18,6 +18,16 @@ element's attributes or slots.
   action finds the view stale (409/404), follows `next` on "Load more", and drops `priority` 3,
   then 2 columns while the table is wider than its frame. Cells are typed (`kind`), or drawn by
   `render` (Lit) or `mount` (a light-DOM element, for React or Vue).
+- **`<sub-kanban>`** — cards in columns, moved between states by drag or keyboard. The card
+  lifts and tilts as it is picked up, a gap opens where it will land and the others slide
+  aside; columns the lifecycle refuses (`canDrop`) dim and say so; WIP limits warn, or refuse
+  with `strict`. Space / arrows / Space moves a card by keyboard, every step announced, and
+  `moveTo` makes the same move from a menu. `move` persists it optimistically and rolls back
+  on failure. Cards are drawn by `renderCard` (Lit) or `mount` (React, Vue).
+  Not yet, each seen on one or two of Trello, GitHub Projects, Linear, Jira and monday.com:
+  dragging several selected cards at once (GitHub, Jira), swimlanes (GitHub, Linear, Jira),
+  collapsing a column (Trello, Linear, Jira), reordering columns by drag (Trello), hiding
+  empty columns (Linear), and virtualising a very long column — every card is drawn today.
 - **`<sub-user-menu>`** — the account menu: who is signed in, your own items (slotted
   `<wa-dropdown-item>`s), then "Switch user" and "Sign out", which it owns because it knows
   the auth endpoints (`/api/auth/*`). Every built-in part is a slot with a default, and
@@ -53,8 +63,8 @@ import '@substrat-run/elements/themes/ledger.css';
 ```
 
 The package root registers every element, and a bundler cannot remove them. An app that uses only
-some imports those by subpath: `@substrat-run/elements/assistant`, `/avatar`, `/user-menu` or
-`/entity-table`. `/assistant-model`, `/entity-table-model` and `/session` carry the helpers with
+some imports those by subpath: `@substrat-run/elements/assistant`, `/avatar`, `/user-menu`,
+`/entity-table` or `/kanban`. `/assistant-model`, `/entity-table-model`, `/kanban-model` and `/session` carry the helpers with
 no element.
 
 ## How it is built

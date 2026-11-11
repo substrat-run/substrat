@@ -1,7 +1,7 @@
 # @substrat-run/elements
 
-Web components for a vertical's screens: a table of one paged read, an account menu, an avatar
-and a conversation with an assistant. They are [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s
+Web components for a vertical's screens: a table of one paged read, an account menu, an avatar,
+a conversation with an assistant, and a kanban board. They are [Lit](https://lit.dev) elements on [Web Awesome](https://webawesome.com)'s
 free core, styled only through its `--wa-*` tokens, so they follow whatever theme the page sets.
 Web components work in React, Vue, Svelte or a plain HTML page, so a vertical's app does not
 have to be written in any one framework to use them.
@@ -22,6 +22,8 @@ This page is the reference. [Building screens](/elements/) is where to start, wi
 [Web Awesome's controls](/elements/web-awesome).
 
 ## `<sub-user-menu>`
+
+<ElementDemo name="user-menu" />
 
 The account menu in a vertical's header. It shows who is signed in, opens a menu with your own
 items, then "Switch user" and "Sign out".
@@ -48,11 +50,15 @@ items, then "Switch user" and "Sign out".
 
 ## `<sub-avatar>`
 
+<ElementDemo name="avatar" />
+
 The same identity without the menu: the picture, or initials (by grapheme, so `María José
 García` is MG) on a colour that follows the principal. `show="name"` or `show="email"` puts the
 text beside it. It reads the same session as the menu, or draws the `session` property.
 
 ## `<sub-entity-table>`
+
+<ElementDemo name="entity-table" />
 
 The rows of one paged read: its views, its sort, its filters and search, a selection, and the
 actions a row allows. Sorting, filtering and paging all happen on the server. The table owns a
@@ -187,7 +193,55 @@ table.actions = [{ id: 'archive', label: 'Archive', views: ['active'], bulk: tru
 
 `EntityTableModel` is everything here except the drawing, with no DOM in it.
 
+## `<sub-kanban>`
+
+<ElementDemo name="kanban" />
+
+Cards in columns, where a column is a state and moving a card changes it. Hand it the columns
+and the cards; the board shows them, and the moves made on it since.
+
+```ts
+import '@substrat-run/elements/kanban';
+
+board.columns = [
+  { key: 'todo', label: 'To do' },
+  { key: 'doing', label: 'In progress', limit: 3 },
+  { key: 'review', label: 'Review', limit: 2, strict: true },
+  { key: 'done', label: 'Done' },
+];
+board.cards = tickets; // each with `id` and `status`, or set `keyOf` / `columnOf`
+board.canDrop = (ticket, from, to) => TRANSITIONS[from].includes(to);
+board.move = (m) => api.moveTicket({ ticketId: m.key, status: m.to, after: m.after, before: m.before });
+```
+
+- **Drag.** The card lifts out tilted (`--sub-kanban-tilt`, 3deg) and sways a little with the
+  pointer. A gap opens where it will land and the other cards slide aside. Near an edge the
+  board and the column scroll. On touch, hold the card for a moment before dragging, so a
+  swipe still scrolls. Escape puts the card back.
+- **Rules.** A column `canDrop` refuses is dimmed while a card is held, and says so when the
+  card is over it. A reorder within a column is never refused. `limit` shows "2 / 3" in the
+  header, warning at the limit and over it; `strict` also refuses the card that would take the
+  column over.
+- **Keyboard.** Space picks a card up. Arrow keys move it, skipping columns that refuse it, and
+  Home / End take it to the top or bottom. Space or Enter drops it, Escape cancels. When no card
+  is held, arrow keys move focus between cards. A screen reader hears every step.
+- **Saving.** `move(m)` is called after the board already shows the move. While it is pending
+  the card is marked busy; if it rejects, the card goes back and `sub-move-failed` fires.
+  `sub-card-move` fires first and can be cancelled. `after` / `before` name the card's new
+  neighbours, for a rank between them.
+- **Without a drag.** `moveTo(key, column, index?)` makes the same move from a "Move to…" menu
+  or a command palette.
+- **Drawing cards.** `renderCard(card)` (Lit) or `mount(el, card)` (React, Vue), as a table
+  cell does. A click or Enter on a card fires `sub-card-open`.
+- **Adding cards.** `addable` puts "Add a card" under each column. It opens a field: Enter
+  fires `sub-card-add` `{ column, title }` and keeps the field open for the next one, Escape
+  closes it. The board makes no card itself — the screen creates it and hands it back in
+  `cards`, as the demo above does in memory.
+- `prefers-reduced-motion` turns off the tilt, the sliding and the settle.
+
 ## `<sub-assistant>`
+
+<ElementDemo name="assistant" />
 
 A conversation with an assistant: the transcript and the box to type in, and nothing around them.
 It has no popup, modal or sidebar mode. It fills the box you give it, so give it a height, and put

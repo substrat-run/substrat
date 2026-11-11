@@ -38,6 +38,7 @@ import BlastRadius from './components/BlastRadius.vue';
 import GuardPath from './components/GuardPath.vue';
 import SignupForm from './components/SignupForm.vue';
 import CommunicationFlow from './components/CommunicationFlow.vue';
+import ElementDemo from './components/ElementDemo.vue';
 
 export default {
   extends: DefaultTheme,
@@ -57,5 +58,6 @@ export default {
     app.component('GuardPath', GuardPath);
     app.component('SignupForm', SignupForm);
     app.component('CommunicationFlow', CommunicationFlow);
+    app.component('ElementDemo', ElementDemo);
   },
 } satisfies Theme;

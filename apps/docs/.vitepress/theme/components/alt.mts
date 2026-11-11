@@ -27,6 +27,7 @@ import { alt as blastRadius } from './BlastRadius.content.mjs';
 import { alt as guardPath } from './GuardPath.content.mjs';
 import { alt as signupForm } from './SignupForm.content.mjs';
 import { alt as communicationFlow } from './CommunicationFlow.content.mjs';
+import { alt as elementDemo } from './ElementDemo.content.mjs';
 
 export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => string> = {
   ConnectorLoop: connectorLoop,
@@ -43,6 +44,7 @@ export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => st
   GuardPath: guardPath,
   SignupForm: signupForm,
   CommunicationFlow: communicationFlow,
+  ElementDemo: elementDemo,
 };
 
 /** The twin for `<Name … />`, or null when the component has no flattening. */
