@@ -1,5 +1,7 @@
 # @substrat-run/contracts
 
+## 0.192.0
+
 ## 0.191.0
 
 ## 0.190.2
