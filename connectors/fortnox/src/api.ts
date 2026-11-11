@@ -309,6 +309,20 @@ export class FortnoxApiError extends Error {
 }
 
 /**
+ * The numeric code in Fortnox's error envelope (`ErrorInformation.code`), or null. The code is what
+ * to branch on: the message is Swedish prose and may change.
+ */
+export function fortnoxErrorCode(err: unknown): number | null {
+  if (!(err instanceof FortnoxApiError)) return null;
+  try {
+    const code = (JSON.parse(err.body) as { ErrorInformation?: { code?: unknown } }).ErrorInformation?.code;
+    return typeof code === 'number' ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fortnox's error envelope. Two shapes in the wild, and a caller wants the message
  * from whichever arrived rather than a bare status.
  */
@@ -554,6 +568,14 @@ export class FortnoxApi {
   /** Books the invoice. Fortnox refuses one that cannot be booked, with its reason. */
   async bookSupplierInvoice(givenNumber: string): Promise<void> {
     await this.write('PUT', `/supplierinvoices/${encodeURIComponent(givenNumber)}/bookkeep`);
+  }
+
+  /**
+   * Approves the invoice for bookkeeping, the step a company that requires approval puts before
+   * booking. Fortnox records this connection's user as the approver.
+   */
+  async approveSupplierInvoice(givenNumber: string): Promise<void> {
+    await this.write('PUT', `/supplierinvoices/${encodeURIComponent(givenNumber)}/approvalbookkeep`);
   }
 
   /** The invoice's comment log, as text. */

@@ -567,15 +567,10 @@ try {
   note(`receipts: ${JSON.stringify(receipts.splice(0))}`);
   await state(G);
 
-  // F: nobody attested it, which is what a company with attest on will see.
-  await pass(`F pass 1, unattested, held and decided`, { hold: [{ givenNumber: F }], decisions: [decided(F)] });
+  // F: nobody approved it. In a company that requires approval, the decision approves it.
+  await pass(`F pass 1, not approved, held and decided`, { hold: [{ givenNumber: F }], decisions: [decided(F)] });
   note(`receipts: ${JSON.stringify(receipts.splice(0))}`);
-  await state(F);
-  step = '7 end to end: F attested by hand';
-  await attest(F);
-  await pass(`F pass 2, the vertical answers the decision again after the failed receipt`, { hold: [], decisions: [decided(F)] });
-  note(`receipts: ${JSON.stringify(receipts.splice(0))}`);
-  await pass(`F pass 3, the same decision again`, { hold: [], decisions: [decided(F)] });
+  await pass(`F pass 2, the same decision again (a receipt that did not land)`, { hold: [], decisions: [decided(F)] });
   note(`receipts: ${JSON.stringify(receipts.splice(0))}`);
   await state(F);
 } finally {

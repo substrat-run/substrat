@@ -26,6 +26,7 @@ import { deadlineFetch, settleConnectionUse, ulid } from '@substrat-run/kernel';
 import {
   FortnoxApi,
   FortnoxApiError,
+  fortnoxErrorCode,
   FORTNOX_API_BASE,
   FORTNOX_OAUTH_BASE,
   fortnoxSecret,
@@ -46,6 +47,7 @@ declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 export {
   FortnoxApi,
   FortnoxApiError,
+  fortnoxErrorCode,
   FORTNOX_API_BASE,
   FORTNOX_OAUTH_BASE,
   fortnoxConsentUrl,
@@ -495,8 +497,19 @@ const INVOICE_DETAILS_PER_PASS = 200;
 const INVOICE_PASS_DEADLINE_MS = 90_000;
 /** What one held invoice can cost a pass: its read and the write. */
 const INVOICE_HOLD_CALLS = 2;
-/** What one decision can cost a pass: its read, booking, the block, the log's read and its write. */
-const INVOICE_DECISION_CALLS = 5;
+/**
+ * What one decision can cost a pass: its read, booking, the block, the log's read and its write, plus
+ * a refused booking and the approval in a company that requires approval.
+ */
+const INVOICE_DECISION_CALLS = 7;
+/**
+ * Fortnox's codes the write-back branches on, measured in a sandbox (MEASUREMENTS-writeback.md).
+ * `NEEDS_APPROVAL`: the company books only approved invoices, and this one is not. `APPROVED_LOCKED`:
+ * the invoice is approved, so the API changes nothing but OCR, invoice number and due date, and its
+ * payment block can be lifted only in Fortnox's web UI.
+ */
+const NEEDS_APPROVAL = 2001109;
+const APPROVED_LOCKED = 2003576;
 /** Tries at a write that keeps failing for no stated reason, before the vertical is told. */
 const INVOICE_WRITE_ATTEMPTS = 8;
 /** Passes a queued file may fail before it is skipped, so a file that never reads cannot hold the budget. */
@@ -1201,6 +1214,8 @@ interface InvoiceHold {
   cleared?: string;
   /** The block was asked for and Fortnox has not answered yet, so it may or may not be set. */
   unconfirmed?: true;
+  /** The invoice was approved before it could be held, so the API cannot block it. Not asked again. */
+  approved?: true;
 }
 
 /** A refusal in Fortnox's own words: the request was read and not carried out. */
@@ -1213,6 +1228,11 @@ const statedRefusal = (err: unknown): boolean =>
  * A decision's steps run in the order that fails safe. The block is cleared only after booking went
  * through, so an invoice that could not be booked stays unpaid, and the comment goes last because
  * the log is append-only. Every step reads first, so a pass cut off part-way repeats nothing.
+ *
+ * A company that requires approval before booking refuses the booking (`NEEDS_APPROVAL`), and once
+ * approved an invoice's block can no longer be lifted over the API. There the board's decision is the
+ * approval: the block is lifted first, while it still can be, then the invoice is approved and booked.
+ * That order leaves nothing payable unblocked, because such a company cannot pay an unbooked invoice.
  *
  * Only `hold` errors and transient failures are retried here. A refusal in Fortnox's own words is
  * the vertical's at once, because the next pass would get the same answer and a person has to act.
@@ -1251,7 +1271,7 @@ async function writeBackInvoices(
     const live = known && !known.cleared ? known : null;
     // Only a block this connector saw set is left alone. Someone else's is looked at again, because
     // lifting it would leave the undecided invoice payable, and so is one Fortnox never confirmed.
-    if (live?.ours && !live.unconfirmed) continue;
+    if ((live?.ours && !live.unconfirmed) || live?.approved) continue;
     if (budget.details < INVOICE_HOLD_CALLS || expired()) {
       out.more = true;
       break;
@@ -1276,6 +1296,15 @@ async function writeBackInvoices(
     } catch (err) {
       // Only a stated refusal says the block was not set. Any other failure may have set it, so the
       // note stays unconfirmed and the next pass reads the invoice to find out.
+      if (fortnoxErrorCode(err) === APPROVED_LOCKED) {
+        // Approved before it could be held: asking again gets the same answer every pass.
+        await host.admin.putConnectorState(connectionId, key, { ours: false, at, approved: true } satisfies InvoiceHold);
+        out.failure ??= new Error(
+          `hold of supplier invoice ${givenNumber}: it was approved in Fortnox before it could be held, ` +
+            `so it cannot be blocked over the API. Block it in Fortnox if it must wait for the decision.`,
+        );
+        continue;
+      }
       if (asked && statedRefusal(err)) await host.admin.putConnectorState(connectionId, key, known ?? null);
       out.failure ??= new Error(`hold of supplier invoice ${givenNumber}: ${asError(err).message}`);
     }
@@ -1323,15 +1352,41 @@ async function settleInvoiceDecision(
 ): Promise<void> {
   const { givenNumber, book, release, comment } = decision;
   const invoice = await api.supplierInvoice(givenNumber);
-  if (book && !invoice.Booked) await api.bookSupplierInvoice(givenNumber);
-  if (release) {
-    const key = invoiceHoldKey(givenNumber);
+  const key = invoiceHoldKey(givenNumber);
+  /** Lift the block this binding set, once. */
+  const releaseHold = async (): Promise<void> => {
     const hold = (await host.admin.getConnectorState(connectionId, key)) as InvoiceHold | null | undefined;
-    if (hold?.ours && !hold.cleared) {
-      if (invoice.DisablePaymentFile) await api.setSupplierInvoicePaymentBlock(givenNumber, false);
-      await host.admin.putConnectorState(connectionId, key, { ...hold, cleared: at } satisfies InvoiceHold);
+    if (!hold?.ours || hold.cleared) return;
+    if (invoice.DisablePaymentFile) {
+      try {
+        await api.setSupplierInvoicePaymentBlock(givenNumber, false);
+      } catch (err) {
+        if (fortnoxErrorCode(err) !== APPROVED_LOCKED || !(err instanceof FortnoxApiError)) throw err;
+        throw new FortnoxApiError(
+          `supplier invoice ${givenNumber} was approved in Fortnox before the decision was written back, ` +
+            `so its payment block can be lifted only in Fortnox: ${err.message}`,
+          err.status,
+          err.body,
+        );
+      }
+    }
+    await host.admin.putConnectorState(connectionId, key, { ...hold, cleared: at } satisfies InvoiceHold);
+  };
+
+  let released = false;
+  if (book && !invoice.Booked) {
+    try {
+      await api.bookSupplierInvoice(givenNumber);
+    } catch (err) {
+      if (fortnoxErrorCode(err) !== NEEDS_APPROVAL) throw err;
+      // The decision is the approval. Lift the block before approving, because approval locks it.
+      if (release) await releaseHold();
+      released = true;
+      await api.approveSupplierInvoice(givenNumber);
+      await api.bookSupplierInvoice(givenNumber);
     }
   }
+  if (release && !released) await releaseHold();
   if (comment !== null && !(await api.supplierInvoiceComments(givenNumber)).includes(comment)) {
     await api.addSupplierInvoiceComment(givenNumber, comment);
   }

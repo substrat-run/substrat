@@ -192,7 +192,8 @@ to bind time rather than disappearing.
    `pnpm fortnox:measure-writeback` seeds supplier invoices in the sandbox, drives every write, and
    prints each call with Fortnox's raw answer, behind the same sandbox check. What it found on
    2026-11-11 is in [`MEASUREMENTS-writeback.md`](MEASUREMENTS-writeback.md): in a company that books
-   only attested invoices, a booked invoice's payment block cannot be cleared.
+   only approved invoices, the API cannot clear an approved invoice's payment block, so there the
+   write-back lifts its hold before it approves and books.
 
 3. **SIE4 is PC8 (code page 437) — not latin1, and not UTF-8.** The file says so in `#FORMAT`;
    the HTTP response does not. Decoding as UTF-8 throws on the first Swedish letter, which is the
