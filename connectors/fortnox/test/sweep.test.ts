@@ -1250,6 +1250,43 @@ describe('fortnox connector — inbound sync', () => {
         expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('write-back of supplier invoice 12:') }]);
       });
 
+      // Measured in the Fortnox sandbox (MEASUREMENTS-writeback.md): a company that books only attested
+      // invoices refuses any change to DisablePaymentFile once the invoice is attested. These pin what
+      // the write-back does there today; it is not what #2827 intended.
+      it('where booking needs attest, books the approved invoice but cannot release its hold, and says so', async () => {
+        fortnox.requireAttest = true;
+        await bindWriteback();
+        unbooked('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+        await sweepFortnoxLedger(host, connId, at(NOW));
+        fortnox.attest('12');
+        fortnox.writes.length = 0;
+
+        waiting = { hold: [], decisions: [decided('12')] };
+        await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        // Booked, still blocked, and the board's comment never written: release comes before it.
+        expect(fortnox.writes).toEqual([BOOK, RELEASE]);
+        expect(receipts).toEqual([{ key: 'decision-12', status: 'failed', error: expect.stringContaining('attesterad leverantörsfaktura') }]);
+      });
+
+      it('where booking needs attest, cannot hold an invoice attested first, and fails its row every pass', async () => {
+        fortnox.requireAttest = true;
+        await bindWriteback();
+        unbooked('12');
+        fortnox.attest('12');
+        waiting = { hold: [{ givenNumber: '12' }], decisions: [] };
+
+        const first = await sweepFortnoxLedger(host, connId, at(NOW));
+        const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+
+        expect(fortnox.writes).toEqual([HOLD, HOLD]);
+        expect([...first.failed, ...second.failed]).toEqual([
+          { scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') },
+          { scopeId: s, error: expect.stringContaining('hold of supplier invoice 12:') },
+        ]);
+      });
+
       it('retries an outage for eight passes, then tells the vertical, and a retry starts over', async () => {
         await bindWriteback();
         unbooked('12');

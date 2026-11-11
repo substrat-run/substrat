@@ -52,7 +52,18 @@ export interface FortnoxMockSupplierInvoice {
   comments?: string[];
   /** Why `bookkeep` answers 400, as Fortnox does for a locked period or a missing account. */
   cannotBook?: string;
+  /**
+   * Attested for bookkeeping (`PUT …/approvalbookkeep`). From then on Fortnox changes only `OCR`,
+   * `InvoiceNumber` and `DueDate`, so `DisablePaymentFile` can be neither set nor cleared.
+   */
+  attested?: boolean;
 }
+
+/** Fortnox's error envelope, with the code a real answer carries. */
+const fortnoxError = (message: string, code: number) => ({ ErrorInformation: { error: 1, message, code } });
+
+/** What a PUT may still change on an attested invoice (measured, 2026-11-11). */
+const EDITABLE_WHEN_ATTESTED = ['OCR', 'InvoiceNumber', 'DueDate'];
 
 /**
  * Encode to PC8 (code page 437) — the charset a real Fortnox SIE export declares in
@@ -133,6 +144,18 @@ export class FortnoxMock {
    * way Fortnox tells a connection it never asked for `archive` or `connectfile`.
    */
   deniedScopes: string[] = [];
+  /**
+   * The company books only attested invoices: `bookkeep` on one nobody attested answers `2001109`,
+   * as the Fortnox sandbox does. Off by default, because a company can run without Fortnox's attest
+   * routine, and whether a booked invoice's block can be cleared there has not been measured.
+   */
+  requireAttest = false;
+
+  /** What the company's attest routine does: `PUT …/approvalbookkeep`. */
+  attest(givenNumber: string): void {
+    const entry = this.supplierInvoices.get(givenNumber);
+    if (entry) entry.attested = true;
+  }
 
   /** Add or change a supplier invoice — how a test simulates "an invoice was booked". */
   setSupplierInvoice(entry: FortnoxMockSupplierInvoice): void {
@@ -243,7 +266,7 @@ export class FortnoxMock {
     if (commentsMatch) {
       const entry = this.supplierInvoices.get(decodeURIComponent(commentsMatch[1]!));
       if (!entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
-      return this.json({ SupplierInvoiceCommentLog: (entry.comments ?? []).map((Comment) => ({ Comment })) });
+      return this.json({ SupplierInvoiceCommentLog: (entry.comments ?? []).map((Comment, i) => this.commentEntry(Comment, i)) });
     }
     const invoiceMatch = /\/supplierinvoices\/([^/?]+)$/.exec(url.pathname);
     if (invoiceMatch) {
@@ -291,12 +314,26 @@ export class FortnoxMock {
     return this.json({ ErrorInformation: { message: `unmocked path ${path}` } }, 404);
   };
 
-  /** The three writes the invoice write-back makes. */
+  /** One comment-log entry as Fortnox serves it. Fortnox stamps the author and the time itself. */
+  private commentEntry(Comment: string, index: number): Record<string, unknown> {
+    return { Id: `comment-${index + 1}`, Comment, UserName: 'Substrat', UserId: 1, CreatedAt: '2026-06-10 09:00:00+02', PersistToInvoice: true };
+  }
+
+  /**
+   * The writes the invoice write-back makes, plus the attest a company's own routine makes. The
+   * answers are the ones the Fortnox sandbox gave on 2026-11-11 (`MEASUREMENTS-writeback.md`).
+   */
   private applyWrite(pathname: string, method: string, body: unknown): ReturnType<FetchLike> extends Promise<infer R> ? R : never {
-    const match = /\/supplierinvoices\/([^/?]+)(?:\/(bookkeep|commentlog))?$/.exec(pathname);
+    const match = /\/supplierinvoices\/([^/?]+)(?:\/(bookkeep|commentlog|approvalbookkeep))?$/.exec(pathname);
     const entry = match ? this.supplierInvoices.get(decodeURIComponent(match[1]!)) : undefined;
     if (!match || !entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
+    if (match[2] === 'approvalbookkeep' && method === 'PUT') {
+      entry.attested = true;
+      return this.json({ SupplierInvoice: entry.invoice });
+    }
     if (match[2] === 'bookkeep' && method === 'PUT') {
+      if (entry.invoice['Booked'] === true) return this.json(fortnoxError('Leverantörsfakturan är redan bokförd.', 2000417), 400);
+      if (this.requireAttest && !entry.attested) return this.json(fortnoxError('Fakturan måste vara attesterad.', 2001109), 400);
       if (entry.cannotBook) return this.json({ ErrorInformation: { message: entry.cannotBook } }, 400);
       entry.invoice['Booked'] = true;
       return this.json({ SupplierInvoice: entry.invoice });
@@ -304,10 +341,16 @@ export class FortnoxMock {
     if (match[2] === 'commentlog' && method === 'POST') {
       const comment = (body as { SupplierInvoiceCommentLog: { Comment: string } }).SupplierInvoiceCommentLog.Comment;
       entry.comments = [...(entry.comments ?? []), comment];
-      return this.json({ SupplierInvoiceCommentLog: { Comment: comment } }, 201);
+      return this.json({ SupplierInvoiceCommentLog: this.commentEntry(comment, entry.comments.length - 1) }, 201);
     }
     if (match[2] === undefined && method === 'PUT') {
-      Object.assign(entry.invoice, (body as { SupplierInvoice: Record<string, unknown> }).SupplierInvoice);
+      const fields = (body as { SupplierInvoice: Record<string, unknown> }).SupplierInvoice;
+      // Sending a field's current value is accepted; changing it is not.
+      const locked = Object.keys(fields).some((k) => !EDITABLE_WHEN_ATTESTED.includes(k) && fields[k] !== entry.invoice[k]);
+      if (entry.attested && locked) {
+        return this.json(fortnoxError('Endast OCR, fakturanummer samt förfallodatum kan ändras på en attesterad leverantörsfaktura.', 2003576), 400);
+      }
+      Object.assign(entry.invoice, fields);
       return this.json({ SupplierInvoice: entry.invoice });
     }
     return this.json({ ErrorInformation: { message: `unmocked write ${method} ${pathname}` } }, 404);

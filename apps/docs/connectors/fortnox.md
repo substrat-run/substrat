@@ -318,8 +318,15 @@ fifteen minutes and nothing else. The operation answers for the company it is gi
 - **Budget.** A hold costs two calls and a decision up to five, from the pass's 200, and the 90-second
   deadline applies. What does not fit is answered again next pass.
 
-Whether a hold does what it is for has not been measured against Fortnox. See
+::: warning A company that books only attested invoices cannot use the release yet
+Measured in a Fortnox sandbox on 2026-11-11: there, `bookkeep` refuses an invoice nobody has
+attested, and once an invoice is attested Fortnox lets a write change only its OCR, invoice number
+and due date. So the hold can be set before attest and never cleared after it. An approved invoice
+is booked, stays blocked from payment, and gets no comment, and the vertical receives `failed` with
+Fortnox's message. An invoice attested before it is held cannot be held at all. Whether a company
+without that rule can clear a booked invoice's block is not measured yet. See
 [what's missing](#what-s-missing).
+:::
 
 ### Bind a hosted connection by hand
 
@@ -619,11 +626,13 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 3. **A deployment that schedules the sweep.** The connector provides the driver and cannot hold a
    timer. Without `startPlatformSweeper` or `definePlatformSweeperDO` wired, a binding is inert.
 
-4. **A measured write-back.** Everything under [writing back](#writing-back) runs against the mock,
-   which is our reading of Fortnox. Before a company depends on it, check in a sandbox:
-   - Can an unbooked supplier invoice be paid at all? Fortnox's support pages disagree.
-   - Is `DisablePaymentFile` writable with `PUT`, on an unbooked invoice and on a booked one, and
-     does a flag set over the API hide the invoice from the payment view as the web UI's does? The
-     release clears it after booking, and a booked invoice can otherwise not be edited.
-   - What does `bookkeep` answer for an invoice that cannot be booked, and for one already booked?
-   - Do `bookkeep` and `commentlog` work with the `supplierinvoice` scope alone?
+4. **A measured write-back.** The write-back was measured against a Fortnox sandbox on 2026-11-11,
+   with `pnpm fortnox:measure-writeback`. The answers, verbatim, are in
+   [`MEASUREMENTS-writeback.md`](https://github.com/substrat-run/substrat/blob/main/connectors/fortnox/MEASUREMENTS-writeback.md).
+   A block set over the API changes nothing else, `bookkeep` books with no body, and the comment log
+   keeps its order and takes at least 65,536 characters. The release does not work where booking
+   needs attest (the warning under [writing back](#writing-back)). Still open, for a person in the
+   sandbox's web UI:
+   - Can an unbooked supplier invoice be paid at all?
+   - Does a block set over the API hide the invoice from the payment view?
+   - Without the attest rule, can a booked invoice's block be cleared?

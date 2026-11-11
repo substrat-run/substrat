@@ -40,11 +40,9 @@ import type { ConnectorConnection } from '@substrat-run/kernel';
 import { FortnoxApi, FORTNOX_API_BASE, type FortnoxSecret } from '../src/api.js';
 import { financialYearFor } from '../src/aggregate.js';
 import { loadDevSecrets, providerEnv } from './dev-secrets.mjs';
+import { requireSandbox } from './sandbox-guard.mjs';
 
 const PKG = dirname(fileURLToPath(import.meta.url));
-
-/** Fortnox stamps every sandbox with this organisation number. */
-const SANDBOX_ORGNR = '555555-5555';
 
 const flag = (name: string): string | undefined =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(`--${name}=`.length);
@@ -104,18 +102,9 @@ const year = Number(flag('year') ?? new Date().getFullYear());
 // ---------------------------------------------------------------------------
 // 1. Prove what we are about to write into.
 // ---------------------------------------------------------------------------
-const company = await api.companyInformation();
-console.log(`company : ${company.CompanyName || '(unnamed)'} — org ${company.OrganizationNumber || '—'}`);
+await requireSandbox(api, { script: 'fortnox:seed', writes: 'vouchers', force: has('force') });
 console.log(`tenant  : ${secret.tenantId}\n`);
-
-if (company.OrganizationNumber !== SANDBOX_ORGNR && !has('force')) {
-  console.error(
-    `fortnox:seed: REFUSING — org number is ${company.OrganizationNumber || '(none)'}, not a sandbox.\n` +
-      `  Fortnox stamps every test environment ${SANDBOX_ORGNR}. This script WRITES vouchers,\n` +
-      `  and a real company's books are not a fixture. Pass --force only if you mean it.`,
-  );
-  process.exit(1);
-}
+if (has('force')) console.log('--force: writing whatever the org number says.\n');
 
 const VOUCHERS = [
   { month: '01', day: '15', text: 'Substrat seed – försäljning', net: 1000, vat: 250 },
