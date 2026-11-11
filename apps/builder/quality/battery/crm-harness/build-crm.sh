@@ -1,7 +1,8 @@
-#!/bin/zsh -i
+#!/bin/zsh
 # build-crm.sh <rounds> [model] — build-arms.sh for the sales-team brief: one build per plain arm per
 # round, one at a time, archived as $BUILDER_RUNS/runs/sales-team-plain-<arm>-<model>-<stamp>/.
 # The briefs are ../crm/plain-<arm>.md; working folders stay in $CHECKS_WORK/battery/work/<id> for the tester.
+source ${0:A:h}/../../path.sh  # node on PATH without the profile; see path.sh
 S=${0:A:h}; N=$1; M=${2:-sonnet}
 B=${S:h}; REPO=${B:h:h:h:h}
 H=${BUILDER_RUNS:-$REPO/data/builder-runs}

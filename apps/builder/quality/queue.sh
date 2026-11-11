@@ -1,7 +1,8 @@
-#!/bin/zsh -i
+#!/bin/zsh
 # queue.sh <strategy> <model> <count> [eval args...] — from a checkout; a bare model runs on the
 # Claude Code login, and one with a provider runs as named (cloudflare:@cf/...); runs serially, stops if disk runs low.
 # Runs land in $BUILDER_RUNS (default data/builder-runs, which is gitignored).
+source ${0:A:h}/path.sh  # node on PATH without the profile; see path.sh
 S=$1; M=$2; N=$3; shift 3
 [[ $M == *:* ]] && SPEC=$M || SPEC=claude-code:$M
 LABEL=${M##*/}

@@ -1,7 +1,8 @@
-#!/bin/zsh -i
+#!/bin/zsh
 # build-arms.sh <rounds> [model] — one plain-asked and one plain-features build per round, one at a
 # time (builds start servers on whatever port they like). Each lands in $BUILDER_RUNS/runs/<id>
 # like a builder run; its working folder stays in $CHECKS_WORK/battery/work/<id> for the tester.
+source ${0:A:h}/../path.sh  # node on PATH without the profile; see path.sh
 S=${0:A:h}; N=$1; M=${2:-sonnet}
 REPO=${S:h:h:h:h}
 H=${BUILDER_RUNS:-$REPO/data/builder-runs}

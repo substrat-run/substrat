@@ -1,7 +1,8 @@
-#!/bin/zsh -i
+#!/bin/zsh
 # hosted-all.sh <run-id>... : verify-hosted.py on each archived run, borrowing node_modules from the
 # lane that built it (<LANE_ROOT>/.builder/projects/eval-<lane>-todo). One line per run; the full
 # output is kept in $CHECKS_WORK/verify-hosted/<run-id>.out. LANEROOT is this script's older name for LANE_ROOT.
+source ${0:A:h}/../path.sh  # node on PATH without the profile; see path.sh
 HERE=${0:A:h}; REPO=${HERE:h:h:h:h}
 D=${CHECKS_WORK:-$REPO/.builder/checks}
 R=${BUILDER_RUNS:-$REPO/data/builder-runs}/runs
