@@ -41,6 +41,7 @@ import {
   managementTokenVerifier,
   tokenAuthMethodOf,
 } from './management-api.js';
+import { ensureScimResource, scimApp, scimTokenVerifier } from './scim.js';
 import type { JSONWebKeySet } from 'jose';
 import { placesOf } from './places.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
@@ -343,7 +344,10 @@ app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => {
   // collision the tsconfig split describes, not a real shape difference.
   const req = new Request(c.req.raw);
   req.headers.set(CLIENT_IP_HEADER, address);
-  if (new URL(req.url).pathname === '/api/auth/oauth2/token') ensureManagementResource(sql, ORIGIN, machineScopesNow());
+  if (new URL(req.url).pathname === '/api/auth/oauth2/token') {
+    ensureManagementResource(sql, ORIGIN, machineScopesNow());
+    ensureScimResource(sql, ORIGIN, machineScopesNow());
+  }
   return authFor().handler(req as unknown as typeof c.req.raw);
 });
 
@@ -352,6 +356,7 @@ app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => {
 const machineScopesNow = (): readonly string[] => machineScopesOf(config()[MACHINE_SCOPES]).scopes;
 app.post('/oauth/token', async (c) => {
   ensureManagementResource(sql, ORIGIN, machineScopesNow());
+  ensureScimResource(sql, ORIGIN, machineScopesNow());
   const translated = await auth0TokenForm(c.req.raw, (id) => tokenAuthMethodOf(sql, id));
   if ('error' in translated) return c.json(translated.error, 400, { 'cache-control': 'no-store' });
   const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
@@ -369,6 +374,21 @@ app.all('/api/v2/*', (c) => {
       ORIGIN,
     ),
     machineScopes: machineScopesNow,
+  }).fetch(c.req.raw);
+});
+
+// The SCIM server (#2941, `scim.ts`), as the DO serves it.
+app.all('/scim/v2/*', (c) => {
+  const auth = authFor();
+  return scimApp({
+    sql,
+    verify: scimTokenVerifier(
+      async () => (await auth.handler(new Request(`${ORIGIN}/api/auth/jwks`) as unknown as typeof c.req.raw)).json() as Promise<JSONWebKeySet>,
+      ORIGIN,
+    ),
+    machineScopes: machineScopesNow,
+    issuer: ORIGIN,
+    transaction: (fn) => sqlite.transaction(fn)(),
   }).fetch(c.req.raw);
 });
 

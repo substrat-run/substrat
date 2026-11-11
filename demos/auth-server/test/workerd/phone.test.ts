@@ -139,3 +139,48 @@ describe('the Auth0 Management API subset, in the deployed Durable Object (#3107
     expect(await res.json()).toEqual([expect.objectContaining({ email: 'admin@example.test', logins_count: 2, last_login: expect.any(String) })]);
   });
 });
+
+describe('the SCIM server, in the deployed Durable Object (#2941)', () => {
+  it('rolls a dry run back with transactionSync, and provisions a BankID member for real', async () => {
+    const scope = ulid();
+    const stub = env.AUTH.get(env.AUTH.idFromName(scope));
+    await runInDurableObject(stub, async (instance) => (instance as unknown as import('../../src/auth-do.js').AuthServerDO).provisionInstance({ tenantId: ulid(), scopeId: scope, slug: 'acme-auth', name: 'Acme Auth' }, [
+      { key: 'ADMIN_EMAIL', value: 'admin@example.test' },
+      { key: 'ADMIN_PASSWORD', value: 'admin-test-password' },
+      { key: 'MACHINE_SCOPES', value: 'users:provision' },
+    ]));
+    const send = (path: string, body: unknown, headers: Record<string, string>, method = 'POST') => stub.fetch(new Request(`https://auth-server.test${path}`, {
+      method, headers: { origin: 'https://auth-server.test', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
+    }));
+    const cookieOf = (res: Response) => (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie().map((c) => c.split(';')[0]).filter((c) => c && !c.endsWith('=')).join('; ');
+    const admin = cookieOf(await send('/api/auth/sign-in/email', { email: 'admin@example.test', password: 'admin-test-password' }, {}));
+    const registered = await send('/__admin/clients', { application_type: 'machine', client_name: 'Member Portal', client_credentials_scopes: ['users:provision'] }, { cookie: admin });
+    expect(registered.status, await registered.clone().text()).toBe(201);
+    const client = (await registered.json()) as { client_id: string; client_secret: string };
+    const minted = await send('/__oauth-token', {
+      grant_type: 'client_credentials', client_id: client.client_id, client_secret: client.client_secret, audience: 'https://auth-server.test/scim/v2',
+    }, {});
+    expect(minted.status, await minted.clone().text()).toBe(200);
+    const bearer = { authorization: `Bearer ${((await minted.json()) as { access_token: string }).access_token}` };
+
+    const member = {
+      schemas: ['urn:ietf:params:scim:schemas:core:2.0:User', 'urn:substrat:params:scim:schemas:extension:bankid:2.0:User'],
+      userName: 'member-1',
+      'urn:substrat:params:scim:schemas:extension:bankid:2.0:User': { personalNumber: '198001012387' },
+    };
+    const bulk = (dry: boolean) => send(`/scim/v2/Bulk${dry ? '?dryRun=true' : ''}`, {
+      schemas: ['urn:ietf:params:scim:api:messages:2.0:BulkRequest'],
+      Operations: [
+        { method: 'POST', bulkId: 'm1', path: '/Users', data: member },
+        // The same person again: only the first operation's own write makes this a conflict.
+        { method: 'POST', bulkId: 'm2', path: '/Users', data: { ...member, userName: 'member-2' } },
+      ],
+    }, bearer);
+    const statuses = async (res: Response) => ((await res.json()) as { Operations: { status: string }[] }).Operations.map((o) => o.status);
+    expect(await statuses(await bulk(true))).toEqual(['201', '409']);
+    const found = async () => ((await (await stub.fetch(new Request('https://auth-server.test/scim/v2/Users?filter=userName%20eq%20%22member-1%22', { headers: bearer }))).json()) as { totalResults: number }).totalResults;
+    expect(await found()).toBe(0);
+    expect(await statuses(await bulk(false))).toEqual(['201', '409']);
+    expect(await found()).toBe(1);
+  });
+});

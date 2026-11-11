@@ -322,6 +322,12 @@ app.post('/oauth/token', (c) => {
 app.all('/api/v2/*', (c) => issuerFor(c.env, c.req.raw).fetch(c.req.raw));
 
 /**
+ * The SCIM 2.0 server (#2941, `src/scim.ts`), answered by the DO. Every method reaches it, so one
+ * it does not serve is SCIM's own 501 and never the admin SPA below.
+ */
+app.all('/scim/v2/*', (c) => issuerFor(c.env, c.req.raw).fetch(c.req.raw));
+
+/**
  * Provision ONE instance on the platform's instruction (K-31). The shared control plane
  * owns this scope's directory row + entitlements already; the vertical's job is only its
  * OWN state — waking the scope's issuer DO materializes it (schema + signing secret), and
