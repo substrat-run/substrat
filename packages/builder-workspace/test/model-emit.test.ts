@@ -332,7 +332,8 @@ describe('model-diff --root — the emitter the studio calls', () => {
 				'import { defineEntities, emitModel, z } from "@substrat-run/contracts";\n' +
 				'import { workorderEntities } from "@substrat-run/engine-workorder";\n' +
 				'export const engines = [workorderEntities];\n' +
-				'export const model = emitModel(defineEntities({ item: { table: "acme_items", fields: z.object({ id: z.string() }) } }));\n';
+				'export const entities = defineEntities({ item: { table: "acme_items", fields: z.object({ id: z.string() }) } });\n' +
+				'export const model = emitModel(entities);\n';
 			await writeFile(source, valid);
 			const spec = standaloneGates(relative(REPO_ROOT, dir)).find((g) => g.name === 'model')!;
 			const ws = new LocalWorkspace({ root: REPO_ROOT });
@@ -348,6 +349,35 @@ describe('model-diff --root — the emitter the studio calls', () => {
 			const refused = await checkModel(ws, relative(REPO_ROOT, dir));
 			expect(refused).toMatch(/^NOT OK — /);
 			expect(refused).toContain('TS2322');
+			await ws.dispose();
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it('check_model and the gates refuse a field no column can hold, while the model may still change', async () => {
+		// The migrations emitter threw on it and exited 1, which reads as a workspace that could not
+		// run it: blocked, so no repair was asked, and the build phase that met it may not change the
+		// model. Real subprocesses, as above.
+		await mkdir(join(REPO_ROOT, '.builder'), { recursive: true });
+		const dir = await mkdtemp(join(REPO_ROOT, '.builder/model-columns-'));
+		try {
+			await mkdir(join(dir, 'spec'));
+			await writeFile(
+				join(dir, 'spec/model.ts'),
+				'import { defineEntities, emitModel, z } from "@substrat-run/contracts";\n' +
+					'export const entities = defineEntities({ deal: { table: "acme_deals", fields: z.object({ id: z.string(), value: z.object({ amount: z.string() }) }) } });\n' +
+					'export const model = emitModel(entities);\n',
+			);
+			const ws = new LocalWorkspace({ root: REPO_ROOT });
+			const projectDir = relative(REPO_ROOT, dir);
+			const said = await checkModel(ws, projectDir);
+			expect(said).toMatch(/^NOT OK — /);
+			expect(said).toContain('cannot map deal.value');
+			expect(await emitProjectModel(ws, projectDir)).toMatchObject({ status: 'emitted' });
+			const run = await runGates(ws, projectDir, []);
+			expect(run.results).toContainEqual(expect.objectContaining({ name: 'migrations-emit', status: 'failed' }));
+			expect(repairNeeded(run)).toBe(true);
 			await ws.dispose();
 		} finally {
 			await rm(dir, { recursive: true, force: true });
