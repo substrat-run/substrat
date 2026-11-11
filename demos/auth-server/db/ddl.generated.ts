@@ -301,4 +301,20 @@ export const SCHEMA_STATEMENTS: string[] = [
     client_id TEXT NOT NULL,
     hostnames TEXT NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
+  // WHEN a person last signed in, and how often (#3107, `src/user-activity.ts`) — the
+  // Management API's `last_login` and `logins_count`. Kept for as long as the person is, which
+  // is the point: the sign-in log above forgets after thirty days. Times and a count only.
+  `CREATE TABLE IF NOT EXISTS user_activity (
+    user_id TEXT PRIMARY KEY NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    last_login_at INTEGER,
+    logins_count INTEGER NOT NULL DEFAULT 0)`,
+  // When each application last got a token for a person (#3107). Auth0 keeps no such record,
+  // so this is served by an extension endpoint, never as a field of the Auth0 user object.
+  `CREATE TABLE IF NOT EXISTS user_client_activity (
+    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL REFERENCES oauth_client(client_id) ON DELETE CASCADE,
+    last_token_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, client_id))`,
+  // A client's rows, for the cascade when the client is deleted.
+  `CREATE INDEX IF NOT EXISTS user_client_activity_client_idx ON user_client_activity (client_id)`,
 ];

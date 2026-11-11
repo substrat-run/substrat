@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
+import { recordLogin } from './user-activity.js';
 
 /**
  * WHAT HAPPENED when someone tried to sign in — the issuer's own record of the attempts it
@@ -436,9 +437,18 @@ export function attributedSignInOf(context: object): string | null {
   return attributed.get(context) ?? null;
 }
 
-/** A `SignInLogger` over one store. What both runtimes hand to `buildAuth`. */
+/**
+ * A `SignInLogger` over one store. What both runtimes hand to `buildAuth`.
+ *
+ * A `succeeded` row naming an account is also that account's login (`user-activity.ts`), kept
+ * past the log's retention. A `succeeded` callback with no account is a LINK, which signs
+ * nobody in, so it is not counted.
+ */
 export function signInLoggerFor(sql: SqlExec): SignInLogger {
-  return (attempt) => recordSignInAttempt(sql, attempt);
+  return (attempt) => {
+    recordSignInAttempt(sql, attempt);
+    if (attempt.outcome === 'succeeded' && attempt.userId) recordLogin(sql, attempt.userId);
+  };
 }
 
 /** What the admin read accepts: a page, newest first, optionally narrowed. */

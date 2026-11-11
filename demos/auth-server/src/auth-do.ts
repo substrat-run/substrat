@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/durable-sqlite';
 import { Hono } from 'hono';
 import { compactVerify, createLocalJWKSet, type JSONWebKeySet } from 'jose';
 import {
+  TOKEN_EXCHANGE_GRANT_TYPE,
   resolveScopedEnvSpec,
   type ScopeDumpTable,
   type ScopeTable,
@@ -46,6 +47,14 @@ import { authenticateClient, servePlaces, serveReport } from './places-http.js';
 import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
 import { isSocialRelayEntry, parseSocialRelayEntry, relayHop, syncSocialRelay } from './social-relay.js';
 import { exchangeToken } from './token-exchange.js';
+import { backfillActivity, recordClientToken } from './user-activity.js';
+import {
+  auth0TokenForm,
+  ensureManagementResource,
+  managementApiApp,
+  managementTokenVerifier,
+  tokenAuthMethodOf,
+} from './management-api.js';
 import {
   PreviewClientRefusal,
   claimsParent,
@@ -129,6 +138,8 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         log.info('schema upgraded', { upgrade });
       }
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
+      // Once per install, after the DDL that creates its tables (`user-activity.ts`).
+      if (backfillActivity(ctx.storage.sql)) log.info('backfilled sign-in activity');
       const rewritten = rewritePlaceholderAddresses(ctx.storage.sql, Date.now());
       if (rewritten) log.info('rewrote BankID placeholder addresses', { rewritten });
       // The issuer's own console, as a row in its own registry (`console-client.ts`).
@@ -238,6 +249,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // tab, and `/internal/export`. A dispatch-namespace script's `console.log` is none of
       // those.
       recordSignIn: signInLoggerFor(this.ctx.storage.sql),
+      // When each application last got a token for a person — the Management API's extension
+      // read (#3107, `management-api.ts`).
+      recordToken: (userId, clientId) => recordClientToken(this.ctx.storage.sql, userId, clientId),
       fetchSignInDiagnostic: (input, init) => globalThis.fetch(input, init),
       // `ctx.waitUntil`, which is the DO's own way of saying "finish this, but not before the
       // response". Better Auth cannot find it by itself — it is handed a `Request` and nothing
@@ -704,6 +718,41 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     // plugin's own `/oauth2/token` below, untouched.
     if (url.pathname === '/__token-exchange' && request.method === 'POST') {
       return this.tokenExchange(auth, url.origin, request);
+    }
+    // The Auth0 Management API subset (#3107, `management-api.ts`). Its audience must be a
+    // registered resource before either token endpoint will mint for it.
+    const issuer = () => this.effectiveCfg().PUBLIC_ORIGIN ?? url.origin;
+    const machineScopes = () => machineScopesOf(this.effectiveCfg()[MACHINE_SCOPES]).scopes;
+    if (url.pathname === '/__oauth-token' || url.pathname === '/api/auth/oauth2/token') {
+      ensureManagementResource(this.ctx.storage.sql, issuer(), machineScopes());
+    }
+    // Auth0's `POST /oauth/token`: the worker sends it here, and it becomes an ordinary request
+    // to this issuer's own endpoint, token exchange included.
+    if (url.pathname === '/__oauth-token' && request.method === 'POST') {
+      const translated = await auth0TokenForm(request, (id) => tokenAuthMethodOf(this.ctx.storage.sql, id));
+      if ('error' in translated) {
+        return Response.json(translated.error, { status: 400, headers: { 'cache-control': 'no-store' } });
+      }
+      const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+      if (translated.authorization) headers.authorization = translated.authorization;
+      const forwarded = new Request(`${url.origin}/api/auth/oauth2/token`, {
+        method: 'POST',
+        headers,
+        body: translated.form.toString(),
+      });
+      return translated.form.get('grant_type') === TOKEN_EXCHANGE_GRANT_TYPE
+        ? this.tokenExchange(auth, url.origin, forwarded)
+        : auth.handler(forwarded);
+    }
+    if (url.pathname === '/api/v2' || url.pathname.startsWith('/api/v2/')) {
+      return managementApiApp({
+        sql: this.ctx.storage.sql,
+        verify: managementTokenVerifier(
+          async () => (await auth.handler(new Request(`${url.origin}/api/auth/jwks`))).json() as Promise<JSONWebKeySet>,
+          issuer(),
+        ),
+        machineScopes,
+      }).fetch(request);
     }
     if (url.pathname === '/__client-options') {
       // No `client_id` is the console asking about ITSELF — the one caller with no relying

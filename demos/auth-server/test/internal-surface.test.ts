@@ -465,6 +465,15 @@ describe('the issuer’s own admin API (/api/admin)', () => {
   });
 });
 
+describe('the Auth0 Management API doors (#3107)', () => {
+  it('forwards Auth0’s token endpoint under its control path, and every /api/v2 method as it came', async () => {
+    const token = await app.request('/oauth/token', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } }, env);
+    const write = await app.request('/api/v2/users/u1?fields=email', { method: 'PATCH' }, env);
+    for (const res of [token, write]) expect(res.headers.get('content-type')).toContain('application/json');
+    expect(auth.forwarded).toEqual(['/__oauth-token', '/api/v2/users/u1?fields=email']);
+  });
+});
+
 describe('issuer addressing (router assertion → DO name)', () => {
   it('routes an asserted request to the SCOPE-NAMED issuer', async () => {
     const scope = ulid();
