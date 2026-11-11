@@ -161,11 +161,15 @@ const fortnoxOptionalNumber = z
   .optional()
   .transform((v) => (v === undefined || v === null || v === '' ? null : String(v)));
 
-/** A flag Fortnox may leave unset. Unset is false: it has not been set. */
+/**
+ * A flag Fortnox may leave unset. Unset is false: it has not been set. Fortnox sometimes sends
+ * a flag as the string `"true"`/`"false"` (#3103), and an empty string is unset; any other
+ * string is refused, so a value nobody has seen does not quietly read as false.
+ */
 const fortnoxFlag = z
-  .union([z.boolean(), z.null()])
+  .union([z.boolean(), z.enum(['true', 'false', '']), z.null()])
   .optional()
-  .transform((v) => v ?? false);
+  .transform((v) => v === true || v === 'true');
 
 /**
  * One supplier invoice, as `GET /3/supplierinvoices/{GivenNumber}` returns it. Only the fields

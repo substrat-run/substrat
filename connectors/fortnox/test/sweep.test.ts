@@ -619,6 +619,17 @@ describe('fortnox connector — inbound sync', () => {
       });
     });
 
+    it('reads a flag Fortnox sends as a string, and refuses one it has never sent (#3103)', async () => {
+      await bindInvoices();
+      invoice('12', '2026-06-10 09:00', { Credit: 'true', PaymentPending: 'false', DisablePaymentFile: '' });
+      invoice('13', '2026-06-10 09:00', { Credit: 'yes' });
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(invoicesLanded[0]!.invoices.map((i) => [i.givenNumber, i.credit, i.paymentPending])).toEqual([['12', true, false]]);
+      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/supplier invoice 13:.*Credit/s) }]);
+    });
+
     it('reads every invoice on a first pass that asks for it, with no filter until the run drains', async () => {
       await bindInvoices(INVOICE_OPERATION, s, 'all');
       invoice('1', '2019-02-01 09:00');
