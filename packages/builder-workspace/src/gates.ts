@@ -537,6 +537,8 @@ function permissionRows(md: string, heading: string): string[][][] {
  * no inviting role covers is one nobody can ever invite at: the door answers 403, and every other
  * gate passes. A Haiku CRM build gave its admin the invite key and not the reps' `deal:create`
  * (1 of 4, with the rule in the instructions). Read off PERMISSIONS.md, which the turn renders.
+ * The bound is the inviter's whole holding, and the join and the invite each seat one role, so one
+ * role is what an inviter holds here: a union across roles would describe no person.
  */
 async function inviteRolesUncovered(ws: Workspace, projectDir: string): Promise<string | null> {
 	const declared = withoutComments(`${await readTree(ws, `${projectDir}/spec`)}\n${await readTree(ws, `${projectDir}/src`)}`);
@@ -887,6 +889,9 @@ export async function checkModel(ws: Workspace, projectDir: string): Promise<str
 		// no column can hold, found when the code is written, is a build that cannot go green.
 		const migrations = await emitProjectMigrations(ws, projectDir, { check: true });
 		if (migrations.status === 'failed') problems.push(`The migrations emitter refused it:\n${migrations.output}`);
+		if (migrations.status === 'blocked' || migrations.status === 'unavailable') {
+			return `CANNOT CHECK — spec/model.ts compiles and loads, and the migrations emitter could not run here (${migrations.status}); this is not a problem in your file. Stop calling check_model and say so; the gates judge the file at the end of your turn.${migrations.output ? `\n${migrations.output}` : ''}`;
+		}
 	}
 	if (problems.length === 0) {
 		return 'ok — spec/model.ts compiles, loads and emits its tables, so the model gate will pass this file.';

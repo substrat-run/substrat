@@ -27,6 +27,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { checkModel, runGate, runGates, standaloneGates, type GateName, type GateSpec } from '../src/gates.js';
 import { LocalWorkspace } from '../src/local.js';
+import { MIGRATIONS_EMITTER_PATH } from '../src/migrations.js';
 import type { ExecOptions, ExecResult, Workspace } from '../src/workspace.js';
 
 const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
@@ -379,12 +380,15 @@ async function fixtureProject(): Promise<string> {
 }
 
 describe('checkModel — a checker that cannot run is not a declaration error', () => {
-	it('answers CANNOT CHECK, not NOT OK, when only the loader is missing', async () => {
-		// A compile that passes and a toolchain without the emitter: calling again
-		// changes nothing, so the verdict must not read as "fix it and retry".
+	// A compile that passes and a toolchain without the tool: calling again changes
+	// nothing, so the verdict must not read as "fix it and retry", nor as "ok".
+	it.each([
+		['the loader', () => false],
+		['the migrations emitter', (path: string) => path !== MIGRATIONS_EMITTER_PATH],
+	])('answers CANNOT CHECK, not NOT OK or ok, when %s is missing', async (_, hasTool) => {
 		const ws = {
 			exists: async () => true,
-			hasTool: async () => false,
+			hasTool: async (path: string) => hasTool(path),
 			exec: async (): Promise<ExecResult> => ({ stdout: '', stderr: '', exitCode: 0 }),
 		} as unknown as Workspace;
 		expect(await checkModel(ws, 'proj')).toMatch(/^CANNOT CHECK — .*\(unavailable\)/);
