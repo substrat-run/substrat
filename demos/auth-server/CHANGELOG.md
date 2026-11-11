@@ -1,5 +1,19 @@
 # @substrat-run/demo-auth-server
 
+## 0.18.0
+
+### Minor Changes
+
+- 0e3d4df: An operator's app can read the issuer's people through a strict subset of the Auth0 Management API (`POST /oauth/token`, `GET /api/v2/users-by-email`, `GET /api/v2/users/{id}`), with `last_login` and `logins_count` kept for as long as the person exists, and when each application last got a token for them. Opt in by adding `read:users` to `MACHINE_SCOPES`.
+- 68239f3: A SCIM 2.0 server at `/scim/v2` provisions people ahead of their first sign-in, with a BankID attached, a dry run, and Bulk.
+
+### Patch Changes
+
+- Updated dependencies [d272d9b]
+  - @substrat-run/kernel@0.192.0
+  - @substrat-run/vertical-host@0.192.0
+  - @substrat-run/contracts@0.192.0
+
 ## 0.17.20
 
 ### Patch Changes

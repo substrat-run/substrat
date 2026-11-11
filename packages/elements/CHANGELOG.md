@@ -1,5 +1,11 @@
 # @substrat-run/elements
 
+## 0.7.1
+
+### Patch Changes
+
+- @substrat-run/contracts@0.192.0
+
 ## 0.7.0
 
 ### Minor Changes

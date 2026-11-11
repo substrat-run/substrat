@@ -1,5 +1,14 @@
 # @substrat-run/connector-fortnox
 
+## 0.7.16
+
+### Patch Changes
+
+- 316c847: `FortnoxMock` answers supplier-invoice writes the way a Fortnox sandbox did: `bookkeep` on a booked invoice is refused, and with `requireAttest` a company books only attested invoices and locks them against edits.
+- Updated dependencies [d272d9b]
+  - @substrat-run/kernel@0.192.0
+  - @substrat-run/contracts@0.192.0
+
 ## 0.7.15
 
 ### Patch Changes

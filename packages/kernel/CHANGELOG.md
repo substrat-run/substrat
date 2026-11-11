@@ -1,5 +1,16 @@
 # @substrat-run/kernel
 
+## 0.192.0
+
+### Minor Changes
+
+- d272d9b: - kernel: `seatWorld` seats a vertical's sample world: a principal, role and identity link per persona, then the records it declares.
+  - dev-issuer: a persona can name its `role`, and `elsewhere` for one in another tenant.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.192.0
+
 ## 0.191.0
 
 ### Minor Changes

@@ -1,5 +1,23 @@
 # @substrat-run/builder
 
+## 0.13.9
+
+### Patch Changes
+
+- 4112913: check_model also emits the model's tables, so a field no column can hold is caught while the model may still change, and the migrations gate asks a repair for it instead of reporting it blocked. A new invite-roles gate refuses invitations offered at a role no inviting role covers.
+- Updated dependencies [4112913]
+- Updated dependencies [d272d9b]
+  - @substrat-run/builder-workspace@0.13.6
+  - @substrat-run/builder-generator@0.12.7
+  - @substrat-run/kernel@0.192.0
+  - @substrat-run/engine-assistant@0.1.44
+  - @substrat-run/engine-metering@0.6.76
+  - @substrat-run/adapter-cloudflare@0.192.0
+  - @substrat-run/control-plane-api@0.192.0
+  - @substrat-run/contracts@0.192.0
+  - @substrat-run/cli@0.58.6
+  - @substrat-run/model-providers@0.5.82
+
 ## 0.13.8
 
 ### Patch Changes
