@@ -510,7 +510,7 @@ export function BankIdSignIn({
         {failed && !err && <p className="error">{t(hint)}</p>}
         {err && <p className="error">{err}</p>}
         {!failed && order && (
-          <a className="btn" href={order.autoStartUrl}>
+          <a className="btn bankid-open" href={order.autoStartUrl}>
             {t('bankid.openHere')}
           </a>
         )}
