@@ -22,7 +22,8 @@ Claude Code and attacks both kinds of build with one calibrated tester ([battery
 ## Before you run them
 
 - `python3` (standard library only), `zsh`, `lsof`, and node 22.13 or later with pnpm on `PATH`. The
-  zsh scripts run as `zsh -i`, so your profile's `PATH` applies.
+  zsh scripts run as plain `zsh` and source `path.sh`, which adds the newest nvm node when `PATH` has
+  none. They do not load your profile: its hooks would run inside them.
 - An installed lane project to borrow `node_modules` from. Archived runs keep none; a `todo` eval run
   leaves `.builder/projects/eval-<lane>-todo` installed (`queue-par.sh`), with the dev issuer, `tsx`,
   Vite and wrangler the checks start.
@@ -53,6 +54,8 @@ They are written for macOS: `cp -Rc` clones, and the browser lookup knows the ma
 | `PLAYWRIGHT_BROWSERS_PATH` | `~/Library/Caches/ms-playwright` | Where `verify-ui.cjs` looks for chromium |
 | `BATTERY_APP` | `todo` | `crm` switches `crm-harness/run-tester.sh` and `battery.py` to the sales-team battery |
 | `TESTER_ALLOW` | none | More path prefixes the tester may read, `:`-separated |
+| `CRM_BUILDER_MODEL` | `sonnet` | The Claude Code model `crm-builder.sh` builds with, and the model its run ids name |
+| `CRM_BUILDER_FROM` | `1` | The first lane `crm-builder.sh` uses; `<lanes>` lanes follow it |
 
 To keep a batch that reinstalls lanes from disturbing a check, point `LANE_ROOT` at a folder whose
 `.builder/projects/eval-<N>-todo` are symlinks to one idle lane.
