@@ -20,6 +20,9 @@ import { bookSidebar, changelogSidebar, guideSidebar } from './sidebar.mjs';
  * `TICKET0_WIDGET=0` builds without one. Off is the exception now, not on — this
  * array ships to production, and a person made that decision once, here.
  */
+/** `@substrat-run/elements`' source, which the live demos import (see `vite.resolve` below). */
+const ELEMENTS_SRC = resolve(import.meta.dirname, '../../../packages/elements/src');
+
 const WIDGET_API =
   process.env.TICKET0_WIDGET === '0'
     ? undefined
@@ -60,6 +63,15 @@ export default withMermaid(defineConfig({
   srcExclude: ['CHANGELOG.md'],
 
   vite: {
+    // The live element demos on reference/elements read `@substrat-run/elements` from its
+    // source: the docs deploy builds no workspace package first, so there is no `dist`.
+    resolve: {
+      alias: [
+        { find: /^@substrat-run\/elements\/themes\/(.*)$/, replacement: resolve(ELEMENTS_SRC, 'themes/$1') },
+        { find: /^@substrat-run\/elements\/(.*)$/, replacement: resolve(ELEMENTS_SRC, '$1.ts') },
+        { find: /^@substrat-run\/elements$/, replacement: resolve(ELEMENTS_SRC, 'index.ts') },
+      ],
+    },
     // mermaid ships ESM that default-imports CJS deps (dayjs); without
     // pre-bundling, the browser throws and the whole app fails to mount.
     optimizeDeps: { include: ['mermaid', 'dayjs'] },
