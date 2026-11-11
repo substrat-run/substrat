@@ -631,7 +631,7 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
    with `pnpm fortnox:measure-writeback`. The answers, verbatim, are in
    [`MEASUREMENTS-writeback.md`](https://github.com/substrat-run/substrat/blob/main/connectors/fortnox/MEASUREMENTS-writeback.md).
    A block set over the API changes nothing else, `bookkeep` books with no body, and the comment log
-   keeps its order and takes at least 65,536 characters. Where booking needs approval, the
-   approval path under [writing back](#writing-back) is unmeasured until the script runs against it. In the sandbox's web UI, an
+   keeps its order and takes at least 65,536 characters. Both company settings were measured,
+   including the approval path under [writing back](#writing-back). In the sandbox's web UI, an
    unbooked invoice could not be selected for payment, and the block did not stop a payment
    registered by hand. Still open: does a blocked invoice stay out of a payment file?

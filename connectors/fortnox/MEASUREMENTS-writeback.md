@@ -235,6 +235,22 @@ End to end, `syncFortnoxSupplierInvoices` as before:
 G ends booked, not blocked, with the board's comment. Pass 1 reported `"held":1,"written":1`. **This
 is #2827 doing what it was written to do, against a real Fortnox.**
 
+## The approval path, measured
+
+The approval path in the stacked follow-up was measured with "Simple approve" back on: run
+`WB-202611111650`, invoices 61–69. In a company that requires approval, the write-back now lifts its
+hold, approves the invoice and books it. The run in between, invoices 52–60, was made with "None".
+It wrote what the earlier no-approval run did.
+
+| Invoice, pass | Writes, in order | Receipt |
+|---|---|---|
+| F (66), pass 1: `{ hold: [66], decisions: [66] }` | hold `PUT /supplierinvoices/66` → `200`; `PUT …/66/bookkeep` → `400 … 2001109`; release `PUT /supplierinvoices/66` → `200`; `PUT …/66/approvalbookkeep` → `200`; `PUT …/66/bookkeep` → `200`; `POST …/66/commentlog` → `201` | `done` |
+| F, pass 2, the same decision again | none | `done` |
+| G (67), approved before the sweep saw it, pass 1 | hold `PUT /supplierinvoices/67` → `400 … 2003576`; `PUT …/67/bookkeep` → `200`; `POST …/67/commentlog` → `201` | `done`. The pass reports once that 67 "was approved in Fortnox before it could be held" |
+| G, pass 2 | none, and the hold is not asked again | `done` |
+
+F and G both end booked, not blocked, with the board's comment.
+
 ## Where `FortnoxMock` disagreed with Fortnox
 
 | What the mock did | What Fortnox does | Change |
