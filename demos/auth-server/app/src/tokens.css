@@ -171,6 +171,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 /* BankID — the QR sits on white whatever the theme, or the app cannot scan it. */
 .bankid-qr { display: flex; justify-content: center; margin: 8px 0 12px; }
 .bankid-qr img { background: #fff; border-radius: 8px; padding: 8px; }
+/* "open on this device" is a link (the autostart URL) drawn as a full-width button */
+.bankid-open { display: block; width: 100%; text-align: center; text-decoration: none; margin-top: 4px; }
+.bankid-open + .btn.link { margin-top: 10px; }
 
 /* the per-application sign-in editor (`views/SignInPolicyEditor.tsx`) */
 .signin-editor { display: flex; flex-direction: column; gap: 14px; margin: 10px 0 0 26px; }
