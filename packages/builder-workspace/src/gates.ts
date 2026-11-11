@@ -210,7 +210,71 @@ async function readTree(ws: Workspace, dir: string): Promise<string> {
 	return parts.join('\n');
 }
 
-const withoutComments = (source: string): string => source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/.*$/gm, '$1');
+/**
+ * The source with its comments removed and its string and template literals kept. A literal is
+ * read first, so the `/*` of a route glob (`'/api/auth/*'`) opens no comment: read as one, it
+ * hid every line up to the next `*\/`, and the gates refused code they could not see. A template's
+ * `${…}` is code again, so a comment inside one goes too: kept, `${/* outbox.kick(caller) *\/ ''}`
+ * reads as wiring that is not there. A `//` after a `:` is a URL's, not a comment.
+ */
+function withoutComments(source: string): string {
+	let out = '';
+	// One entry per `${` still open: how many of its own `{` are unclosed.
+	const open: number[] = [];
+	let i = 0;
+	const template = () => {
+		// From just after a backtick or an interpolation's `}`, to the closing backtick or the next `${`.
+		while (i < source.length) {
+			const c = source[i]!;
+			if (c === '\\') {
+				out += source.slice(i, i + 2);
+				i += 2;
+			} else if (c === '`') {
+				out += c;
+				i++;
+				return;
+			} else if (c === '$' && source[i + 1] === '{') {
+				out += '${';
+				i += 2;
+				open.push(0);
+				return;
+			} else {
+				out += c;
+				i++;
+			}
+		}
+	};
+	while (i < source.length) {
+		const c = source[i]!;
+		const next = source[i + 1];
+		if (c === '/' && next === '*') {
+			const end = source.indexOf('*/', i + 2);
+			i = end === -1 ? source.length : end + 2;
+		} else if (c === '/' && next === '/' && source[i - 1] !== ':') {
+			while (i < source.length && source[i] !== '\n') i++;
+		} else if (c === "'" || c === '"') {
+			let j = i + 1;
+			while (j < source.length && source[j] !== c && source[j] !== '\n') j += source[j] === '\\' ? 2 : 1;
+			out += source.slice(i, j + 1);
+			i = j + 1;
+		} else if (c === '`') {
+			out += c;
+			i++;
+			template();
+		} else if (c === '}' && open.length > 0 && open[open.length - 1] === 0) {
+			open.pop();
+			out += c;
+			i++;
+			template();
+		} else {
+			if (open.length > 0 && c === '{') open[open.length - 1]!++;
+			if (open.length > 0 && c === '}') open[open.length - 1]!--;
+			out += c;
+			i++;
+		}
+	}
+	return out;
+}
 
 /** The API port a file falls back to. `ISSUER_PORT` and `WEB_PORT` are other ports. */
 const apiPortIn = (source: string): string | undefined => /(?<![A-Z_])PORT\s*\?\?\s*['"]?(\d+)/.exec(source)?.[1];
