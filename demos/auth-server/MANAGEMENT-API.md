@@ -74,6 +74,11 @@ token exchange is not recorded: the person did not sign in to that application. 
 client's own tokens are never listed. Rows are kept for as long as the person and the
 application both exist.
 
+On an install that existed before this feature, the first times are approximate. They come from
+the stored refresh tokens, opaque access tokens and consents. A consent's time is when the person
+agreed, not necessarily when a token was issued. An application that only ever got JWT access
+tokens has no time until its next sign-in.
+
 ## Where it differs from Auth0
 
 ### Calling it

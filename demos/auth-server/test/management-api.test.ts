@@ -341,8 +341,11 @@ describe('activity outlives the sign-in log', () => {
   it('fills an upgraded install once, from the sign-ins and sessions it already holds', () => {
     db.prepare('DELETE FROM user_activity').run();
     db.prepare("DELETE FROM config WHERE key = 'user_activity_backfilled'").run();
+    // The latest of the log and the sessions wins: an older logged sign-in, a newer session.
+    db.prepare("UPDATE sign_in_attempt SET at = 1000 WHERE user_id = ?").run(adminId);
+    db.prepare('UPDATE session SET created_at = 5000 WHERE user_id = ?').run(adminId);
     expect(backfillActivity(sql)).toBe(true);
-    expect(readActivity(sql, adminId)).toEqual({ lastLoginAt: expect.any(Number), loginsCount: 1 });
+    expect(readActivity(sql, adminId)).toEqual({ lastLoginAt: 5000, loginsCount: 1 });
     expect(backfillActivity(sql)).toBe(false);
   });
 });

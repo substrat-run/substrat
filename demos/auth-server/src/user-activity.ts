@@ -80,23 +80,28 @@ const BACKFILLED_KEY = 'user_activity_backfilled';
  *
  * `last_login_at` is the latest of a successful sign-in in the log and a session's creation.
  * `logins_count` is the successful sign-ins the log still holds — an undercount for anyone who
- * signed in before the log's thirty days, which the compatibility table says. A per-application
- * time is the latest token or consent row for the pair; a JWT access token is never stored, so
- * an application that only ever got those starts at its next sign-in.
+ * signed in before the log's thirty days, which the compatibility table says.
+ *
+ * A per-application time is APPROXIMATE: the latest token or consent row for the pair. A consent
+ * row's time is when the person agreed, which proves no token was issued then, and a JWT access
+ * token is never stored, so an application that only ever got those is missing until its next
+ * sign-in. Every time recorded after the fill is an actual token.
  *
  * Runs at boot in both runtimes, after the DDL. Returns whether it ran.
  */
 export function backfillActivity(sql: SqlExec): boolean {
   if (sql.exec('SELECT 1 FROM config WHERE key = ?', BACKFILLED_KEY).toArray().length) return false;
   sql.exec(
+    // One pass over each source, grouped, then joined: `sign_in_attempt` has no `user_id` index,
+    // so a per-user subquery would read the whole log once for every person.
     `INSERT OR IGNORE INTO user_activity (user_id, last_login_at, logins_count)
-     SELECT u.id,
-            max(coalesce((SELECT max(at) FROM sign_in_attempt a WHERE a.user_id = u.id AND a.outcome = 'succeeded'), 0),
-                coalesce((SELECT max(created_at) FROM session s WHERE s.user_id = u.id), 0)),
-            (SELECT count(*) FROM sign_in_attempt a WHERE a.user_id = u.id AND a.outcome = 'succeeded')
-     FROM user u
-     WHERE EXISTS (SELECT 1 FROM sign_in_attempt a WHERE a.user_id = u.id AND a.outcome = 'succeeded')
-        OR EXISTS (SELECT 1 FROM session s WHERE s.user_id = u.id)`,
+     SELECT x.user_id, max(x.at), sum(x.n) FROM (
+       SELECT user_id, max(at) AS at, count(*) AS n FROM sign_in_attempt
+        WHERE outcome = 'succeeded' AND user_id IS NOT NULL GROUP BY user_id
+       UNION ALL SELECT user_id, max(created_at), 0 FROM session GROUP BY user_id
+     ) x
+     JOIN user u ON u.id = x.user_id
+     GROUP BY x.user_id`,
   );
   sql.exec(
     `INSERT OR IGNORE INTO user_client_activity (user_id, client_id, last_token_at)
