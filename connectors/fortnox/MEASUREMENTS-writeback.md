@@ -229,19 +229,20 @@ labels are quoted in English. Nothing was changed, approved, booked or paid.
 - **The payment-file view was not reached.** The Supplier invoices list and "Show list" open a setup
   wizard ("Get started with supplier invoices!") instead. Finishing it changes settings, so it was
   left alone. Whether a blocked invoice is missing from a payment file is still open.
-- **The UI offers to lift a block the API cannot.** On booked, attested 25 the toolbar shows an
-  active **"Enable payment file"**. Over the API that change is refused (`2003576`). It was not
-  clicked: whether the UI really clears it on a booked invoice is the next check.
+- **The UI lifts a block the API cannot.** On booked, approved 25 the toolbar's **"Enable payment
+  file"** answered "Payment file enabled.", the ✗ disappeared, and a reload showed it lifted. "Disable
+  payment file" ("Payment file disabled.") then set it again, and 25 was left blocked as before. Over
+  the API the same change is refused (`2003576`). So the lock is **a limit of the API, not a state of
+  the invoice**: Fortnox lets a person clear the block after booking, and does not let an
+  integration.
 
 ## What a person has to check
 
 Still open, in the sandbox's web UI:
 
-1. **Click "Enable payment file" on booked invoice 25.** If the UI clears the block, the API's
-   `2003576` is a restriction of the API, not of the invoice. Then re-block it the same way.
-2. **Set Approval management to no approval, run `pnpm fortnox:measure-writeback` again, then set it
+1. **Set Approval management to no approval, run `pnpm fortnox:measure-writeback` again, then set it
    back to "Simple approve".** That run answers the one question still open over the API: can a booked
    invoice that nobody approved have its block cleared?
-3. **The payment-file view**, once someone decides to finish the supplier-invoice setup wizard. Is
+2. **The payment-file view**, once someone decides to finish the supplier-invoice setup wizard. Is
    blocked 33, 25, 29 or 30 missing from a payment file, where 32, 27 and 31 are not?
-4. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it.
+3. **Which scope admits `/supplierinvoicepayments`?** The current consent does not hold it.
