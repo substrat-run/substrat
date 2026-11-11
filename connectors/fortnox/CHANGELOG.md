@@ -1,5 +1,11 @@
 # @substrat-run/connector-fortnox
 
+## 0.7.15
+
+### Patch Changes
+
+- 61f7420: A supplier invoice flag Fortnox sends as `"true"`, `"false"` or `""` is read as a boolean instead of failing the invoice landing.
+
 ## 0.7.14
 
 ### Patch Changes
