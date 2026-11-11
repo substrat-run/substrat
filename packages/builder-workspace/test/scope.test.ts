@@ -72,6 +72,21 @@ describe('project mode — the vertical is its own repo (§4.6)', () => {
 		expect(await foreignChanges(ws, PROJECT)).toEqual([]);
 	});
 
+	it('a clone with no ignores gets them before its first commit, and never commits node_modules', async () => {
+		// A hosted project is a clone of a repository the studio did not initialise.
+		await ws.writeFile(`${PROJECT}/README.md`, 'seed\n');
+		await ws.exec("git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -q -m seed", { cwd: PROJECT });
+		await ws.writeFile(`${PROJECT}/node_modules/dep/index.js`, 'module.exports = 1;\n');
+		await ws.writeFile(`${PROJECT}/src/module.ts`, 'export const M = 1;\n');
+
+		const turn = await runTurn(ws, { verticalDir: PROJECT, message: 'turn 1', gates: NO_GATES });
+
+		expect(turn.commit).not.toBeNull();
+		const tracked = (await ws.exec('git ls-files', { cwd: PROJECT })).stdout.split('\n');
+		expect(tracked).toEqual(expect.arrayContaining(['.gitignore', 'src/module.ts']));
+		expect(tracked.filter((f) => f.includes('node_modules'))).toEqual([]);
+	});
+
 	it('refuses to nest a repo inside a parent-tracked directory', async () => {
 		await ws.writeFile('demos/x/existing.ts', 'export const A = 1;\n');
 		await ws.exec('git add -A && git -c user.name=t -c user.email=t@t commit -q -m demos');
@@ -112,6 +127,15 @@ describe('legacy scoped mode — the vertical inside a larger repo', () => {
 		});
 		expect(turn.commit).toBeNull();
 		expect((await ws.exec('git rev-parse HEAD')).stdout).toBe(before.stdout);
+	});
+
+	it('never stages node_modules, and a turn that only installed commits nothing', async () => {
+		await ws.writeFile('demos/x/node_modules/dep/index.js', 'module.exports = 1;\n');
+		expect((await runTurn(ws, { verticalDir: 'demos/x', message: 'install only', gates: NO_GATES })).commit).toBeNull();
+
+		await ws.writeFile('demos/x/src/module.ts', 'export const M = 1;\n');
+		expect((await runTurn(ws, { verticalDir: 'demos/x', message: 'turn 1', gates: NO_GATES })).commit).not.toBeNull();
+		expect((await ws.exec('git ls-files -- demos/x')).stdout).not.toContain('node_modules');
 	});
 
 	it('reports foreign changes so the session can warn', async () => {
