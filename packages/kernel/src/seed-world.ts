@@ -105,6 +105,9 @@ export async function seatWorld(host: ScopeHost, input: SeatWorldInput): Promise
   const seated = world.personas.filter((p) => Boolean(p.elsewhere) === elsewhere);
   for (const persona of seated) {
     const known = await host.admin.resolveIdentity(node.tenantId, provider, persona.sub);
+    if (known?.scopeId && known.scopeId !== node.scopeId) {
+      throw new Error(`seed world: identity '${persona.sub}' is linked to another scope`);
+    }
     const principal = known?.principal ?? principalId.parse(ulid());
     if (!known) {
       if (persona.role) {
