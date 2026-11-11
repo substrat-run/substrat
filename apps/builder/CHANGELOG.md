@@ -1,5 +1,13 @@
 # @substrat-run/builder
 
+## 0.13.8
+
+### Patch Changes
+
+- 07afeed: The builder's gates no longer read the `/*` of a route glob in a string (`'/api/auth/*'`) as the start of a comment. They used to skip every line up to the next `*/`, so a dev server that wired its mail outbox right after its sign-in route was refused as writing mail nowhere. A comment inside a template's `${…}` is now removed as well, so it is no longer read as code.
+- 12cf2f3: Builder: a hosted project gets a `.gitignore` before its first commit and a turn never stages `node_modules`, so the build turn that installs dependencies no longer fails to save with "repository operation failed".
+- 72f9111: The builder's interview keeps a power with the role the brief and the answers give it: "the admin can hand a deal to another rep" no longer becomes "and managers, within their team" in the concept. The rule only stops a power spreading, and never takes one from a role, including what a role that invites needs to cover the roles it invites at.
+
 ## 0.13.7
 
 ### Patch Changes

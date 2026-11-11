@@ -1,5 +1,11 @@
 # @substrat-run/builder-web
 
+## 0.4.12
+
+### Patch Changes
+
+- @substrat-run/ui@0.4.3
+
 ## 0.4.11
 
 ### Patch Changes
