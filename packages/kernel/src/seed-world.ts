@@ -188,6 +188,10 @@ export async function seatWorldWith(seating: WorldSeating, input: SeatWorldOptio
   return seats;
 }
 
+// The kernel compiles without the DOM lib; Web Crypto is a global in every runtime it runs in.
+declare const crypto: { subtle: { digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer> } };
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
+
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 /**
