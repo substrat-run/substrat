@@ -113,6 +113,26 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
     expect(await inertIn(clean)).toBe(1);
   });
 
+  // #3108: the guard a seeded preview's persona link is behind. A carry onto a new version loads the
+  // scope's own export, copy-origin row included, so a fork carried that way still names its source.
+  it('reads a clean room as one, before and after a carry; a fork and an install never', async () => {
+    const host = hostFor();
+    const carry = async (s: ScopeId, lineage: typeof PREVIEW) =>
+      host.restoreScopeLocal(s, await host.exportScopeLocal(s), { sourceScopeId: s, exact: true, markCopy: lineage });
+    const clean = scopeId.parse(ulid());
+    await host.restoreScopeLocal(clean, [], { markCopy: PREVIEW });
+    const fork = scopeId.parse(ulid());
+    await host.restoreScopeLocal(fork, await host.exportScopeLocal(install), { sourceScopeId: install, markCopy: FORK() });
+
+    expect(await host.isCleanRoomCopyLocal(clean)).toBe(true);
+    expect(await host.isCleanRoomCopyLocal(fork)).toBe(false);
+    expect(await host.isCleanRoomCopyLocal(install)).toBe(false);
+    await carry(clean, PREVIEW);
+    await carry(fork, FORK());
+    expect(await host.isCleanRoomCopyLocal(clean)).toBe(true);
+    expect(await host.isCleanRoomCopyLocal(fork)).toBe(false);
+  });
+
   // A copy made before every copy carried the marker, or a same-scope carry of one, holds no
   // row: on its own storage it reads as an install. The platform, which has the directory, marks it.
   describe('a copy that predates the marker (#2005)', () => {

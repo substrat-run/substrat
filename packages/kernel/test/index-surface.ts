@@ -597,9 +597,9 @@ export const INDEX_VALUE_EXPORTS = [
   'peerSeats',
   'peerSubjectRef',
   'peerVerticalSpellings',
+  'pendingCopyKeepAliveParams',
   // #3108: the principal a persona is seated as in a deployed preview, stable across pushes.
   'personaPrincipal',
-  'pendingCopyKeepAliveParams',
   'planExportBatch',
   'planMigrations',
   'platformIntentFailureMessage',

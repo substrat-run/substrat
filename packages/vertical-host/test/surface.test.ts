@@ -3848,3 +3848,44 @@ describe('mountPlatformSurface — the paged copy verbs (#2450)', () => {
     expect(seen).toHaveLength(1);
   });
 });
+
+/**
+ * #3108: a seeded preview's sample world. The routes read whether the scope is a clean-room
+ * preview from the scope itself, so a persona link never lands on a production scope or a fork,
+ * whatever the request says.
+ */
+describe('mountPlatformSurface — a seeded preview (#3108)', () => {
+  const ANNA = { sub: 'dev|anna', name: 'Anna', email: 'anna@example.test', role: 'admin' };
+  const call = (host: VerticalScopeHost, deps: Parameters<typeof appWith>[1], path: string, body: object = {}) =>
+    appWith(host, deps).request(
+      path,
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, ...body }) },
+      ENV,
+    );
+
+  it('seats the world only where the scope reads as a clean room, and answers its personas', async () => {
+    const seated: unknown[] = [];
+    const world = { personas: [ANNA], seat: async (_env: Env, b: object) => void seated.push(b) };
+    let clean = false;
+    const host = fakeHost({ isCleanRoomCopyLocal: async () => clean });
+
+    for (const path of ['/internal/seed-world', '/internal/personas']) {
+      expect((await call(host, { seedWorld: world }, path, { build: true })).status).toBe(path === '/internal/seed-world' ? 409 : 400);
+    }
+    expect((await call(host, { seedWorld: world }, '/internal/personas')).status).toBe(409);
+    expect(seated).toEqual([]);
+
+    clean = true;
+    const res = await call(host, { seedWorld: world }, '/internal/seed-world', { build: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ personas: [ANNA] });
+    expect(seated).toEqual([{ tenantId: TENANT, scopeId: SCOPE, build: true }]);
+    expect(await (await call(host, { seedWorld: world }, '/internal/personas')).json()).toEqual({ personas: [ANNA] });
+  });
+
+  it('answers 501 for a deployment with no world, or a host that cannot read the clean room', async () => {
+    const world = { personas: [ANNA], seat: async () => undefined };
+    expect((await call(fakeHost({ isCleanRoomCopyLocal: async () => true }), {}, '/internal/seed-world', { build: false })).status).toBe(501);
+    expect((await call(fakeHost(), { seedWorld: world }, '/internal/seed-world', { build: false })).status).toBe(501);
+  });
+});
