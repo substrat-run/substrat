@@ -87,7 +87,11 @@ export interface ConnectorSweeper {
  */
 export interface ConnectorSweepAnswer {
   found: number;
-  failed: readonly { scopeId: string; error: string }[];
+  /**
+   * `error` is staff's (it may carry the provider's answer); `said`, when the connector gives one, is
+   * what the connection's tenant may read about why, built from the connector's own words (#3103).
+   */
+  failed: readonly { scopeId: string; error: string; said?: string }[];
   unsupported?: readonly { scopeId: string; reason: string }[];
 }
 
@@ -103,10 +107,23 @@ export function connectorSweepAnswerOf(result: unknown): ConnectorSweepAnswer | 
           .map((u) => ({ scopeId: String(u.scopeId), reason: String(u.reason) }))
       : [],
     failed: failed
-      .filter((f): f is { scopeId: unknown; error: unknown } => typeof f === 'object' && f !== null)
-      .map((f) => ({ scopeId: String(f.scopeId), error: String(f.error) })),
+      .filter((f): f is { scopeId: unknown; error: unknown; said?: unknown } => typeof f === 'object' && f !== null)
+      .map((f) => ({
+        scopeId: String(f.scopeId),
+        error: String(f.error),
+        ...(typeof f.said === 'string' && f.said !== '' ? { said: f.said.slice(0, SAID_LIMIT) } : {}),
+      })),
   };
 }
+
+/** The most of one binding's `said` a sweep row carries: a line, never a payload. */
+const SAID_LIMIT = 200;
+
+/** `: why; why` for the failed bindings whose connector said why (#3103), or nothing. */
+const saidOf = (failed: readonly { said?: string }[]): string => {
+  const said = [...new Set(failed.flatMap((f) => (f.said ? [f.said] : [])))];
+  return said.length > 0 ? `: ${said.join('; ')}` : '';
+};
 
 /** `n noun`, with the noun's plural when `n` is not one. */
 const counted = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -2094,7 +2111,7 @@ export async function runPlatformSweep(
     const unsupportedDetail = unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; ');
     if (landingFailed.length > 0 || pollFailed.length > 0) {
       fail(
-        [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
+        [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land${saidOf(pollFailed)}`] : [])],
         scoped([...landingFailed, ...pollFailed]),
         unsupportedDetail || undefined,
       );

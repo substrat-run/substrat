@@ -268,6 +268,8 @@ export interface ScopeSyncResult {
   pending: boolean;
   /** On `failed`, the connector's own words: staff's ledger row, never the answer. */
   errors: string[];
+  /** On `failed`, what the tenant may read about why, when the connector built one from its own words (#3103). */
+  said?: string[];
 }
 
 /** Poll ONE scope's binding on a connection, inside the same budget and deadline a sweep pass has. */
@@ -336,7 +338,8 @@ export async function relayConnectionSync(
     let error: string | undefined;
     if (result.outcome === 'failed') {
       const reference = ulid();
-      error = `the binding did not land (reference ${reference})`;
+      const why = [...new Set(result.said ?? [])].map((s) => s.slice(0, 200));
+      error = `the binding did not land${why.length > 0 ? `: ${why.join('; ')}` : ''} (reference ${reference})`;
       await host.admin
         .recordOpsFailure({
           actor,

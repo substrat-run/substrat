@@ -1094,6 +1094,36 @@ export async function syncFortnoxSupplierInvoices(
 
 const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
+/**
+ * A read that failed, with what the binding's tenant may be told about it (#3103). The message is
+ * staff's: it carries Fortnox's own answer. `said` is built only from what this connector names
+ * itself (the invoice number, the field our schema could not read, the HTTP status), so the sweep's
+ * row can say why the binding did not land without carrying a provider's text.
+ */
+class FortnoxReadFailure extends Error {
+  readonly said: string;
+  constructor(message: string, said: string) {
+    super(message);
+    this.name = 'FortnoxReadFailure';
+    this.said = said;
+  }
+}
+
+/** A field path our schema names: keys we declared and array indexes, never a key Fortnox chose. */
+const SCHEMA_SEGMENT = /^[A-Za-z@][A-Za-z0-9]{0,63}$/;
+
+/** What the tenant may read about a failed read of supplier invoice `givenNumber`, or null when it has nothing of ours to say. */
+function invoiceReadSaid(givenNumber: string, err: unknown): string | null {
+  if (err instanceof z.ZodError) {
+    const fields = [...new Set(err.issues.map((i) => i.path.filter((p) => typeof p === 'number' || (typeof p === 'string' && SCHEMA_SEGMENT.test(p))).join('.')))]
+      .filter((f) => f !== '');
+    const named = fields.slice(0, 3).join(', ') + (fields.length > 3 ? ` and ${fields.length - 3} more` : '');
+    return `supplier invoice ${givenNumber} has a value this connector cannot read${named ? ` in ${named}` : ''}`;
+  }
+  if (err instanceof FortnoxApiError) return `Fortnox answered ${err.status} for supplier invoice ${givenNumber}`;
+  return null;
+}
+
 interface InvoiceLanding {
   landed: number;
   more: boolean;
@@ -1146,7 +1176,9 @@ async function landChangedInvoices(
       invoices.push(landedInvoice(await api.supplierInvoice(givenNumber)));
     } catch (err) {
       if (!(err instanceof FortnoxApiError && err.status === 404)) {
-        failure = new Error(`supplier invoice ${givenNumber}: ${err instanceof Error ? err.message : String(err)}`);
+        const text = `supplier invoice ${givenNumber}: ${err instanceof Error ? err.message : String(err)}`;
+        const said = invoiceReadSaid(givenNumber, err);
+        failure = said === null ? new Error(text) : new FortnoxReadFailure(text, said);
         break;
       }
     }
@@ -1536,7 +1568,8 @@ export interface FortnoxSweepResult {
   /** Invoice bindings that landed invoices or files, wrote back, or left work for a later pass. */
   invoices: FortnoxInvoiceSyncResult[];
   unchanged: number;
-  failed: { scopeId: string; error: string }[];
+  /** `error` is staff's; `said`, when present, is what the binding's tenant may read about it (#3103). */
+  failed: { scopeId: string; error: string; said?: string }[];
   /** Bindings another poll was polling (#2672): skipped this pass, never failed; the next pass polls them. */
   busy: string[];
 }
@@ -1671,6 +1704,7 @@ export async function sweepFortnoxLedger(
       result.failed.push({
         scopeId: binding.scopeId,
         error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof FortnoxReadFailure ? { said: err.said } : {}),
       });
     } finally {
       // A release that fails leaves the lease to expire.
@@ -1689,6 +1723,8 @@ export interface FortnoxScopePoll {
   pending: boolean;
   /** On `failed`, each binding's own error: staff's to read, never the tenant's. */
   errors: string[];
+  /** On `failed`, what the tenant may read about why, for the bindings that say (#3103). */
+  said?: string[];
 }
 
 /**
@@ -1703,7 +1739,10 @@ export async function pollFortnoxScope(
 ): Promise<FortnoxScopePoll> {
   const r = await sweepFortnoxLedger(host, connectionId, { ...options, scopeId });
   const pending = r.invoices.some((i) => i.pending);
-  if (r.failed.length > 0) return { outcome: 'failed', pending, errors: r.failed.map((f) => f.error) };
+  if (r.failed.length > 0) {
+    const said = r.failed.flatMap((f) => (f.said ? [f.said] : []));
+    return { outcome: 'failed', pending, errors: r.failed.map((f) => f.error), ...(said.length > 0 ? { said } : {}) };
+  }
   if (r.found === 0) return { outcome: 'not-bound', pending: false, errors: [] };
   if (r.busy.length > 0) return { outcome: 'in-progress', pending: false, errors: [] };
   const landed = r.synced.length > 0 || r.invoices.some((i) => i.landed > 0 || i.files > 0 || i.held > 0 || i.written > 0);
