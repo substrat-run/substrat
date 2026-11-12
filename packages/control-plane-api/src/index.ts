@@ -418,6 +418,7 @@ export {
   verticalConnectorDispatchHandler,
   verticalConnectorInspector,
   verticalConnectorReadsOf,
+  verticalConnectorScopeSync,
   verticalConnectorSweeper,
 } from './vertical-connectors.js';
 export type { VerticalConnectorDeps, VerticalConnectorReads, VerticalConnectorTarget } from './vertical-connectors.js';

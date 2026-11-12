@@ -56,8 +56,8 @@ it applies a batch another app exported, entering through the peer door.
 `getScope` takes a fourth argument, `ScopeStubOptions`, for the HTTP layer around an operation
 rather than for the module. Its observers fire only after an invoke **commits**:
 
-- **`onPlatformRequests(count)`** fires when the operation enqueued
-  [platform intents](/concepts/platform#platform-intents).
+- **`onPlatformRequests(count, scopeId)`** fires when the operation enqueued
+  [platform intents](/concepts/platform#platform-intents), naming the scope they went into.
 - **`onExportedEvents(count)`** fires when the operation, or an in-scope consumer in its tail,
   committed an event of a type this deployment exports to another app.
 

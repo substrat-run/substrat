@@ -33,6 +33,7 @@ import {
   verticalConnectorReadsOf,
   verticalConnectorBinder,
   verticalConnectorInspector,
+  verticalConnectorScopeSync,
   verticalConnectorSweeper,
   verticalConnectorDispatchHandler,
   type ConnectionInspector,
@@ -169,6 +170,33 @@ describe('vertical-defined connectors — the platform side', () => {
     expect(await stateAt(b, 'cursor')).toBe('b1'); // the failed call's scope keeps its cursor
     expect(uses.mock.calls.map(([, use]) => use)).toEqual(expect.arrayContaining([{ ok: true, status: 200 }, { ok: false, error: 'box answered 503', status: 503 }]));
     expect(uses).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls one scope's binding on request with the pass's own call, and nothing of another scope's (#2672)", async () => {
+    await bind(a);
+    await bind(b);
+    await host.admin.putConnectorState(row.id, verticalConnectorStateKey(a, 'cursor'), 'a1');
+    answer = async () => ok({ result: { landed: 2, more: true }, state: [{ key: 'cursor', value: 'a2' }] });
+    const sync = verticalConnectorScopeSync(deps());
+
+    expect(await sync(host, row, a)).toEqual({ outcome: 'landed', pending: true, errors: [] });
+    expect(calls.map((c) => c.target.scopeId)).toEqual([a]);
+    expect(calls[0]!.request).toMatchObject({ role: 'sweep', binding: { scopeId: a }, state: [{ key: 'cursor', value: 'a1' }] });
+    expect(await stateAt(a, 'cursor')).toBe('a2');
+
+    answer = async () => ok({ result: { landed: 0, more: false } });
+    expect(await sync(host, row, a)).toEqual({ outcome: 'unchanged', pending: false, errors: [] });
+    answer = async () => ({ status: 200, body: { ok: false, refused: false, error: 'box answered 503', uses: [] } });
+    expect(await sync(host, row, b)).toEqual({ outcome: 'failed', pending: false, errors: ['box answered 503'] });
+  });
+
+  it('answers not-bound for a scope the connection is not bound to, or whose connector sweeps nothing', async () => {
+    const sync = verticalConnectorScopeSync(deps());
+    expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
+    await bind(a);
+    declaration = declare({ sweeps: false });
+    expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
+    expect(calls).toEqual([]);
   });
 
   it('records one failed use when the call never answers, and applies a probe that did', async () => {

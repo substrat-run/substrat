@@ -17,7 +17,9 @@ export function kickFlags(
   setHeader: (name: string, value: string) => void,
 ): Pick<ScopeStubOptions, 'onPlatformRequests' | 'onExportedEvents'> {
   return {
-    onPlatformRequests: () => setHeader(PLATFORM_REQUEST_HEADER, '1'),
+    // The value names the scope the intents went into: a worker that serves several scopes under
+    // one hostname picks one per request, and the router's routed scope is then the wrong drain.
+    onPlatformRequests: (_count, scopeId) => setHeader(PLATFORM_REQUEST_HEADER, scopeId),
     onExportedEvents: () => setHeader(EXPORTED_EVENTS_HEADER, '1'),
   };
 }

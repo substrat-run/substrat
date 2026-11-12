@@ -48,6 +48,14 @@ export const CONNECTOR_ATTACHMENT_META_MAX_BYTES = 8 * 1024;
  * so provisioning settles in seconds instead of at the sweep. Carries no payload
  * and no privilege: a forged or spurious flag costs the platform one wasted
  * pull, nothing more. Fed by `ScopeStubOptions.onPlatformRequests` (#458).
+ *
+ * Its value is the id of the scope the intents were enqueued in (`kickFlags` writes it),
+ * or any other value — `1` from a vertical that predates this — for the routed scope. A
+ * worker serving several scopes under one hostname picks the scope per request, so the
+ * routed scope is not always where the intents are. The control plane drains the named
+ * scope only when it shares the routed scope's tenant and vertical, and the routed one
+ * otherwise, so the value can move the drain between a deployment's own scopes and
+ * nowhere else.
  */
 export const PLATFORM_REQUEST_HEADER = 'x-substrat-platform-request';
 

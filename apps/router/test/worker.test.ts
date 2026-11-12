@@ -831,6 +831,31 @@ describe('router kick (platform-intents)', () => {
     expect(call.body).toEqual({ tenantId: T, scopeId: S, platformRequests: true, exports: false });
   });
 
+  it('passes the scope the intent flag names beside the resolved one, never in its place', async () => {
+    // A worker serving several scopes under one hostname picks the scope per request, so its
+    // intents can sit in a scope other than the routed one; the flag's value names it.
+    const named = '01JZ0000000000000000000003';
+    const kicked = async (value: string) => {
+      const kick = kickSpy();
+      const { ctx, settle } = collectingCtx();
+      const env = {
+        ROUTER_SECRET: SECRET,
+        CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+        VERTICAL_FSM: { fetch: async () => new Response('accepted', { status: 202, headers: { 'x-substrat-platform-request': value } }) },
+        CONTROL_PLANE_KICK: kick.binding,
+        PLATFORM_SECRET: 'sekret',
+      } as unknown as Env;
+      await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx);
+      await settle();
+      return kick.calls()[0]!.body;
+    };
+    expect(await kicked(named)).toEqual({ tenantId: T, scopeId: S, platformRequests: true, exports: false, namedScopeId: named });
+    // The routed scope itself, `1`, or anything that is not a scope id names nothing.
+    for (const value of [S, '1', 'not-a-scope']) {
+      expect(await kicked(value)).toEqual({ tenantId: T, scopeId: S, platformRequests: true, exports: false });
+    }
+  });
+
   it('does NOT kick when the response carries no platform-intent flag', async () => {
     const kick = kickSpy();
     const { ctx, settle } = collectingCtx();

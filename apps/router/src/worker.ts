@@ -48,6 +48,7 @@ import {
   RATE_LIMIT_POLICY_HEADER,
   type RateLimiter,
   type RouteTarget,
+  scopeId as scopeIdSchema,
 } from '@substrat-run/contracts';
 import { wireEndpoint, wireSignerOf, type WireSignResult } from '@substrat-run/contracts/wire-signing';
 import { fieldCoverageSampled, fieldCoverageSampleRate, mintDispatchId } from './field-coverage-sample.js';
@@ -457,6 +458,13 @@ async function kickDrain(
    * response asked for. A control plane that predates `exports` ignores it and drains intents.
    */
   flags: { platformRequests: boolean; exports: boolean },
+  /**
+   * The scope the response's intent flag names (its header value), when it names one. Passed
+   * beside the routed scope, never instead of it: the control plane drains it only when it
+   * shares the routed scope's tenant and vertical, so a response cannot aim the drain anywhere
+   * its own deployment does not serve.
+   */
+  namedScopeId?: string,
 ): Promise<void> {
   const cp = env.CONTROL_PLANE_KICK;
   if (!cp) return; // Not wired (dev / self-host) — the sweep is the backstop.
@@ -477,7 +485,12 @@ async function kickDrain(
       new Request('https://control-plane/internal/drain-scope', {
         method: 'POST',
         headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: secret },
-        body: JSON.stringify({ tenantId: target.tenantId, scopeId: target.scopeId, ...flags }),
+        body: JSON.stringify({
+          tenantId: target.tenantId,
+          scopeId: target.scopeId,
+          ...flags,
+          ...(namedScopeId && namedScopeId !== target.scopeId ? { namedScopeId } : {}),
+        }),
       }),
     );
   } catch {
@@ -675,14 +688,17 @@ export default {
       // imports (#1705), and flagged the response. Kick the control plane out of band so it
       // runs in seconds — after we've returned, never blocking it. Both flags are RESPONSE
       // headers: a request can carry neither to the vertical, because `assertNode` strips every
-      // inbound `x-substrat-*`, and the kick names the scope this router resolved, never one
-      // the response names.
+      // inbound `x-substrat-*`. The kick always names the scope this router resolved; the intent
+      // flag's value may name another of the deployment's scopes (a worker serving several under
+      // one hostname), which the control plane honours only within the routed scope's tenant
+      // and vertical.
+      const intentFlag = response.headers.get(PLATFORM_REQUEST_HEADER);
       const flags = {
-        platformRequests: response.headers.get(PLATFORM_REQUEST_HEADER) !== null,
+        platformRequests: intentFlag !== null,
         exports: response.headers.get(EXPORTED_EVENTS_HEADER) !== null,
       };
       if (ctx && (flags.platformRequests || flags.exports)) {
-        ctx.waitUntil(kickDrain(env, target, flags));
+        ctx.waitUntil(kickDrain(env, target, flags, scopeIdSchema.safeParse(intentFlag).data));
       }
       return response;
     } finally {

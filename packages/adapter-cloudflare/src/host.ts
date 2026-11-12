@@ -7413,7 +7413,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // turned this operation's event into a `connector:<provider>` intent, and the
         // kick is what collapses its dispatch latency from sweep-cadence to seconds.
         const enqueued = envelope.platformRequests + (drained.routedToPlatform ?? 0);
-        if (enqueued > 0) options?.onPlatformRequests?.(enqueued);
+        if (enqueued > 0) options?.onPlatformRequests?.(enqueued, scopeId);
         if ((envelope.exported ?? 0) > 0) options?.onExportedEvents?.(envelope.exported!);
         if (envelope.concurrency) invokeOptions?.onEntityVersion?.(envelope.concurrency.version);
         if (envelope.idempotency?.replayed) invokeOptions?.onIdempotentReplay?.();

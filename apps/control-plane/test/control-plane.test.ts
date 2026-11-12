@@ -6,7 +6,7 @@ import { platformActorId, principalId, tenantId } from '@substrat-run/contracts'
 import { ulid } from '@substrat-run/kernel';
 import { mintSession, type OidcEnv } from '@substrat-run/oidc-rp';
 import { d1StaffRoster, listStaff } from '../src/staff-roster.js';
-import worker, { drainKickOf, kickCrossVertical, platformStoreClients } from '../src/worker.js';
+import worker, { drainKickOf, kickCrossVertical, platformStoreClients, sameDeploymentScope } from '../src/worker.js';
 
 /**
  * Slice 1's definition of done, as an automated workerd test (first-flow.md §4):
@@ -429,6 +429,15 @@ describe('router kick — /internal/drain-scope', () => {
         kickCrossVertical({ CROSS_VERTICAL_KICK: undefined }, { tenantId: tenantId.parse(ulid()), scopeId: ulid() as never }),
       ).resolves.toBe('unwired');
     });
+  });
+
+  it("drains a response-named scope only when it shares the routed scope's tenant and vertical", () => {
+    const routed = { tenantId: 't1', vertical: 'drive' };
+    expect(sameDeploymentScope(routed, { tenantId: 't1', vertical: 'drive' })).toBe(true);
+    expect(sameDeploymentScope(routed, { tenantId: 't1', vertical: 'crm' })).toBe(false); // another vertical's scope
+    expect(sameDeploymentScope(routed, { tenantId: 't2', vertical: 'drive' })).toBe(false); // another tenant's
+    expect(sameDeploymentScope(routed, undefined)).toBe(false); // not on record
+    expect(sameDeploymentScope({ tenantId: 't1', vertical: null }, { tenantId: 't1', vertical: null })).toBe(false); // no vertical serves it
   });
 
   it('reads what the kick asks for: a legacy router means the intent drain, and only `true` runs edges', () => {

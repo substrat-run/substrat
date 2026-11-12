@@ -286,19 +286,23 @@ So there is a fast path, and it has three parts, each owned by a different party
 
 ```
 operation commits with ≥1 intent
-  │  host fires onPlatformRequests(count)      ← only after COMMIT, never on rollback
+  │  host fires onPlatformRequests(count, scopeId)   ← only after COMMIT, never on rollback
   ▼
-vertical sets response header  x-substrat-platform-request: 1
+vertical sets response header  x-substrat-platform-request: <scopeId>
   │
   ▼
 router sees the header → waitUntil(kickDrain)  ← after the response has gone
-  │  POST /internal/drain-scope {tenantId, scopeId}   (service binding + platform secret)
+  │  POST /internal/drain-scope {tenantId, scopeId, namedScopeId}   (service binding + platform secret)
   ▼
 control plane drains that one scope now
 ```
 
-The header carries no payload and no privilege. The control plane re-derives the tenant and
-vertical from the directory and simply pulls. A forged or spurious header costs one empty pull.
+The header carries no payload and no privilege. Its value names the scope the intents went
+into, because a worker that serves several scopes under one hostname picks the scope per
+request, so the routed scope is not always where the intents are. The control plane drains the
+named scope only when it shares the routed scope's tenant and vertical, and the routed scope
+otherwise. It re-derives both from the directory and simply pulls, so a forged or spurious
+header costs one empty pull.
 The user never waits for the kick either, because the router runs it after returning the
 response. With it, an intent settles in seconds.
 
@@ -307,7 +311,7 @@ header for you. A vertical opts in when it mints its stub:
 
 ```ts
 const stub = await host.getScope(principal, tenantId, scopeId, {
-  onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+  onPlatformRequests: (_count, scope) => c.header(PLATFORM_REQUEST_HEADER, scope),
 });
 ```
 

@@ -1099,8 +1099,13 @@ export interface ScopeStubOptions {
    * Never fired for a rolled-back operation: an intent that did not survive its
    * transaction is not a signal. Purely advisory — a missed callback costs one
    * sweep interval, nothing more.
+   *
+   * `scopeId` is the scope the intents were enqueued in — the one this stub invokes. A
+   * vertical that serves several scopes under one hostname picks the scope per request,
+   * so the router's routed scope is not always it; the flag names it so the kick drains
+   * where the intents actually are.
    */
-  onPlatformRequests?: (count: number) => void;
+  onPlatformRequests?: (count: number, scopeId: ScopeId) => void;
   /**
    * Fired after an invoke through this stub COMMITS having added outbox rows of a type this
    * deployment exports to other verticals (#1705), with how many. Its own emits and those of
