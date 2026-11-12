@@ -1,5 +1,16 @@
 # @substrat-run/control-plane-api
 
+## 0.194.0
+
+### Patch Changes
+
+- 7d95a78: A connector sweep row that says a binding did not land now says why, when the connector can say it in its own words: for Fortnox, the supplier invoice and the field it could not read, or the HTTP status Fortnox answered. The provider's own text still goes only to staff's row under the reference.
+- Updated dependencies [7d95a78]
+- Updated dependencies [0dab770]
+  - @substrat-run/kernel@0.194.0
+  - @substrat-run/contracts@0.194.0
+  - @substrat-run/control-plane-client@0.6.16
+
 ## 0.193.0
 
 ### Patch Changes
