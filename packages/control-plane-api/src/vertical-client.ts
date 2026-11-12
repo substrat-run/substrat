@@ -1,4 +1,4 @@
-import { z } from '@substrat-run/contracts';
+import { PERSONAS_PATH, SEED_WORLD_PATH, seededPersonas, z, type PersonasBody, type SeedWorldBody, type SeededPersona } from '@substrat-run/contracts';
 import type {
   EntityGrantShape,
   AttachmentRecord,
@@ -781,6 +781,20 @@ export class VerticalClient {
   async readPreviewConfig(input: ReadPreviewConfigInput): Promise<Array<{ key: string; value: string }>> {
     const response = await this.postInternal<unknown>('/internal/preview-config', input, 'preview-config');
     return z.object({ entries: z.array(z.object({ key: z.string(), value: z.string() })) }).parse(response).entries;
+  }
+
+  /**
+   * Seat the vertical's sample world in a clean-room preview (#3108), and build its records when
+   * `build` says the scope is new. Answers the personas it offers. The deployment refuses a scope
+   * that is not a clean-room preview (409), and one that declares no world answers 501.
+   */
+  async seedWorld(input: SeedWorldBody): Promise<SeededPersona[]> {
+    return seededPersonas.parse(await this.postInternal<unknown>(SEED_WORLD_PATH, input, 'seed-world')).personas;
+  }
+
+  /** The personas a seeded preview offers, for the persona issuer's picker (#3108). Read-only. */
+  async personas(input: PersonasBody): Promise<SeededPersona[]> {
+    return seededPersonas.parse(await this.postInternal<unknown>(PERSONAS_PATH, input, 'personas')).personas;
   }
 
   /**

@@ -236,6 +236,8 @@ import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRe
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
+import type { PersonaIssuerSeam } from './persona-issuer.js';
+import type { PreviewAuth, SeededPersona } from '@substrat-run/contracts';
 import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
@@ -529,6 +531,11 @@ export interface ControlPlaneApiOptions {
    * (`async`), every copy runs in the request, as before.
    */
   copyJobs?: CopyJobs;
+  /**
+   * The control plane's persona issuer (#3108), which a seeded preview's login points at. Absent,
+   * a create asking for `seed` is refused 501: there is nothing to sign its people in with.
+   */
+  personaIssuer?: PersonaIssuerSeam;
   /**
    * Reserved scope-store operations, signed and sent to the store script (#2207).
    * The vertical is not asked: it holds neither the namespace nor the key.
@@ -1376,6 +1383,9 @@ const createPreviewBody = z.object({
   // vertical's FIRST environment can be a throwaway preview, exactly when a fork has nothing
   // to copy. Mutually exclusive with `sourceScopeId`; a `--tag`'s reuse keeps whichever it was.
   empty: z.boolean().optional(),
+  // A SEEDED clean room (#3108): the version's sample world is seated in the empty scope, and its
+  // people sign in by picking a persona at the control plane's persona issuer. Needs `empty`.
+  seed: z.boolean().optional(),
   // Hours until the GC sweep may reap the fork. Absent = the 72h default; an explicit
   // `null` pins the fork until it is deliberately deleted — a long-lived preview
   // environment (a `--tag dev` scope CI re-pushes to). The deadline is (re)applied on
@@ -11912,7 +11922,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     slug: string,
     // A FORK copies this scope's data; `null` provisions an empty clean-room scope (#509 (b)).
     source: Scope | null,
-    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean; poll?: boolean },
+    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean; poll?: boolean; seed?: boolean },
   ): Promise<PreviewCopying | {
     scopeId: ScopeId;
     hostname: string;
@@ -11920,7 +11930,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     versionId: string;
     reused: boolean;
     /** What happened to the preview's login (#1704) — never a secret. */
-    auth: Awaited<ReturnType<typeof wirePreviewAuth>>;
+    auth: PreviewAuth;
     /** Lines for whoever reads the create's output: what a preview does NOT carry over. */
     notes: string[];
   }> => {
@@ -12125,8 +12135,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // older push can never overwrite a newer push's config store. A failure lands an
     // ops-failure row like a failed restore (#559): the preview exists and serves the PR, but
     // has no working login. The message names no secret; none ever reaches it.
-    const wireLogin = async (previewId: ScopeId, hostname: string, parent: Scope | null) => {
+    const wireLogin = async (previewId: ScopeId, hostname: string, parent: Scope | null, fresh: boolean): Promise<PreviewAuth> => {
       try {
+        if (opts.seed && !parent) return await seedLogin(previewId, hostname, fresh);
         return await wirePreviewAuth(previewAuthDeps(c), {
           tenantId,
           versionId: opts.versionId,
@@ -12156,6 +12167,50 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         throw e;
       }
+    };
+    /**
+     * A seeded preview's login (#3108): seat the version's sample world, then point the preview at
+     * the persona issuer. The world first, so the issuer never offers a preview nobody is seated
+     * in. Delivered into THIS push's version deployment, as `wirePreviewAuth` delivers; the client
+     * secret is the same on every push (the issuer derives it from the preview's id), so a slower,
+     * older push cannot leave a newer one holding a secret that no longer works.
+     */
+    const seedLogin = async (previewId: ScopeId, hostname: string, fresh: boolean): Promise<PreviewAuth> => {
+      const callbackUrl = oidcCallbackUrl(hostname);
+      const issuer = options.personaIssuer;
+      if (!issuer) throw new ControlPlaneError(501, 'this control plane runs no persona issuer, so a seeded preview has nobody to sign in with');
+      if (!target) throw new ControlPlaneError(501, 'no deployment resolves for the PR version to seed');
+      let personas: SeededPersona[];
+      try {
+        personas = await retryTransient(() => target.seedWorld({ tenantId, scopeId: previewId, build: fresh }));
+      } catch (e) {
+        if (!(e instanceof ControlPlaneError) || e.status !== 501) throw e;
+        return {
+          status: 'unseeded',
+          callbackUrl,
+          note:
+            'Sign-in: this version declares no sample world, so the preview has nobody to sign in as. Put its ' +
+            'people in src/world.ts and name it in the worker (`workerDoor({ world: WORLD })`), as the template does.',
+        };
+      }
+      const client = await issuer.client({ tenantId, previewScopeId: previewId, redirectUri: callbackUrl });
+      await retryTransient(() =>
+        target.configureInstance({
+          tenantId,
+          scopeId: previewId,
+          entries: [{ key: 'substrat:auth', value: JSON.stringify({ mode: 'oidc', issuer: client.issuer, clientId: client.clientId, clientSecret: client.clientSecret }) }],
+        }),
+      );
+      const offered = personas.filter((p) => p.sub);
+      return {
+        status: 'personas',
+        callbackUrl,
+        issuer: client.issuer,
+        clientId: client.clientId,
+        note:
+          `Sign-in: pick one of the sample world's ${offered.length} people (${offered.map((p) => p.name).join(', ')}). ` +
+          'Anyone on the team can, once signed in to Substrat.',
+      };
     };
     const notesFor = (parent: Scope | null): string[] =>
       parent
@@ -12258,7 +12313,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, p.previewId, opts.tag, surface);
       await assertServesBoundVersion(p.previewId);
       await carrySettings(p.previewId, p.parent);
-      const auth = await wireLogin(p.previewId, hostname, p.parent);
+      const auth = await wireLogin(p.previewId, hostname, p.parent, true);
       return {
         scopeId: p.previewId,
         hostname,
@@ -12518,7 +12573,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? ((await c.var.admin.getScopeRecord(actor, tenantId, existing.forkedFrom)) ?? null)
         : null;
       await carrySettings(existing.id, parent);
-      const auth = await wireLogin(existing.id, hostname, parent);
+      const auth = await wireLogin(existing.id, hostname, parent, false);
       return {
         scopeId: existing.id,
         hostname,
@@ -12738,6 +12793,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     if (body.empty && body.sourceScopeId) {
       return refuse(c, 'validation_failed', `pass either --empty (clean-room) or a sourceScopeId, not both`);
+    }
+    // #3108: a sample world is seated only in a clean room; never in a fork of someone's data.
+    if (body.seed && !body.empty) {
+      return refuse(c, 'validation_failed', 'seed needs empty: a sample world is seated only in a clean-room preview');
+    }
+    if (body.seed && !options.personaIssuer) {
+      return refuse(c, 'unavailable', 'this control plane runs no persona issuer, so it cannot sign a seeded preview in');
     }
     // Clean-room (#509 (b)): a null source provisions an EMPTY scope — no prod scope needed.
     // Everything else forks the tenant's own active, non-fork scope for this vertical.

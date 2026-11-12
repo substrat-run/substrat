@@ -15,6 +15,14 @@ import { scopeId, tenantId } from './ids.js';
  * A deployment that declares no world answers both 501.
  */
 export const SEED_WORLD_PATH = '/internal/seed-world';
+/**
+ * Where the control plane's persona issuer lives: one issuer per preview, at
+ * `<control plane origin>/persona/<preview scope id>`, so a token minted for one preview names an
+ * issuer no other preview trusts.
+ */
+export const PERSONA_ISSUER_PATH = '/persona';
+export const personaIssuerUrl = (controlPlaneOrigin: string, previewScopeId: string): string =>
+  `${controlPlaneOrigin.replace(/\/+$/, '')}${PERSONA_ISSUER_PATH}/${previewScopeId}`;
 export const PERSONAS_PATH = '/internal/personas';
 
 export const seedWorldBody = z

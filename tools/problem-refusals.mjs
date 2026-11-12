@@ -261,6 +261,13 @@ export const ALLOWED = [
   },
   {
     area: 'control plane',
+    path: 'apps/control-plane/src/persona-issuer.ts',
+    sites: 2,
+    kind: 'protocol',
+    reason: "the persona issuer (#3108) is an OpenID Connect provider: its discovery and keys answer OAuth's error shape, its picker is a page for a person",
+  },
+  {
+    area: 'control plane',
     path: 'apps/control-plane/src/cli-auth.ts',
     sites: 1,
     kind: 'protocol',

@@ -141,7 +141,9 @@
 			// #2450 step 2: one per background preview copy, stepped by alarm.
 			{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" },
 			// #2365 phase 1: the review runner's reader half, one per review id, stepped by alarm.
-			{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" }
+			{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" },
+			// #3108: the persona issuer a seeded preview signs in through — one object, its key inside.
+			{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" }
 		]
 	},
 	"migrations": [
@@ -168,6 +170,11 @@
 			// #2365 phase 1: the review runner's job object.
 			"tag": "v5",
 			"new_sqlite_classes": ["ReviewJobDO"]
+		},
+		{
+			// #3108: the persona issuer.
+			"tag": "v6",
+			"new_sqlite_classes": ["PersonaIssuerDO"]
 		}
 	],
 	// Pushed verticals are reached through the WfP dispatch namespace, not static
@@ -350,7 +357,8 @@
 					{ "name": "CROSS_VERTICAL_KICK", "class_name": "CrossVerticalKickDO" },
 					{ "name": "OBS_CACHE", "class_name": "ObservabilityCacheDO" },
 					{ "name": "COPY_JOBS", "class_name": "ScopeCopyJobDO" },
-					{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" }
+					{ "name": "REVIEW_JOBS", "class_name": "ReviewJobDO" },
+					{ "name": "PERSONA_ISSUER", "class_name": "PersonaIssuerDO" }
 				]
 			},
 			"migrations": [
@@ -358,7 +366,8 @@
 				{ "tag": "v2", "new_sqlite_classes": ["CrossVerticalKickDO"] },
 				{ "tag": "v3", "new_sqlite_classes": ["ObservabilityCacheDO"] },
 				{ "tag": "v4", "new_sqlite_classes": ["ScopeCopyJobDO"] },
-				{ "tag": "v5", "new_sqlite_classes": ["ReviewJobDO"] }
+				{ "tag": "v5", "new_sqlite_classes": ["ReviewJobDO"] },
+				{ "tag": "v6", "new_sqlite_classes": ["PersonaIssuerDO"] }
 			],
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test

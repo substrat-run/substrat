@@ -83,7 +83,7 @@ export function formatPreviewLogin(created: PreviewCreated): string[] {
         `If the app signs in with OIDC, its callback here is ${oidcCallbackUrl(created.hostname)}.`,
     );
   } else {
-    const warn = auth.status === 'unregistered' || auth.status === 'ambiguous' || auth.status === 'unknown';
+    const warn = auth.status === 'unregistered' || auth.status === 'ambiguous' || auth.status === 'unknown' || auth.status === 'unseeded';
     lines.push(`  ${warn ? '⚠ ' : ''}${auth.note}`);
   }
   for (const note of created.notes ?? []) lines.push(`  ${note}`);

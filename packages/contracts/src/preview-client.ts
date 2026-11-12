@@ -159,14 +159,19 @@ export type RetiredPreviewClients = z.infer<typeof retiredPreviewClients>;
  *   - `superseded` — a newer push owns the preview; this push delivered nothing to it.
  *   - `not-applicable` — a clean-room preview has no parent to sign in like.
  */
-export const previewAuthStatus = z.enum(['wired', 'unregistered', 'ambiguous', 'unknown', 'superseded', 'not-applicable']);
+/**
+ * `personas` (#3108): a seeded preview, signed into by picking a persona at the platform's persona
+ * issuer. `unseeded`: a seeded preview of a deployment that declares no sample world, which
+ * therefore has nobody to sign in as.
+ */
+export const previewAuthStatus = z.enum(['wired', 'unregistered', 'ambiguous', 'unknown', 'superseded', 'not-applicable', 'personas', 'unseeded']);
 export type PreviewAuthStatus = z.infer<typeof previewAuthStatus>;
 
 export const previewAuth = z.object({
   status: previewAuthStatus,
   /** The preview's callback — what an external issuer would need registered. */
   callbackUrl: z.string().nullable(),
-  /** `wired` only. */
+  /** `wired` and `personas`. */
   issuer: z.string().optional(),
   issuerScopeId: scopeId.optional(),
   clientId: z.string().optional(),

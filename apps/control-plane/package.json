@@ -28,7 +28,8 @@
     "@substrat-run/model-providers": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "hono": "catalog:"
+    "hono": "catalog:",
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "@substrat-run/console": "workspace:*",
