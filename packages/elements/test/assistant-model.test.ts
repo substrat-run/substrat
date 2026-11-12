@@ -84,7 +84,7 @@ describe('AssistantModel', () => {
       { t: 'host-event', kind: 'applied', text: 'Updated the canvas' },
       say('Done.', 'b'),
       { t: 'source', sid: 's1', title: 'old title', ref: 'file/1' },
-      { t: 'source', sid: 's1', title: 'lease.pdf', ref: 'file/1' },
+      { t: 'source', sid: 's1', title: 'lease.pdf', ref: 'file/1', kind: 'pdf', detail: 'Family' },
       { t: 'data-provenance', producedAt: '2026-11-09T10:00:00.000Z', model: 'm', sources: 2 },
       { t: 'budget-notice', exhausted: true },
       done,
@@ -98,7 +98,7 @@ describe('AssistantModel', () => {
       'Done.',
     ]);
     expect(answerOf(turn)).toBe('Two open.Done.');
-    expect(turn.citations).toEqual([{ sid: 's1', title: 'lease.pdf', url: null, ref: 'file/1' }]);
+    expect(turn.citations).toEqual([{ sid: 's1', title: 'lease.pdf', url: null, ref: 'file/1', kind: 'pdf', detail: 'Family' }]);
     expect(turn).toMatchObject({ provenance: { model: 'm', sources: 2 }, budgetExhausted: true, status: 'done' });
   });
 

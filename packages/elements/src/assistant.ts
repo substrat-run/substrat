@@ -15,7 +15,9 @@
  *   host with its own input, which calls `model.send(text)`).
  * Slot: `empty` — what shows before the first question.
  * Event: `sub-assistant-source` `{ citation, turn }` when a source is clicked, cancelable: a
- *   citation with a `url` is a link, and `preventDefault()` keeps it from opening.
+ *   citation with a `url` is a link, and `preventDefault()` keeps it from opening. A source
+ *   with a `kind` in `ASSISTANT_SOURCE_KINDS` gets an icon, and its `detail` is drawn quietly
+ *   after the title.
  * Method: `focus()` — the input, or the transcript under `hide-composer`.
  *
  * ## Keys
@@ -36,9 +38,10 @@
  *
  * The theme's `--wa-*` tokens; then `--sub-assistant-gap`; then `::part()` — `transcript`,
  * `turn`, `question`, `ai-marker`, `answer`, `trace`, `working`, `sources`, `source`,
- * `provenance`, `note`, `failure`, `retry`, `jump`, `composer`, `input`, `send`, `stop`.
+ * `source-icon`, `source-detail`, `provenance`, `note`, `failure`, `retry`, `jump`, `composer`,
+ * `input`, `send`, `stop`.
  */
-import { css, html, noChange, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import { css, html, noChange, nothing, svg, type PropertyValues, type SVGTemplateResult, type TemplateResult } from 'lit';
 import { Directive, directive, type Part } from 'lit/directive.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -54,6 +57,27 @@ import {
 } from './assistant-model.js';
 import { isComposingEnter, type CompositionState } from './internal/composing.js';
 import SubstratElement from './internal/substrat-element.js';
+
+const PAGE = svg`<path d="M4 1.5h5l3 3v10H4z" /><path d="M9 1.5v3h3" />`;
+
+/**
+ * The icon a source's `kind` draws, for the kinds this version knows. Any other kind draws
+ * none: the title still says what the thing is, and a guessed icon would say it wrongly.
+ * A Map rather than an object, so a kind like `constructor` finds nothing.
+ */
+const KIND_ICONS: ReadonlyMap<string, SVGTemplateResult> = new Map([
+  ['document', svg`${PAGE}<path d="M6 8h4M6 10.5h4" />`],
+  ['pdf', svg`${PAGE}<path d="M5.5 9h5v3h-5z" />`],
+  ['spreadsheet', svg`${PAGE}<path d="M6 7.5h4v5H6zM8 7.5v5M6 10h4" />`],
+  ['presentation', svg`${PAGE}<path d="M6 8h4v3H6zM8 11v1.5" />`],
+  ['image', svg`<path d="M2 3h12v10H2z" /><circle cx="5.5" cy="6" r="1" /><path d="M2 12l4-4 3 3 2-2 3 3" />`],
+  ['email', svg`<path d="M2 3.5h12v9H2z" /><path d="M2 4l6 4.5L14 4" />`],
+  ['record', svg`<path d="M2 3.5h12v9H2z" /><path d="M4.5 6.5h4M4.5 9.5h7" />`],
+  ['web', svg`<circle cx="8" cy="8" r="6" /><path d="M2 8h12M8 2c-2.2 2.2-2.2 9.8 0 12M8 2c2.2 2.2 2.2 9.8 0 12" />`],
+]);
+
+/** The kinds a source can name and get an icon for. Another kind is drawn without one. */
+export const ASSISTANT_SOURCE_KINDS: readonly string[] = [...KIND_ICONS.keys()];
 
 /** Every word the element says. Set `labels` to replace any of them. */
 export interface AssistantLabels {
@@ -557,7 +581,9 @@ export class SubAssistant extends SubstratElement {
       list-style: none;
     }
     .source {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35em;
       max-width: 16rem;
       padding: 0.1em 0.5em;
       border: var(--wa-border-width-s, 1px) solid var(--_border);
@@ -568,9 +594,32 @@ export class SubAssistant extends SubstratElement {
       font-size: var(--_tiny);
       text-decoration: none;
       white-space: nowrap;
+      cursor: pointer;
+    }
+    .source .title {
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
-      cursor: pointer;
+    }
+    .source .kind {
+      flex: none;
+      width: 1.15em;
+      height: 1.15em;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .source .detail {
+      flex: none;
+      max-width: 50%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--_quiet);
+    }
+    .source .detail::before {
+      content: '· ' / '';
     }
     .source:hover,
     .plain:hover {
@@ -731,9 +780,14 @@ export class SubAssistant extends SubstratElement {
 
   #citation(turn: AssistantTurn, citation: AssistantCitation): TemplateResult {
     const open = (event: Event) => this.#openCitation(event, turn, citation);
+    const icon = citation.kind === null ? undefined : KIND_ICONS.get(citation.kind);
+    const body = html`${icon ? html`<svg part="source-icon" class="kind" viewBox="0 0 16 16" aria-hidden="true">${icon}</svg>` : nothing}<span
+        class="title"
+        >${citation.title}</span
+      >${citation.detail ? html`<span part="source-detail" class="detail">${citation.detail}</span>` : nothing}`;
     return citation.url
-      ? html`<a part="source" class="source" href=${citation.url} target="_blank" rel="noopener noreferrer" @click=${open} @keydown=${this.#onControlKey}>${citation.title}</a>`
-      : html`<button type="button" part="source" class="source" @click=${open} @keydown=${this.#onControlKey}>${citation.title}</button>`;
+      ? html`<a part="source" class="source" href=${citation.url} target="_blank" rel="noopener noreferrer" @click=${open} @keydown=${this.#onControlKey}>${body}</a>`
+      : html`<button type="button" part="source" class="source" @click=${open} @keydown=${this.#onControlKey}>${body}</button>`;
   }
 
   #outcome(turn: AssistantTurn, retryable: boolean, words: AssistantLabels): TemplateResult | typeof nothing {

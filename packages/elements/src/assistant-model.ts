@@ -78,12 +78,18 @@ export interface AssistantProvenance {
   sources: number | null;
 }
 
-/** Something an answer rests on. `ref` is the host's own handle on it; `url` is http(s) or absent. */
+/**
+ * Something an answer rests on. `ref` is the host's own handle on it; `url` is http(s) or absent.
+ * `kind` is what sort of thing it is, as the server named it, and `detail` is the short line the
+ * element draws beside the title (where it lives, when the title does not say).
+ */
 export interface AssistantCitation {
   sid: string;
   title: string;
   url: string | null;
   ref: string | null;
+  kind: string | null;
+  detail: string | null;
 }
 
 export interface AssistantTurn {
@@ -167,7 +173,14 @@ export function reduceTurn(turn: AssistantTurn, event: AssistantEvent): Assistan
     case 'host-event':
       return { ...turn, parts: [...turn.parts, { kind: 'note', id: `note-${turn.parts.length}`, note: event.kind, text: event.text }] };
     case 'source': {
-      const citation: AssistantCitation = { sid: event.sid, title: event.title, url: httpUrl(event.url), ref: event.ref ?? null };
+      const citation: AssistantCitation = {
+        sid: event.sid,
+        title: event.title,
+        url: httpUrl(event.url),
+        ref: event.ref ?? null,
+        kind: event.kind ?? null,
+        detail: event.detail || null,
+      };
       return turn.citations.some((c) => c.sid === event.sid)
         ? { ...turn, citations: turn.citations.map((c) => (c.sid === event.sid ? citation : c)) }
         : { ...turn, citations: [...turn.citations, citation] };

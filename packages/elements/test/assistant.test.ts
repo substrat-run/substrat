@@ -200,6 +200,23 @@ describe('<sub-assistant>', () => {
     expect(find<HTMLAnchorElement>(el, 'a[part~="source"]')!.rel).toBe('noopener noreferrer');
   });
 
+  it('draws an icon for a kind it knows and none for one it does not, with the detail after the title', async () => {
+    const model = modelOf(
+      { t: 'source', sid: 'a', title: 'lease.pdf', ref: 'file/1', kind: 'pdf', detail: 'Family' },
+      { t: 'source', sid: 'b', title: 'Scan', ref: 'file/2', kind: 'hologram' },
+      { t: 'source', sid: 'c', title: 'Odd', ref: 'file/3', kind: 'constructor' },
+      { t: 'source', sid: 'd', title: 'Plain', ref: 'file/4' },
+      finish,
+    );
+    const el = await mount(model);
+    await ask(el, model);
+    const sources = [...el.shadowRoot!.querySelectorAll('[part~="source"]')];
+    expect(sources.map((s) => s.querySelector('[part~="source-icon"]') !== null)).toEqual([true, false, false, false]);
+    expect(sources[0]!.querySelector('[part~="source-icon"]')!.getAttribute('aria-hidden')).toBe('true');
+    expect(sources[0]!.querySelector('.title')!.textContent).toBe('lease.pdf');
+    expect(sources.map((s) => s.querySelector('[part~="source-detail"]')?.textContent ?? null)).toEqual(['Family', null, null, null]);
+  });
+
   it('keeps one status node, empty until it has something to say, and no live region on the transcript', async () => {
     const model = modelOf(answer('ok'), finish);
     const el = await mount(model);

@@ -307,6 +307,16 @@ through `sub-assistant-source`; `ref` is your own handle on the record. With an 
 draws a link instead, and `preventDefault()` on the event keeps it from opening. Take `url` from
 your server, never from the model's text.
 
+Two optional fields make a source easier to place. `kind` says what sort of thing it is, and the
+element draws an icon for `document`, `pdf`, `spreadsheet`, `presentation`, `image`, `email`,
+`record` and `web` (`ASSISTANT_SOURCE_KINDS`); any other kind draws no icon, so a newer kind
+never breaks an older page. `detail` is a short line drawn quietly after the title, for where the
+thing lives when the title alone does not say:
+
+```ts
+yield { t: 'source', sid: 'f1', title: 'lease.pdf', ref: 'file/1', kind: 'pdf', detail: 'Family' };
+```
+
 **Words.** `labels` replaces any string the element says, including what a screen reader hears:
 
 ```ts
@@ -357,8 +367,9 @@ sub-assistant {
 ```
 
 Beyond the tokens, `--sub-assistant-gap` sets the spacing and `::part()` reaches `transcript`,
-`turn`, `question`, `ai-marker`, `answer`, `trace`, `working`, `sources`, `source`, `provenance`,
-`note`, `failure`, `retry`, `jump`, `composer`, `input`, `send` and `stop`.
+`turn`, `question`, `ai-marker`, `answer`, `trace`, `working`, `sources`, `source`, `source-icon`,
+`source-detail`, `provenance`, `note`, `failure`, `retry`, `jump`, `composer`, `input`, `send` and
+`stop`.
 
 ## The session read
 

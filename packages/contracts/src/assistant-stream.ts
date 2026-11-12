@@ -193,12 +193,19 @@ export const assistantStreamBody = z.discriminatedUnion('t', [
   }),
 
   // Where an answer came from. `ref` is whatever the product links to (an entity, a page).
+  // `kind` says what sort of thing it is (`pdf`, `email`, `record`, …), so a client can draw
+  // an icon; it is an open string and not an enum, because the reader drops a known event
+  // whose enum value it has never seen, and a new kind must not cost an older client the
+  // whole citation. `detail` is a short line beside the title: where the thing lives (a
+  // folder, a space, a customer) when the title alone does not say it.
   z.object({
     t: z.literal('source'),
     sid: z.string().min(1).max(64),
     title: z.string().max(500),
     url: httpUrl.optional(),
     ref: z.string().max(500).optional(),
+    kind: z.string().min(1).max(64).optional(),
+    detail: z.string().max(200).optional(),
   }),
 
   // The AI marker and its provenance: when, which model, how many sources, and (for staff
