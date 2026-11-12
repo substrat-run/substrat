@@ -17,6 +17,7 @@ import {
   verticalConnectorStatePrefix,
   type Connection,
   type ConnectionId,
+  z,
   type ConnectionProbe,
   type ConnectorCallConnection,
   type ConnectorCallRequest,
@@ -29,7 +30,7 @@ import {
   type VerticalConnectorBinding,
   type VerticalConnectorDeclaration,
 } from '@substrat-run/contracts';
-import { isPrimaryScope, runningVersionOf, type ConnectionBinder, type ConnectorSweeper, type ScopeHost, type ServingPointer } from '@substrat-run/kernel';
+import { isPrimaryScope, runningVersionOf, ulid, type ConnectionBinder, type ConnectorSweeper, type ScopeHost, type ServingPointer } from '@substrat-run/kernel';
 import type { ConnectionScopeBinding } from '@substrat-run/control-plane-client';
 import type { ConnectionInspector } from './api.js';
 import type { PlatformRequestHandler } from './platform-drain.js';
@@ -284,8 +285,38 @@ async function storedBindings(host: ScopeHost, id: ConnectionId): Promise<Vertic
   });
 }
 
-/** What sweeping one stored binding came to: skipped (its connector sweeps nothing), failed, or ran. */
-type BindingSweep = { skipped: true } | { failed: string } | { landed: number; more: boolean };
+/** What sweeping one stored binding came to: skipped (its connector sweeps nothing), busy, failed, or ran. */
+type BindingSweep = { skipped: true } | { busy: true } | { failed: string } | { landed: number; more: boolean };
+
+/**
+ * The lease one sweep of a binding holds while it reads the scope's state, calls, and writes the
+ * answer's state back. A pass and an on-request poll can reach the same binding at once, and the
+ * cap check and the writes are separate host calls: two unserialised sweeps could each pass the
+ * check and together leave the state over the cap, which refuses every later call for the scope.
+ * Outside both `vc:binding:` and `vc:state:`, so neither the binding listing nor the connector's
+ * state ever carries it. Fifteen minutes, a scheduled invocation's ceiling: a holder that died
+ * blocks the binding for at most one pass.
+ */
+const SWEEP_LEASE_PREFIX = 'vc:sweep:';
+const SWEEP_LEASE_MS = 15 * 60_000;
+const sweepLease = z.object({ holder: z.string(), until: z.string() });
+
+/** Take the binding's sweep lease, or `null` when another sweep holds a live one. */
+async function claimSweep(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string): Promise<z.infer<typeof sweepLease> | null> {
+  const key = `${SWEEP_LEASE_PREFIX}${scopeId}`;
+  const held = await deps.host.admin.getConnectorState(id, key);
+  const now = Date.parse(deps.now());
+  const lease = sweepLease.safeParse(held);
+  if (lease.success && Date.parse(lease.data.until) > now) return null;
+  const mine = { holder: ulid(), until: new Date(now + SWEEP_LEASE_MS).toISOString() };
+  // A compare-and-set on what was read: of two sweeps that both found it free, one wins.
+  return (await deps.host.admin.swapConnectorState(id, key, held, mine)) ? mine : null;
+}
+
+/** Give the lease back, only if it is still this sweep's; a failed release just runs out. */
+async function releaseSweep(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string, mine: z.infer<typeof sweepLease>): Promise<void> {
+  await deps.host.admin.swapConnectorState(id, `${SWEEP_LEASE_PREFIX}${scopeId}`, mine, null).catch(() => false);
+}
 
 /**
  * Sweep ONE stored binding of a vertical-defined connection: one call to the bound scope's own
@@ -306,17 +337,23 @@ async function sweepBinding(
     if ('refused' in resolved) return { failed: resolved.refused };
     // A connector with no sweep polls nothing; its binding is the dispatch's, not a poll's.
     if (!resolved.declaration.sweeps) return { skipped: true };
-    const state = await stateOf(deps.host, connection.id, scopeId);
-    const outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
-      role: 'sweep',
-      provider: connection.provider,
-      connection: await opened(),
-      binding: binding.data,
-      state,
-    });
-    if (!outcome.ok) return { failed: outcome.error };
-    const result = connectorSweepResult.safeParse(outcome.result);
-    return result.success ? result.data : { failed: 'the connector answered a sweep result that does not read as one' };
+    const lease = await claimSweep(deps, connection.id, scopeId);
+    if (!lease) return { busy: true };
+    try {
+      const state = await stateOf(deps.host, connection.id, scopeId);
+      const outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
+        role: 'sweep',
+        provider: connection.provider,
+        connection: await opened(),
+        binding: binding.data,
+        state,
+      });
+      if (!outcome.ok) return { failed: outcome.error };
+      const result = connectorSweepResult.safeParse(outcome.result);
+      return result.success ? result.data : { failed: 'the connector answered a sweep result that does not read as one' };
+    } finally {
+      await releaseSweep(deps, connection.id, scopeId, lease);
+    }
   } catch (e) {
     return { failed: message(e) };
   }
@@ -351,6 +388,8 @@ export function verticalConnectorSweeper(deps: VerticalConnectorDeps, connection
       const swept = await sweepBinding(deps, connection, opened, scopeId, row.value);
       if ('skipped' in swept) continue;
       found += 1;
+      // Another sweep of this binding is running (an on-request poll): it does this pass's work.
+      if ('busy' in swept) continue;
       if ('failed' in swept) failed.push({ scopeId, error: swept.failed });
       else landed += swept.landed;
     }
@@ -361,9 +400,8 @@ export function verticalConnectorSweeper(deps: VerticalConnectorDeps, connection
 /**
  * Poll ONE scope's binding of a vertical-defined connection now (#2672's on-request poll), the
  * call a pass makes for that binding and nothing else. `not-bound` when the platform holds no
- * binding of the connection for the scope, or its connector sweeps nothing. Like a pass, it takes
- * no lock: a poll that overlaps a pass makes the same call twice, and the connector's state and
- * idempotent landings are what keep that harmless, as they are between two passes.
+ * binding of the connection for the scope, or its connector sweeps nothing; `in-progress` when a
+ * pass (or another poll) holds the binding's sweep lease, so nothing ran.
  */
 export function verticalConnectorScopeSync(deps: VerticalConnectorDeps): ScopeSync {
   return async (_host, connection, scopeId) => {
@@ -372,6 +410,7 @@ export function verticalConnectorScopeSync(deps: VerticalConnectorDeps): ScopeSy
     if (!row) return { outcome: 'not-bound', pending: false, errors: [] };
     const swept = await sweepBinding(deps, connection, openedOnce(deps, connection), scopeId, row.value);
     if ('skipped' in swept) return { outcome: 'not-bound', pending: false, errors: [] };
+    if ('busy' in swept) return { outcome: 'in-progress', pending: false, errors: [] };
     if ('failed' in swept) return { outcome: 'failed', pending: false, errors: [swept.failed] };
     return { outcome: swept.landed > 0 ? 'landed' : 'unchanged', pending: swept.more, errors: [] };
   };
