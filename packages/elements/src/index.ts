@@ -32,7 +32,7 @@ export {
   type TableTree,
   type Tone,
 } from './entity-table-model.js';
-export { SubAssistant, type AssistantLabels } from './assistant.js';
+export { SubAssistant, ASSISTANT_SOURCE_KINDS, type AssistantLabels } from './assistant.js';
 export {
   AssistantModel,
   answerOf,

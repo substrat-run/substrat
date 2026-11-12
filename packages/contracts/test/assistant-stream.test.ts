@@ -178,6 +178,18 @@ describe('assistantStreamBody', () => {
       }
     });
   });
+
+  describe('source.kind and source.detail, which place a source', () => {
+    it('takes both, and takes a source without either', () => {
+      expect(ok({ t: 'source', sid: 's', title: 'lease.pdf', ref: 'file/1', kind: 'pdf', detail: 'Family' })).toBe(true);
+      expect(ok({ t: 'source', sid: 's', title: 'lease.pdf' })).toBe(true);
+    });
+
+    it('refuses an empty kind and a detail over its bound', () => {
+      expect(ok({ t: 'source', sid: 's', title: 'x', kind: '' })).toBe(false);
+      expect(ok({ t: 'source', sid: 's', title: 'x', detail: 'd'.repeat(201) })).toBe(false);
+    });
+  });
 });
 
 describe('assistantStreamEvent', () => {
@@ -217,6 +229,11 @@ describe('readAssistantStreamEvent, how a client reads a newer producer', () => 
     expect(read).toEqual({ known: false, t: 'turn-finish', id: 9, raw });
     // Still a resting event: a client knows the run ended even without the reason.
     expect(isRestingEvent(read.known ? read.event : { t: read.t })).toBe(true);
+  });
+
+  it('reads a source with a kind no client has drawn yet as known, so the citation is kept', () => {
+    const read = readAssistantStreamEvent({ t: 'source', sid: 's', title: 'x', kind: 'hologram', id: 5 });
+    expect(read).toMatchObject({ known: true, event: { t: 'source', kind: 'hologram' } });
   });
 
   it('throws on a known event that is broken, not newer', () => {
