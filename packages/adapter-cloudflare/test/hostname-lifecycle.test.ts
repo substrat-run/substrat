@@ -77,11 +77,14 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
   const actor = platformActorId.parse(ulid());
   const owner = principalId.parse(ulid());
   const deliveries: { scopeId: string; scope: string; tenant: string; lifecycle: ScopeLifecycle }[] = [];
+  /** Every delivery the host sent, landed or not. */
+  const sent: string[] = [];
   let failing = false;
   let failText = 'deployment unreachable';
   const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
   const lifecycleDelegation: LifecycleDelegation = {
     deliver: async ({ scopeId: s, lifecycle }) => {
+      sent.push(s);
       if (failing) throw new Error(failText);
       deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant, lifecycle });
       return deployment().setLifecycleLocal(s, lifecycle);
@@ -238,6 +241,88 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       );
     }
     await platform().healLifecycles(actor, { limit: 1000 });
+  });
+
+  describe('#3119: a scope whose delivery keeps failing backs off, and files one row per error', () => {
+    const failureOf = (s: ScopeId) =>
+      runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) =>
+        state.storage.sql.exec('SELECT failures, retry_at FROM scope_lifecycle_failures WHERE scope_id = ?', s).toArray()[0] as
+          | { failures: number; retry_at: string }
+          | undefined,
+      );
+    const waitOver = (s: ScopeId) =>
+      runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) => {
+        state.storage.sql.exec("UPDATE scope_lifecycle_failures SET retry_at = '2000-01-01T00:00:00.000Z' WHERE scope_id = ?", s);
+      });
+    const rowsOf = async (t: TenantId, s: ScopeId) => (await platform().admin.listOpsFailures(actor, { tenantId: t, scopeId: s })).length;
+    const sentTo = (s: ScopeId) => sent.filter((x) => x === s).length;
+    /** A held scope whose deployment refuses every delivery: the transition's failure, then the heal's. */
+    const stuck = async () => {
+      const t = await tenantOf();
+      const s = await hosted(t);
+      failing = true;
+      await platform().admin.suspendScope(actor, t, s);
+      await platform().healLifecycles(actor, { limit: 1000 });
+      return { t, s };
+    };
+
+    it('the first failure is retried on the next pass, a repeat waits and files nothing, a new error files', async () => {
+      try {
+        const { t, s } = await stuck();
+        expect(sentTo(s)).toBe(2);
+        expect(await rowsOf(t, s)).toBe(1);
+        expect(await failureOf(s)).toMatchObject({ failures: 2 });
+        expect(Date.parse((await failureOf(s))!.retry_at)).toBeGreaterThan(Date.now());
+        // Backing off: the held scope is not delivered to, though a hold is delivered every pass.
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(sentTo(s)).toBe(2);
+        // The wait over, the same error is counted again and still files nothing.
+        await waitOver(s);
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(sentTo(s)).toBe(3);
+        expect(await failureOf(s)).toMatchObject({ failures: 3 });
+        expect(await rowsOf(t, s)).toBe(1);
+        // Another error is news.
+        await waitOver(s);
+        failText = 'deployment answered 500';
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(await rowsOf(t, s)).toBe(2);
+        // A delivery that lands drops the count; the hold is delivered every pass again.
+        failing = false;
+        await waitOver(s);
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(await failureOf(s)).toBeUndefined();
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(deliveredTo(s)).toEqual(['suspended/active', 'suspended/active']);
+      } finally {
+        failing = false;
+        failText = 'deployment unreachable';
+      }
+    });
+
+    it('a transition, or another deployment serving the scope, is delivered without waiting', async () => {
+      try {
+        // The tenant's suspension wants another receipt; its own fan-out delivers it.
+        const { t, s } = await stuck();
+        failing = false;
+        await platform().admin.setTenantStatus(actor, t, 'suspended');
+        expect(deliveredTo(s)).toEqual(['suspended/suspended']);
+        expect(await failureOf(s)).toBeUndefined();
+
+        const { s: s2 } = await stuck();
+        failing = false;
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(sentTo(s2)).toBe(2);
+        // A push that re-points the scope's script.
+        await runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) => {
+          state.storage.sql.exec("UPDATE scopes SET serving_ref = 'todo-redeployed' WHERE scope_id = ?", s2);
+        });
+        await platform().healLifecycles(actor, { limit: 1000 });
+        expect(deliveredTo(s2)).toEqual(['suspended/active']);
+      } finally {
+        failing = false;
+      }
+    });
   });
 
   it('every transition delivers a strictly newer revision, counted in the directory', async () => {
@@ -771,10 +856,11 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     await platform().healLifecycles(actor);
     expect(asked.filter((s) => s === copy)).toHaveLength(1);
     expect(await receiptOf(copy)).toBe(t);
-    // And the unreachable ones keep being asked on later passes, without the copy again.
+    // #3119: the ones failed twice in a row back off, and leave the slice; only the one the second
+    // pass had no room for is asked again. The copy is not asked again either.
     const before = asked.length;
     await platform().healLifecycles(actor);
-    expect(asked.length - before).toBe(TENANT_UNRECORDED_PER_PASS);
+    expect(asked.length - before).toBe(1);
     expect(asked.filter((s) => s === copy)).toHaveLength(1);
     // A full slice is the point of the case: three passes of about fifty deliveries each,
     // against the real directory.
