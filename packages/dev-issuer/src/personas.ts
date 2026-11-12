@@ -27,4 +27,6 @@ export interface DevPersona {
   role?: string;
   /** Belongs to another tenant — the outsider an isolation scenario turns away. */
   elsewhere?: boolean;
+  /** Not seated by `seatWorld`: they get in by a member invite naming their `email`. */
+  invited?: boolean;
 }

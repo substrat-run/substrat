@@ -47,6 +47,11 @@ export interface WorldPersona {
    * has someone to turn away. A world with one scope (a hosted preview) leaves them out.
    */
   readonly elsewhere?: boolean;
+  /**
+   * Not seated: they get in the way anyone does, by a member invite naming their `email`. A
+   * picker still offers them, so the invite flow can be walked through end to end.
+   */
+  readonly invited?: boolean;
   /** A one-line hint a persona picker shows under the name. */
   readonly note?: string;
 }
@@ -161,7 +166,7 @@ export async function seatWorldWith(seating: WorldSeating, input: SeatWorldOptio
   const { world } = input;
   const elsewhere = (input.seat ?? 'home') === 'elsewhere';
   const seats = new Map<string, WorldSeat>();
-  const seated = world.personas.filter((p) => Boolean(p.elsewhere) === elsewhere);
+  const seated = world.personas.filter((p) => Boolean(p.elsewhere) === elsewhere && !p.invited);
   for (const persona of seated) {
     const known = await seating.resolve(persona.sub);
     const principal = known ?? (seating.principalFor ? await seating.principalFor(persona.sub) : principalId.parse(ulid()));

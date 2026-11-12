@@ -9,16 +9,17 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { seatWorld, ulid, type WorldSeat } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
-import { ENTITLEMENT_KEYS, ENTITY_GRANTS, MODULES, OWNER_ROLE_KEY, permissions, portalPerms, ROLES } from './provision.js';
+import { ENTITLEMENT_KEYS, ENTITY_GRANTS, MODULES, permissions, portalPerms, ROLES } from './provision.js';
 
 // The provisioning surface (modules, roles, grant shapes) lives in
 // provision.ts — node-free so the worker bundles it and `substrat push` reads
 // it. Re-exported here for callers that treat seed.ts as the world's front door.
 export { ENTITY_GRANTS, MODULES, permissions, ROLES } from './provision.js';
-import { DEV_PROVIDER, PERSONAS } from './personas.js';
+import { DEV_PROVIDER } from './personas.js';
+import { buildShop, WORLD, type ShopRecords } from './world.js';
 
 // ============================================================================
 // The seeded world. TWO tenants on purpose: the first is the shop the scenario
@@ -50,13 +51,13 @@ export function buildBikeShopHost(dir: string): SqliteScopeHost {
 }
 
 /**
- * Provision ONE tenant of this vertical: tenant, entitlements for every module
- * it runs, an active scope, the role table, and the owner holding workshop-admin.
- * This is what an instantiate button would call — no demo cast, no fixtures.
+ * Provision ONE tenant of this vertical: tenant, entitlements for every module it runs, an
+ * active scope, and the role table. This is what an instantiate button would call — no demo
+ * cast, no fixtures. The people come after, from `src/world.ts`.
  */
 async function provisionShop(
   host: SqliteScopeHost,
-  input: { tenantId: TenantId; scopeId: ScopeId; owner: PrincipalId; slug: string; name: string },
+  input: { tenantId: TenantId; scopeId: ScopeId; slug: string; name: string },
 ): Promise<void> {
   const staff = platformActorId.parse(ulid());
   await host.admin.createTenant(staff, { id: input.tenantId, slug: input.slug, name: input.name });
@@ -75,11 +76,6 @@ async function provisionShop(
   // confirmation is immediate).
   await host.admin.activateScope(staff, input.tenantId, input.scopeId);
   for (const role of ROLES) await host.admin.defineRole(staff, input.tenantId, role);
-  await host.admin.assignRole(staff, {
-    principalId: input.owner,
-    roleKey: OWNER_ROLE_KEY,
-    node: { tenantId: input.tenantId, scopeId: null },
-  });
 }
 
 /**
@@ -112,100 +108,52 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
     return world;
   }
 
-  const staff = platformActorId.parse(ulid());
-  const world: BikeShopWorld = {
-    t1: tenantId.parse(ulid()),
-    s1: scopeId.parse(ulid()),
-    t2: tenantId.parse(ulid()),
-    s2: scopeId.parse(ulid()),
-    greta: principalId.parse(ulid()),
-    mans: principalId.parse(ulid()),
-    lisbeth: principalId.parse(ulid()),
-    otto: principalId.parse(ulid()),
-    rutger: principalId.parse(ulid()),
-    lisbethId: '',
-    ottoId: '',
-    crescentId: '',
-    bianchiId: '',
-  };
-
+  const homes = {
+    home: { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()) },
+    elsewhere: { tenantId: tenantId.parse(ulid()), scopeId: scopeId.parse(ulid()) },
+  } as const;
   // The shop under test, and a second unrelated shop whose admin will attack it.
-  await provisionShop(host, {
-    tenantId: world.t1,
-    scopeId: world.s1,
-    owner: world.greta,
-    slug: 'kedja-kugghjul',
-    name: 'Kedja & Kugghjul Cykelverkstad',
-  });
-  await provisionShop(host, {
-    tenantId: world.t2,
-    scopeId: world.s2,
-    owner: world.rutger,
-    slug: 'trampolin',
-    name: 'Trampolin Cykel',
-  });
+  await provisionShop(host, { ...homes.home, slug: 'kedja-kugghjul', name: 'Kedja & Kugghjul Cykelverkstad' });
+  await provisionShop(host, { ...homes.elsewhere, slug: 'trampolin', name: 'Trampolin Cykel' });
 
-  // The rest of t1's cast.
-  await host.admin.assignRole(staff, {
-    principalId: world.mans,
-    roleKey: 'mechanic',
-    node: { tenantId: world.t1, scopeId: world.s1 },
-  });
-
-  // Seed entities go through the operations (NEVER raw SQL): the seed exercises
-  // the same permission checks and event spine the app does.
-  const greta = await host.getScope(world.greta, world.t1, world.s1);
-  const lisbethCustomer = await greta.invoke<{ id: string }>('shop/create-customer', {
-    number: '2001',
-    name: 'Lisbeth Sandell',
-    phone: '070-123 45 67',
-  });
-  const ottoCustomer = await greta.invoke<{ id: string }>('shop/create-customer', {
-    number: '2002',
-    name: 'Otto Vinge',
-  });
-  const crescent = await greta.invoke<{ id: string }>('shop/register-bike', {
-    customerId: lisbethCustomer.id,
-    label: 'Crescent Elina 3-vxl',
-    frameNo: 'CR-88412',
-  });
-  const bianchi = await greta.invoke<{ id: string }>('shop/register-bike', {
-    customerId: ottoCustomer.id,
-    label: 'Bianchi Oltre XR3',
-  });
-  await greta.invoke('shop/upsert-price', {
-    article: 'labor',
-    description: 'Mechanic time',
-    unit: 'hour',
-    priceAmount: '495',
-    minQty: '0.5',
-  });
-  await greta.invoke('shop/upsert-price', {
-    article: 'shop-supplies',
-    description: 'Workshop supplies',
-    unit: 'ea',
-    priceAmount: '15',
-    internal: true,
-  });
-  await greta.invoke('shop/upsert-price', {
-    article: 'tube-28',
-    description: 'Inner tube 28"',
-    unit: 'ea',
-    priceAmount: '89',
-  });
-  await greta.invoke('shop/upsert-price', {
-    article: 'chain-9s',
-    description: 'Chain, 9-speed',
-    unit: 'ea',
-    priceAmount: '249',
-  });
-
-  world.lisbethId = lisbethCustomer.id;
-  world.ottoId = ottoCustomer.id;
-  world.crescentId = crescent.id;
-  world.bianchiId = bianchi.id;
-
-  await grantPortals(host, world);
+  // The cast and the records they start with: `src/world.ts`, seated by the kernel in each
+  // shop — a principal per persona, its role, its identity link — the same way a seeded
+  // preview of the deployed app seats it. Its records are kept for `cast.json`.
+  const staff = platformActorId.parse(ulid());
+  await host.admin.registerIdentityPool(staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  let records: ShopRecords | null = null;
+  const seats = new Map<string, WorldSeat>();
+  for (const seat of ['home', 'elsewhere'] as const) {
+    const seated = await seatWorld(host, {
+      actor: staff,
+      node: homes[seat],
+      provider: DEV_PROVIDER,
+      world: { ...WORLD, build: async (w) => void (records ??= await buildShop(w)) },
+      seat,
+      build: true,
+    });
+    for (const [sub, at] of seated) seats.set(sub, at);
+  }
+  const principalOf = (sub: string): PrincipalId => {
+    const at = seats.get(sub);
+    if (!at) throw new Error(`seed: persona ${sub} was not seated`);
+    return at.principal;
+  };
+  if (!records) throw new Error('seed: the shop under test was built with no records');
+  const world: BikeShopWorld = {
+    t1: homes.home.tenantId,
+    s1: homes.home.scopeId,
+    t2: homes.elsewhere.tenantId,
+    s2: homes.elsewhere.scopeId,
+    greta: principalOf('dev|greta'),
+    mans: principalOf('dev|mans'),
+    lisbeth: principalOf('dev|lisbeth'),
+    otto: principalOf('dev|otto'),
+    rutger: principalOf('dev|rutger'),
+    ...(records as ShopRecords),
+  };
+  // `buildShop` gave the portal grants; the reconcile tops every holder up to the shape as it is.
+  await host.admin.reconcileEntityGrantShapes(staff, homes.home, ENTITY_GRANTS);
 
   writeFileSync(castPath, JSON.stringify(world, null, 2));
   return world;
@@ -240,43 +188,23 @@ async function grantPortals(host: SqliteScopeHost, world: BikeShopWorld): Promis
 }
 
 /**
- * Bind each dev persona's OIDC `sub` to its principal in the identity directory.
+ * Seat the cast again on every boot, because `seedBikeShop` returns early once `cast.json`
+ * exists. Seating is idempotent — a persona already linked keeps its principal — so this costs
+ * nothing, a wiped identity link heals itself, and a persona added to `src/personas.ts` after
+ * the first boot gets a principal, its role and a link (but no records: `build` runs only on a
+ * fresh world).
  *
- * This is the ordinary production seam, not a dev one: a deployed instance builds the same
- * rows when someone claims the owner seat or accepts an invite. All that differs locally is
- * that the subjects are known up front, so nobody has to click through a first-run claim
- * after every data wipe.
- *
- * Run on EVERY boot rather than only on a fresh seed: `seedBikeShop` returns early once
- * `cast.json` exists, and `linkIdentity` is idempotent for an unchanged binding, so
- * re-running costs nothing and a wiped `.data` heals itself.
+ * This is the ordinary production seam, not a dev one: a deployed instance builds the same rows
+ * when someone claims the owner seat or accepts an invite, and a seeded preview runs this very
+ * seating. All that differs locally is that the subjects are known up front.
  */
 export async function linkDevPersonas(host: SqliteScopeHost, world: BikeShopWorld): Promise<void> {
   const staff = platformActorId.parse(ulid());
-  await host.admin.registerIdentityPool(staff, {
-    provider: DEV_PROVIDER,
-    topology: 'central',
-    tenantId: null,
-  });
-  // `scopeId` on the link is what carries a persona to their own node — Rutger into the
-  // other shop entirely, which is why the cross-tenant beat still runs with no persona
-  // table anywhere in the server.
-  const homes: Record<string, { principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId }> = {
-    'dev|greta': { principal: world.greta, tenantId: world.t1, scopeId: world.s1 },
-    'dev|mans': { principal: world.mans, tenantId: world.t1, scopeId: world.s1 },
-    'dev|lisbeth': { principal: world.lisbeth, tenantId: world.t1, scopeId: world.s1 },
-    'dev|otto': { principal: world.otto, tenantId: world.t1, scopeId: world.s1 },
-    'dev|rutger': { principal: world.rutger, tenantId: world.t2, scopeId: world.s2 },
-  };
-  for (const persona of PERSONAS) {
-    const home = homes[persona.sub];
-    if (!home) continue;
-    await host.admin.linkIdentity(staff, {
-      provider: DEV_PROVIDER,
-      externalId: persona.sub,
-      principal: home.principal,
-      tenantId: home.tenantId,
-      scopeId: home.scopeId,
-    });
+  await host.admin.registerIdentityPool(staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  for (const [seat, node] of [
+    ['home', { tenantId: world.t1, scopeId: world.s1 }],
+    ['elsewhere', { tenantId: world.t2, scopeId: world.s2 }],
+  ] as const) {
+    await seatWorld(host, { actor: staff, node, provider: DEV_PROVIDER, world: WORLD, seat });
   }
 }

@@ -42,6 +42,7 @@ import { IdentityDO, workerDoor } from '@substrat-run/vertical-host/worker-door'
 // provision.ts exports these five, and needs no edit beyond a `join`.
 import { MODULES, OWNER_ROLE_KEY, ROLES, envSpec, permissions } from './provision.js';
 import { mountApi } from './routes.js';
+import { WORLD } from './world.js';
 
 /** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
@@ -163,6 +164,9 @@ const door = workerDoor<Env>({
   nodeFor,
   hostFor,
   envSpec,
+  // The sample world (src/world.ts) a seeded preview of this app holds: its people sign in by
+  // picking a persona, as they do locally. Seated only in a clean-room preview, never an install.
+  world: WORLD,
 });
 
 /** The caller's scope stub. 401 if nobody. */

@@ -12,6 +12,7 @@ const WORLD: SeedWorld = {
   personas: [
     { sub: 'dev|anna', name: 'Anna', email: 'anna@example.test', role: 'admin' },
     { sub: 'dev|eve', name: 'Eve', email: 'eve@example.test', elsewhere: true },
+    { sub: 'dev|ivan', name: 'Ivan', email: 'ivan@example.test', invited: true },
   ],
 };
 
@@ -33,7 +34,7 @@ const deployment = () => {
 };
 
 describe('seatWorldWith (#3108)', () => {
-  it('seats a persona as the same principal after a push empties the directory, and only the home cast', async () => {
+  it('seats a persona as the same principal after a push empties the directory, and only the home cast it seats', async () => {
     const d = deployment();
     const first = await seatWorldWith(d.seating, { world: WORLD });
     await seatWorldWith(d.seating, { world: WORLD }); // linked already: nothing seated again
@@ -44,7 +45,7 @@ describe('seatWorldWith (#3108)', () => {
     expect(principalId.parse(anna)).toBe(anna);
     expect(second.get('dev|anna')!.principal).toBe(anna);
     expect(d.seated).toEqual([['dev|anna', anna], ['dev|anna', anna]]);
-    expect(first.has('dev|eve')).toBe(false);
+    expect([...first.keys()]).toEqual(['dev|anna']);
     // Another scope's persona of the same `sub` is someone else.
     expect(await personaPrincipal(scopeId.parse('01JZ0000000000000000SCP002'), 'dev|anna')).not.toBe(anna);
   });
