@@ -595,6 +595,8 @@ export const INDEX_VALUE_EXPORTS = [
   'peerSeats',
   'peerSubjectRef',
   'peerVerticalSpellings',
+  // #3108: the principal a persona is seated as in a deployed preview, stable across pushes.
+  'personaPrincipal',
   'pendingCopyKeepAliveParams',
   'planExportBatch',
   'planMigrations',
@@ -765,6 +767,7 @@ export const INDEX_VALUE_EXPORTS = [
   'seatScopeTuple',
   // #3108: a vertical's sample world, seated alike by the dev server and a seeded preview.
   'seatWorld',
+  'seatWorldWith',
   'servedFromRow',
   'servesAsFrom',
   'servesNowParams',

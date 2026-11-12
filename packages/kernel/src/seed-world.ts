@@ -82,11 +82,29 @@ export interface SeedWorld {
   build?(world: WorldBuilder): Promise<void>;
 }
 
-export interface SeatWorldInput {
-  actor: PlatformActorId;
-  node: { tenantId: TenantId; scopeId: ScopeId };
-  /** The identity pool the personas' `sub`s belong to. Registered by the caller. */
-  provider: string;
+/**
+ * Where a world is seated: the directory a persona's `sub` signs in through, and the scope it
+ * works in. {@link seatWorld} seats into a host's own admin directory, as a node harness has
+ * one; a deployed vertical has none (its host is scope-local), so it passes its own: the
+ * identity store its sign-in door reads, and the scope-local verbs for the role and the grant.
+ */
+export interface WorldSeating {
+  /** The principal `sub` is already linked to here, or null. Never claims anything. */
+  resolve(sub: string): Promise<PrincipalId | null>;
+  /**
+   * The principal a persona not linked here gets. Absent: a fresh ulid. A deployed preview
+   * derives it from the scope and the `sub` instead (see `personaPrincipal`), because each push
+   * is a new script whose identity store starts empty while the scope's data is carried: the
+   * same persona has to come back as the same principal, or it loses everything it built.
+   */
+  principalFor?(sub: string): Promise<PrincipalId>;
+  /** Give the persona's principal its role (when it has one), then link its `sub` to it. */
+  seat(persona: WorldPersona, principal: PrincipalId): Promise<void>;
+  grantShape(input: { principal: PrincipalId; entity: EntityRef; permissions: readonly PermissionKey[]; grantedBy: PrincipalId }): Promise<void>;
+  invoke<O, I>(persona: WorldPersona, principal: PrincipalId, operation: string, input?: I): Promise<O>;
+}
+
+export interface SeatWorldOptions {
   world: SeedWorld;
   /** `home` seats the personas of this scope; `elsewhere` the outsiders, in their own tenant. */
   seat?: 'home' | 'elsewhere';
@@ -94,39 +112,61 @@ export interface SeatWorldInput {
   build?: boolean;
 }
 
+export interface SeatWorldInput extends SeatWorldOptions {
+  actor: PlatformActorId;
+  node: { tenantId: TenantId; scopeId: ScopeId };
+  /** The identity pool the personas' `sub`s belong to. Registered by the caller. */
+  provider: string;
+}
+
 /**
- * Seat a world's personas in one scope, and build its records when asked. Answers each seated
- * persona by `sub`.
+ * Seat a world's personas in one scope of `host`, through its admin directory, and build its
+ * records when asked. Answers each seated persona by `sub`.
  */
 export async function seatWorld(host: ScopeHost, input: SeatWorldInput): Promise<Map<string, WorldSeat>> {
-  const { actor, node, provider, world } = input;
+  const { actor, node, provider } = input;
+  return await seatWorldWith(
+    {
+      resolve: async (sub) => {
+        const known = await host.admin.resolveIdentity(node.tenantId, provider, sub);
+        if (known?.scopeId && known.scopeId !== node.scopeId) {
+          throw new Error(`seed world: identity '${sub}' is linked to another scope`);
+        }
+        return known?.principal ?? null;
+      },
+      seat: async (persona, principal) => {
+        if (persona.role) await host.admin.assignRole(actor, { principalId: principal, roleKey: persona.role, node });
+        await host.admin.linkIdentity(actor, { provider, externalId: persona.sub, principal, tenantId: node.tenantId, scopeId: node.scopeId });
+      },
+      grantShape: async ({ principal, entity, permissions, grantedBy }) => {
+        await host.admin.grantEntityShape(actor, { principalId: principal, node, entity, permissions, grantedBy });
+      },
+      invoke: async <O, I>(persona: WorldPersona, principal: PrincipalId, operation: string, payload?: I) => {
+        const stub = await host.getScope(principal, node.tenantId, node.scopeId, { verifiedEmail: persona.email });
+        return await stub.invoke<O, I>(operation, payload as I);
+      },
+    },
+    input,
+  );
+}
+
+/**
+ * Seat a world's personas through `seating`, and build its records when asked: the one
+ * procedure {@link seatWorld} and a deployed vertical's seeded preview share. A persona already
+ * linked keeps its principal and is not seated again.
+ */
+export async function seatWorldWith(seating: WorldSeating, input: SeatWorldOptions): Promise<Map<string, WorldSeat>> {
+  const { world } = input;
   const elsewhere = (input.seat ?? 'home') === 'elsewhere';
   const seats = new Map<string, WorldSeat>();
   const seated = world.personas.filter((p) => Boolean(p.elsewhere) === elsewhere);
   for (const persona of seated) {
-    const known = await host.admin.resolveIdentity(node.tenantId, provider, persona.sub);
-    if (known?.scopeId && known.scopeId !== node.scopeId) {
-      throw new Error(`seed world: identity '${persona.sub}' is linked to another scope`);
-    }
-    const principal = known?.principal ?? principalId.parse(ulid());
-    if (!known) {
-      if (persona.role) {
-        await host.admin.assignRole(actor, { principalId: principal, roleKey: persona.role, node });
-      }
-      await host.admin.linkIdentity(actor, {
-        provider,
-        externalId: persona.sub,
-        principal,
-        tenantId: node.tenantId,
-        scopeId: node.scopeId,
-      });
-    }
+    const known = await seating.resolve(persona.sub);
+    const principal = known ?? (seating.principalFor ? await seating.principalFor(persona.sub) : principalId.parse(ulid()));
+    if (!known) await seating.seat(persona, principal);
     seats.set(persona.sub, {
       principal,
-      invoke: async <O, I>(operation: string, payload?: I) => {
-        const stub = await host.getScope(principal, node.tenantId, node.scopeId, { verifiedEmail: persona.email });
-        return stub.invoke<O, I>(operation, payload as I);
-      },
+      invoke: <O, I>(operation: string, payload?: I) => seating.invoke<O, I>(persona, principal, operation, payload),
     });
   }
   if (input.build && world.build) {
@@ -139,15 +179,24 @@ export async function seatWorld(host: ScopeHost, input: SeatWorldInput): Promise
       personas: seated,
       as: seatOf,
       grantShape: async ({ to, entity, permissions, grantedBy }) => {
-        await host.admin.grantEntityShape(actor, {
-          principalId: seatOf(to).principal,
-          node,
-          entity,
-          permissions,
-          grantedBy: seatOf(grantedBy).principal,
-        });
+        await seating.grantShape({ principal: seatOf(to).principal, entity, permissions, grantedBy: seatOf(grantedBy).principal });
       },
     });
   }
   return seats;
+}
+
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/**
+ * The principal a persona is seated as in a deployed preview: derived from the scope and its
+ * `sub`, so every push of the preview seats it as the same principal (see
+ * {@link WorldSeating.principalFor}). Ulid-shaped, its first character kept to `0`–`7` as a
+ * ulid's is. Web Crypto only.
+ */
+export async function personaPrincipal(scopeId: ScopeId, sub: string): Promise<PrincipalId> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`persona:${scopeId}:${sub}`)));
+  let id = CROCKFORD[digest[0]! % 8]!;
+  for (let i = 1; i < 26; i++) id += CROCKFORD[digest[i]! % 32];
+  return principalId.parse(id);
 }
