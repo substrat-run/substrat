@@ -1,5 +1,18 @@
 # @substrat-run/elements
 
+## 0.8.0
+
+### Minor Changes
+
+- 0ed73dd: - contracts: the assistant stream's `source` event takes an optional `kind` (an open string, so a new kind never makes an older reader drop the citation) and `detail` (a short line saying where the source lives).
+  - elements: `<sub-assistant>` draws an icon for a source whose `kind` is in `ASSISTANT_SOURCE_KINDS` and its `detail` quietly after the title, with new parts `source-icon` and `source-detail`; `AssistantCitation` carries both.
+
+### Patch Changes
+
+- Updated dependencies [0ed73dd]
+- Updated dependencies [15e97c6]
+  - @substrat-run/contracts@0.193.0
+
 ## 0.7.1
 
 ### Patch Changes

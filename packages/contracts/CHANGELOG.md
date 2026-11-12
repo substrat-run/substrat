@@ -1,5 +1,16 @@
 # @substrat-run/contracts
 
+## 0.193.0
+
+### Minor Changes
+
+- 0ed73dd: - contracts: the assistant stream's `source` event takes an optional `kind` (an open string, so a new kind never makes an older reader drop the citation) and `detail` (a short line saying where the source lives).
+  - elements: `<sub-assistant>` draws an icon for a source whose `kind` is in `ASSISTANT_SOURCE_KINDS` and its `detail` quietly after the title, with new parts `source-icon` and `source-detail`; `AssistantCitation` carries both.
+
+### Patch Changes
+
+- 15e97c6: The router kick drains the scope a platform intent went into, not only the routed one: `onPlatformRequests` reports the scope, `kickFlags` writes it into `x-substrat-platform-request`, and the control plane honours it within the routed scope's tenant and vertical. A vertical-defined connector's binding can be polled on request (`verticalConnectorScopeSync`), so its connect-time sync and "sync now" run instead of answering 501.
+
 ## 0.192.0
 
 ## 0.191.0
