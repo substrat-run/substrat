@@ -1,5 +1,16 @@
 # @substrat-run/control-plane-api
 
+## 0.193.0
+
+### Patch Changes
+
+- 15e97c6: The router kick drains the scope a platform intent went into, not only the routed one: `onPlatformRequests` reports the scope, `kickFlags` writes it into `x-substrat-platform-request`, and the control plane honours it within the routed scope's tenant and vertical. A vertical-defined connector's binding can be polled on request (`verticalConnectorScopeSync`), so its connect-time sync and "sync now" run instead of answering 501.
+- Updated dependencies [0ed73dd]
+- Updated dependencies [15e97c6]
+  - @substrat-run/contracts@0.193.0
+  - @substrat-run/kernel@0.193.0
+  - @substrat-run/control-plane-client@0.6.15
+
 ## 0.192.0
 
 ### Patch Changes
