@@ -143,6 +143,7 @@ export interface SelfShapeHost {
 export interface PersonaSeatHost {
   assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string, door?: 'person' | 'platform'): Promise<void>;
   grantEntityShapeLocal?(scopeId: ScopeId, principal: PrincipalId, entity: EntityRef, permissions: readonly PermissionKey[]): Promise<void>;
+  hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
 }
 
 /**
@@ -295,6 +296,17 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       if (!assignScopeRole || !grantEntityShapeLocal) {
         throw new HTTPException(501, { message: 'this deployment cannot seat a sample world — redeploy it' });
       }
+      // Built once per scope's data. The platform says when the scope is new; a scope it reuses
+      // is built too while none of the world's role holders holds a role in it yet, as a preview
+      // created before it was first seeded has none. Read before seating, which gives them one.
+      let build = b.build;
+      const holders = world.personas.filter((p) => p.role && !p.elsewhere && !p.invited);
+      if (!build && holders.length > 0 && host.hasScopeRoleLocal) {
+        const held = await Promise.all(
+          holders.map(async (p) => host.hasScopeRoleLocal!(b.tenantId, b.scopeId, await personaPrincipal(b.scopeId, p.sub))),
+        );
+        build = !held.some(Boolean);
+      }
       await seatWorldWith(
         {
           resolve: async (sub) => {
@@ -310,7 +322,7 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
           invoke: async (persona, principal, operation, input) =>
             (await host.getScope(principal, b.tenantId, b.scopeId, { verifiedEmail: persona.email })).invoke(operation, input),
         },
-        { world, build: b.build },
+        { world, build },
       );
     },
   });

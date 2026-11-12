@@ -394,3 +394,56 @@ describe('an invited person (K-61 phase 3)', () => {
     });
   });
 });
+
+/**
+ * #3108: a seeded preview's personas, seated through the door. Each push binds a new script whose
+ * identity directory starts empty while the scope's data is carried, so a re-seat links each
+ * persona again as the same principal, and the world is built only where its people hold no role.
+ */
+describe('workerDoor — a seeded preview (#3108)', () => {
+  const world = {
+    personas: [
+      { sub: 'dev|anna', name: 'Anna', email: 'anna@example.test', role: 'admin', note: 'admin' },
+      { sub: 'dev|ivan', name: 'Ivan', email: 'ivan@example.test', invited: true },
+      { sub: 'dev|eve', name: 'Eve', email: 'eve@example.test', role: 'admin', elsewhere: true },
+    ],
+    build: vi.fn(async () => undefined),
+  };
+  const deployment = () => {
+    const links = new Map<string, string>();
+    const roles = new Set<string>();
+    const host = {
+      assignScopeRole: vi.fn(async (_s: string, principal: string) => void roles.add(principal)),
+      grantEntityShapeLocal: vi.fn(async () => undefined),
+      hasScopeRoleLocal: vi.fn(async (_t: string, _s: string, principal: string) => roles.has(principal)),
+      getScope: vi.fn(),
+    };
+    const directory = {
+      boundPrincipal: vi.fn(async (_s: string, sub: string) => links.get(sub) ?? null),
+      bindPersona: vi.fn(async (_s: string, sub: string, principal: string) => void links.set(sub, principal)),
+    };
+    const built = workerDoor<object>({
+      directory: () => directory as never,
+      nodeFor: () => node,
+      hostFor: () => host as never,
+      envSpec: [],
+      world,
+    });
+    return { built, host, links, push: () => links.clear() };
+  };
+
+  it('offers the home cast, links it as the same principal after a push, and builds only where it is not seated', async () => {
+    const d = deployment();
+    const hook = d.built.platform.seedWorld!;
+    expect(hook.personas.map((p) => p.sub)).toEqual(['dev|anna', 'dev|ivan']);
+
+    await hook.seat({}, { ...node, build: false }); // a reused slot, first seeded: built anyway
+    const anna = d.links.get('dev|anna');
+    d.push();
+    await hook.seat({}, { ...node, build: false }); // the next push: seated again, not built again
+    expect(d.links.get('dev|anna')).toBe(anna);
+    expect([...d.links.keys()]).toEqual(['dev|anna']);
+    expect(d.host.assignScopeRole).toHaveBeenCalledWith(node.scopeId, anna, 'admin', 'person');
+    expect(world.build).toHaveBeenCalledTimes(1);
+  });
+});

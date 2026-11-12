@@ -21,7 +21,11 @@ export const seedWorldBody = z
   .object({
     tenantId,
     scopeId,
-    /** Build the world's records too. Only for a scope seeded for the first time: a build is not idempotent. */
+    /**
+     * The platform's word that the scope is new, so the world's records are built too. A deployment
+     * also builds a reused scope whose data holds none of the world's people yet; a build is not
+     * idempotent, so it never builds where they are already seated.
+     */
     build: z.boolean(),
   })
   .strict();
