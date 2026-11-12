@@ -47,6 +47,8 @@ export interface WorldPersona {
    * has someone to turn away. A world with one scope (a hosted preview) leaves them out.
    */
   readonly elsewhere?: boolean;
+  /** A one-line hint a persona picker shows under the name. */
+  readonly note?: string;
 }
 
 /** A persona, seated: its principal, and an invoker acting as it. */

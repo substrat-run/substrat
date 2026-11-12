@@ -691,7 +691,7 @@ export {
   type OutboxSubscriber,
   type PruneDrainedEventsInput,
 } from './outbox-prune.js';
-export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
+export { CLEAN_ROOM_COPY_SQL, COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 // RFC wire-signing §4: the nonce store a signed call that changes state spends its nonce in.
 export {
   WIRE_NONCE_CAP,

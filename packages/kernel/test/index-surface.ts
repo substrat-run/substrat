@@ -39,6 +39,8 @@ export const INDEX_VALUE_EXPORTS = [
   'CAPABILITY_EXCHANGE_OPERATION',
   'CAPABILITY_SESSION_PRUNE_BATCH',
   'CARRIED_AWAY_KEY',
+  // #3108: the guard a seeded preview's persona link is behind.
+  'CLEAN_ROOM_COPY_SQL',
   // #2732: the live-connection key, owner included, as both adapters build it.
   'CONNECTIONS_LIVE_INDEX',
   'CONNECT_LINKS_DDL',

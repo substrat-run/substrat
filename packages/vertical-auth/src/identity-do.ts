@@ -17,6 +17,8 @@ import {
   needsSetup as needsSetupRow,
   ownerSeat as ownerSeatRow,
   resolvePrincipal as resolvePrincipalRow,
+  boundPrincipal as boundPrincipalRow,
+  bindPersona as bindPersonaRow,
   ownerClaimTarget as ownerClaimTargetRow,
   recordOwnerClaim as recordOwnerClaimRow,
   ownerClaimMatches as ownerClaimMatchesRow,
@@ -257,6 +259,16 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return resolvePrincipalRow(this.registrySql, scopeId, sub, Date.now());
   }
 
+  /** The principal `sub` is bound to in this scope, or null. Never claims the owner seat. */
+  async boundPrincipal(scopeId: string, sub: string): Promise<string | null> {
+    return boundPrincipalRow(this.registrySql, scopeId, sub);
+  }
+
+  /** Bind a seeded preview's persona to the principal it was seated as (#3108). */
+  async bindPersona(scopeId: string, sub: string, principal: string): Promise<void> {
+    bindPersonaRow(this.registrySql, scopeId, sub, principal);
+  }
+
   /**
    * The principal a claim link would bind — the pending owner — or null when the seat is not
    * pending (#1686). What a mint reads before asking the scope for a `become` capability.
@@ -412,6 +424,8 @@ export type IdentityStub = {
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;
+  boundPrincipal(scopeId: string, sub: string): Promise<string | null>;
+  bindPersona(scopeId: string, sub: string, principal: string): Promise<void>;
   ownerClaimTarget(scopeId: string): Promise<string | null>;
   recordOwnerClaim(scopeId: string, principal: string, link: OwnerClaimLinkRow): Promise<{ previous: string | null } | null>;
   ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean>;

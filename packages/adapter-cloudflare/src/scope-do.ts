@@ -498,7 +498,7 @@ import type {
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
 import { loadDropsRowsOf, SCOPE_COPY_LEASE_MS, ulidTime } from '@substrat-run/kernel';
-import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, CLEAN_ROOM_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 
 /**
@@ -7077,6 +7077,11 @@ export function defineScopeDO(
      */
     isCopy(): boolean {
       return this.sql.exec(IS_COPY_SQL).toArray().length > 0;
+    }
+
+    /** Whether this scope is a clean-room copy (#3108, `CLEAN_ROOM_COPY_SQL`): what a seeded preview's persona link is behind. */
+    isCleanRoomCopy(): boolean {
+      return this.hasTable('_substrat_copy_origin') && this.sql.exec(CLEAN_ROOM_COPY_SQL).toArray().length > 0;
     }
 
     /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
