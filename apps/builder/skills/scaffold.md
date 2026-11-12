@@ -84,7 +84,7 @@ build outputs and the platform checkout are never deployment inputs.
 
 **Copy the reference before you write.** `list_reference` / `read_reference` open
 complete working verticals, compiled against this platform on every change. From
-`template`, read `src/seed.ts`, `src/provision.ts`, `src/server.ts`, `src/routes.ts`
+`template`, read `src/seed.ts`, `src/world.ts`, `src/provision.ts`, `src/server.ts`, `src/routes.ts`
 and `src/personas.ts` before writing your own; from `todo`, `src/module.ts` for
 operations that create, link and share, and when the model has invitations, `todo/invite`
 and `shareInvitedLists` there. When people are invited to join at a role, the template's
@@ -173,11 +173,18 @@ export function buildHost(dir: string) {
 }
 ```
 
-Seed: provision tenant+scope(s), define roles per tenant from engine PERM +
-APP_PERM, assign them, create entities via `stub.invoke` (never raw SQL),
-entity-narrowed grants for portal principals, persist the cast (principal ids +
-names) to a JSON file so restarts reuse it. **Seed two tenants** — the second
-is the attacker the scenario needs. Export `MODULES` and
+Seed: provision tenant+scope(s) and define roles per tenant from engine PERM +
+APP_PERM; then let `seatWorld` from `@substrat-run/kernel` seat the cast in each
+and build the records, and persist the cast (principal ids + record ids) to a
+JSON file so restarts reuse it. **Seed two tenants** — the second is the
+attacker the scenario needs. The cast and its records live in `src/world.ts`,
+node-free, as `template`'s does: `WORLD = { personas: PERSONAS, build }`, where
+each persona in `src/personas.ts` carries its `role` (`elsewhere: true` for the
+other tenant's attacker), and `build` creates entities via `as(sub).invoke`
+(never raw SQL) and gives portal principals their entity-narrowed grants with
+`grantShape`. `src/worker.ts` names the same world (`workerDoor({ world: WORLD })`):
+it is what a seeded preview of the deployed app holds, so the studio's Run
+signs in as these personas. Export `MODULES` and
 `ROLES: RoleDefinition[]` (from `@substrat-run/contracts` — `{ key, permissions,
 source: 'vertical' }`, the same table `defineRole` is fed) so the permission
 surface is a build-time fact tooling can read, not something buried in seed

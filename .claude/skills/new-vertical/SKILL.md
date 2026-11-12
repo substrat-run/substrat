@@ -167,7 +167,10 @@ permission diff) and the API tags. `src/module.ts` is where the work is:
   creates the seed entities through `world.as(sub).invoke` (never raw SQL) and the bootstrap
   grants a person needs on their own entity through `world.grantShape`, looping over
   `world.personas` — the ones seated where it runs. It is the world a hosted seeded preview
-  runs too (#3108), so it imports nothing node-only.
+  runs too (#3108), so it imports nothing node-only. A deployed vertical names it in its
+  worker, `workerDoor({ world: WORLD })`; the preview then offers the home cast in a picker. A
+  persona marked `invited: true` is offered but never seated: they get in by a member invite
+  naming their `email`, locally and in a preview alike.
 - `src/provision.ts`: `definePermissions({ modules, roles, entityGrants, keys })`, with
   `keys` the **same** array `spec/model.ts` handed `defineOperations` — it throws at load
   if the two disagree. `ENTITY_GRANTS` declares the shapes of the grants made outside the
