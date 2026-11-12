@@ -56,8 +56,8 @@ it applies a batch another app exported, entering through the peer door.
 `getScope` takes a fourth argument, `ScopeStubOptions`, for the HTTP layer around an operation
 rather than for the module. Its observers fire only after an invoke **commits**:
 
-- **`onPlatformRequests(count)`** fires when the operation enqueued
-  [platform intents](/concepts/platform#platform-intents).
+- **`onPlatformRequests(count, scopeId)`** fires when the operation enqueued
+  [platform intents](/concepts/platform#platform-intents), naming the scope they went into.
 - **`onExportedEvents(count)`** fires when the operation, or an in-scope consumer in its tail,
   committed an event of a type this deployment exports to another app.
 
@@ -72,8 +72,11 @@ return host.getScope(principal, tenantId, scopeId, {
 ```
 
 A vertical that leaves this out still works, and waits for the sweep. The flags carry no
-authority: the router strips every inbound `x-substrat-*` header, and the platform acts on the
-scope it resolved, never on one a response names.
+authority: the router strips every inbound `x-substrat-*` header, so only a response can raise
+one. The intent flag's value names the scope the intents went into, since a worker serving
+several scopes under one hostname picks the scope per request. The platform drains that scope
+only when it and the routed scope are both on record in the same tenant under the same vertical,
+and drains the routed scope otherwise. The exports flag always acts on the routed scope.
 
 ### Preconditions travel per invocation, not in the input
 

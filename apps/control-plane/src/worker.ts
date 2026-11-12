@@ -146,6 +146,7 @@ import {
   verticalConnectorBinder,
   verticalConnectorDispatchHandler,
   verticalConnectorInspector,
+  verticalConnectorScopeSync,
   verticalConnectorSweeper,
   resolveVerticalConnectorTarget,
   verticalConnectorReadsOf,
@@ -2264,6 +2265,34 @@ export function assertReconcileReaches(scopeId: ScopeId, expected: string, reach
 }
 
 /**
+ * Which scope a router kick's intent drain runs in. The response that raised the flag may name
+ * the scope its intents went into (`PLATFORM_REQUEST_HEADER`'s value): a worker serving several
+ * scopes under one hostname picks the scope per request, so the routed scope is not always it.
+ * The named scope is honoured only when it is a scope of the routed scope's tenant served by the
+ * same vertical — the response is tenant code, so it may move the drain between its own
+ * deployment's scopes and nowhere else. Anything else drains the routed scope, as a kick always
+ * did.
+ */
+export async function intentScopeOf(env: Env, t: TenantId, routed: ScopeId, named: unknown): Promise<ScopeId> {
+  const parsed = scopeId.safeParse(named);
+  if (!parsed.success || parsed.data === routed) return routed;
+  const admin = hostFor(env).admin;
+  const [routedRec, namedRec] = await Promise.all([
+    admin.getScopeRecord(SWEEP_ACTOR, t, routed).catch(() => undefined),
+    admin.getScopeRecord(SWEEP_ACTOR, t, parsed.data).catch(() => undefined),
+  ]);
+  return sameDeploymentScope(routedRec, namedRec) ? parsed.data : routed;
+}
+
+/** Both scopes on record, in one tenant, under one vertical: the test `intentScopeOf` applies. */
+export function sameDeploymentScope(
+  routed: { tenantId: string; vertical: string | null } | null | undefined,
+  named: { tenantId: string; vertical: string | null } | null | undefined,
+): boolean {
+  return !!routed?.vertical && !!named && named.tenantId === routed.tenantId && named.vertical === routed.vertical;
+}
+
+/**
  * What one router kick asks for (#1705 PR 2), read off `/internal/drain-scope`'s body. The
  * router says which flags the vertical's response raised: `platformRequests` (drain the scope's
  * intents) and `exports` (run the scope's outgoing cross-vertical edges). A router that predates
@@ -3174,6 +3203,7 @@ export default {
         scopeId?: unknown;
         platformRequests?: unknown;
         exports?: unknown;
+        namedScopeId?: unknown;
       };
       const ids = tenantId.safeParse(body.tenantId);
       const sids = scopeId.safeParse(body.scopeId);
@@ -3185,7 +3215,7 @@ export default {
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
       // `attempted` is for the sweep's second drain (#2431); the router is answered as before.
       const report = kick.intents
-        ? withoutAttempted(await drainOneScope(c.env, ids.data, sids.data))
+        ? withoutAttempted(await drainOneScope(c.env, ids.data, await intentScopeOf(c.env, ids.data, sids.data, body.namedScopeId)))
         : { drained: 0, done: 0, failed: 0, pending: 0 };
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
       // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass
@@ -3400,8 +3430,24 @@ export default {
       bindingRelay((env, host, body, proven) =>
         relayConnectionSync(host, CONNECTION_RELAY_ACTOR, body, {
           proven,
-          landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: connectionBindersFor(env) },
-          syncScope: (provider) => CONNECTORS.find((c) => c.provider === provider)?.syncScope?.(env),
+          landings: {
+            read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+            binders: connectionBindersFor(env),
+            // A vertical-defined provider's bindings are its own (vertical-connectors.md §6.1), as
+            // the bind and unbind routes above read them: without this its connection is never
+            // found bound, and the poll below would answer that nothing is.
+            binderFor: (conn) =>
+              isVerticalConnectorProvider(conn.provider)
+                ? verticalConnectorBinder(verticalConnectorDepsFor(env, host, CONNECTION_RELAY_ACTOR))
+                : undefined,
+          },
+          // A first-party connector's own scope poll, or a vertical-defined provider's: the call its
+          // pass makes for the one binding. Only a provider that is neither answers 501.
+          syncScope: (provider) =>
+            CONNECTORS.find((c) => c.provider === provider)?.syncScope?.(env) ??
+            (isVerticalConnectorProvider(provider)
+              ? verticalConnectorScopeSync(verticalConnectorDepsFor(env, host, CONNECTION_RELAY_ACTOR))
+              : undefined),
         }),
       ),
     );

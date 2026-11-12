@@ -33,6 +33,7 @@ import {
   verticalConnectorReadsOf,
   verticalConnectorBinder,
   verticalConnectorInspector,
+  verticalConnectorScopeSync,
   verticalConnectorSweeper,
   verticalConnectorDispatchHandler,
   type ConnectionInspector,
@@ -169,6 +170,77 @@ describe('vertical-defined connectors — the platform side', () => {
     expect(await stateAt(b, 'cursor')).toBe('b1'); // the failed call's scope keeps its cursor
     expect(uses.mock.calls.map(([, use]) => use)).toEqual(expect.arrayContaining([{ ok: true, status: 200 }, { ok: false, error: 'box answered 503', status: 503 }]));
     expect(uses).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls one scope's binding on request with the pass's own call, and nothing of another scope's (#2672)", async () => {
+    await bind(a);
+    await bind(b);
+    await host.admin.putConnectorState(row.id, verticalConnectorStateKey(a, 'cursor'), 'a1');
+    answer = async () => ok({ result: { landed: 2, more: true }, state: [{ key: 'cursor', value: 'a2' }] });
+    const sync = verticalConnectorScopeSync(deps());
+
+    expect(await sync(host, row, a)).toEqual({ outcome: 'landed', pending: true, errors: [] });
+    expect(calls.map((c) => c.target.scopeId)).toEqual([a]);
+    expect(calls[0]!.request).toMatchObject({ role: 'sweep', binding: { scopeId: a }, state: [{ key: 'cursor', value: 'a1' }] });
+    expect(await stateAt(a, 'cursor')).toBe('a2');
+
+    answer = async () => ok({ result: { landed: 0, more: false } });
+    expect(await sync(host, row, a)).toEqual({ outcome: 'unchanged', pending: false, errors: [] });
+    answer = async () => ({ status: 200, body: { ok: false, refused: false, error: 'box answered 503', uses: [] } });
+    expect(await sync(host, row, b)).toEqual({ outcome: 'failed', pending: false, errors: ['box answered 503'] });
+  });
+
+  it("serialises sweeps of one binding: a held lease makes a poll and a pass stand back without calling", async () => {
+    await bind(a);
+    const lease = 'vc:sweep:' + a;
+    const until = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
+    await host.admin.putConnectorState(row.id, lease, { holder: 'other', until: until(60_000) });
+    answer = async () => ok({ result: { landed: 1, more: false } });
+
+    expect(await verticalConnectorScopeSync(deps())(host, row, a)).toEqual({ outcome: 'in-progress', pending: false, errors: [] });
+    // The pass counts the binding as found and leaves it to the holder: neither failed nor landed.
+    expect(await verticalConnectorSweeper(deps(), row)(host, row.id, { fetch: FETCH })).toEqual({ found: 1, failed: [], landed: 0 });
+    expect(calls).toEqual([]);
+
+    // A lease whose holder died runs out, and the next sweep takes it over.
+    await host.admin.putConnectorState(row.id, lease, { holder: 'other', until: until(-1) });
+    expect(await verticalConnectorScopeSync(deps())(host, row, a)).toMatchObject({ outcome: 'landed' });
+    expect(await host.admin.getConnectorState(row.id, lease)).toBeNull(); // given back
+  });
+
+  it('gives the lease back after a failed call, and never hands it to the connector as state', async () => {
+    await bind(a);
+    answer = async () => ({ status: 503, body: null });
+    expect(await verticalConnectorScopeSync(deps())(host, row, a)).toMatchObject({ outcome: 'failed' });
+    answer = async () => ok({ result: { landed: 0, more: false } });
+    expect(await verticalConnectorScopeSync(deps())(host, row, a)).toMatchObject({ outcome: 'unchanged' });
+    expect(calls.every((c) => (c.request as { state: { key: string }[] }).state.every((e) => !e.key.includes('sweep')))).toBe(true);
+  });
+
+  it('lets one of two simultaneous polls of a binding call, and tells the other it is in progress', async () => {
+    await bind(a);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    answer = async () => {
+      await held;
+      return ok({ result: { landed: 1, more: false } });
+    };
+    const sync = verticalConnectorScopeSync(deps());
+    const first = sync(host, row, a);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(await sync(host, row, a)).toEqual({ outcome: 'in-progress', pending: false, errors: [] });
+    release();
+    expect(await first).toMatchObject({ outcome: 'landed' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('answers not-bound for a scope the connection is not bound to, or whose connector sweeps nothing', async () => {
+    const sync = verticalConnectorScopeSync(deps());
+    expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
+    await bind(a);
+    declaration = declare({ sweeps: false });
+    expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
+    expect(calls).toEqual([]);
   });
 
   it('records one failed use when the call never answers, and applies a probe that did', async () => {

@@ -640,9 +640,16 @@ export function scopeHostContractSuite(
 
     it('reports committed platform intents to the stub minter — the drain-hint feed (#458)', async () => {
       const counts: number[] = [];
-      const stub = await host.getScope(alice, t1, s1, { onPlatformRequests: (n) => counts.push(n) });
+      const scopes: string[] = [];
+      const stub = await host.getScope(alice, t1, s1, {
+        onPlatformRequests: (n, scope) => {
+          counts.push(n);
+          scopes.push(scope);
+        },
+      });
       await stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: { slug: 'gym' } });
       expect(counts).toEqual([1]); // fired once, with how many intents that invoke enqueued
+      expect(scopes).toEqual([s1]); // and the scope they went into: the router kick drains it
 
       // An operation that enqueues nothing stays silent…
       await stub.invoke('test/emit-event');

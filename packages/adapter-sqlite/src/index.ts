@@ -7342,7 +7342,7 @@ export class SqliteScopeHost implements ScopeHost {
             rt.logTally = null;
           }
         }).finally(() => invokeOptions?.onLogLines?.(logTally.logLines));
-        if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
+        if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests, scopeId);
         if (exported > 0) options?.onExportedEvents?.(exported);
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
         if (replayed) invokeOptions?.onIdempotentReplay?.();
