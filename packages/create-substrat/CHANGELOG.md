@@ -1,5 +1,11 @@
 # create-substrat
 
+## 0.17.0
+
+### Minor Changes
+
+- 0dab770: A deployed vertical can hold its sample world in a seeded preview (#3108). `workerDoor({ world })` serves `/internal/seed-world` and `/internal/personas`, which seat the world's personas only in a clean-room preview; `seatWorldWith` and `personaPrincipal` seat them through the vertical's own identity directory, as the same principal on every push. A persona marked `invited` is offered but never seated. The template's sample world moves to `src/world.ts`.
+
 ## 0.16.2
 
 ### Patch Changes

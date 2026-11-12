@@ -1,5 +1,14 @@
 # @substrat-run/cli
 
+## 0.58.8
+
+### Patch Changes
+
+- Updated dependencies [0dab770]
+  - @substrat-run/contracts@0.194.0
+  - @substrat-run/control-plane-client@0.6.16
+  - @substrat-run/model-view@0.6.44
+
 ## 0.58.7
 
 ### Patch Changes

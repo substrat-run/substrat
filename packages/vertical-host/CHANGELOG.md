@@ -1,5 +1,20 @@
 # @substrat-run/vertical-host
 
+## 0.194.0
+
+### Minor Changes
+
+- 0dab770: A deployed vertical can hold its sample world in a seeded preview (#3108). `workerDoor({ world })` serves `/internal/seed-world` and `/internal/personas`, which seat the world's personas only in a clean-room preview; `seatWorldWith` and `personaPrincipal` seat them through the vertical's own identity directory, as the same principal on every push. A persona marked `invited` is offered but never seated. The template's sample world moves to `src/world.ts`.
+
+### Patch Changes
+
+- Updated dependencies [7d95a78]
+- Updated dependencies [0dab770]
+  - @substrat-run/kernel@0.194.0
+  - @substrat-run/contracts@0.194.0
+  - @substrat-run/vertical-auth@0.34.0
+  - @substrat-run/model-providers@0.5.84
+
 ## 0.193.0
 
 ### Patch Changes

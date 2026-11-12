@@ -1,5 +1,19 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.194.0
+
+### Minor Changes
+
+- 0dab770: A deployed vertical can hold its sample world in a seeded preview (#3108). `workerDoor({ world })` serves `/internal/seed-world` and `/internal/personas`, which seat the world's personas only in a clean-room preview; `seatWorldWith` and `personaPrincipal` seat them through the vertical's own identity directory, as the same principal on every push. A persona marked `invited` is offered but never seated. The template's sample world moves to `src/world.ts`.
+
+### Patch Changes
+
+- a86a5e7: The lifecycle heal backs off from a scope whose delivery keeps failing, and files one ops-failure row per error instead of one every pass (#3119).
+- Updated dependencies [7d95a78]
+- Updated dependencies [0dab770]
+  - @substrat-run/kernel@0.194.0
+  - @substrat-run/contracts@0.194.0
+
 ## 0.193.0
 
 ### Patch Changes

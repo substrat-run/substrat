@@ -1,5 +1,12 @@
 # @substrat-run/elements
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [0dab770]
+  - @substrat-run/contracts@0.194.0
+
 ## 0.8.0
 
 ### Minor Changes
