@@ -889,7 +889,23 @@ export interface LifecycleTargetRow {
   epoch: number;
   scope_rev: number;
   tenant_rev: number;
+  /** #3119: the deployment serving the scope as the directory names it (`lifecycleDeployment`). */
+  deployment: string;
 }
+
+/**
+ * #3119: what a delivery to the scope `s` reaches, as far as the directory can tell — the script its
+ * route names and the version its vertical's serving script runs. A failure is held against it, so
+ * a push or a promote that changes either lets the heal deliver again at once. Wider than the route
+ * the delivery takes, never narrower: a change it does not reflect only waits out the back-off.
+ * Reads `vv` (the scope's version) and `v` (its vertical).
+ */
+const LIFECYCLE_DEPLOYMENT = "COALESCE(s.serving_ref, vv.deployment_ref, '') || '|' || COALESCE(v.serving_version_id, '')";
+
+/** #3119: the heal's wait after the second failure in a row against the same receipt and deployment,
+ *  doubling with each further one up to the cap. The first failure waits for nothing. */
+export const LIFECYCLE_RETRY_BASE_MS = 30 * 60 * 1000;
+export const LIFECYCLE_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 
 const DIRECTORY_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through
@@ -1470,6 +1486,20 @@ const DIRECTORY_DDL = `
   CREATE TABLE IF NOT EXISTS scope_tenant_asks (
     scope_id TEXT PRIMARY KEY,
     asked_at TEXT NOT NULL
+  );
+  -- #3119: a scope whose delivery keeps failing, against what it failed: the receipt the directory
+  -- wanted, the deployment it was sent to (lifecycleDeployment), the last error, and how many times
+  -- in a row. The heal leaves the scope out until retry_at, the wait doubling with each repeat, and
+  -- a repeat of the same error files no ops-failure row. A delivery that lands drops the row. A
+  -- transition (another receipt wanted) or a redeploy (another deployment) starts afresh.
+  CREATE TABLE IF NOT EXISTS scope_lifecycle_failures (
+    scope_id TEXT PRIMARY KEY,
+    wanted TEXT NOT NULL,
+    deployment TEXT NOT NULL,
+    error TEXT NOT NULL,
+    failures INTEGER NOT NULL,
+    first_at TEXT NOT NULL,
+    retry_at TEXT NOT NULL
   );
   -- #1713: the lifecycle's revisions, one counter per subject ("scope:<id>" counts a
   -- scope's status transitions, "tenant:<id>" a tenant's status changes), each bumped in
@@ -4646,7 +4676,7 @@ export class ControlPlaneDO extends DurableObject {
    * good. A reaped scope keeps its tombstone row but leaves every delivery walk, so its go too.
    */
   private forgetLifecycleDeliveries(where: string, ...params: string[]): void {
-    for (const table of ['scope_lifecycle_receipts', 'scope_tenant_asks']) {
+    for (const table of ['scope_lifecycle_receipts', 'scope_tenant_asks', 'scope_lifecycle_failures']) {
       this.sql.exec(`DELETE FROM ${table} WHERE ${where}`, ...params);
     }
   }
@@ -6442,6 +6472,14 @@ export class ControlPlaneDO extends DurableObject {
       params.push(...driftParams);
     }
     if (filter.unrecorded) where.push('COALESCE(r.tenant_recorded, 0) <> 1');
+    // #3119: the heal leaves out a scope backing off from the receipt it still wants, at the
+    // deployment it still has. A transition's own delivery (scopeId, tenantId) never waits.
+    if (filter.drift || filter.unrecorded) {
+      where.push(
+        `(f.scope_id IS NULL OR f.wanted <> ${acked} OR f.deployment <> ${LIFECYCLE_DEPLOYMENT} OR f.retry_at <= ?)`,
+      );
+      params.push(epoch, new Date().toISOString());
+    }
     // The unrecorded walk rotates on the ask, not the answer: never asked first, then the one asked
     // longest ago, so a scope that answers 0, or never answers at all, cannot starve the rest of a
     // bounded pass.
@@ -6453,11 +6491,14 @@ export class ControlPlaneDO extends DurableObject {
     return this.sql
       .exec(
         `SELECT s.tenant_id, s.scope_id, s.status AS scope_status, t.status AS tenant_status, r.delivered,
-                ${epoch} AS epoch, COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev
+                ${epoch} AS epoch, COALESCE(rs.revision, 0) AS scope_rev, COALESCE(rt.revision, 0) AS tenant_rev,
+                ${LIFECYCLE_DEPLOYMENT} AS deployment
            FROM scopes s
            JOIN tenants t ON t.tenant_id = s.tenant_id
            LEFT JOIN verticals v ON v.slug = s.vertical
+           LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
            LEFT JOIN scope_lifecycle_receipts r ON r.scope_id = s.scope_id
+           LEFT JOIN scope_lifecycle_failures f ON f.scope_id = s.scope_id
            LEFT JOIN scope_tenant_asks a ON a.scope_id = s.scope_id
            LEFT JOIN lifecycle_revisions rs ON rs.subject = 'scope:' || s.scope_id
            LEFT JOIN lifecycle_revisions rt ON rt.subject = 'tenant:' || s.tenant_id
@@ -6527,6 +6568,43 @@ export class ControlPlaneDO extends DurableObject {
       tenantRecorded ? 1 : 0,
       scopeId,
     );
+    this.sql.exec('DELETE FROM scope_lifecycle_failures WHERE scope_id = ?', scopeId);
+  }
+
+  /**
+   * #3119: count a failed delivery of `wanted` to `deployment`, and answer whether it is news — the
+   * first against this receipt and deployment, or another error than the last — which is when the
+   * host files an ops-failure row. The first failure waits for nothing, so a passing outage heals on
+   * the next pass as before. Each repeat waits twice as long as the one before, up to the cap.
+   */
+  recordLifecycleFailure(
+    scopeId: string,
+    wanted: string,
+    deployment: string,
+    error: string,
+    at: string,
+  ): { failures: number; news: boolean; retryAt: string } {
+    const text = error.slice(0, 1000);
+    const prev = this.sql
+      .exec('SELECT wanted, deployment, error, failures, first_at FROM scope_lifecycle_failures WHERE scope_id = ?', scopeId)
+      .toArray()[0] as { wanted: string; deployment: string; error: string; failures: number; first_at: string } | undefined;
+    const same = prev !== undefined && prev.wanted === wanted && prev.deployment === deployment;
+    const failures = same ? prev.failures + 1 : 1;
+    const wait = failures < 2 ? 0 : Math.min(LIFECYCLE_RETRY_BASE_MS * 2 ** (failures - 2), LIFECYCLE_RETRY_MAX_MS);
+    const retryAt = new Date(Date.parse(at) + wait).toISOString();
+    this.sql.exec(
+      `INSERT OR REPLACE INTO scope_lifecycle_failures (scope_id, wanted, deployment, error, failures, first_at, retry_at)
+       SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${STILL_DELIVERED}`,
+      scopeId,
+      wanted,
+      deployment,
+      text,
+      failures,
+      same ? prev.first_at : at,
+      retryAt,
+      scopeId,
+    );
+    return { failures, news: !same || prev.error !== text, retryAt };
   }
 
   recordOpsFailure(row: OpsFailureRow): void {

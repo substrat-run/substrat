@@ -744,6 +744,14 @@ interface ControlPlaneStub {
   recordLifecycleReceipt(scopeId: string, delivered: string, at: string, tenantRecorded?: boolean): Promise<void>;
   /** #2016: note the heal's tenant-record asks, success or failure, so the walk rotates. */
   recordTenantAsks(scopeIds: string[], at: string): Promise<void>;
+  /** #3119: count a failed delivery; `news` says whether it earns an ops-failure row. */
+  recordLifecycleFailure(
+    scopeId: string,
+    wanted: string,
+    deployment: string,
+    error: string,
+    at: string,
+  ): Promise<{ failures: number; news: boolean; retryAt: string }>;
   /** #1713: raise the directory's epoch to at least this; answers the epoch now. */
   raiseLifecycleEpoch(atLeast: number): Promise<number>;
   createTenant(
@@ -11407,8 +11415,10 @@ export class CloudflareScopeHost implements ScopeHost {
    *
    * Never throws. A transition is the operator's lever in an incident, and the router refuses
    * the scope's requests as soon as the directory moves (#1730), so a deployment that cannot be
-   * reached must not refuse the lever. Each failure is an ops-failure row, no receipt is written,
-   * and the heal sweep delivers again.
+   * reached must not refuse the lever. A failure writes no receipt, and the heal sweep delivers
+   * again: on the next pass after the first failure, then backing off (#3119), so a scope that can
+   * never be delivered to is not asked every pass for good. Only news is an ops-failure row — the
+   * first failure against a receipt and a deployment, or another error than the last.
    */
   private async deliverLifecycles(
     actor: PlatformActorId,
@@ -11529,6 +11539,17 @@ export class CloudflareScopeHost implements ScopeHost {
         report.delivered += 1;
       } catch (err) {
         report.failed += 1;
+        const text = err instanceof Error ? err.message : String(err);
+        // #3119: a repeat of the last failure is counted, not filed. If the count cannot be kept,
+        // the row is filed: a missed failure is worse than a repeated one.
+        const news = await this.cp
+          .recordLifecycleFailure(scopeId, lifecycleReceipt(lifecycle), t.deployment, text, new Date().toISOString())
+          .then((f) => f.news)
+          .catch((e: unknown) => {
+            console.error('substrat: could not count a lifecycle delivery failure (#3119)', e);
+            return true;
+          });
+        if (!news) continue;
         try {
           // #2554: the throw is the deployment's or its runtime's text, and the deployment serving
           // a scope is the vertical's code, often another tenant's. The tenant's row says only what
@@ -11537,7 +11558,7 @@ export class CloudflareScopeHost implements ScopeHost {
           await this.admin.recordOpsFailure(
             withheldOpsFailure(
               { actor, operation: 'scope.lifecycle', stage: 'deliver', tenantId, scopeId },
-              `${missed}: ${err instanceof Error ? err.message : String(err)}`,
+              `${missed}: ${text}`,
               (reference) => `${missed} (reference ${reference})`,
             ),
           );
