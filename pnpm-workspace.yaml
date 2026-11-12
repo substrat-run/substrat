@@ -71,16 +71,16 @@ catalog:
   # 0.23.0 with a per-instance prototype re-wrap that stalled large workerd suites. The
   # plugin is a vitest plugin (`cloudflareTest(...)` in `plugins`) rather than a pool
   # config, and it peers on vitest 4 or 5.
-  vitest: ^5.0.5
-  '@vitest/ui': ^5.0.5
+  vitest: ^5.1.0
+  '@vitest/ui': ^5.1.0
   '@cloudflare/vitest-plugin': ^1.4.12
 
   # The apps' bundler (#2121): every app and demo builds on the same vite and React plugin.
   # `apps/docs` declares vite only for its EPUB figure renderer; vitepress 1.x keeps its own
   # vite 5 inside, and has no stable release on a newer one.
-  vite: ^8.3.5
-  '@vitejs/plugin-react': ^6.2.1
-  '@cloudflare/workers-types': ^5.20261102.1
+  vite: ^8.3.6
+  '@vitejs/plugin-react': ^6.3.0
+  '@cloudflare/workers-types': ^5.20261109.1
   wrangler: ^4.156.1
   '@types/node': ^22.20.5
 
