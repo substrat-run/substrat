@@ -117,7 +117,7 @@ describe('a CP-less host holds a copy inert by its own storage (#2005)', () => {
   // scope's own export, copy-origin row included, so a fork carried that way still names its source.
   it('reads a clean room as one, before and after a carry; a fork and an install never', async () => {
     const host = hostFor();
-    const carry = async (s: ScopeId, lineage: typeof PREVIEW) =>
+    const carry = async (s: ScopeId, lineage: { kind: string; forkedFrom: ScopeId | null }) =>
       host.restoreScopeLocal(s, await host.exportScopeLocal(s), { sourceScopeId: s, exact: true, markCopy: lineage });
     const clean = scopeId.parse(ulid());
     await host.restoreScopeLocal(clean, [], { markCopy: PREVIEW });
