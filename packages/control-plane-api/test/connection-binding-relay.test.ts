@@ -453,13 +453,14 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       expect(polled).toHaveLength(2);
     });
 
-    it("answers a failed poll with a reference, and files the provider's words on staff's row alone", async () => {
+    it("answers a failed poll with the connector's own cause and a reference, and files the provider's words on staff's row alone", async () => {
       const { ofA } = await boundWorld();
       const RAW = 'provider says: company 0000000000 is locked';
+      const SAID = 'supplier invoice 1 has a value this connector cannot read in Credit';
 
-      const { bindings } = await syncA(syncing(recording({ outcome: 'failed', pending: false, errors: [RAW] })));
+      const { bindings } = await syncA(syncing(recording({ outcome: 'failed', pending: false, errors: [RAW], said: [SAID] })));
 
-      expect(bindings).toEqual(expect.arrayContaining([expect.objectContaining({ connectionId: ofA, outcome: 'failed', error: expect.stringMatching(/^the binding did not land \(reference \w+\)$/) })]));
+      expect(bindings).toEqual(expect.arrayContaining([expect.objectContaining({ connectionId: ofA, outcome: 'failed', error: expect.stringMatching(new RegExp(`^the binding did not land: ${SAID} \\(reference \\w+\\)$`)) })]));
       expect(JSON.stringify(bindings)).not.toContain('0000000000');
       const failed = bindings.find((x) => x.connectionId === ofA)!;
       const reference = /reference (\w+)/.exec(failed.error!)![1];

@@ -181,7 +181,7 @@ describe('declared connection landings (#2316)', () => {
    * records as `unsupported`. Fortnox polled no invoices before #2422; no connector answers this
    * today, but the platform still reads it, so these tests hold that reading.
    */
-  const answeringUnsupported = (failed: { scopeId: string; error: string }[] = []): ConnectorSweeper => async (h, id) => {
+  const answeringUnsupported = (failed: { scopeId: string; error: string; said?: string }[] = []): ConnectorSweeper => async (h, id) => {
     const bindings = await listFortnoxBindings(h, id);
     return {
       found: bindings.length,
@@ -460,12 +460,13 @@ describe('declared connection landings (#2316)', () => {
     const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(ledger)));
     await host.admin.bindScopeVersion(staff, t, invoiceScope, await publish(manifestDeclaring(invoice)));
-    sweepers.fortnox = answeringUnsupported(outcome === 'failed' ? [{ scopeId: s, error: `unknown operation ${operation}` }] : []);
+    sweepers.fortnox = answeringUnsupported(outcome === 'failed' ? [{ scopeId: s, error: `unknown operation ${operation}`, said: 'the ledger could not be read' }] : []);
 
     await pass();
 
     expect(lastRun(id)).toMatchObject({ outcome, error: expect.stringContaining('invoice polling awaits an upgrade') });
-    if (outcome === 'failed') expect(lastRun(id)?.error).toContain('\n1 of 2 bindings did not land');
+    // #3103: what the connector said about why rides on the tenant's row; its error stays staff's.
+    if (outcome === 'failed') expect(lastRun(id)?.error).toMatch(/\n1 of 2 bindings did not land: the ledger could not be read \(reference \w{26}\)$/);
     expect((await listFortnoxBindings(host, id))).toEqual(expect.arrayContaining([
       expect.objectContaining({ scopeId: s, operation }),
       expect.objectContaining({ scopeId: invoiceScope, kind: 'supplier-invoice' }),

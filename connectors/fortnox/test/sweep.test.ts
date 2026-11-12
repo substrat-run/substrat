@@ -627,7 +627,11 @@ describe('fortnox connector — inbound sync', () => {
       const result = await sweepFortnoxLedger(host, connId, at(NOW));
 
       expect(invoicesLanded[0]!.invoices.map((i) => [i.givenNumber, i.credit, i.paymentPending])).toEqual([['12', true, false]]);
-      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/supplier invoice 13:.*Credit/s) }]);
+      expect(result.failed).toEqual([{
+        scopeId: s,
+        error: expect.stringMatching(/supplier invoice 13:.*Credit/s),
+        said: 'supplier invoice 13 has a value this connector cannot read in Credit',
+      }]);
     });
 
     it('reads every invoice on a first pass that asks for it, with no filter until the run drains', async () => {
@@ -1034,7 +1038,7 @@ describe('fortnox connector — inbound sync', () => {
       const result = await sweepFortnoxLedger(host, connId, { ...at(NOW), sleep: async (ms) => void sleeps.push(ms) });
 
       expect(sleeps).toEqual([2000, 2000, 2000]);
-      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 12:') }]);
+      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 12:'), said: 'Fortnox answered 429 for supplier invoice 12' }]);
       expect(invoicesLanded).toEqual([]);
     });
 
@@ -1096,12 +1100,12 @@ describe('fortnox connector — inbound sync', () => {
 
       const first = await sweepFortnoxLedger(host, connId, at(NOW));
 
-      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 2:') }]);
+      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 2:'), said: 'supplier invoice 2 has a value this connector cannot read in Booked' }]);
       expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1']]);
       expect((await binding()).invoiceSync?.pending?.through).toBe('1');
 
       const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
-      expect(second.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 2:') }]);
+      expect(second.failed).toEqual([expect.objectContaining({ scopeId: s, error: expect.stringContaining('supplier invoice 2:') })]);
       expect(invoicesLanded).toHaveLength(1);
     });
 
