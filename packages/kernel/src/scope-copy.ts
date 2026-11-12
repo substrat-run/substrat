@@ -254,3 +254,14 @@ export function clearCopyMarker(sql: SwitchSql): 'cleared' | 'absent' {
  * coordinator asks it before it runs an executor.
  */
 export const IS_COPY_SQL = 'SELECT 1 AS copy FROM _substrat_copy_origin WHERE id = 1 AND COALESCE(is_copy, 1) = 1';
+
+/**
+ * Whether this scope is a CLEAN-ROOM copy (#3108): classified a copy, and loaded from no other
+ * scope. A clean-room preview is marked a copy with no source (`MARK_COPY_ORIGIN_SQL`); a fork's
+ * load records the scope it was copied from, and a carry onto a new version (a load from itself)
+ * keeps the row as it was. A store with no row, or one whose source is named, fails it: this is
+ * the guard a persona link is behind, and a persona linked into a fork of production data would
+ * be a way into that data.
+ */
+export const CLEAN_ROOM_COPY_SQL =
+  'SELECT 1 AS clean FROM _substrat_copy_origin WHERE id = 1 AND COALESCE(is_copy, 1) = 1 AND source_scope_id IS NULL';

@@ -19,6 +19,8 @@ import {
   completeOwnerTransfer,
   abandonOwnerTransfer,
   unbindSubject,
+  boundPrincipal,
+  bindPersona,
 } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
 
@@ -477,5 +479,20 @@ describe('owner transfer', () => {
     recordOwnerSeat(sql, SCOPE, OWNER, T0 + 10 * MIN);
     expect(ownerOfRecord(sql, SCOPE)).toBe(SUCCESSOR);
     expect(needsSetup(sql, SCOPE)).toBe(false);
+  });
+});
+
+// #3108: a seeded preview's personas are bound beside the owner seat, never into it. The seat's
+// first-sign-in window is open while the platform seats them, so a read that claimed would hand
+// the install's ownership to the first persona the world names.
+describe('persona bindings (#3108)', () => {
+  it('reads and binds a persona without claiming or closing the pending owner seat', () => {
+    const sql = freshSql();
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+    expect(boundPrincipal(sql, SCOPE, 'dev|anna')).toBeNull();
+    bindPersona(sql, SCOPE, 'dev|anna', '01PRINCIPALANNA');
+    expect(boundPrincipal(sql, SCOPE, 'dev|anna')).toBe('01PRINCIPALANNA');
+    expect(ownerSeat(sql, SCOPE, T0 + MIN)).toMatchObject({ state: 'unclaimed' });
+    expect(resolvePrincipal(sql, SCOPE, 'dev|anna', T0 + MIN)).toBe('01PRINCIPALANNA');
   });
 });

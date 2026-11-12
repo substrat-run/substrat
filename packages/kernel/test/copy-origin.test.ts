@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { JOB_RUN_DDL } from '../src/job-run.js';
-import { clearCopyMarker, COPY_ORIGIN_DDL, emittedHere, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from '../src/scope-copy.js';
+import { CLEAN_ROOM_COPY_SQL, clearCopyMarker, COPY_ORIGIN_DDL, emittedHere, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from '../src/scope-copy.js';
 import type { SwitchSql } from '../src/system-switch.js';
 
 /**
@@ -146,5 +146,26 @@ describe('a store built before #2009 (#2009 migration)', () => {
     const { sql, db } = store(LEGACY_DDL);
     db.exec('ALTER TABLE _substrat_copy_origin ADD COLUMN is_copy INTEGER');
     expect(isCopy(sql)).toBe(false);
+  });
+});
+
+// #3108: the guard a seeded preview's persona link is behind. Only a copy loaded from no other
+// scope passes; a fork names its source, and a load of a scope from itself (a carry onto a new
+// version) leaves the row as it was.
+describe('CLEAN_ROOM_COPY_SQL', () => {
+  const cleanRoom = (sql: SwitchSql) => sql.all(CLEAN_ROOM_COPY_SQL).length > 0;
+  const cases: Array<[string, (sql: SwitchSql) => void, boolean]> = [
+    ['an empty clean-room preview: loaded from nothing, then marked', (sql) => { settleCopiedWork(sql, DEST, undefined, NOW); markCopyOrigin(sql, NOW); }, true],
+    ['marked with no load at all', (sql) => { markCopyOrigin(sql, NOW); }, true],
+    ['the clean-room preview carried onto a new version', (sql) => { markCopyOrigin(sql, NOW); settleCopiedWork(sql, DEST, DEST, NOW); }, true],
+    ['a fork: loaded from production, then marked', (sql) => { settleCopiedWork(sql, DEST, SOURCE, NOW); markCopyOrigin(sql, NOW); }, false],
+    ['the fork carried onto a new version', (sql) => { settleCopiedWork(sql, DEST, SOURCE, NOW); markCopyOrigin(sql, NOW); settleCopiedWork(sql, DEST, DEST, NOW); }, false],
+    ['a primary scope with no row', () => undefined, false],
+    ['a clean room whose mark staff cleared', (sql) => { markCopyOrigin(sql, NOW); clearCopyMarker(sql); }, false],
+  ];
+  it.each(cases)('%s', (_name, history, expected) => {
+    const { sql } = store(COPY_ORIGIN_DDL);
+    history(sql);
+    expect(cleanRoom(sql)).toBe(expected);
   });
 });

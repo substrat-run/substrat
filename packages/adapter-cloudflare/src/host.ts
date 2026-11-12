@@ -1455,6 +1455,8 @@ interface ScopeStubRpc {
   retryMigrations(): Promise<number | null>;
   /** Whether the scope is classified a copy (#2005, #2009): what a CP-less coordinator reads for primacy. */
   isCopy(): Promise<boolean>;
+  /** Whether the scope is a clean-room copy (#3108): a copy loaded from no other scope. */
+  isCleanRoomCopy(): Promise<boolean>;
   /** Mark the scope a copy (#2005); whether this call stamped it. */
   markCopy(): Promise<boolean>;
   /** The lifecycle the platform last delivered to this scope (#1713), or null for none. */
@@ -4449,6 +4451,15 @@ export class CloudflareScopeHost implements ScopeHost {
   async markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }> {
     assertCopyLineage(lineage);
     return { marked: await this.scopeStub(scopeId).markCopy() };
+  }
+
+  /**
+   * Whether one scope in THIS deployment is a clean-room copy (#3108): classified a copy and loaded
+   * from no other scope, as a clean-room preview is and a fork never is. The guard a seeded
+   * preview's persona link is behind, read from the scope's own storage.
+   */
+  async isCleanRoomCopyLocal(scopeId: ScopeId): Promise<boolean> {
+    return await this.scopeStub(scopeId).isCleanRoomCopy();
   }
 
   /** Scope-side half of an erasure, reached through this script's own DO binding. */

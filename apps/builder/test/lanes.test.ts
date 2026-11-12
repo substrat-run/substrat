@@ -328,9 +328,10 @@ describe('an unlaned build reads what it read on main (#2200 r1)', () => {
 	it('scaffold.md and ui.md retain the reviewed standalone-project baseline', async () => {
 		// D-66 changes source projects to standalone repos with pinned published
 		// dependencies and their own lockfile. Keep prompt changes deliberate.
+		// #3108: scaffold.md moves the seed's cast and records to src/world.ts.
 		const rejoined = `${await skill('apps/builder/skills/scaffold.md')}\n${await skill('apps/builder/skills/ui.md')}`;
 		expect(createHash('sha256').update(rejoined).digest('hex')).toBe(
-			'b2ba6400788854e82cfb9180b95e10bfffa9bdf384527a775a06f8bffebb5af2',
+			'7230fe6c5e0d20c05fa992c61c1721d337440d2dd8f413c0bf5b196c2af99d57',
 		);
 	});
 

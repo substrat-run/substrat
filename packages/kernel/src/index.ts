@@ -541,12 +541,16 @@ export { canonicalInstant, frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export {
+  personaPrincipal,
   seatWorld,
+  seatWorldWith,
   type SeatWorldInput,
+  type SeatWorldOptions,
   type SeedWorld,
   type WorldBuilder,
   type WorldPersona,
   type WorldSeat,
+  type WorldSeating,
 } from './seed-world.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { guardSpine } from './spine-guard.js';
@@ -687,7 +691,7 @@ export {
   type OutboxSubscriber,
   type PruneDrainedEventsInput,
 } from './outbox-prune.js';
-export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
+export { CLEAN_ROOM_COPY_SQL, COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 // RFC wire-signing §4: the nonce store a signed call that changes state spends its nonce in.
 export {
   WIRE_NONCE_CAP,

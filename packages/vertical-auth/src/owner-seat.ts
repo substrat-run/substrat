@@ -377,6 +377,22 @@ export function resolvePrincipal(sql: RegistrySql, scopeId: string, sub: string,
   return bindSeat(sql, scopeId, sub, pending.principal);
 }
 
+/** The principal `sub` is bound to here, or null. A read only: unlike `resolvePrincipal` it never claims the seat. */
+export function boundPrincipal(sql: RegistrySql, scopeId: string, sub: string): string | null {
+  const bound = [...sql.exec('SELECT principal FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)][0] as
+    | { principal: string }
+    | undefined;
+  return bound?.principal ?? null;
+}
+
+/**
+ * Bind a persona of a seeded preview to the principal it was seated as (#3108). It leaves the owner
+ * seat alone: a persona is someone the vertical's sample world names, not the install's owner.
+ */
+export function bindPersona(sql: RegistrySql, scopeId: string, sub: string, principal: string): void {
+  sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
+}
+
 /**
  * Unbind a subject from a scope (#1670) — the removal every "remove this member" path shares,
  * and the one write that takes a binding away. True when there was one to take.

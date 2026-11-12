@@ -30,10 +30,9 @@ the vertical's `<ns>/invite-member`, and lets the person in when they sign in; a
 posts to `/api/member-invites/<principal>/withdraw`. The template's `src/worker.ts` and
 `src/server.ts` show both. Locally, a person signs in through the dev issuer, which offers only
 the people in `src/personas.ts`; so the cast holds one person the seed does not link, who gets in
-the way anyone does hosted: by being invited. Keep that persona out of the seed's `homes` map (the
-template's seed links only the personas it has a home for), and invite them at exactly the `email`
-their persona carries: the door admits by the verified address, so an invite to any other address
-leaves them answered 401.
+the way anyone does hosted: by being invited. Mark that persona `invited: true` in `src/personas.ts`
+(`seatWorld` seats everyone else), and invite them at exactly the `email` their persona carries: the
+door admits by the verified address, so an invite to any other address leaves them answered 401.
 
 **Tier 1 — engines you compose** (imported; their in-scope functions run in
 YOUR transaction):

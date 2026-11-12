@@ -51,11 +51,12 @@ import {
   type CapabilityId,
   type EntityRef,
   type EnvVarSpec,
+  type PermissionKey,
   type PrincipalId,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import type { ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
+import { personaPrincipal, seatWorldWith, type ScopeHost, type ScopeStub, type ScopeStubOptions, type SeedWorld } from '@substrat-run/kernel';
 import {
   AuthConfigError,
   IdentityDO,
@@ -80,7 +81,7 @@ import {
 } from '@substrat-run/vertical-auth/invite-routes';
 import { mountOwnerClaim, type OwnerClaimRouteDeps } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { mountSession, sessionAnswer } from '@substrat-run/vertical-auth/session-route';
-import type { PlatformSurfaceDeps } from './index.js';
+import type { PlatformSurfaceDeps, SeedWorldHook } from './index.js';
 
 export { IdentityDO };
 
@@ -96,7 +97,7 @@ export interface WorkerDoorDeps<E extends object> {
   directory: (env: E, node: DoorNode) => IdentityStub;
   /** The routed (tenant, scope), from the router's assertion. */
   nodeFor: (req: Request, env: E) => DoorNode;
-  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost;
+  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost;
   /** The vertical's declared settings, resolved per scope with the delivered values. */
   envSpec: EnvVarSpec[];
   /**
@@ -109,6 +110,13 @@ export interface WorkerDoorDeps<E extends object> {
    * join has to return the row it already wrote rather than fail, as `todo/join` does.
    */
   join?: (scope: ScopeStub, who: { display: string }) => Promise<unknown>;
+  /**
+   * The vertical's sample world (`src/world.ts`, #3108). Named, it is what a seeded preview of
+   * this deployment holds: the platform seats its personas there, builds its records once, and
+   * lets a member of the team sign in as any of them. Seated nowhere else: the route that seats
+   * it refuses every scope but a clean-room preview.
+   */
+  world?: SeedWorld;
   /**
    * Member invites through the door (K-61 phase 3): the two routes above, and the vertical's own
    * operations they run as the caller. Omit it and neither route is mounted; a person a member
@@ -126,6 +134,16 @@ export type DoorInvitation = MemberInvitation;
 /** The host call that gives a person the shapes declared for their own record. */
 export interface SelfShapeHost {
   grantSelfShapesLocal(scopeId: ScopeId, principal: PrincipalId): Promise<EntityRef[]>;
+}
+
+/**
+ * The scope-local verbs a seeded preview's personas are seated with (#3108). `CloudflareScopeHost`
+ * has both; they are optional so a worker that names no `world` need not.
+ */
+export interface PersonaSeatHost {
+  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string, door?: 'person' | 'platform'): Promise<void>;
+  grantEntityShapeLocal?(scopeId: ScopeId, principal: PrincipalId, entity: EntityRef, permissions: readonly PermissionKey[]): Promise<void>;
+  hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
 }
 
 /**
@@ -164,7 +182,7 @@ export interface WorkerDoor<E extends object> {
    */
   settings(env: E, node: DoorNode): Promise<InstanceAuth['settings']>;
   /** Spread into `mountPlatformSurface`, so what the platform delivers lands in the directory. */
-  platform: DoorHooks<E>;
+  platform: DoorHooks<E> & { seedWorld?: SeedWorldHook<E> };
 }
 
 export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoor<E> {
@@ -260,6 +278,55 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
   };
 
 
+  /**
+   * Seat the world in a seeded preview (#3108). A persona is linked in this tenant's identity
+   * directory, which a sign-in reads, and seated as a principal derived from the scope and its
+   * `sub`: every push binds a new script whose directory starts empty while the scope's data is
+   * carried, so the same persona must come back as the same principal. The role goes through the
+   * person's door, so a role holding a key reserved to a system principal is refused (#2430).
+   */
+  const seedWorld = (world: SeedWorld): SeedWorldHook<E> => ({
+    personas: world.personas
+      .filter((p) => !p.elsewhere)
+      .map((p) => ({ sub: p.sub, name: p.name, email: p.email, ...(p.role ? { role: p.role } : {}), ...(p.note ? { note: p.note } : {}) })),
+    seat: async (env, b) => {
+      const directory = deps.directory(env, b);
+      const host = deps.hostFor(env);
+      const { assignScopeRole, grantEntityShapeLocal } = host;
+      if (!assignScopeRole || !grantEntityShapeLocal) {
+        throw new HTTPException(501, { message: 'this deployment cannot seat a sample world — redeploy it' });
+      }
+      // Built once per scope's data. The platform says when the scope is new; a scope it reuses
+      // is built too while none of the world's role holders holds a role in it yet, as a preview
+      // created before it was first seeded has none. Read before seating, which gives them one.
+      let build = b.build;
+      const holders = world.personas.filter((p) => p.role && !p.elsewhere && !p.invited);
+      if (!build && holders.length > 0 && host.hasScopeRoleLocal) {
+        const held = await Promise.all(
+          holders.map(async (p) => host.hasScopeRoleLocal!(b.tenantId, b.scopeId, await personaPrincipal(b.scopeId, p.sub))),
+        );
+        build = !held.some(Boolean);
+      }
+      await seatWorldWith(
+        {
+          resolve: async (sub) => {
+            const bound = await directory.boundPrincipal(b.scopeId, sub);
+            return bound ? principalId.parse(bound) : null;
+          },
+          principalFor: (sub) => personaPrincipal(b.scopeId, sub),
+          seat: async (persona, principal) => {
+            if (persona.role) await assignScopeRole.call(host, b.scopeId, principal, persona.role, 'person');
+            await directory.bindPersona(b.scopeId, persona.sub, principal);
+          },
+          grantShape: ({ principal, entity, permissions }) => grantEntityShapeLocal.call(host, b.scopeId, principal, entity, permissions),
+          invoke: async (persona, principal, operation, input) =>
+            (await host.getScope(principal, b.tenantId, b.scopeId, { verifiedEmail: persona.email })).invoke(operation, input),
+        },
+        { world, build },
+      );
+    },
+  });
+
   return {
     mount(app) {
       app.on(['GET', 'POST'], '/api/auth/*', async (c) => (await authProvider(c.env, c.req.raw)).handle(c.req.raw));
@@ -314,6 +381,7 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
         deps.directory(env, ref).completeOwnerTransfer(ref.scopeId, input.from, input.to),
       abandonOwnerTransfer: (env, ref, input) =>
         deps.directory(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to, input.toHoldsRole),
+      ...(deps.world ? { seedWorld: seedWorld(deps.world) } : {}),
     },
   };
 }

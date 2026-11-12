@@ -22,7 +22,7 @@
  * neither `adapter-cloudflare` nor any concrete host — no dependency cycle, and a future
  * adapter satisfies the same interface.
  */
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf, refuse, refuseStatus, withRequestIdMember, type ErrorClassification } from './errors.js';
@@ -211,6 +211,13 @@ import {
   attachmentUploadFields,
   type AttachmentRecord,
   type EntityGrantShape,
+  PERSONAS_PATH,
+  SEED_WORLD_PATH,
+  personasBody,
+  seedWorldBody,
+  seededPersonas,
+  type SeedWorldBody,
+  type SeededPersona,
 } from '@substrat-run/contracts';
 
 /**
@@ -328,6 +335,9 @@ export interface VerticalScopeHost {
   /** #2005: remove a mistaken copy marker, given the directory's classification, which must be
    *  primary. */
   clearCopyMarkLocal(scopeId: ScopeId, lineage: ScopeLineage, expect?: LoadMarker): Promise<{ cleared: boolean }>;
+  /** #3108: whether one scope is a clean-room copy, the guard a seeded preview's persona link is
+   *  behind. Optional: a host built before it answers `/internal/seed-world` 501. */
+  isCleanRoomCopyLocal?(scopeId: ScopeId): Promise<boolean>;
   /** #1722: what a carry's restore into this store expects to find unchanged. Optional, like
    *  `wipeCarriedLocal`; the route answers 501 without it, and the platform then cannot fence. */
   loadMarkerLocal?(scopeId: ScopeId): Promise<LoadMarker>;
@@ -1398,11 +1408,26 @@ export interface PlatformSurfaceDeps<Env> {
   connectors?: VerticalConnectors;
 
   /**
+   * The vertical's sample world (#3108), for a seeded preview: `/internal/seed-world` seats it and
+   * `/internal/personas` lists who it offers. `workerDoor`'s `platform` supplies it when the worker
+   * names its `world`. Omit ⇒ both routes answer 501.
+   */
+  seedWorld?: SeedWorldHook<Env>;
+
+  /**
    * Extra error mapping, tried BEFORE the default envelope. Return a `{status, message}`
    * to override, or `undefined` to fall through to the default. Use it for a vertical's
    * own domain errors; the platform routes here never need it.
    */
   mapError?: (err: unknown) => { status: number; message: string } | undefined;
+}
+
+/** A deployment's sample world, as `/internal/seed-world` and `/internal/personas` serve it (#3108). */
+export interface SeedWorldHook<Env> {
+  /** The personas a seeded preview offers: the home cast, never an outsider. */
+  personas: readonly SeededPersona[];
+  /** Seat them in the body's scope, and build the world's records when `build` says so. */
+  seat(env: Env, body: SeedWorldBody): Promise<void>;
 }
 
 /**
@@ -1686,6 +1711,35 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/mark-copy', async (c) => {
     const body = z.object({ scopeId: scopeIdOf, lineage: scopeLineage }).parse(await c.req.json());
     return c.json(await deps.hostFor(c.env).markCopyLocal(body.scopeId, body.lineage));
+  });
+
+  // #3108: a seeded preview's sample world. Both routes are refused for any scope that is not a
+  // clean-room preview, read from the scope's own storage rather than taken from the request: a
+  // persona link is a sign-in nobody was invited by, so on a production scope, or a fork of one,
+  // it would be a way in. The platform asks only for a preview it created empty; this is the end
+  // that holds even if it asked wrongly.
+  const seededScope = async (c: Context<{ Bindings: Env }>, scope: ScopeId): Promise<SeedWorldHook<Env> | Response> => {
+    const world = deps.seedWorld;
+    if (!world) return refuseStatus(c, 501, 'this deployment declares no sample world — name a `world` in its workerDoor');
+    const host = deps.hostFor(c.env);
+    if (!host.isCleanRoomCopyLocal) return refuseStatus(c, 501, 'this deployment cannot tell a clean-room preview apart — redeploy it');
+    if (!(await host.isCleanRoomCopyLocal(scope))) {
+      return refuseStatus(c, 409, `scope ${scope} is not a clean-room preview, and a sample world is seated only in one`);
+    }
+    return world;
+  };
+  app.post(SEED_WORLD_PATH, async (c) => {
+    const body = seedWorldBody.parse(await c.req.json());
+    const world = await seededScope(c, body.scopeId);
+    if (world instanceof Response) return world;
+    await world.seat(c.env, body);
+    return c.json(seededPersonas.parse({ personas: world.personas }));
+  });
+  app.post(PERSONAS_PATH, async (c) => {
+    const body = personasBody.parse(await c.req.json());
+    const world = await seededScope(c, body.scopeId);
+    if (world instanceof Response) return world;
+    return c.json(seededPersonas.parse({ personas: world.personas }));
   });
 
   // #2005: staff's correction of a MISTAKEN mark, for a scope the directory says IS primary. The

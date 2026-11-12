@@ -8,6 +8,9 @@ import type { DevPersona } from '@substrat-run/dev-issuer';
  * password. `linkDevPersonas` reads the same array and binds each `sub` to a principal in
  * the identity directory. Neither side holds a copy of the other's list.
  *
+ * `role` is the role key each person holds; `elsewhere` puts them in the other shop. A seeded
+ * preview of this app offers the same people (`src/world.ts`), except anyone `elsewhere`.
+ *
  * Nothing here is a bypass, and that is the point. The issuer asserts a subject and the
  * directory maps it to a principal — the same two steps a deployed instance performs against
  * a real issuer, so the login you exercise all day is the login your users will run. What
@@ -19,12 +22,14 @@ import type { DevPersona } from '@substrat-run/dev-issuer';
  * readable: they end up in an identity directory that outlives a restart.
  */
 export const PERSONAS: DevPersona[] = [
-  { sub: 'dev|greta', name: 'Greta', email: 'greta@kedja.test', note: 'workshop-admin' },
-  { sub: 'dev|mans', name: 'Måns', email: 'mans@kedja.test', note: 'mechanic' },
+  { sub: 'dev|greta', name: 'Greta', email: 'greta@kedja.test', note: 'workshop-admin', role: 'workshop-admin' },
+  { sub: 'dev|mans', name: 'Måns', email: 'mans@kedja.test', note: 'mechanic', role: 'mechanic' },
+  // Portal customers hold no role: their access is a grant on their own customer record,
+  // which `src/world.ts` gives once that record exists.
   { sub: 'dev|lisbeth', name: 'Lisbeth', email: 'lisbeth@example.test', note: 'portal customer' },
   { sub: 'dev|otto', name: 'Otto', email: 'otto@example.test', note: 'portal customer' },
   // The other shop, so the cross-tenant beat has someone to be turned away as.
-  { sub: 'dev|rutger', name: 'Rutger', email: 'rutger@trampolin.test', note: 'admin at a DIFFERENT shop' },
+  { sub: 'dev|rutger', name: 'Rutger', email: 'rutger@trampolin.test', note: 'admin at a DIFFERENT shop', role: 'workshop-admin', elsewhere: true },
 ];
 
 /**
