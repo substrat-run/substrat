@@ -707,11 +707,67 @@ jobs:
       - if: steps.touched.outputs.run == 'true' && steps.toolchain.outputs.cache-hit != 'true'
         run: docker save -o "$RUNNER_TEMP/mtls-toolchain.tar" $(docker image ls --format '{{.Repository}}:{{.Tag}}' substrat-mtls-wasm)
 
+  # The WooCommerce connector against a real store (#3136): WordPress and WooCommerce at pinned
+  # versions in Docker (connectors/woocommerce/docker/), seeded with a small catalogue, two orders
+  # and a Read API key, then `test/live.test.ts` against it. The mock in the connector's own suite
+  # is the author's reading of the REST API; this is what checks the reading. Its own job because
+  # starting the store takes a couple of minutes, and only when the connector or the commerce
+  # shapes changed — or on a push to main, which always runs it.
+  woocommerce-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: touched
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          if git diff --name-only "origin/$BASE_REF...HEAD" \
+            | grep -qE '^(connectors/woocommerce/|packages/contracts/src/commerce-source\.ts$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.touched.outputs.run == 'true'
+        run: docker compose -f connectors/woocommerce/docker/compose.yaml up -d db wordpress
+      - if: steps.touched.outputs.run == 'true'
+        uses: pnpm/action-setup@v6
+      - if: steps.touched.outputs.run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - if: steps.touched.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.touched.outputs.run == 'true'
+        run: pnpm --filter "@substrat-run/connector-woocommerce..." build
+      - if: steps.touched.outputs.run == 'true'
+        name: seed the store
+        run: |
+          docker compose -f connectors/woocommerce/docker/compose.yaml run --rm -T cli sh /seed/seed.sh > "$RUNNER_TEMP/woo.env"
+          # A throwaway key on a throwaway store, masked all the same.
+          while IFS='=' read -r name value; do
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done < "$RUNNER_TEMP/woo.env"
+      - if: steps.touched.outputs.run == 'true'
+        env:
+          WOOCOMMERCE_STORE_URL: http://localhost:8080
+          WOOCOMMERCE_ALLOW_LOCAL_HTTP: '1'
+        run: pnpm --filter @substrat-run/connector-woocommerce exec vitest run test/live.test.ts --silent=false
+      - if: failure() && steps.touched.outputs.run == 'true'
+        run: docker compose -f connectors/woocommerce/docker/compose.yaml logs --tail 200
+
   # The one verdict: green only when the checks, every shard and the Windows CLI suite
   # succeeded. A skipped or cancelled job is not a pass. Named `test` because that is the
   # job name deploy-test waits on and the one a merge has always been judged by.
   test:
-    needs: [checks, test-shard, test-windows, mtls-wasm]
+    needs: [checks, test-shard, test-windows, mtls-wasm, woocommerce-live]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -721,9 +777,10 @@ jobs:
           SHARDS: ${{ needs.test-shard.result }}
           WINDOWS: ${{ needs.test-windows.result }}
           MTLS_WASM: ${{ needs.mtls-wasm.result }}
+          WOOCOMMERCE: ${{ needs.woocommerce-live.result }}
         run: |
-          echo "checks: $CHECKS, test shards: $SHARDS, windows cli: $WINDOWS, mtls wasm: $MTLS_WASM"
-          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ] && [ "$WINDOWS" = "success" ] && [ "$MTLS_WASM" = "success" ]
+          echo "checks: $CHECKS, test shards: $SHARDS, windows cli: $WINDOWS, mtls wasm: $MTLS_WASM, woocommerce live: $WOOCOMMERCE"
+          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ] && [ "$WINDOWS" = "success" ] && [ "$MTLS_WASM" = "success" ] && [ "$WOOCOMMERCE" = "success" ]
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset

@@ -1,0 +1,53 @@
+# A real WooCommerce store for `test/live.test.ts` — CI's `woocommerce-live` job starts it, seeds it
+# with `seed.sh`, and points the live test at http://localhost:8080. Every image is pinned by digest.
+#
+# WordPress is told it is behind TLS (`$_SERVER['HTTPS'] = 'on'`), so WooCommerce authenticates the
+# key as HTTP Basic, the path a production store over HTTPS takes; over plain HTTP it would want
+# OAuth 1.0a signatures instead, and the test would exercise a path production never does.
+#
+#   docker compose -f connectors/woocommerce/docker/compose.yaml up -d db wordpress
+#   docker compose -f connectors/woocommerce/docker/compose.yaml run --rm -T cli sh /seed/seed.sh > woo.env
+name: substrat-woocommerce-live
+services:
+  db:
+    image: mariadb:11.4.13@sha256:5e73baf8179b29f115101bb102763a47a017361f3e9792daccba6646c3ab1532
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress
+      MARIADB_RANDOM_ROOT_PASSWORD: '1'
+    healthcheck:
+      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized']
+      interval: 2s
+      retries: 60
+  wordpress:
+    image: wordpress:7.1.3-php8.3-apache@sha256:8901759bfbb7ebc567dbc44a244c0d96d720d0a67c17bc4f42ec355ddba2e863
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:8080:80'
+    environment: &wp-env
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress
+      WORDPRESS_CONFIG_EXTRA: "$$_SERVER['HTTPS'] = 'on';"
+    volumes:
+      - wp:/var/www/html
+  cli:
+    image: wordpress:cli-2.11.0-php8.3@sha256:8620869ecf48e0eda305b4ee466990fa318664c638b861ebd5ce443d9904abde
+    depends_on:
+      - wordpress
+    # The apache image's www-data is uid 33; the alpine cli image's is 82, which could not write
+    # the plugin into the shared volume.
+    user: '33:33'
+    environment:
+      <<: *wp-env
+      WP_CLI_CACHE_DIR: /tmp/wp-cli-cache
+      WOOCOMMERCE_VERSION: 11.2.2
+    volumes:
+      - wp:/var/www/html
+      - ./:/seed:ro
+volumes:
+  wp:

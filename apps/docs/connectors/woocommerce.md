@@ -74,6 +74,11 @@ The key is sent as HTTP Basic credentials over HTTPS, never in a URL. The store 
 `https://` on the default port and name a public host: an IP address, `localhost` and private
 network names (`.local`, `.internal`) are refused before anything is sent.
 
+Some hosts run PHP in a way that drops the `Authorization` header before WooCommerce sees it.
+WooCommerce's own workaround is to put the key in the URL's query string, which this connector
+refuses to do. On such a host, **Test connection** reports the key as missing or invalid. The host
+has to pass the header through: on Apache, a `SetEnvIf Authorization` rule in `.htaccess`.
+
 **Test connection** answers which of these went wrong: no WooCommerce store at that address, a key
 the store refuses, or a key whose user is not a manager. On success it names the store by the URL
 WordPress reports for itself, its WooCommerce version and its currency.
