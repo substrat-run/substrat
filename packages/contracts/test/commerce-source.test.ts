@@ -34,7 +34,7 @@ describe('commerce-source shapes (#3136)', () => {
     [{ currency: 'sek' }, 'a currency that is not an ISO code'],
     [{ record: 'customer' }, 'a record kind nobody declared'],
     [{ change: 'delete' }, 'a delete, which this version does not carry'],
-  ])('refuses %j — %s', (over) => {
+  ] as [Record<string, unknown>, string][])('refuses %j — %s', (over) => {
     expect(commerceChange.safeParse({ ...product, ...over }).success).toBe(false);
   });
 });
