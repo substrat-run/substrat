@@ -1,5 +1,24 @@
 # @substrat-run/control-plane
 
+## 0.18.31
+
+### Patch Changes
+
+- 7ce7202: A clean-room preview created with `seed: true` holds the version's sample world, and anyone on the team signs in to it by picking a persona at the control plane's persona issuer (#3108). The builder studio's Run asks for one. A version that declares no world gets an `unseeded` preview, which `preview create` marks.
+- Updated dependencies [7ce7202]
+  - @substrat-run/contracts@0.195.0
+  - @substrat-run/control-plane-api@0.195.0
+  - @substrat-run/connector-bolagsverket@0.0.18
+  - @substrat-run/connector-fortnox@0.7.19
+  - @substrat-run/connector-mail-in@0.1.32
+  - @substrat-run/connector-microsoft365@0.0.56
+  - @substrat-run/connector-planima@0.2.92
+  - @substrat-run/connector-scrive@0.14.101
+  - @substrat-run/adapter-cloudflare@0.195.0
+  - @substrat-run/kernel@0.195.0
+  - @substrat-run/model-providers@0.5.85
+  - @substrat-run/vertical-host@0.195.0
+
 ## 0.18.30
 
 ### Patch Changes

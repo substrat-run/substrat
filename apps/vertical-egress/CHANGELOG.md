@@ -1,5 +1,12 @@
 # @substrat-run/vertical-egress
 
+## 0.2.59
+
+### Patch Changes
+
+- Updated dependencies [7ce7202]
+  - @substrat-run/contracts@0.195.0
+
 ## 0.2.58
 
 ### Patch Changes
