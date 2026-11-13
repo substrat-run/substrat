@@ -56,6 +56,7 @@ import {
   pushedConnectorProblems,
   verticalConnectorDeclarations,
   type VerticalConnectorDeclaration,
+  issuerScopes as issuerScopesSchema,
 } from '@substrat-run/contracts';
 import {
   lint,
@@ -1562,6 +1563,11 @@ export interface PushOptions {
    *  as `outbound` — `[]` when undeclared, because absence means "pushed before the
    *  declaration existed", which the platform reads as unenforced. */
   calls?: readonly unknown[];
+  /** The issuer scopes the app's machine client should hold (#3134), from package.json
+   *  `substrat.issuerScopes`: scopes of the team auth-server's own machine APIs, such as
+   *  `read:users`. A request the issuer's operator bounds, so declaring one grants nothing by
+   *  itself. Left out of the manifest when none is declared. */
+  issuerScopes?: readonly unknown[];
   /**
    * Acknowledge a lineage fork (#388): a first push of a NEW registry id whose name
    * matches an existing lineage under a different owner is refused by the control plane
@@ -2037,6 +2043,16 @@ export async function buildRelease(
   // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
   // between what the CLI builds and what the server accepts fails here, before the
   // upload, instead of as a 4xx from the deploy endpoint.
+  // The declared issuer scopes (#3134) are the builder's own text, so a malformed one is refused
+  // here in their words. Left to the parse below it would read as a stale CLI.
+  const declaredIssuerScopes = issuerScopesSchema.safeParse(opts.issuerScopes ?? []);
+  if (!declaredIssuerScopes.success) {
+    const issues = declaredIssuerScopes.error.issues.map((i) => `  - ${i.path.length ? `${i.path.join('.')}: ` : ''}${i.message}`);
+    throw new Error(
+      `package.json \`substrat.issuerScopes\` names scopes a push cannot carry — each is a scope of the ` +
+        `team auth-server's machine APIs, such as "read:users":\n${issues.join('\n')}`,
+    );
+  }
   const parseManifest = (input: unknown) => {
     try {
       return deployManifest.parse(input);
@@ -2139,6 +2155,9 @@ export async function buildRelease(
     // vertical without connectors pushes the manifest it did before. Their standing grants are
     // also in `registry.connectors`, which the permission digest covers.
     ...(connectors ? { connectors } : {}),
+    // The issuer scopes the app's machine client should hold (#3134), absent when none is
+    // declared, so an app without them pushes the manifest it did before.
+    ...(declaredIssuerScopes.data.length > 0 ? { issuerScopes: declaredIssuerScopes.data } : {}),
     // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
     // role templates, entity-grant shapes. Required — its content hash is digests.permission.
     registry,
@@ -2262,6 +2281,9 @@ export interface VerticalMeta {
   /** Declared outgoing peer calls (#1706), from package.json `substrat.calls`. Undefined
    *  travels as `[]`, for `outbound`'s reason. */
   calls: readonly unknown[] | undefined;
+  /** Declared issuer scopes (#3134), from package.json `substrat.issuerScopes`. Undefined
+   *  travels as no field at all: the app asks for no machine client. */
+  issuerScopes: readonly unknown[] | undefined;
 }
 
 /**
@@ -2275,7 +2297,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
   let pkg: {
     name?: string;
     version?: string;
-    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; lifecycle?: unknown; usesModels?: boolean; surfaces?: unknown[]; outbound?: unknown[]; calls?: unknown[] };
+    substrat?: { slug?: string; name?: string; tenant?: string; envSpec?: unknown[]; ownerGrants?: unknown[]; entitlements?: unknown[]; provides?: unknown[]; requires?: unknown[]; provisions?: unknown[]; sendsEmail?: boolean; lifecycle?: unknown; usesModels?: boolean; surfaces?: unknown[]; outbound?: unknown[]; calls?: unknown[]; issuerScopes?: unknown[] };
   } = {};
   try {
     pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as typeof pkg;
@@ -2304,6 +2326,7 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     surfaces: s?.surfaces,
     outbound: s?.outbound,
     calls: s?.calls,
+    issuerScopes: s?.issuerScopes,
   };
 }
 
