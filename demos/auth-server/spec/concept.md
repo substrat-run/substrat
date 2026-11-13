@@ -103,6 +103,23 @@ later read could return it even deliberately. `skip_consent` is a column now rat
   being minted on the next request. Machine scopes are kept out of a person's sign-in: they
   are stripped from every authorize request, and self-registered clients stay on the sign-in
   scopes. They are advertised in discovery's `scopes_supported`.
+- **An app's own machine client.** The platform can register one machine client per app at
+  this issuer (#3134), from the issuer scopes the app declares in its package metadata
+  (`substrat.issuerScopes`), so nobody registers it in the console or copies its secret by hand.
+  Two platform-gated routes do it, `POST` and `DELETE /internal/machine-client`, each addressed
+  by this issuer's own scope and refused for any other tenant's instance. The client is an
+  ordinary machine application: it appears under Applications, and an operator can disable it
+  there. `MACHINE_SCOPES` bounds it like any other. A declared scope outside the ceiling is not
+  granted, and the route answers it by name, so the platform can say which scope is missing and
+  where to add it; once the ceiling holds it, the next ensure grants it without a new secret.
+  With the ceiling unset the client is still registered, holding nothing, and gets no token.
+  The issuer records each client it registered this way in `app_machine_client`, keyed by the
+  app's scope, and both routes find their client there and nowhere else: neither can change or
+  remove a client an operator registered, or one registered dynamically. An ensure sets the
+  client's name and scopes back to what the app declares and leaves `disabled` alone, so the
+  ceiling and the disable switch are the operator's levers. A rotation keeps the client id,
+  because the accounts a client provisioned through SCIM belong to that id; the old secret gets
+  no new token, and a token issued before the rotation stays valid until it expires.
 
 That SPA is **two surfaces behind one origin**, and the second is easy to miss: besides the
 dashboard it serves the issuer's own user-facing OIDC pages, `/login` and `/consent`. Those
