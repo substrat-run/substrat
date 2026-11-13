@@ -16,7 +16,7 @@ import type { Hono } from 'hono';
 import { principalId, type PrincipalId } from '@substrat-run/contracts';
 import { PEOPLE_TTL_SECONDS, devPeople, type DevCaller } from '@substrat-run/dev-issuer';
 import { ulid } from '@substrat-run/kernel';
-import { createApp as createTodoApp } from '@substrat-run/demo-todo/app';
+import { createApp as createTodoApp } from '@substrat-run/demo-todo/src/app.js';
 import { createApp } from '../src/app.js';
 import { rolesFromTodo } from '../src/provision.js';
 import { DEV_PROVIDER, seedPair, type Pair } from '../src/seed.js';

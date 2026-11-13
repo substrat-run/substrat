@@ -14,8 +14,8 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { createLocalVerticalBroker, type LocalVerticalClient } from '@substrat-run/adapter-sqlite/vertical-broker';
 import { scopeId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { DEV_PROVIDER } from '@substrat-run/demo-todo/personas';
-import { buildHost as buildTodoHost, seed as seedTodo, type World as TodoWorld } from '@substrat-run/demo-todo/seed';
+import { DEV_PROVIDER } from '@substrat-run/demo-todo/src/personas.js';
+import { buildHost as buildTodoHost, seed as seedTodo, type World as TodoWorld } from '@substrat-run/demo-todo/src/seed.js';
 import { notesManifest } from './manifest.js';
 import { MODULES, ROLES, permissions } from './provision.js';
 
