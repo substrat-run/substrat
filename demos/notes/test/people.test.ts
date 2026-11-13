@@ -158,6 +158,14 @@ describe('a plugin that takes its people from Todo', () => {
     const pad = (await (await notesApp.request('/api/notes', as(gus.sub))).json()) as { text: string }[];
     expect(pad.map((n) => n.text)).not.toContain('the big one, please');
 
+    // Across lists, only the notes on lists he may see: Ada's note on her own list stays hers.
+    await access(pair.world.ada.principal, 'POST');
+    expect((await notesApp.request(`/api/items/${hidden.id}/notes`, as('dev|ada', post({ text: 'only mine' })))).status).toBe(200);
+    const all = (await (await notesApp.request('/api/item-notes', as(gus.sub))).json()) as { entries: { text: string }[] };
+    expect(all.entries.map((n) => n.text)).toEqual(['the big one, please']);
+    const adas = (await (await notesApp.request('/api/item-notes', as('dev|ada'))).json()) as { entries: { text: string }[] };
+    expect(adas.entries.map((n) => n.text).sort()).toEqual(['only mine', 'the big one, please']);
+
     // A list nobody shared with him, an item on it, and an id that is nothing: the same 403.
     expect((await notesApp.request(`/api/lists/${own.id}/item-notes`, as(gus.sub))).status).toBe(403);
     expect((await notesApp.request(`/api/items/${hidden.id}/notes`, as(gus.sub, post({ text: 'x' })))).status).toBe(403);

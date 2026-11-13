@@ -111,3 +111,7 @@ _No lifecycle is declared: nothing here moves through stages._
 - 2026-11-13: Notes on Todo's items (`item_note`, `notes/add-item-note`, `notes/list-item-notes`), kept
   apart from the notepad. The two operations have no route of their own: the door's routes ask Todo
   (`todo/vouch-access`) whether the person may see the list or item first. No key or role changed.
+- 2026-11-13: The notes on items are one tab in Todo, beside the lists' views, grouped by list and item.
+  `notes/list-item-notes` takes no list to read every item note, and the door's `GET /api/item-notes`
+  keeps only those on lists Todo vouches for, asking once per list. No key or role changed.
+

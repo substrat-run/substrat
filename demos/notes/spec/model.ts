@@ -93,9 +93,10 @@ export const notesOperations = defineOperations(notesEntities, NOTES_PERMISSIONS
    * rather than `derive: 'list'`, which the platform serves as a GET route.
    */
   'notes/list-item-notes': {
-    summary: 'The notes on the items of one Todo list',
+    summary: 'The notes on the items of one Todo list, or of every list',
     permission: 'note:read',
-    input: z.object({ listId: z.string().min(1) }),
+    // Without a list, every item note: the door's route keeps only those on lists Todo vouches for.
+    input: z.object({ listId: z.string().min(1).optional() }),
     output: notesEntities.item_note.fields,
     paged: { over: { entity: 'item_note', sortable: ['id'], filterable: ['list_id'] } },
   },

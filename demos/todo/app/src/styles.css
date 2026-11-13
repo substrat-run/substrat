@@ -34,6 +34,10 @@ header a.plugin-link { color: var(--muted); font-size: .85rem; }
 .item-notes { order: 1; flex-basis: 100%; padding: .2rem 0 .3rem 2rem; }
 .item-note { font-size: .9rem; padding: .25rem 0; border-top: 1px solid var(--line); }
 .plugin-credit { font-size: .75rem; margin: .5rem 0 0; }
+/* The Notes tab: a card per list, a row per item with its notes under it. */
+.card.note-group { margin-bottom: .75rem; }
+.row.note-item { align-items: flex-start; padding-left: 1.5rem; }
+.row.note-item > div { flex: 1; }
 form.inline { display: flex; gap: .5rem; margin-top: .9rem; }
 form.inline wa-input { flex: 1; }
 .error { display: block; margin: 0 0 1rem; }

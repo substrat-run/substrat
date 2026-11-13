@@ -84,6 +84,28 @@ export function createApp({ host, login, people, vouch }: AppOptions): Hono {
     return c.json(page);
   });
 
+  /**
+   * Every item note the caller may see, across lists: the notes read once, then Todo asked once
+   * per list they are on, and only the vouched lists' notes answered. One page of notes, at the
+   * ceiling; a workspace with more shows the newest.
+   */
+  app.get('/api/item-notes', async (c) => {
+    const caller = await callerOf(c.req.raw.headers);
+    const scope = await scopeOf(caller);
+    const page = await scope.invoke<{ entries: { list_id: string }[] }, unknown>('notes/list-item-notes', { limit: 100, order: 'desc' });
+    const lists = [...new Set(page.entries.map((n) => n.list_id))];
+    const seen = new Set<string>();
+    for (const listId of lists) {
+      try {
+        if ((await vouched(caller, { listId })) === listId) seen.add(listId);
+      } catch (e) {
+        // A list the caller may not see is left out; Todo not answering is the whole read's 503.
+        if (!(e instanceof HTTPException) || e.status !== 403) throw e;
+      }
+    }
+    return c.json({ entries: page.entries.filter((n) => seen.has(n.list_id)) });
+  });
+
   app.post('/api/items/:itemId/notes', async (c) => {
     const caller = await callerOf(c.req.raw.headers);
     const body = z.object({ text: z.string().min(1) }).safeParse(await c.req.json().catch(() => null));

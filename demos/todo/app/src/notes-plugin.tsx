@@ -149,57 +149,101 @@ export function ItemNotesPanel({
   );
 }
 
-/** The workspace notepad: every note not on an item, for everyone the plugin lets in. */
-export function NotesPage({ me }: { me: string }) {
-  const [notes, setNotes] = useState<Note[] | null>(null);
+/** A note's item, as Todo has it now: its text and whether it is done, or gone. */
+type ItemState = { text: string; done: boolean } | 'deleted';
+
+/**
+ * The Notes tab: every note the plugin keeps on items of lists you can see, grouped by list and
+ * item, each item read from Todo as it is now.
+ *
+ * The two halves come from two apps. The notes are the plugin's; the lists and items are Todo's,
+ * and the note holds only the item's id. So this is where the dependency shows: tick an item off
+ * and its notes follow it as done, delete it and the note is still the plugin's, now on an item
+ * Todo no longer has, and bin the list and Todo stops vouching for it, so its notes leave here.
+ */
+export function NotesPage({ lists }: { lists: () => Promise<{ id: string; name: string }[]>; me: string }) {
+  type Group = { listId: string; name: string; items: { itemId: string; state: ItemState; notes: ItemNote[] }[] };
+  const [groups, setGroups] = useState<Group[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${BASE}/notes?order=desc`, { credentials: 'same-origin' });
+      const res = await fetch(`${BASE}/item-notes`, { credentials: 'same-origin' });
       if (!res.ok) return setError(await refusal(res));
-      setNotes((await res.json()) as Note[]);
+      const { entries } = (await res.json()) as { entries: (ItemNote & { list_id: string })[] };
+      const names = new Map((await lists()).map((l) => [l.id, l.name]));
+      const byList = new Map<string, Map<string, ItemNote[]>>();
+      for (const n of entries) {
+        const items = byList.get(n.list_id) ?? new Map<string, ItemNote[]>();
+        items.set(n.item_id, [...(items.get(n.item_id) ?? []), n]);
+        byList.set(n.list_id, items);
+      }
+      const next: Group[] = [];
+      for (const [listId, items] of byList) {
+        const states = await itemStates(listId);
+        next.push({
+          listId,
+          name: names.get(listId) ?? 'A list',
+          items: [...items].map(([itemId, notes]) => ({ itemId, state: states.get(itemId) ?? 'deleted', notes })),
+        });
+      }
+      setGroups(next);
       setError(null);
     } catch {
       setError('the Notes plugin is not running');
     }
-  }, []);
+  }, [lists]);
   useEffect(() => void load(), [load]);
 
   return (
     <section>
-      <h2>Notes</h2>
-      <p className="sub">A notepad for everyone in the workspace who may use plugins. From the Notes plugin.</p>
+      <p className="sub">
+        Notes on the items of lists you can see, from the Notes plugin. The plugin keeps the notes and only each
+        item's id; the item itself is read from Todo as it is now.
+      </p>
       {error ? (
         <wa-callout class="error" variant="warning" size="s">
           <strong>Notes is not available to you. </strong>
           {error}
         </wa-callout>
       ) : null}
-      {notes ? (
-        <>
-          <div className="card">
-            {notes.length === 0 ? <div className="empty">No notes yet.</div> : null}
-            {notes.map((n) => (
-              <div className="row" key={n.id}>
-                <span>
-                  {n.text}
-                  <span className="muted">
-                    {n.author_id === me ? 'you' : 'a colleague'} · {new Date(n.created_at).toLocaleString()}
-                  </span>
-                </span>
-              </div>
-            ))}
-          </div>
-          <AddNote
-            placeholder="Write a note"
-            add={async (text) => {
-              const failed = await send('/notes', text);
-              if (!failed) await load();
-              return failed;
-            }}
-          />
-        </>
+      {groups && groups.length === 0 ? (
+        <div className="card">
+          <p className="empty">No notes yet. Open a list and use Add note on an item.</p>
+        </div>
       ) : null}
+      {(groups ?? []).map((g) => (
+        <div className="card note-group" key={g.listId}>
+          <div className="row">
+            <a href={`#/list/${g.listId}`}>{g.name}</a>
+          </div>
+          {g.items.map((i) => (
+            <div className="row note-item" key={i.itemId}>
+              <div>
+                {i.state === 'deleted' ? (
+                  <span className="muted">An item deleted in Todo. The plugin still keeps its notes.</span>
+                ) : (
+                  <span className={i.state.done ? 'done' : undefined}>{i.state.text}</span>
+                )}
+                {i.notes.map((n) => (
+                  <div className="item-note" key={n.id}>
+                    {n.text}
+                    <span className="muted">{new Date(n.created_at).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
     </section>
   );
+}
+
+/** Each item on a list as Todo has it now, read through Todo's own API. */
+async function itemStates(listId: string): Promise<Map<string, ItemState>> {
+  const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/items?limit=100`, { credentials: 'same-origin' });
+  if (!res.ok) return new Map();
+  const items = (await res.json()) as { id: string; text: string; done: number }[];
+  return new Map(items.map((i) => [i.id, { text: i.text, done: i.done === 1 }]));
 }

@@ -34,7 +34,8 @@ const bound = operationsFor(notesOperations)({
 
   'notes/list-item-notes': async (ctx, input) => {
     assertAllowed(await ctx.check(NOTES_PERM.noteRead));
-    return ctx.page<ItemNoteRow>('item_note', { ...input, filters: { list_id: input.listId } });
+    const { listId, ...page } = input;
+    return ctx.page<ItemNoteRow>('item_note', listId === undefined ? page : { ...page, filters: { list_id: listId } });
   },
 
   'notes/add-item-note': async (ctx, input) => {

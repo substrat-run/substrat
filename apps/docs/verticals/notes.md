@@ -24,8 +24,13 @@ notepad is the whole product, so the only thing on the page is who is let in. It
 - **It fails closed.** With the kept answer expired and Todo unreachable, Notes admits nobody
   and answers `503`. An outage shorter than five minutes goes unnoticed.
 - **It has no screens of its own.** A person sees one app, Todo. When the plugin lets them in,
-  Todo's app shows what it adds: notes under each item on the list screen, and a **Notes** page in
-  the header. Someone not switched on sees Todo as it is without the plugin.
+  Todo's app shows what it adds: notes under each item on the list screen, and a **Notes** tab
+  beside Active, Archived, Trash and Table. Someone not switched on sees Todo as it is without the
+  plugin.
+- **A note depends on an item it does not own.** The plugin keeps the note and the item's id;
+  Todo keeps the item. The Notes tab reads each item from Todo as it is now, so a ticked item's
+  notes show it done, a deleted item's notes stay the plugin's and say their item is gone, and a
+  binned list's notes leave the tab, because Todo stops vouching for it.
 - **A note on a Todo item follows the item's sharing.** Notes keeps the note; Todo knows who may
   see the item. So before showing or adding one, Notes asks Todo (`todo/vouch-access`) whether the
   person may see that list or item, and answers `403` otherwise, the same for an item that does not
@@ -71,8 +76,8 @@ stop that one first: both use port 5278.
 To see the plugin at work:
 
 1. Sign in as **Ada**, open **Plugins** from the account menu, and switch yourself on.
-2. Within 30 seconds a **Notes** link appears in the header, and each item on a list gets
-   **Add note**. Add one.
+2. Within 30 seconds a **Notes** tab appears beside the lists' views, and each item on a list
+   gets **Add note**. Add one, then tick the item off or delete it, and look at the Notes tab.
 3. Share the list with **Björn**, and switch user to him. He sees the list and no notes: he is
    not switched on.
 4. As Ada, switch him on. Within 30 seconds he sees the note on the shared item, and can add his own.

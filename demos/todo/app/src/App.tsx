@@ -64,8 +64,14 @@ const SETTINGS_HASH = '#/settings';
 /** Who may use the workspace's plugins, from the account menu (`src/plugins.tsx`). */
 const PLUGINS_HASH = '#/plugins';
 
-/** The Notes plugin's notepad, in the header for whoever the plugin lets in. */
+/** The Notes plugin's tab, beside the lists' views for whoever the plugin lets in. */
 const NOTES_HASH = '#/notes';
+
+/** Every list a person reaches, active and archived, for naming the lists notes are on. */
+const allLists = async () => [
+  ...(await api.myLists({ limit: 100 })).entries,
+  ...(await api.myLists({ view: 'archived', limit: 100 })).entries,
+];
 
 function shownOf(hash: string): ListsShown {
   return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
@@ -124,8 +130,6 @@ function SignedIn({
         <wa-tag size="s" appearance="outlined">
             on Substrat
           </wa-tag>
-        {/* The Notes plugin's page, for someone it lets in (`src/notes-plugin.tsx`). */}
-        {notesOn ? <a className="plugin-link" href={NOTES_HASH}>Notes</a> : null}
         <span className="who">
           <AccountMenu />
         </span>
@@ -140,14 +144,17 @@ function SignedIn({
         ) : hash === PLUGINS_HASH ? (
           <Plugins key={who} />
         ) : hash === NOTES_HASH ? (
-          <NotesPage key={who} me={who} />
+          <>
+            <ViewsNav current="notes" notesOn={notesOn} />
+            <NotesPage key={who} me={who} lists={allLists} />
+          </>
         ) : hash === TABLE_HASH ? (
           <>
-            <ViewsNav current="table" />
+            <ViewsNav current="table" notesOn={notesOn} />
             <ListsTable key={`${who}:${full}`} />
           </>
         ) : (
-          <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} />
+          <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} notesOn={notesOn} />
         )}
       </main>
     </>
@@ -176,7 +183,7 @@ const VIEW_COPY: Record<ListsShown, { tab: string; title: string; sub: string; e
   },
 };
 
-function ViewsNav({ current }: { current: ListsShown | 'table' }) {
+function ViewsNav({ current, notesOn = false }: { current: ListsShown | 'table' | 'notes'; notesOn?: boolean }) {
   return (
     <nav className="views">
       {(Object.keys(VIEW_HASH) as ListsShown[]).map((v) => (
@@ -187,6 +194,12 @@ function ViewsNav({ current }: { current: ListsShown | 'table' }) {
       <a href={TABLE_HASH} aria-current={current === 'table' ? 'page' : undefined}>
         Table
       </a>
+      {/* The Notes plugin's tab, for someone it lets in (`src/notes-plugin.tsx`). */}
+      {notesOn ? (
+        <a href={NOTES_HASH} aria-current={current === 'notes' ? 'page' : undefined}>
+          Notes
+        </a>
+      ) : null}
     </nav>
   );
 }
@@ -197,7 +210,7 @@ function readOf(shown: ListsShown): () => Promise<Paged<List>> {
   return () => api.myLists(shown === 'archived' ? { view: 'archived' } : {});
 }
 
-export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
+export function Lists({ shown = 'active', notesOn = false }: { shown?: ListsShown; notesOn?: boolean }) {
   const [lists, setLists] = useState<List[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
@@ -250,7 +263,7 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
 
   return (
     <>
-      <ViewsNav current={shown} />
+      <ViewsNav current={shown} notesOn={notesOn} />
       <h2>{copy.title}</h2>
       <p className="sub">{copy.sub}</p>
       <Problem error={error} />
