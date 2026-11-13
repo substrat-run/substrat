@@ -12,7 +12,12 @@ import { apiCatalogFrom, buildOpenApiDocument } from '@substrat-run/contracts';
 import { todoOperations } from '../spec/model.js';
 import { todoManifest } from './manifest.js';
 
-export const API = apiCatalogFrom(todoOperations, {
+// `todo/resolve-person` and `todo/vouch-access` declare no `http`: a plugin reaches them through
+// the peer door, and no route here answers them. Left in, the document would describe a path
+// nothing serves.
+const { 'todo/resolve-person': _person, 'todo/vouch-access': _vouch, ...served } = todoOperations;
+
+export const API = apiCatalogFrom(served, {
   'todo/join': { tag: 'Account' },
   'todo/my-lists': { tag: 'Lists', description: 'A proof walk: lists you own or were shared, never a filter.' },
   'todo/create-list': { tag: 'Lists' },
@@ -32,6 +37,9 @@ export const API = apiCatalogFrom(todoOperations, {
   'todo/delete-item': { tag: 'Items' },
   'todo/share-list': { tag: 'Sharing', description: 'Narrows `list:contribute` onto this list for that person.' },
   'todo/list-shares': { tag: 'Sharing' },
+  'todo/list-members': { tag: 'Plugins' },
+  'todo/grant-plugin-access': { tag: 'Plugins' },
+  'todo/revoke-plugin-access': { tag: 'Plugins' },
   'todo/revoke-share': { tag: 'Sharing' },
 });
 

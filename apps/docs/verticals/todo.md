@@ -1,7 +1,7 @@
 # Todo (shared lists)
 
 `demos/todo` — the smallest vertical that is still a real one: lists, the items on them, and
-sharing a list with one person by email, or inviting an address that has not joined yet. No engine, no money, one role, two tenants.
+sharing a list with one person by email, or inviting an address that has not joined yet. No engine, no money, two roles, two tenants.
 
 ## Overview
 
@@ -36,6 +36,13 @@ on the domain, so the platform is the only thing on the page. It proves:
 - **A 403 wall is not an empty list.** A list you were never shared reaches you neither in the
   listing nor by id — asking directly is *refused*, not answered with nothing — and the React
   app tells the two apart on screen.
+- **It can be the app a plugin takes its people from.** An `admin` gives a member plugin access
+  (`todo/grant-plugin-access`, `todo/revoke-plugin-access`), and a plugin asks who a login is with
+  `todo/resolve-person`, through the peer door and nowhere else: its key is held by the plugin and
+  by no person. The admin's screen is **Plugins**, in the account menu (`todo/list-members`).
+  [Notes](/verticals/notes) is the plugin. It keeps notes on items, shown on the list screen, and
+  asks `todo/vouch-access` whether a person may see the list first; Todo answers from the list's
+  owner and its shares.
 - **No engine is a fact, not an omission.** An item is open or done and can go back; there are
   no stages to skip, so there is nothing for an engine to own. What Björn may do is decided by
   the share on *that list*, not by anything about Björn.
@@ -49,9 +56,9 @@ on the domain, so the platform is the only thing on the page. It proves:
 |---|---|
 | **Package** | `@substrat-run/demo-todo` |
 | **Engines composed** | *none* — kernel only |
-| **Own tables** | `todo_owners` · `todo_lists` · `todo_items` · `todo_shares` · `todo_invites` |
-| **Roles** | `member` (create lists) — everything else is an entity-narrowed grant: `list:contribute` on a list shared with you; `list:contribute` + `list:manage` on your own |
-| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/todo/PERMISSIONS.md) — 3 keys, 1 module, 1 role |
+| **Own tables** | `todo_owners` · `todo_lists` · `todo_items` · `todo_shares` · `todo_invites` · `todo_plugin_access` |
+| **Roles** | `member` (create lists) and `admin` (a member who also decides plugin access) — everything else is an entity-narrowed grant: `list:contribute` on a list shared with you; `list:contribute` + `list:manage` on your own |
+| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/todo/PERMISSIONS.md) — 7 keys, 1 module, 2 roles |
 | **Auth** | [OIDC only](/concepts/identity) — the dev issuer is a real provider you sign into by picking a name; there is no dev auth branch |
 | **Apps** | API (`:8878`) + one React app (`:5278`) for owners and invitees alike — no separate portal |
 | **Status** | Working — demo seed |
@@ -60,7 +67,7 @@ on the domain, so the platform is the only thing on the page. It proves:
 
 | Who | Holds | Cannot |
 |---|---|---|
-| **Ada** | `member`, tenant one — owns *Groceries* and *Work* | — |
+| **Ada** | `admin`, tenant one — owns *Groceries* and *Work*, and decides who may use plugins | — |
 | **Björn** | `member`, same tenant; *Groceries* is shared with him | **delete the list**, delete items, share it onward, or see *Work* — not in his listing, and refused by id |
 | **Cleo** | `member` in a different tenant | anything of Ada's or Björn's — not by listing, not by id; the cross-tenant denial |
 

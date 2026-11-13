@@ -129,3 +129,4 @@ export * from './seeded-preview.js';
 export * from './client-redirects.js';
 export * from './source-build.js';
 export * from './builder-turns.js';
+export * from './people.js';

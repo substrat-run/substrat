@@ -697,6 +697,24 @@ describe('PERMISSIONS.md', () => {
     expect(r.changes).toEqual([expect.objectContaining({ path: 'scheduled operation todo/purge', flagged: true })]);
   });
 
+  it('a peer vertical appearing, or allowed another operation, is a flagged minor and never an unread section', () => {
+    const row = (module: string, invoke: string, holds = '`list:read`') => `| \`notes\` | \`${module}\` | ${invoke} | ${holds} |\n`;
+    const peers = (...rows: string[]) =>
+      `\n## 6. Other verticals — what each may do here\n\n| Vertical | Declared by | May invoke | Holds |\n| --- | --- | --- | --- |\n${rows.join('')}`;
+    const path = 'peer vertical notes (declared by @acme/vertical)';
+    const added = classifyPermissions(PERMS, PERMS + peers(row('@acme/vertical', '`todo/get`')));
+    expect(added).toMatchObject({ bump: 'minor', changes: [{ path, flagged: true }] });
+    const widened = classifyPermissions(PERMS + peers(row('@acme/vertical', '`todo/get`')), PERMS + peers(row('@acme/vertical', '`todo/get`, `todo/list`')));
+    expect(widened).toMatchObject({ bump: 'minor', changes: [{ path, flagged: true }] });
+    // Two modules naming one vertical are two declarations: a change in the first is still seen.
+    const second = row('@acme/z-engine', '`z/get`');
+    const first = classifyPermissions(
+      PERMS + peers(row('@acme/vertical', '`todo/get`'), second),
+      PERMS + peers(row('@acme/vertical', '`todo/get`', '`list:manage`, `list:read`'), second),
+    );
+    expect(first).toMatchObject({ bump: 'minor', changes: [{ path, flagged: true }] });
+  });
+
   /** PERMS with §1 as the emitter writes it once some key is reserved: a fourth cell, `yes` or `—`, on every row. */
   const withColumn = (t: string, cell: (key: string) => string) =>
     t

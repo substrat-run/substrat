@@ -1,0 +1,209 @@
+---
+status: proposed
+layer: plan
+description: A vertical takes its people from another app of the same tenant. It signs them in at the shared issuer, asks the other app who each login is by a peer call, and keeps the answer for a bounded time. The first slice is built on the pure host with a demo pair.
+---
+
+# RFC: a vertical that takes its people from another app
+
+**Status:** proposed; first slice built (pure host, `demos/notes` beside `demos/todo`) ·
+**Touches:** `@substrat-run/contracts` (`people.ts`), `@substrat-run/vertical-auth` (`people.ts`),
+`@substrat-run/dev-issuer` (`people.ts`), `demos/todo`, `demos/notes`
+
+## 1. The need
+
+A product built on Substrat wants **plugins**: apps that run isolated from it, can be built and
+published separately, and are used by the same people. A CRM beside a workspace app, say.
+
+Isolation is already the platform's: a plugin is its own vertical, with its own deployment, scope
+and sandbox. What is missing is the people. Today every vertical owns who is in its scope: an owner
+claims the seat, members are invited, and the identity directory maps each login to a principal
+(`vertical-auth-detach.md` §2.3). Two verticals of one tenant on one issuer share a sign-in and
+nothing else, so a team would manage its members once per plugin.
+
+## 2. The shape
+
+One app of the tenant owns the people (the **master**). A plugin (a **dependent**) owns none: no
+owner claim, no invitations, no linking. It signs people in at the same issuer as every vertical
+does, and asks the master who each login is.
+
+```mermaid
+sequenceDiagram
+  participant P as Person
+  participant D as Dependent's door
+  participant M as Master (peer door)
+  P->>D: request, signed in at the shared issuer
+  alt the kept answer is fresh
+    D-->>P: served as the person it names
+  else none, or past its time
+    D->>M: who is this login? (peer call, as the app)
+    M-->>D: person id, status, role keys, or nobody
+    D->>D: bind the login, seat the mapped roles, keep the answer
+    D-->>P: served, or refused
+  end
+```
+
+- **The contract** is `identity.person@1` (`packages/contracts/src/people.ts`): one operation the
+  master implements, taking the login (issuer, sub, verified address) and answering an id, a status
+  (`invited`, `active`, `blocked`) and the master's role keys, or nobody. It carries no name and no
+  address.
+- **The master allowlists the dependent as a peer** for that operation (#1706). The key it checks is
+  declared `holder: 'system'`, so no person's role can carry it (#2430).
+- **The dependent's door** is `admitPerson` (`packages/vertical-auth/src/people.ts`). The master's id
+  becomes the person's principal in the dependent's scope, the master's roles are mapped onto the
+  dependent's own and seated, and the answer is kept for `PEOPLE_TTL_SECONDS` (300).
+- **`ctx.check` is unchanged**, and local. The network call is at the door, when an answer is
+  missing or past its time, and never per check.
+
+## 3. Decisions taken in this slice
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | **The copy is lazy.** A person is copied when they first sign in to the dependent; nothing is synchronised ahead. | No first sync, no backlog, and only people who use a plugin are known to it. The master answers per login, so disclosure follows use. |
+| 2 | **The answer expires, and that is the revocation bound.** A block or a changed role reaches the dependent within the time an answer is kept. | It needs no delivery guarantee. An event edge can be paused or skipped (`cross-vertical-events.md`), and a lost block is not acceptable. Events can be added later as a faster path, with expiry still the backstop. |
+| 3 | **It fails closed.** An answer past its time with a master that does not answer admits nobody. | The other choice keeps a blocked person in for as long as an outage lasts. An outage shorter than the kept time goes unnoticed. |
+| 4 | **The master's person id is the principal.** | One person is one id in both apps. Several logins, a changed issuer, and moving a running vertical onto a master all reduce to which login maps to that id. |
+| 5 | **Only the authorisation half is copied.** | The rule that only `piiClass: 'none'` crosses stands untouched: no name and no address is kept. What is kept is each login's `sub` beside the principal and status, and the roles seated per principal. A `sub` is the issuer's identifier for a person, and an issuer may use an address as one, so these rows are personal data an erasure has to reach (§5.2). |
+| 6 | **Roles are seated per person, answers are kept per login.** | Two logins of one person share one set of roles. |
+| 7 | **The reference master matches a login on its verified address.** The contract carries issuer and sub as well. | Module code is handed the verified address (`ctx.verifiedEmail`, K-61) and not the subject. A master that records logins matches on those, and no dependent changes. |
+
+### This is a copy per scope, and the kernel design warns against those
+
+[kernel-design.md](../architecture/kernel-design.md) rejects "an authoritative copy per scope" for a
+tenant-wide fact, and K-22 rejected it for membership: nothing keeps N copies in step. It allows a
+derived projection whose consumers accept eventual consistency, and says such a projection "cannot
+supply a tenant-wide … revocation guarantee".
+
+What is built here is that projection, with the weakness stated as a number. The master stays the
+only authority; a dependent's copy is a cache with an expiry, and the guarantee is "within 300
+seconds, or refused", never "at once". Whether that is recorded as an amendment, or the people move
+to the tenant directory as K-22 moved membership, is the decision this RFC asks for (§5.1).
+
+## 4. What is built, and what is not
+
+Built, on the pure host:
+
+- the contract, the door and its SQL store, with the door's rules under test
+  (`packages/vertical-auth/test/people.test.ts`);
+- `devPeople` in `@substrat-run/dev-issuer`: the door over a dev server's pieces;
+- `demos/todo` as a master: plugin access per member, decided by a new `admin` role, and
+  `todo/resolve-person`;
+- `demos/notes`, a plugin: its own vertical with no people of its own and no screens of its own,
+  and a suite that drives both apps over HTTP as several people (`demos/notes/test/people.test.ts`).
+  What it adds is drawn by Todo's app for whoever the plugin lets in: notes under each item, and a
+  Notes page. Todo's Plugins screen is where an admin decides who that is.
+- Notes on Todo's items, as the first case of a plugin keeping data about the master's records.
+  Notes stores them; Todo answers whether a person may see the item (`todo/vouch-access`, another
+  system-held key the peer holds), and Notes' door asks before every read and write.
+
+Not built:
+
+- **The hosted door.** `workerDoor` has no people option, and the identity directory has no tables
+  for the copy. `sqlPeopleStore` is written over the directory's own SQL seam so that half is a
+  wiring change. Until it lands nothing deployed can depend on another app's people.
+- **A declaration `substrat push` reads.** A dependent says so in its host wiring and in
+  `substrat.calls`. Nothing refuses a push whose master does not implement the contract, and install
+  does not bind the two.
+- **The owner seat of a dependent scope.** Provisioning still expects an owner to claim it.
+- **Names.** A dependent shows ids. Reading a display name is a separate peer call, or the profile
+  half of the contract (§5.2).
+- **Access per plugin.** The reference master keeps one flag per member for all plugins, because an
+  operation cannot read which peer is calling it.
+- **A plugin's screens, deployed.** Todo draws Notes' features itself and reaches its API through
+  the dev proxy, so the two are one origin locally. Deployed they are two origins, and the host
+  carries the plugin's screens in its own code. Whether a plugin ships its own UI pieces for the
+  host to mount, and how they cross origins, is undecided.
+- **A check about another principal.** `todo/vouch-access` answers from the tables that mirror
+  Todo's grants, because an operation can only check its own caller. And Notes' operations trust
+  their door for the answer, because module code cannot make the call. A kernel check for another
+  principal, or a call made as the person (§5.3), would remove both.
+
+## 5. Open questions
+
+### 5.1 A projection with a stated bound, or the tenant directory
+
+The alternative to §3 is that the tenant directory holds the people and a privileged executor seats
+them in each scope through `HostAdmin`, as it does for membership. That keeps one copy. It also
+makes the people the platform's rather than an app's, which removes the reason a product would be
+the master at all. Not decided.
+
+### 5.2 The profile half, and erasure
+
+The copy a dependent keeps today is not empty of personal data: `person_login` holds each login's
+`sub`, and the row outlives its expiry, which only stops it being answered from. Nothing deletes it
+when the master erases the person. An erasure has to remove a person's login rows and seat row in
+every dependent, and the platform has to do it, since the rows are the door's and not module code's.
+That is unbuilt.
+
+Names and addresses are deferred, and a plugin that wants them will cache them in its own tables,
+which is the copy an erasure cannot reach. The proposed answer is a platform-held profile copy that
+module code reads and cannot write, erased by the platform when the master erases. It should be
+decided before a second plugin exists, even if it is built later.
+
+### 5.3 Calls on a person's behalf
+
+A peer acts as the app. A plugin reading the master's data for one person needs either the token
+exchange #1824 built for MCP extended to peer calls, or the person's id as input, which a
+third-party plugin could set to anyone.
+
+### 5.4 Whether this survives merging verticals and modules
+
+If a plugin becomes an isolated module or a scope type (#2993) of the app it belongs to, the door
+and the bound stay as they are, and the peer call may become a read inside one app.
+
+## 6. Deployed: a host app that calls its plugin as the person
+
+**Proposed, not decided. It reverses a #1706 decision and needs a human's yes before any code.**
+
+Locally, Todo's page reaches Notes through the dev proxy, so one origin carries one session. Deployed,
+the two are separate origins with separate sessions, and the platform refuses a shared login cookie on
+its own hostnames (`cookie-domain.ts`: a parent within the platform's space would reach other tenants'
+apps). The chosen answer is that **Todo's worker calls Notes for the person**: the browser talks only
+to Todo, and Todo forwards a plugin request to Notes saying which person it acts for.
+
+### What it reverses
+
+The peer door was built to carry no person. Its body is strict "so no field a future caller adds can
+make a peer call act as a person" (`vertical-host`, `verticalInvokeBody`), and `getVerticalScope`
+states that the caller's signed-in user does not cross. That was right for a peer that is merely
+another app of the tenant. It is the thing to change here, and only here.
+
+### The proposal
+
+- **A declaration on the dependent.** Notes declares its identity source in its manifest,
+  `identity: { from: 'todo', contract: 'identity.person@1' }` (§2 of the plan this RFC follows).
+  `substrat push` and provisioning read it; nothing else may.
+- **One new field on the peer call: `actingFor: <person id>`.** The router passes it through
+  untouched. The target's door accepts it from **exactly one caller: the vertical its manifest names
+  as identity source**, and refuses it from every other peer, as today. A plain peer call without it
+  is unchanged.
+- **The operation runs as the person.** `ctx.principal` is the person, `ctx.check` answers with their
+  roles in the dependent's scope, and grants made, rows written and events emitted are theirs. The
+  spine stamps `{ vertical: 'todo', actingFor: <person> }` beside it, as K-42 stamps impersonation, so
+  the history shows who acted for whom.
+- **The person must be let in.** Before invoking, the dependent's door runs the same people check a
+  sign-in does: the person's kept answer, refreshed from the master when it has expired, must be
+  `active`. A blocked person cannot be acted for, and the bound is the same 300 s.
+- **No chains.** A call made while acting for a person cannot itself act for one (`depth` > 0
+  refuses `actingFor`), and the person's own `verifiedEmail` does not cross.
+
+### Why the trust holds
+
+The dependent already takes the master's word for who a person is and what they hold: that is what
+the person contract is. A master that says "this is person P, acting now" adds no authority it did
+not have; it is the same authority at a different moment. A plugin, or any other peer, gains nothing:
+`actingFor` from anyone but the declared master is refused.
+
+### What it costs, and what stays open
+
+- **The master can act for anyone, any time.** Nothing proves that P is behind the request; Todo's
+  worker is trusted to claim P only while serving P's request. A schedule in Todo could act for P
+  without them. The spine stamp makes it visible, not impossible. The fix for that is a token minted
+  for P at sign-in and carried through, which is #1824's exchange; this design does not need it and
+  does not block it.
+- **Kernel and both adapters.** `getVerticalScope` gains the person; the checker resolves the
+  person's grants under the peer's door; the contract suites hold both adapters to it.
+- **Third-party masters.** A third party's app could be declared as identity source by a plugin it
+  ships, and would then act for its own people in its own plugin, which is no wider than it has. A
+  plugin may not declare a master the tenant did not bind it to; install binding (§4) is where that
+  is enforced, and it is unbuilt.

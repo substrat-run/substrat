@@ -9,6 +9,11 @@
       "version": "0002",
       "slug": "add-todo_invites",
       "sql": "CREATE TABLE todo_invites (\n  id TEXT PRIMARY KEY NOT NULL,\n  list_id TEXT NOT NULL REFERENCES todo_lists(id),\n  email TEXT NOT NULL,\n  invited_by TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (list_id, email)\n);"
+    },
+    {
+      "version": "0003",
+      "slug": "add-todo_plugin_access",
+      "sql": "CREATE TABLE todo_plugin_access (\n  id TEXT PRIMARY KEY NOT NULL,\n  granted_by TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);"
     }
   ]
 }

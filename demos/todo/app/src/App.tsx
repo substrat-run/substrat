@@ -15,8 +15,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
-import { api, ApiError, type Invite, type Item, type List, type Paged, type Share } from './api.js';
+import { api, ApiError, walk, type Invite, type Item, type List, type Paged, type Share } from './api.js';
 import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
+import { ItemNotesPanel, NotesPage, useItemNotes, useNotesPlugin } from './notes-plugin.js';
+import { Plugins } from './plugins.js';
 import { Settings } from './settings.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
@@ -59,6 +61,18 @@ const TABLE_HASH = '#/table';
 /** Theme and light/dark, from the account menu. */
 const SETTINGS_HASH = '#/settings';
 
+/** Who may use the workspace's plugins, from the account menu (`src/plugins.tsx`). */
+const PLUGINS_HASH = '#/plugins';
+
+/** The Notes plugin's tab, beside the lists' views for whoever the plugin lets in. */
+const NOTES_HASH = '#/notes';
+
+/** Every list a person reaches, active and archived, every page, for naming the lists notes are on. */
+const allLists = async () => [
+  ...(await walk(await api.myLists({ limit: 100 }))),
+  ...(await walk(await api.myLists({ view: 'archived', limit: 100 }))),
+];
+
 function shownOf(hash: string): ListsShown {
   return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
 }
@@ -91,6 +105,24 @@ export function App() {
   }
 
   const who = state.session.principal;
+  return <SignedIn who={who} hash={hash} full={full} match={match} tableList={tableList} />;
+}
+
+/** Signed in: the header, and the screen the route picks. */
+function SignedIn({
+  who,
+  hash,
+  full,
+  match,
+  tableList,
+}: {
+  who: string;
+  hash: string;
+  full: string;
+  match: RegExpExecArray | null;
+  tableList: RegExpExecArray | null;
+}) {
+  const notesOn = useNotesPlugin();
   return (
     <>
       <header>
@@ -104,18 +136,26 @@ export function App() {
       </header>
       <main>
         {match ? (
-          <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
+          <ListView key={`${who}:${match[1]}`} listId={match[1]!} notesOn={notesOn} />
         ) : tableList ? (
           <ItemsTable key={`${who}:${full}`} listId={tableList[1]!} />
         ) : hash === SETTINGS_HASH ? (
           <Settings />
+        ) : hash === PLUGINS_HASH ? (
+          <Plugins key={who} />
+        ) : hash === NOTES_HASH ? (
+          <>
+            <ViewsNav current="notes" notesOn={notesOn} />
+            {/* Gone with the plugin's yes: switched off, the notes leave this page as well as the tab. */}
+            {notesOn ? <NotesPage key={who} me={who} lists={allLists} /> : <p className="empty">Notes is not switched on for you.</p>}
+          </>
         ) : hash === TABLE_HASH ? (
           <>
-            <ViewsNav current="table" />
+            <ViewsNav current="table" notesOn={notesOn} />
             <ListsTable key={`${who}:${full}`} />
           </>
         ) : (
-          <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} />
+          <Lists key={`${who}:${shownOf(hash)}`} shown={shownOf(hash)} notesOn={notesOn} />
         )}
       </main>
     </>
@@ -144,7 +184,7 @@ const VIEW_COPY: Record<ListsShown, { tab: string; title: string; sub: string; e
   },
 };
 
-function ViewsNav({ current }: { current: ListsShown | 'table' }) {
+function ViewsNav({ current, notesOn = false }: { current: ListsShown | 'table' | 'notes'; notesOn?: boolean }) {
   return (
     <nav className="views">
       {(Object.keys(VIEW_HASH) as ListsShown[]).map((v) => (
@@ -155,6 +195,12 @@ function ViewsNav({ current }: { current: ListsShown | 'table' }) {
       <a href={TABLE_HASH} aria-current={current === 'table' ? 'page' : undefined}>
         Table
       </a>
+      {/* The Notes plugin's tab, for someone it lets in (`src/notes-plugin.tsx`). */}
+      {notesOn ? (
+        <a href={NOTES_HASH} aria-current={current === 'notes' ? 'page' : undefined}>
+          Notes
+        </a>
+      ) : null}
     </nav>
   );
 }
@@ -165,7 +211,7 @@ function readOf(shown: ListsShown): () => Promise<Paged<List>> {
   return () => api.myLists(shown === 'archived' ? { view: 'archived' } : {});
 }
 
-export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
+export function Lists({ shown = 'active', notesOn = false }: { shown?: ListsShown; notesOn?: boolean }) {
   const [lists, setLists] = useState<List[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
@@ -218,7 +264,7 @@ export function Lists({ shown = 'active' }: { shown?: ListsShown }) {
 
   return (
     <>
-      <ViewsNav current={shown} />
+      <ViewsNav current={shown} notesOn={notesOn} />
       <h2>{copy.title}</h2>
       <p className="sub">{copy.sub}</p>
       <Problem error={error} />
@@ -298,7 +344,7 @@ function SharedTag({ list }: { list: List }) {
   );
 }
 
-function ListView({ listId }: { listId: string }) {
+function ListView({ listId, notesOn }: { listId: string; notesOn: boolean }) {
   // A PAGE, not an array. `todo/list-items` declares `paged`, so what comes back is
   // the first twenty items plus a link to the next twenty — and an app that kept a
   // bare array would render those twenty as though they were the list.
@@ -308,6 +354,8 @@ function ListView({ listId }: { listId: string }) {
   const [error, setError] = useState<unknown>(null);
   const [text, setText] = useState('');
   const [email, setEmail] = useState('');
+  // The Notes plugin's notes on these items, for someone it lets in (`src/notes-plugin.tsx`).
+  const itemNotes = useItemNotes(listId, notesOn);
 
   // How far down the walk this screen has gone, so a revalidation refetches the
   // same depth instead of snapping back to the first page under someone's cursor.
@@ -421,6 +469,7 @@ function ListView({ listId }: { listId: string }) {
                 <span className={i.done === 1 ? 'done' : undefined}>{i.text}</span>
               </wa-checkbox>
               <span className="spacer" />
+              <ItemNotesPanel itemId={i.id} notes={itemNotes} />
               <wa-button size="s" appearance="plain" variant="danger" onClick={() => guard(() => api.deleteItem({ itemId: i.id }))}>
                 delete
               </wa-button>

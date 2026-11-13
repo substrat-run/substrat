@@ -14,7 +14,7 @@ import type { DevPersona } from '@substrat-run/dev-issuer';
  * it is the only one anybody reading this vertical will see.
  */
 export const PERSONAS: DevPersona[] = [
-  { sub: 'dev|ada', name: 'Ada', email: 'ada@example.com', note: 'member', role: 'member' },
+  { sub: 'dev|ada', name: 'Ada', email: 'ada@example.com', note: 'admin · decides who may use plugins', role: 'admin' },
   { sub: 'dev|bjorn', name: 'Björn', email: 'bjorn@example.com', note: 'member · same tenant as Ada', role: 'member' },
   {
     sub: 'dev|cleo',
