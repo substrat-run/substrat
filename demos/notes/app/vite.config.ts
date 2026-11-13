@@ -1,0 +1,37 @@
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+// Just above the demos' private 887x/527x block, beside the API: `PORT=… WEB_PORT=… pnpm dev`
+// moves both ends of the proxy together.
+const WEB_PORT = Number(process.env.WEB_PORT ?? 5281);
+const API_PORT = Number(process.env.PORT ?? 8881);
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: WEB_PORT,
+    // The API keeps its scopes' SQLite databases in this demo's `.data/`, inside the root Vite
+    // serves files from: without this, `/@fs/…/.data/<scope>.sqlite` answers 200 to anyone who
+    // can reach this port. `deny` REPLACES Vite's own list, so its defaults are written out first
+    // (`pnpm lint:vite-proxy` holds both halves).
+    fs: {
+      deny: [
+        '.env',
+        '.env.*',
+        '*.{crt,pem,key,p12,pfx,cer,der}',
+        '.npmrc',
+        '.yarnrc.yml',
+        '**/.git/**',
+        '**/.data/**',
+        '*.{sqlite,sqlite-shm,sqlite-wal}',
+      ],
+    },
+    proxy: {
+      // `changeOrigin: false`, written out. Vite's string shorthand expands to
+      // `{ target, changeOrigin: true }`, which rewrites Host — and the API derives
+      // its OIDC `redirect_uri` from the Host it is handed, so the login callback
+      // would come back to the API's port, where this app is not (#1388).
+      '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: false },
+    },
+  },
+});

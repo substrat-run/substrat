@@ -310,15 +310,17 @@ export function useSession(): SessionState {
 }
 
 /**
- * The account menu, with Settings as this vertical's one item of its own. Switching
+ * The account menu, with Settings and Plugins as this vertical's own items. Switching
  * user and signing out are the element's: it knows the auth endpoints.
  */
 export function AccountMenu() {
   return (
     <sub-user-menu show="name">
       <wa-dropdown-item href={SETTINGS_HREF}>Settings</wa-dropdown-item>
+      <wa-dropdown-item href={PLUGINS_HREF}>Plugins</wa-dropdown-item>
     </sub-user-menu>
   );
 }
 
 const SETTINGS_HREF = '#/settings';
+const PLUGINS_HREF = '#/plugins';

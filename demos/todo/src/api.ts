@@ -36,6 +36,9 @@ export const API = apiCatalogFrom(served, {
   'todo/delete-item': { tag: 'Items' },
   'todo/share-list': { tag: 'Sharing', description: 'Narrows `list:contribute` onto this list for that person.' },
   'todo/list-shares': { tag: 'Sharing' },
+  'todo/list-members': { tag: 'Plugins' },
+  'todo/grant-plugin-access': { tag: 'Plugins' },
+  'todo/revoke-plugin-access': { tag: 'Plugins' },
   'todo/revoke-share': { tag: 'Sharing' },
 });
 

@@ -37,7 +37,7 @@ notepad is the whole product, so the only thing on the page is who is let in. It
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/notes/PERMISSIONS.md) — 2 keys, 1 module, 1 role |
 | **Calls** | `todo`, for `todo/resolve-person` and nothing else |
 | **Auth** | [OIDC only](/concepts/identity), at the same issuer as Todo |
-| **Apps** | API (`:8881`), and a copy of Todo's API (`:8882`) in the same process. No screen |
+| **Apps** | API (`:8881`) and a one-screen web app (`:5281`); the dev command also runs a copy of Todo's API (`:8882`) and Todo's web app (`:5278`) against it |
 | **Status** | Runs locally — the hosted door does not take this option yet |
 
 ## The cast & what's denied
@@ -54,21 +54,26 @@ The cast is Todo's. Nobody is seeded into Notes.
 
 ```bash
 pnpm --filter @substrat-run/demo-notes dev
-# issuer      http://localhost:8879
-# notes API   http://localhost:8881
-# its Todo    http://localhost:8882
+# Notes   http://localhost:5281
+# Todo    http://localhost:5278   (Plugins is in the account menu)
 ```
 
-Both apps run in one process, because locally the peer call goes through an in-process broker.
-The Todo served here is this process's own copy, not the one `pnpm todo-demo dev` serves.
+Both APIs run in one process, because locally the peer call goes through an in-process broker.
+The Todo served here is this process's own copy, not the one `pnpm todo-demo dev` serves, so
+stop that one first: both use port 5278. Signing in to either app signs you in to both, since
+the session cookie is shared across localhost ports.
 
-There is no screen, so sign in as a persona with the issuer's shortcut and call the API:
+To see the door at work:
 
-```bash
-TOKEN=$(curl -s localhost:8879/dev/token -H 'content-type: application/json' \
-  -d '{"sub":"dev|bjorn"}' | jq -r .access_token)
-curl -s localhost:8881/api/notes -H "authorization: Bearer $TOKEN"
-```
+1. Open Notes and sign in as **Björn**. He is a member of Todo with no plugin access, and Notes
+   says so.
+2. Open Todo, switch user to **Ada**, open **Plugins** from the account menu and switch Björn on.
+3. Back in Notes as Björn, he is let in and can write a note.
+4. As Ada, switch him off. About 30 seconds later Notes refuses him again.
+
+The dev server keeps an answer for 30 seconds so this can be watched; the door's own default is
+five minutes. `PEOPLE_TTL_SECONDS=300 pnpm --filter @substrat-run/demo-notes dev` runs it with
+the real bound. Sign in as **Cleo** to see a login the workspace has nobody for.
 
 `test/people.test.ts` drives both apps over HTTP as several people, with the door's clock in the
 test's hands: a member with access is let in as the same id, another tenant's member is refused,
@@ -77,5 +82,5 @@ on an expired answer while Todo is down.
 
 ## Deliberately out of scope
 
-Names (a note shows its author's id), a screen, access per plugin (Todo keeps one flag per
-member for all plugins), and anything deployed.
+Names (a note shows its author's id), access per plugin (Todo keeps one flag per member for all
+plugins), showing Notes inside Todo's own screens, and anything deployed.

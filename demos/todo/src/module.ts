@@ -12,6 +12,7 @@
  * one implemented and not declared, is a compile error naming the exact method.
  */
 import {
+  mapPage,
   pageVisible,
   dataSubjectId,
   substratError,
@@ -533,6 +534,19 @@ const bound = operationsFor(todoOperations)({
       payload: { id: share.id },
     });
     return { id: share.id, revoked: true };
+  },
+
+  /** One page of members, and one read for which of that page hold plugin access. */
+  'todo/list-members': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.peopleManage));
+    const page = ctx.page<OwnerRow>('owner', input);
+    const ids = page.entries.map((m) => m.id);
+    const granted = new Set(
+      ctx.sql
+        .query<{ id: string }>('SELECT id FROM todo_plugin_access WHERE id IN (SELECT value FROM json_each(?))', [JSON.stringify(ids)])
+        .map((r) => r.id),
+    );
+    return mapPage(page, (m) => ({ ...m, plugin_access: granted.has(m.id) }));
   },
 
   'todo/grant-plugin-access': async (ctx, input) => {

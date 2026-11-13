@@ -638,6 +638,18 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
   },
 
   /**
+   * The workspace's members, each with whether they may use its plugins: the admin's screen for
+   * deciding plugin access. Members only, never list invitations, which are no person yet.
+   */
+  'todo/list-members': {
+    summary: 'The workspace’s members, and which of them may use its plugins',
+    permission: 'people:manage',
+    output: todoEntities.owner.fields.extend({ plugin_access: z.boolean() }),
+    paged: { over: { entity: 'owner', sortable: ['created_at', 'display_name'] } },
+    http: { method: 'GET', path: '/members' },
+  },
+
+  /**
    * Let a member use the plugins. Idempotent: a member who has access keeps the row they have.
    * The event is about a person, so it is classified and keyed on them.
    */

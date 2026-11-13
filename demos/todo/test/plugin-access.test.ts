@@ -48,6 +48,16 @@ describe('plugin access', () => {
     expect(await resolve(email)).toEqual({ person: null });
   });
 
+  it('an admin sees each member with whether they may use plugins; a member is refused the read', async () => {
+    await (await as(world.ada)).invoke('todo/grant-plugin-access', { memberId: world.ada.principal });
+    const page = await (await as(world.ada)).invoke<{ entries: { id: string; plugin_access: boolean }[] }, unknown>('todo/list-members', {});
+    expect(Object.fromEntries(page.entries.map((m) => [m.id, m.plugin_access]))).toMatchObject({
+      [world.ada.principal]: true,
+      [world.bjorn.principal]: false,
+    });
+    await expect((await as(world.bjorn)).invoke('todo/list-members', {})).rejects.toMatchObject({ code: 'permission_denied' });
+  });
+
   it('only an admin decides plugin access', async () => {
     await expect((await as(world.bjorn)).invoke('todo/grant-plugin-access', { memberId: world.bjorn.principal })).rejects.toMatchObject({
       code: 'permission_denied',

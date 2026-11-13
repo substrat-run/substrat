@@ -201,6 +201,16 @@ export interface TodoClient {
   listItems(input: { listId: string; done?: number; limit?: number; order?: "asc" | "desc"; sort?: "id" | "text" }): Promise<Paged<Item>>;
 
   /**
+   * The workspace’s members, and which of them may use its plugins
+   *
+   * `GET /members` — `todo/list-members`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   * Sorted by `created_at` unless `sort` names another declared column.
+   */
+  listMembers(input?: { limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "display_name" }): Promise<Paged<{ id: string; email: string; display_name: string; created_at: string; plugin_access: boolean }>>;
+
+  /**
    * Who this list is shared with
    *
    * `GET /lists/{listId}/shares` — `todo/list-shares`
@@ -436,6 +446,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       page(`/lists/${encodeURIComponent(String(input.listId))}/invites`, "GET", undefined, omit(input, ["listId"])),
     listItems: (input: Args) =>
       page(`/lists/${encodeURIComponent(String(input.listId))}/items`, "GET", undefined, omit(input, ["listId"])),
+    listMembers: (input?: Args) =>
+      page("/members", "GET", undefined, input),
     listShares: (input: Args) =>
       page(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "GET", undefined, omit(input, ["listId"])),
     myLists: (input: Args) =>

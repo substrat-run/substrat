@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, type Invite, type Item, type List, type Paged, type Share } from './api.js';
 import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
+import { NOTES_URL, Plugins } from './plugins.js';
 import { Settings } from './settings.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
@@ -59,6 +60,9 @@ const TABLE_HASH = '#/table';
 /** Theme and light/dark, from the account menu. */
 const SETTINGS_HASH = '#/settings';
 
+/** Who may use the workspace's plugins, from the account menu (`src/plugins.tsx`). */
+const PLUGINS_HASH = '#/plugins';
+
 function shownOf(hash: string): ListsShown {
   return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
 }
@@ -98,6 +102,8 @@ export function App() {
         <wa-tag size="s" appearance="outlined">
             on Substrat
           </wa-tag>
+        {/* The plugin, when one runs beside this app (`pnpm --filter @substrat-run/demo-notes dev`). */}
+        {NOTES_URL ? <a className="plugin-link" href={NOTES_URL}>Notes</a> : null}
         <span className="who">
           <AccountMenu />
         </span>
@@ -109,6 +115,8 @@ export function App() {
           <ItemsTable key={`${who}:${full}`} listId={tableList[1]!} />
         ) : hash === SETTINGS_HASH ? (
           <Settings />
+        ) : hash === PLUGINS_HASH ? (
+          <Plugins key={who} />
         ) : hash === TABLE_HASH ? (
           <>
             <ViewsNav current="table" />

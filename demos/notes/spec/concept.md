@@ -95,3 +95,5 @@ _No lifecycle is declared: nothing here moves through stages._
 - 2026-11-13: First version. One entity (`note`), two operations, two keys (`note:read`,
   `note:write`) and one role, `writer`, which holds both and is seated only by the door, from what
   Todo answers.
+- 2026-11-13: One screen (`app/`): the notes, and a box to write one, with a message for each of
+  the door's refusals. No key, role or operation changed.

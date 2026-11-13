@@ -1,0 +1,27 @@
+/* Read from the theme's --wa-* tokens (@substrat-run/elements), as the Todo app's are. */
+:root {
+  --bg: var(--wa-color-surface-lowered, #fbfbfa); --panel: var(--wa-color-surface-default, #fff);
+  --ink: var(--wa-color-text-normal, #1d1d1b); --muted: var(--wa-color-text-quiet, #6b6b66);
+  --line: var(--wa-color-surface-border, #e6e4df);
+  font-family: var(--wa-font-family-body, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); }
+header {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .75rem 1.25rem;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 1rem; margin: 0; font-weight: 600; letter-spacing: -.01em; }
+header a { color: var(--muted); font-size: .85rem; }
+header .who { margin-left: auto; display: flex; align-items: center; gap: .75rem; font-size: .85rem; }
+main { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+h2 { font-size: 1.35rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+.sub { color: var(--muted); font-size: .85rem; margin: 0 0 1.25rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.row { padding: .7rem .9rem; }
+.row + .row { border-top: 1px solid var(--line); }
+.row .meta { color: var(--muted); font-size: .75rem; margin-top: .2rem; overflow-wrap: anywhere; }
+.empty { color: var(--muted); font-size: .9rem; padding: 1.1rem .9rem; }
+form.inline { display: flex; gap: .5rem; margin-top: .9rem; }
+form.inline wa-input { flex: 1; }
+.error { display: block; margin: 0 0 1rem; }

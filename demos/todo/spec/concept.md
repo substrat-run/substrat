@@ -257,3 +257,5 @@ _No lifecycle is declared: nothing here moves through stages._
   the new `admin` role (a member who also decides plugin access; Ada, in the dev cast), and
   `people:resolve`, declared `holder: 'system'` and held only by the `notes` peer. Nothing a member
   could do before changed.
+- 2026-11-13: An admin reads the members with whether each may use plugins (`todo/list-members`,
+  `people:manage`), for a Plugins screen in the account menu. No key or role changed.

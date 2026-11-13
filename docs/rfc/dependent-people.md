@@ -88,8 +88,9 @@ Built, on the pure host:
 - `devPeople` in `@substrat-run/dev-issuer`: the door over a dev server's pieces;
 - `demos/todo` as a master: plugin access per member, decided by a new `admin` role, and
   `todo/resolve-person`;
-- `demos/notes`, a plugin: its own vertical with no people of its own, and a suite that drives both
-  apps over HTTP as several people (`demos/notes/test/people.test.ts`).
+- `demos/notes`, a plugin: its own vertical with no people of its own, one screen, and a suite that
+  drives both apps over HTTP as several people (`demos/notes/test/people.test.ts`). Its dev command
+  runs Todo's web app too, whose Plugins screen is where an admin decides access.
 
 Not built:
 
@@ -104,7 +105,8 @@ Not built:
   half of the contract (§5.2).
 - **Access per plugin.** The reference master keeps one flag per member for all plugins, because an
   operation cannot read which peer is calling it.
-- **Screens.** `demos/notes` is an API. Showing a plugin inside the app it belongs to is undecided.
+- **Screens inside the host.** Notes has its own screen and links to Todo; showing a plugin inside
+  the app it belongs to is undecided.
 
 ## 5. Open questions
 

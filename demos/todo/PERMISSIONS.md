@@ -98,6 +98,7 @@ shapes.
 | `todo/join` | `list:create` | the scope | `@substrat-run/demo-todo` |
 | `todo/list-invites` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/list-members` | `people:manage` | the scope | `@substrat-run/demo-todo` |
 | `todo/list-shares` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/my-lists` | `list:contribute` | each row, by a proof walk: Returns only lists the caller owns or has been shared | `@substrat-run/demo-todo` |
 | `todo/rename-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |

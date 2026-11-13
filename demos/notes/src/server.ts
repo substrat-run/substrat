@@ -13,9 +13,12 @@
  *     curl -s localhost:8879/dev/token -d '{"sub":"dev|bjorn"}' -H 'content-type: application/json'
  *     curl -s localhost:8881/api/notes -H "authorization: Bearer $TOKEN"
  *
- * Björn is refused until Ada gives him plugin access in Todo
- * (`POST localhost:8882/api/members/{id}/plugin-access`), and again within `PEOPLE_TTL_SECONDS`
- * of her taking it away.
+ * Four processes: the issuer, this API (with Todo's beside it), Notes' web app on :5281, and
+ * Todo's own web app on :5278 pointed at the Todo served here. Sign in to either; the session
+ * cookie is shared across localhost ports, so the other app knows you too.
+ *
+ * Björn is refused until Ada gives him plugin access on Todo's Plugins screen, and again after
+ * she takes it away, within `PEOPLE_TTL_SECONDS` (30 here, 300 for the door's own default).
  */
 import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -63,6 +66,7 @@ async function boot() {
   // Notes' own relying party at the same issuer. Its `caller` is never asked: who a login is
   // here is Todo's to say, through the person contract.
   const login = devLogin({ directory: notes.admin, actor: staff, provider: DEV_PROVIDER });
+  const ttlSeconds = Number(process.env.PEOPLE_TTL_SECONDS ?? 30);
   const peer = peerFor(node);
   const people = devPeople({
     login,
@@ -73,6 +77,9 @@ async function boot() {
     node,
     resolve: (person) => peer.invoke('todo', 'todo/resolve-person', person),
     roles: rolesFromTodo,
+    // Shorter than the door's 300 s, so a switch flipped in Todo shows here while you watch.
+    // The bound is the same mechanism at any value; `PEOPLE_TTL_SECONDS=300` shows the real one.
+    ttlSeconds,
   });
   const app = createApp({ host: notes, login, people });
 
@@ -80,7 +87,10 @@ async function boot() {
   const todoPort = Number(process.env.TODO_PORT ?? 8882);
   serve({ fetch: app.fetch, port });
   serve({ fetch: todoApp.fetch, port: todoPort });
-  process.stdout.write(`notes api on :${port} · its todo on :${todoPort} — auth: OIDC · ${login.issuer}\n`);
+  process.stdout.write(
+    `notes api on :${port} · its todo on :${todoPort} — auth: OIDC · ${login.issuer} · ` +
+      `an answer from todo is kept ${ttlSeconds} s\n`,
+  );
 }
 
 void boot();

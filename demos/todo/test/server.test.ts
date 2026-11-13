@@ -54,9 +54,9 @@ describe('the derived route table, served', () => {
     // purpose: adding an operation to the model should make somebody look here.
     // Twelve until #827 added the two search reads; fourteen until #119 added the
     // four archive/trash moves and the bin; nineteen until lists became searchable;
-    // twenty-three until plugin access. `resolve-person` declares no http shape: a plugin
-    // reaches it through the peer door.
-    expect(mounted).toHaveLength(25);
+    // twenty-three until plugin access and the members read. `resolve-person` declares no
+    // http shape: a plugin reaches it through the peer door.
+    expect(mounted).toHaveLength(26);
   });
 
   it('serves a real operation for a seeded persona', async () => {
