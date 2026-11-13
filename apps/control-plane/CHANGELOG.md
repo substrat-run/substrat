@@ -1,5 +1,29 @@
 # @substrat-run/control-plane
 
+## 0.18.32
+
+### Patch Changes
+
+- 2c64f1a: A seeded preview of a deployment that predates `/internal/seed-world` is `unseeded`, with a note naming the vertical-host to push with, instead of failing preview create with "the input did not parse".
+- 77ce7f0: A WooCommerce store can be connected from the dashboard with its URL and a Read REST API key. Its products and orders land in your app every quarter of an hour, through the operation the app declares, as `commerceChange` records: a provider-neutral commerce shape in `@substrat-run/contracts`, so another store platform's connector can feed the same operation. Test connection tells a wrong address from a wrong key and names the store. Read-only; stock, deletes and write-back are not in this release.
+- Updated dependencies [12933eb]
+- Updated dependencies [8757b2c]
+- Updated dependencies [2c64f1a]
+- Updated dependencies [77ce7f0]
+  - @substrat-run/contracts@0.196.0
+  - @substrat-run/control-plane-api@0.196.0
+  - @substrat-run/connector-bolagsverket@0.0.19
+  - @substrat-run/connector-fortnox@0.7.20
+  - @substrat-run/connector-mail-in@0.1.33
+  - @substrat-run/connector-microsoft365@0.0.57
+  - @substrat-run/connector-planima@0.2.93
+  - @substrat-run/connector-scrive@0.14.102
+  - @substrat-run/connector-woocommerce@0.0.2
+  - @substrat-run/adapter-cloudflare@0.196.0
+  - @substrat-run/kernel@0.196.0
+  - @substrat-run/model-providers@0.5.86
+  - @substrat-run/vertical-host@0.196.0
+
 ## 0.18.31
 
 ### Patch Changes

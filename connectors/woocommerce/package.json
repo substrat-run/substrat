@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-woocommerce",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Substrat connector: reads a WooCommerce store's products and orders on a poll, through its REST API with a consumer key, and lands them in a scope in the provider-neutral commerce shape. Read-only. Host code, never module code.",
   "license": "AGPL-3.0-only",

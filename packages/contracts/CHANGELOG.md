@@ -1,5 +1,13 @@
 # @substrat-run/contracts
 
+## 0.196.0
+
+### Minor Changes
+
+- 12933eb: An app can declare the issuer scopes its machine client needs, as `substrat.issuerScopes` in package.json (for example `["read:users", "users:provision"]`), and `substrat push` carries the declaration in the manifest. A sign-in scope or a malformed one is refused before upload. The team auth-server gains the two platform-gated routes that register, converge and remove one machine client per app, bounded by `MACHINE_SCOPES`. Nothing registers a client at install yet: the dashboard half follows.
+- 8757b2c: A vertical can take its people from another app of the same tenant: the `identity.person@1` contract, the door that asks and keeps the answer (`@substrat-run/vertical-auth/people`), and `devPeople` for a dev server.
+- 77ce7f0: A WooCommerce store can be connected from the dashboard with its URL and a Read REST API key. Its products and orders land in your app every quarter of an hour, through the operation the app declares, as `commerceChange` records: a provider-neutral commerce shape in `@substrat-run/contracts`, so another store platform's connector can feed the same operation. Test connection tells a wrong address from a wrong key and names the store. Read-only; stock, deletes and write-back are not in this release.
+
 ## 0.195.0
 
 ### Minor Changes

@@ -1,5 +1,21 @@
 # @substrat-run/cli
 
+## 0.59.0
+
+### Minor Changes
+
+- 12933eb: An app can declare the issuer scopes its machine client needs, as `substrat.issuerScopes` in package.json (for example `["read:users", "users:provision"]`), and `substrat push` carries the declaration in the manifest. A sign-in scope or a malformed one is refused before upload. The team auth-server gains the two platform-gated routes that register, converge and remove one machine client per app, bounded by `MACHINE_SCOPES`. Nothing registers a client at install yet: the dashboard half follows.
+
+### Patch Changes
+
+- 8757b2c: `substrat changeset` reads the "Other verticals" section of `PERMISSIONS.md`: a peer gaining a key or an operation is a flagged minor, where the section used to be judged as breaking.
+- Updated dependencies [12933eb]
+- Updated dependencies [8757b2c]
+- Updated dependencies [77ce7f0]
+  - @substrat-run/contracts@0.196.0
+  - @substrat-run/control-plane-client@0.6.18
+  - @substrat-run/model-view@0.6.46
+
 ## 0.58.9
 
 ### Patch Changes

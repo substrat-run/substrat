@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-notes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "A plugin of the Todo demo — a second vertical that takes its people from the first (identity.person@1)",
   "license": "Apache-2.0",

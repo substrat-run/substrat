@@ -1,5 +1,19 @@
 # @substrat-run/dev-issuer
 
+## 0.8.0
+
+### Minor Changes
+
+- 8757b2c: A vertical can take its people from another app of the same tenant: the `identity.person@1` contract, the door that asks and keeps the answer (`@substrat-run/vertical-auth/people`), and `devPeople` for a dev server.
+
+### Patch Changes
+
+- Updated dependencies [12933eb]
+- Updated dependencies [8757b2c]
+- Updated dependencies [77ce7f0]
+  - @substrat-run/contracts@0.196.0
+  - @substrat-run/vertical-auth@0.35.0
+
 ## 0.7.1
 
 ### Patch Changes

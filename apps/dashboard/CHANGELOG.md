@@ -1,5 +1,25 @@
 # @substrat-run/dashboard
 
+## 0.49.14
+
+### Patch Changes
+
+- 77ce7f0: A WooCommerce store can be connected from the dashboard with its URL and a Read REST API key. Its products and orders land in your app every quarter of an hour, through the operation the app declares, as `commerceChange` records: a provider-neutral commerce shape in `@substrat-run/contracts`, so another store platform's connector can feed the same operation. Test connection tells a wrong address from a wrong key and names the store. Read-only; stock, deletes and write-back are not in this release.
+- Updated dependencies [12933eb]
+- Updated dependencies [8757b2c]
+- Updated dependencies [2c64f1a]
+- Updated dependencies [77ce7f0]
+  - @substrat-run/contracts@0.196.0
+  - @substrat-run/control-plane-api@0.196.0
+  - @substrat-run/connector-fortnox@0.7.20
+  - @substrat-run/engine-invites@0.9.73
+  - @substrat-run/engine-protocol@0.13.81
+  - @substrat-run/adapter-cloudflare@0.196.0
+  - @substrat-run/control-plane-client@0.6.18
+  - @substrat-run/kernel@0.196.0
+  - @substrat-run/model-providers@0.5.86
+  - @substrat-run/vertical-host@0.196.0
+
 ## 0.49.13
 
 ### Patch Changes

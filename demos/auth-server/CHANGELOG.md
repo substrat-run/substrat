@@ -1,5 +1,17 @@
 # @substrat-run/demo-auth-server
 
+## 0.18.4
+
+### Patch Changes
+
+- 12933eb: An app can declare the issuer scopes its machine client needs, as `substrat.issuerScopes` in package.json (for example `["read:users", "users:provision"]`), and `substrat push` carries the declaration in the manifest. A sign-in scope or a malformed one is refused before upload. The team auth-server gains the two platform-gated routes that register, converge and remove one machine client per app, bounded by `MACHINE_SCOPES`. Nothing registers a client at install yet: the dashboard half follows.
+- Updated dependencies [12933eb]
+- Updated dependencies [8757b2c]
+- Updated dependencies [77ce7f0]
+  - @substrat-run/contracts@0.196.0
+  - @substrat-run/kernel@0.196.0
+  - @substrat-run/vertical-host@0.196.0
+
 ## 0.18.3
 
 ### Patch Changes

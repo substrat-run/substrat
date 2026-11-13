@@ -1,5 +1,17 @@
 # @substrat-run/control-plane-api
 
+## 0.196.0
+
+### Patch Changes
+
+- 2c64f1a: A seeded preview of a deployment that predates `/internal/seed-world` is `unseeded`, with a note naming the vertical-host to push with, instead of failing preview create with "the input did not parse".
+- Updated dependencies [12933eb]
+- Updated dependencies [8757b2c]
+- Updated dependencies [77ce7f0]
+  - @substrat-run/contracts@0.196.0
+  - @substrat-run/control-plane-client@0.6.18
+  - @substrat-run/kernel@0.196.0
+
 ## 0.195.0
 
 ### Minor Changes
