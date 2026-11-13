@@ -464,6 +464,31 @@ signed into by picking a persona. The builder studio's Run asks for one. Three p
 
 A version that names no world gets an `unseeded` preview: it is created, and nobody can sign in.
 
+### Who may fork production data (#3108)
+
+A fork binds code the caller chose onto a copy of every row, and that code reads all of it. So
+when the credential behind a create names a person (a tenant token minted for someone, as the
+dashboard's and the studio's are), the plane judges that person in the app's own scope before it
+copies anything: the person must be the owner of record, or hold every role the owner holds there.
+The roster is read from the deployment that holds the scope (`/internal/members`, as the members
+routes read it), and a deployment that cannot answer refuses the fork. A team role confers nothing
+here, and "admin" is not a platform concept: a vertical names its own roles, so the owner's set
+is the bar. A credential that names nobody (a CI push token, the CLI, staff) keeps the rule it
+had, because it can already push code onto the production scope itself.
+
+`GET /verticals/:slug/previews/fork-check` answers what a create would decide, without making
+one, with a `code` for a caller that words it itself: `not-installed`, `several-installs` or
+`not-owner`. The builder studio reads it to offer "Production data" beside the seeded Run. It
+forks under its own tag (`studio-data`), apart from the seeded `studio` slot, since a tag keeps
+the kind it began as. The studio makes the fork as the signed-in person: it asks the plane for a
+tenant token naming the login's principal in the team (`/internal/builder/identity-tenants`
+carries it), never with its own credential. The preview signs in through the app's real login
+(#1704).
+
+A team member whose access to the app is through an invite has a principal of their own there,
+not the one their team login maps to, so the plane cannot see that role from the studio and
+refuses them. Linking the two is a follow-up.
+
 ## 10. Open questions
 
 0. ~~Per-PR previews (composition of §2 × §9)~~ **Built + decided (2026-07-30, D-43).**

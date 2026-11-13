@@ -40,7 +40,16 @@ import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
 import { BUILD_ID_HEADER, interruptionOf, isBuildId, ulid } from './build-log.js';
 import { interruptedResponse, refuse, unhandledResponse } from './problem.js';
-import { readStudioPreview, releaseRevision, runStudioPreview, type ControlPlaneCall, type StudioProject } from './studio-preview.js';
+import {
+	personPlane,
+	readStudioDataPreview,
+	readStudioPreview,
+	releaseRevision,
+	runStudioDataPreview,
+	runStudioPreview,
+	type ControlPlaneCall,
+	type StudioProject,
+} from './studio-preview.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
 import { teamsFor, type Team } from './teams.js';
@@ -326,18 +335,43 @@ app.all('/api/*', async (c) => {
 		await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
 	// The control plane over the service binding: the `/api` prefix and the service credential,
 	// written once for every call this handler makes on the team's behalf.
-	const cp: ControlPlaneCall = (path, init) => {
+	const cpWith = (token: string): ControlPlaneCall => (path, init) => {
 		const cpHeaders = new Headers(init?.headers);
-		cpHeaders.set('x-service-token', c.env.CP_SERVICE_TOKEN ?? '');
+		cpHeaders.set('x-service-token', token);
 		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api${path}`, { ...init, headers: cpHeaders });
 	};
-	if (c.req.path === '/api/preview' && c.req.method === 'GET') {
-		// The registry read, not project-source: opening the tab must not boot the sandbox.
+	const cp = cpWith(c.env.CP_SERVICE_TOKEN ?? '');
+	// The plane as the signed-in person (#3108), for the calls it must judge as them: a fork of
+	// production data. A login linked to no principal in the team has nobody to be judged as.
+	const noPerson = `your login has no member record in team '${team.slug}', so production data cannot be copied for you`;
+	const asPerson = async (): Promise<ControlPlaneCall | null> =>
+		team.principal ? await personPlane(cp, cpWith, team.id, team.principal) : null;
+	// The registry read, not project-source: opening the tab must not boot the sandbox.
+	const currentProject = async (): Promise<StudioProject | Response | null> => {
 		const listed = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/projects', { headers }));
 		if (!listed.ok) return listed;
 		const { current, projects } = await listed.json() as { current: string; projects: Array<StudioProject & { id: string }> };
-		const project = projects.find((p) => p.id === current);
+		return projects.find((p) => p.id === current) ?? null;
+	};
+	if (c.req.path === '/api/preview' && c.req.method === 'GET') {
+		const project = await currentProject();
+		if (project instanceof Response) return project;
 		return project ? readStudioPreview(cp, project, new Date()) : c.json({ state: 'none' });
+	}
+	if (c.req.path === '/api/preview/data' && c.req.method === 'GET') {
+		const project = await currentProject();
+		if (project instanceof Response) return project;
+		if (!project) return c.json({ state: 'none', fork: { ok: false, reason: 'no project open' } });
+		const person = await asPerson();
+		return person ? readStudioDataPreview(person, project, new Date()) : c.json({ state: 'none', fork: { ok: false, reason: noPerson } });
+	}
+	if (c.req.path === '/api/preview/data' && c.req.method === 'POST') {
+		const person = await asPerson();
+		if (!person) return refuse(403, noPerson);
+		const projectResponse = await projectSource();
+		if (!projectResponse.ok) return projectResponse;
+		const project = await projectResponse.json() as StudioProject;
+		return runStudioDataPreview(cp, person, project, team.id, `0.0.0-studio.${ulid().toLowerCase()}`);
 	}
 	if (c.req.path === '/api/preview' && c.req.method === 'POST') {
 		const projectResponse = await projectSource();

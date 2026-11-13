@@ -1,4 +1,4 @@
-import { slug, tenantId, z } from '@substrat-run/contracts';
+import { principalId, slug, tenantId, z } from '@substrat-run/contracts';
 
 /**
  * A tenant a login builds for, as the control plane's studio membership read states it
@@ -18,6 +18,12 @@ export const identityTenant = z.object({
   name: z.string().min(1),
   /** Whether the tenant holds the `builder` entitlement (the control plane applies expiry at read). */
   entitled: z.boolean(),
+  /**
+   * The login's principal in this tenant (#3108): the person a studio names when it asks for a
+   * tenant token, so the plane judges a fork of production data as them. Absent from a plane that
+   * predates it, and for a login the directory links to no principal there.
+   */
+  principal: principalId.optional(),
 });
 
 /** The `/internal/builder/identity-tenants` response body. */

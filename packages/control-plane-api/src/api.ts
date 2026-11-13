@@ -172,6 +172,7 @@ import type {
   ScopeDump,
   ScopeId,
   ScopeLineage,
+  ScopeMember,
   ScopeTable,
   ServiceDimensions,
   SwitchedOffInUnit,
@@ -1825,6 +1826,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote-impact$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
+  // #3108: whether a fork would be admitted, and why not — read before offering one.
+  { method: 'GET', re: /\/verticals\/[^/]+\/previews\/fork-check$/, pin: 'owner' },
   { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/, pin: 'owner' },
   { method: 'POST', re: /\/hostnames\/[^/]+\/verify$/, pin: 'owner' },
   { method: 'PATCH', re: /\/hostnames\/[^/]+\/status$/, pin: 'owner' },
@@ -12786,6 +12789,76 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return { tenantId: v.ownerTenant, slug };
   };
 
+  /** Why a fork-check says no, for a caller that words it itself. */
+  type ForkRefusalCode = 'not-installed' | 'several-installs' | 'not-owner';
+
+  /** The production scope a fork copies: the one named, or the only one there is. */
+  const forkSource = async (
+    c: Context<{ Variables: Vars }>,
+    tenantId: TenantId,
+    slug: string,
+    sourceScopeId: ScopeId | undefined,
+  ): Promise<{ source: Scope } | { refused: ErrorCode; code: ForkRefusalCode; error: string; carried?: Record<string, unknown> }> => {
+    const owned = (
+      await c.var.admin.listScopes(c.get('actor'), { tenantId, vertical: slug, status: ['active'] })
+    ).filter((s) => !s.forkedFrom && s.kind !== 'preview');
+    const source = sourceScopeId
+      ? owned.find((s) => s.id === sourceScopeId)
+      : owned.length === 1
+        ? owned[0]
+        : undefined;
+    if (source) return { source };
+    if (sourceScopeId) return { refused: 'not_found', code: 'not-installed', error: `no active prod scope ${sourceScopeId} for '${slug}'` };
+    if (owned.length === 0) {
+      return { refused: 'conflict', code: 'not-installed', error: `no prod scope to fork for '${slug}' — provision one first, or pass empty:true for a clean-room preview` };
+    }
+    return {
+      refused: 'conflict', code: 'several-installs',
+      error: `'${slug}' has several prod scopes — pass sourceScopeId`, carried: { scopes: owned.map((s) => s.id) },
+    };
+  };
+
+  /**
+   * Whether the person a credential names may fork `source`'s data into a preview (#3108), or the
+   * sentence that says why not. A fork binds code the caller chose onto a copy of every row, and
+   * that code reads all of it, so the bar is the app's own owner: the owner of record, or a
+   * principal holding every role the owner holds IN THAT SCOPE. A team role confers nothing here,
+   * as on the members routes; the plane asks the deployment that holds the scope.
+   *
+   * A credential naming nobody (a CI push token, the CLI, staff) keeps the rule it had: it can
+   * already push code onto the production scope itself, so a fork reaches nothing more.
+   */
+  const forkRefusal = async (c: Context<{ Variables: Vars }>, source: Scope): Promise<string | null> => {
+    const person = memberPerson(c.get('principal'));
+    if (!person) return null;
+    const vertical = await verticalForScope(c, source);
+    if (!vertical) return `cannot ask '${source.vertical}' who owns ${source.id}, so its data is not copied`;
+    let members: ScopeMember[];
+    try {
+      members = (await vertical.listMembers(source.tenantId, source.id)).members;
+    } catch (e) {
+      if (!(e instanceof ControlPlaneError)) throw e;
+      return `cannot read who owns ${source.id} (${e.message}), so its data is not copied`;
+    }
+    const owner = members.find((m) => m.owner);
+    const me = members.find((m) => m.principal === person);
+    if (me?.owner) return null;
+    if (me && owner && owner.roles.length > 0 && owner.roles.every((r) => me.roles.includes(r))) return null;
+    return `copying ${source.id}'s data takes its owner, or every role its owner holds there`;
+  };
+
+  // What a create with this body would decide about a fork, without making one — so a studio can
+  // offer "Preview with production data" only where it would work, and say why where it would not.
+  app.get('/verticals/:slug/previews/fork-check', async (c) => {
+    const gate = await previewVertical(c);
+    if ('error' in gate) return refuse(c, gate.refused, gate.error);
+    const requested = c.req.query('sourceScopeId');
+    const picked = await forkSource(c, gate.tenantId, gate.slug, requested ? scopeIdSchema.parse(requested) : undefined);
+    if ('refused' in picked) return c.json({ ok: false, code: picked.code, reason: picked.error });
+    const denied = await forkRefusal(c, picked.source);
+    return c.json(denied ? { ok: false, code: 'not-owner', reason: denied } : { ok: true, sourceScopeId: picked.source.id });
+  });
+
   app.post('/verticals/:slug/previews', async (c) => {
     const gate = await previewVertical(c);
     if ('error' in gate) return refuse(c, gate.refused, gate.error);
@@ -12806,23 +12879,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Everything else forks the tenant's own active, non-fork scope for this vertical.
     let source: Scope | null = null;
     if (!body.empty) {
-      const owned = (
-        await c.var.admin.listScopes(actor, { tenantId, vertical: slug, status: ['active'] })
-      ).filter((s) => !s.forkedFrom && s.kind !== 'preview');
-      source = body.sourceScopeId
-        ? (owned.find((s) => s.id === body.sourceScopeId) ?? null)
-        : owned.length === 1
-          ? (owned[0] ?? null)
-          : null;
-      if (!source) {
-        if (body.sourceScopeId) {
-          return refuse(c, 'not_found', `no active prod scope ${body.sourceScopeId} for '${slug}'`);
-        }
-        if (owned.length === 0) {
-          return refuse(c, 'conflict', `no prod scope to fork for '${slug}' — provision one first, or pass empty:true for a clean-room preview`);
-        }
-        return refuse(c, 'conflict', `'${slug}' has several prod scopes — pass sourceScopeId`, { scopes: owned.map((s) => s.id) });
-      }
+      const picked = await forkSource(c, tenantId, slug, body.sourceScopeId);
+      if ('refused' in picked) return refuse(c, picked.refused, picked.error, picked.carried);
+      source = picked.source;
+      const denied = await forkRefusal(c, source);
+      if (denied) return refuse(c, 'forbidden', denied);
     }
     try {
       const out = await orchestratedPreview(c, tenantId, slug, source, body);
