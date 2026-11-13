@@ -1,5 +1,11 @@
 # @substrat-run/demo-todo-app
 
+## 0.1.17
+
+### Patch Changes
+
+- @substrat-run/elements@0.8.2
+
 ## 0.1.16
 
 ### Patch Changes
