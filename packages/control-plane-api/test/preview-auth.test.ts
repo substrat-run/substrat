@@ -17,6 +17,7 @@ import {
   scopeId,
   tenantId,
   type PreviewAuth,
+  type SeededPersona,
   type ScopeDumpTable,
   type ScopeId,
   type TenantId,
@@ -34,6 +35,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
 } from '../src/index.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
  * A preview's own login, over HTTP (#1704).
@@ -237,6 +239,9 @@ class AppDeployments {
   /** Awaited inside a delivery, after it landed. */
   duringDelivery: ((version: string) => Promise<void>) | null = null;
   readonly clients = new Map<string, VerticalClient>();
+  /** #3108: the sample world each version declares; null, none. */
+  world: SeededPersona[] | null = [{ sub: 'dev|anna', name: 'Anna', email: 'anna@example.test', role: 'admin' }];
+  readonly seeds: Array<{ version: string; scopeId: string; build: boolean }> = [];
 
   client(version: string): VerticalClient {
     const existing = this.clients.get(version);
@@ -256,6 +261,11 @@ class AppDeployments {
         store.set(input.scopeId, cfg);
         this.deliveries.push({ version, scopeId: input.scopeId, keys: input.entries.map((e) => e.key) });
         if (this.duringDelivery) await this.duringDelivery(version);
+      },
+      seedWorld: async (input: { scopeId: string; build: boolean }) => {
+        this.seeds.push({ version, scopeId: input.scopeId, build: input.build });
+        if (!this.world) throw new ControlPlaneError(501, 'this deployment declares no sample world');
+        return this.world;
       },
       readPreviewConfig: async (input: { scopeId: string; keys: string[] }) => {
         const config = this.stores.get(version)?.get(input.scopeId) ?? {};
@@ -1480,5 +1490,47 @@ describe('only whoever may create the preview triggers any of it (#1704)', () =>
       expect([403, 404]).toContain(res.status);
     }
     expect(issuers.calls).toEqual([]);
+  });
+});
+
+// #3108: a seeded preview signs in at the control plane's persona issuer, with the sample world
+// the version seats. The issuer is faked as the seam preview create reaches it.
+describe('a seeded preview (#3108)', () => {
+  const minted: string[] = [];
+  const personaIssuer = {
+    client: async ({ previewScopeId }: { previewScopeId: string }) => {
+      minted.push(previewScopeId);
+      return { issuer: `https://cp.test/persona/${previewScopeId}`, clientId: previewScopeId, clientSecret: `secret-of-${previewScopeId}` };
+    },
+  };
+
+  it('seats the world, builds it only on create, and delivers the persona issuer into each push', async () => {
+    app = api({ personaIssuer });
+    const first = await created({ tag: 'studio', versionId: versions[1], empty: true, seed: true });
+    expect(first.auth).toMatchObject({ status: 'personas', issuer: `https://cp.test/persona/${first.scopeId}` });
+    expect(first.auth.note).toContain('Anna');
+    const again = await created({ tag: 'studio', versionId: versions[2], empty: true, seed: true });
+    expect(again.reused).toBe(true);
+    expect(deployments.seeds).toEqual([
+      { version: versions[1], scopeId: first.scopeId, build: true },
+      { version: versions[2], scopeId: first.scopeId, build: false },
+    ]);
+    for (const v of [versions[1]!, versions[2]!]) {
+      expect(deployments.auth(v, first.scopeId)).toEqual({
+        mode: 'oidc', issuer: `https://cp.test/persona/${first.scopeId}`, clientId: first.scopeId, clientSecret: `secret-of-${first.scopeId}`,
+      });
+    }
+    expect(issuers.calls).toEqual([]);
+  });
+
+  it('a version with no sample world is "unseeded", with no login delivered; seed needs a clean room and an issuer', async () => {
+    app = api({ personaIssuer });
+    deployments.world = null;
+    const out = await created({ tag: 'studio', versionId: versions[1], empty: true, seed: true });
+    expect(out.auth.status).toBe('unseeded');
+    expect(deployments.auth(versions[1]!, out.scopeId)).toBeUndefined();
+    expect((await create({ tag: 'pr-8', versionId: versions[1], seed: true })).status).toBe(400);
+    app = api();
+    expect((await create({ tag: 'pr-9', versionId: versions[1], empty: true, seed: true })).status).toBe(503);
   });
 });

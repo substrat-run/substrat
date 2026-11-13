@@ -438,6 +438,32 @@ registering the preview callback and a distinct client at that issuer is a manua
 step; this alone does not deliver the client to the preview. Build automatic external-issuer
 registration, delivery, and reaping when a real external-issuer vertical needs previews.
 
+### Seeded previews and persona sign-in (#3108)
+
+A clean-room preview created with `seed: true` holds the version's own sample world and is
+signed into by picking a persona. The builder studio's Run asks for one. Three parts:
+
+- **The world** is the vertical's `src/world.ts` (`SeedWorld`: personas with their roles, and a
+  `build` that makes the records through operations), named in the worker with
+  `workerDoor({ world })`. The local seed runs the same world through `seatWorld`.
+- **Seating** is `/internal/seed-world` on the version's deployment. It refuses any scope that
+  is not a clean-room copy, read from the scope's own storage (`CLEAN_ROOM_COPY_SQL`: classified
+  a copy, loaded from no other scope; a fork names its source and a carry keeps the row). Each
+  persona is linked in the tenant's identity directory as a principal derived from the scope and
+  its `sub` (`personaPrincipal`), because every push binds a new script whose directory starts
+  empty while the data is carried. The records are built once: on create, or on a reused scope
+  where none of the world's role holders holds a role yet. A persona marked `invited` is offered
+  but not seated; it gets in by a member invite naming its address.
+- **Sign-in** is the control plane's persona issuer, one OIDC issuer per preview at
+  `<control plane>/persona/<preview scope id>`. The preview is delivered a plain `substrat:auth`
+  pointing at it. The picker answers only a person signed in to Substrat who is on the
+  preview's team. The client secret is derived from the preview's id under a key the issuer's
+  Durable Object holds, so every push delivers the same secret. A code is single-use and bound to
+  the PKCE challenge. The token endpoint refuses once the preview is no longer an active clean
+  room. Each persona sign-in is logged with the person who made it.
+
+A version that names no world gets an `unseeded` preview: it is created, and nobody can sign in.
+
 ## 10. Open questions
 
 0. ~~Per-PR previews (composition of §2 × §9)~~ **Built + decided (2026-07-30, D-43).**

@@ -13,6 +13,11 @@
  * permission. A tag's reuse keeps the scope it has, so every Run after the first rebinds
  * the same URL and refreshes its TTL.
  *
+ * And SEEDED (`seed: true`, #3108): the project's sample world (`src/world.ts`) is seated in the
+ * slot, and anyone on the team signs in by picking one of its people, as they do locally. A
+ * project whose worker names no world gets a slot nobody can sign in to, and the plane's note
+ * says so.
+ *
  * Not a PR either: a per-PR preview is a GitHub Actions flow and exists only for GitHub
  * projects. That stays the separate "Create preview PR" step.
  */
@@ -92,7 +97,7 @@ export async function runStudioPreview(
 	const created = await cp(`/verticals/${encodeURIComponent(project.slug)}/previews`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ tag: STUDIO_PREVIEW_TAG, versionId, empty: true }),
+		body: JSON.stringify({ tag: STUDIO_PREVIEW_TAG, versionId, empty: true, seed: true }),
 	});
 	if (!created.ok) return created;
 	const ready = createdPreview.parse(await created.json());

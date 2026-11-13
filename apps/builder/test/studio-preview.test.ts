@@ -25,12 +25,12 @@ const previews = '/verticals/acme%2Ftodo/previews';
 const ready = { url: 'https://todo--studio.acme.substrat.run', scopeId: 'scp_1', versionId: 'ver_1', reused: false, auth: { status: 'unregistered', note: 'no login yet' } };
 
 describe('runStudioPreview', () => {
-	it('releases the revision pinned to the team, then binds it to the studio tag as a clean-room slot', async () => {
+	it('releases the revision pinned to the team, then binds it to the studio tag as a seeded clean-room slot', async () => {
 		const { cp, calls } = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } }, [previews]: { status: 201, body: ready } });
 		const res = await runStudioPreview(cp, project, 'ten_a', '0.0.0-studio.x');
 		expect(calls).toEqual([
 			{ path: deploy, method: 'POST', body: { version: '0.0.0-studio.x', revision: project.revision, tenant: 'ten_a' } },
-			{ path: previews, method: 'POST', body: { tag: STUDIO_PREVIEW_TAG, versionId: 'ver_1', empty: true } },
+			{ path: previews, method: 'POST', body: { tag: STUDIO_PREVIEW_TAG, versionId: 'ver_1', empty: true, seed: true } },
 		]);
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ state: 'ready', url: ready.url, versionId: 'ver_1', reused: false, authNote: 'no login yet' });

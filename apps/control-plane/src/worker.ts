@@ -26,6 +26,7 @@ import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv, type RelayScopeLoo
 import { sendAsTenant, TenantMailRefusal } from './tenant-mail.js';
 import {
   parsePlatformBaseDomains,
+  personaIssuerUrl,
   platformActorId,
   tenantId,
   scopeId,
@@ -93,6 +94,7 @@ import {
   defineCopyJobDO,
 } from '@substrat-run/adapter-cloudflare';
 import {
+  type PersonaIssuerSeam,
   createControlPlaneApi,
   sweepScopeScriptCopies,
   assertNoUnreachableScopeCopies,
@@ -227,7 +229,8 @@ import { fileNotHeld, undrainedOrNotHeld } from './event-drain-not-held.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
-import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
+import { builderTenantsFor, studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
+import { mountPersonaIssuer, PersonaIssuerDO } from './persona-issuer.js';
 import { dispatchNamespaceOf } from './dispatch-namespace.js';
 import { saasRoutingTargetOf } from './saas-routing-target.js';
 import {
@@ -333,6 +336,7 @@ export async function kickCrossVertical(
 }
 export { ControlPlaneDO };
 export { ObservabilityCacheDO };
+export { PersonaIssuerDO };
 export { ReviewJobDO };
 export { RelayGateway } from './relay-gateway.js';
 
@@ -524,6 +528,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * Absent, every aggregate read counts its span live (and a long window can time out).
    */
   OBS_CACHE?: DurableObjectNamespace<ObservabilityCacheDO>;
+  /**
+   * #3108: the persona issuer a seeded preview signs in through — one object holding its key,
+   * the previews' clients and the codes in flight. Absent, a create asking for `seed` answers 501.
+   */
+  PERSONA_ISSUER?: DurableObjectNamespace<PersonaIssuerDO>;
   /**
    * #2450 step 2: where a preview's copy runs when it outlasts the request that started it, one
    * object per job. Absent, every copy runs inside its request, as before.
@@ -1174,8 +1183,35 @@ function servingConnectorDeclaration(env: Env, actor: PlatformActorId): Vertical
     resolveVerticalConnectorTarget(verticalConnectorReadsOf(hostFor(env), actor), { tenantId, vertical, scopeId: null, provider });
 }
 
+/** The persona issuer's one object (#3108). */
+const personaIssuerOf = (env: Env) => env.PERSONA_ISSUER!.get(env.PERSONA_ISSUER!.idFromName('persona-issuer'));
+
+/**
+ * The seeded preview a persona issuer request names, when it is one: an ACTIVE clean-room
+ * preview (#3108). A fork, an install, or a preview gone or replaced is nothing the issuer serves.
+ */
+async function seededPreview(env: Env, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | null> {
+  const record = await hostFor(env).admin.getScopeRecord(PERSONA_ISSUER_ACTOR, tenantId, scopeId);
+  return record && record.kind === 'preview' && record.status === 'active' && !record.forkedFrom ? record : null;
+}
+
+/** The seam preview create mints a seeded preview's client through (#3108), when the issuer is deployed. */
+function personaIssuerSeam(env: Env): PersonaIssuerSeam | undefined {
+  const origin = env.PLATFORM_CP_URL;
+  if (!env.PERSONA_ISSUER || !origin) return undefined;
+  return {
+    client: async ({ tenantId, previewScopeId, redirectUri }) => ({
+      issuer: personaIssuerUrl(origin, previewScopeId),
+      clientId: previewScopeId,
+      clientSecret: await personaIssuerOf(env).register(previewScopeId, tenantId, redirectUri),
+    }),
+  };
+}
+
 // The actor a connected vertical acts as when it registers (a service, not staff).
 const SERVICE_ACTOR = platformActorId.parse('01JZ00000000000000000000SV');
+// The actor the persona issuer reads the directory as (#3108): a preview's record, its version.
+const PERSONA_ISSUER_ACTOR = platformActorId.parse('01JZ00000000000000000000PN');
 // The actor the scheduled sweep runs as (a machine pass, not staff): its directory
 // reads land in the access log and its reaps in the admin log under this id.
 const SWEEP_ACTOR = platformActorId.parse('01JZ00000000000000000000SW');
@@ -3065,6 +3101,26 @@ export default {
     // the same signed session as a bearer. Also before the /api router.
     mountCliAuthRoutes(app);
 
+    // #3108: the persona issuer a seeded preview signs in through, at /persona/<preview scope>.
+    // Outside /api: a preview's deployment discovers and exchanges here, and a person picks here
+    // once signed in to Substrat, so each route decides whom it answers itself.
+    if (env.PERSONA_ISSUER) {
+      mountPersonaIssuer(app, {
+        stub: personaIssuerOf,
+        origin: (e) => e.PLATFORM_CP_URL,
+        oidc: (e) => e,
+        session: (e, headers) => sessionFromHeaders(e, headers),
+        isMember: async (e, user, tenantId) => (await builderTenantsFor(hostFor(e), user)).some((t) => t.id === tenantId),
+        active: async (e, tenantId, scopeId) => (await seededPreview(e, tenantId, scopeId)) !== null,
+        personas: async (e, tenantId, scopeId) => {
+          const preview = await seededPreview(e, tenantId, scopeId);
+          if (!preview?.vertical || !preview.verticalVersionId) return null;
+          const client = await resolveVerticalVersionFor(e)?.(preview.vertical, preview.verticalVersionId, PERSONA_ISSUER_ACTOR);
+          return client ? await client.personas({ tenantId, scopeId }) : null;
+        },
+      });
+    }
+
     // Who is signed in — the console SPA polls this (null when there is no session).
     // Authentication only, so deliberately NOT the staff reader: an address the issuer did
     // not verify is still signed in, and the console hands a null straight back to the
@@ -3658,6 +3714,8 @@ export default {
         crossVertical: crossVerticalFor(env, apiHost),
         // #1054: the platform's margin over list for model usage it provides. Whole percent.
         ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
+        // #3108: a seeded preview's login, at this control plane's own persona issuer.
+        ...(personaIssuerSeam(env) ? { personaIssuer: personaIssuerSeam(env) } : {}),
         // #971: the CLI freshness nudge. Deployment vars, passed through only when set so
         // an unconfigured deployment emits no header and the CLI reads nothing.
         ...(env.CLI_MIN_VERSION || env.CLI_LATEST_VERSION

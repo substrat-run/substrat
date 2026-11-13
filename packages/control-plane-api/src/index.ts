@@ -95,6 +95,7 @@ export { hostedCrossVerticalReach } from './cross-vertical.js';
 // A preview's own sign-in client (#1704): the create's wiring, and the reap's half the
 // platform sweep also runs when it garbage-collects an expired preview.
 export { retireAllPreviewClients, retireClientsOfReapedScope, tenantIssuers, wirePreviewAuth } from './preview-auth.js';
+export type { PersonaIssuerSeam } from './persona-issuer.js';
 export type { PreviewAuthDeps, WirePreviewAuthInput } from './preview-auth.js';
 export type { ScopeDeployment, ScopeDeploymentLadder, ScopeDeploymentVia } from './scope-deployment.js';
 export {
