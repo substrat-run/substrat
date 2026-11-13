@@ -159,7 +159,8 @@ interface R2BucketLike {
     value: Uint8Array | ArrayBuffer | ReadableStream,
     options?: { httpMetadata?: { contentType?: string } },
   ): Promise<unknown>;
-  get(key: string): Promise<{
+  /** With `range`, `body` is the slice and `size` is still the whole object's (#3139). */
+  get(key: string, options?: { range?: { offset: number; length: number } }): Promise<{
     arrayBuffer(): Promise<ArrayBuffer>;
     /** The object's bytes, read from R2 as the stream is read. */
     body: ReadableStream<Uint8Array>;
@@ -198,6 +199,13 @@ export function r2TenantBlobStore(bucket: unknown): TenantBlobStore {
     // #2514: the object's own body stream, with the size R2 holds for it, so an open reads it as it goes.
     getStream: async (key) => {
       const obj = await r2.get(key);
+      if (!obj) return null;
+      const contentType = obj.httpMetadata?.contentType;
+      return { stream: obj.body, size: obj.size, ...(contentType !== undefined ? { contentType } : {}) };
+    },
+    // #3139: R2 reads the slice itself, so a seek costs the bytes it asks for.
+    getRangeStream: async (key, range) => {
+      const obj = await r2.get(key, { range });
       if (!obj) return null;
       const contentType = obj.httpMetadata?.contentType;
       return { stream: obj.body, size: obj.size, ...(contentType !== undefined ? { contentType } : {}) };

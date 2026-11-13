@@ -20,11 +20,54 @@ the read key. Both are checked **on the owning entity**, so an entity-narrowed g
 exactly as it does for `ctx.check`.
 
 The attachment surface is on the host, not on `ctx`: `host.attachments(principal, tenantId,
-scopeId)` returns `upload`, `list`, `open`, `remove` and `search`. **The platform ships no
+scopeId)` returns `upload`, `list`, `open`, `openStream`, `remove` and `search`. **The platform ships no
 upload route.** A vertical mounts its own, calls `upload` with the bytes, and decides what the
 platform does not: the size cap, which file types it accepts, any scanning. The kernel itself
 checks the write key and records the file. For a link share's read-only door, see
 [Permissions](./permissions.md#files-through-a-link).
+
+## Serving files from a deployed worker
+
+A deployed worker reaches files through its door, as it reaches operations, so a route never names
+whose files it reads. `door.attachments(c)` is the signed-in person's file surface, minted from the
+session as `door.scope(c)` is, and a 401 for nobody. Name `attachments` and the door serves and
+removes a file itself:
+
+```ts
+const door = workerDoor<Env>({ directory, nodeFor, hostFor, envSpec, attachments: true });
+```
+
+| Route | Answer |
+|---|---|
+| `GET /api/attachments/:attachmentId` | 200 with the file, or 206 with the byte range asked for |
+| `DELETE /api/attachments/:attachmentId` | 204 |
+
+Each runs as the signed-in person, so a read is gated by the target's `readPermission` and a
+removal by its `writePermission`, on the entity the file hangs on. An id the person cannot read is
+the same 404 as an id that does not exist.
+
+The file is streamed from the blob store as the response is written, never held whole. A `Range`
+header naming one byte range is answered with a 206 and only those bytes are read from the store,
+so an `<audio>` or `<video>` element pointed at the route plays and seeks; a range with no byte in
+the file is a 416. The `ETag` is the file's SHA-256, which never changes under an id. A ranged read
+holds the slice to the recorded size but cannot check the SHA-256, which needs every byte; a whole
+read checks both. The response is always a download (`Content-Disposition: attachment`) and carries
+the headers in the warning below, which a media or image element ignores, so the same URL plays in
+the page and saves when opened directly.
+
+A route of your own answers the same way through `serveAttachment` from
+`@substrat-run/vertical-host`:
+
+```ts
+app.get('/api/recordings/:id', async (c) => {
+  hardenFileResponse(c);
+  try {
+    return await serveAttachment(c, await door.attachments(c), c.req.param('id'));
+  } catch (err) {
+    return problemResponse(c, err);
+  }
+});
+```
 
 That leaves one gap. An [MCP](./mcp.md) client calling an operation has no cookie and often no
 bearer for the vertical's own route, and a file of any real size cannot go through a tool call
@@ -239,8 +282,8 @@ uploadLinks: { maxBytes: 2 * 1024 * 1024, contentTypes: ['image/*', 'image/svg+x
 ::: warning Serve stored files as downloads, whatever the allowlist
 Any route of yours that serves an attachment should answer with all three of
 `X-Content-Type-Options: nosniff`, `Content-Disposition: attachment` and a sandboxing
-`Content-Security-Policy` (`default-src 'none'; sandbox`), as the platform's link-share download
-does, so a stored file is never run as your origin. The active-type rule is a second line, not the
+`Content-Security-Policy` (`default-src 'none'; sandbox`), as the platform's file routes do
+(`hardenFileResponse` sets them), so a stored file is never run as your origin. The active-type rule is a second line, not the
 first: leaving `contentTypes` out admits every well-formed type, active ones included, and an
 exact entry admits the type it names. The rule was checked against Chrome and WebKit; Firefox was
 not covered.

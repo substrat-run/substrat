@@ -722,6 +722,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2430: the refusal both adapters' reconcile of declared entity-grant shapes answers.
   'reservedShapeRefusal',
   'resolveAttachmentTextBounds',
+  // #3139: a range read's span, resolved once for both adapters and the routes that serve it.
+  'resolveByteRange',
   'resolveCapabilitySession',
   'resolvePeerInstanceFrom',
   'resolveRetryPolicy',

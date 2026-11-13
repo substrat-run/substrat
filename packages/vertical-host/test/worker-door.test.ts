@@ -5,10 +5,18 @@
  * is admitted by that verified address, and a member invite is made and withdrawn here — the
  * platform's half first, the vertical's operation as the caller, and the one unwound by the other.
  */
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { capabilityId, principalId, scopeId, tenantId, type Coverage, type PermissionKey } from '@substrat-run/contracts';
-import { mintCapabilitySecret, ulid } from '@substrat-run/kernel';
+import { capabilityId, principalId, scopeId, tenantId, type AttachmentRecord, type Coverage, type PermissionKey } from '@substrat-run/contracts';
+import {
+  bytesStream,
+  mintCapabilitySecret,
+  openAttachmentByteStream,
+  ulid,
+  type ByteRangeSpec,
+  type TenantBlobStore,
+} from '@substrat-run/kernel';
 import { HTTPException } from 'hono/http-exception';
 import type { AuthSubject } from '@substrat-run/vertical-auth/provider';
 
@@ -445,5 +453,133 @@ describe('workerDoor — a seeded preview (#3108)', () => {
     expect([...d.links.keys()]).toEqual(['dev|anna']);
     expect(d.host.assignScopeRole).toHaveBeenCalledWith(node.scopeId, anna, 'admin', 'person');
     expect(world.build).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the door's files (#3139)", () => {
+  const BYTES = Uint8Array.from({ length: 10 }, (_, i) => i);
+  const record = {
+    id: 'att-1',
+    entity: { entityType: 'item', entityId: 'i1' },
+    filename: 'clip.mp3',
+    contentType: 'audio/mpeg',
+    visibility: 'internal',
+    createdBy: String(ann),
+    createdAt: '2026-11-13T00:00:00.000Z',
+    size: BYTES.byteLength,
+    sha256: createHash('sha256').update(BYTES).digest('hex'),
+  } as AttachmentRecord;
+  const store: TenantBlobStore = {
+    put: async () => {},
+    get: async () => null,
+    getStream: async () => ({ stream: bytesStream(BYTES).stream, size: BYTES.byteLength }),
+    getRangeStream: async (_key, { offset, length }) => ({
+      stream: bytesStream(BYTES.slice(offset, offset + length)).stream,
+      size: BYTES.byteLength,
+    }),
+    delete: async () => {},
+    list: async () => [],
+  };
+  const sha256 = () => {
+    const hash = createHash('sha256');
+    return { update: (chunk: Uint8Array) => void hash.update(chunk), hex: async () => hash.digest('hex') };
+  };
+
+  /** A door with `attachments: true` over one file, `att-1`; the host verb is recorded. */
+  function fileDoor(mount = true) {
+    const files = {
+      openStream: vi.fn(async (id: string, options?: { range?: ByteRangeSpec }) =>
+        id === record.id ? openAttachmentByteStream(store, 'k', record, sha256, options?.range) : null,
+      ),
+      remove: vi.fn(async (id: string) => (id === record.id ? record : null)),
+    };
+    const attachments = vi.fn(async () => files);
+    const built = workerDoor<object>({
+      directory: () => ({ resolvePrincipal: async () => ann, openInviteFor: async () => null }) as never,
+      nodeFor: () => node,
+      hostFor: () => ({ getScope: async () => ({}), grantSelfShapesLocal: async () => [], attachments }) as never,
+      envSpec: [],
+      ...(mount ? { attachments: true as const } : {}),
+    });
+    const app = new Hono<{ Bindings: object }>();
+    built.mount(app);
+    const send = (method: string, headers: Record<string, string> = {}, id = record.id) =>
+      app.request(`/api/attachments/${id}`, { method, headers });
+    return { send, attachments, files };
+  }
+
+  it('serves the file as the person the session names, streamed and hardened', async () => {
+    subject = signedIn();
+    const { send, attachments } = fileDoor();
+    const res = await send('GET');
+    expect(res.status).toBe(200);
+    expect(attachments).toHaveBeenCalledWith(ann, node.tenantId, node.scopeId);
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([...BYTES]);
+    expect(Object.fromEntries(res.headers)).toMatchObject({
+      'content-type': 'audio/mpeg',
+      'content-length': '10',
+      'content-disposition': expect.stringMatching(/^attachment; filename="clip\.mp3"/),
+      'accept-ranges': 'bytes',
+      etag: `"${record.sha256}"`,
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'cache-control': 'private, no-store',
+    });
+  });
+
+  it.each([
+    ['a range', { Range: 'bytes=2-4' }, 206, 'bytes 2-4/10', [2, 3, 4]],
+    ['a suffix', { Range: 'bytes=-3' }, 206, 'bytes 7-9/10', [7, 8, 9]],
+    ['the whole file as a range, as a media element asks first', { Range: 'bytes=0-' }, 206, 'bytes 0-9/10', [...BYTES]],
+    ['an If-Range naming another file', { Range: 'bytes=2-4', 'If-Range': `"${'0'.repeat(64)}"` }, 200, null, [...BYTES]],
+    ['an If-Range that is a date', { Range: 'bytes=2-4', 'If-Range': 'Fri, 13 Nov 2026 00:00:00 GMT' }, 200, null, [...BYTES]],
+    ['several ranges', { Range: 'bytes=0-1,4-5' }, 200, null, [...BYTES]],
+  ])('answers %s', async (_label, headers, status, contentRange, body) => {
+    subject = signedIn();
+    const res = await fileDoor().send('GET', headers);
+    expect(res.status).toBe(status);
+    expect(res.headers.get('content-range')).toBe(contentRange);
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual(body);
+  });
+
+  it('answers a range with no byte in the file with a 416 problem naming the size', async () => {
+    subject = signedIn();
+    const res = await fileDoor().send('GET', { Range: 'bytes=10-' });
+    expect(res.status).toBe(416);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(res.headers.get('content-range')).toBe('bytes */10');
+  });
+
+  it('answers a HEAD with the headers and no body', async () => {
+    subject = signedIn();
+    const res = await fileDoor().send('HEAD');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBe('10');
+    expect(await res.text()).toBe('');
+  });
+
+  it('removes the file as that person, and 404s an id it does not open, hardened all the same', async () => {
+    subject = signedIn();
+    const { send, files } = fileDoor();
+    expect((await send('DELETE')).status).toBe(204);
+    expect(files.remove).toHaveBeenCalledWith(record.id);
+    expect((await send('DELETE', {}, 'nope')).status).toBe(404);
+    const missing = await send('GET', {}, 'nope');
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('answers 401 for nobody, and mints no file surface', async () => {
+    subject = null;
+    const { send, attachments } = fileDoor();
+    expect((await send('GET')).status).toBe(401);
+    expect(attachments).not.toHaveBeenCalled();
+  });
+
+  it('mounts no file route unless the worker names `attachments`', async () => {
+    subject = signedIn();
+    const { send, attachments } = fileDoor(false);
+    expect((await send('GET')).status).toBe(404);
+    expect(attachments).not.toHaveBeenCalled();
   });
 });

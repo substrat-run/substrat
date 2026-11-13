@@ -203,7 +203,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { ByteBody } from './byte-stream.js';
-import type { BlobStoreProvisionInput, BlobStoreRecord, OpenedAttachment, OpenedAttachmentStream } from './attachment-bytes.js';
+import type { AttachmentOpenOptions, BlobStoreProvisionInput, BlobStoreRecord, OpenedAttachment, OpenedAttachmentStream } from './attachment-bytes.js';
 import type {
   ConnectorOptions,
   ExecutorDeadLetter,
@@ -5033,8 +5033,11 @@ export interface ScopeAttachments {
    * `open`, with the bytes as a stream that is never held whole (#2514). The same gate, checked
    * before the store is touched, and the same `null`; the integrity check moves to the stream (see
    * {@link OpenedAttachmentStream}).
+   *
+   * With `options.range` (#3139), only those bytes: the gate is the same, and the answer's `range`
+   * says what was served (`openAttachmentByteStream` says how a slice is held to the record).
    */
-  openStream(attachmentId: string): Promise<OpenedAttachmentStream | null>;
+  openStream(attachmentId: string, options?: AttachmentOpenOptions): Promise<OpenedAttachmentStream | null>;
   /** Delete row (and event) first, then bytes; returns the removed record, null if unknown. */
   remove(attachmentId: string): Promise<AttachmentRecord | null>;
   /**

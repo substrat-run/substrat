@@ -5469,11 +5469,13 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           return record ? this.openAttachmentBytes(store, scopeId, record) : null;
         },
-        openStream: async (attachmentId) => {
+        openStream: async (attachmentId, options) => {
           const record = unwrapReply(
             await stub.capabilityAttachmentOpen(attachmentId, hash, tenantId, scopeId),
           );
-          return record ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256) : null;
+          return record
+            ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256, options?.range)
+            : null;
         },
         remove: async (attachmentId) =>
           unwrapReply(
@@ -5537,9 +5539,11 @@ export class CloudflareScopeHost implements ScopeHost {
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
       },
       // #2514: the same gate, then the bytes as R2 reads them, checked against the record as they pass.
-      openStream: async (attachmentId) => {
+      openStream: async (attachmentId, options) => {
         const record = await authorizeRead(attachmentId);
-        return record ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256) : null;
+        return record
+          ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256, options?.range)
+          : null;
       },
       remove: async (attachmentId) => {
         const removed = unwrapReply(

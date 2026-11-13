@@ -907,6 +907,13 @@ so per-scope isolation inside a per-tenant store is construction, not a key-pref
 and because bytes are write-once under a fresh ULID key with their SHA-256 recorded, a PITR
 rewind can at worst orphan an object (GC-able), never re-point a row at different content.
 
+**A deployed worker reaches those bytes through its door (#3139).** `door.attachments(c)` mints the
+surface from the session, as `door.scope(c)` mints the stub, so worker code never passes a principal
+it was not handed; the door's opt-in file routes serve a file streamed and answer one byte range
+(`ScopeAttachments.openStream(id, { range })`, read by the store as a slice). A ranged read is held
+to the recorded size but not the SHA-256, which needs every byte; write-once keys under a fresh id
+are what make that affordable. Putting files on the stub itself is #3140.
+
 **Content search over those bytes is split at the text, not at the file (K-43, #1575).** The
 kernel owns what happens to extracted text: the dump-excluded text table and its FTS index,
 removal with the attachment, restore/fork reconcile, the extraction job, the outcome states,

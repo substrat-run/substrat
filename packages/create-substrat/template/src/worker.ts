@@ -167,6 +167,11 @@ const door = workerDoor<Env>({
   // The sample world (src/world.ts) a seeded preview of this app holds: its people sign in by
   // picking a persona, as they do locally. Seated only in a clean-room preview, never an install.
   world: WORLD,
+  // Files on customers and bikes (manifest.ts `attachmentTargets`), served and removed by the door
+  // as the signed-in person: GET and DELETE /api/attachments/:attachmentId. A GET streams the file
+  // and answers byte ranges, so an <audio> or <video> element can play and seek it. A route of your
+  // own reaches the same files through `door.attachments(c)`.
+  attachments: true,
 });
 
 /** The caller's scope stub. 401 if nobody. */

@@ -55,7 +55,9 @@ import type { Context, Env, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { substratError, z, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import type { ScopeAttachments, ScopeHost, ScopeStub, ScopeStubOptions } from '@substrat-run/kernel';
+import { hardenFileResponse, serveAttachment } from './attachment-serve.js';
 import { problemResponse } from './errors.js';
+
 
 /**
  * The cookie a capability session rides in. Named beside oidc-rp's `sb_session`.
@@ -393,35 +395,18 @@ export interface LinkShareDownloadOptions<E extends Env = Env> {
 }
 
 /**
- * `Content-Disposition` for a stored filename: always `attachment`, so the browser saves
- * the file rather than rendering it on this origin, with an ASCII fallback (quotes,
- * backslashes, control and non-ASCII characters replaced) and the exact name as RFC 5987
- * `filename*`. The filename is the uploader's text, so nothing of it reaches the header raw.
- */
-export function attachmentDisposition(filename: string): string {
-  const fallback = filename.replace(/[^\x20-\x7e]|["\\]/g, '_') || 'download';
-  const exact = encodeURIComponent(filename).replace(
-    /['()*]/g,
-    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${exact}`;
-}
-
-/**
  * Mount `GET <path>`: download one attachment through `linkShareAttachments` — the file a
  * link share of its folder or document reaches, or, with no capability cookie, one the
  * signed-in visitor may read themselves.
  *
- * 200 with the bytes; 404 for an id the scope does not know; 403 for a file outside the
- * capability's subtree, or one its minter can no longer read (recorded in the denial log
- * against the capability); 401 for a revoked or expired link, or no session at all.
+ * 200 with the bytes, streamed; 206 for a byte range (`serveAttachment`, #3139); 404 for an id
+ * the scope does not know; 403 for a file outside the capability's subtree, or one its minter can
+ * no longer read (recorded in the denial log against the capability); 401 for a revoked or
+ * expired link, or no session at all.
  *
- * **Nothing about the response may leak.** `Cache-Control: private, no-store` — a shared
- * cache must never hold a private file, and neither should the browser's once the link is
- * gone — plus `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and a
- * `sandbox` CSP, so a file that is secretly HTML cannot run as this origin even if opened
- * directly. `Content-Disposition` is always `attachment` (`attachmentDisposition`). All of
- * it is set before anything can fail, so a refusal carries it too.
+ * **Nothing about the response may leak.** It is hardened before anything can fail
+ * (`hardenFileResponse`), so a refusal carries the same headers, and the file is always a
+ * download (`attachmentDisposition`).
  *
  * A download is not a use: `maxUses` counts exchanges, and reading a file through a session
  * takes nothing from the link.
@@ -432,12 +417,7 @@ export function mountLinkShareDownload<E extends Env>(
 ): void {
   const path = options.path ?? LINK_SHARE_DOWNLOAD_PATH;
   app.get(path, async (c) => {
-    c.header('Cache-Control', 'private, no-store');
-    c.header('Referrer-Policy', 'no-referrer');
-    c.header('X-Content-Type-Options', 'nosniff');
-    c.header('Content-Security-Policy', "default-src 'none'; sandbox");
-    // Generic until there is a file to name — the 200 replaces it with the sanitised name.
-    c.header('Content-Disposition', 'attachment');
+    hardenFileResponse(c);
     try {
       const attachmentId = c.req.param('attachmentId');
       if (!attachmentId) throw substratError('not_found', 'no attachment named');
@@ -450,13 +430,7 @@ export function mountLinkShareDownload<E extends Env>(
         { cookieName: options.cookieName },
       );
       if (!files) throw substratError('unauthenticated', 'sign in, or open the link you were sent');
-      const opened = await files.open(attachmentId);
-      if (!opened) throw substratError('not_found', 'no such file');
-      return c.body(opened.body as unknown as ArrayBuffer, 200, {
-        'Content-Type': opened.contentType,
-        'Content-Length': String(opened.body.byteLength),
-        'Content-Disposition': attachmentDisposition(opened.record.filename),
-      });
+      return await serveAttachment(c, files, attachmentId);
     } catch (err) {
       return problemResponse(c, err);
     }

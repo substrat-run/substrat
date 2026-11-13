@@ -1056,8 +1056,13 @@ const unreadFiles = new FinalizationRegistry<{ close(): void }>((handle) => hand
  * `null` when there is no such file. The file is opened here, so a key removed after the open is still
  * read whole from the open handle, and closed once the stream ends, errors or is cancelled, or (best
  * effort) once a stream nobody finished is collected.
+ *
+ * With `range` (#3139), only `range.length` bytes from `range.offset`; `size` is still the whole file's.
  */
-function fileStream(path: string): { stream: ReadableStream<Uint8Array>; size: number } | null {
+function fileStream(
+  path: string,
+  range?: { offset: number; length: number },
+): { stream: ReadableStream<Uint8Array>; size: number } | null {
   const CHUNK = 64 * 1024;
   let fd: number;
   try {
@@ -1076,12 +1081,17 @@ function fileStream(path: string): { stream: ReadableStream<Uint8Array>; size: n
     },
   };
   const close = handle.close;
+  let position = range?.offset ?? 0;
+  let left = range?.length ?? size;
   const stream = new ReadableStream<Uint8Array>(
     {
       pull(controller) {
         try {
-          const chunk = new Uint8Array(CHUNK);
-          const read = readSync(fd, chunk, 0, CHUNK, null);
+          const want = range ? Math.min(CHUNK, left) : CHUNK;
+          const chunk = new Uint8Array(want);
+          const read = want === 0 ? 0 : readSync(fd, chunk, 0, want, range ? position : null);
+          position += read;
+          left -= read;
           if (read === 0) {
             close();
             controller.close();
@@ -4077,6 +4087,12 @@ export class SqliteScopeHost implements ScopeHost {
         const file = fileStream(p);
         return file && { ...file, ...contentTypeOf(p) };
       },
+      // #3139: a seek reads only the slice.
+      getRangeStream: async (key, range) => {
+        const p = resolveKey(key);
+        const file = fileStream(p, range);
+        return file && { ...file, ...contentTypeOf(p) };
+      },
       delete: async (key) => {
         const p = resolveKey(key);
         rmSync(p, { force: true });
@@ -4548,10 +4564,10 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // #2514: the same gate, then the file as it is read, checked against the record as it passes.
       // The bytes are read after the gate's turn has ended, so a long read holds no actor turn.
-      openStream: async (attachmentId) => {
+      openStream: async (attachmentId, options) => {
         const record = await authorizeRead(attachmentId);
         if (!record) return null;
-        return openAttachmentByteStream(store, attachmentBlobKey(rt.scopeId, record.id), record, nodeSha256);
+        return openAttachmentByteStream(store, attachmentBlobKey(rt.scopeId, record.id), record, nodeSha256, options?.range);
       },
       remove: async (attachmentId) => {
         const removed = await guarded('attachments.remove', async (ctx, subject) => {
