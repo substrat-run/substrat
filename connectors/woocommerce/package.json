@@ -1,0 +1,42 @@
+{
+  "name": "@substrat-run/connector-woocommerce",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Substrat connector: reads a WooCommerce store's products and orders on a poll, through its REST API with a consumer key, and lands them in a scope in the provider-neutral commerce shape. Read-only. Host code, never module code.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "connectors/woocommerce"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^"
+  },
+  "devDependencies": {
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
+  }
+}

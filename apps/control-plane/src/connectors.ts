@@ -45,6 +45,17 @@ import {
   sweepPlanimaPlan,
 } from '@substrat-run/connector-planima';
 import {
+  WOOCOMMERCE_CONNECTION_GRANTS,
+  bindWooCommerceScope,
+  listWooCommerceBindings,
+  probeWooCommerceConnection,
+  probeWooCommerceSecret,
+  sweepWooCommerce,
+  unbindWooCommerceScope,
+  woocommerceConnectionActivity,
+  woocommerceCredentialSummary,
+} from '@substrat-run/connector-woocommerce';
+import {
   MICROSOFT365_CONNECTION_GRANTS,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
@@ -476,6 +487,31 @@ const PLANIMA: ConnectorRegistration = {
 };
 
 /**
+ * WooCommerce (#3136): a store's products and orders, read-only, landed in the provider-neutral
+ * commerce shape through the consuming vertical's own operation. The credential is the store's URL
+ * and a REST API key with Read permission, pasted into the dashboard's door; the URL is tenant
+ * input, so the connector judges it before calling it (`storeBaseUrl`). `probeWooCommerceSecret`
+ * tells a wrong address from a wrong key, and names the store the key reads.
+ */
+const WOOCOMMERCE: ConnectorRegistration = {
+  provider: 'woocommerce',
+  grants: WOOCOMMERCE_CONNECTION_GRANTS,
+  // An idle pass is three requests to the merchant's own server; a quarter of an hour keeps
+  // orders fresh without polling a small shop's PHP every pass.
+  sweepEveryMinutes: 15,
+  inspector: () => ({
+    bindScope: (h, row, target) => bindWooCommerceScope(h, { ...target, connectionId: row.id }),
+    bindings: (h, row) => listWooCommerceBindings(h, row.id),
+    unbindScope: (h, row, scopeId) => unbindWooCommerceScope(h, row.id, scopeId),
+    probe: async (h, row) => probeWooCommerceConnection(h, row, { fetch: globalFetch }),
+    activity: async (h, row) => woocommerceConnectionActivity(h, row.id),
+    credential: (h, row) => woocommerceCredentialSummary(h, row),
+    probeCandidate: async (secret) => probeWooCommerceSecret(secret, { fetch: globalFetch }),
+  }),
+  sweep: () => async (h, id, o) => sweepWooCommerce(h, id, o),
+};
+
+/**
  * Bolagsverket (#2855): organisation-number validation over the free value-datasets API. The
  * credential is the tenant's own client id and secret, pasted into the dashboard's door, so
  * the provider's 60-a-minute limit is metered per tenant. No consent round, no callback, and
@@ -578,7 +614,7 @@ function microsoft365Options(env: ConnectorEnv) {
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, WOOCOMMERCE, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {
@@ -622,7 +658,7 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
         ...(inspector.unbindScope ? { unbind: inspector.unbindScope } : {}),
-        ...(['fortnox', 'planima'].includes(c.provider)
+        ...(['fortnox', 'planima', 'woocommerce'].includes(c.provider)
           ? {
               bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>
                 bindScope(h, row, { ...target, grantPreflighted: true } as Parameters<typeof bindScope>[2]),

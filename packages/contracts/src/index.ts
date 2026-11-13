@@ -104,6 +104,7 @@ export * from './ci.js';
 export * from './money.js';
 export * from './attachments.js';
 export * from './file-source.js';
+export * from './commerce-source.js';
 export * from './mail-in.js';
 export * from './kernel-events.js';
 export * from './email-intent.js';

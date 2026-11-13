@@ -324,6 +324,9 @@ importers:
       '@substrat-run/connector-scrive':
         specifier: workspace:^
         version: link:../../connectors/scrive
+      '@substrat-run/connector-woocommerce':
+        specifier: workspace:^
+        version: link:../../connectors/woocommerce
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
@@ -768,6 +771,28 @@ importers:
       '@substrat-run/engine-protocol':
         specifier: workspace:^
         version: link:../../engines/protocol
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@opentelemetry/api@1.9.1)(@types/node@26.6.3)(@vitest/ui@5.0.5)(jsdom@26.1.0)(vite@8.3.5(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+
+  connectors/woocommerce:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../../packages/kernel
+    devDependencies:
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/adapter-sqlite
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

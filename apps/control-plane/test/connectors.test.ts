@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/connector-scrive';
 import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
 import { PLANIMA_CONNECTION_GRANTS } from '@substrat-run/connector-planima';
+import { WOOCOMMERCE_CONNECTION_GRANTS } from '@substrat-run/connector-woocommerce';
 import {
   CONNECTORS,
   connectionBindersFor,
@@ -31,10 +32,11 @@ describe('connector registry', () => {
     expect(providers).toContain('scrive');
     expect(providers).toContain('fortnox');
     expect(providers).toContain('planima');
+    expect(providers).toContain('woocommerce');
     expect(Object.keys(connectionInspectorsFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorSweepersFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorGrantsFor()).sort()).toEqual([...providers].sort());
-    expect(connectorSweepEveryMinutesFor()).toEqual({ planima: 120 });
+    expect(connectorSweepEveryMinutesFor()).toEqual({ planima: 120, woocommerce: 15 });
     // A provider that is not registered is absent everywhere — the inspection route
     // 501s honestly rather than the plane pretending it operates it.
     expect(connectionInspectorsFor(ENV)['docusign']).toBeUndefined();
@@ -96,6 +98,7 @@ describe('connector registry', () => {
     expect(connectorGrantsFor()['scrive']).toBe(SCRIVE_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['fortnox']).toBe(FORTNOX_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['planima']).toBe(PLANIMA_CONNECTION_GRANTS);
+    expect(connectorGrantsFor()['woocommerce']).toBe(WOOCOMMERCE_CONNECTION_GRANTS);
   });
 
   it('every registered connector answers both probes', () => {
@@ -121,6 +124,16 @@ describe('connector registry', () => {
     expect(probe.ok).toBe(false);
     expect(probe.refused).toBe(true);
     expect(probe.error).toMatch(/token/);
+  });
+
+  it('refuses a WooCommerce candidate at a private address without calling it', async () => {
+    // The store URL is tenant input the platform calls with a credential attached.
+    const probe = await connectionInspectorsFor({})['woocommerce']!.probeCandidate!({
+      storeUrl: 'https://metadata.google.internal',
+      consumerKey: 'ck_test',
+      consumerSecret: 'cs_test',
+    });
+    expect(probe).toMatchObject({ ok: false, refused: false, error: expect.stringMatching(/private network name/) });
   });
 
   it('a poll-only connector registers with no dispatch and no callback — by design, not omission', () => {
@@ -189,7 +202,7 @@ describe('connector registry', () => {
 it('registered poll binding doors preserve the vertical landing configuration', async () => {
   const id = connectionId.parse('01JZ0000000000000000000001');
   const target = { tenantId: '01JZ0000000000000000000002', scopeId: '01JZ0000000000000000000003', vertical: 'acme-crm' };
-  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record']] as const) {
+  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record']] as const) {
     const records = new Map<string, unknown>();
     const host = {
       connectionGrantsInScope: async () => [{ connectionId: id, permission: permissionKey.parse(permission) }],
@@ -213,7 +226,10 @@ describe('connection binders (#2316)', () => {
   it('binds from a declaration only for a provider whose inspector binds, with the door\'s options (#2316)', () => {
     const binders = connectionBindersFor(ENV);
     // Scrive is dispatched, not polled: nothing to bind, so a declaration for it binds nothing.
-    expect(Object.keys(binders).sort()).toEqual(['fortnox', 'microsoft365', 'planima']);
+    expect(Object.keys(binders).sort()).toEqual(['fortnox', 'microsoft365', 'planima', 'woocommerce']);
+    expect(binders['woocommerce']!.bindBeforeGrant).toBeTypeOf('function');
+    // No options: a WooCommerce binding names its operation and permission, and nothing else.
+    expect(() => binders['woocommerce']!.options!({ window: null })).toThrow();
     expect(binders['planima']!.options!({ organizationId: null, horizonYears: 50 })).toEqual({ organizationId: null, horizonYears: 50 });
     // The staff door's schema, strict: a typo'd option is refused rather than bound with a default.
     expect(() => binders['planima']!.options!({ horizonYear: 50 })).toThrow();
