@@ -697,6 +697,15 @@ describe('PERMISSIONS.md', () => {
     expect(r.changes).toEqual([expect.objectContaining({ path: 'scheduled operation todo/purge', flagged: true })]);
   });
 
+  it('a peer vertical appearing, or allowed another operation, is a flagged minor and never an unread section', () => {
+    const peers = (invoke: string) =>
+      `\n## 6. Other verticals — what each may do here\n\n| Vertical | Declared by | May invoke | Holds |\n| --- | --- | --- | --- |\n| \`notes\` | \`@acme/vertical\` | ${invoke} | \`list:read\` |\n`;
+    const added = classifyPermissions(PERMS, PERMS + peers('`todo/get`'));
+    expect(added).toMatchObject({ bump: 'minor', changes: [{ path: 'peer vertical notes', flagged: true }] });
+    const widened = classifyPermissions(PERMS + peers('`todo/get`'), PERMS + peers('`todo/get`, `todo/list`'));
+    expect(widened).toMatchObject({ bump: 'minor', changes: [{ path: 'peer vertical notes', flagged: true }] });
+  });
+
   /** PERMS with §1 as the emitter writes it once some key is reserved: a fourth cell, `yes` or `—`, on every row. */
   const withColumn = (t: string, cell: (key: string) => string) =>
     t

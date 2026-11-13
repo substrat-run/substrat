@@ -718,6 +718,8 @@ export interface PermissionSnapshot {
   readonly grantShapes: Record<string, { keys: string[]; terms: string[] }>;
   /** Scheduled operation → the keys its system principal holds, then the remaining cells. */
   readonly schedules: Record<string, { keys: string[]; terms: string[] }>;
+  /** Peer vertical (#1706) → the keys it holds here, then who declares it and what it may invoke. */
+  readonly peers: Record<string, { keys: string[]; terms: string[] }>;
   /**
    * Operation → the key it declares it checks, then how it narrows and who declares it (#2384).
    * `undefined` when the artifact has no Operations section: an emitter that predates it.
@@ -775,6 +777,7 @@ export function parsePermissions(text: string): PermissionSnapshot {
     systemRoles: {} as Record<string, string[]>,
     grantShapes: {} as Record<string, { keys: string[]; terms: string[] }>,
     schedules: {} as Record<string, { keys: string[]; terms: string[] }>,
+    peers: {} as Record<string, { keys: string[]; terms: string[] }>,
     unread: {} as Record<string, string>,
   } as PermissionSnapshot;
   for (const section of permissionsSections(text)) {
@@ -797,6 +800,11 @@ export function parsePermissions(text: string): PermissionSnapshot {
       // | Operation | Cadence | System principal | Permissions |
       for (const cells of rowsOf(body)) {
         snap.schedules[firstKey(cells)] = { keys: codesIn(cells[cells.length - 1] ?? ''), terms: cells.slice(0, -1) };
+      }
+    } else if (/^Other verticals\b/.test(heading)) {
+      // | Vertical | Declared by | May invoke | Holds |
+      for (const cells of rowsOf(body)) {
+        snap.peers[firstKey(cells)] = { keys: codesIn(cells[cells.length - 1] ?? ''), terms: cells.slice(1, -1) };
       }
     } else if (/^Operations\b/.test(heading)) {
       // | Operation | Key | Checked on | Declared by | — the key cell's prose ("checked in code,
@@ -862,13 +870,16 @@ export function classifyPermissions(baseText: string | null, headText: string | 
   const keysOf = (m: Record<string, { keys: string[] }>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.keys]));
   holders('entity grant shape', keysOf(b.grantShapes), keysOf(h.grantShapes));
   holders('scheduled operation', keysOf(b.schedules), keysOf(h.schedules));
+  // Another vertical of the tenant is ranked as a role is: what it may do here is the keys shown.
+  holders('peer vertical', keysOf(b.peers), keysOf(h.peers));
   for (const [what, bm, hm] of [
     ['entity grant shape', b.grantShapes, h.grantShapes],
     ['scheduled operation', b.schedules, h.schedules],
+    ['peer vertical', b.peers, h.peers],
   ] as const) {
     for (const name of Object.keys(bm)) {
       if (name in hm && canon(bm[name]!.terms, false) !== canon(hm[name]!.terms, false)) {
-        flag(`${what} ${name}`, 'its terms changed (how it is given, bound or scheduled)');
+        flag(`${what} ${name}`, 'its terms changed (how it is given, bound or scheduled, or what it may invoke)');
       }
     }
   }
