@@ -53,9 +53,9 @@ describe('streamed attachment open (cloudflare host)', () => {
   const realBucket = () => ({
     put: (key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView, options?: R2PutOptions) =>
       env.STREAM_BUCKET.put(key, value, options),
-    get: async (key: string) => {
+    get: async (key: string, options?: R2GetOptions) => {
       flow.gets++;
-      return env.STREAM_BUCKET.get(key);
+      return env.STREAM_BUCKET.get(key, options);
     },
     delete: (key: string) => env.STREAM_BUCKET.delete(key),
     list: (options?: R2ListOptions) => env.STREAM_BUCKET.list(options),
@@ -181,6 +181,22 @@ describe('streamed attachment open (cloudflare host)', () => {
     expect(opened!.record).toEqual(record);
     expect(opened!.contentType).toBe('application/pdf');
     expect(await read(knownLengthStream(opened!.body))).toEqual({ ok: true, size: 8 * MiB, sha256: record.sha256 });
+    expect(flow.gets).toBe(1);
+  });
+
+  it('real R2: a byte range is read from R2 as a slice (#3139)', async () => {
+    const w = await world(realBucket);
+    const record = await landed(w, 2);
+    const opened = await (await w.host.attachments(w.reader, w.t, w.s)).openStream(record.id, {
+      range: { start: MiB - 2, end: MiB + 1 },
+    });
+    expect(opened!.range).toEqual({ start: MiB - 2, end: MiB + 1 });
+    expect(opened!.body.length).toBe(4);
+    const reader = knownLengthStream(opened!.body).getReader();
+    const got: number[] = [];
+    for (let r = await reader.read(); !r.done; r = await reader.read()) got.push(...r.value!);
+    // The last two bytes of the first MiB (0s), the first two of the second (1s).
+    expect(got).toEqual([0, 0, 1, 1]);
     expect(flow.gets).toBe(1);
   });
 

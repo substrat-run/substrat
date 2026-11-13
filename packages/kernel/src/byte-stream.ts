@@ -164,6 +164,16 @@ function assertDeclaredLength(length: number): void {
 }
 
 /**
+ * `body`, held to the length it declares by a plain web stream (#3139): one that carries more or
+ * fewer bytes errors whatever reads it. Unlike {@link knownLengthStream} it is never the runtime's
+ * fixed-length stream, so a route can still hand the result to `knownLengthStream`: workerd cannot
+ * pipe one fixed-length stream into another.
+ */
+export function lengthHeldStream(body: SizedByteStream): SizedByteStream {
+  return { stream: relay(body.stream, body.length), length: body.length };
+}
+
+/**
  * A new stream that passes `source` through chunk by chunk, holding it to `length`. Pull-driven
  * with no queue of its own (`highWaterMark: 0`), so a chunk is read from the source only when the
  * consumer asks for one: at most one chunk is in flight, whatever the body's size.

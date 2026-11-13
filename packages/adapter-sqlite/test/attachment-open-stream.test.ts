@@ -162,6 +162,20 @@ describe('streamed attachment open (pure adapter)', () => {
     expect(flow).toMatchObject({ get: 0, getStream: 1 });
   });
 
+  it('a byte range reads only its slice from the file (#3139)', async () => {
+    const { host, t, s, reader, record, bytes } = await world();
+    const opened = await (await host.attachments(reader, t, s)).openStream(record.id, {
+      range: { start: CHUNK - 2, end: CHUNK + 1 },
+    });
+    expect(opened!.range).toEqual({ start: CHUNK - 2, end: CHUNK + 1 });
+    const reader2 = opened!.body.stream.getReader();
+    const got: number[] = [];
+    for (let r = await reader2.read(); !r.done; r = await reader2.read()) got.push(...r.value!);
+    expect(got).toEqual([...bytes.subarray(CHUNK - 2, CHUNK + 2)]);
+    // Neither whole-file read was asked for.
+    expect(flow).toMatchObject({ get: 0, getStream: 0 });
+  });
+
   it('the positive twin: the buffered open of the same file gives the same bytes', async () => {
     const { host, t, s, reader, record, bytes } = await world();
     const opened = await (await host.attachments(reader, t, s)).open(record.id);

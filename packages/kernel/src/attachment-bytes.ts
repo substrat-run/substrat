@@ -2,6 +2,7 @@ import { attachmentUploadFields, type AttachmentRecord, type AttachmentRecordFie
 import {
   bytesStream,
   isSizedByteStream,
+  lengthHeldStream,
   verifiedStream,
   witnessedStream,
   type ByteBody,
@@ -45,6 +46,16 @@ export interface TenantBlobStore {
    * as a stream, which works but holds the object whole.
    */
   getStream?(key: string): Promise<{ stream: ByteStream; size: number; contentType?: string } | null>;
+  /**
+   * `length` bytes of the object under `key`, from `offset` (#3139): the slice as a stream, and the
+   * size of the WHOLE object, which a ranged open holds to the record. The caller has resolved the
+   * span against the record's size, so it lies inside the object. Optional: an open asked for a
+   * range over a store without it serves the whole object, and says so by answering no `range`.
+   */
+  getRangeStream?(
+    key: string,
+    range: { offset: number; length: number },
+  ): Promise<{ stream: ByteStream; size: number; contentType?: string } | null>;
   delete(key: string): Promise<void>;
   /** Keys under `prefix` — the GC/ops walk. */
   list(prefix: string): Promise<string[]>;
@@ -127,6 +138,49 @@ export async function putAttachmentBytes(
 }
 
 /**
+ * A byte range a reader asks for, as HTTP's `Range: bytes=` says one (#3139): from `start` to `end`
+ * inclusive (to the last byte when `end` is absent), or the last `suffix` bytes.
+ */
+export type ByteRangeSpec = { start: number; end?: number } | { suffix: number };
+
+/** A range resolved against an object's size: both ends inclusive, both inside the object. */
+export interface ByteSpan {
+  start: number;
+  end: number;
+}
+
+/** What `ScopeAttachments.openStream` takes besides the id. */
+export interface AttachmentOpenOptions {
+  /** Read only these bytes (#3139). The answer's `range` says what was served. */
+  range?: ByteRangeSpec;
+}
+
+const isByteOffset = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+
+/**
+ * `spec` against an object of `size` bytes, as RFC 9110 §14.1.2 resolves it, or `null` when no byte
+ * of it exists: a start at or past the end, a zero-byte suffix, or any range of an empty object. An
+ * end past the last byte is clamped to it, and a suffix longer than the object is the whole object.
+ * A spec that is not a range at all (a negative or fractional offset, an end before its start) is a
+ * caller's mistake and throws, where an unsatisfiable one is an answer.
+ */
+export function resolveByteRange(spec: ByteRangeSpec, size: number): ByteSpan | null {
+  if ('suffix' in spec) {
+    if (!isByteOffset(spec.suffix)) throw new Error(`a byte range suffix is a whole number of bytes, not ${spec.suffix}`);
+    if (spec.suffix === 0 || size === 0) return null;
+    return { start: Math.max(0, size - spec.suffix), end: size - 1 };
+  }
+  if (!isByteOffset(spec.start) || (spec.end !== undefined && !isByteOffset(spec.end))) {
+    throw new Error('a byte range starts and ends at whole, non-negative offsets');
+  }
+  if (spec.end !== undefined && spec.end < spec.start) {
+    throw new Error(`a byte range cannot end (${spec.end}) before it starts (${spec.start})`);
+  }
+  if (spec.start >= size) return null;
+  return { start: spec.start, end: Math.min(spec.end ?? size - 1, size - 1) };
+}
+
+/**
  * The bytes of an attachment the scope has already AUTHORIZED, as a stream held to its record (#2514):
  * the "bytes" half of every streamed open, one path for both adapters, as {@link putAttachmentBytes}
  * is for the write. The caller checks the read permission first and calls this only once it passed,
@@ -137,18 +191,44 @@ export async function putAttachmentBytes(
  * is refused up front. The sha256 is checked as the bytes flow ({@link verifiedStream}): a mismatch
  * errors the stream before its last chunk is handed on. A store without `getStream` is read whole with
  * `get` and handed on the same way.
+ *
+ * **A range (#3139)** is resolved against the record's size first. One with no byte in the file
+ * answers `range: 'unsatisfiable'` and an empty body, and reads nothing. One covering the whole file
+ * is the verified stream above. Any other is read from the store's {@link TenantBlobStore.getRangeStream},
+ * whose whole-object size is held to the record as above, and the slice to its length; its sha256 is
+ * NOT checked, since a digest needs every byte. That is the price of a seek, and it is affordable
+ * because a key is written once under a fresh id: what a rewind can do is orphan an object, never
+ * put other bytes under a key a record names. A store with no `getRangeStream` serves the whole,
+ * verified, and the answer carries no `range`.
  */
 export async function openAttachmentByteStream(
   store: TenantBlobStore,
   key: string,
   record: AttachmentRecord,
   sha256: () => IncrementalSha256,
+  range?: ByteRangeSpec,
 ): Promise<OpenedAttachmentStream> {
   const missing = () =>
     new Error(
       `attachment ${record.id}: bytes missing from the blob store — the metadata row ` +
         `survived something the object did not (rewind/reap); see the #473 integrity notes`,
     );
+  const span = range === undefined ? undefined : resolveByteRange(range, record.size);
+  if (span === null) {
+    return { record, body: bytesStream(new Uint8Array(0)), contentType: record.contentType, range: 'unsatisfiable' };
+  }
+  const whole = span === undefined || (span.start === 0 && span.end === record.size - 1);
+  if (span && !whole && store.getRangeStream) {
+    const length = span.end - span.start + 1;
+    const obj = await store.getRangeStream(key, { offset: span.start, length });
+    if (!obj) throw missing();
+    if (obj.size !== record.size) {
+      await obj.stream.getReader().cancel().catch(() => {});
+      throw new Error(`attachment ${record.id}: the stored object is ${obj.size} bytes; its record says ${record.size}`);
+    }
+    const body = lengthHeldStream({ stream: obj.stream, length });
+    return { record, body, contentType: obj.contentType ?? record.contentType, range: span };
+  }
   let source: { stream: ByteStream; size: number; contentType?: string };
   if (store.getStream) {
     const obj = await store.getStream(key);
@@ -168,7 +248,9 @@ export async function openAttachmentByteStream(
     await source.stream.getReader().cancel(err).catch(() => {});
     throw new Error(`attachment ${record.id}: ${(err as Error).message}`);
   }
-  return { record, body, contentType: source.contentType ?? record.contentType };
+  const contentType = source.contentType ?? record.contentType;
+  // Asked for the whole file as a range (`bytes=0-`, as a media element asks first): served, and said so.
+  return span && whole ? { record, body, contentType, range: span } : { record, body, contentType };
 }
 
 /** An opened attachment: the metadata fact plus the bytes it witnesses. */
@@ -189,4 +271,10 @@ export interface OpenedAttachmentStream {
   record: AttachmentRecord;
   body: SizedByteStream;
   contentType: string;
+  /**
+   * Present when the open was asked for a range (#3139) and answered it: the bytes `body` holds,
+   * inclusive, or `'unsatisfiable'` when no byte of the range exists (`body` is then empty). Absent
+   * when no range was asked, or the store could not read one and `body` is the whole file.
+   */
+  range?: ByteSpan | 'unsatisfiable';
 }

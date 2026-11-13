@@ -42,11 +42,17 @@
  *
  * A worker that hands out invite LINKS instead mounts `mountInviteRoutes` beside this, with its own
  * admin gate; an invite naming an address is accepted there only by a verified holder of it.
+ *
+ * Files are reached the same way operations are (#3139). `attachments(c)` is the caller's file
+ * surface, minted from the session as the stub is, so a route never names whose files it reads; and
+ * when the worker names `attachments`, the door serves and removes a file itself at
+ * `/api/attachments/:attachmentId`, streamed and seekable, as the signed-in person.
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
   principalId,
+  substratError,
   type CapabilityExchange,
   type CapabilityId,
   type EntityRef,
@@ -56,7 +62,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { personaPrincipal, seatWorldWith, type ScopeHost, type ScopeStub, type ScopeStubOptions, type SeedWorld } from '@substrat-run/kernel';
+import { personaPrincipal, seatWorldWith, type ScopeAttachments, type ScopeHost, type ScopeStub, type ScopeStubOptions, type SeedWorld } from '@substrat-run/kernel';
 import {
   AuthConfigError,
   IdentityDO,
@@ -81,6 +87,8 @@ import {
 } from '@substrat-run/vertical-auth/invite-routes';
 import { mountOwnerClaim, type OwnerClaimRouteDeps } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { mountSession, sessionAnswer } from '@substrat-run/vertical-auth/session-route';
+import { hardenFileResponse, serveAttachment } from './attachment-serve.js';
+import { problemResponse } from './errors.js';
 import type { PlatformSurfaceDeps, SeedWorldHook } from './index.js';
 
 export { IdentityDO };
@@ -97,7 +105,7 @@ export interface WorkerDoorDeps<E extends object> {
   directory: (env: E, node: DoorNode) => IdentityStub;
   /** The routed (tenant, scope), from the router's assertion. */
   nodeFor: (req: Request, env: E) => DoorNode;
-  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost;
+  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost & Partial<Pick<ScopeHost, 'attachments'>>;
   /** The vertical's declared settings, resolved per scope with the delivered values. */
   envSpec: EnvVarSpec[];
   /**
@@ -123,7 +131,22 @@ export interface WorkerDoorDeps<E extends object> {
    * invite names (made by the dashboard, say) is still admitted by their verified address.
    */
   invites?: DoorInvites;
+  /**
+   * The door's own file routes (#3139), over `attachments(c)`:
+   *
+   *   GET    /api/attachments/:attachmentId   → 200 the file, streamed; 206 for a byte range
+   *   DELETE /api/attachments/:attachmentId   → 204
+   *
+   * Each as the signed-in person, so a read is gated by the target's `readPermission` and a removal
+   * by its `writePermission`, on the entity the file hangs on. Served as `serveAttachment` serves a
+   * file: hardened, always a download, and playable from an `<audio>` or `<video>` element, which
+   * seeks with byte ranges. Omit it and neither route is mounted; `attachments(c)` is there either way.
+   */
+  attachments?: true;
 }
+
+/** Where the door serves and removes a file when `attachments` is named (#3139). */
+export const DOOR_ATTACHMENT_PATH = '/api/attachments/:attachmentId';
 
 /** What a worker names to let its people invite by address through the door (K-61 phase 3). */
 export type DoorInvites = MemberInvites;
@@ -172,10 +195,19 @@ type DoorHooks<E> = Required<
 >;
 
 export interface WorkerDoor<E extends object> {
-  /** `/api/auth/*` (the login round-trip), `/api/me`, `/api/claim-owner`, and `/api/member-invites*` when `invites` is named. */
+  /**
+   * `/api/auth/*` (the login round-trip), `/api/me`, `/api/claim-owner`, `/api/member-invites*` when
+   * `invites` is named, and `/api/attachments/:attachmentId` when `attachments` is.
+   */
   mount(app: Hono<{ Bindings: E }>): void;
   /** The caller's scope stub, with their verified address. 401 for nobody. */
   scope(c: Context<{ Bindings: E }>, options?: ScopeStubOptions): Promise<ScopeStub>;
+  /**
+   * The caller's files on this scope (#3139): read, upload and remove as them, each gated by the
+   * file's target as `ctx.check` would gate it. The id comes from the session, as the stub's does,
+   * so a route never names whose files it reads. 401 for nobody. Serve one with `serveAttachment`.
+   */
+  attachments(c: Context<{ Bindings: E }>): Promise<ScopeAttachments>;
   /**
    * The declared settings for one scope: delivered value, then binding, then default. Read them
    * here and never off `env`: a default rides as a binding every install of a script shares.
@@ -276,6 +308,15 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     const who = principalId.parse(principal);
     return { node, subject, principal: who, scope: await scopeFor(c.env, node, who, subject, options) };
   };
+  /** The caller's files, once they have arrived as `scope` has them arrive (#3139). */
+  const attachmentsOf = async (c: Context<{ Bindings: E }>): Promise<ScopeAttachments> => {
+    const { node, subject, principal, scope } = await signedIn(c);
+    await arrive(c.env, node, principal, subject, scope);
+    const host = deps.hostFor(c.env);
+    if (!host.attachments) throw substratError('unavailable', 'this scope host serves no files (ScopeHost.attachments)');
+    return host.attachments(principal, node.tenantId, node.scopeId);
+  };
+
 
 
   /**
@@ -344,6 +385,25 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       if (deps.invites) {
         mountMemberInvites(app, { signedIn, directory: deps.directory, host: deps.hostFor, invites: deps.invites });
       }
+      if (deps.attachments) {
+        app.get(DOOR_ATTACHMENT_PATH, async (c) => {
+          hardenFileResponse(c);
+          try {
+            return await serveAttachment(c, await attachmentsOf(c), c.req.param('attachmentId'));
+          } catch (err) {
+            return problemResponse(c, err);
+          }
+        });
+        app.delete(DOOR_ATTACHMENT_PATH, async (c) => {
+          try {
+            const removed = await (await attachmentsOf(c)).remove(c.req.param('attachmentId'));
+            if (!removed) throw substratError('not_found', 'no such file');
+            return c.body(null, 204);
+          } catch (err) {
+            return problemResponse(c, err);
+          }
+        });
+      }
     },
 
     async scope(c, options) {
@@ -352,6 +412,8 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       await arrive(c.env, node, principal, subject, scope);
       return scope;
     },
+
+    attachments: attachmentsOf,
 
     settings: async (env, node) => (await wiring(env, node)).settings,
 
