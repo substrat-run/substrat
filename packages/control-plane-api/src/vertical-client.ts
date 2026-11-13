@@ -325,6 +325,9 @@ const PREDATES = Symbol('predates');
  */
 type RouteRule = { legacy501: boolean; lost: string };
 
+/** What a scaffolded worker's catch-all answers, 200, for a path it does not route (the template's `app.all('*')`). */
+const scaffoldPointer = z.object({ service: z.literal('substrat vertical') });
+
 /** #1722's kept-copy and fenced-wipe verbs: a host without the method answers a 501. */
 const FENCED: RouteRule = { legacy501: true, lost: 'it may or may not have acted' };
 
@@ -789,12 +792,41 @@ export class VerticalClient {
    * that is not a clean-room preview (409), and one that declares no world answers 501.
    */
   async seedWorld(input: SeedWorldBody): Promise<SeededPersona[]> {
-    return seededPersonas.parse(await this.postInternal<unknown>(SEED_WORLD_PATH, input, 'seed-world')).personas;
+    return this.seededAnswer('seed-world', SEED_WORLD_PATH, input);
   }
 
   /** The personas a seeded preview offers, for the persona issuer's picker (#3108). Read-only. */
   async personas(input: PersonasBody): Promise<SeededPersona[]> {
-    return seededPersonas.parse(await this.postInternal<unknown>(PERSONAS_PATH, input, 'personas')).personas;
+    return this.seededAnswer('personas', PERSONAS_PATH, input);
+  }
+
+  /**
+   * The two seeded-preview verbs' answer. A deployment that predates them is a 501, as one with no
+   * world is, so preview create reports the version `unseeded` instead of failing: a 404, or the
+   * pointer a scaffolded worker's `app.all('*')` answers 200 for any path it does not route. That
+   * pointer is no persona list, and parsing it as one read as the caller's 400 (#3108). Any other
+   * shape is still the 502 it is.
+   */
+  private async seededAnswer(verb: string, path: string, body: SeedWorldBody | PersonasBody): Promise<SeededPersona[]> {
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const rule = { legacy501: false, lost: 'it may or may not have acted' };
+    const answer = await this.routeAnswer(verb, rule, () =>
+      this.options.fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        body: JSON.stringify(body),
+      }),
+    );
+    if (answer === PREDATES || scaffoldPointer.safeParse(answer).success) {
+      throw new ControlPlaneError(
+        501,
+        `the deployment serving scope ${body.scopeId} predates seeded previews (#3108) — push it with ` +
+          '@substrat-run/vertical-host 0.194 or later',
+      );
+    }
+    const parsed = seededPersonas.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${body.scopeId}.`);
+    return parsed.data.personas;
   }
 
   /**

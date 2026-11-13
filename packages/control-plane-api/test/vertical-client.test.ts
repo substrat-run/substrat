@@ -1920,3 +1920,27 @@ describe('the table reads and the held flag (#2563)', () => {
     expect(url!.searchParams.has('held')).toBe(false);
   });
 });
+
+// #3108: a seeded preview of a deployment older than `/internal/seed-world` is `unseeded`, not a
+// failed create. A scaffolded worker answers that path 200 with its catch-all pointer, which
+// used to be parsed as the persona list and reported as the caller's 400 "the input did not parse".
+describe('VerticalClient.seedWorld against a deployment that predates it (#3108)', () => {
+  const seed = (res: () => Response) =>
+    new VerticalClient({ fetch: (async () => res()) as unknown as typeof fetch, platformSecret: 'secret' })
+      .seedWorld({ tenantId: t, scopeId: s, build: true })
+      .then(() => null, (e: unknown) => e as ControlPlaneError);
+  const json = (status: number, body: unknown) => () => new Response(JSON.stringify(body), { status });
+
+  it.each([
+    ["the scaffold's catch-all pointer", json(200, { service: 'substrat vertical', api: 'POST /api/invoke', docs: 'https://substrat.net' })],
+    ['a 404', () => new Response('404 Not Found', { status: 404 })],
+  ])('%s is a 501 naming the vertical-host to push with', async (_name, res) => {
+    const err = await seed(res);
+    expect([err?.status, err?.message]).toEqual([501, expect.stringMatching(/predates seeded previews .*vertical-host 0\.194/)]);
+  });
+
+  it("passes the deployment's own 501 through, and is a 502 for any other shape", async () => {
+    expect((await seed(json(501, { error: 'this deployment declares no sample world' })))?.message).toBe('this deployment declares no sample world');
+    expect((await seed(json(200, { ok: true })))?.status).toBe(502);
+  });
+});
