@@ -180,6 +180,24 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // correct, and a re-paste rotates it in place — which is what a re-paste should do
     // when there is only ever one.
   },
+  woocommerce: {
+    provider: 'woocommerce',
+    name: 'WooCommerce',
+    description: 'An online store — reads its products and orders.',
+    monogram: 'WC',
+    // Keyed as the connector's `woocommerceSecret` parses them. The key is made in WooCommerce →
+    // Settings → Advanced → REST API, with Read permission, by an administrator or shop manager:
+    // the connector never writes, and the probe reads the store's own settings.
+    fields: [
+      { key: 'storeUrl', label: 'Store URL', secret: false, placeholder: 'https://shop.example.com' },
+      { key: 'consumerKey', label: 'Consumer key', secret: true, placeholder: 'ck_… — a Read key' },
+      { key: 'consumerSecret', label: 'Consumer secret', secret: true, placeholder: 'cs_…' },
+    ],
+    // Empty for Planima's reason: the records land through the consuming vertical's own
+    // operation, and `bindWooCommerceScope` verifies its permission at bind time.
+    grants: [],
+    // No `accountRefField`: one store per app, so a re-paste rotates the connection in place.
+  },
   bolagsverket: {
     provider: 'bolagsverket',
     name: 'Bolagsverket',

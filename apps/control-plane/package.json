@@ -22,6 +22,7 @@
     "@substrat-run/connector-microsoft365": "workspace:^",
     "@substrat-run/connector-planima": "workspace:^",
     "@substrat-run/connector-scrive": "workspace:^",
+    "@substrat-run/connector-woocommerce": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
