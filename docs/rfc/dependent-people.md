@@ -150,3 +150,60 @@ third-party plugin could set to anyone.
 
 If a plugin becomes an isolated module or a scope type (#2993) of the app it belongs to, the door
 and the bound stay as they are, and the peer call may become a read inside one app.
+
+## 6. Deployed: a host app that calls its plugin as the person
+
+**Proposed, not decided. It reverses a #1706 decision and needs a human's yes before any code.**
+
+Locally, Todo's page reaches Notes through the dev proxy, so one origin carries one session. Deployed,
+the two are separate origins with separate sessions, and the platform refuses a shared login cookie on
+its own hostnames (`cookie-domain.ts`: a parent within the platform's space would reach other tenants'
+apps). The chosen answer is that **Todo's worker calls Notes for the person**: the browser talks only
+to Todo, and Todo forwards a plugin request to Notes saying which person it acts for.
+
+### What it reverses
+
+The peer door was built to carry no person. Its body is strict "so no field a future caller adds can
+make a peer call act as a person" (`vertical-host`, `verticalInvokeBody`), and `getVerticalScope`
+states that the caller's signed-in user does not cross. That was right for a peer that is merely
+another app of the tenant. It is the thing to change here, and only here.
+
+### The proposal
+
+- **A declaration on the dependent.** Notes declares its identity source in its manifest,
+  `identity: { from: 'todo', contract: 'identity.person@1' }` (§2 of the plan this RFC follows).
+  `substrat push` and provisioning read it; nothing else may.
+- **One new field on the peer call: `actingFor: <person id>`.** The router passes it through
+  untouched. The target's door accepts it from **exactly one caller: the vertical its manifest names
+  as identity source**, and refuses it from every other peer, as today. A plain peer call without it
+  is unchanged.
+- **The operation runs as the person.** `ctx.principal` is the person, `ctx.check` answers with their
+  roles in the dependent's scope, and grants made, rows written and events emitted are theirs. The
+  spine stamps `{ vertical: 'todo', actingFor: <person> }` beside it, as K-42 stamps impersonation, so
+  the history shows who acted for whom.
+- **The person must be let in.** Before invoking, the dependent's door runs the same people check a
+  sign-in does: the person's kept answer, refreshed from the master when it has expired, must be
+  `active`. A blocked person cannot be acted for, and the bound is the same 300 s.
+- **No chains.** A call made while acting for a person cannot itself act for one (`depth` > 0
+  refuses `actingFor`), and the person's own `verifiedEmail` does not cross.
+
+### Why the trust holds
+
+The dependent already takes the master's word for who a person is and what they hold: that is what
+the person contract is. A master that says "this is person P, acting now" adds no authority it did
+not have; it is the same authority at a different moment. A plugin, or any other peer, gains nothing:
+`actingFor` from anyone but the declared master is refused.
+
+### What it costs, and what stays open
+
+- **The master can act for anyone, any time.** Nothing proves that P is behind the request; Todo's
+  worker is trusted to claim P only while serving P's request. A schedule in Todo could act for P
+  without them. The spine stamp makes it visible, not impossible. The fix for that is a token minted
+  for P at sign-in and carried through, which is #1824's exchange; this design does not need it and
+  does not block it.
+- **Kernel and both adapters.** `getVerticalScope` gains the person; the checker resolves the
+  person's grants under the peer's door; the contract suites hold both adapters to it.
+- **Third-party masters.** A third party's app could be declared as identity source by a plugin it
+  ships, and would then act for its own people in its own plugin, which is no wider than it has. A
+  plugin may not declare a master the tenant did not bind it to; install binding (§4) is where that
+  is enforced, and it is unbuilt.
