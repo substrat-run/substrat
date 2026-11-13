@@ -12189,8 +12189,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           status: 'unseeded',
           callbackUrl,
           note:
-            'Sign-in: this version declares no sample world, so the preview has nobody to sign in as. Put its ' +
-            'people in src/world.ts and name it in the worker (`workerDoor({ world: WORLD })`), as the template does.',
+            'Sign-in: this version seats no sample world, so the preview has nobody to sign in as. Push it with ' +
+            '@substrat-run/vertical-host 0.194 or later, put its people in src/world.ts and name it in the worker ' +
+            '(`workerDoor({ world: WORLD })`), as the template does.',
         };
       }
       const client = await issuer.client({ tenantId, previewScopeId: previewId, redirectUri: callbackUrl });
