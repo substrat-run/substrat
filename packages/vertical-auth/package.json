@@ -47,6 +47,10 @@
     "./session-route": {
       "types": "./dist/session-route.d.ts",
       "default": "./dist/session-route.js"
+    },
+    "./people": {
+      "types": "./dist/people.d.ts",
+      "default": "./dist/people.js"
     }
   },
   "files": [

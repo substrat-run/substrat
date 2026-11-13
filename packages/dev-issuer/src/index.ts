@@ -18,3 +18,5 @@ export {
   type DevMemberInvitesOptions,
   type DevSqliteDatabase,
 } from './member-invites.js';
+export { devPeople, type DevPeople, type DevPeopleHost, type DevPeopleOptions } from './people.js';
+export { PEOPLE_TTL_SECONDS, type PersonRefusal } from '@substrat-run/vertical-auth/people';

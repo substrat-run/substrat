@@ -16,6 +16,7 @@ import {
   manifestEntities,
   manifestOperations,
   moduleManifest,
+  peersDeclaredBy,
   permissionKey,
   purgeSchedulesOf,
   type EntityGrantShape,
@@ -28,6 +29,8 @@ export const TODO_PERM = {
   listContribute: permissionKey.parse('list:contribute'),
   listArchive: permissionKey.parse('list:archive'),
   listTrash: permissionKey.parse('list:trash'),
+  peopleManage: permissionKey.parse('people:manage'),
+  peopleResolve: permissionKey.parse('people:resolve'),
 } as const;
 
 /**
@@ -73,6 +76,9 @@ const surface = manifestOperations(todoOperations, {
     'list:contribute': 'See a list, add items to it, and tick them off',
     'list:archive': 'Archive a list, or bring it back from the archive',
     'list:trash': 'Move a list to the trash, see what is in it, and restore it',
+    'people:manage': 'Decide which members may use this workspace’s plugins',
+    // A plugin's, as a peer, and no person's: `lint:permissions` refuses a role that carries it.
+    'people:resolve': { description: 'Ask who a login is here, when they sign in to a plugin', holder: 'system' },
   },
   });
 
@@ -109,5 +115,8 @@ export const todoManifest = moduleManifest.parse({
   // #119: the 30-day purge horizon on lists, as the schedule that runs `delete-list` — derived,
   // so the operation, the key the system principal is seated with and the horizon are one fact.
   schedules: purgeSchedulesOf(todoOperations, todoEntities),
+  // The plugins that take their people from this workspace (`identity.person@1`). Each may ask
+  // who a login is and nothing else: the key is read off that one operation.
+  ...peersDeclaredBy(todoOperations, { notes: ['todo/resolve-person'] }),
   entitlementKey: 'todo',
 });

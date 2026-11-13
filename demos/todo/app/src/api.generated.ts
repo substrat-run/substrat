@@ -108,6 +108,13 @@ export interface Invite {
   created_at: string;
 }
 
+/** `todo_plugin_access` — declared in spec/model.ts. */
+export interface Access {
+  id: string;
+  granted_by: string;
+  created_at: string;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface TodoClient {
   /**
@@ -151,6 +158,13 @@ export interface TodoClient {
    * `DELETE /lists/{listId}` — `todo/delete-list`
    */
   deleteList(input: { listId: string }): Promise<{ id: string; deleted: boolean }>;
+
+  /**
+   * Let a member use this workspace’s plugins
+   *
+   * `POST /members/{memberId}/plugin-access` — `todo/grant-plugin-access`
+   */
+  grantPluginAccess(input: { memberId: string }): Promise<Access>;
 
   /**
    * Invite someone to a list by email
@@ -219,6 +233,13 @@ export interface TodoClient {
    * `POST /lists/{listId}/restore` — `todo/restore-list`
    */
   restoreList(input: { listId: string }): Promise<{ id: string; state: "active" | "archived" | "trashed" }>;
+
+  /**
+   * Stop a member using this workspace’s plugins
+   *
+   * `DELETE /members/{memberId}/plugin-access` — `todo/revoke-plugin-access`
+   */
+  revokePluginAccess(input: { memberId: string }): Promise<{ id: string; revoked: boolean }>;
 
   /**
    * Revoke someone’s access to a list
@@ -405,6 +426,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       send(`/items/${encodeURIComponent(String(input.itemId))}`, "DELETE", undefined, omit(input, ["itemId"])),
     deleteList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}`, "DELETE", undefined, omit(input, ["listId"])),
+    grantPluginAccess: (input: Args) =>
+      send(`/members/${encodeURIComponent(String(input.memberId))}/plugin-access`, "POST", omit(input, ["memberId"]), undefined),
     invite: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/invites`, "POST", omit(input, ["listId"]), undefined),
     join: (input: Args) =>
@@ -421,6 +444,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
       send(`/lists/${encodeURIComponent(String(input.listId))}`, "PATCH", omit(input, ["listId"]), undefined),
     restoreList: (input: Args) =>
       send(`/lists/${encodeURIComponent(String(input.listId))}/restore`, "POST", omit(input, ["listId"]), undefined),
+    revokePluginAccess: (input: Args) =>
+      send(`/members/${encodeURIComponent(String(input.memberId))}/plugin-access`, "DELETE", undefined, omit(input, ["memberId"])),
     revokeShare: (input: Args) =>
       send(`/shares/${encodeURIComponent(String(input.shareId))}`, "DELETE", undefined, omit(input, ["shareId"])),
     searchItems: (input: Args) =>

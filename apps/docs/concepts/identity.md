@@ -372,3 +372,52 @@ Leaving it out is safe: `ctx.verifiedEmail` is then `null`, so a person joins no
 `null` for a schedule, a consumer, a connection, a peer, a capability, someone acting as a person,
 and a delegated token, because none of those is the person proving the address.
 `OIDC_ALLOW_UNVERIFIED_EMAIL` keeps a person signed in, and does not reach this field.
+
+## People owned by another app
+
+A vertical normally owns who is in its scope. A **plugin** of another app does not: the other app
+decides who exists and what they hold, and the plugin asks it. Both run in the same tenant, on the
+same issuer, as separate verticals with separate databases.
+
+The question and its answer are the person contract, `identity.person@1`, in
+`@substrat-run/contracts`. The app that owns the people implements one operation with those shapes
+and names the plugin as a [peer](/concepts/cross-vertical) for it:
+
+```ts
+// the app that owns the people
+'workspace/resolve-person': {
+  summary: 'Who a login is here, for a plugin',
+  permission: 'people:resolve',
+  input: personResolveInput,    // { issuer, sub, verifiedEmail }
+  output: personResolveOutput,  // { person: { id, status, roles } | null }
+},
+```
+
+Declare that key with `holder: 'system'`, so no person's role can carry it, and list the plugin
+with `peersDeclaredBy`. The answer has an id, a status and role keys. It has no name and no address.
+
+The plugin's door is `admitPerson` from `@substrat-run/vertical-auth/people` (`devPeople` in
+`@substrat-run/dev-issuer` wraps it for a dev server). When a login it has not seen makes a request,
+it asks, then:
+
+- lets the person in as the **id the other app gave**, which becomes their principal here;
+- seats the roles your mapping turns the other app's role keys into, and removes the ones it no
+  longer maps to;
+- keeps the answer for five minutes (`PEOPLE_TTL_SECONDS`).
+
+Within that time a request costs no call. After it the door asks again. So a person blocked in the
+other app, or whose roles changed there, is refused or re-seated in the plugin within five minutes,
+and that number is the bound to plan around. If the answer has expired and the other app cannot be
+reached, nobody is admitted.
+
+| The other app answers | The plugin |
+|---|---|
+| a person, `active` | serves them, with the mapped roles |
+| a person, `active`, no roles | serves them; every operation is `403` |
+| a person, `invited` or `blocked` | `403`, and removes their roles |
+| nobody | `403` |
+| nothing (unreachable, answer expired) | `503` |
+
+`ctx.check` is unchanged and makes no network call. The hosted door does not take this option yet:
+today it runs on the pure host, and `demos/notes` beside `demos/todo` is the runnable pair.
+

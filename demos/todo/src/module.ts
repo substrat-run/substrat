@@ -39,6 +39,7 @@ type ListRow = EntityRow<typeof todoEntities, 'list'>;
 type ItemRow = EntityRow<typeof todoEntities, 'item'>;
 type ShareRow = EntityRow<typeof todoEntities, 'share'>;
 type InviteRow = EntityRow<typeof todoEntities, 'invite'>;
+type AccessRow = EntityRow<typeof todoEntities, 'access'>;
 const listRef = (id: string) => ({ entityType: 'list', entityId: id });
 
 /**
@@ -532,6 +533,62 @@ const bound = operationsFor(todoOperations)({
       payload: { id: share.id },
     });
     return { id: share.id, revoked: true };
+  },
+
+  'todo/grant-plugin-access': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.peopleManage));
+    const member = ctx.sql.query<OwnerRow>('SELECT * FROM todo_owners WHERE id = ?', [input.memberId])[0];
+    if (!member) throw substratError('not_found', `member not found: ${input.memberId}`);
+    const existing = ctx.sql.query<AccessRow>('SELECT * FROM todo_plugin_access WHERE id = ?', [member.id])[0];
+    if (existing) return existing;
+
+    ctx.sql.exec('INSERT INTO todo_plugin_access (id, granted_by, created_at) VALUES (?, ?, ?)', [
+      member.id,
+      ctx.principal,
+      ctx.now(),
+    ]);
+    const row = ctx.sql.query<AccessRow>('SELECT * FROM todo_plugin_access WHERE id = ?', [member.id])[0]!;
+    ctx.emit({
+      type: 'todo.plugin-access-granted',
+      schemaVersion: 1,
+      entity: { entityType: 'access', entityId: row.id },
+      piiClass: 'pseudonymous',
+      subjectId: dataSubjectId.parse(row.id),
+      payload: { id: row.id },
+    });
+    return row;
+  },
+
+  'todo/revoke-plugin-access': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.peopleManage));
+    const { changes } = ctx.sql.exec('DELETE FROM todo_plugin_access WHERE id = ?', [input.memberId]);
+    if (changes === 0) throw substratError('not_found', `no plugin access to revoke: ${input.memberId}`);
+    ctx.emit({
+      type: 'todo.plugin-access-revoked',
+      schemaVersion: 1,
+      entity: { entityType: 'access', entityId: input.memberId },
+      piiClass: 'pseudonymous',
+      subjectId: dataSubjectId.parse(input.memberId),
+      payload: { id: input.memberId },
+    });
+    return { id: input.memberId, revoked: true };
+  },
+
+  /**
+   * The person contract, answered from what this app already records: a member is found by the
+   * address they joined with, which is the issuer's word for it (K-61) and the same proof an
+   * invitation is admitted on. This app keeps no logins, so `sub` and `issuer` go unread.
+   *
+   * A member without plugin access is known and holds nothing, which is what an empty role
+   * list says. Nobody here is ever `invited` or `blocked`: a list invitation is no person yet.
+   */
+  'todo/resolve-person': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.peopleResolve));
+    if (input.verifiedEmail === null) return { person: null };
+    const member = ownerByEmail(ctx, input.verifiedEmail);
+    if (!member) return { person: null };
+    const access = ctx.sql.query<{ id: string }>('SELECT id FROM todo_plugin_access WHERE id = ?', [member.id])[0];
+    return { person: { id: member.id, status: 'active' as const, roles: access ? ['member'] : [] } };
   },
 });
 

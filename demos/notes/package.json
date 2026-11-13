@@ -1,0 +1,49 @@
+{
+  "name": "@substrat-run/demo-notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A plugin of the Todo demo — a second vertical that takes its people from the first (identity.person@1)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "concurrently -n issuer,api -c magenta,blue \"pnpm run issuer\" \"tsx src/server.ts\"",
+    "emit:migrations": "tsx tools/emit-migrations.mts",
+    "server": "tsx src/server.ts",
+    "demo": "pnpm run dev",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas ../todo/src/personas.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/demo-todo": "workspace:*",
+    "@substrat-run/dev-issuer": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
+    "better-sqlite3": "catalog:",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
+    "@substrat-run/model-emit": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "catalog:",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "substrat": {
+    "slug": "notes",
+    "name": "Notes",
+    "permissions": "src/provision.ts",
+    "conformance": "test/conformance.ts",
+    "calls": [
+      "todo"
+    ]
+  }
+}

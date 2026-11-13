@@ -5,6 +5,11 @@
   "description": "The smallest vertical that is still a real one — a shared todo app, built forward from its model",
   "license": "Apache-2.0",
   "type": "module",
+  "exports": {
+    "./app": "./src/app.ts",
+    "./personas": "./src/personas.ts",
+    "./seed": "./src/seed.ts"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

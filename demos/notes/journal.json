@@ -1,0 +1,9 @@
+{
+  "entries": [
+    {
+      "version": "0001",
+      "slug": "add-notes_notes",
+      "sql": "CREATE TABLE notes_notes (\n  id TEXT PRIMARY KEY NOT NULL,\n  author_id TEXT NOT NULL,\n  text TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);"
+    }
+  ]
+}

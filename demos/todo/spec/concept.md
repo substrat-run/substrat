@@ -155,6 +155,7 @@ attachments, comments, re-sharing, public links, search, and a mobile app.
 
 | Role | What they can do |
 | --- | --- |
+| `admin` | `list:create` — Create lists of your own<br>`people:manage` — Decide which members may use this workspace’s plugins |
 | `member` | `list:create` — Create lists of your own |
 
 Shared one record at a time, without a role:
@@ -172,18 +173,23 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    e3 ||--o{ e1 : has
-    e3 ||--o{ e2 : has
+    e4 ||--o{ e2 : has
     e4 ||--o{ e3 : has
-    e3 ||--o{ e5 : has
-    e1["invite"] {
+    e5 ||--o{ e4 : has
+    e4 ||--o{ e6 : has
+    e1["access"] {
+        string created_at
+        string granted_by
+        string id PK
+    }
+    e2["invite"] {
         string created_at
         string email
         string id PK
         string invited_by
         string list_id
     }
-    e2["item"] {
+    e3["item"] {
         string added_by
         string created_at
         number done
@@ -191,19 +197,19 @@ erDiagram
         string list_id
         string text
     }
-    e3["list"] {
+    e4["list"] {
         string created_at
         string id PK
         string name
         string owner_id
     }
-    e4["owner"] {
+    e5["owner"] {
         string created_at
         string display_name
         string email
         string id PK
     }
-    e5["share"] {
+    e6["share"] {
         string created_at
         string email
         string id PK
@@ -244,3 +250,10 @@ _No lifecycle is declared: nothing here moves through stages._
 - 2026-11-07: `todo/join` no longer takes `email` (K-61). The operation reads `ctx.verifiedEmail`, which
   every door passes, and refuses a person with no verified address, so a typed address claims nothing.
   The host guard is gone. Under `OIDC_ALLOW_UNVERIFIED_EMAIL` a person can still sign in, but not join.
+- 2026-11-13: Todo can be the app a plugin takes its people from (`identity.person@1`,
+  `docs/rfc/dependent-people.md`). A member may be given plugin access (`todo/grant-plugin-access`,
+  `todo/revoke-plugin-access`, the `access` entity), and a plugin asks who a login is with
+  `todo/resolve-person`, through the peer door. Two keys and one role are new: `people:manage`, held by
+  the new `admin` role (a member who also decides plugin access; Ada, in the dev cast), and
+  `people:resolve`, declared `holder: 'system'` and held only by the `notes` peer. Nothing a member
+  could do before changed.
