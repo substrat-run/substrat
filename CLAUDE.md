@@ -72,7 +72,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/elements` | Web components for a vertical's screens — Lit on Web Awesome's free core, themed by its `--wa-*` tokens: `<sub-entity-table>`, `<sub-user-menu>`, `<sub-avatar>`, `<sub-assistant>` (over `AssistantModel`, loading no Web Awesome component), and the session read they share. Framework-free, so a vertical's app need not be React | Apache-2.0 |
 | `engines/*` | The nine domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`, `assistant`. `notifications` is published; `assistant` is configured for public publication, first npm release pending | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` and `bolagsverket` are private until their first release is set up | AGPL + commercial |
-| `demos/*` | Eight directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
+| `demos/*` | Nine directories: the eight demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock`, `notes` (a plugin of `todo`: it takes its people from it, `docs/rfc/dependent-people.md`) — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
 | `apps/control-plane` | The control plane, and the worker that serves the console | private |
 | `apps/console` | Control-plane admin console (tenants, fleet, admin log, permissions) | private |
@@ -284,8 +284,11 @@ a private package needs none. If `lint:changeset-bump` fails, fix the changeset 
 - `pnpm todo-demo dev` — run the Todo demo (issuer :8879 + API + web).
   Demo dev ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. That block
-  is full — `8872`–`8878` are taken (`8871` was the removed Callout demo's) and `8879` is the issuer — so `tock`, the newest demo,
-  sits just above it at `8880`/`5280`. The Vite
+  is full — `8872`–`8878` are taken (`8871` was the removed Callout demo's) and `8879` is the issuer — so `tock`
+  sits just above it at `8880`/`5280`, and `notes` after it at `8881`, with the copy of Todo it is
+  a plugin of on `8882` (one process serves both: the local peer broker is in-process). Notes has
+  no web app: its dev command runs Todo's own on `5278` against that copy, which draws the plugin,
+  so it cannot run beside `pnpm todo-demo dev`. The Vite
   proxy must set **`changeOrigin: false`, written out**: the API derives its OIDC
   `redirect_uri` from the forwarded Host header, and rewriting it sends the login callback
   to the wrong port. Writing nothing is not the same as writing `false` — Vite's string

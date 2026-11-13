@@ -5,17 +5,20 @@
 
 # Permission snapshot — @substrat-run/demo-todo
 
-5 keys · 1 modules · 1 roles
+8 keys · 1 modules · 2 roles
 
 ## 1. Registry — every key a registered manifest declares
 
-| Key | Description | Declared by |
-| --- | --- | --- |
-| `list:archive` | Archive a list, or bring it back from the archive | `@substrat-run/demo-todo` |
-| `list:contribute` | See a list, add items to it, and tick them off | `@substrat-run/demo-todo` |
-| `list:create` | Create lists of your own | `@substrat-run/demo-todo` |
-| `list:manage` | Rename, delete and share a list, and delete items on it | `@substrat-run/demo-todo` |
-| `list:trash` | Move a list to the trash, see what is in it, and restore it | `@substrat-run/demo-todo` |
+| Key | Description | Declared by | Reserved to a system principal |
+| --- | --- | --- | --- |
+| `list:archive` | Archive a list, or bring it back from the archive | `@substrat-run/demo-todo` | — |
+| `list:contribute` | See a list, add items to it, and tick them off | `@substrat-run/demo-todo` | — |
+| `list:create` | Create lists of your own | `@substrat-run/demo-todo` | — |
+| `list:manage` | Rename, delete and share a list, and delete items on it | `@substrat-run/demo-todo` | — |
+| `list:trash` | Move a list to the trash, see what is in it, and restore it | `@substrat-run/demo-todo` | — |
+| `people:manage` | Decide which members may use this workspace’s plugins | `@substrat-run/demo-todo` | — |
+| `people:resolve` | Ask who a login is here, when they sign in to a plugin | `@substrat-run/demo-todo` | yes |
+| `people:vouch` | Ask whether a person may see a list or an item, for a plugin | `@substrat-run/demo-todo` | yes |
 
 ## 2. Roles — as defined by this vertical's provisioning code
 
@@ -23,6 +26,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
+| `admin` | `list:create`, `people:manage` |
 | `member` | `list:create` |
 
 ## 3. Coverage — which roles hold each key
@@ -31,9 +35,12 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | --- | --- |
 | `list:archive` | — no role — |
 | `list:contribute` | — no role — |
-| `list:create` | `member` |
+| `list:create` | `admin`, `member` |
 | `list:manage` | — no role — |
 | `list:trash` | — no role — |
+| `people:manage` | `admin` |
+| `people:resolve` | — no role — |
+| `people:vouch` | — no role — |
 
 ## 4. Entity-narrowed grant shapes
 
@@ -59,7 +66,20 @@ A purge horizon's grant is scope-wide, and narrower than it reads: a key the sys
 principal holds only for a purge is refused to it everywhere except the purge sweep's own
 call of that operation, one entity at a time, on an entity still in the bin past its horizon.
 
-## 6. Operations — which key each checks
+## 6. Other verticals — what each may do here
+
+Each is another vertical of the SAME tenant, calling through the platform as
+`vertical:<slug>` — never with a token, and never as a person. It holds the permissions
+shown on every instance of this vertical from provisioning on, and no others: a key
+removed here stops being held on every instance at the first call after the promote
+(#2263). It may invoke only the operations shown (none: it may only receive). A tenant
+switches one off per scope with `revokeFromPeer`.
+
+| Vertical | Declared by | May invoke | Holds |
+| --- | --- | --- | --- |
+| `notes` | `@substrat-run/demo-todo` | `todo/resolve-person`, `todo/vouch-access` | `people:resolve`, `people:vouch` |
+
+## 7. Operations — which key each checks
 
 The check each registered operation DECLARES it opens with, and what it narrows to. A
 proof walk lists this module's keys only; a composed engine's key it reaches is declared by
@@ -75,14 +95,18 @@ shapes.
 | `todo/create-list` | `list:create` | the scope | `@substrat-run/demo-todo` |
 | `todo/delete-item` | `list:manage` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
 | `todo/delete-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/grant-plugin-access` | `people:manage` | the scope | `@substrat-run/demo-todo` |
 | `todo/invite` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/join` | `list:create` | the scope | `@substrat-run/demo-todo` |
 | `todo/list-invites` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/list-members` | `people:manage` | the scope | `@substrat-run/demo-todo` |
 | `todo/list-shares` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/my-lists` | `list:contribute` | each row, by a proof walk: Returns only lists the caller owns or has been shared | `@substrat-run/demo-todo` |
 | `todo/rename-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/resolve-person` | `people:resolve` | the scope | `@substrat-run/demo-todo` |
 | `todo/restore-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/revoke-plugin-access` | `people:manage` | the scope | `@substrat-run/demo-todo` |
 | `todo/revoke-share` | `list:manage` | one `list`, resolved in the handler: the list the share is on | `@substrat-run/demo-todo` |
 | `todo/search-items` | `list:contribute` | each row, by a proof walk: Returns only items on lists the caller owns or has been shared | `@substrat-run/demo-todo` |
 | `todo/search-list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
@@ -92,8 +116,9 @@ shapes.
 | `todo/trash-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/trashed-lists` | `list:trash` | each row, by a proof walk: Returns only binned lists the caller may restore | `@substrat-run/demo-todo` |
 | `todo/unarchive-list` | `list:archive` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/vouch-access` | `people:vouch` | the scope | `@substrat-run/demo-todo` |
 
-## 7. Not covered by this artifact
+## 8. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

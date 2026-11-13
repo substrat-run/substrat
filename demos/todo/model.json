@@ -1,5 +1,28 @@
 {
   "entities": {
+    "access": {
+      "table": "todo_plugin_access",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "granted_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "granted_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
     "invite": {
       "table": "todo_invites",
       "fields": {

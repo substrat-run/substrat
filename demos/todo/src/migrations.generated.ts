@@ -64,4 +64,15 @@ export const todoMigrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-todo_plugin_access
+    version: '0003',
+    sql: `
+      CREATE TABLE todo_plugin_access (
+        id TEXT PRIMARY KEY NOT NULL,
+        granted_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

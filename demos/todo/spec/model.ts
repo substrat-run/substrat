@@ -15,6 +15,8 @@ import {
   defineOperations,
   emitModel,
   entityStateOutput,
+  personResolveInput,
+  personResolveOutput,
   z,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
@@ -147,6 +149,22 @@ export const todoEntities = defineEntities({
     key: ['list_id', 'email'],
     erasable: ['email'],
   },
+
+  /**
+   * A member who may use this workspace's plugins: the other apps of the tenant that take their
+   * people from here. A row is the access, and removing it takes the access away.
+   *
+   * Its own entity rather than a column on `owner`, because it is a decision somebody else made
+   * about a person, with its own author and date. `id` is the member's `owner` id.
+   */
+  access: {
+    table: 'todo_plugin_access',
+    fields: z.object({
+      id: z.string(),
+      granted_by: z.string(),
+      created_at: z.string(),
+    }),
+  },
 });
 
 /**
@@ -160,6 +178,11 @@ export const todoEntities = defineEntities({
  *   member's lists unreachable to another.
  * - Sharing narrows `list:contribute` onto ONE list for one person, so what
  *   Björn may do is a fact about *that list* rather than about Björn.
+ *
+ * Three more are about people rather than lists. `people:manage` is the workspace admin's:
+ * who may use the plugins. `people:resolve` and `people:vouch` are held by no person at all: a
+ * plugin holds them, as a peer, to ask who somebody signing in to it is, and whether they may
+ * see a list or an item it keeps something about.
  */
 export const TODO_PERMISSIONS = [
   'list:create',
@@ -167,6 +190,9 @@ export const TODO_PERMISSIONS = [
   'list:contribute',
   'list:archive',
   'list:trash',
+  'people:manage',
+  'people:resolve',
+  'people:vouch',
 ] as const;
 
 export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
@@ -611,6 +637,95 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
       piiClass: 'none',
       payload: ['id'],
     },
+  },
+
+  /**
+   * The workspace's members, each with whether they may use its plugins: the admin's screen for
+   * deciding plugin access. Members only, never list invitations, which are no person yet.
+   */
+  'todo/list-members': {
+    summary: 'The workspace’s members, and which of them may use its plugins',
+    permission: 'people:manage',
+    output: todoEntities.owner.fields.extend({ plugin_access: z.boolean() }),
+    paged: { over: { entity: 'owner', sortable: ['created_at', 'display_name'] } },
+    http: { method: 'GET', path: '/members' },
+  },
+
+  /**
+   * Let a member use the plugins. Idempotent: a member who has access keeps the row they have.
+   * The event is about a person, so it is classified and keyed on them.
+   */
+  'todo/grant-plugin-access': {
+    summary: 'Let a member use this workspace’s plugins',
+    permission: 'people:manage',
+    input: z.object({ memberId: z.string() }),
+    output: todoEntities.access.fields,
+    http: { method: 'POST', path: '/members/{memberId}/plugin-access' },
+    emits: {
+      entity: 'access',
+      entityIdFrom: 'id',
+      type: 'todo.plugin-access-granted',
+      schemaVersion: 1,
+      piiClass: 'pseudonymous',
+      subjectId: 'id',
+      payload: ['id'],
+    },
+  },
+
+  /**
+   * Take it away again. A plugin learns of it the next time it asks about the person, which is
+   * within the time it keeps an answer for.
+   */
+  'todo/revoke-plugin-access': {
+    summary: 'Stop a member using this workspace’s plugins',
+    permission: 'people:manage',
+    input: z.object({ memberId: z.string() }),
+    output: z.object({ id: z.string(), revoked: z.boolean() }),
+    http: { method: 'DELETE', path: '/members/{memberId}/plugin-access' },
+    emits: {
+      entity: 'access',
+      entityIdFrom: 'id',
+      type: 'todo.plugin-access-revoked',
+      schemaVersion: 1,
+      piiClass: 'pseudonymous',
+      subjectId: 'id',
+      payload: ['id'],
+    },
+  },
+
+  /**
+   * The person contract (`identity.person@1`): who is this login, asked by a plugin when
+   * somebody signs in to it. The shapes are the contract's own, so a plugin written against
+   * the contract works against this app unchanged.
+   *
+   * No `http`: it is called through the peer door and nowhere else, and `people:resolve` is
+   * held by the peers the manifest names, never by a person.
+   */
+  'todo/resolve-person': {
+    summary: 'Who a login is here, for a plugin of this workspace',
+    permission: 'people:resolve',
+    input: personResolveInput,
+    output: personResolveOutput,
+  },
+
+  /**
+   * Whether a person may see a list, or the list an item is on: asked by a plugin that keeps
+   * something about Todo's lists (Notes, about items) before it shows or adds it. Answered from
+   * the list's owner and its shares, which are written in the same transaction as the grants
+   * they mirror; an operation cannot ask the kernel about another principal's access, which is
+   * what this stands in for. A binned list is seen by nobody, as everywhere else.
+   *
+   * No `http`, like `resolve-person`: the peer door is the only way in.
+   */
+  'todo/vouch-access': {
+    summary: 'Whether a person may see a list or an item, for a plugin of this workspace',
+    permission: 'people:vouch',
+    input: z.object({
+      principal: z.string().min(1),
+      listId: z.string().min(1).optional(),
+      itemId: z.string().min(1).optional(),
+    }),
+    output: z.object({ visible: z.boolean(), listId: z.string().nullable() }),
   },
 });
 

@@ -22,6 +22,8 @@ export const MODULES = [todoModule];
 
 export const ROLES: RoleDefinition[] = [
   { key: 'member', permissions: [TODO_PERM.listCreate], source: 'vertical' },
+  // A member who also decides which members may use the workspace's plugins.
+  { key: 'admin', permissions: [TODO_PERM.listCreate, TODO_PERM.peopleManage], source: 'vertical' },
 ];
 
 /**

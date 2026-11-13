@@ -6,6 +6,8 @@ import react from '@vitejs/plugin-react';
 // `PORT=… WEB_PORT=… pnpm dev` moves both ends of the proxy together.
 const WEB_PORT = Number(process.env.WEB_PORT ?? 5278);
 const API_PORT = Number(process.env.PORT ?? 8878);
+// The Notes plugin's API, when `pnpm --filter @substrat-run/demo-notes dev` runs it beside this app.
+const NOTES_API_PORT = Number(process.env.NOTES_API_PORT ?? 8881);
 
 export default defineConfig({
   plugins: [react()],
@@ -33,6 +35,14 @@ export default defineConfig({
       // its OIDC `redirect_uri` from the Host it is handed, so the login callback
       // would come back to the API's port, where this app is not (#1388).
       '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: false },
+      // The plugin's notes on this app's items, from the same origin, so the session cookie goes
+      // with them. Deployed, a plugin is another origin, and this is the open question of how its
+      // screens appear inside the app it belongs to (docs/rfc/dependent-people.md).
+      '/plugins/notes/api': {
+        target: `http://localhost:${NOTES_API_PORT}`,
+        rewrite: (path) => path.replace(/^\/plugins\/notes/, ''),
+        changeOrigin: false,
+      },
     },
   },
 });

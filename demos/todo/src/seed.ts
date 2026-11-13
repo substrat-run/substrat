@@ -43,7 +43,7 @@ export interface World {
   readonly cleo: Person;
 }
 
-export function buildHost(dir: string): ScopeHost {
+export function buildHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir, permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;

@@ -104,6 +104,7 @@ Substrat is pre-release (0.x). What exists today:
 | Todo (shared lists) — user-initiated sharing on a record app; no engine, by design | [`demos/todo`](/verticals/todo) | Working |
 | ticket0 (support desk) — a public, unauthenticated surface; the assistant as a member of staff | [`demos/ticket0`](/verticals/ticket0) | Working |
 | Tock (measured file loads) — a runtime schema the data may disagree with; corrections that supersede without destroying | [`demos/tock`](/verticals/tock) | Runs locally — not deployed |
+| Notes (a plugin of Todo) — a vertical that takes its people from another app of the tenant | [`demos/notes`](/verticals/notes) | Runs locally — not deployed |
 
 Interfaces change without notice until the first vertical ships.
 
