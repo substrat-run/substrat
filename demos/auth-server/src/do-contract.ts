@@ -77,6 +77,13 @@ export type AuthServerStub = {
   retirePreviewClients(
     input: import('@substrat-run/contracts').PreviewClientRetire,
   ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').RetiredPreviewClients>>;
+  /** An app's machine client (#3134) — ensure, remove; each refuses another tenant's call. */
+  ensureMachineClient(
+    input: import('@substrat-run/contracts').MachineClientEnsure,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').EnsuredMachineClient>>;
+  removeMachineClient(
+    input: import('@substrat-run/contracts').MachineClientRemove,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').RemovedMachineClient>>;
 };
 
 /** The verified subject behind a session, as the `/__session` probe returns it. */

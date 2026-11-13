@@ -63,13 +63,18 @@ import {
   retirePreviewClients,
   type RegisterClientFn,
 } from './preview-clients.js';
+import { ensureMachineClient, removeMachineClient } from './app-machine-clients.js';
 import type { ConfigEntry, InstanceMeta, IssuerState, PreviewClientOutcome, SessionSubject } from './do-contract.js';
 import type {
+  EnsuredMachineClient,
+  MachineClientEnsure,
+  MachineClientRemove,
   MintedPreviewClient,
   PreviewClientCheck,
   PreviewClientClaim,
   PreviewClientMint,
   PreviewClientRetire,
+  RemovedMachineClient,
   RetiredPreviewClients,
 } from '@substrat-run/contracts';
 import { log, noteVersion } from './log.js';
@@ -383,6 +388,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * recorded here. The platform secret proves the caller is the platform, never which tenant
    * the platform is acting for, so without this a tenant's preview could be wired to another
    * tenant's issuer. A never-provisioned DO (a stray id) has no record and refuses everything.
+   *
+   * An app's machine client (#3134, `app-machine-clients.ts`) is addressed the same way and
+   * refused the same way, so its two verbs go through the same gate.
    */
   private foreignCall(input: { tenantId: string; scopeId: string }): PreviewClientRefusal | null {
     const meta = this.instanceMeta();
@@ -409,7 +417,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
 
   async mintPreviewClient(input: PreviewClientMint): Promise<PreviewClientOutcome<MintedPreviewClient>> {
     return this.previewCall(input, () =>
-      mintPreviewClient(this.ctx.storage.sql, this.registerClient(), input, (fn) => this.ctx.storage.transactionSync(fn)),
+      mintPreviewClient(this.ctx.storage.sql, this.registerClient('the preview client'), input, (fn) =>
+        this.ctx.storage.transactionSync(fn),
+      ),
     );
   }
 
@@ -420,12 +430,36 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /**
+   * Ensure an app's machine client (#3134). The ceiling is this issuer's `MACHINE_SCOPES` as it
+   * stands for this call, so a scope the operator has not allowed is answered as withheld and
+   * never granted.
+   */
+  async ensureMachineClient(input: MachineClientEnsure): Promise<PreviewClientOutcome<EnsuredMachineClient>> {
+    return this.previewCall(input, () =>
+      ensureMachineClient(
+        this.ctx.storage.sql,
+        this.registerClient("the app's machine client"),
+        input,
+        machineScopesOf(this.effectiveCfg()[MACHINE_SCOPES]).scopes,
+        (fn) => this.ctx.storage.transactionSync(fn),
+      ),
+    );
+  }
+
+  async removeMachineClient(input: MachineClientRemove): Promise<PreviewClientOutcome<RemovedMachineClient>> {
+    return this.previewCall(input, () =>
+      this.ctx.storage.transactionSync(() => removeMachineClient(this.ctx.storage.sql, input)),
+    );
+  }
+
+  /**
    * Dynamic client registration, in-process: the plugin's own `/oauth2/register`, the endpoint
    * the dashboard's install-time registration POSTs to. So a preview's client is registered by
    * exactly the code an app's is — the plugin mints the id, hashes the secret and judges the
    * URIs. A platform call has no request origin, and registration does not depend on one.
+   * `what` names the client in a refusal, since an app's machine client registers here too.
    */
-  private registerClient(): RegisterClientFn {
+  private registerClient(what: string): RegisterClientFn {
     const origin = this.env.PUBLIC_ORIGIN ?? 'https://preview-client.platform.invalid';
     const auth = this.auth(origin);
     return async (body) => {
@@ -441,7 +475,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         | null;
       if (!res.ok || !out?.client_id || !out.client_secret) {
         const why = out?.error_description ?? out?.error ?? `status ${res.status}`;
-        throw new PreviewClientRefusal(400, `the issuer refused the preview client's registration: ${why}`);
+        throw new PreviewClientRefusal(400, `the issuer refused the registration of ${what}: ${why}`);
       }
       return { client_id: out.client_id, client_secret: out.client_secret };
     };
