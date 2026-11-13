@@ -5526,6 +5526,25 @@ export interface ScopeHost {
   ): Promise<Pick<ScopeAttachments, 'open'>>;
 
   /**
+   * Open the attachment a DOWNLOAD link names (#3139), as the principal who minted it: the link is
+   * resolved (`resolveDownloadLink`), and the file is then opened through `attachments(minter, …)`,
+   * so the target's `readPermission` is checked as them on every request. `not_found` for a secret
+   * that names nothing or names another file; `conflict` with reason `download_link_gone` for one
+   * that expired or was revoked; `null` for a file removed since the mint. `options.range` is read
+   * as `openStream` reads it. The mint is `ctx.attachments.mintDownloadUrl`.
+   *
+   * Optional: a host that has not wired the link table says so by leaving it out, and
+   * `mountDownloadLinkRedeem` answers `unavailable` over one.
+   */
+  openDownloadLink?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    attachmentId: string,
+    options?: AttachmentOpenOptions,
+  ): Promise<OpenedAttachmentStream | null>;
+
+  /**
    * Look an upload link up WITHOUT spending it, so the route can refuse an oversize body or a
    * wrong type before it reads a byte. `not_found` for a secret that names nothing (and for
    * one that cannot be ours); `not_found` with reason `upload_link_wrong_target` when `target`

@@ -170,7 +170,8 @@ const door = workerDoor<Env>({
   // Files on customers and bikes (manifest.ts `attachmentTargets`), served and removed by the door
   // as the signed-in person: GET and DELETE /api/attachments/:attachmentId. A GET streams the file
   // and answers byte ranges, so an <audio> or <video> element can play and seek it. A route of your
-  // own reaches the same files through `door.attachments(c)`.
+  // own reaches the same files through `door.attachments(c)`. The door also reads a download link
+  // an operation mints (`ctx.attachments.mintDownloadUrl`), for a caller with no session.
   attachments: true,
 });
 

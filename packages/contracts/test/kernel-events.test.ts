@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
+  ATTACHMENT_DOWNLOAD_LINK_MINTED,
+  ATTACHMENT_DOWNLOAD_LINK_REVOKED,
   ATTACHMENT_UPLOAD_LINK_MINTED,
   ATTACHMENT_UPLOAD_LINK_REDEEMED,
   ATTACHMENT_UPLOAD_LINK_REVOKED,
@@ -40,11 +42,14 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the twenty-three types the kernel writes', () => {
+  it('is exactly the twenty-five types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
         ATTACHMENT_REMOVED,
+        // Download links (#3139): minted, revoked. A read spends nothing, so nothing is written for one.
+        ATTACHMENT_DOWNLOAD_LINK_MINTED,
+        ATTACHMENT_DOWNLOAD_LINK_REVOKED,
         // Upload links: minted, redeemed with the attachment they caused, revoked.
         ATTACHMENT_UPLOAD_LINK_MINTED,
         ATTACHMENT_UPLOAD_LINK_REDEEMED,
@@ -111,7 +116,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(23);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(25);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);

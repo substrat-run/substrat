@@ -11,6 +11,9 @@
  *   the active-type rule leaves out of each (`text/xsl`, `application/unknown`, `unknown/unknown`,
  *   `multipart/x-mixed-replace`).
  *
+ * `upl/mint-download`, `upl/revoke-download` and `upl/dump-downloads` serve
+ * `downloadLinkContractSuite` (#3139) over the same targets.
+ *
  * The `upl.poke` consumer tries to mint and to revoke a link, and writes down what it was
  * told: a consumer runs as the system actor, which holds no authorship to lend a file.
  *
@@ -57,6 +60,8 @@ export const uploadLinkModManifest = moduleManifest.parse({
       { type: 'attachment.upload-link-minted', schemaVersion: 1 },
       { type: 'attachment.upload-link-redeemed', schemaVersion: 1 },
       { type: 'attachment.upload-link-revoked', schemaVersion: 1 },
+      { type: 'attachment.download-link-minted', schemaVersion: 1 },
+      { type: 'attachment.download-link-revoked', schemaVersion: 1 },
     ],
     consumes: [{ type: 'upl.poke', schemaVersion: 1 }],
   },
@@ -149,6 +154,15 @@ export const uploadLinkMod: ModuleRegistration = {
     'upl/dump': ((ctx) =>
       ctx.sql.query('SELECT * FROM _substrat_upload_links').map((r) => JSON.stringify(r))) as Handler,
     'upl/id': (() => ({ id: ulid() })) as Handler,
+    // #3139: download links, for `downloadLinkContractSuite`. Unguarded for `upl/mint`'s reason.
+    'upl/mint-download': ((ctx, input) =>
+      ctx.attachments.mintDownloadUrl(input as Parameters<OperationContext['attachments']['mintDownloadUrl']>[0])) as Handler,
+    'upl/revoke-download': (async (ctx, input) => {
+      await ctx.attachments.revokeDownloadLink((input as { id: string }).id);
+      return { revoked: true };
+    }) as Handler,
+    'upl/dump-downloads': ((ctx) =>
+      ctx.sql.query('SELECT * FROM _substrat_download_links').map((r) => JSON.stringify(r))) as Handler,
     // Hand a consumer an entity to mint for and an existing link to revoke.
     'upl/poke': ((ctx, input) => {
       const i = input as { entity: EntityRef; linkId: string };

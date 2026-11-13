@@ -366,10 +366,22 @@ function versionIdOf(env: unknown): string | null {
  */
 export const UPLOAD_LINK_LOG_PREFIX = '/api/attachment-uploads';
 export const UPLOAD_LINK_LOG_SECRET_PREFIX = 'sbup_';
+/**
+ * A download link's secret (#3139) is the last segment of its path too
+ * (`/api/attachment-downloads/<attachmentId>/<secret>`), and is redacted by the same two rules. Held
+ * equal to `DOWNLOAD_LINK_PATH_PREFIX` and `DOWNLOAD_LINK_SECRET_PREFIX` by a test, as above.
+ */
+export const DOWNLOAD_LINK_LOG_PREFIX = '/api/attachment-downloads';
+export const DOWNLOAD_LINK_LOG_SECRET_PREFIX = 'sbdl_';
 const UPLOAD_LINK_SECRET_SEGMENT = /^(\/api\/attachment-uploads\/[^/]+\/[^/]+\/)[^/]+/;
-const SECRET_SHAPED_SEGMENT = new RegExp(`(^|/)${UPLOAD_LINK_LOG_SECRET_PREFIX}[^/]*`, 'g');
+const DOWNLOAD_LINK_SECRET_SEGMENT = /^(\/api\/attachment-downloads\/[^/]+\/)[^/]+/;
+const SECRET_SHAPED_SEGMENT = new RegExp(`(^|/)(?:${UPLOAD_LINK_LOG_SECRET_PREFIX}|${DOWNLOAD_LINK_LOG_SECRET_PREFIX})[^/]*`, 'g');
+/** The path with every upload- and download-link secret in it replaced by `[redacted]`. */
 export const redactUploadLinkSecret = (pathname: string): string =>
-  pathname.replace(UPLOAD_LINK_SECRET_SEGMENT, '$1[redacted]').replace(SECRET_SHAPED_SEGMENT, '$1[redacted]');
+  pathname
+    .replace(UPLOAD_LINK_SECRET_SEGMENT, '$1[redacted]')
+    .replace(DOWNLOAD_LINK_SECRET_SEGMENT, '$1[redacted]')
+    .replace(SECRET_SHAPED_SEGMENT, '$1[redacted]');
 
 /**
  * The path, with the query string DISCARDED.

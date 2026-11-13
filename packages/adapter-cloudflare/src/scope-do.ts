@@ -377,8 +377,10 @@ import {
   assertNoSecret,
   CAPABILITY_DDL,
   UPLOAD_LINK_DDL,
+  DOWNLOAD_LINK_DDL,
   createAttachmentVerbs,
   inspectUploadLink,
+  resolveDownloadLink,
   redeemUploadLinkInTransaction,
   type UploadLinkInspection,
   COPY_ORIGIN_DDL,
@@ -1019,6 +1021,9 @@ const KERNEL_DDL = `
   -- Upload links: a short-lived, single-use URL that lets a caller with no session upload ONE
   -- file to ONE entity. Shared with the pure adapter from @substrat-run/kernel.
   ${UPLOAD_LINK_DDL}
+  -- #3139: download links, a short-lived URL that lets a caller with no session read ONE file as
+  -- the principal who minted it. Shared with the pure adapter from @substrat-run/kernel.
+  ${DOWNLOAD_LINK_DDL}
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
@@ -4717,6 +4722,25 @@ export function defineScopeDO(
             secret,
             target,
             idempotencyKey,
+          ),
+        );
+      });
+    }
+
+    /** #3139: who a download link reads `attachmentId` as — its minter, while it is live. */
+    downloadLinkResolveReply(
+      secret: string,
+      attachmentId: string,
+      _tenantId: TenantId,
+      _scopeId: ScopeId,
+    ): Promise<DoReply<PrincipalId>> {
+      return replyOf(async () => {
+        await this.ensureMigrations();
+        return await this.queue.enqueue(() =>
+          resolveDownloadLink(
+            { sql: doSpineSql(this.sql), now: instant.parse(new Date().toISOString()) },
+            secret,
+            attachmentId,
           ),
         );
       });
@@ -10048,7 +10072,7 @@ export function defineScopeDO(
             const gate = this.attachmentTargets.get(entityType);
             if (!gate) return undefined;
             const uploadLinks = this.uploadLinkPolicies.get(entityType);
-            return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
+            return uploadLinks ? { read: gate.read, write: gate.write, uploadLinks } : { read: gate.read, write: gate.write };
           },
         }),
         // K-16 / #1864: link and relink, written once in the kernel over the raw spine seam.

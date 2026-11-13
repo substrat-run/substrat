@@ -19,8 +19,10 @@ import {
   type CheckSubject,
   type Decision,
   type DomainEventInput,
+  type DownloadLinkMintInput,
   type EntityRef,
   type Instant,
+  type MintedDownloadLink,
   type MintedUploadLink,
   type PermissionKey,
   type PrincipalId,
@@ -35,6 +37,7 @@ import { toBase64url } from './base64url.js';
 import { capabilityTokenHash } from './capability.js';
 import { assertAllowed } from './permission-checker.js';
 import { attachmentSha256 } from './attachment-bytes.js';
+import { mintDownloadUrl, revokeDownloadLink } from './download-link.js';
 import type { RedeemedUploadLink, ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
 
@@ -277,10 +280,29 @@ export interface AttachmentVerbs {
   revokeUploadLink(id: string): Promise<void>;
   /** This scope's upload links, newest first — never the secret. What a follow-up operation reads to find the attachment a link produced. */
   uploadLinks(filter?: { entity?: EntityRef; limit?: number }): UploadLinkRecord[];
+  /**
+   * Mint a URL that lets its holder READ one attachment, with no session, until it expires
+   * (#3139): an `<audio>` element on another origin, a file an MCP tool hands back, a link in a
+   * mail. The caller must be a principal holding the target's `readPermission` on the file's
+   * owner, and the file is read as them on every request, so losing that key ends every link
+   * they minted. Not spent by a read: good until `expiresAt` or a revoke.
+   *
+   * ```ts
+   * const link = await ctx.attachments.mintDownloadUrl({ attachmentId, ttlSeconds: 3600 });
+   * return { url: `${origin}${link.path}`, expiresAt: link.expiresAt };
+   * ```
+   *
+   * The secret tripwire `mintUploadUrl` has applies. Transactional with the operation.
+   */
+  mintDownloadUrl(input: DownloadLinkMintInput): Promise<MintedDownloadLink>;
+  /** Revoke a download link before it expires. Allowed to anyone who could have minted it. Idempotent. */
+  revokeDownloadLink(id: string): Promise<void>;
 }
 
 /** What the verbs need of the target's declaration: its write key and its link policy. */
 export interface UploadTarget {
+  /** The read key: what a download link is minted and read under (#3139). */
+  read: PermissionKey;
   write: PermissionKey;
   uploadLinks?: UploadLinkPolicy;
 }
@@ -317,8 +339,11 @@ function principalOf(subject: CheckSubject, verb: string): PrincipalId {
 export function createAttachmentVerbs(deps: AttachmentVerbDeps): AttachmentVerbs {
   const readRow = (id: string): UploadLinkRow | undefined =>
     deps.sql.query<UploadLinkRow>(`SELECT ${COLUMNS} FROM _substrat_upload_links WHERE id = ?`, [id])[0];
+  const downloadDeps = { ...deps, readKeyOf: (entityType: string) => deps.targetOf(entityType)?.read };
 
   return {
+    mintDownloadUrl: (input) => mintDownloadUrl(downloadDeps, input),
+    revokeDownloadLink: (id) => revokeDownloadLink(downloadDeps, id),
     async mintUploadUrl(raw) {
       deps.assertWrites('ctx.attachments.mintUploadUrl');
       const minter = principalOf(deps.subject, 'ctx.attachments.mintUploadUrl');

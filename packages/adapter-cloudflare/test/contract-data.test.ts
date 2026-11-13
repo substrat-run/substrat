@@ -53,6 +53,7 @@ import {
 import {
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
+  downloadLinkContractSuite,
   orphanSweepContractSuite,
   uploadLinkReplayContractSuite,
   type OrphanSweepFixture,
@@ -341,11 +342,16 @@ const attachmentHostFixture = async (options: AttachmentTextHostOptions = {}) =>
     put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
       objs.set(key, { body: new Uint8Array(value), contentType: options?.httpMetadata?.contentType });
     },
-    get: async (key: string) => {
+    // R2's shapes, buffered and streamed (#3139): `body` is the object, or the `range` asked for,
+    // and `size` is always the whole object's.
+    get: async (key: string, options?: { range?: { offset: number; length: number } }) => {
       const o = objs.get(key);
       if (!o) return null;
+      const slice = options?.range ? o.body.slice(options.range.offset, options.range.offset + options.range.length) : o.body;
       return {
         arrayBuffer: async () => o.body.buffer.slice(o.body.byteOffset, o.body.byteOffset + o.body.byteLength),
+        body: new Response(slice).body!,
+        size: o.body.byteLength,
         httpMetadata: o.contentType ? { contentType: o.contentType } : undefined,
       };
     },
@@ -401,6 +407,7 @@ capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // Upload links, on the DO path: the link row and the spend live in the ScopeDO, the bytes in the bucket.
 uploadLinkContractSuite('adapter-cloudflare', attachmentHostFixture);
+downloadLinkContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // #2314: the orphan-byte sweep, judged by the real ScopeDO (the tombstone, the insert's and the
 // load's refusals, the copy refusal) over a bucket whose puts a test can hold. Its listing

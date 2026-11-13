@@ -494,10 +494,11 @@ describe("the door's files (#3139)", () => {
       remove: vi.fn(async (id: string) => (id === record.id ? record : null)),
     };
     const attachments = vi.fn(async () => files);
+    const openDownloadLink = vi.fn(async (_t: unknown, _s: unknown, _secret: string, id: string) => files.openStream(id));
     const built = workerDoor<object>({
       directory: () => ({ resolvePrincipal: async () => ann, openInviteFor: async () => null }) as never,
       nodeFor: () => node,
-      hostFor: () => ({ getScope: async () => ({}), grantSelfShapesLocal: async () => [], attachments }) as never,
+      hostFor: () => ({ getScope: async () => ({}), grantSelfShapesLocal: async () => [], attachments, openDownloadLink }) as never,
       envSpec: [],
       ...(mount ? { attachments: true as const } : {}),
     });
@@ -505,7 +506,7 @@ describe("the door's files (#3139)", () => {
     built.mount(app);
     const send = (method: string, headers: Record<string, string> = {}, id = record.id) =>
       app.request(`/api/attachments/${id}`, { method, headers });
-    return { send, attachments, files };
+    return { send, attachments, files, app };
   }
 
   it('serves the file as the person the session names, streamed and hardened', async () => {
@@ -578,8 +579,16 @@ describe("the door's files (#3139)", () => {
 
   it('mounts no file route unless the worker names `attachments`', async () => {
     subject = signedIn();
-    const { send, attachments } = fileDoor(false);
+    const { send, attachments, app } = fileDoor(false);
     expect((await send('GET')).status).toBe(404);
+    expect((await app.request(`/api/attachment-downloads/${record.id}/sbdl_${'A'.repeat(43)}`)).status).toBe(404);
     expect(attachments).not.toHaveBeenCalled();
+  });
+
+  it('reads a download link with no session at all', async () => {
+    subject = null;
+    const res = await fileDoor().app.request(`/api/attachment-downloads/${record.id}/sbdl_${'A'.repeat(43)}`);
+    expect(res.status).toBe(200);
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([...BYTES]);
   });
 });
