@@ -15,7 +15,7 @@
  * the permission model becomes visible — the same screen, a different answer, and no
  * filtering anywhere in the app.
  */
-import { createClient } from './api.generated.js';
+import { createClient, type Paged } from './api.generated.js';
 
 export { ApiError } from './api.generated.js';
 export type { Invite, Item, List, Owner, Paged, Share, TodoClient } from './api.generated.js';
@@ -30,3 +30,15 @@ export type { Invite, Item, List, Owner, Paged, Share, TodoClient } from './api.
 export const api = createClient({
   fetch: (input, init) => fetch(input, { credentials: 'same-origin', ...init }),
 });
+
+/** A paged read followed to its end: for a screen that is wrong on a partial answer. */
+export async function walk<T>(first: Paged<T>): Promise<T[]> {
+  const out = [...first.entries];
+  let next = first.next;
+  while (next) {
+    const page = await api.follow<T>(next);
+    out.push(...page.entries);
+    next = page.next;
+  }
+  return out;
+}

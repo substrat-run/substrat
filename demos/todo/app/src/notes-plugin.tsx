@@ -11,8 +11,9 @@
  * on the dev server) its features turn up here. Someone not switched on, or a workspace where the
  * plugin does not run, sees Todo as it is without it: no notes, and no word about them.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
+import { api, walk } from './api.js';
 
 const BASE = '/plugins/notes/api';
 
@@ -68,21 +69,39 @@ function AddNote({ placeholder, add }: { placeholder: string; add: (text: string
   const [text, setText] = useState('');
   const [draft, setDraft] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const typed = useRef('');
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!text.trim()) return;
-    const failed = await add(text);
-    setProblem(failed);
-    if (!failed) {
-      setText('');
-      setDraft((n) => n + 1);
+    if (busy || !text.trim()) return;
+    const sent = text;
+    setBusy(true);
+    try {
+      const failed = await add(sent);
+      setProblem(failed);
+      // Cleared only if nothing was typed meanwhile: a second draft is not thrown away.
+      if (!failed && typed.current === sent) {
+        setText('');
+        typed.current = '';
+        setDraft((n) => n + 1);
+      }
+    } finally {
+      setBusy(false);
     }
   };
   return (
     <>
       <form className="inline" onSubmit={submit}>
-        <wa-input key={draft} size="s" placeholder={placeholder} onInput={(e) => setText((e.target as HTMLInputElement).value)} />
-        <wa-button size="s" type="submit">
+        <wa-input
+          key={draft}
+          size="s"
+          placeholder={placeholder}
+          onInput={(e) => {
+            typed.current = (e.target as HTMLInputElement).value;
+            setText(typed.current);
+          }}
+        />
+        <wa-button size="s" type="submit" disabled={busy || undefined}>
           Add
         </wa-button>
       </form>
@@ -99,7 +118,7 @@ export function useItemNotes(listId: string, on: boolean) {
     try {
       const res = await fetch(`${BASE}/lists/${encodeURIComponent(listId)}/item-notes`, { credentials: 'same-origin' });
       if (!res.ok) return setByItem(null);
-      const { entries } = (await res.json()) as { entries: ItemNote[] };
+      const { entries } = (await res.json()) as { entries: ItemNote[]; capped: boolean };
       const grouped = new Map<string, ItemNote[]>();
       for (const n of entries) grouped.set(n.item_id, [...(grouped.get(n.item_id) ?? []), n]);
       setByItem(grouped);
@@ -108,6 +127,7 @@ export function useItemNotes(listId: string, on: boolean) {
     }
   }, [listId, on]);
   useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
 
   const add = async (itemId: string, text: string) => {
     const failed = await send(`/items/${encodeURIComponent(itemId)}/notes`, text);
@@ -165,12 +185,15 @@ export function NotesPage({ lists }: { lists: () => Promise<{ id: string; name: 
   type Group = { listId: string; name: string; items: { itemId: string; state: ItemState; notes: ItemNote[] }[] };
   const [groups, setGroups] = useState<Group[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [capped, setCapped] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch(`${BASE}/item-notes`, { credentials: 'same-origin' });
       if (!res.ok) return setError(await refusal(res));
-      const { entries } = (await res.json()) as { entries: (ItemNote & { list_id: string })[] };
+      const body = (await res.json()) as { entries: (ItemNote & { list_id: string })[]; capped: boolean };
+      const { entries } = body;
+      setCapped(body.capped);
       const names = new Map((await lists()).map((l) => [l.id, l.name]));
       const byList = new Map<string, Map<string, ItemNote[]>>();
       for (const n of entries) {
@@ -194,6 +217,8 @@ export function NotesPage({ lists }: { lists: () => Promise<{ id: string; name: 
     }
   }, [lists]);
   useEffect(() => void load(), [load]);
+  // A share revoked or a list binned elsewhere: the next read leaves its notes out (Todo stops vouching).
+  useAutoRefresh(load);
 
   return (
     <section>
@@ -207,6 +232,7 @@ export function NotesPage({ lists }: { lists: () => Promise<{ id: string; name: 
           {error}
         </wa-callout>
       ) : null}
+      {capped ? <p className="sub">Showing the newest notes; there are more than this page reads.</p> : null}
       {groups && groups.length === 0 ? (
         <div className="card">
           <p className="empty">No notes yet. Open a list and use Add note on an item.</p>
@@ -240,10 +266,11 @@ export function NotesPage({ lists }: { lists: () => Promise<{ id: string; name: 
   );
 }
 
-/** Each item on a list as Todo has it now, read through Todo's own API. */
+/**
+ * Each item on a list as Todo has it now, every page of them: an item missing from the result is
+ * read as deleted, so a list longer than one page must be read to its end.
+ */
 async function itemStates(listId: string): Promise<Map<string, ItemState>> {
-  const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/items?limit=100`, { credentials: 'same-origin' });
-  if (!res.ok) return new Map();
-  const items = (await res.json()) as { id: string; text: string; done: number }[];
+  const items = await walk(await api.listItems({ listId, limit: 100 }));
   return new Map(items.map((i) => [i.id, { text: i.text, done: i.done === 1 }]));
 }

@@ -31,6 +31,9 @@ export interface AppOptions {
 
 const vouchAnswer = z.object({ visible: z.boolean(), listId: z.string().nullable() });
 
+/** How many pages of item notes one read walks before it says it stopped: 20 × 100 notes. */
+const ITEM_NOTE_PAGES = 20;
+
 /** What a signed-in person who is not let in is told. No answer says whether they exist. */
 const REFUSED = 'the workspace this plugin belongs to does not let you in here';
 
@@ -76,23 +79,40 @@ export function createApp({ host, login, people, vouch }: AppOptions): Hono {
     return answer.listId;
   };
 
+  /**
+   * Item notes, every page of them up to `ITEM_NOTE_PAGES`, so a screen counting an item's notes
+   * counts them all. `capped` says the walk stopped first, and the screen says so.
+   */
+  const itemNotes = async (caller: DevCaller, input: { listId?: string; order?: 'desc' }) => {
+    const scope = await scopeOf(caller);
+    const entries: { list_id: string }[] = [];
+    let cursor: string | null = null;
+    for (let n = 0; n < ITEM_NOTE_PAGES; n++) {
+      const page: { entries: { list_id: string }[]; nextCursor: string | null } = await scope.invoke('notes/list-item-notes', {
+        ...input,
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      entries.push(...page.entries);
+      cursor = page.nextCursor;
+      if (!cursor) return { entries, capped: false };
+    }
+    return { entries, capped: true };
+  };
+
   app.get('/api/lists/:listId/item-notes', async (c) => {
     const caller = await callerOf(c.req.raw.headers);
     const listId = await vouched(caller, { listId: c.req.param('listId') });
-    // One page, at the ceiling: a list's notes are read together, and the screen says if there are more.
-    const page = await (await scopeOf(caller)).invoke<{ entries: unknown[] }, unknown>('notes/list-item-notes', { listId, limit: 100 });
-    return c.json(page);
+    return c.json(await itemNotes(caller, { listId }));
   });
 
   /**
-   * Every item note the caller may see, across lists: the notes read once, then Todo asked once
-   * per list they are on, and only the vouched lists' notes answered. One page of notes, at the
-   * ceiling; a workspace with more shows the newest.
+   * Every item note the caller may see, across lists: the notes read, newest first, then Todo
+   * asked once per list they are on, and only the vouched lists' notes answered.
    */
   app.get('/api/item-notes', async (c) => {
     const caller = await callerOf(c.req.raw.headers);
-    const scope = await scopeOf(caller);
-    const page = await scope.invoke<{ entries: { list_id: string }[] }, unknown>('notes/list-item-notes', { limit: 100, order: 'desc' });
+    const page = await itemNotes(caller, { order: 'desc' });
     const lists = [...new Set(page.entries.map((n) => n.list_id))];
     const seen = new Set<string>();
     for (const listId of lists) {
@@ -103,7 +123,7 @@ export function createApp({ host, login, people, vouch }: AppOptions): Hono {
         if (!(e instanceof HTTPException) || e.status !== 403) throw e;
       }
     }
-    return c.json({ entries: page.entries.filter((n) => seen.has(n.list_id)) });
+    return c.json({ entries: page.entries.filter((n) => seen.has(n.list_id)), capped: page.capped });
   });
 
   app.post('/api/items/:itemId/notes', async (c) => {

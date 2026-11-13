@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm run web\"",
-    "web": "PORT=${TODO_PORT:-8882} WEB_PORT=${TODO_WEB_PORT:-5278} NOTES_API_PORT=${PORT:-8881} pnpm --dir ../todo/app dev",
+    "web": "NOTES_API_PORT=${PORT:-8881} PORT=${TODO_PORT:-8882} WEB_PORT=${TODO_WEB_PORT:-5278} pnpm --dir ../todo/app dev",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
     "demo": "pnpm run dev",

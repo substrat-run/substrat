@@ -9,7 +9,7 @@
  * Only an admin may read or change it; anyone else is refused by the server, and told so here.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError } from './api.js';
+import { api, ApiError, walk } from './api.js';
 
 type Member = Awaited<ReturnType<typeof api.listMembers>>['entries'][number];
 
@@ -19,7 +19,8 @@ export function Plugins() {
 
   const load = useCallback(async () => {
     try {
-      setMembers((await api.listMembers({ sort: 'display_name' })).entries);
+      // Every page: an admin must reach every member, not the first hundred.
+      setMembers(await walk(await api.listMembers({ sort: 'display_name', limit: 100 })));
       setError(null);
     } catch (e) {
       setError(e);

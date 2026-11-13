@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
-import { api, ApiError, type Invite, type Item, type List, type Paged, type Share } from './api.js';
+import { api, ApiError, walk, type Invite, type Item, type List, type Paged, type Share } from './api.js';
 import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
 import { ItemNotesPanel, NotesPage, useItemNotes, useNotesPlugin } from './notes-plugin.js';
 import { Plugins } from './plugins.js';
@@ -67,10 +67,10 @@ const PLUGINS_HASH = '#/plugins';
 /** The Notes plugin's tab, beside the lists' views for whoever the plugin lets in. */
 const NOTES_HASH = '#/notes';
 
-/** Every list a person reaches, active and archived, for naming the lists notes are on. */
+/** Every list a person reaches, active and archived, every page, for naming the lists notes are on. */
 const allLists = async () => [
-  ...(await api.myLists({ limit: 100 })).entries,
-  ...(await api.myLists({ view: 'archived', limit: 100 })).entries,
+  ...(await walk(await api.myLists({ limit: 100 }))),
+  ...(await walk(await api.myLists({ view: 'archived', limit: 100 }))),
 ];
 
 function shownOf(hash: string): ListsShown {
@@ -146,7 +146,8 @@ function SignedIn({
         ) : hash === NOTES_HASH ? (
           <>
             <ViewsNav current="notes" notesOn={notesOn} />
-            <NotesPage key={who} me={who} lists={allLists} />
+            {/* Gone with the plugin's yes: switched off, the notes leave this page as well as the tab. */}
+            {notesOn ? <NotesPage key={who} me={who} lists={allLists} /> : <p className="empty">Notes is not switched on for you.</p>}
           </>
         ) : hash === TABLE_HASH ? (
           <>
