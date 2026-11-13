@@ -343,6 +343,16 @@ ${models
     client_id TEXT NOT NULL)\`,
   // \`filter=externalId eq "…"\`, the lookup a provisioning client makes before it creates.
   \`CREATE INDEX IF NOT EXISTS scim_user_external_id_idx ON scim_user (external_id)\`,
+  // An APP's machine client (#3134, \`src/app-machine-clients.ts\`): the one client the platform
+  // registered here for an app that declares issuer scopes, keyed by the app's scope. Every
+  // platform verb finds its client in this table and nowhere else, so none can reach a client
+  // an operator registered in the console or one somebody registered dynamically. Cascades
+  // with the client, so an operator removing it in the console leaves no row behind and the
+  // next ensure registers a new one.
+  \`CREATE TABLE IF NOT EXISTS app_machine_client (
+    app_scope_id TEXT PRIMARY KEY NOT NULL,
+    client_id TEXT NOT NULL UNIQUE REFERENCES oauth_client(client_id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))\`,
 ];
 `;
 
