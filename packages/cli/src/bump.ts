@@ -718,7 +718,7 @@ export interface PermissionSnapshot {
   readonly grantShapes: Record<string, { keys: string[]; terms: string[] }>;
   /** Scheduled operation → the keys its system principal holds, then the remaining cells. */
   readonly schedules: Record<string, { keys: string[]; terms: string[] }>;
-  /** Peer vertical (#1706) → the keys it holds here, then who declares it and what it may invoke. */
+  /** Peer vertical and its declaring module (#1706) → the keys it holds here, then what it may invoke. */
   readonly peers: Record<string, { keys: string[]; terms: string[] }>;
   /**
    * Operation → the key it declares it checks, then how it narrows and who declares it (#2384).
@@ -802,9 +802,13 @@ export function parsePermissions(text: string): PermissionSnapshot {
         snap.schedules[firstKey(cells)] = { keys: codesIn(cells[cells.length - 1] ?? ''), terms: cells.slice(0, -1) };
       }
     } else if (/^Other verticals\b/.test(heading)) {
-      // | Vertical | Declared by | May invoke | Holds |
+      // | Vertical | Declared by | May invoke | Holds | — one row per declaring module, so the
+      // entry is named by both: two modules naming one vertical are two declarations.
       for (const cells of rowsOf(body)) {
-        snap.peers[firstKey(cells)] = { keys: codesIn(cells[cells.length - 1] ?? ''), terms: cells.slice(1, -1) };
+        snap.peers[`${firstKey(cells)} (declared by ${firstKey(cells.slice(1))})`] = {
+          keys: codesIn(cells[cells.length - 1] ?? ''),
+          terms: cells.slice(2, -1),
+        };
       }
     } else if (/^Operations\b/.test(heading)) {
       // | Operation | Key | Checked on | Declared by | — the key cell's prose ("checked in code,

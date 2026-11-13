@@ -63,7 +63,7 @@ sequenceDiagram
 | 2 | **The answer expires, and that is the revocation bound.** A block or a changed role reaches the dependent within the time an answer is kept. | It needs no delivery guarantee. An event edge can be paused or skipped (`cross-vertical-events.md`), and a lost block is not acceptable. Events can be added later as a faster path, with expiry still the backstop. |
 | 3 | **It fails closed.** An answer past its time with a master that does not answer admits nobody. | The other choice keeps a blocked person in for as long as an outage lasts. An outage shorter than the kept time goes unnoticed. |
 | 4 | **The master's person id is the principal.** | One person is one id in both apps. Several logins, a changed issuer, and moving a running vertical onto a master all reduce to which login maps to that id. |
-| 5 | **Only the authorisation half is copied.** | The rule that only `piiClass: 'none'` crosses stands untouched: what is kept holds nothing an erasure has to reach. |
+| 5 | **Only the authorisation half is copied.** | The rule that only `piiClass: 'none'` crosses stands untouched: no name and no address is kept. What is kept is each login's `sub` beside the principal and status, and the roles seated per principal. A `sub` is the issuer's identifier for a person, and an issuer may use an address as one, so these rows are personal data an erasure has to reach (§5.2). |
 | 6 | **Roles are seated per person, answers are kept per login.** | Two logins of one person share one set of roles. |
 | 7 | **The reference master matches a login on its verified address.** The contract carries issuer and sub as well. | Module code is handed the verified address (`ctx.verifiedEmail`, K-61) and not the subject. A master that records logins matches on those, and no dependent changes. |
 
@@ -116,6 +116,12 @@ makes the people the platform's rather than an app's, which removes the reason a
 the master at all. Not decided.
 
 ### 5.2 The profile half, and erasure
+
+The copy a dependent keeps today is not empty of personal data: `person_login` holds each login's
+`sub`, and the row outlives its expiry, which only stops it being answered from. Nothing deletes it
+when the master erases the person. An erasure has to remove a person's login rows and seat row in
+every dependent, and the platform has to do it, since the rows are the door's and not module code's.
+That is unbuilt.
 
 Names and addresses are deferred, and a plugin that wants them will cache them in its own tables,
 which is the copy an erasure cannot reach. The proposed answer is a platform-held profile copy that

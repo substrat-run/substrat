@@ -22,8 +22,10 @@
  * - **Roles are seated per person, copies are kept per login.** Two logins of one person share
  *   one set of roles, so one of them moving away takes nothing from the other.
  *
- * What is kept is a login's principal and status and a person's seated roles. No name and no
- * address: the contract carries neither.
+ * What is kept is a login's `sub`, principal and status, and a person's seated roles. No name and
+ * no address: the contract carries neither. A `sub` is still the issuer's identifier for a person,
+ * and a row outlives its expiry, so erasing a person has to remove their rows here too; nothing
+ * does yet (docs/rfc/dependent-people.md §5.2).
  */
 import {
   personResolveOutput,

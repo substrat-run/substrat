@@ -12,7 +12,11 @@ import { apiCatalogFrom, buildOpenApiDocument } from '@substrat-run/contracts';
 import { todoOperations } from '../spec/model.js';
 import { todoManifest } from './manifest.js';
 
-export const API = apiCatalogFrom(todoOperations, {
+// `todo/resolve-person` declares no `http`: a plugin reaches it through the peer door, and no
+// route here answers it. Left in, the document would describe a path nothing serves.
+const { 'todo/resolve-person': _peerOnly, ...served } = todoOperations;
+
+export const API = apiCatalogFrom(served, {
   'todo/join': { tag: 'Account' },
   'todo/my-lists': { tag: 'Lists', description: 'A proof walk: lists you own or were shared, never a filter.' },
   'todo/create-list': { tag: 'Lists' },
