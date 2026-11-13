@@ -285,9 +285,10 @@ a private package needs none. If `lint:changeset-bump` fails, fix the changeset 
   Demo dev ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. That block
   is full — `8872`–`8878` are taken (`8871` was the removed Callout demo's) and `8879` is the issuer — so `tock`
-  sits just above it at `8880`/`5280`, and `notes` after it at `8881`/`5281`, with the copy of
-  Todo it is a plugin of on `8882` (one process serves both: the local peer broker is in-process)
-  and Todo's own web app on `5278` against it, so it cannot run beside `pnpm todo-demo dev`. The Vite
+  sits just above it at `8880`/`5280`, and `notes` after it at `8881`, with the copy of Todo it is
+  a plugin of on `8882` (one process serves both: the local peer broker is in-process). Notes has
+  no web app: its dev command runs Todo's own on `5278` against that copy, which draws the plugin,
+  so it cannot run beside `pnpm todo-demo dev`. The Vite
   proxy must set **`changeOrigin: false`, written out**: the API derives its OIDC
   `redirect_uri` from the forwarded Host header, and rewriting it sends the login callback
   to the wrong port. Writing nothing is not the same as writing `false` — Vite's string

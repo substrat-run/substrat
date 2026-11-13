@@ -17,8 +17,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, type Invite, type Item, type List, type Paged, type Share } from './api.js';
 import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
-import { ItemNotesPanel, ItemNotesStatus, useItemNotes } from './item-notes.js';
-import { NOTES_URL, Plugins } from './plugins.js';
+import { ItemNotesPanel, NotesPage, useItemNotes, useNotesPlugin } from './notes-plugin.js';
+import { Plugins } from './plugins.js';
 import { Settings } from './settings.js';
 
 /** The wall, as opposed to a blip: the server said no, not "try again". */
@@ -64,6 +64,9 @@ const SETTINGS_HASH = '#/settings';
 /** Who may use the workspace's plugins, from the account menu (`src/plugins.tsx`). */
 const PLUGINS_HASH = '#/plugins';
 
+/** The Notes plugin's notepad, in the header for whoever the plugin lets in. */
+const NOTES_HASH = '#/notes';
+
 function shownOf(hash: string): ListsShown {
   return hash === VIEW_HASH.archived ? 'archived' : hash === VIEW_HASH.trash ? 'trash' : 'active';
 }
@@ -96,6 +99,24 @@ export function App() {
   }
 
   const who = state.session.principal;
+  return <SignedIn who={who} hash={hash} full={full} match={match} tableList={tableList} />;
+}
+
+/** Signed in: the header, and the screen the route picks. */
+function SignedIn({
+  who,
+  hash,
+  full,
+  match,
+  tableList,
+}: {
+  who: string;
+  hash: string;
+  full: string;
+  match: RegExpExecArray | null;
+  tableList: RegExpExecArray | null;
+}) {
+  const notesOn = useNotesPlugin();
   return (
     <>
       <header>
@@ -103,21 +124,23 @@ export function App() {
         <wa-tag size="s" appearance="outlined">
             on Substrat
           </wa-tag>
-        {/* The plugin, when one runs beside this app (`pnpm --filter @substrat-run/demo-notes dev`). */}
-        {NOTES_URL ? <a className="plugin-link" href={NOTES_URL}>Notes</a> : null}
+        {/* The Notes plugin's page, for someone it lets in (`src/notes-plugin.tsx`). */}
+        {notesOn ? <a className="plugin-link" href={NOTES_HASH}>Notes</a> : null}
         <span className="who">
           <AccountMenu />
         </span>
       </header>
       <main>
         {match ? (
-          <ListView key={`${who}:${match[1]}`} listId={match[1]!} />
+          <ListView key={`${who}:${match[1]}`} listId={match[1]!} notesOn={notesOn} />
         ) : tableList ? (
           <ItemsTable key={`${who}:${full}`} listId={tableList[1]!} />
         ) : hash === SETTINGS_HASH ? (
           <Settings />
         ) : hash === PLUGINS_HASH ? (
           <Plugins key={who} />
+        ) : hash === NOTES_HASH ? (
+          <NotesPage key={who} me={who} />
         ) : hash === TABLE_HASH ? (
           <>
             <ViewsNav current="table" />
@@ -307,7 +330,7 @@ function SharedTag({ list }: { list: List }) {
   );
 }
 
-function ListView({ listId }: { listId: string }) {
+function ListView({ listId, notesOn }: { listId: string; notesOn: boolean }) {
   // A PAGE, not an array. `todo/list-items` declares `paged`, so what comes back is
   // the first twenty items plus a link to the next twenty — and an app that kept a
   // bare array would render those twenty as though they were the list.
@@ -317,8 +340,8 @@ function ListView({ listId }: { listId: string }) {
   const [error, setError] = useState<unknown>(null);
   const [text, setText] = useState('');
   const [email, setEmail] = useState('');
-  // The Notes plugin's notes on these items, when it runs beside this app (`src/item-notes.tsx`).
-  const itemNotes = useItemNotes(listId);
+  // The Notes plugin's notes on these items, for someone it lets in (`src/notes-plugin.tsx`).
+  const itemNotes = useItemNotes(listId, notesOn);
 
   // How far down the walk this screen has gone, so a revalidation refetches the
   // same depth instead of snapping back to the first page under someone's cursor.
@@ -414,7 +437,6 @@ function ListView({ listId }: { listId: string }) {
       </h2>
       <p className="sub">Tick things off, add your own. Both are things a share lets you do.</p>
       <Problem error={error} />
-      <ItemNotesStatus notes={itemNotes.notes} />
 
       {page === null ? (
         !error && <p className="empty">Loading…</p>
@@ -433,7 +455,7 @@ function ListView({ listId }: { listId: string }) {
                 <span className={i.done === 1 ? 'done' : undefined}>{i.text}</span>
               </wa-checkbox>
               <span className="spacer" />
-              <ItemNotesPanel itemId={i.id} notes={itemNotes.notes} add={itemNotes.add} />
+              <ItemNotesPanel itemId={i.id} notes={itemNotes} />
               <wa-button size="s" appearance="plain" variant="danger" onClick={() => guard(() => api.deleteItem({ itemId: i.id }))}>
                 delete
               </wa-button>

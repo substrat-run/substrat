@@ -13,9 +13,9 @@
  *     curl -s localhost:8879/dev/token -d '{"sub":"dev|bjorn"}' -H 'content-type: application/json'
  *     curl -s localhost:8881/api/notes -H "authorization: Bearer $TOKEN"
  *
- * Four processes: the issuer, this API (with Todo's beside it), Notes' web app on :5281, and
- * Todo's own web app on :5278 pointed at the Todo served here. Sign in to either; the session
- * cookie is shared across localhost ports, so the other app knows you too.
+ * Three processes: the issuer, this API (with Todo's beside it), and Todo's own web app on :5278
+ * pointed at the Todo served here. Notes has no screens of its own: Todo's app draws what the
+ * plugin adds, for whoever the plugin lets in, and reaches this API through its dev proxy.
  *
  * Björn is refused until Ada gives him plugin access on Todo's Plugins screen, and again after
  * she takes it away, within `PEOPLE_TTL_SECONDS` (30 here, 300 for the door's own default).

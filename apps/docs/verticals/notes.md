@@ -23,10 +23,13 @@ notepad is the whole product, so the only thing on the page is who is let in. It
   five minutes, in both directions.
 - **It fails closed.** With the kept answer expired and Todo unreachable, Notes admits nobody
   and answers `503`. An outage shorter than five minutes goes unnoticed.
+- **It has no screens of its own.** A person sees one app, Todo. When the plugin lets them in,
+  Todo's app shows what it adds: notes under each item on the list screen, and a **Notes** page in
+  the header. Someone not switched on sees Todo as it is without the plugin.
 - **A note on a Todo item follows the item's sharing.** Notes keeps the note; Todo knows who may
   see the item. So before showing or adding one, Notes asks Todo (`todo/vouch-access`) whether the
   person may see that list or item, and answers `403` otherwise, the same for an item that does not
-  exist. The notes appear inside Todo's own list screen, under each item.
+  exist.
 - **Nothing personal is copied.** The answer carries no name and no address. Notes keeps which
   login is which id, and the roles it seated.
 
@@ -41,7 +44,7 @@ notepad is the whole product, so the only thing on the page is who is let in. It
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/notes/PERMISSIONS.md) — 2 keys, 1 module, 1 role |
 | **Calls** | `todo`, for `todo/resolve-person` and `todo/vouch-access`, and nothing else |
 | **Auth** | [OIDC only](/concepts/identity), at the same issuer as Todo |
-| **Apps** | API (`:8881`) and a one-screen web app (`:5281`); the dev command also runs a copy of Todo's API (`:8882`) and Todo's web app (`:5278`) against it |
+| **Apps** | API only (`:8881`). The dev command runs a copy of Todo's API (`:8882`) and Todo's web app (`:5278`), which draws the plugin |
 | **Status** | Runs locally — the hosted door does not take this option yet |
 
 ## The cast & what's denied
@@ -58,29 +61,27 @@ The cast is Todo's. Nobody is seeded into Notes.
 
 ```bash
 pnpm --filter @substrat-run/demo-notes dev
-# Notes   http://localhost:5281
-# Todo    http://localhost:5278   (Plugins is in the account menu)
+# Todo    http://localhost:5278   (with the plugin; Plugins is in the account menu)
 ```
 
 Both APIs run in one process, because locally the peer call goes through an in-process broker.
 The Todo served here is this process's own copy, not the one `pnpm todo-demo dev` serves, so
-stop that one first: both use port 5278. Signing in to either app signs you in to both, since
-the session cookie is shared across localhost ports.
+stop that one first: both use port 5278.
 
-To see the door at work:
+To see the plugin at work:
 
-1. Open Notes and sign in as **Björn**. He is a member of Todo with no plugin access, and Notes
-   says so.
-2. Open Todo, switch user to **Ada**, open **Plugins** from the account menu and switch Björn on.
-3. Back in Notes as Björn, he is let in and can write a note.
-4. In Todo, open a list Ada shared with Björn: each item has **Add note** / **Notes (n)**, served
-   by Notes. A list nobody shared with him is not his to open, and its notes are refused alike.
-5. As Ada, switch him off. About 30 seconds later Notes refuses him again, and Todo's list screen
-   says why it shows no notes.
+1. Sign in as **Ada**, open **Plugins** from the account menu, and switch yourself on.
+2. Within 30 seconds a **Notes** link appears in the header, and each item on a list gets
+   **Add note**. Add one.
+3. Share the list with **Björn**, and switch user to him. He sees the list and no notes: he is
+   not switched on.
+4. As Ada, switch him on. Within 30 seconds he sees the note on the shared item, and can add his own.
+   A list nobody shared with him is not his to open, and its notes are refused alike.
+5. As Ada, switch him off. Within 30 seconds the notes are gone from his Todo again.
 
-The dev server keeps an answer for 30 seconds so this can be watched; the door's own default is
-five minutes. `PEOPLE_TTL_SECONDS=300 pnpm --filter @substrat-run/demo-notes dev` runs it with
-the real bound. Sign in as **Cleo** to see a login the workspace has nobody for.
+The dev server keeps an answer from Todo for 30 seconds so this can be watched; the door's own
+default is five minutes. `PEOPLE_TTL_SECONDS=300 pnpm --filter @substrat-run/demo-notes dev` runs it
+with the real bound.
 
 `test/people.test.ts` drives both apps over HTTP as several people, with the door's clock in the
 test's hands: a member with access is let in as the same id, another tenant's member is refused,
@@ -90,7 +91,7 @@ on an expired answer while Todo is down.
 ## Deliberately out of scope
 
 Names (a note shows its author's id), access per plugin (Todo keeps one flag per member for all
-plugins), and anything deployed. Todo shows the item notes through its own dev proxy, so both
-apps are one origin; deployed, a plugin is another origin, and how its screens appear inside the
-app it belongs to is still open. Notes trusts its own door for whether an item may be seen: the
+plugins), and anything deployed. Todo's app draws the plugin's features in its own code and
+reaches its API through the dev proxy, so both are one origin; deployed, a plugin is another
+origin, and how a plugin ships screens for the app it belongs to is still open. Notes trusts its own door for whether an item may be seen: the
 operation behind the route cannot ask Todo itself, since module code has no network.

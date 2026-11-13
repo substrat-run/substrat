@@ -11,9 +11,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from './api.js';
 
-/** Where the Notes plugin runs, when the dev server says (`VITE_NOTES_URL`). */
-export const NOTES_URL: string | undefined = import.meta.env.VITE_NOTES_URL;
-
 type Member = Awaited<ReturnType<typeof api.listMembers>>['entries'][number];
 
 export function Plugins() {
@@ -45,24 +42,16 @@ export function Plugins() {
     <section>
       <h2>Plugins</h2>
       <p className="sub">
-        A plugin is another app of this workspace, with its own screens and its own data, that takes its people
-        from here: whoever is switched on below may use it. A change reaches a plugin the next time it asks,
-        which is within five minutes.
+        A plugin is another app of this workspace, with its own data, that takes its people from here and adds
+        to this app for whoever is switched on below. A change reaches a plugin the next time it asks, which is
+        within five minutes.
       </p>
       <div className="card plugin">
         <div className="row">
           <span>
             <strong>Notes</strong>
-            <span className="muted">A shared notepad for the workspace.</span>
+            <span className="muted">Notes on list items, and a Notes page for the workspace.</span>
           </span>
-          <span className="spacer" />
-          {NOTES_URL ? (
-            <wa-button size="s" href={NOTES_URL}>
-              Open Notes
-            </wa-button>
-          ) : (
-            <span className="muted">Runs beside this app with `pnpm --filter @substrat-run/demo-notes dev`</span>
-          )}
         </div>
       </div>
       <h3>Who may use plugins</h3>

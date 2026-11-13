@@ -9,9 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dev": "concurrently -n issuer,api,web,todo-web -c magenta,blue,green,yellow \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm run web\" \"pnpm run todo-web\"",
-    "web": "VITE_TODO_URL=http://localhost:${TODO_WEB_PORT:-5278} pnpm --dir app dev",
-    "todo-web": "PORT=${TODO_PORT:-8882} WEB_PORT=${TODO_WEB_PORT:-5278} VITE_NOTES_URL=http://localhost:${WEB_PORT:-5281} pnpm --dir ../todo/app dev",
+    "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm run web\"",
+    "web": "PORT=${TODO_PORT:-8882} WEB_PORT=${TODO_WEB_PORT:-5278} NOTES_API_PORT=${PORT:-8881} pnpm --dir ../todo/app dev",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
     "demo": "pnpm run dev",
@@ -44,13 +43,6 @@
     "name": "Notes",
     "permissions": "src/provision.ts",
     "conformance": "test/conformance.ts",
-    "client": {
-      "model": "spec/model.ts",
-      "entities": "notesEntities",
-      "operations": "notesOperations",
-      "out": "app/src/api.generated.ts",
-      "name": "Notes"
-    },
     "calls": [
       "todo"
     ]

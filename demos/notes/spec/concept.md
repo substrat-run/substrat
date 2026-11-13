@@ -105,6 +105,9 @@ _No lifecycle is declared: nothing here moves through stages._
   Todo answers.
 - 2026-11-13: One screen (`app/`): the notes, and a box to write one, with a message for each of
   the door's refusals. No key, role or operation changed.
+- 2026-11-13: The screen is gone again. Notes has no web app: Todo's app draws what the plugin adds
+  (item notes on the list screen, and a Notes page) for whoever the plugin lets in, so a person sees
+  one app. No key, role or operation changed.
 - 2026-11-13: Notes on Todo's items (`item_note`, `notes/add-item-note`, `notes/list-item-notes`), kept
   apart from the notepad. The two operations have no route of their own: the door's routes ask Todo
   (`todo/vouch-access`) whether the person may see the list or item first. No key or role changed.
