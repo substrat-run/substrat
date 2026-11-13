@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-todo
 
-27 operations · 17 narrowed checks · 13 conformance pairs driven
+28 operations · 17 narrowed checks · 13 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -93,7 +93,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 6 | `todo/create-list`, `todo/grant-plugin-access`, `todo/join`, `todo/list-members`, `todo/resolve-person`, `todo/revoke-plugin-access` |
+| Node-level check | 7 | `todo/create-list`, `todo/grant-plugin-access`, `todo/join`, `todo/list-members`, `todo/resolve-person`, `todo/revoke-plugin-access`, `todo/vouch-access` |
 | Per-entity proof walk (`narrows`) | 4 | `todo/my-lists`, `todo/search-items`, `todo/search-lists`, `todo/trashed-lists` |
 
 ## 5. Not covered by this artifact

@@ -24,4 +24,18 @@ export const notesMigrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-notes_item_notes
+    version: '0002',
+    sql: `
+      CREATE TABLE notes_item_notes (
+        id TEXT PRIMARY KEY NOT NULL,
+        item_id TEXT NOT NULL,
+        list_id TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

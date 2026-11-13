@@ -91,6 +91,10 @@ Built, on the pure host:
 - `demos/notes`, a plugin: its own vertical with no people of its own, one screen, and a suite that
   drives both apps over HTTP as several people (`demos/notes/test/people.test.ts`). Its dev command
   runs Todo's web app too, whose Plugins screen is where an admin decides access.
+- Notes on Todo's items, as the first case of a plugin keeping data about the master's records.
+  Notes stores them; Todo answers whether a person may see the item (`todo/vouch-access`, another
+  system-held key the peer holds), and Notes' door asks before every read and write. Todo shows
+  them under each item through its dev proxy.
 
 Not built:
 
@@ -105,8 +109,13 @@ Not built:
   half of the contract (§5.2).
 - **Access per plugin.** The reference master keeps one flag per member for all plugins, because an
   operation cannot read which peer is calling it.
-- **Screens inside the host.** Notes has its own screen and links to Todo; showing a plugin inside
-  the app it belongs to is undecided.
+- **Screens inside the host, deployed.** Todo shows Notes' item notes through its dev proxy, so the
+  two are one origin locally. Deployed they are two, and how a plugin's screens appear inside the
+  app it belongs to is undecided.
+- **A check about another principal.** `todo/vouch-access` answers from the tables that mirror
+  Todo's grants, because an operation can only check its own caller. And Notes' operations trust
+  their door for the answer, because module code cannot make the call. A kernel check for another
+  principal, or a call made as the person (§5.3), would remove both.
 
 ## 5. Open questions
 

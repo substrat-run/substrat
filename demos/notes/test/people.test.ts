@@ -91,7 +91,15 @@ beforeAll(async () => {
     roles: rolesFromTodo,
     now: () => new Date(now),
   });
-  notesApp = createApp({ host: pair.notes, login: { handle: async () => new Response(null, { status: 404 }) }, people });
+  notesApp = createApp({
+    host: pair.notes,
+    login: { handle: async () => new Response(null, { status: 404 }) },
+    people,
+    vouch: async (principal, at) => {
+      if (todoDown) throw new Error('todo is unreachable');
+      return pair.peer.invoke('todo', 'todo/vouch-access', { principal, ...at });
+    },
+  });
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -128,6 +136,32 @@ describe('a plugin that takes its people from Todo', () => {
     // Still a member of Todo, so still signed in here, and holding nothing.
     expect((await notesApp.request('/api/me', as(erik.sub))).status).toBe(200);
     expect((await notesApp.request('/api/notes', as(erik.sub))).status).toBe(403);
+  });
+
+  it("keeps notes on a Todo item for the people Todo says may see it, and refuses the rest alike", async () => {
+    const gus = await member('gus');
+    await access(gus.principal, 'POST');
+    const ada = await pair.todo.getScope(pair.world.ada.principal, pair.world.tenant, pair.world.scope);
+    const shared = await ada.invoke<{ id: string }, unknown>('todo/create-list', { name: 'Offsite' });
+    const own = await ada.invoke<{ id: string }, unknown>('todo/create-list', { name: 'Ada only' });
+    await ada.invoke('todo/share-list', { listId: shared.id, email: 'gus@example.com' });
+    const item = await ada.invoke<{ id: string }, unknown>('todo/add-item', { listId: shared.id, text: 'book the room' });
+    const hidden = await ada.invoke<{ id: string }, unknown>('todo/add-item', { listId: own.id, text: 'secret' });
+
+    const added = await notesApp.request(`/api/items/${item.id}/notes`, as(gus.sub, post({ text: 'the big one, please' })));
+    expect(added.status).toBe(200);
+    expect(await added.json()).toMatchObject({ item_id: item.id, list_id: shared.id, author_id: gus.principal });
+
+    const read = await notesApp.request(`/api/lists/${shared.id}/item-notes`, as(gus.sub));
+    expect(((await read.json()) as { entries: { text: string }[] }).entries.map((n) => n.text)).toEqual(['the big one, please']);
+    // Not on the workspace notepad: a note on an item is for the people who may see the item.
+    const pad = (await (await notesApp.request('/api/notes', as(gus.sub))).json()) as { text: string }[];
+    expect(pad.map((n) => n.text)).not.toContain('the big one, please');
+
+    // A list nobody shared with him, an item on it, and an id that is nothing: the same 403.
+    expect((await notesApp.request(`/api/lists/${own.id}/item-notes`, as(gus.sub))).status).toBe(403);
+    expect((await notesApp.request(`/api/items/${hidden.id}/notes`, as(gus.sub, post({ text: 'x' })))).status).toBe(403);
+    expect((await notesApp.request('/api/items/nothing/notes', as(gus.sub, post({ text: 'x' })))).status).toBe(403);
   });
 
   it('admits nobody on an expired answer while Todo cannot be reached', async () => {

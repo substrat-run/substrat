@@ -1,5 +1,40 @@
 {
   "entities": {
+    "item_note": {
+      "table": "notes_item_notes",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "list_id": {
+            "type": "string"
+          },
+          "author_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "item_id",
+          "list_id",
+          "author_id",
+          "text",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
     "note": {
       "table": "notes_notes",
       "fields": {

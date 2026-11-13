@@ -588,6 +588,23 @@ const bound = operationsFor(todoOperations)({
     return { id: input.memberId, revoked: true };
   },
 
+  'todo/vouch-access': async (ctx, input) => {
+    assertAllowed(await ctx.check(TODO_PERM.peopleVouch));
+    if ((input.listId === undefined) === (input.itemId === undefined)) {
+      throw substratError('validation_failed', 'name exactly one of listId and itemId');
+    }
+    const listId =
+      input.listId ??
+      ctx.sql.query<{ list_id: string }>('SELECT list_id FROM todo_items WHERE id = ?', [input.itemId!])[0]?.list_id;
+    const list = listId === undefined ? undefined : ctx.sql.query<ListRow>('SELECT * FROM todo_lists WHERE id = ?', [listId])[0];
+    if (!list || ctx.entityState(listRef(list.id)) === 'trashed') return { visible: false, listId: null };
+    const shared = ctx.sql.query<{ id: string }>('SELECT id FROM todo_shares WHERE list_id = ? AND principal = ?', [
+      list.id,
+      input.principal,
+    ]).length > 0;
+    return { visible: list.owner_id === input.principal || shared, listId: list.id };
+  },
+
   /**
    * The person contract, answered from what this app already records: a member is found by the
    * address they joined with, which is the issuer's word for it (K-61) and the same proof an

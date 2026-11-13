@@ -64,6 +64,27 @@ describe('plugin access', () => {
     });
   });
 
+  it("vouches for a list's owner and the people it is shared with, through an item too, and for nobody else", async () => {
+    const ada = await as(world.ada);
+    const shared = await ada.invoke<{ id: string }, unknown>('todo/create-list', { name: 'Groceries' });
+    const own = await ada.invoke<{ id: string }, unknown>('todo/create-list', { name: 'Work' });
+    await ada.invoke('todo/share-list', { listId: shared.id, email: world.bjorn.email });
+    const item = await ada.invoke<{ id: string }, unknown>('todo/add-item', { listId: own.id, text: 'plan' });
+    const vouch = async (principal: string, at: { listId?: string; itemId?: string }) =>
+      (await asNotes()).invoke<{ visible: boolean; listId: string | null }, unknown>('todo/vouch-access', { principal, ...at });
+
+    expect(await vouch(world.bjorn.principal, { listId: shared.id })).toEqual({ visible: true, listId: shared.id });
+    expect(await vouch(world.bjorn.principal, { itemId: item.id })).toEqual({ visible: false, listId: own.id });
+    expect(await vouch(world.ada.principal, { itemId: item.id })).toEqual({ visible: true, listId: own.id });
+    expect(await vouch(world.ada.principal, { itemId: 'no-such-item' })).toEqual({ visible: false, listId: null });
+
+    await ada.invoke('todo/trash-list', { listId: own.id });
+    expect(await vouch(world.ada.principal, { itemId: item.id })).toEqual({ visible: false, listId: null });
+    await expect(ada.invoke('todo/vouch-access', { principal: world.ada.principal, listId: shared.id })).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+  });
+
   it('no person can ask who a login is, an admin included', async () => {
     await expect(
       (await as(world.ada)).invoke('todo/resolve-person', { issuer: null, sub: 'any', verifiedEmail: world.bjorn.email }),

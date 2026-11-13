@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-todo
 
-7 keys · 1 modules · 2 roles
+8 keys · 1 modules · 2 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -18,6 +18,7 @@
 | `list:trash` | Move a list to the trash, see what is in it, and restore it | `@substrat-run/demo-todo` | — |
 | `people:manage` | Decide which members may use this workspace’s plugins | `@substrat-run/demo-todo` | — |
 | `people:resolve` | Ask who a login is here, when they sign in to a plugin | `@substrat-run/demo-todo` | yes |
+| `people:vouch` | Ask whether a person may see a list or an item, for a plugin | `@substrat-run/demo-todo` | yes |
 
 ## 2. Roles — as defined by this vertical's provisioning code
 
@@ -39,6 +40,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `list:trash` | — no role — |
 | `people:manage` | `admin` |
 | `people:resolve` | — no role — |
+| `people:vouch` | — no role — |
 
 ## 4. Entity-narrowed grant shapes
 
@@ -75,7 +77,7 @@ switches one off per scope with `revokeFromPeer`.
 
 | Vertical | Declared by | May invoke | Holds |
 | --- | --- | --- | --- |
-| `notes` | `@substrat-run/demo-todo` | `todo/resolve-person` | `people:resolve` |
+| `notes` | `@substrat-run/demo-todo` | `todo/resolve-person`, `todo/vouch-access` | `people:resolve`, `people:vouch` |
 
 ## 7. Operations — which key each checks
 
@@ -114,6 +116,7 @@ shapes.
 | `todo/trash-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/trashed-lists` | `list:trash` | each row, by a proof walk: Returns only binned lists the caller may restore | `@substrat-run/demo-todo` |
 | `todo/unarchive-list` | `list:archive` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/vouch-access` | `people:vouch` | the scope | `@substrat-run/demo-todo` |
 
 ## 8. Not covered by this artifact
 

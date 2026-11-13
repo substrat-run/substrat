@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, type Invite, type Item, type List, type Paged, type Share } from './api.js';
 import { AccountMenu, ItemsTable, ListsTable, useSession } from './elements.js';
+import { ItemNotesPanel, ItemNotesStatus, useItemNotes } from './item-notes.js';
 import { NOTES_URL, Plugins } from './plugins.js';
 import { Settings } from './settings.js';
 
@@ -316,6 +317,8 @@ function ListView({ listId }: { listId: string }) {
   const [error, setError] = useState<unknown>(null);
   const [text, setText] = useState('');
   const [email, setEmail] = useState('');
+  // The Notes plugin's notes on these items, when it runs beside this app (`src/item-notes.tsx`).
+  const itemNotes = useItemNotes(listId);
 
   // How far down the walk this screen has gone, so a revalidation refetches the
   // same depth instead of snapping back to the first page under someone's cursor.
@@ -411,6 +414,7 @@ function ListView({ listId }: { listId: string }) {
       </h2>
       <p className="sub">Tick things off, add your own. Both are things a share lets you do.</p>
       <Problem error={error} />
+      <ItemNotesStatus notes={itemNotes.notes} />
 
       {page === null ? (
         !error && <p className="empty">Loading…</p>
@@ -429,6 +433,7 @@ function ListView({ listId }: { listId: string }) {
                 <span className={i.done === 1 ? 'done' : undefined}>{i.text}</span>
               </wa-checkbox>
               <span className="spacer" />
+              <ItemNotesPanel itemId={i.id} notes={itemNotes.notes} add={itemNotes.add} />
               <wa-button size="s" appearance="plain" variant="danger" onClick={() => guard(() => api.deleteItem({ itemId: i.id }))}>
                 delete
               </wa-button>

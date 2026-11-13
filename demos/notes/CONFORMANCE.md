@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-notes
 
-2 operations · 0 narrowed checks · assessed node-only
+4 operations · 0 narrowed checks · assessed node-only
 
 ## 1. Kernel-enforced properties
 
@@ -47,7 +47,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 2 | `notes/add-note`, `notes/list-notes` |
+| Node-level check | 4 | `notes/add-item-note`, `notes/add-note`, `notes/list-item-notes`, `notes/list-notes` |
 | Per-entity proof walk (`narrows`) | 0 | — |
 
 ## 4. Not covered by this artifact

@@ -6,7 +6,11 @@ import { apiCatalogFrom, buildOpenApiDocument } from '@substrat-run/contracts';
 import { notesOperations } from '../spec/model.js';
 import { notesManifest } from './manifest.js';
 
-export const API = apiCatalogFrom(notesOperations, {
+// The two item-note operations declare no `http`: only the door's own routes reach them, after
+// Todo has vouched for the caller (`src/app.ts`).
+const { 'notes/add-item-note': _add, 'notes/list-item-notes': _list, ...served } = notesOperations;
+
+export const API = apiCatalogFrom(served, {
   'notes/add-note': { tag: 'Notes' },
   'notes/list-notes': { tag: 'Notes' },
 });

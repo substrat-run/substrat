@@ -1,8 +1,8 @@
 # Notes (a plugin of Todo)
 
-`demos/notes` — a second vertical in the same tenant as Todo that owns no people. It has one
-table, two operations, and no owner seat, invitations or members of its own: who gets in is
-decided in Todo.
+`demos/notes` — a second vertical in the same tenant as Todo that owns no people. It keeps a
+workspace notepad and notes on Todo's items, and has no owner seat, invitations or members of its
+own: who gets in is decided in Todo, and who sees an item's notes too.
 
 ## Overview
 
@@ -23,6 +23,10 @@ notepad is the whole product, so the only thing on the page is who is let in. It
   five minutes, in both directions.
 - **It fails closed.** With the kept answer expired and Todo unreachable, Notes admits nobody
   and answers `503`. An outage shorter than five minutes goes unnoticed.
+- **A note on a Todo item follows the item's sharing.** Notes keeps the note; Todo knows who may
+  see the item. So before showing or adding one, Notes asks Todo (`todo/vouch-access`) whether the
+  person may see that list or item, and answers `403` otherwise, the same for an item that does not
+  exist. The notes appear inside Todo's own list screen, under each item.
 - **Nothing personal is copied.** The answer carries no name and no address. Notes keeps which
   login is which id, and the roles it seated.
 
@@ -32,10 +36,10 @@ notepad is the whole product, so the only thing on the page is who is let in. It
 |---|---|
 | **Package** | `@substrat-run/demo-notes` |
 | **Engines composed** | *none* — kernel only |
-| **Own tables** | `notes_notes` |
+| **Own tables** | `notes_notes` · `notes_item_notes` |
 | **Roles** | `writer` (read and write notes), seated only by the door: Todo's `member` answer maps to it |
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/notes/PERMISSIONS.md) — 2 keys, 1 module, 1 role |
-| **Calls** | `todo`, for `todo/resolve-person` and nothing else |
+| **Calls** | `todo`, for `todo/resolve-person` and `todo/vouch-access`, and nothing else |
 | **Auth** | [OIDC only](/concepts/identity), at the same issuer as Todo |
 | **Apps** | API (`:8881`) and a one-screen web app (`:5281`); the dev command also runs a copy of Todo's API (`:8882`) and Todo's web app (`:5278`) against it |
 | **Status** | Runs locally — the hosted door does not take this option yet |
@@ -69,7 +73,10 @@ To see the door at work:
    says so.
 2. Open Todo, switch user to **Ada**, open **Plugins** from the account menu and switch Björn on.
 3. Back in Notes as Björn, he is let in and can write a note.
-4. As Ada, switch him off. About 30 seconds later Notes refuses him again.
+4. In Todo, open a list Ada shared with Björn: each item has **Add note** / **Notes (n)**, served
+   by Notes. A list nobody shared with him is not his to open, and its notes are refused alike.
+5. As Ada, switch him off. About 30 seconds later Notes refuses him again, and Todo's list screen
+   says why it shows no notes.
 
 The dev server keeps an answer for 30 seconds so this can be watched; the door's own default is
 five minutes. `PEOPLE_TTL_SECONDS=300 pnpm --filter @substrat-run/demo-notes dev` runs it with
@@ -83,4 +90,7 @@ on an expired answer while Todo is down.
 ## Deliberately out of scope
 
 Names (a note shows its author's id), access per plugin (Todo keeps one flag per member for all
-plugins), showing Notes inside Todo's own screens, and anything deployed.
+plugins), and anything deployed. Todo shows the item notes through its own dev proxy, so both
+apps are one origin; deployed, a plugin is another origin, and how its screens appear inside the
+app it belongs to is still open. Notes trusts its own door for whether an item may be seen: the
+operation behind the route cannot ask Todo itself, since module code has no network.

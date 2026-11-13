@@ -179,9 +179,10 @@ export const todoEntities = defineEntities({
  * - Sharing narrows `list:contribute` onto ONE list for one person, so what
  *   Björn may do is a fact about *that list* rather than about Björn.
  *
- * Two more are about people rather than lists. `people:manage` is the workspace admin's:
- * who may use the plugins. `people:resolve` is held by no person at all: a plugin holds it,
- * as a peer, to ask who somebody signing in to it is.
+ * Three more are about people rather than lists. `people:manage` is the workspace admin's:
+ * who may use the plugins. `people:resolve` and `people:vouch` are held by no person at all: a
+ * plugin holds them, as a peer, to ask who somebody signing in to it is, and whether they may
+ * see a list or an item it keeps something about.
  */
 export const TODO_PERMISSIONS = [
   'list:create',
@@ -191,6 +192,7 @@ export const TODO_PERMISSIONS = [
   'list:trash',
   'people:manage',
   'people:resolve',
+  'people:vouch',
 ] as const;
 
 export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
@@ -704,6 +706,26 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
     permission: 'people:resolve',
     input: personResolveInput,
     output: personResolveOutput,
+  },
+
+  /**
+   * Whether a person may see a list, or the list an item is on: asked by a plugin that keeps
+   * something about Todo's lists (Notes, about items) before it shows or adds it. Answered from
+   * the list's owner and its shares, which are written in the same transaction as the grants
+   * they mirror; an operation cannot ask the kernel about another principal's access, which is
+   * what this stands in for. A binned list is seen by nobody, as everywhere else.
+   *
+   * No `http`, like `resolve-person`: the peer door is the only way in.
+   */
+  'todo/vouch-access': {
+    summary: 'Whether a person may see a list or an item, for a plugin of this workspace',
+    permission: 'people:vouch',
+    input: z.object({
+      principal: z.string().min(1),
+      listId: z.string().min(1).optional(),
+      itemId: z.string().min(1).optional(),
+    }),
+    output: z.object({ visible: z.boolean(), listId: z.string().nullable() }),
   },
 });
 

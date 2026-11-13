@@ -55,6 +55,11 @@ async function boot() {
   const node = { tenantId: tenantId.parse(world.tenant), scopeId: scopeId.parse(saved.notesScope) };
   await linkDevPersonas(todo, world);
   await reconcileOwnerGrants(todo, world);
+  // Re-provision both scopes, as a deploy does: provisioning is idempotent, and it is what seats
+  // the keys a peer is declared to hold. A world saved before Todo declared a new one for Notes
+  // would otherwise refuse Notes that key until `.data` is wiped.
+  await todo.provisionScope(staff, { tenantId: world.tenant, scopeId: scopeId.parse(world.scope), vertical: 'todo' });
+  await notes.provisionScope(staff, { ...node, vertical: 'notes' });
 
   const todoLogin = devLogin({ directory: todo.admin, actor: staff, provider: DEV_PROVIDER });
   const todoApp = createTodoApp({
@@ -81,7 +86,12 @@ async function boot() {
     // The bound is the same mechanism at any value; `PEOPLE_TTL_SECONDS=300` shows the real one.
     ttlSeconds,
   });
-  const app = createApp({ host: notes, login, people });
+  const app = createApp({
+    host: notes,
+    login,
+    people,
+    vouch: (principal, at) => peer.invoke('todo', 'todo/vouch-access', { principal, ...at }),
+  });
 
   const port = Number(process.env.PORT ?? 8881);
   const todoPort = Number(process.env.TODO_PORT ?? 8882);

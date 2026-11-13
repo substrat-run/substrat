@@ -72,6 +72,16 @@ export interface Note {
   created_at: string;
 }
 
+/** `notes_item_notes` — declared in spec/model.ts. */
+export interface ItemNote {
+  id: string;
+  item_id: string;
+  list_id: string;
+  author_id: string;
+  text: string;
+  created_at: string;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface NotesClient {
   /**

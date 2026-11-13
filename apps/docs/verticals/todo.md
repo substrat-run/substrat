@@ -40,7 +40,9 @@ on the domain, so the platform is the only thing on the page. It proves:
   (`todo/grant-plugin-access`, `todo/revoke-plugin-access`), and a plugin asks who a login is with
   `todo/resolve-person`, through the peer door and nowhere else: its key is held by the plugin and
   by no person. The admin's screen is **Plugins**, in the account menu (`todo/list-members`).
-  [Notes](/verticals/notes) is the plugin.
+  [Notes](/verticals/notes) is the plugin. It keeps notes on items, shown on the list screen, and
+  asks `todo/vouch-access` whether a person may see the list first; Todo answers from the list's
+  owner and its shares.
 - **No engine is a fact, not an omission.** An item is open or done and can go back; there are
   no stages to skip, so there is nothing for an engine to own. What Björn may do is decided by
   the share on *that list*, not by anything about Björn.

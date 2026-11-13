@@ -39,7 +39,9 @@ shapes.
 
 | Operation | Key | Checked on | Declared by |
 | --- | --- | --- | --- |
+| `notes/add-item-note` | `note:write` | the scope | `@substrat-run/demo-notes` |
 | `notes/add-note` | `note:write` | the scope | `@substrat-run/demo-notes` |
+| `notes/list-item-notes` | `note:read` | the scope | `@substrat-run/demo-notes` |
 | `notes/list-notes` | `note:read` | the scope | `@substrat-run/demo-notes` |
 
 ## 5. Not covered by this artifact

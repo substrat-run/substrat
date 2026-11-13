@@ -64,7 +64,15 @@ access away, that member loses Notes within five minutes, and nothing has to be 
 
 ```mermaid
 erDiagram
-    e1["note"] {
+    e1["item_note"] {
+        string author_id
+        string created_at
+        string id PK
+        string item_id
+        string list_id
+        string text
+    }
+    e2["note"] {
         string author_id
         string created_at
         string id PK
@@ -97,3 +105,6 @@ _No lifecycle is declared: nothing here moves through stages._
   Todo answers.
 - 2026-11-13: One screen (`app/`): the notes, and a box to write one, with a message for each of
   the door's refusals. No key, role or operation changed.
+- 2026-11-13: Notes on Todo's items (`item_note`, `notes/add-item-note`, `notes/list-item-notes`), kept
+  apart from the notepad. The two operations have no route of their own: the door's routes ask Todo
+  (`todo/vouch-access`) whether the person may see the list or item first. No key or role changed.

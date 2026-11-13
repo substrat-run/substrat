@@ -259,3 +259,7 @@ _No lifecycle is declared: nothing here moves through stages._
   could do before changed.
 - 2026-11-13: An admin reads the members with whether each may use plugins (`todo/list-members`,
   `people:manage`), for a Plugins screen in the account menu. No key or role changed.
+- 2026-11-13: A plugin may ask whether a person may see a list or an item (`todo/vouch-access`, the new
+  key `people:vouch`, declared `holder: 'system'` and held only by the `notes` peer), so a plugin that
+  keeps notes on items shows them only to the people the item is shared with. It answers from the
+  list's owner and its shares. The list screen shows the plugin's notes under each item. No role changed.
