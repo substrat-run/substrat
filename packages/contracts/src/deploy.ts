@@ -14,6 +14,7 @@ import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 import { connectionLandingBind, connectionLandingOptions } from './connection-landing.js';
 import { connectionProvider } from './connections.js';
 import { verticalConnectorDeclarations, verticalConnectorProvider, type VerticalConnectorDeclaration } from './vertical-connector.js';
+import { issuerScopes } from './machine-client.js';
 import {
   ownerGrantSets,
   reservedKeyLine,
@@ -2743,6 +2744,15 @@ export const deployManifest = z.object({
    *  ABSENT = a pre-feature CLI, or no connectors. Its grants are judged against `registry` by
    *  {@link pushedConnectorProblems}, which the push routes call beside the parse. */
   connectors: verticalConnectorDeclarations.optional(),
+  /** The issuer scopes the vertical DECLARES it needs (#3134) — package.json
+   *  `substrat.issuerScopes`: scopes of the machine-facing APIs its team auth-server serves
+   *  (`read:users`, `users:provision`). The platform registers one machine client for the app at
+   *  the issuer it signs in with, holding the declared scopes that issuer's operator allows; a
+   *  declared scope outside the operator's ceiling is reported, never granted and never dropped
+   *  in silence. Versioned with the code, so a changed declaration ships as a version. A push
+   *  that declares none OMITS the field, as `connectors` does, so a vertical without it pushes
+   *  exactly the manifest it did before. ABSENT = no machine client asked for. */
+  issuerScopes: issuerScopes.optional(),
   /** DECLARED email-sender intent (#303): this vertical wants to send transactional mail
    *  (password-reset, verification, invites) — package.json `substrat.sendsEmail`. Outbound
    *  is a platform concern (deploy.ts §4 keeps `send_email` OUT of the sandbox allowlist and
