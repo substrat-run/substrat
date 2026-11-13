@@ -91,6 +91,14 @@ function fakeAuth() {
           previewCalls.push({ doName, verb: 'retire', input });
           return previewAnswer.next as never;
         },
+        ensureMachineClient: async (input) => {
+          previewCalls.push({ doName, verb: 'ensure-machine', input });
+          return previewAnswer.next as never;
+        },
+        removeMachineClient: async (input) => {
+          previewCalls.push({ doName, verb: 'remove-machine', input });
+          return previewAnswer.next as never;
+        },
       };
     },
   };
@@ -151,6 +159,8 @@ it.each([
   ['POST', '/internal/preview-client/check', () => ({ tenantId: ulid(), scopeId: ulid(), parentScopeId: ulid(), parentRedirectUris: ['https://acme.test/callback'] })],
   ['POST', '/internal/preview-client', () => ({ tenantId: ulid(), scopeId: ulid(), parentScopeId: ulid(), parentRedirectUris: ['https://acme.test/callback'], previewScopeId: ulid(), redirectUri: 'https://acme.test/callback', postLogoutRedirectUri: 'https://acme.test/', clientName: 'Preview' })],
   ['DELETE', '/internal/preview-client', () => ({ tenantId: ulid(), scopeId: ulid(), previewScopeId: ulid() })],
+  ['POST', '/internal/machine-client', () => ({ tenantId: ulid(), scopeId: ulid(), appScopeId: ulid(), clientName: 'Desk', scopes: ['read:users'] })],
+  ['DELETE', '/internal/machine-client', () => ({ tenantId: ulid(), scopeId: ulid(), appScopeId: ulid() })],
 ] as const)('%s %s refuses a call without the platform secret before touching any DO', async (method, path, body) => {
   const res = await app.request(path, {
     method,
@@ -402,6 +412,40 @@ describe('/internal/preview-client (#1704 — a preview’s own client)', () => 
       (await call('DELETE', '/internal/preview-client', { ...address(), previewScopeId: ulid(), keep: 'a', only: 'b' }, PLATFORM_SECRET)).status,
     ).toBe(400);
     expect(auth.touched).toEqual([]);
+  });
+});
+
+describe('/internal/machine-client (#3134 — an app’s machine client)', () => {
+  const call = (method: string, body: unknown) =>
+    Promise.resolve(app.request(
+      '/internal/machine-client',
+      { method, headers: { 'content-type': 'application/json', 'x-substrat-platform': PLATFORM_SECRET }, body: JSON.stringify(body) },
+      env,
+    ));
+  const address = () => ({ tenantId: ulid(), scopeId: ulid(), appScopeId: ulid() });
+  const ensureBody = () => ({ ...address(), clientName: 'Desk', scopes: ['read:users'] });
+
+  it.each([
+    ['POST', ensureBody, 'ensure-machine'],
+    ['DELETE', address, 'remove-machine'],
+  ] as const)('%s reaches the BODY-named issuer DO and answers what it answered', async (method, body, verb) => {
+    const b = body();
+    auth.previewAnswer.next = { ok: true, value: { answered: verb } };
+    const res = await call(method, b);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ answered: verb });
+    expect(auth.previewCalls).toEqual([{ doName: b.scopeId, verb, input: b }]);
+  });
+
+  it('answers a foreign tenant’s refusal as the DO’s 403, and never addresses a DO for a body it cannot parse', async () => {
+    auth.previewAnswer.next = { ok: false, status: 403, error: 'scope x is not an issuer of tenant y' };
+    expect((await call('POST', ensureBody())).status).toBe(403);
+    const reached = auth.touched.length;
+
+    // A scope a person grants by signing in is not one a machine client may hold.
+    expect((await call('POST', { ...ensureBody(), scopes: ['openid'] })).status).toBe(400);
+    expect((await call('DELETE', { ...address(), appScopeId: 'nope' })).status).toBe(400);
+    expect(auth.touched).toHaveLength(reached);
   });
 });
 

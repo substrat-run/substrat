@@ -16,8 +16,9 @@
  * `/internal/reconcile` answers the sweep's re-provision (#1660), writing nothing,
  * `/internal/tables` answers the §5.4 introspection reads (secrets redacted in the DO),
  * `/internal/export` dumps an instance in full and `/internal/delete-scope` wipes one
- * (#590 — backed-up reap, wipe, and data-carrying rebind), and `/internal/preview-client`
- * mints and deletes a preview's own client (#1704);
+ * (#590 — backed-up reap, wipe, and data-carrying rebind), `/internal/preview-client`
+ * mints and deletes a preview's own client (#1704), and `/internal/machine-client` ensures
+ * and removes an app's machine client (#3134);
  * every OTHER `/internal/*` path answers a JSON 501 — NEVER the SPA fallback. (A platform
  * call once fell through to the SPA catch-all, returned 200 text/html, and surfaced as
  * "Provisioning failed — internal error" in the dashboard. The fallback route and its
@@ -31,6 +32,9 @@ import {
   scopeId,
   principalId,
   readScopeTableInput,
+  MACHINE_CLIENT_PATH,
+  machineClientEnsure,
+  machineClientRemove,
   PLACES_DISCOVERY_PATH,
   PREVIEW_CLIENT_PATH,
   previewClientCheck,
@@ -498,6 +502,30 @@ app.delete(PREVIEW_CLIENT_PATH, async (c) => {
   assertPlatform(c.env, c.req.raw);
   const body = previewClientRetire.parse(await c.req.json());
   return answerPreviewCall(c, stubFor(c.env, body.scopeId).retirePreviewClients(body), 200);
+});
+
+/**
+ * An APP's machine client (#3134, `src/app-machine-clients.ts`; the protocol is
+ * `@substrat-run/contracts`' `machine-client.ts`). Gated and addressed like the preview routes
+ * above, and refused by the DO for any scope that is not this tenant's own instance:
+ *
+ *   - `POST   /internal/machine-client` — ensure the app's client; its secret only when this
+ *     call registered it or rotated it.
+ *   - `DELETE /internal/machine-client` — remove the app's client, and only that one.
+ *
+ * An ensure answers 200 whether or not it registered anything: the body says which. A
+ * deployment built before these existed answers the 501 below, as for the preview routes.
+ */
+app.post(MACHINE_CLIENT_PATH, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = machineClientEnsure.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).ensureMachineClient(body), 200);
+});
+
+app.delete(MACHINE_CLIENT_PATH, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = machineClientRemove.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).removeMachineClient(body), 200);
 });
 
 /**
