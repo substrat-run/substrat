@@ -282,8 +282,10 @@ import {
   assertPermissionKey,
   CAPABILITY_DDL,
   UPLOAD_LINK_DDL,
+  DOWNLOAD_LINK_DDL,
   createAttachmentVerbs,
   inspectUploadLink,
+  resolveDownloadLink,
   redeemUploadLinkInTransaction,
   redeemOrReplayUploadLink,
   COPY_ORIGIN_DDL,
@@ -480,7 +482,9 @@ import {
   foldModelUsage,
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
+  type AttachmentOpenOptions,
   type OpenedAttachment,
+  type OpenedAttachmentStream,
   type ScopeAttachments,
   type TenantBlobStore,
   type ConsumerHandler,
@@ -1515,6 +1519,9 @@ const KERNEL_DDL = `
   -- Upload links: a short-lived, single-use URL that lets a caller with no session upload ONE
   -- file to ONE entity. Spine (kernel-written), shared with the DO adapter from the kernel.
   ${UPLOAD_LINK_DDL}
+  -- #3139: download links, a short-lived URL that lets a caller with no session read ONE file as
+  -- the principal who minted it. Spine (kernel-written), shared with the DO adapter from the kernel.
+  ${DOWNLOAD_LINK_DDL}
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
@@ -4154,7 +4161,22 @@ export class SqliteScopeHost implements ScopeHost {
     const gate = this.attachmentTargets.get(entityType);
     if (!gate) return undefined;
     const uploadLinks = this.uploadLinkPolicies.get(entityType);
-    return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
+    return uploadLinks ? { read: gate.read, write: gate.write, uploadLinks } : { read: gate.read, write: gate.write };
+  }
+
+  async openDownloadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    attachmentId: string,
+    options?: AttachmentOpenOptions,
+  ): Promise<OpenedAttachmentStream | null> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const minter = await rt.actor.enqueue(() =>
+      resolveDownloadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, attachmentId),
+    );
+    // The file as the minter, through the read gate any open takes: their key is asked again now.
+    return (await this.attachments(minter, tenantId, scopeId)).openStream(attachmentId, options);
   }
 
   async inspectUploadLink(

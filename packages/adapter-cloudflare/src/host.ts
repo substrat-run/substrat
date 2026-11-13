@@ -367,6 +367,7 @@ import {
   type AttachmentUploadInput,
   type OpenedAttachment,
   type OpenedAttachmentStream,
+  type AttachmentOpenOptions,
   type TenantBlobStore,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
@@ -1967,6 +1968,8 @@ interface ScopeStubRpc {
     target?: EntityRef,
     idempotencyKey?: string,
   ): Promise<DoReply<UploadLinkInspection>>;
+  /** #3139: who a download link reads `attachmentId` as — its minter, while it is live. */
+  downloadLinkResolveReply(secret: string, attachmentId: string, tenantId: TenantId, scopeId: ScopeId): Promise<DoReply<PrincipalId>>;
   attachmentListReply(
     entity: EntityRef,
     principal: PrincipalId,
@@ -5265,6 +5268,20 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
+  }
+
+  async openDownloadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    attachmentId: string,
+    options?: AttachmentOpenOptions,
+  ): Promise<OpenedAttachmentStream | null> {
+    await this.assertLive(tenantId, scopeId, 'openDownloadLink');
+    await this.migrateAndRecord(scopeId);
+    const minter = unwrapReply(await this.scopeStub(scopeId).downloadLinkResolveReply(secret, attachmentId, tenantId, scopeId));
+    // The file as the minter, through the read gate any open takes: their key is asked again now.
+    return (await this.attachments(minter, tenantId, scopeId)).openStream(attachmentId, options);
   }
 
   async inspectUploadLink(

@@ -453,3 +453,35 @@ so module code cannot forge or suppress them.
   content) in a wrapper of your own.
 - **Version.** `ctx.attachments` and the `uploadLinks` manifest key exist from the platform
   release that introduced upload links; a vertical that uses them needs that version or newer.
+
+## Download links
+
+A download link is the read-side counterpart: a URL that lets whoever holds it read ONE file, with
+no session, until it expires. Use it where a cookie does not ride: an `<audio>` element on another
+origin, a file an [MCP](./mcp.md) tool hands back, a link in a mail. On your own origin, with the
+person signed in, `/api/attachments/:attachmentId` (above) needs no link.
+
+```ts
+// In an operation: the caller must hold the target's readPermission on the file's owner.
+const link = await ctx.attachments.mintDownloadUrl({ attachmentId, ttlSeconds: 3600 });
+return { url: `${origin}${link.path}`, expiresAt: link.expiresAt };
+```
+
+The path is `/api/attachment-downloads/<attachmentId>/<secret>`. `workerDoor({ attachments: true })`
+mounts the route that reads it; a worker without the door mounts `mountDownloadLinkRedeem` from
+`@substrat-run/vertical-host`. The answer is the door's file route's: streamed, seekable, hardened and
+always a download.
+
+- **It reads as the person who minted it, now.** The file is opened through the ordinary read gate as
+  the minter on every request, so taking their read key away ends every link they minted, and giving
+  it back revives them. Only a principal mints; a consumer or a schedule cannot.
+- **A read spends nothing.** A media element reads a file in many ranged requests, so a link is good
+  until it expires or is revoked: fifteen minutes by default, a day at most. Treat the URL as the
+  file. `ctx.attachments.revokeDownloadLink(id)` takes it back sooner.
+- **One file, one scope.** The link named with another file's id, at another scope, or by a copy of
+  the scope (a fork or a preview) is the 404 an unknown secret gets. An expired or revoked link is a
+  410, said only to someone holding the secret. A file removed since the mint is a 404.
+- **On the spine.** `attachment.download-link-minted` and `attachment.download-link-revoked`, as the
+  minter. A read writes nothing. Only the secret's SHA-256 is stored, in `_substrat_download_links`,
+  and `invocationLog` writes the secret segment, and any path segment that starts with `sbdl_`, as
+  `[redacted]`.

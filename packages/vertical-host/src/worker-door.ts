@@ -88,6 +88,7 @@ import {
 import { mountOwnerClaim, type OwnerClaimRouteDeps } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { mountSession, sessionAnswer } from '@substrat-run/vertical-auth/session-route';
 import { hardenFileResponse, serveAttachment } from './attachment-serve.js';
+import { mountDownloadLinkRedeem } from './download-link.js';
 import { problemResponse } from './errors.js';
 import type { PlatformSurfaceDeps, SeedWorldHook } from './index.js';
 
@@ -105,7 +106,7 @@ export interface WorkerDoorDeps<E extends object> {
   directory: (env: E, node: DoorNode) => IdentityStub;
   /** The routed (tenant, scope), from the router's assertion. */
   nodeFor: (req: Request, env: E) => DoorNode;
-  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost & Partial<Pick<ScopeHost, 'attachments'>>;
+  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost & Partial<Pick<ScopeHost, 'attachments'>> & Pick<ScopeHost, 'openDownloadLink'>;
   /** The vertical's declared settings, resolved per scope with the delivered values. */
   envSpec: EnvVarSpec[];
   /**
@@ -136,11 +137,12 @@ export interface WorkerDoorDeps<E extends object> {
    *
    *   GET    /api/attachments/:attachmentId   → 200 the file, streamed; 206 for a byte range
    *   DELETE /api/attachments/:attachmentId   → 204
+   *   GET    /api/attachment-downloads/:attachmentId/:secret   → a download link's file (`mountDownloadLinkRedeem`)
    *
    * Each as the signed-in person, so a read is gated by the target's `readPermission` and a removal
    * by its `writePermission`, on the entity the file hangs on. Served as `serveAttachment` serves a
    * file: hardened, always a download, and playable from an `<audio>` or `<video>` element, which
-   * seeks with byte ranges. Omit it and neither route is mounted; `attachments(c)` is there either way.
+   * seeks with byte ranges. Omit it and none of the three is mounted; `attachments(c)` is there either way.
    */
   attachments?: true;
 }
@@ -394,6 +396,8 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
             return problemResponse(c, err);
           }
         });
+        // A download link needs no session: the file is read as the person who minted it.
+        mountDownloadLinkRedeem(app, { host: (c) => deps.hostFor(c.env), node: (c) => deps.nodeFor(c.req.raw, c.env) });
         app.delete(DOOR_ATTACHMENT_PATH, async (c) => {
           try {
             const removed = await (await attachmentsOf(c)).remove(c.req.param('attachmentId'));

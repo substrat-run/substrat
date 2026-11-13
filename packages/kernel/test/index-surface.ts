@@ -71,6 +71,9 @@ export const INDEX_VALUE_EXPORTS = [
   'DENIAL_WINDOW_QUERY',
   // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
   'DEPLOYMENT_WIRE_AUTH_DDL',
+  // #3139: download links, the table both adapters build and the lookup they redeem through.
+  'DOWNLOAD_LINK_DDL',
+  'DOWNLOAD_LINK_GONE',
   'DO_SQL_LIMITS',
   'EMITTED_REPORT_CAP',
   'ENTITY_STATE_MOVES_DDL',
@@ -725,6 +728,7 @@ export const INDEX_VALUE_EXPORTS = [
   // #3139: a range read's span, resolved once for both adapters and the routes that serve it.
   'resolveByteRange',
   'resolveCapabilitySession',
+  'resolveDownloadLink',
   'resolvePeerInstanceFrom',
   'resolveRetryPolicy',
   'resolveScopeRecord',

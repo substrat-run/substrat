@@ -3243,6 +3243,8 @@ export * from './capability-exchange.js';
 // #3139: one answer to a request for a stored file — streamed, ranged, hardened.
 export { attachmentDisposition, hardenFileResponse, parseByteRange, serveAttachment } from './attachment-serve.js';
 export * from './upload-link.js';
+// #3139: reading a file through a download link, the read-side counterpart.
+export * from './download-link.js';
 // #1706: calling another vertical of the same tenant, from harness code.
 export * from './peer-client.js';
 // #1859: the live-read route — the Origin gate and the pure host's 501, once.

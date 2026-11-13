@@ -914,6 +914,14 @@ it was not handed; the door's opt-in file routes serve a file streamed and answe
 to the recorded size but not the SHA-256, which needs every byte; write-once keys under a fresh id
 are what make that affordable. Putting files on the stub itself is #3140.
 
+**Download links are the read-side counterpart of upload links (#3139).** `ctx.attachments.mintDownloadUrl`
+mints a bearer URL for ONE attachment, held in `_substrat_download_links` (`DOWNLOAD_LINK_DDL` in
+`packages/kernel/src/download-link.ts`) as the secret's SHA-256, and left out of a copy like the
+upload-link table. `ScopeHost.openDownloadLink` resolves the secret to its minter and opens the file
+through `attachments(minter, …)`, so the target's `readPermission` is checked as them on every read.
+A read spends nothing, since a media element reads in many ranged requests; a short life (a day at
+most) and a revoke are what bound the bearer.
+
 **Content search over those bytes is split at the text, not at the file (K-43, #1575).** The
 kernel owns what happens to extracted text: the dump-excluded text table and its FTS index,
 removal with the attachment, restore/fork reconcile, the extraction job, the outcome states,

@@ -279,6 +279,76 @@ export const attachmentUploadLinkRevokedPayload = z.object({
 });
 export type AttachmentUploadLinkRevokedPayload = z.infer<typeof attachmentUploadLinkRevokedPayload>;
 
+// -- download links (#3139) -------------------------------------------------------
+//
+// The read-side counterpart of an upload link: a URL that lets whoever holds it read ONE
+// attachment, for a short while, with no session — an `<audio>` element on another origin, a
+// file an MCP tool hands back, a link in a mail. Like an upload link it never acts as anyone:
+// redemption opens the file through the ordinary read surface AS THE MINTER, so the target's
+// `readPermission` is checked again on every request, and a minter who loses it takes every link
+// they minted with them. Unlike an upload link it is not spent by a read: a media element reads a
+// file in many ranged requests, so a link is good until it expires or is revoked.
+// ---------------------------------------------------------------------------
+
+/** What every download-link secret starts with — so a secret scanner can recognise a leaked one. */
+export const DOWNLOAD_LINK_SECRET_PREFIX = 'sbdl_';
+/** The prefix, then 32 random bytes as unpadded base64url. Anything else is the 404 an unknown secret gets. */
+export const DOWNLOAD_LINK_SECRET_SHAPE = /^sbdl_[A-Za-z0-9_-]{43}$/;
+/** Could `secret` be one the kernel minted? Says nothing about whether it names a link. */
+export const isDownloadLinkSecretShape = (secret: unknown): secret is string =>
+  typeof secret === 'string' && DOWNLOAD_LINK_SECRET_SHAPE.test(secret);
+/** A download link lives fifteen minutes unless the mint says otherwise. */
+export const DOWNLOAD_LINK_DEFAULT_TTL_SECONDS = 900;
+/** ... and never more than a day: a bearer URL is copied, and a short life is what bounds that. */
+export const DOWNLOAD_LINK_MAX_TTL_SECONDS = 86_400;
+/** Where a vertical mounts the redemption (`mountDownloadLinkRedeem` in `@substrat-run/vertical-host`). */
+export const DOWNLOAD_LINK_PATH_PREFIX = '/api/attachment-downloads';
+
+/** `ctx.attachments.mintDownloadUrl`'s input. */
+export const downloadLinkMintInput = z
+  .object({
+    attachmentId: z.string().min(1).max(255),
+    ttlSeconds: z.number().int().positive().max(DOWNLOAD_LINK_MAX_TTL_SECONDS).optional(),
+  })
+  .strict();
+export type DownloadLinkMintInput = z.input<typeof downloadLinkMintInput>;
+
+/** The path a link is read at — the secret last, the attachment in the path so a mismatch is the 404 an unknown secret gets. */
+export function downloadLinkPath(attachmentId: string, secret: string): string {
+  return `${DOWNLOAD_LINK_PATH_PREFIX}/${encodeURIComponent(attachmentId)}/${secret}`;
+}
+
+/** What a mint returns. The `secret` (and the `path` that carries it) exists only here. */
+export interface MintedDownloadLink {
+  id: string;
+  secret: string;
+  /** Join to the vertical's own public origin: `GET ${origin}${path}`. */
+  path: string;
+  expiresAt: string;
+}
+
+/** A download link was minted. Entity: the file's owner; actor: the minter. */
+export const ATTACHMENT_DOWNLOAD_LINK_MINTED = 'attachment.download-link-minted';
+/** A download link was revoked before it expired. */
+export const ATTACHMENT_DOWNLOAD_LINK_REVOKED = 'attachment.download-link-revoked';
+
+export const attachmentDownloadLinkMintedPayload = z.object({
+  linkId: z.string().min(1),
+  attachmentId: z.string().min(1),
+  entity: entityRef,
+  expiresAt: instant,
+  mintedBy: principalId,
+});
+export type AttachmentDownloadLinkMintedPayload = z.infer<typeof attachmentDownloadLinkMintedPayload>;
+
+export const attachmentDownloadLinkRevokedPayload = z.object({
+  linkId: z.string().min(1),
+  attachmentId: z.string().min(1),
+  entity: entityRef,
+  revokedBy: principalId,
+});
+export type AttachmentDownloadLinkRevokedPayload = z.infer<typeof attachmentDownloadLinkRevokedPayload>;
+
 // -- connector upload bounds (#2516) --------------------------------------------
 
 /**

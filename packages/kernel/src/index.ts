@@ -320,6 +320,8 @@ export {
   redeemUploadLinkInTransaction,
   uploadContentTypeAllowed,
 } from './upload-link.js';
+// #3139: download links — the table, the refusal reason, and the lookup both adapters redeem through.
+export { DOWNLOAD_LINK_DDL, DOWNLOAD_LINK_GONE, resolveDownloadLink } from './download-link.js';
 export type {
   AttachmentVerbDeps,
   AttachmentVerbs,

@@ -21,6 +21,7 @@ import {
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
+  downloadLinkContractSuite,
   orphanSweepContractSuite,
   uploadLinkReplayContractSuite,
   type OrphanSweepFixture,
@@ -711,6 +712,7 @@ capabilityAttachmentContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // Upload links: a single-use URL minted in an operation, redeemed through the attachment write.
 uploadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
+downloadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // #2314: the orphan-byte sweep over the per-tenant directory, with each put observable so a test
 // can hold an upload between its bytes and its row.

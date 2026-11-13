@@ -86,11 +86,15 @@ const STRONG_SHA256_TAG = /^"[0-9a-f]{64}"$/;
  * with the range asked for, 416 for a range with no byte in the file, and `not_found` (thrown) for
  * an id `files` does not open, whether unknown or not the caller's to read. A HEAD gets the headers
  * and no body. Call {@link hardenFileResponse} first, and render a throw with `problemResponse`.
+ *
+ * `options.instance` is what the 416 names as its `instance`, the request path by default: a route
+ * whose path carries a secret passes it without one.
  */
 export async function serveAttachment(
   c: Context,
   files: Pick<ScopeAttachments, 'openStream'>,
   attachmentId: string,
+  options?: { instance?: string },
 ): Promise<Response> {
   const head = c.req.method === 'HEAD';
   const ifRange = c.req.header('If-Range')?.trim();
@@ -112,7 +116,11 @@ export async function serveAttachment(
     'Accept-Ranges': 'bytes',
   };
   if (opened.range === 'unsatisfiable') {
-    const refusal = problemForStatus(416, `This file is ${record.size} bytes; the range asked for has none of them.`, c.req.path);
+    const refusal = problemForStatus(
+      416,
+      `This file is ${record.size} bytes; the range asked for has none of them.`,
+      options?.instance ?? c.req.path,
+    );
     return c.body(JSON.stringify(withRequestIdMember(refusal, c)), 416, {
       'content-type': PROBLEM_CONTENT_TYPE,
       'Content-Range': `bytes */${record.size}`,

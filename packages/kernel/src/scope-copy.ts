@@ -1,5 +1,6 @@
 import type { PlatformRequestFailure } from '@substrat-run/contracts';
 import { CAPABILITY_TABLE_NAMES } from './capability.js';
+import { DOWNLOAD_LINK_TABLE_NAMES } from './download-link.js';
 import { UPLOAD_LINK_TABLE_NAMES } from './upload-link.js';
 import type { SwitchSql } from './system-switch.js';
 
@@ -39,8 +40,12 @@ import type { SwitchSql } from './system-switch.js';
 export const isCopyLoad = (destScopeId: string | undefined, sourceScopeId: string | undefined): boolean =>
   destScopeId === undefined || sourceScopeId !== destScopeId;
 
-/** The capability tables — and the upload-link table, a bearer link of the same kind — as `capabilitiesForLoad` matches a dump's (lowercased) names. */
-const CAPABILITY_TABLES: ReadonlySet<string> = new Set<string>([...CAPABILITY_TABLE_NAMES, ...UPLOAD_LINK_TABLE_NAMES]);
+/** The capability tables — and the upload- and download-link tables, bearer links of the same kind — as `capabilitiesForLoad` matches a dump's (lowercased) names. */
+const CAPABILITY_TABLES: ReadonlySet<string> = new Set<string>([
+  ...CAPABILITY_TABLE_NAMES,
+  ...UPLOAD_LINK_TABLE_NAMES,
+  ...DOWNLOAD_LINK_TABLE_NAMES,
+]);
 
 /**
  * A dump's tables as a load into `destScopeId` takes them: **capability rows never cross a scope
