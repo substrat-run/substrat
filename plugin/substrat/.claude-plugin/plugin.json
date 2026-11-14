@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "substrat",
   "displayName": "Substrat",
-  "description": "Build a multi-tenant business app on Substrat — scaffold a vertical, then follow the project's own playbook through the design gate and the two human checkpoints.",
-  "version": "0.7.0",
+  "description": "Build a multi-tenant business app on Substrat \u2014 scaffold a vertical, then follow the project's own playbook through the design gate and the two human checkpoints.",
+  "version": "0.8.0",
   "author": {
     "name": "Substrat",
     "url": "https://github.com/substrat-run"
@@ -11,5 +11,20 @@
   "homepage": "https://substrat.net",
   "repository": "https://github.com/substrat-run/substrat",
   "license": "Apache-2.0",
-  "keywords": ["substrat", "multi-tenant", "vertical", "permissions", "kernel"]
+  "keywords": [
+    "substrat",
+    "multi-tenant",
+    "vertical",
+    "permissions",
+    "kernel"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "approvals": {
+      "type": "boolean",
+      "title": "Approvals pane",
+      "description": "Show design gates and refused promotes in a pane with Approve buttons, and stop Claude passing plan --approve or --ack-* itself.",
+      "default": true
+    }
+  }
 }

@@ -68,8 +68,11 @@ async function begin(over: Record<string, string> = {}) {
 }
 
 /** Pick a persona on the picker as `user`, answering the redirect the issuer sends back. */
-async function pick(path: string, sub: string, user = MEMBER.id, origin = ORIGIN) {
-  const html = await (await call(path, { headers: { 'x-test-user': user } })).text();
+async function pick(path: string, sub: string, user = MEMBER.id, origin?: string) {
+  const picker = await call(path, { headers: { 'x-test-user': user } });
+  // The Origin a browser sends on the picker's form POST: `null` under a no-referrer policy.
+  origin ??= picker.headers.get('referrer-policy') === 'no-referrer' ? 'null' : ORIGIN;
+  const html = await picker.text();
   const request = /name="request" value="([^"]+)"/.exec(html)![1]!.replace(/&amp;/g, '&');
   return call(`/persona/${PREVIEW}/authorize`, {
     method: 'POST',

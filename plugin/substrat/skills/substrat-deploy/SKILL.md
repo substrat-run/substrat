@@ -101,6 +101,13 @@ substrat promote <slug> --version <versionId>
 substrat promote <slug> --version <versionId> --ack-permissions --review <token>   # and/or --ack-migrations
 ```
 
+**Where the Substrat approvals pane runs** (the plugin's mod, in Claude Code with mods on),
+the refused promote has already opened it with these diffs and an **Acknowledge and promote**
+button that runs exactly the flags the refusal named and its `--review` token. Present the
+diffs as above, tell the person the pane is waiting, and stop: a command of yours carrying an
+`--ack-*` flag is refused there. Their acknowledgement comes back to you as a message; go on
+to step 6.
+
 If they reply "yes, go ahead" without having read the diff you printed, that is not an
 approval — ask them to confirm the specific line that matters (the widened role, or the
 migration that rewrites rows). One ask, not an argument.

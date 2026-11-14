@@ -256,7 +256,8 @@ async function fixtureProject(base = tmpdir()): Promise<string> {
 describe('the model gate compiles under the project tsconfig once one exists (#2727)', () => {
 	// A file `noUnusedLocals` refuses and the explicit defaults accept: only the
 	// project's own config can tell the two forms apart.
-	const compile = async (tsconfig: boolean) => {
+	// `suffix` runs after the gate in the same shell, as the hosted sandbox's one session does.
+	const compile = async (tsconfig: boolean, suffix = '') => {
 		await mkdir(join(REPO_ROOT, '.builder'), { recursive: true });
 		const dir = await mkdtemp(join(REPO_ROOT, '.builder/model-gate-'));
 		try {
@@ -270,7 +271,7 @@ describe('the model gate compiles under the project tsconfig once one exists (#2
 			}
 			const spec = standaloneGates(relative(REPO_ROOT, dir)).find((g) => g.name === 'model')!;
 			const ws = new LocalWorkspace({ root: REPO_ROOT });
-			const result = await ws.exec(spec.cmd);
+			const result = await ws.exec(`${spec.cmd}${suffix}`);
 			const leftover = await ws.exists(relative(REPO_ROOT, join(dir, 'tsconfig.model-gate.json')));
 			await ws.dispose();
 			return { result, leftover };
@@ -288,6 +289,11 @@ describe('the model gate compiles under the project tsconfig once one exists (#2
 		expect(result.exitCode).not.toBe(0);
 		expect(result.stdout + result.stderr).toContain('TS6133');
 		expect(leftover).toBe(false);
+	}, 60_000);
+
+	it('leaves the shell it runs in alive, so the sandbox session survives the gate', async () => {
+		const { result } = await compile(true, '; echo "shell kept: $?"');
+		expect(result.stdout).toMatch(/shell kept: [1-9]/);
 	}, 60_000);
 });
 

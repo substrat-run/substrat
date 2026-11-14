@@ -10,5 +10,8 @@
         ]
       }
     ]
-  }
+  },
+  "modules": [
+    "./approvals.tsx"
+  ]
 }

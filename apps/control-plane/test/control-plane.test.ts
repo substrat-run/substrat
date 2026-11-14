@@ -433,13 +433,19 @@ describe('router kick — /internal/drain-scope', () => {
     });
   });
 
-  it("drains a response-named scope only when it shares the routed scope's tenant and vertical", () => {
-    const routed = { tenantId: 't1', vertical: 'drive' };
-    expect(sameDeploymentScope(routed, { tenantId: 't1', vertical: 'drive' })).toBe(true);
-    expect(sameDeploymentScope(routed, { tenantId: 't1', vertical: 'crm' })).toBe(false); // another vertical's scope
-    expect(sameDeploymentScope(routed, { tenantId: 't2', vertical: 'drive' })).toBe(false); // another tenant's
+  it("drains a response-named scope only when it is a live primary install of the routed scope's tenant and vertical", () => {
+    const live = { status: 'active', kind: 'org', forkedFrom: null } as const;
+    const scope = (tenantId: string, vertical: string | null, over: object = {}) => ({ ...live, tenantId, vertical, ...over }) as never;
+    const routed = scope('t1', 'drive');
+    expect(sameDeploymentScope(routed, scope('t1', 'drive'))).toBe(true);
+    expect(sameDeploymentScope(routed, scope('t1', 'crm'))).toBe(false); // another vertical's scope
+    expect(sameDeploymentScope(routed, scope('t2', 'drive'))).toBe(false); // another tenant's
     expect(sameDeploymentScope(routed, undefined)).toBe(false); // not on record
-    expect(sameDeploymentScope({ tenantId: 't1', vertical: null }, { tenantId: 't1', vertical: null })).toBe(false); // no vertical serves it
+    expect(sameDeploymentScope(scope('t1', null), scope('t1', null))).toBe(false); // no vertical serves it
+    expect(sameDeploymentScope(routed, scope('t1', 'drive', { kind: 'preview' }))).toBe(false); // a preview runs other code (#2005)
+    expect(sameDeploymentScope(routed, scope('t1', 'drive', { forkedFrom: 'x' }))).toBe(false); // a fork
+    expect(sameDeploymentScope(routed, scope('t1', 'drive', { status: 'archived' }))).toBe(false); // not active
+    expect(sameDeploymentScope(scope('t1', 'drive', { kind: 'preview' }), scope('t1', 'drive'))).toBe(false); // a preview cannot aim at production
   });
 
   it('reads what the kick asks for: a legacy router means the intent drain, and only `true` runs edges', () => {

@@ -145,7 +145,6 @@ import {
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
   drainScopePlatformRequests,
-  verticalConnectorBinder,
   verticalConnectorDispatchHandler,
   verticalConnectorInspector,
   verticalConnectorScopeSync,
@@ -245,7 +244,7 @@ import {
   scopeOwnable,
   type ConnectorEnv,
 } from './connectors.js';
-import { verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
+import { verticalConnectorBinderFor, verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
@@ -2301,31 +2300,48 @@ export function assertReconcileReaches(scopeId: ScopeId, expected: string, reach
 }
 
 /**
- * Which scope a router kick's intent drain runs in. The response that raised the flag may name
- * the scope its intents went into (`PLATFORM_REQUEST_HEADER`'s value): a worker serving several
- * scopes under one hostname picks the scope per request, so the routed scope is not always it.
- * The named scope is honoured only when it is a scope of the routed scope's tenant served by the
- * same vertical — the response is tenant code, so it may move the drain between its own
- * deployment's scopes and nowhere else. Anything else drains the routed scope, as a kick always
- * did.
+ * Which scopes a router kick's intent drain runs in, each with its record read once (the drain
+ * takes it rather than reading it again). The routed scope always, as a kick always did; and the
+ * scope the response named (`PLATFORM_REQUEST_HEADER`'s value), when it is another: a worker
+ * serving several scopes under one hostname picks the scope per request, so a request may have
+ * committed intents in both. The header holds one value, so of several non-routed scopes only the
+ * last one named is reached here; the sweep drains the rest.
+ *
+ * The named scope is honoured only when it is an active, primary install of the routed scope's
+ * tenant and vertical, and the routed scope is one too — the response is tenant code, so it may
+ * move the drain between its own deployment's live scopes and nowhere else: never into a preview
+ * or a fork (#2005), which run other code.
  */
-export async function intentScopeOf(env: Env, t: TenantId, routed: ScopeId, named: unknown): Promise<ScopeId> {
-  const parsed = scopeId.safeParse(named);
-  if (!parsed.success || parsed.data === routed) return routed;
+export async function intentScopesOf(
+  env: Env,
+  t: TenantId,
+  routed: ScopeId,
+  named: unknown,
+): Promise<{ scopeId: ScopeId; rec: Scope | undefined }[]> {
   const admin = hostFor(env).admin;
+  const parsed = scopeId.safeParse(named);
+  const other = parsed.success && parsed.data !== routed ? parsed.data : null;
   const [routedRec, namedRec] = await Promise.all([
     admin.getScopeRecord(SWEEP_ACTOR, t, routed).catch(() => undefined),
-    admin.getScopeRecord(SWEEP_ACTOR, t, parsed.data).catch(() => undefined),
+    other ? admin.getScopeRecord(SWEEP_ACTOR, t, other).catch(() => undefined) : undefined,
   ]);
-  return sameDeploymentScope(routedRec, namedRec) ? parsed.data : routed;
+  const scopes = [{ scopeId: routed, rec: routedRec }];
+  if (other && sameDeploymentScope(routedRec, namedRec)) scopes.push({ scopeId: other, rec: namedRec });
+  return scopes;
 }
 
-/** Both scopes on record, in one tenant, under one vertical: the test `intentScopeOf` applies. */
+/**
+ * Both scopes on record, in one tenant, under one vertical, and both active primary installs: the
+ * test `intentScopesOf` applies before it drains a response-named scope.
+ */
 export function sameDeploymentScope(
-  routed: { tenantId: string; vertical: string | null } | null | undefined,
-  named: { tenantId: string; vertical: string | null } | null | undefined,
+  routed: Pick<Scope, 'tenantId' | 'vertical' | 'status' | 'kind' | 'forkedFrom'> | null | undefined,
+  named: Pick<Scope, 'tenantId' | 'vertical' | 'status' | 'kind' | 'forkedFrom'> | null | undefined,
 ): boolean {
-  return !!routed?.vertical && !!named && named.tenantId === routed.tenantId && named.vertical === routed.vertical;
+  const live = (s: Pick<Scope, 'status' | 'kind' | 'forkedFrom'>) => s.status === 'active' && isPrimaryScope(s);
+  return (
+    !!routed?.vertical && !!named && named.tenantId === routed.tenantId && named.vertical === routed.vertical && live(routed) && live(named)
+  );
 }
 
 /**
@@ -2496,12 +2512,15 @@ async function drainOneScope(
   env: Env,
   t: TenantId,
   s: ScopeId,
-  /** #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. */
-  opts?: { skip?: readonly string[] },
+  /**
+   * #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. `rec`:
+   * the scope's record when the caller already read it, so a kick reads it once.
+   */
+  opts?: { skip?: readonly string[]; rec?: Scope },
 ): Promise<ScopeDrainReport & { attempted: string[] }> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
-  const target = await drainTarget(await host.admin.getScopeRecord(SWEEP_ACTOR, t, s), resolveVerticalForScope);
+  const target = await drainTarget(opts?.rec ?? (await host.admin.getScopeRecord(SWEEP_ACTOR, t, s)), resolveVerticalForScope);
   if ('report' in target) return { ...target.report, attempted: [] };
   const { rec, vertical, client } = target;
   // The managed-tenant capability (#412/#444): who may create tenants is the registry's
@@ -2732,7 +2751,7 @@ export default {
       connectionLandings: {
         read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
         binders: connectionBindersFor(env),
-        binderFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorBinder(verticalConnectorDepsFor(env, host, SWEEP_ACTOR)) : undefined),
+        binderFor: verticalConnectorBinderFor(env, host, SWEEP_ACTOR),
       },
       // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape).
@@ -3273,9 +3292,18 @@ export default {
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
       // `attempted` is for the sweep's second drain (#2431); the router is answered as before.
-      const report = kick.intents
-        ? withoutAttempted(await drainOneScope(c.env, ids.data, await intentScopeOf(c.env, ids.data, sids.data, body.namedScopeId)))
-        : { drained: 0, done: 0, failed: 0, pending: 0 };
+      // The routed scope's report is the answer, as it always was; a response-named scope's drain
+      // runs after it and is reported beside it.
+      let report: ScopeDrainReport & { named?: ScopeDrainReport } = { drained: 0, done: 0, failed: 0, pending: 0 };
+      let routedRec: Scope | undefined | null = null;
+      if (kick.intents) {
+        const [routed, named] = await intentScopesOf(c.env, ids.data, sids.data, body.namedScopeId);
+        routedRec = routed!.rec;
+        const drain = (s: { scopeId: ScopeId; rec: Scope | undefined }) =>
+          drainOneScope(c.env, ids.data, s.scopeId, s.rec ? { rec: s.rec } : undefined).then(withoutAttempted);
+        report = await drain(routed!);
+        if (named) report.named = await drain(named);
+      }
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
       // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass
       // per flagged response would let one vertical drive this worker and the directory as hard
@@ -3287,7 +3315,7 @@ export default {
       // secret-holder naming a fresh scope id per request would mint a new coalescer, and a
       // pass, each time. Now a scope that is not an active, primary install of a vertical costs
       // this one read and nothing else.
-      const rec = await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined);
+      const rec = routedRec ?? (await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined));
       if (!isKickableProducer(rec)) return c.json({ ...report, crossVertical: 'not-a-producer' });
       return c.json({ ...report, crossVertical: await kickCrossVertical(c.env, { tenantId: ids.data, scopeId: sids.data }) });
     });
@@ -3477,10 +3505,7 @@ export default {
           landings: {
             read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
             binders: connectionBindersFor(env),
-            binderFor: (conn) =>
-              isVerticalConnectorProvider(conn.provider)
-                ? verticalConnectorBinder(verticalConnectorDepsFor(env, host, CONNECTION_RELAY_ACTOR))
-                : undefined,
+            binderFor: verticalConnectorBinderFor(env, host, CONNECTION_RELAY_ACTOR),
           },
         });
     // #2672: poll the scope's bindings of one provider now, through the provider's own scope poll.
@@ -3495,10 +3520,7 @@ export default {
             // A vertical-defined provider's bindings are its own (vertical-connectors.md §6.1), as
             // the bind and unbind routes above read them: without this its connection is never
             // found bound, and the poll below would answer that nothing is.
-            binderFor: (conn) =>
-              isVerticalConnectorProvider(conn.provider)
-                ? verticalConnectorBinder(verticalConnectorDepsFor(env, host, CONNECTION_RELAY_ACTOR))
-                : undefined,
+            binderFor: verticalConnectorBinderFor(env, host, CONNECTION_RELAY_ACTOR),
           },
           // A first-party connector's own scope poll, or a vertical-defined provider's: the call its
           // pass makes for the one binding. Only a provider that is neither answers 501.

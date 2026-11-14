@@ -310,16 +310,25 @@ export const REVIEW_WRITE_RETRY_MAX_MS = 60 * 60_000;
  * call is paid for either way (deduplicated on the review id); it stays held until that write
  * succeeds, so a rejected one is tried again on the next alarm while the result is still unwritten.
  * Before each write of the result the job checks the held expiry and that the receipt is still
- * there: past expiry, or with the receipt pruned, it writes nothing and forgets the job. Once the
- * job ends, a ledger write that failed on that last alarm is logged and not retried. A failed
- * result write retries only the write, waiting from REVIEW_WRITE_RETRY_MS and doubling to at most
+ * there: past expiry, or with the receipt pruned, it writes nothing and forgets the job. A job that
+ * ends with its ledger line still unwritten keeps only the line, which is billable, and tries it
+ * again on its own alarms until the receipt expires (`finishJob`). A failed result write retries only the write, waiting from REVIEW_WRITE_RETRY_MS and doubling to at most
  * REVIEW_WRITE_RETRY_MAX_MS. If the result cannot be held, it is written straight to R2. A transient
  * model error re-arms the next attempt. The job is forgotten once the result is written, or nothing
  * is left to write it for.
  */
 export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJobDeps | null, nowMs: () => number = Date.now): Promise<void> {
+  if (!deps) {
+    await storage.deleteAll();
+    return;
+  }
+  const line = await storage.get<UnrecordedLine>('line');
+  if (line) {
+    await retryLine(storage, deps, line, nowMs);
+    return;
+  }
   const job = await storage.get<ReviewJobState>('job');
-  if (!job || !deps) {
+  if (!job) {
     await storage.deleteAll();
     return;
   }
@@ -351,14 +360,14 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
       // failure here re-arms the job, whose attempt is already counted.
       console.error('review.job.failed', { reviewId: job.reviewId, reason: 'result not held' });
       // The ledger line first: a paid call has its line even when the result is no longer wanted.
-      if (held.usage) await recordLedger(deps, held.usage);
+      const unrecorded = held.usage && !(await recordLedger(deps, held.usage)) ? held.usage : undefined;
       if (!(await stillWanted(deps, job.reviewId, held.expiresAt, nowMs))) {
-        await storage.deleteAll();
+        await finishJob(storage, unrecorded, held.expiresAt, nowMs);
         return;
       }
       try {
         await writeReviewResult(deps.bucket, job.reviewId, held.result);
-        await storage.deleteAll();
+        await finishJob(storage, unrecorded, held.expiresAt, nowMs);
       } catch {
         await storage.setAlarm(nowMs() + REVIEW_WRITE_RETRY_MS);
       }
@@ -372,7 +381,7 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
     await storage.put('held', held);
   }
   if (!(await stillWanted(deps, job.reviewId, held.expiresAt, nowMs))) {
-    await storage.deleteAll();
+    await finishJob(storage, held.usage, held.expiresAt, nowMs);
     return;
   }
   try {
@@ -382,10 +391,49 @@ export async function reviewAlarm(storage: DurableObjectStorage, deps: ReviewJob
     console.error('review.job.failed', { reviewId: job.reviewId, reason: 'record write failed', writes });
     const current = (await storage.get<ReviewJobState>('job')) ?? job;
     await storage.put('job', { ...current, writes } satisfies ReviewJobState);
-    await storage.setAlarm(nowMs() + Math.min(REVIEW_WRITE_RETRY_MS * 2 ** (writes - 1), REVIEW_WRITE_RETRY_MAX_MS));
+    await storage.setAlarm(nowMs() + writeRetryDelay(writes));
     return;
   }
+  await finishJob(storage, held.usage, held.expiresAt, nowMs);
+}
+
+/** The wait before write `writes + 1`: from REVIEW_WRITE_RETRY_MS, doubling to REVIEW_WRITE_RETRY_MAX_MS. */
+const writeRetryDelay = (writes: number): number => Math.min(REVIEW_WRITE_RETRY_MS * 2 ** (writes - 1), REVIEW_WRITE_RETRY_MAX_MS);
+
+/** A paid call's ledger line that outlived its job: the line is what the tenant is billed from. */
+interface UnrecordedLine { usage: UsageToRecord; until: string; writes: number }
+
+/**
+ * Forget the job. A ledger line still unwritten is kept, alone, and retried on the object's own
+ * alarms until `until` (the receipt's expiry): the prune never reaches this object, so the line
+ * needs an end of its own. Without an expiry there is nothing to bound the retries by, and the
+ * line is logged as unrecorded instead.
+ */
+async function finishJob(storage: DurableObjectStorage, usage: UsageToRecord | undefined, until: string | undefined, nowMs: () => number): Promise<void> {
   await storage.deleteAll();
+  if (!usage) return;
+  if (!until || Date.parse(until) <= nowMs()) {
+    console.error('review.usage.unrecorded', { reviewId: usage.requestId, reason: 'ledger write failed' });
+    return;
+  }
+  await storage.put('line', { usage, until, writes: 1 } satisfies UnrecordedLine);
+  await storage.setAlarm(nowMs() + writeRetryDelay(1));
+}
+
+async function retryLine(storage: DurableObjectStorage, deps: ReviewJobDeps, line: UnrecordedLine, nowMs: () => number): Promise<void> {
+  if (await recordLedger(deps, line.usage)) {
+    await storage.deleteAll();
+    return;
+  }
+  const writes = line.writes + 1;
+  const next = nowMs() + writeRetryDelay(writes);
+  if (next >= Date.parse(line.until)) {
+    console.error('review.usage.unrecorded', { reviewId: line.usage.requestId, reason: 'ledger write failed until the review expired', writes });
+    await storage.deleteAll();
+    return;
+  }
+  await storage.put('line', { ...line, writes } satisfies UnrecordedLine);
+  await storage.setAlarm(next);
 }
 
 /**
