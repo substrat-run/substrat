@@ -69,6 +69,8 @@ export interface VerticalConnectorDeps {
   }): Promise<{ declaration: VerticalConnectorDeclaration; target: VerticalConnectorTarget } | { refused: string }>;
   call(target: VerticalConnectorTarget, request: ConnectorCallRequest): Promise<{ status: number; body: unknown }>;
   now(): string;
+  /** How long a call made under a scope's state lease may run, from the lease's taking, before its answer is dropped. Defaults to {@link LEASE_CALL_MS}. */
+  leaseCallMs?: number;
 }
 
 /** The directory and registry reads {@link resolveVerticalConnectorTarget} decides from. */
@@ -204,7 +206,8 @@ async function stateOf(host: ScopeHost, id: ConnectionId, scopeId: string | null
  * Make one call and apply its answer (§6.2, §6.3). A succeeded call's state writes land, then its
  * recorded uses; a failed one's uses only, so a cursor never moves past work that did not land. A
  * call that never produced an answer (a transport throw, a non-200, a body that is not a response)
- * records one failed use and is reported retryable.
+ * records one failed use and is reported retryable. A call under a state lease passes `callBy`,
+ * the wall-clock time its answer must arrive by: one that comes later is never applied.
  */
 async function applyConnectorCall(
   deps: VerticalConnectorDeps,
@@ -212,6 +215,7 @@ async function applyConnectorCall(
   scopeId: string | null,
   target: VerticalConnectorTarget,
   request: ConnectorCallRequest,
+  callBy?: number,
 ): Promise<CallOutcome> {
   const unanswered = async (error: string): Promise<CallOutcome> => {
     await deps.host.admin.recordConnectionUse(connectionId, { ok: false, error: error.slice(0, USE_ERROR_MAX) });
@@ -219,7 +223,7 @@ async function applyConnectorCall(
   };
   let answer: { status: number; body: unknown };
   try {
-    answer = await deps.call(target, request);
+    answer = await (callBy === undefined ? deps.call(target, request) : answeredBy(deps.call(target, request), callBy));
   } catch (e) {
     return unanswered(`the call into the vertical's connector did not complete: ${message(e)}`);
   }
@@ -303,6 +307,30 @@ const SWEEP_LEASE_PREFIX = 'vc:sweep:';
 const SWEEP_LEASE_MS = 15 * 60_000;
 const sweepLease = z.object({ holder: z.string(), until: z.string() });
 
+/**
+ * How long the call made under a state lease may run, from the lease's taking. The state writes
+ * check no lease ownership, so the answer must arrive while the lease is still this call's: a call
+ * that outlived it could overwrite the state of the call that took the lease over. A minute inside
+ * the lease leaves the cap check and the writes room to finish before it runs out.
+ */
+const LEASE_CALL_MS = SWEEP_LEASE_MS - 60_000;
+
+/** The wall-clock time a call under a lease taken now must be answered by. */
+const leaseCallBy = (deps: VerticalConnectorDeps): number => Date.now() + (deps.leaseCallMs ?? LEASE_CALL_MS);
+
+/** `call`'s answer, or a rejection once `by` passes; a later answer is dropped. */
+async function answeredBy<T>(call: Promise<T>, by: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('no answer while the scope state lease was held; a later answer is dropped')), Math.max(0, by - Date.now()));
+  });
+  try {
+    return await Promise.race([call, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Take the scope's state lease, or `null` when another call holds a live one. */
 async function claimStateLease(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string): Promise<z.infer<typeof sweepLease> | null> {
   const key = `${SWEEP_LEASE_PREFIX}${scopeId}`;
@@ -341,6 +369,7 @@ async function sweepBinding(
     if (!resolved.declaration.sweeps) return { skipped: true };
     const lease = await claimStateLease(deps, connection.id, scopeId);
     if (!lease) return { busy: true };
+    const callBy = leaseCallBy(deps);
     try {
       const state = await stateOf(deps.host, connection.id, scopeId);
       const outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
@@ -349,7 +378,7 @@ async function sweepBinding(
         connection: await opened(),
         binding: binding.data,
         state,
-      });
+      }, callBy);
       if (!outcome.ok) return { failed: outcome.error };
       const result = connectorSweepResult.safeParse(outcome.result);
       return result.success ? result.data : { failed: 'the connector answered a sweep result that does not read as one' };
@@ -444,6 +473,7 @@ async function bindScope(deps: VerticalConnectorDeps, host: ScopeHost, connectio
   if (resolved.declaration.binds) {
     const lease = await claimStateLease(deps, connection.id, scopeId);
     if (!lease) throw new Error(`another call of connection ${connection.id} is writing scope ${scopeId}'s connector state; bind again shortly`);
+    const callBy = leaseCallBy(deps);
     let outcome: CallOutcome;
     try {
       outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
@@ -452,7 +482,7 @@ async function bindScope(deps: VerticalConnectorDeps, host: ScopeHost, connectio
         connection: await openFor(deps, connection),
         scopeId,
         options: raw,
-      });
+      }, callBy);
     } finally {
       await releaseStateLease(deps, connection.id, scopeId, lease);
     }
@@ -620,6 +650,7 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
     // is counted, so a held lease never wears down the event's retries.
     const lease = await claimStateLease(deps, row.id, ctx.scopeId);
     if (!lease) return { status: 'deferred' };
+    const callBy = leaseCallBy(deps);
     let outcome: CallOutcome;
     try {
       const state = await stateOf(deps.host, row.id, ctx.scopeId);
@@ -631,7 +662,7 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
         binding,
         event: payload.event,
         state,
-      });
+      }, callBy);
     } finally {
       await releaseStateLease(deps, row.id, ctx.scopeId, lease);
     }

@@ -234,6 +234,22 @@ describe('vertical-defined connectors — the platform side', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('drops an answer that arrives after the lease-held call ran out, so a late one writes no state', async () => {
+    await bind(a);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    answer = async () => {
+      await held;
+      return ok({ result: { landed: 1, more: false }, state: [{ key: 'cursor', value: 'late' }] });
+    };
+    const out = await verticalConnectorScopeSync({ ...deps(), leaseCallMs: 20 })(host, row, a);
+    expect(out).toMatchObject({ outcome: 'failed', errors: [expect.stringMatching(/lease was held/)] });
+    expect(await host.admin.getConnectorState(row.id, 'vc:sweep:' + a)).toBeNull(); // given back
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await stateAt(a, 'cursor')).toBeUndefined();
+  });
+
   it('answers not-bound for a scope the connection is not bound to, or whose connector sweeps nothing', async () => {
     const sync = verticalConnectorScopeSync(deps());
     expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
