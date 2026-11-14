@@ -370,7 +370,7 @@ app.all('/api/*', async (c) => {
 	if (c.req.path === '/api/preview/personas' && c.req.method === 'GET') {
 		const project = await currentProject();
 		if (project instanceof Response) return project;
-		return project ? readStudioPersonas(cp, internal, project, person, new Date()) : c.json({ personas: [] });
+		return project ? readStudioPersonas(cp, internal, (url, init) => fetch(url, init), project, person, new Date()) : c.json({ personas: [] });
 	}
 	if (c.req.path === '/api/preview/sign-in' && c.req.method === 'POST') {
 		const project = await currentProject();

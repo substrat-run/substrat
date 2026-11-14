@@ -137,6 +137,8 @@ function HostedPreview() {
 	/** The sample slot's people (#3145), and who the frame was last signed in as. */
 	const [personas, setPersonas] = useState<StudioPersona[]>([]);
 	const [signedInAs, setSignedInAs] = useState('');
+	/** Why nobody is offered when the slot cannot hold a sign-in inside this frame. */
+	const [personaNote, setPersonaNote] = useState<string | null>(null);
 	/** The one-time sign-in URL the frame was pointed at: spent, so reload goes back to the app. */
 	const entered = useRef<string | null>(null);
 
@@ -161,8 +163,12 @@ function HostedPreview() {
 	// Who the sample slot can be signed in as: asked again whenever it is shown ready.
 	useEffect(() => {
 		setPersonas([]);
+		setPersonaNote(null);
 		if (kind !== 'sample' || state !== 'ready') return;
-		void api.studioPersonas().then((r) => setPersonas(r.personas), () => undefined);
+		void api.studioPersonas().then((r) => {
+			setPersonas(r.personas);
+			setPersonaNote(r.note ?? null);
+		}, () => undefined);
 	}, [kind, state, url]);
 
 	async function signInAs(sub: string): Promise<void> {
@@ -267,6 +273,7 @@ function HostedPreview() {
 				/>
 				{src && <button className="pill" onClick={reload}>reload</button>}
 			</div>
+			{personaNote && <pre className="dev-log note">{personaNote}</pre>}
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
 			{note && <pre className="dev-log">{note}</pre>}
 			{fork && !fork.ok && <pre className="dev-log">Production data: {fork.reason}</pre>}

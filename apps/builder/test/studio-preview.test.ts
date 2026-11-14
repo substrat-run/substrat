@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	STALE_AUTH_NOTE,
 	STUDIO_DATA_PREVIEW_TAG,
 	STUDIO_PREVIEW_TAG,
 	personPlane,
@@ -14,6 +15,7 @@ import {
 	runStudioPreview,
 	studioSignIn,
 	type ControlPlaneCall,
+	type PreviewFetch,
 } from '../src/studio-preview.js';
 
 interface Call { path: string; method: string; body: unknown }
@@ -155,14 +157,29 @@ describe('production data (#3108): the fork is made as the signed-in person', ()
 describe("sign in as… (#3145): the seeded slot's personas, and a ticket for one", () => {
 	const now = new Date('2026-11-05T12:00:00Z');
 	const slot = { body: [{ scopeId: 'scp_1', tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: null }] };
+	const ada = { sub: 'dev|ada', name: 'Ada', email: 'ada@example.test' };
+	const offering = { '/internal/builder/persona/scp_1/personas': { body: { personas: [ada] } } };
+	/** The preview's login answering with this flow cookie, every probe recorded. */
+	const login = (flowCookie: string): { fetchPreview: PreviewFetch; probed: Array<{ url: string; redirect?: string }> } => {
+		const probed: Array<{ url: string; redirect?: string }> = [];
+		const fetchPreview: PreviewFetch = async (url, init) => {
+			probed.push({ url, redirect: init.redirect });
+			const headers = new Headers({ location: 'https://issuer.test/authorize' });
+			headers.append('set-cookie', flowCookie);
+			return new Response(null, { status: 302, headers });
+		};
+		return { fetchPreview, probed };
+	};
+	const partitioned = 'sb_oidc_flow=f; Path=/; Max-Age=600; HttpOnly; SameSite=None; Secure; Partitioned';
 
 	it("asks the slot's own issuer, for the person the studio vouches for, and relays its answer", async () => {
 		const builder = plane({ [previews]: slot });
 		const internal = plane({
-			'/internal/builder/persona/scp_1/personas': { body: { personas: [{ sub: 'dev|ada', name: 'Ada', email: 'ada@example.test' }] } },
+			...offering,
 			'/internal/builder/persona/scp_1/ticket': { status: 403, body: { detail: "only a member of the preview's team can sign in to it" } },
 		});
-		const personas = await readStudioPersonas(builder.cp, internal.cp, project, 'user-1', now);
+		const { fetchPreview, probed } = login(partitioned);
+		const personas = await readStudioPersonas(builder.cp, internal.cp, fetchPreview, project, 'user-1', now);
 		expect(((await personas.json()) as { personas: unknown[] }).personas).toHaveLength(1);
 		const ticket = await studioSignIn(builder.cp, internal.cp, project, 'user-1', 'dev|ada', now);
 		expect(ticket.status).toBe(403);
@@ -170,12 +187,36 @@ describe("sign in as… (#3145): the seeded slot's personas, and a ticket for on
 			{ path: '/internal/builder/persona/scp_1/personas', method: 'POST', body: { externalId: 'user-1' } },
 			{ path: '/internal/builder/persona/scp_1/ticket', method: 'POST', body: { externalId: 'user-1', sub: 'dev|ada' } },
 		]);
+		expect(probed).toEqual([{ url: `${ready.url}/api/auth/login`, redirect: 'manual' }]);
+	});
+
+	it.each<[string, PreviewFetch, unknown]>([
+		[
+			'offers nobody, and says why, when the login sets its cookies unpartitioned',
+			login('sb_oidc_flow=f; Path=/; Max-Age=600; HttpOnly; SameSite=Lax; Secure').fetchPreview,
+			{ personas: [], note: STALE_AUTH_NOTE },
+		],
+		[
+			'still offers its people when the probe cannot reach the preview',
+			async () => { throw new TypeError('network connection lost'); },
+			{ personas: [ada] },
+		],
+		[
+			'still offers its people when the preview answers with no flow cookie to judge',
+			async () => new Response('upstream unavailable', { status: 503 }),
+			{ personas: [ada] },
+		],
+	])('%s', async (_name, fetchPreview, expected) => {
+		const builder = plane({ [previews]: slot });
+		const internal = plane(offering);
+		const res = await readStudioPersonas(builder.cp, internal.cp, fetchPreview, project, 'user-1', now);
+		expect(await res.json()).toEqual(expected);
 	});
 
 	it('offers nobody, and mints nothing, with no slot running', async () => {
 		const builder = plane({ [previews]: { body: [] } });
 		const internal = plane({});
-		expect(await (await readStudioPersonas(builder.cp, internal.cp, project, 'user-1', now)).json()).toEqual({ personas: [] });
+		expect(await (await readStudioPersonas(builder.cp, internal.cp, login(partitioned).fetchPreview, project, 'user-1', now)).json()).toEqual({ personas: [] });
 		expect((await studioSignIn(builder.cp, internal.cp, project, 'user-1', 'dev|ada', now)).status).toBe(409);
 		expect(internal.calls).toEqual([]);
 	});

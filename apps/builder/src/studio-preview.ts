@@ -31,6 +31,7 @@
  * Not a PR either: a per-PR preview is a GitHub Actions flow and exists only for GitHub
  * projects. That stays the separate "Create preview PR" step.
  */
+import { FLOW_COOKIE } from '@substrat-run/oidc-rp';
 import { z } from 'zod';
 import { refuse } from './problem.js';
 
@@ -176,16 +177,51 @@ async function liveSlot(
 const personaPath = (scopeId: string, leaf: 'personas' | 'ticket'): string =>
 	`/internal/builder/persona/${encodeURIComponent(scopeId)}/${leaf}`;
 
+/** A plain HTTP fetch of the preview's own URL, from outside the platform. */
+export type PreviewFetch = (url: string, init: RequestInit) => Promise<Response>;
+
+/** What the pane shows in place of "Sign in as…" when the preview's cookies cannot live in a frame. */
+export const STALE_AUTH_NOTE =
+	"This preview's sign-in package is too old to stay signed in inside the studio. Ask the agent: " +
+	'`pnpm update @substrat-run/vertical-host @substrat-run/vertical-auth --latest`, then Run again. ' +
+	'Open in new tab works meanwhile.';
+
+const PROBE_TIMEOUT_MS = 5000;
+
+/**
+ * Whether the preview's login sets its flow cookie `Partitioned` — what vertical-auth 0.35.2 does
+ * for a persona issuer, so the cookie survives the studio's cross-site frame. Asked of the preview
+ * itself rather than of a version label, since a project's lockfile may pin an older one. `false`
+ * only on a flow cookie seen without it; anything the probe cannot read is `null`, undecided.
+ */
+async function holdsFramedSignIn(fetchPreview: PreviewFetch, url: string): Promise<boolean | null> {
+	try {
+		const res = await fetchPreview(new URL('/api/auth/login', url).href, {
+			redirect: 'manual',
+			signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+		});
+		const flow = res.headers.getSetCookie().find((c) => c.startsWith(`${FLOW_COOKIE}=`));
+		if (!flow) return null;
+		return flow.split(';').some((attr) => attr.trim().toLowerCase() === 'partitioned');
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Who the seeded slot can be signed in as (#3145), for the studio's "Sign in as…". Asked of the
  * plane's persona issuer for `person` — the OIDC subject the studio's own session verified — over
  * `internal`, the builder's credential, which the plane takes as the studio vouching for them. It
  * applies the picker's checks: on the preview's team, and the preview an active clean room. A slot
  * that is not seeded (made before #3108) has nobody to offer.
+ *
+ * A slot whose app sets its login cookies unpartitioned offers nobody either, and says why: inside
+ * the frame the browser drops them, so a sign-in would land signed out with nothing said.
  */
 export async function readStudioPersonas(
 	cp: ControlPlaneCall,
 	internal: ControlPlaneCall,
+	fetchPreview: PreviewFetch,
 	project: StudioProject,
 	person: string,
 	now: Date,
@@ -198,7 +234,12 @@ export async function readStudioPersonas(
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ externalId: person }),
 	});
-	return res.status === 404 ? json(200, { personas: [] }) : res;
+	if (res.status === 404) return json(200, { personas: [] });
+	if (!res.ok) return res;
+	const offered = z.object({ personas: z.array(z.unknown()).min(1) }).safeParse(await res.clone().json().catch(() => null));
+	if (!offered.success) return res;
+	if ((await holdsFramedSignIn(fetchPreview, slot.url)) === false) return json(200, { personas: [], note: STALE_AUTH_NOTE });
+	return res;
 }
 
 /**
