@@ -294,15 +294,15 @@ vertical sets response header  x-substrat-platform-request: <scopeId>
 router sees the header → waitUntil(kickDrain)  ← after the response has gone
   │  POST /internal/drain-scope {tenantId, scopeId, namedScopeId}   (service binding + platform secret)
   ▼
-control plane drains that one scope now
+control plane drains the routed scope, and the named one, now
 ```
 
 The header carries no payload and no privilege. Its value names the scope the intents went
 into, because a worker that serves several scopes under one hostname picks the scope per
-request, so the routed scope is not always where the intents are. The control plane drains the
-named scope only when it shares the routed scope's tenant and vertical, and the routed scope
-otherwise. It re-derives both from the directory and simply pulls, so a forged or spurious
-header costs one empty pull.
+request, so the routed scope is not always where the intents are. The control plane always
+drains the routed scope, and drains the named scope too when both are live installs (active,
+not a preview or a fork) of the same tenant and vertical. It re-derives both from the directory
+and simply pulls, so a forged or spurious header costs one empty pull.
 The user never waits for the kick either, because the router runs it after returning the
 response. With it, an intent settles in seconds.
 
