@@ -268,8 +268,10 @@ function HostedPreview() {
 				{src && <button className="pill" onClick={reload}>reload</button>}
 			</div>
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
-			{note && <pre className="dev-log">{note}</pre>}
-			{fork && !fork.ok && <pre className="dev-log">Production data: {fork.reason}</pre>}
+			{/* The plane's sign-in note describes the picker page; once "Sign in as…" is up, the menu says it. */}
+			{note && personas.length === 0 && <pre className="dev-log note">{note}</pre>}
+			{/* Why production data is unavailable, only while it is the one chosen; the option's title says it too. */}
+			{kind === 'production' && fork && !fork.ok && <pre className="dev-log note">Production data: {fork.reason}</pre>}
 			{src ? (
 				<iframe key={frame} src={src} title="preview" />
 			) : (

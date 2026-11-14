@@ -588,6 +588,8 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 	color: var(--status-danger-fg); background: var(--status-danger-bg);
 	border-bottom: 1px solid var(--border-subtle); white-space: pre-wrap;
 }
+/* A note about the preview, not a failure: the same strip, in the page's own colours. */
+.dev-log.note { color: var(--text-secondary); background: var(--surface-inset); }
 
 /* ── usage tab (#646) — series colors validated per theme (dataviz six checks) ── */
 :root { --viz-input: #5749d8; --viz-output: #0891b2; }
