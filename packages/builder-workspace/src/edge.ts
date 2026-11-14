@@ -67,6 +67,7 @@ export {
 
 export {
 	SNAPSHOT_MAX_FILE_BYTES,
+	gitPaths,
 	isDependencyPath,
 	snapshotWorkspace,
 	type WorkspaceSnapshot,

@@ -8,7 +8,7 @@
  * commit would tell it nothing had changed.
  */
 import type { Workspace } from '@substrat-run/builder-workspace';
-import { isDependencyPath } from '@substrat-run/builder-workspace/edge';
+import { gitPaths, isDependencyPath } from '@substrat-run/builder-workspace/edge';
 import { shellQuote } from './repositories.js';
 
 /** The least time between two snapshots inside a pass; each reads the whole tree. */
@@ -44,6 +44,9 @@ export function workIn(stored: string | undefined): WorkSnapshot | null {
  * Returns how many files changed.
  */
 export async function restoreWork(ws: Workspace, verticalDir: string, work: WorkSnapshot): Promise<number> {
+	// A snapshot with no files cannot be a project's tree: the empty listing saved while the hosted
+	// exec dropped NULs (see gitPaths). Read as one, every tracked file would be a deletion.
+	if (Object.keys(work.files).length === 0) return 0;
 	const prefix = verticalDir === '.' ? '' : `${verticalDir}/`;
 	let restored = 0;
 	for (const [rel, content] of Object.entries(work.files)) {
@@ -52,11 +55,8 @@ export async function restoreWork(ws: Workspace, verticalDir: string, work: Work
 		await ws.writeFile(`${prefix}${rel}`, content);
 		restored += 1;
 	}
-	const tracked = await ws.exec(`git ls-files -z -- ${shellQuote(verticalDir)}`, { cwd: '.' });
-	if (tracked.exitCode !== 0) throw new Error(`git ls-files failed in ${verticalDir}: ${tracked.stderr || tracked.stdout}`);
 	const listed = new Set([...Object.keys(work.files), ...work.skipped]);
-	const deleted = tracked.stdout
-		.split('\0')
+	const deleted = (await gitPaths(ws, `-- ${shellQuote(verticalDir)}`, '.'))
 		.filter((p) => p && !isDependencyPath(p) && !listed.has(p.slice(prefix.length)));
 	if (deleted.length) {
 		const rm = await ws.exec(`rm -f -- ${deleted.map(shellQuote).join(' ')}`, { cwd: '.' });
