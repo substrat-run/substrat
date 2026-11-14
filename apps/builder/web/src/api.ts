@@ -30,6 +30,14 @@ export type StudioPreview =
 /** GET /api/preview/data — the production-data slot, and whether Run may make one (#3108). */
 export type StudioDataPreview = StudioPreview & { fork: { ok: true } | { ok: false; reason: string } };
 
+/** GET /api/preview/personas — who the seeded slot can be signed in as (#3145). */
+export interface StudioPersona {
+	sub: string;
+	name: string;
+	role?: string;
+	note?: string;
+}
+
 export interface SessionInfo {
 	sourceProjects?: boolean;
 	root: string;
@@ -248,6 +256,14 @@ export const api = {
 	/** A preview over a copy of the installed app's data, as the signed-in person (#3108). */
 	studioDataPreview: () => f('/api/preview/data').then((r) => j<StudioDataPreview>(r)),
 	runStudioDataPreview: () => f('/api/preview/data', { method: 'POST' }).then((r) => j<StudioPreview>(r)),
+	/** The seeded slot's people, and a one-time URL that signs the frame in as one of them (#3145). */
+	studioPersonas: () => f('/api/preview/personas').then((r) => j<{ personas: StudioPersona[] }>(r)),
+	studioSignIn: (sub: string) =>
+		f('/api/preview/sign-in', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ sub }),
+		}).then((r) => j<{ url: string }>(r)),
 	dev: (action: 'start' | 'stop') =>
 		f('/api/dev', {
 			method: 'POST',

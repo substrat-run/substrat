@@ -3112,6 +3112,9 @@ export default {
         session: (e, headers) => sessionFromHeaders(e, headers),
         isMember: async (e, user, tenantId) => (await builderTenantsFor(hostFor(e), user)).some((t) => t.id === tenantId),
         active: async (e, tenantId, scopeId) => (await seededPreview(e, tenantId, scopeId)) !== null,
+        // #3145: the studio vouches for its signed-in person over the same credential its
+        // membership read uses (/internal/builder/identity-tenants). Unset refuses, never bypasses.
+        service: async (e, request) => !!e.SERVICE_TOKEN && (await serviceTokenAuth(e.SERVICE_TOKEN, SERVICE_ACTOR)(request)) !== null,
         personas: async (e, tenantId, scopeId) => {
           const preview = await seededPreview(e, tenantId, scopeId);
           if (!preview?.vertical || !preview.verticalVersionId) return null;

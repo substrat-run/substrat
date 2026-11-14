@@ -43,10 +43,12 @@ import { interruptedResponse, refuse, unhandledResponse } from './problem.js';
 import {
 	personPlane,
 	readStudioDataPreview,
+	readStudioPersonas,
 	readStudioPreview,
 	releaseRevision,
 	runStudioDataPreview,
 	runStudioPreview,
+	studioSignIn,
 	type ControlPlaneCall,
 	type StudioProject,
 } from './studio-preview.js';
@@ -341,6 +343,14 @@ app.all('/api/*', async (c) => {
 		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api${path}`, { ...init, headers: cpHeaders });
 	};
 	const cp = cpWith(c.env.CP_SERVICE_TOKEN ?? '');
+	// The plane's routes outside `/api` that take the builder's credential as the studio vouching
+	// for its signed-in person (#3145), as the membership read in teams.ts does.
+	const internal: ControlPlaneCall = (path, init) => {
+		const cpHeaders = new Headers(init?.headers);
+		cpHeaders.set('x-service-token', c.env.CP_SERVICE_TOKEN ?? '');
+		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane${path}`, { ...init, headers: cpHeaders });
+	};
+	const person = (c.get('user' as never) as SessionUser).id;
 	// The plane as the signed-in person (#3108), for the calls it must judge as them: a fork of
 	// production data. A login linked to no principal in the team has nobody to be judged as.
 	const noPerson = `your login has no member record in team '${team.slug}', so production data cannot be copied for you`;
@@ -356,6 +366,19 @@ app.all('/api/*', async (c) => {
 		const project = await currentProject();
 		if (project instanceof Response) return project;
 		return project ? readStudioPreview(cp, project, new Date()) : c.json({ state: 'none' });
+	}
+	if (c.req.path === '/api/preview/personas' && c.req.method === 'GET') {
+		const project = await currentProject();
+		if (project instanceof Response) return project;
+		return project ? readStudioPersonas(cp, internal, project, person, new Date()) : c.json({ personas: [] });
+	}
+	if (c.req.path === '/api/preview/sign-in' && c.req.method === 'POST') {
+		const project = await currentProject();
+		if (project instanceof Response) return project;
+		if (!project) return refuse(409, 'no project open');
+		const body = (await c.req.json().catch(() => null)) as { sub?: unknown } | null;
+		if (typeof body?.sub !== 'string' || body.sub === '') return refuse(400, 'sub (the persona to sign in as) is required');
+		return studioSignIn(cp, internal, project, person, body.sub, new Date());
 	}
 	if (c.req.path === '/api/preview/data' && c.req.method === 'GET') {
 		const project = await currentProject();
