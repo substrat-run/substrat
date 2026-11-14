@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BUILD_WAIT_MS, BuildQueue, BuildWaitExpired } from '../src/build-queue.js';
+import { BUILD_WAIT_MS, BuildQueue, busyRefusal } from '../src/build-queue.js';
 
 const fast = () => new BuildQueue({ waitMs: 200, pollMs: 5 });
 
@@ -61,7 +61,7 @@ describe('the build queue', () => {
 		const first = held();
 		const a = q.run('acme/crm', () => false, first.fn);
 		await first.started;
-		await expect(q.run('acme/crm', () => false, async () => 'never')).rejects.toThrow(BuildWaitExpired);
+		await expect(q.run('acme/crm', () => false, async () => 'never')).rejects.toThrow(/^project operation already in progress: a build of acme\/crm, started \d+ s ago$/);
 		await expect(q.run('acme/crm', () => true, async () => 'never')).rejects.toThrow('project operation already in progress');
 		// A third build, queued after one that gave up, still waits for the first.
 		let thirdRan = false;
@@ -70,6 +70,21 @@ describe('the build queue', () => {
 		expect(thirdRan).toBe(false);
 		first.finish('a');
 		await expect(Promise.all([a, c])).resolves.toEqual(['a', 'c']);
+	});
+});
+
+describe('the busy refusal', () => {
+	it('names what holds the project and for how long, after the words the CLI retries on', async () => {
+		const since = Date.parse('2026-11-15T10:00:00Z');
+		const res = busyRefusal({ what: 'an agent turn in project "CRM"', since }, since + 42_400);
+		expect(res.status).toBe(409);
+		const doc = await res.json() as { detail: string; occupant: unknown };
+		expect(doc.detail).toBe('project operation already in progress: an agent turn in project "CRM", started 42 s ago');
+		// packages/cli/src/push.ts retries a 409 on this pattern.
+		expect(doc.detail).toMatch(/\boperation already in progress\b/);
+		expect(doc.occupant).toEqual({ what: 'an agent turn in project "CRM"', startedAt: '2026-11-15T10:00:00.000Z' });
+		const unknown = await busyRefusal(null, since).json() as { detail: string; occupant: unknown };
+		expect(unknown).toMatchObject({ detail: 'project operation already in progress: another operation', occupant: { what: 'another operation' } });
 	});
 });
 
@@ -94,6 +109,11 @@ describe('the hosted agent uses it', () => {
 		expect(dropped).toBeGreaterThan(-1);
 		expect(dropped).toBeLessThan(queued);
 		expect(build.slice(queued)).not.toMatch(/request\.snapshot/);
+	});
+
+	it('no busy refusal goes out without its occupant', () => {
+		expect(agent).not.toMatch(/refuse\(409, '?project operation already in progress/);
+		expect(agent).not.toMatch(/refuse\(409, BUILD_BUSY\)/);
 	});
 
 	it('no studio path saves a registry it read before a long await', () => {

@@ -12,6 +12,8 @@
  * The wait is bounded, and running out of it is the one refusal left: the caller reads
  * it as the 409 it always was, which the CLI retries.
  */
+import { PROBLEM_CONTENT_TYPE } from '@substrat-run/contracts';
+import { refusalProblem } from './problem.js';
 
 /**
  * How long a build waits for its vertical before it is refused. Short on purpose: the wait
@@ -23,19 +25,52 @@ export const BUILD_WAIT_MS = 2 * 60_000;
 /** How often a waiting build looks again at a studio operation holding its project. */
 export const BUILD_POLL_MS = 1_000;
 
-/** The refusal a build gets when its wait runs out — the words the CLI retries on. */
+/** The refusal's first words, whoever is refused — the words the CLI retries on. */
 export const BUILD_BUSY = 'project operation already in progress';
 
-/** The wait ran out; the vertical is still being built, or worked on in the studio. */
+/** What holds a project, in words a person reads, and since when (epoch ms) when that is known. */
+export interface Occupant {
+	what: string;
+	since?: number;
+}
+
+/** The busy refusal's sentence: the CLI's words first, then who holds the project and for how long. */
+export function busyDetail(occupant: Occupant | null, now: number): string {
+	if (!occupant) return `${BUILD_BUSY}: another operation`;
+	if (occupant.since === undefined) return `${BUILD_BUSY}: ${occupant.what}`;
+	return `${BUILD_BUSY}: ${occupant.what}, started ${Math.max(0, Math.round((now - occupant.since) / 1000))} s ago`;
+}
+
+/**
+ * The 409 itself. The occupant is also a member of its own, so the studio can say what it is
+ * waiting for without parsing the sentence; like `diagnostic`, a private member of this hop.
+ */
+export function busyRefusal(occupant: Occupant | null, now: number): Response {
+	const problem = refusalProblem(409, busyDetail(occupant, now));
+	const member = {
+		what: occupant?.what ?? 'another operation',
+		...(occupant?.since === undefined ? {} : { startedAt: new Date(occupant.since).toISOString() }),
+	};
+	return new Response(JSON.stringify({ ...problem, occupant: member }), {
+		status: problem.status,
+		headers: { 'content-type': PROBLEM_CONTENT_TYPE },
+	});
+}
+
+/**
+ * The wait ran out; the vertical is still being built, or worked on in the studio. An earlier
+ * build is named here; a studio operation is not the queue's to name, so the caller does.
+ */
 export class BuildWaitExpired extends Error {
-	constructor() {
-		super(BUILD_BUSY);
+	constructor(readonly occupant: Occupant | null = null) {
+		super(busyDetail(occupant, Date.now()));
 	}
 }
 
 export class BuildQueue {
 	#tails = new Map<string, Promise<void>>();
-	readonly #building = new Set<string>();
+	/** Each vertical being built, and when its build began. */
+	readonly #building = new Map<string, number>();
 
 	constructor(private readonly opts: { waitMs: number; pollMs: number } = { waitMs: BUILD_WAIT_MS, pollMs: BUILD_POLL_MS }) {}
 
@@ -61,12 +96,15 @@ export class BuildQueue {
 		void tail.then(() => { if (this.#tails.get(key) === tail) this.#tails.delete(key); });
 		const deadline = Date.now() + this.opts.waitMs;
 		try {
-			if (!(await before(prev, this.opts.waitMs))) throw new BuildWaitExpired();
+			if (!(await before(prev, this.opts.waitMs))) {
+				const since = this.#building.get(key);
+				throw new BuildWaitExpired({ what: `a build of ${key}`, ...(since === undefined ? {} : { since }) });
+			}
 			while (blocked()) {
 				if (Date.now() >= deadline) throw new BuildWaitExpired();
 				await new Promise((resolve) => setTimeout(resolve, this.opts.pollMs));
 			}
-			this.#building.add(key);
+			this.#building.set(key, Date.now());
 			try {
 				return await fn();
 			} finally {

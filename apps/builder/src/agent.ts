@@ -41,7 +41,7 @@ import {
 	type TurnResult,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { BUILD_BUSY, BuildQueue, BuildWaitExpired } from './build-queue.js';
+import { BuildQueue, BuildWaitExpired, busyDetail, busyRefusal, type Occupant } from './build-queue.js';
 import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, interruptedRecord, interruptionOf, invalidFields, orBuildFailure, RECORD_INDEX, RECORD_PREFIX, retained, ulid, type BuildRecord } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
@@ -153,8 +153,11 @@ function sandboxLike(sb: Sandbox, timeout?: number): SandboxLike {
 }
 
 export class BuilderAgent extends DurableObject<Env> {
-	/** A studio operation is running. Builds do not take it (#2795): they queue in `#builds`. */
-	#busy = false;
+	/**
+	 * The running studio operation, named for the refusal a second one gets. Builds do not take
+	 * it (#2795): they queue in `#builds`.
+	 */
+	#occupant: Occupant | null = null;
 	/** The vertical the running studio operation works on, once it knows — a build of it waits. */
 	#studioSlug: string | null = null;
 	#builds = new BuildQueue();
@@ -198,8 +201,21 @@ export class BuilderAgent extends DurableObject<Env> {
 		return null;
 	}
 
+	get #busy(): boolean {
+		return this.#occupant !== null;
+	}
+
+	#occupy(what: string): void {
+		this.#occupant = { what, since: Date.now() };
+	}
+
+	/** The 409 an operation gets while another holds the studio. */
+	#refuseBusy(): Response {
+		return busyRefusal(this.#occupant, Date.now());
+	}
+
 	#releaseStudio(): void {
-		this.#busy = false;
+		this.#occupant = null;
 		this.#studioSlug = null;
 	}
 
@@ -430,14 +446,17 @@ export class BuilderAgent extends DurableObject<Env> {
 			});
 		} catch (error) {
 			// A command's failure already carries its own output; any other failure gets the tail.
-			const detail = errorDetail(log, error instanceof BuildWaitExpired ? BUILD_BUSY : sourceBuildFailure(error), error);
+			// Who held the vertical, read before any await: the studio operation may end meanwhile.
+			const occupant = error instanceof BuildWaitExpired ? error.occupant ?? this.#occupant : null;
+			const now = Date.now();
+			const detail = errorDetail(log, error instanceof BuildWaitExpired ? busyDetail(occupant, now) : sourceBuildFailure(error), error);
 			// The error as its own argument: nested in an object it serialises to `{}`.
 			// `cause` too: Workers Logs keeps that argument's stack and drops its message.
 			const cause = interruptionOf(error);
 			console.error('source.build.failed', { buildId, step: log.step, cause }, error);
 			await log.finish('failed', detail).catch(() => undefined);
-			// The CLI retries on this sentence; it stays exactly as the queue words it.
-			if (error instanceof BuildWaitExpired) return refuse(409, BUILD_BUSY);
+			// The CLI retries on this sentence's first words, which stay as the queue words them.
+			if (error instanceof BuildWaitExpired) return busyRefusal(occupant, now);
 			// A try, not `.catch`: a storage write can throw before it returns a promise. Escaping
 			// here would answer the caller with neither the sentence nor the build id.
 			try {
@@ -548,7 +567,7 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		const building = this.#claimStudio(entry);
 		if (building) return building;
-		this.#busy = true;
+		this.#occupy(`an agent turn in project "${entry.name}"`);
 		this.#abort = new AbortController();
 		const signal = this.#abort.signal;
 		state.turnNo += 1;
@@ -842,10 +861,12 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		switch (route) {
 			case 'GET /api/project-source': {
-				if (this.#busy) return refuse(409, 'project operation already in progress');
-				this.#busy = true;
+				if (this.#busy) return this.#refuseBusy();
+				// Claimed before the registry read, so nothing slips in; named once the project is known.
+				this.#occupy('another operation');
 				try {
 					const { entry } = await this.#current();
+					this.#occupant!.what = sourcePurpose(url.searchParams.get('for'), entry.name);
 					const building = this.#claimStudio(entry);
 					if (building) return building;
 					// Resolve the remote before pinning a release, including a newly connected
@@ -991,10 +1012,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				// Through the PROJECT-rooted workspace, so the write is confined twice: once
 				// by the check above, and again by that workspace's own jail, which is also
 				// what judges a symlink pointing out of the project.
-				if (this.#busy) return refuse(409, 'project operation already in progress');
+				if (this.#busy) return this.#refuseBusy();
 				const building = this.#claimStudio(entry);
 				if (building) return building;
-				this.#busy = true;
+				this.#occupy(`saving a file in project "${entry.name}"`);
 				try {
 					const pair = this.#sandboxPair(entry.id);
 					await this.#restoreProject(pair, entry);
@@ -1055,8 +1076,8 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, { current: reg.currentId, projects: sorted });
 			}
 			case 'POST /api/projects': {
-				if (this.#busy) return refuse(409, 'project operation already in progress');
-				this.#busy = true;
+				if (this.#busy) return this.#refuseBusy();
+				this.#occupy('creating a project');
 				try {
 					const body = await req.json() as { name?: string; slug?: string; repository?: unknown };
 					const name = body.name?.trim() || 'Untitled';
@@ -1065,10 +1086,10 @@ export class BuilderAgent extends DurableObject<Env> {
 					if (repository) await this.#access({ repository } as ProjectEntry, 'read', this.#tenant);
 					const slug = body.slug ?? `${this.#tenantSlug || this.#tenant}/draft-${ulid().toLowerCase()}`;
 					return json(200, await this.#createProject(name, slug, repository));
-				} finally { this.#busy = false; }
+				} finally { this.#occupant = null; }
 			}
 			case 'POST /api/projects/select': {
-				if (this.#busy) return refuse(409, 'project operation already in progress');
+				if (this.#busy) return this.#refuseBusy();
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const reg = await this.#registry();
 				const entry = reg.projects.find((p) => p.id === id);
@@ -1078,12 +1099,12 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, entry);
 			}
 			case 'POST /api/projects/remove': {
-				if (this.#busy) return refuse(409, 'project operation already in progress');
+				if (this.#busy) return this.#refuseBusy();
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const entry = (await this.#registry()).projects.find((p) => p.id === id);
 				if (!entry) return refuse(404, `no project ${id}`);
 				if (this.#builds.building(entry.slug)) return refuse(409, 'a build of this project is running');
-				this.#busy = true;
+				this.#occupy(`removing project "${entry.name}"`);
 				try {
 					// The repository first: a refused delete leaves the project listed and the
 					// removal retryable, never a repository no entry points at any more. A GitHub
@@ -1095,10 +1116,10 @@ export class BuilderAgent extends DurableObject<Env> {
 					const next = withoutProject(await this.#registry(), entry.id);
 					if (next) await this.#save(next.registry);
 					return json(200, { removed: entry.id, current: next?.registry.currentId ?? null });
-				} finally { this.#busy = false; }
+				} finally { this.#occupant = null; }
 			}
 			case 'PUT /api/project': {
-				if (this.#busy) return refuse(409, 'project operation already in progress');
+				if (this.#busy) return this.#refuseBusy();
 				const { name } = (await req.json().catch(() => ({}))) as { name?: string };
 				if (!name?.trim()) return refuse(400, 'name required');
 				const { reg, entry } = await this.#current();
@@ -1111,6 +1132,16 @@ export class BuilderAgent extends DurableObject<Env> {
 			default:
 				return refuse(503, 'not hosted yet: /api/dev (preview processes) lands with the #626 follow-ups');
 		}
+	}
+}
+
+/** What a `project-source` read is for, as the worker names it, in a busy refusal's words. */
+function sourcePurpose(purpose: string | null, project: string): string {
+	switch (purpose) {
+		case 'preview': return `a sample-data preview of project "${project}"`;
+		case 'data-preview': return `a production-data preview of project "${project}"`;
+		case 'release': return `a release of project "${project}"`;
+		default: return `reading the source of project "${project}"`;
 	}
 }
 
