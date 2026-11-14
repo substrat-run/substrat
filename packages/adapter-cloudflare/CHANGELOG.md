@@ -1,5 +1,13 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.197.1
+
+### Patch Changes
+
+- Updated dependencies [f3c4166]
+  - @substrat-run/contracts@0.197.1
+  - @substrat-run/kernel@0.197.1
+
 ## 0.197.0
 
 ### Minor Changes
