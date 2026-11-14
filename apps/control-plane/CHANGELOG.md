@@ -1,5 +1,27 @@
 # @substrat-run/control-plane
 
+## 0.18.33
+
+### Patch Changes
+
+- 361c67b: The builder studio can run a preview on a copy of the installed app's production data, beside the sample-data one (#3108). A fork of production data asked for by a credential that names a person, as the studio's and the dashboard's do, now needs that person to be the app's owner, or to hold every role the owner holds in the app itself. `GET /verticals/:slug/previews/fork-check` says whether a fork would be admitted and why not, and the studio's membership read carries the login's principal in each team.
+- Updated dependencies [7b93798]
+- Updated dependencies [2fd76c2]
+- Updated dependencies [361c67b]
+  - @substrat-run/kernel@0.197.0
+  - @substrat-run/adapter-cloudflare@0.197.0
+  - @substrat-run/vertical-host@0.197.0
+  - @substrat-run/contracts@0.197.0
+  - @substrat-run/control-plane-api@0.197.0
+  - @substrat-run/connector-bolagsverket@0.0.20
+  - @substrat-run/connector-fortnox@0.7.21
+  - @substrat-run/connector-mail-in@0.1.34
+  - @substrat-run/connector-microsoft365@0.0.58
+  - @substrat-run/connector-planima@0.2.94
+  - @substrat-run/connector-scrive@0.14.103
+  - @substrat-run/connector-woocommerce@0.0.3
+  - @substrat-run/model-providers@0.5.87
+
 ## 0.18.32
 
 ### Patch Changes

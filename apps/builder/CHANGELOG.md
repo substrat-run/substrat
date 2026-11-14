@@ -1,5 +1,25 @@
 # @substrat-run/builder
 
+## 0.13.14
+
+### Patch Changes
+
+- 361c67b: The builder studio can run a preview on a copy of the installed app's production data, beside the sample-data one (#3108). A fork of production data asked for by a credential that names a person, as the studio's and the dashboard's do, now needs that person to be the app's owner, or to hold every role the owner holds in the app itself. `GET /verticals/:slug/previews/fork-check` says whether a fork would be admitted and why not, and the studio's membership read carries the login's principal in each team.
+- Updated dependencies [7b93798]
+- Updated dependencies [2fd76c2]
+- Updated dependencies [361c67b]
+  - @substrat-run/kernel@0.197.0
+  - @substrat-run/adapter-cloudflare@0.197.0
+  - create-substrat@0.18.0
+  - @substrat-run/contracts@0.197.0
+  - @substrat-run/control-plane-api@0.197.0
+  - @substrat-run/engine-assistant@0.1.49
+  - @substrat-run/engine-metering@0.6.81
+  - @substrat-run/builder-workspace@0.13.11
+  - @substrat-run/cli@0.59.1
+  - @substrat-run/model-providers@0.5.87
+  - @substrat-run/builder-generator@0.12.12
+
 ## 0.13.13
 
 ### Patch Changes
