@@ -74,9 +74,11 @@ return host.getScope(principal, tenantId, scopeId, {
 A vertical that leaves this out still works, and waits for the sweep. The flags carry no
 authority: the router strips every inbound `x-substrat-*` header, so only a response can raise
 one. The intent flag's value names the scope the intents went into, since a worker serving
-several scopes under one hostname picks the scope per request. The platform drains that scope
-only when it and the routed scope are both on record in the same tenant under the same vertical,
-and drains the routed scope otherwise. The exports flag always acts on the routed scope.
+several scopes under one hostname picks the scope per request. The platform always drains the
+routed scope, and drains the named scope as well when both are live installs (active, not a
+preview or a fork) in the same tenant under the same vertical. The header holds one scope, so
+when one request writes intents into several scopes that are not the routed one, only the last is
+drained at once and the sweep picks up the rest. The exports flag always acts on the routed scope.
 
 ### Preconditions travel per invocation, not in the input
 
