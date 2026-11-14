@@ -289,20 +289,22 @@ async function storedBindings(host: ScopeHost, id: ConnectionId): Promise<Vertic
 type BindingSweep = { skipped: true } | { busy: true } | { failed: string } | { landed: number; more: boolean };
 
 /**
- * The lease one sweep of a binding holds while it reads the scope's state, calls, and writes the
- * answer's state back. A pass and an on-request poll can reach the same binding at once, and the
- * cap check and the writes are separate host calls: two unserialised sweeps could each pass the
- * check and together leave the state over the cap, which refuses every later call for the scope.
- * Outside both `vc:binding:` and `vc:state:`, so neither the binding listing nor the connector's
- * state ever carries it. Fifteen minutes, a scheduled invocation's ceiling: a holder that died
- * blocks the binding for at most one pass.
+ * The lease every call that writes a scope's connector state holds while it reads that state, calls,
+ * and writes the answer's state back: a sweep (a pass's or an on-request poll's), a dispatch, and a
+ * bind. The cap check and the writes are separate host calls, so two unserialised calls could each
+ * pass the check and together leave the state over the cap, which refuses every later call for the
+ * scope. A busy sweep skips the binding, a busy dispatch defers (no attempt is counted), and a busy
+ * bind is refused for its caller to retry. Outside both `vc:binding:` and `vc:state:`, so neither
+ * the binding listing nor the connector's state ever carries it; the key keeps its `vc:sweep:` name,
+ * since rows written under it exist. Fifteen minutes, a scheduled invocation's ceiling: a holder that
+ * died blocks the scope's connector calls for at most one pass.
  */
 const SWEEP_LEASE_PREFIX = 'vc:sweep:';
 const SWEEP_LEASE_MS = 15 * 60_000;
 const sweepLease = z.object({ holder: z.string(), until: z.string() });
 
-/** Take the binding's sweep lease, or `null` when another sweep holds a live one. */
-async function claimSweep(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string): Promise<z.infer<typeof sweepLease> | null> {
+/** Take the scope's state lease, or `null` when another call holds a live one. */
+async function claimStateLease(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string): Promise<z.infer<typeof sweepLease> | null> {
   const key = `${SWEEP_LEASE_PREFIX}${scopeId}`;
   const held = await deps.host.admin.getConnectorState(id, key);
   const now = Date.parse(deps.now());
@@ -313,8 +315,8 @@ async function claimSweep(deps: VerticalConnectorDeps, id: ConnectionId, scopeId
   return (await deps.host.admin.swapConnectorState(id, key, held, mine)) ? mine : null;
 }
 
-/** Give the lease back, only if it is still this sweep's; a failed release just runs out. */
-async function releaseSweep(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string, mine: z.infer<typeof sweepLease>): Promise<void> {
+/** Give the lease back, only if it is still this call's; a failed release just runs out. */
+async function releaseStateLease(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string, mine: z.infer<typeof sweepLease>): Promise<void> {
   await deps.host.admin.swapConnectorState(id, `${SWEEP_LEASE_PREFIX}${scopeId}`, mine, null).catch(() => false);
 }
 
@@ -337,7 +339,7 @@ async function sweepBinding(
     if ('refused' in resolved) return { failed: resolved.refused };
     // A connector with no sweep polls nothing; its binding is the dispatch's, not a poll's.
     if (!resolved.declaration.sweeps) return { skipped: true };
-    const lease = await claimSweep(deps, connection.id, scopeId);
+    const lease = await claimStateLease(deps, connection.id, scopeId);
     if (!lease) return { busy: true };
     try {
       const state = await stateOf(deps.host, connection.id, scopeId);
@@ -352,7 +354,7 @@ async function sweepBinding(
       const result = connectorSweepResult.safeParse(outcome.result);
       return result.success ? result.data : { failed: 'the connector answered a sweep result that does not read as one' };
     } finally {
-      await releaseSweep(deps, connection.id, scopeId, lease);
+      await releaseStateLease(deps, connection.id, scopeId, lease);
     }
   } catch (e) {
     return { failed: message(e) };
@@ -401,14 +403,13 @@ export function verticalConnectorSweeper(deps: VerticalConnectorDeps, connection
  * Poll ONE scope's binding of a vertical-defined connection now (#2672's on-request poll), the
  * call a pass makes for that binding and nothing else. `not-bound` when the platform holds no
  * binding of the connection for the scope, or its connector sweeps nothing; `in-progress` when a
- * pass (or another poll) holds the binding's sweep lease, so nothing ran.
+ * pass, another poll or a dispatch holds the scope's state lease, so nothing ran.
  */
 export function verticalConnectorScopeSync(deps: VerticalConnectorDeps): ScopeSync {
   return async (_host, connection, scopeId) => {
-    const key = `${VERTICAL_CONNECTOR_BINDING_PREFIX}${scopeId}`;
-    const row = (await deps.host.admin.listConnectorState(connection.id, key)).find((r) => r.key === key && r.value !== null);
-    if (!row) return { outcome: 'not-bound', pending: false, errors: [] };
-    const swept = await sweepBinding(deps, connection, openedOnce(deps, connection), scopeId, row.value);
+    const stored = await deps.host.admin.getConnectorState(connection.id, verticalConnectorBindingKey(scopeId));
+    if (stored === undefined || stored === null) return { outcome: 'not-bound', pending: false, errors: [] };
+    const swept = await sweepBinding(deps, connection, openedOnce(deps, connection), scopeId, stored);
     if ('skipped' in swept) return { outcome: 'not-bound', pending: false, errors: [] };
     if ('busy' in swept) return { outcome: 'in-progress', pending: false, errors: [] };
     if ('failed' in swept) return { outcome: 'failed', pending: false, errors: [swept.failed] };
@@ -441,13 +442,20 @@ async function bindScope(deps: VerticalConnectorDeps, host: ScopeHost, connectio
   if ('refused' in resolved) throw new Error(resolved.refused);
   let options: Record<string, unknown> = raw;
   if (resolved.declaration.binds) {
-    const outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
-      role: 'bind',
-      provider: connection.provider,
-      connection: await openFor(deps, connection),
-      scopeId,
-      options: raw,
-    });
+    const lease = await claimStateLease(deps, connection.id, scopeId);
+    if (!lease) throw new Error(`another call of connection ${connection.id} is writing scope ${scopeId}'s connector state; bind again shortly`);
+    let outcome: CallOutcome;
+    try {
+      outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
+        role: 'bind',
+        provider: connection.provider,
+        connection: await openFor(deps, connection),
+        scopeId,
+        options: raw,
+      });
+    } finally {
+      await releaseStateLease(deps, connection.id, scopeId, lease);
+    }
     if (!outcome.ok) throw new Error(`the ${connection.provider} connector ${outcome.refused ? 'refused' : 'could not complete'} the binding: ${outcome.error}`);
     const result = connectorBindResult.safeParse(outcome.result);
     if (!result.success) throw new Error(`the ${connection.provider} connector answered a binding that does not read as one`);
@@ -608,16 +616,25 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
       if (!parsed.success) throw new Error(`the stored binding of connection ${row.id} to scope ${ctx.scopeId} does not read as one`);
       binding = parsed.data;
     }
-    const state = await stateOf(deps.host, row.id, ctx.scopeId);
-    const outcome = await applyConnectorCall(deps, row.id, ctx.scopeId, resolved.target, {
-      role: 'dispatch',
-      provider,
-      connection: opened,
-      scopeId: ctx.scopeId,
-      binding,
-      event: payload.event,
-      state,
-    });
+    // A sweep or another dispatch writing this scope's state: not tried this pass, and no attempt
+    // is counted, so a held lease never wears down the event's retries.
+    const lease = await claimStateLease(deps, row.id, ctx.scopeId);
+    if (!lease) return { status: 'deferred' };
+    let outcome: CallOutcome;
+    try {
+      const state = await stateOf(deps.host, row.id, ctx.scopeId);
+      outcome = await applyConnectorCall(deps, row.id, ctx.scopeId, resolved.target, {
+        role: 'dispatch',
+        provider,
+        connection: opened,
+        scopeId: ctx.scopeId,
+        binding,
+        event: payload.event,
+        state,
+      });
+    } finally {
+      await releaseStateLease(deps, row.id, ctx.scopeId, lease);
+    }
     if (outcome.ok) return { status: 'done', result: { eventId: payload.event.id } };
     if (outcome.refused) return { status: 'failed', error: `the ${provider} connector refused event ${payload.event.id}: ${outcome.error}` };
     throw new Error(outcome.error);

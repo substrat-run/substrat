@@ -498,6 +498,23 @@ describe('vertical-defined connectors — the platform side', () => {
       expect([...bare.values()]).toEqual([expect.objectContaining({ status: 'failed', lastError: `no handler for platform-request kind '${kind}'` })]);
     });
 
+    it("defers a dispatch while a sweep holds the scope's state lease, settling nothing, and delivers it once the lease is free", async () => {
+      await bind(a);
+      const lease = 'vc:sweep:' + a;
+      await host.admin.putConnectorState(row.id, lease, { holder: 'sweep', until: new Date(Date.parse(NOW) + 60_000).toISOString() });
+      answer = async () => ok({ state: [{ key: 'n', value: 1 }] });
+      const pending = intent(`connector:${PROVIDER}`, { executorId: PROVIDER, event: event('ok') });
+
+      // Deferred: not tried, so not settled, and the drain counts no attempt against it.
+      expect((await drain([pending], true)).has(pending.id)).toBe(false);
+      expect(calls).toEqual([]);
+
+      await host.admin.putConnectorState(row.id, lease, null);
+      expect((await drain([pending], true)).get(pending.id)).toMatchObject({ status: 'done' });
+      expect(await stateAt(a, 'n')).toBe(1);
+      expect(await host.admin.getConnectorState(row.id, lease)).toBeNull(); // given back
+    });
+
     it("hands a scope's event its own connection once that is bound there, else the tenant's, never another scope's (#2732)", async () => {
       await bind(a);
       const ofA = connectionId.parse(ulid());
