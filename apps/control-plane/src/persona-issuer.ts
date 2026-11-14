@@ -246,7 +246,9 @@ button:hover{border-color:#8a8a84}small{display:block;color:#6c6c66}
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
       'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
-      'referrer-policy': 'no-referrer',
+      // Not no-referrer: under it a browser sends `Origin: null` on the picker's own form POST, and
+      // the same-origin check below refuses every pick. same-origin still sends nothing cross-origin.
+      'referrer-policy': 'same-origin',
     },
   });
 }
