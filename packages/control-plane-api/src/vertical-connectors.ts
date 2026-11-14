@@ -69,7 +69,7 @@ export interface VerticalConnectorDeps {
   }): Promise<{ declaration: VerticalConnectorDeclaration; target: VerticalConnectorTarget } | { refused: string }>;
   call(target: VerticalConnectorTarget, request: ConnectorCallRequest): Promise<{ status: number; body: unknown }>;
   now(): string;
-  /** How long a call made under a scope's state lease may run, from the lease's taking, before its answer is dropped. Defaults to {@link LEASE_CALL_MS}. */
+  /** How long a call made under a scope's state lease may run, from the lease's taking (its `until`, less the lease's length), before its answer is dropped. Defaults to {@link LEASE_CALL_MS}. */
   leaseCallMs?: number;
 }
 
@@ -206,8 +206,9 @@ async function stateOf(host: ScopeHost, id: ConnectionId, scopeId: string | null
  * Make one call and apply its answer (§6.2, §6.3). A succeeded call's state writes land, then its
  * recorded uses; a failed one's uses only, so a cursor never moves past work that did not land. A
  * call that never produced an answer (a transport throw, a non-200, a body that is not a response)
- * records one failed use and is reported retryable. A call under a state lease passes `callBy`,
- * the wall-clock time its answer must arrive by: one that comes later is never applied.
+ * records one failed use and is reported retryable. A call under a scope's state lease passes it
+ * (`held`): an answer after its deadline, or one whose lease is no longer this call's when the
+ * writes come, is never applied.
  */
 async function applyConnectorCall(
   deps: VerticalConnectorDeps,
@@ -215,7 +216,7 @@ async function applyConnectorCall(
   scopeId: string | null,
   target: VerticalConnectorTarget,
   request: ConnectorCallRequest,
-  callBy?: number,
+  held?: HeldLease,
 ): Promise<CallOutcome> {
   const unanswered = async (error: string): Promise<CallOutcome> => {
     await deps.host.admin.recordConnectionUse(connectionId, { ok: false, error: error.slice(0, USE_ERROR_MAX) });
@@ -223,7 +224,7 @@ async function applyConnectorCall(
   };
   let answer: { status: number; body: unknown };
   try {
-    answer = await (callBy === undefined ? deps.call(target, request) : answeredBy(deps.call(target, request), callBy));
+    answer = await (held === undefined ? deps.call(target, request) : answeredBy(deps, () => deps.call(target, request), held.callBy));
   } catch (e) {
     return unanswered(`the call into the vertical's connector did not complete: ${message(e)}`);
   }
@@ -246,6 +247,10 @@ async function applyConnectorCall(
   if (over) {
     await recordUses();
     return { ok: false, refused: false, error: over };
+  }
+  if (held !== undefined && scopeId !== null && response.state.length > 0 && !(await stillHeld(deps, connectionId, scopeId, held))) {
+    await recordUses();
+    return { ok: false, refused: false, error: "the scope's state lease was lost before the answer's state was written; nothing was written" };
   }
   for (const w of response.state) {
     await deps.host.admin.putConnectorState(connectionId, verticalConnectorStateKey(scopeId, w.key), w.value === undefined ? null : w.value);
@@ -308,27 +313,57 @@ const SWEEP_LEASE_MS = 15 * 60_000;
 const sweepLease = z.object({ holder: z.string(), until: z.string() });
 
 /**
- * How long the call made under a state lease may run, from the lease's taking. The state writes
- * check no lease ownership, so the answer must arrive while the lease is still this call's: a call
- * that outlived it could overwrite the state of the call that took the lease over. A minute inside
- * the lease leaves the cap check and the writes room to finish before it runs out.
+ * How long the call made under a state lease may run, from the lease's taking. The answer must
+ * arrive while the lease is still this call's: a call that outlived it could overwrite the state of
+ * the call that took the lease over. A minute inside the lease leaves the cap check and the writes
+ * room to finish before it runs out.
  */
 const LEASE_CALL_MS = SWEEP_LEASE_MS - 60_000;
 
-/** The wall-clock time a call under a lease taken now must be answered by. */
-const leaseCallBy = (deps: VerticalConnectorDeps): number => Date.now() + (deps.leaseCallMs ?? LEASE_CALL_MS);
+/** A taken state lease, and the time (on `deps.now()`'s clock) its call must be answered by. */
+type HeldLease = { mine: z.infer<typeof sweepLease>; callBy: number };
 
-/** `call`'s answer, or a rejection once `by` passes; a later answer is dropped. */
-async function answeredBy<T>(call: Promise<T>, by: number): Promise<T> {
+/**
+ * `mine` as held: the deadline is read off the lease's own `until`, so time spent taking it (the
+ * compare-and-set) and preparing the call comes out of the call's budget, never past the lease.
+ */
+const heldLease = (deps: VerticalConnectorDeps, mine: z.infer<typeof sweepLease>): HeldLease => ({
+  mine,
+  callBy: Date.parse(mine.until) - SWEEP_LEASE_MS + (deps.leaseCallMs ?? LEASE_CALL_MS),
+});
+
+const LATE = 'no answer while the scope state lease was held; a later answer is dropped';
+
+/**
+ * `call`'s answer, or a rejection once `by` passes. Not started at all when `by` has passed already,
+ * and an answer that settles after `by` is refused even if it won the race against the timer.
+ */
+async function answeredBy<T>(deps: VerticalConnectorDeps, call: () => Promise<T>, by: number): Promise<T> {
+  const left = by - Date.parse(deps.now());
+  if (left <= 0) throw new Error(LATE);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('no answer while the scope state lease was held; a later answer is dropped')), Math.max(0, by - Date.now()));
+    timer = setTimeout(() => reject(new Error(LATE)), left);
   });
   try {
-    return await Promise.race([call, late]);
+    const answer = await Promise.race([call(), late]);
+    if (Date.parse(deps.now()) >= by) throw new Error(LATE);
+    return answer;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Whether `held` is still this call's, read just before its state writes. The writes and this read
+ * are separate host calls, so it is not a fence: what keeps a taker out of the gap is the minute the
+ * call's deadline leaves inside the lease. It catches a lease already lost or run out.
+ */
+async function stillHeld(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string, held: HeldLease): Promise<boolean> {
+  const now = Date.parse(deps.now());
+  if (now >= Date.parse(held.mine.until)) return false;
+  const lease = sweepLease.safeParse(await deps.host.admin.getConnectorState(id, `${SWEEP_LEASE_PREFIX}${scopeId}`));
+  return lease.success && lease.data.holder === held.mine.holder;
 }
 
 /** Take the scope's state lease, or `null` when another call holds a live one. */
@@ -369,7 +404,7 @@ async function sweepBinding(
     if (!resolved.declaration.sweeps) return { skipped: true };
     const lease = await claimStateLease(deps, connection.id, scopeId);
     if (!lease) return { busy: true };
-    const callBy = leaseCallBy(deps);
+    const held = heldLease(deps, lease);
     try {
       const state = await stateOf(deps.host, connection.id, scopeId);
       const outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
@@ -378,7 +413,7 @@ async function sweepBinding(
         connection: await opened(),
         binding: binding.data,
         state,
-      }, callBy);
+      }, held);
       if (!outcome.ok) return { failed: outcome.error };
       const result = connectorSweepResult.safeParse(outcome.result);
       return result.success ? result.data : { failed: 'the connector answered a sweep result that does not read as one' };
@@ -473,7 +508,7 @@ async function bindScope(deps: VerticalConnectorDeps, host: ScopeHost, connectio
   if (resolved.declaration.binds) {
     const lease = await claimStateLease(deps, connection.id, scopeId);
     if (!lease) throw new Error(`another call of connection ${connection.id} is writing scope ${scopeId}'s connector state; bind again shortly`);
-    const callBy = leaseCallBy(deps);
+    const held = heldLease(deps, lease);
     let outcome: CallOutcome;
     try {
       outcome = await applyConnectorCall(deps, connection.id, scopeId, resolved.target, {
@@ -482,7 +517,7 @@ async function bindScope(deps: VerticalConnectorDeps, host: ScopeHost, connectio
         connection: await openFor(deps, connection),
         scopeId,
         options: raw,
-      }, callBy);
+      }, held);
     } finally {
       await releaseStateLease(deps, connection.id, scopeId, lease);
     }
@@ -650,7 +685,7 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
     // is counted, so a held lease never wears down the event's retries.
     const lease = await claimStateLease(deps, row.id, ctx.scopeId);
     if (!lease) return { status: 'deferred' };
-    const callBy = leaseCallBy(deps);
+    const held = heldLease(deps, lease);
     let outcome: CallOutcome;
     try {
       const state = await stateOf(deps.host, row.id, ctx.scopeId);
@@ -662,7 +697,7 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
         binding,
         event: payload.event,
         state,
-      }, callBy);
+      }, held);
     } finally {
       await releaseStateLease(deps, row.id, ctx.scopeId, lease);
     }

@@ -250,6 +250,30 @@ describe('vertical-defined connectors — the platform side', () => {
     expect(await stateAt(a, 'cursor')).toBeUndefined();
   });
 
+  it("starts no call once the lease's deadline has passed in preparing it, even one that would answer at once", async () => {
+    await bind(a);
+    answer = async () => ok({ result: { landed: 1, more: false }, state: [{ key: 'cursor', value: 'late' }] });
+    // The lease is taken at NOW; every later read of the clock is past the call's deadline.
+    let reads = 0;
+    const past = new Date(Date.parse(NOW) + 15 * 60_000).toISOString();
+    const out = await verticalConnectorScopeSync({ ...deps(), now: () => (reads++ === 0 ? NOW : past) })(host, row, a);
+    expect(out).toMatchObject({ outcome: 'failed', errors: [expect.stringMatching(/lease was held/)] });
+    expect(calls).toEqual([]);
+    expect(await stateAt(a, 'cursor')).toBeUndefined();
+  });
+
+  it("writes none of an answer's state once another call has taken the scope's lease over", async () => {
+    await bind(a);
+    answer = async () => {
+      await host.admin.putConnectorState(row.id, 'vc:sweep:' + a, { holder: 'taker', until: new Date(Date.parse(NOW) + 60_000).toISOString() });
+      return ok({ result: { landed: 1, more: false }, state: [{ key: 'cursor', value: 'stale' }] });
+    };
+    const out = await verticalConnectorScopeSync(deps())(host, row, a);
+    expect(out).toMatchObject({ outcome: 'failed', errors: [expect.stringMatching(/lease was lost/)] });
+    expect(await stateAt(a, 'cursor')).toBeUndefined();
+    expect(await host.admin.getConnectorState(row.id, 'vc:sweep:' + a)).toMatchObject({ holder: 'taker' }); // not released from under the taker
+  });
+
   it('answers not-bound for a scope the connection is not bound to, or whose connector sweeps nothing', async () => {
     const sync = verticalConnectorScopeSync(deps());
     expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
