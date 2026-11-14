@@ -114,6 +114,7 @@ describe('the hosted agent uses it', () => {
 	it('no busy refusal goes out without its occupant', () => {
 		expect(agent).not.toMatch(/refuse\(409, '?project operation already in progress/);
 		expect(agent).not.toMatch(/refuse\(409, BUILD_BUSY\)/);
+		expect(agent).not.toMatch(/if \(this\.#busy\) return refuse\(/);
 	});
 
 	it('no studio path saves a registry it read before a long await', () => {

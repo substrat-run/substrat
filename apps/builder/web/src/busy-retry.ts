@@ -13,12 +13,15 @@ export const BUSY_RETRY_BOUND_MS = 10 * 60_000;
 export const BUSY_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000] as const;
 
 const BUSY = /\boperation already in progress\b/;
+/** The occupant inside the sentence: the control plane relays the sentence, not the `occupant` member. */
+const NAMED = /\boperation already in progress: (.+?)(?:, started \d+ s ago)?$/;
 
 /** What holds the project, when `e` is the busy refusal; null for any other error. */
 export function busyOccupant(e: unknown): string | null {
 	if (!(e instanceof ApiError) || e.status !== 409 || !BUSY.test(e.message)) return null;
 	const what = (e.body as { occupant?: { what?: unknown } } | null)?.occupant?.what;
-	return typeof what === 'string' && what !== '' ? what : 'another operation';
+	if (typeof what === 'string' && what !== '') return what;
+	return NAMED.exec(e.message)?.[1] ?? 'another operation';
 }
 
 export interface BusyRetryOptions {

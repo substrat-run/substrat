@@ -210,8 +210,8 @@ export class BuilderAgent extends DurableObject<Env> {
 	}
 
 	/** The 409 an operation gets while another holds the studio. */
-	#refuseBusy(): Response {
-		return busyRefusal(this.#occupant, Date.now());
+	#refuseBusy(prefix?: string): Response {
+		return busyRefusal(this.#occupant, Date.now(), prefix);
 	}
 
 	#releaseStudio(): void {
@@ -542,7 +542,7 @@ export class BuilderAgent extends DurableObject<Env> {
 	// ── the turn (the local server's handleTurn, ported) ──────────────────────
 
 	async #turn(req: Request): Promise<Response> {
-		if (this.#busy) return refuse(409, 'a turn is already running');
+		if (this.#busy) return this.#refuseBusy();
 		const { message } = (await req.json().catch(() => ({}))) as { message?: string };
 		if (!message?.trim()) return refuse(400, 'message required');
 
@@ -1055,7 +1055,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				}
 			}
 			case 'POST /api/model': {
-				if (this.#busy) return refuse(409, 'cannot switch model mid-turn');
+				if (this.#busy) return this.#refuseBusy('cannot switch model now');
 				const { spec } = (await req.json().catch(() => ({}))) as { spec?: string };
 				if (!spec) return refuse(400, 'spec required (provider:model)');
 				try {

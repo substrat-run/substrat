@@ -34,19 +34,22 @@ export interface Occupant {
 	since?: number;
 }
 
-/** The busy refusal's sentence: the CLI's words first, then who holds the project and for how long. */
-export function busyDetail(occupant: Occupant | null, now: number): string {
-	if (!occupant) return `${BUILD_BUSY}: another operation`;
-	if (occupant.since === undefined) return `${BUILD_BUSY}: ${occupant.what}`;
-	return `${BUILD_BUSY}: ${occupant.what}, started ${Math.max(0, Math.round((now - occupant.since) / 1000))} s ago`;
+/**
+ * The busy refusal's sentence: the CLI's words first (or another route's own), then who holds
+ * the project and for how long.
+ */
+export function busyDetail(occupant: Occupant | null, now: number, prefix: string = BUILD_BUSY): string {
+	if (!occupant) return `${prefix}: another operation`;
+	if (occupant.since === undefined) return `${prefix}: ${occupant.what}`;
+	return `${prefix}: ${occupant.what}, started ${Math.max(0, Math.round((now - occupant.since) / 1000))} s ago`;
 }
 
 /**
  * The 409 itself. The occupant is also a member of its own, so the studio can say what it is
  * waiting for without parsing the sentence; like `diagnostic`, a private member of this hop.
  */
-export function busyRefusal(occupant: Occupant | null, now: number): Response {
-	const problem = refusalProblem(409, busyDetail(occupant, now));
+export function busyRefusal(occupant: Occupant | null, now: number, prefix: string = BUILD_BUSY): Response {
+	const problem = refusalProblem(409, busyDetail(occupant, now, prefix));
 	const member = {
 		what: occupant?.what ?? 'another operation',
 		...(occupant?.since === undefined ? {} : { startedAt: new Date(occupant.since).toISOString() }),

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '../src/api.js';
-import { BUSY_RETRY_BOUND_MS, retryWhileBusy } from '../src/busy-retry.js';
+import { BUSY_RETRY_BOUND_MS, busyOccupant, retryWhileBusy } from '../src/busy-retry.js';
 
 const busy = () =>
 	new ApiError('project operation already in progress: an agent turn in project "CRM", started 3 s ago', 409, {
@@ -29,6 +29,13 @@ describe('retryWhileBusy', () => {
 		expect(result).toBe('ready');
 		expect(waited).toEqual(['an agent turn in project "CRM"', 'an agent turn in project "CRM"']);
 		expect(c.slept).toEqual([5_000, 10_000]);
+	});
+
+	it('reads the occupant out of the sentence when the body carries only that', () => {
+		// The control plane relays status and sentence, not the occupant member.
+		const relayed = (detail: string) => new ApiError(detail, 409, { detail });
+		expect(busyOccupant(relayed('project operation already in progress: a release of project "CRM", started 12 s ago'))).toBe('a release of project "CRM"');
+		expect(busyOccupant(relayed('project operation already in progress'))).toBe('another operation');
 	});
 
 	it('stops at its bound and fails with the sentence', async () => {
