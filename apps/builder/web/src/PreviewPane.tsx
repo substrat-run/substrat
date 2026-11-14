@@ -11,12 +11,14 @@
  *   The slot holds the project's sample world by default; "production data"
  *   (#3108) runs it on a copy of the installed app instead, offered only where
  *   the control plane would admit it, and saying why where it would not.
+ *   A sample-data slot is signed into from "Sign in as…" (#3145): the frame is
+ *   cross-site, so the app's own sign-in cannot reach the persona picker there.
  *
  * The manual URL field stays as an escape hatch for apps the user runs in their
  * own terminal.
  */
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { api, type StudioDataPreview, type StudioPreview } from './api.js';
+import { api, type StudioDataPreview, type StudioPersona, type StudioPreview } from './api.js';
 
 type DevState = 'stopped' | 'starting' | 'running' | 'error';
 
@@ -132,6 +134,11 @@ function HostedPreview() {
 	const [fork, setFork] = useState<StudioDataPreview['fork'] | null>(null);
 	/** Set by Run: the tab's opening read must not land on top of a Run already under way. */
 	const ran = useRef(false);
+	/** The sample slot's people (#3145), and who the frame was last signed in as. */
+	const [personas, setPersonas] = useState<StudioPersona[]>([]);
+	const [signedInAs, setSignedInAs] = useState('');
+	/** The one-time sign-in URL the frame was pointed at: spent, so reload goes back to the app. */
+	const entered = useRef<string | null>(null);
 
 	function show(p: StudioPreview): void {
 		setError(null);
@@ -146,7 +153,35 @@ function HostedPreview() {
 		setUrl(p.url);
 		setSrc(p.url);
 		setNote(p.authNote ?? null);
+		setSignedInAs('');
 		// A re-run rebinds the same URL, so the frame is reloaded rather than left on the old version.
+		reloadFrame();
+	}
+
+	// Who the sample slot can be signed in as: asked again whenever it is shown ready.
+	useEffect(() => {
+		setPersonas([]);
+		if (kind !== 'sample' || state !== 'ready') return;
+		void api.studioPersonas().then((r) => setPersonas(r.personas), () => undefined);
+	}, [kind, state, url]);
+
+	async function signInAs(sub: string): Promise<void> {
+		setSignedInAs(sub);
+		if (!sub) return;
+		setError(null);
+		try {
+			const { url: enter } = await api.studioSignIn(sub);
+			entered.current = enter;
+			setSrc(enter);
+			reloadFrame();
+		} catch (e) {
+			setSignedInAs('');
+			setError((e as Error).message);
+		}
+	}
+
+	function reload(): void {
+		if (src && src === entered.current) setSrc(url);
 		reloadFrame();
 	}
 
@@ -208,6 +243,17 @@ function HostedPreview() {
 					{busy ? '… Running' : state === 'ready' ? '↻ Run again' : '▶ Run'}
 				</button>
 				<span className={`badge ${state === 'ready' ? 'ok' : state === 'error' ? 'bad' : 'warn'}`}>{label}</span>
+				{personas.length > 0 && (
+					<select value={signedInAs} disabled={busy} onChange={(e) => void signInAs(e.target.value)} aria-label="sign in as">
+						<option value="">Sign in as…</option>
+						{personas.map((p) => (
+							<option key={p.sub} value={p.sub}>
+								{p.name}
+								{(p.note ?? p.role) ? ` · ${p.note ?? p.role}` : ''}
+							</option>
+						))}
+					</select>
+				)}
 				{url && (
 					<a className="pill" href={url} target="_blank" rel="noreferrer">
 						open in new tab
@@ -219,7 +265,7 @@ function HostedPreview() {
 					onKeyDown={(e) => e.key === 'Enter' && setSrc(manual)}
 					placeholder="…or open a URL yourself"
 				/>
-				{src && <button className="pill" onClick={reloadFrame}>reload</button>}
+				{src && <button className="pill" onClick={reload}>reload</button>}
 			</div>
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
 			{note && <pre className="dev-log">{note}</pre>}

@@ -23,6 +23,21 @@ export const SEED_WORLD_PATH = '/internal/seed-world';
 export const PERSONA_ISSUER_PATH = '/persona';
 export const personaIssuerUrl = (controlPlaneOrigin: string, previewScopeId: string): string =>
   `${controlPlaneOrigin.replace(/\/+$/, '')}${PERSONA_ISSUER_PATH}/${previewScopeId}`;
+/**
+ * Whether an issuer URL is a persona issuer's (#3145): its path is exactly
+ * `${PERSONA_ISSUER_PATH}/<scope id>`. Only a seeded preview is delivered one, and the studio shows
+ * it in a cross-site frame, so its deployment's cookies have to work there.
+ */
+export function isPersonaIssuer(issuer: string): boolean {
+  let path: string;
+  try {
+    path = new URL(issuer).pathname.replace(/\/+$/, '');
+  } catch {
+    return false;
+  }
+  const prefix = `${PERSONA_ISSUER_PATH}/`;
+  return path.startsWith(prefix) && scopeId.safeParse(path.slice(prefix.length)).success;
+}
 export const PERSONAS_PATH = '/internal/personas';
 
 export const seedWorldBody = z

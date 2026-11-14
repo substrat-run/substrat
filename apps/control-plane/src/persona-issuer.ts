@@ -9,7 +9,8 @@ import {
   type SeededPersona,
   type TenantId,
 } from '@substrat-run/contracts';
-import { safePath, signEphemeral, verifyEphemeral, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
+import { readCookie, safePath, signEphemeral, verifyEphemeral, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
+import { refuse } from './problem.js';
 
 /**
  * The control plane's persona issuer (#3108): how a SEEDED preview is signed into.
@@ -38,6 +39,16 @@ import { safePath, signEphemeral, verifyEphemeral, type OidcEnv, type SessionUse
  *   and bound to the PKCE challenge the deployment sent.
  *
  * The person who really signed in is logged with every persona sign-in (`persona-sign-in`).
+ *
+ * **Inside the studio's frame (#3145).** The studio shows the preview in a cross-site frame, which
+ * never carries the Substrat session, and the picker refuses to be framed. So the studio vouches
+ * for its signed-in person instead: over its service credential it mints a TICKET for one persona
+ * of one preview, after the picker's own checks, and points the frame at `/enter?ticket=…`. That
+ * spends the ticket, sets a short-lived partitioned ENTRY cookie on this issuer's path naming the
+ * person and the persona, and starts the preview's own login. Its `/authorize` then spends the
+ * entry, checks the team and the preview again, and redirects straight back with a code: no page
+ * is rendered, so nothing of this issuer is ever framed. Both are single-use, a minute long, and
+ * stored here, as codes are.
  */
 
 const ALG = 'ES256';
@@ -46,6 +57,10 @@ const CODE_TTL_MS = 2 * 60_000;
 /** How long the picker's signed request stays good: the time to choose a person. */
 const PICK_TTL_SEC = 10 * 60;
 const TOKEN_TTL_SEC = 10 * 60;
+/** How long a ticket, and the entry it becomes, stays good: the studio uses one at once. */
+const TICKET_TTL_MS = 60_000;
+/** The entry cookie `/enter` sets for `/authorize`, on this issuer's own path. */
+const ENTRY_COOKIE = 'substrat_persona_entry';
 
 const DDL = [
   'CREATE TABLE IF NOT EXISTS persona_key (id INTEGER PRIMARY KEY, kid TEXT NOT NULL, private_jwk TEXT NOT NULL, public_jwk TEXT NOT NULL, client_key TEXT NOT NULL)',
@@ -53,6 +68,10 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS persona_code (
     code_hash TEXT PRIMARY KEY, scope_id TEXT NOT NULL, sub TEXT NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL,
     nonce TEXT, challenge TEXT NOT NULL, redirect_uri TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
+  // #3145: the studio's tickets, and the entries `/enter` turns them into. Only hashes are stored.
+  `CREATE TABLE IF NOT EXISTS persona_ticket (
+    token_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, scope_id TEXT NOT NULL, uid TEXT NOT NULL, sub TEXT NOT NULL,
+    expires_at INTEGER NOT NULL)`,
 ];
 
 const enc = new TextEncoder();
@@ -80,6 +99,15 @@ export interface PersonaCodeInput {
   nonce: string | null;
   challenge: string;
   redirectUri: string;
+}
+
+/** A ticket the studio minted, or the entry `/enter` made of it: who, as whom, in which preview. */
+export interface PersonaTicket {
+  kind: 'ticket' | 'entry';
+  scopeId: ScopeId;
+  /** The Substrat login the studio vouched for. */
+  uid: string;
+  sub: string;
 }
 
 export interface PersonaExchangeInput {
@@ -170,6 +198,31 @@ export class PersonaIssuerDO extends DurableObject {
     return code;
   }
 
+  /** Mint a single-use ticket or entry. Only its hash is stored. */
+  async issueTicket(input: PersonaTicket, ttlMs: number): Promise<string> {
+    const now = Date.now();
+    this.sql.exec('DELETE FROM persona_ticket WHERE expires_at <= ?', now);
+    const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    this.sql.exec(
+      'INSERT INTO persona_ticket (token_hash, kind, scope_id, uid, sub, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      await sha256(token),
+      input.kind,
+      input.scopeId,
+      input.uid,
+      input.sub,
+      now + ttlMs,
+    );
+    return token;
+  }
+
+  /** Spend a ticket or entry: null unless it is of this kind, for this preview, and unexpired. */
+  async redeemTicket(kind: PersonaTicket['kind'], scopeId: ScopeId, token: string): Promise<{ uid: string; sub: string } | null> {
+    // Spent on the first try whatever it finds, as a code is.
+    const row = this.sql.exec('DELETE FROM persona_ticket WHERE token_hash = ? RETURNING *', await sha256(token)).toArray()[0];
+    if (!row || row.kind !== kind || row.scope_id !== scopeId || (row.expires_at as number) <= Date.now()) return null;
+    return { uid: row.uid as string, sub: row.sub as string };
+  }
+
   /** Exchange a code for the persona's tokens: client, callback, PKCE and expiry, then sign. */
   async exchange(input: PersonaExchangeInput): Promise<PersonaExchange> {
     if (!this.sql.exec('SELECT 1 FROM persona_client WHERE scope_id = ?', input.scopeId).toArray().length ||
@@ -210,7 +263,7 @@ export class PersonaIssuerDO extends DurableObject {
   }
 }
 
-type IssuerStub = Pick<PersonaIssuerDO, 'jwks' | 'register' | 'clientOf' | 'issueCode' | 'exchange'>;
+type IssuerStub = Pick<PersonaIssuerDO, 'jwks' | 'register' | 'clientOf' | 'issueCode' | 'exchange' | 'issueTicket' | 'redeemTicket'>;
 
 /** What the routes need from the control plane around them. */
 export interface PersonaIssuerDeps<E> {
@@ -225,6 +278,10 @@ export interface PersonaIssuerDeps<E> {
   personas(env: E, tenantId: TenantId, scopeId: ScopeId): Promise<SeededPersona[] | null>;
   /** Whether the preview is still an active clean-room preview — asked again at the exchange. */
   active(env: E, tenantId: TenantId, scopeId: ScopeId): Promise<boolean>;
+  /** Whether the request carries the studio's service credential: who may vouch for a login (#3145). */
+  service(env: E, request: Request): Promise<boolean>;
+  /** How long a ticket and its entry stay good. Defaults to a minute. */
+  ticketTtlMs?: number;
 }
 
 const escapeHtml = (s: string): string =>
@@ -263,13 +320,23 @@ interface PickRequest {
   cc: string;
 }
 
+/** Where the studio reads a preview's personas and mints a ticket, over its service credential (#3145). */
+export const STUDIO_PERSONA_PATH = '/internal/builder/persona';
+/** Where a deployed vertical begins its login (vertical-auth's fixed path), which `/enter` starts. */
+const VERTICAL_LOGIN_PATH = '/api/auth/login';
+
+/** The entry cookie: partitioned, so it lives only inside the studio's frame, and on this issuer's path alone. */
+const entryCookie = (scope: ScopeId, value: string, maxAgeSec: number): string =>
+  `${ENTRY_COOKIE}=${value}; Path=${PERSONA_ISSUER_PATH}/${scope}; Max-Age=${maxAgeSec}; HttpOnly; Secure; SameSite=None; Partitioned`;
+
 /**
- * Mount the issuer at `/persona/:scope/…`: discovery, JWKS, the picker (`/authorize`) and the code
- * exchange (`/token`). Nothing here is under `/api`, so no staff gate applies; each route decides
- * who it answers itself.
+ * Mount the issuer at `/persona/:scope/…`: discovery, JWKS, the picker (`/authorize`), the code
+ * exchange (`/token`) and the studio's door into its frame (`/enter`). Nothing here is under `/api`,
+ * so no staff gate applies; each route decides who it answers itself.
  */
 export function mountPersonaIssuer<E extends object>(app: Hono<{ Bindings: E }>, deps: PersonaIssuerDeps<E>): void {
   const base = `${PERSONA_ISSUER_PATH}/:scope`;
+  const ticketTtlMs = deps.ticketTtlMs ?? TICKET_TTL_MS;
   const scopeOf = (c: Context<{ Bindings: E }>): ScopeId | null => {
     const parsed = scopeIdOf.safeParse(c.req.param('scope'));
     return parsed.success ? parsed.data : null;
@@ -309,11 +376,16 @@ export function mountPersonaIssuer<E extends object>(app: Hono<{ Bindings: E }>,
    * Everything both halves of the picker check, in order: the request names this preview's own
    * client and callback, a Substrat session is present (or the browser is sent to sign in), its
    * person is on the preview's team, and the preview is still an active clean room.
+   *
+   * With an `entry` (#3145), the person is the one the studio vouched for, and the persona is
+   * the one they chose there (`pinned`), in place of the session the studio's frame never carries.
+   * The entry is spent here, whatever follows.
    */
   const gate = async (
     c: Context<{ Bindings: E }>,
     req: { clientId: string; redirectUri: string },
-  ): Promise<Response | { scope: ScopeId; user: SessionUser; personas: SeededPersona[]; redirectUri: string }> => {
+    entry?: string,
+  ): Promise<Response | { scope: ScopeId; user: SessionUser; personas: SeededPersona[]; redirectUri: string; pinned: string | null }> => {
     const scope = scopeOf(c);
     const client = scope ? await deps.stub(c.env).clientOf(scope) : null;
     if (!scope || !client) return page('Not found', '<h1>No such preview</h1><p>This sign-in page belongs to no preview.</p>', 404);
@@ -321,25 +393,60 @@ export function mountPersonaIssuer<E extends object>(app: Hono<{ Bindings: E }>,
       // Never redirected: a callback that is not the preview's own is not trusted with an error either.
       return page('Bad request', '<h1>This sign-in request is not valid</h1><p>Open the preview again and sign in from there.</p>', 400);
     }
-    const user = await deps.session(c.env, c.req.raw.headers);
-    if (!user?.id) {
-      const back = safePath(new URL(c.req.url).pathname + new URL(c.req.url).search) ?? '/';
-      return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(back)}`);
+    let user: SessionUser | null;
+    let pinned: string | null = null;
+    if (entry) {
+      const entered = await deps.stub(c.env).redeemTicket('entry', scope, entry);
+      if (!entered) return page('Expired', '<h1>This sign-in has expired</h1><p>Choose who to sign in as again.</p>', 400);
+      user = { id: entered.uid };
+      pinned = entered.sub;
+    } else {
+      user = await deps.session(c.env, c.req.raw.headers);
+      if (!user?.id) {
+        const back = safePath(new URL(c.req.url).pathname + new URL(c.req.url).search) ?? '/';
+        return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(back)}`);
+      }
     }
     if (!(await deps.isMember(c.env, user, client.tenantId))) {
       return page('Not on this team', '<h1>You are not on this preview\'s team</h1><p>Only a member of the team that owns this preview can sign in to it.</p>', 403);
     }
     const personas = await deps.personas(c.env, client.tenantId, scope);
     if (!personas) return page('Gone', '<h1>This preview is gone</h1><p>It was deleted or replaced. Run it again.</p>', 410);
-    return { scope, user, personas, redirectUri: client.redirectUri };
+    return { scope, user, personas, redirectUri: client.redirectUri, pinned };
+  };
+
+  /** Settle a sign-in: a single-use code for `persona`, logged beside the person really there, and back to the callback. */
+  const settle = async (
+    c: Context<{ Bindings: E }>,
+    passed: { scope: ScopeId; user: SessionUser; redirectUri: string },
+    persona: SeededPersona,
+    req: { nonce: string | null; challenge: string; state: string | null },
+    via?: 'ticket',
+  ): Promise<Response> => {
+    const code = await deps.stub(c.env).issueCode({ scopeId: passed.scope, persona, nonce: req.nonce, challenge: req.challenge, redirectUri: passed.redirectUri });
+    // The person who was really there, beside who they chose to be.
+    console.log(JSON.stringify({ host: 'persona-sign-in', scopeId: passed.scope, persona: persona.sub, user: passed.user.id, ...(via ? { via } : {}) }));
+    const back = new URL(passed.redirectUri);
+    back.searchParams.set('code', code);
+    if (req.state) back.searchParams.set('state', req.state);
+    back.searchParams.set('iss', issuerOf(c, passed.scope)!);
+    return c.redirect(back.toString(), 302);
   };
 
   app.get(`${base}/authorize`, async (c) => {
     const q = c.req.query();
-    const passed = await gate(c, { clientId: q.client_id ?? '', redirectUri: q.redirect_uri ?? '' });
+    const entry = readCookie(c.req.header('cookie'), ENTRY_COOKIE);
+    const passed = await gate(c, { clientId: q.client_id ?? '', redirectUri: q.redirect_uri ?? '' }, entry);
     if (passed instanceof Response) return passed;
     if (q.response_type !== 'code' || !q.code_challenge || q.code_challenge_method !== 'S256') {
       return page('Bad request', '<h1>This sign-in request is not valid</h1><p>It must ask for a code, with a PKCE S256 challenge.</p>', 400);
+    }
+    if (passed.pinned) {
+      // #3145: chosen in the studio, so no picker: the code, and straight back, with nothing rendered in its frame.
+      const persona = passed.personas.find((p) => p.sub === passed.pinned);
+      if (!persona) return page('Not found', '<h1>That person is not in this preview</h1>', 400);
+      c.header('set-cookie', entryCookie(passed.scope, '', 0));
+      return await settle(c, passed, persona, { nonce: q.nonce ?? null, challenge: q.code_challenge, state: q.state ?? null }, 'ticket');
     }
     const request = await signEphemeral(
       deps.oidc(c.env),
@@ -379,14 +486,65 @@ export function mountPersonaIssuer<E extends object>(app: Hono<{ Bindings: E }>,
     const persona = passed.personas.find((p) => p.sub === field('sub'));
     if (!persona) return page('Not found', '<h1>That person is not in this preview</h1>', 400);
 
-    const code = await deps.stub(c.env).issueCode({ scopeId: passed.scope, persona, nonce: signed.n, challenge: signed.cc, redirectUri: passed.redirectUri });
-    // The person who was really there, beside who they chose to be.
-    console.log(JSON.stringify({ host: 'persona-sign-in', scopeId: passed.scope, persona: persona.sub, user: passed.user.id }));
-    const back = new URL(passed.redirectUri);
-    back.searchParams.set('code', code);
-    if (signed.st) back.searchParams.set('state', signed.st);
-    back.searchParams.set('iss', issuerOf(c, passed.scope)!);
-    return c.redirect(back.toString(), 302);
+    return await settle(c, passed, persona, { nonce: signed.n, challenge: signed.cc, state: signed.st });
+  });
+
+  /**
+   * #3145: the studio's frame lands here with a ticket. Spend it, leave the entry `/authorize`
+   * reads, and start the preview's own login, which comes back to `/authorize`. Only a redirect:
+   * nothing of this issuer is rendered in the frame.
+   */
+  app.get(`${base}/enter`, async (c) => {
+    const scope = scopeOf(c);
+    const client = scope ? await deps.stub(c.env).clientOf(scope) : null;
+    if (!scope || !client) return page('Not found', '<h1>No such preview</h1><p>This sign-in page belongs to no preview.</p>', 404);
+    const ticket = await deps.stub(c.env).redeemTicket('ticket', scope, c.req.query('ticket') ?? '');
+    if (!ticket) return page('Expired', '<h1>This sign-in has expired</h1><p>Choose who to sign in as again.</p>', 400);
+    const entry = await deps.stub(c.env).issueTicket({ kind: 'entry', scopeId: scope, uid: ticket.uid, sub: ticket.sub }, ticketTtlMs);
+    c.header('set-cookie', entryCookie(scope, entry, Math.ceil(ticketTtlMs / 1000)));
+    c.header('cache-control', 'no-store');
+    c.header('referrer-policy', 'no-referrer');
+    return c.redirect(new URL(VERTICAL_LOGIN_PATH, client.redirectUri).toString(), 302);
+  });
+
+  /**
+   * #3145: what the studio asks as its signed-in person (`externalId`, the OIDC subject its own
+   * session verified), over its service credential: the picker's checks, without the picker.
+   */
+  const vouched = async (
+    c: Context<{ Bindings: E }>,
+  ): Promise<Response | { scope: ScopeId; user: SessionUser; personas: SeededPersona[]; body: { sub?: unknown } }> => {
+    if (!(await deps.service(c.env, c.req.raw))) return refuse('forbidden', 'service token required');
+    const scope = scopeOf(c);
+    const client = scope ? await deps.stub(c.env).clientOf(scope) : null;
+    if (!scope || !client) return refuse('not_found', 'no seeded preview has this scope id');
+    const body = (await c.req.json().catch(() => ({}))) as { externalId?: unknown; sub?: unknown };
+    if (typeof body.externalId !== 'string' || body.externalId === '') {
+      return refuse('validation_failed', 'externalId (the OIDC subject) is required');
+    }
+    const user: SessionUser = { id: body.externalId };
+    if (!(await deps.isMember(c.env, user, client.tenantId))) return refuse('forbidden', "only a member of the preview's team can sign in to it");
+    const personas = await deps.personas(c.env, client.tenantId, scope);
+    if (!personas) return refuse('not_found', 'this preview is gone: it was deleted or replaced');
+    return { scope, user, personas, body };
+  };
+
+  app.post(`${STUDIO_PERSONA_PATH}/:scope/personas`, async (c) => {
+    const passed = await vouched(c);
+    if (passed instanceof Response) return passed;
+    return c.json({ personas: passed.personas });
+  });
+
+  app.post(`${STUDIO_PERSONA_PATH}/:scope/ticket`, async (c) => {
+    const passed = await vouched(c);
+    if (passed instanceof Response) return passed;
+    const persona = passed.personas.find((p) => p.sub === passed.body.sub);
+    if (!persona) return refuse('validation_failed', 'that person is not in this preview');
+    const issuer = issuerOf(c, passed.scope);
+    if (!issuer) return refuse('not_found', 'this control plane has no public origin to sign in at');
+    const ticket = await deps.stub(c.env).issueTicket({ kind: 'ticket', scopeId: passed.scope, uid: passed.user.id, sub: persona.sub }, ticketTtlMs);
+    console.log(JSON.stringify({ host: 'persona-ticket', scopeId: passed.scope, persona: persona.sub, user: passed.user.id }));
+    return c.json({ url: `${issuer}/enter?ticket=${encodeURIComponent(ticket)}`, expiresIn: Math.ceil(ticketTtlMs / 1000) });
   });
 
   app.post(`${base}/token`, async (c) => {

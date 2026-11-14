@@ -24,6 +24,10 @@
  * scope. The studio therefore makes that call AS the signed-in person — a tenant token the plane
  * mints naming them — and never with the builder's own credential, which names nobody.
  *
+ * In the studio's frame (#3145), the seeded slot is signed into from the studio's own "Sign in
+ * as…": the plane's persona issuer mints a one-time ticket for the person the studio vouches for,
+ * and the frame redeems it, since a cross-site frame carries no Substrat session to pick with.
+ *
  * Not a PR either: a per-PR preview is a GitHub Actions flow and exists only for GitHub
  * projects. That stays the separate "Create preview PR" step.
  */
@@ -55,6 +59,7 @@ const createdPreview = z.object({
 });
 
 const previewRow = z.object({
+	scopeId: z.string(),
 	tag: z.string().nullable(),
 	versionId: z.string().nullable(),
 	url: z.string().nullable(),
@@ -144,14 +149,78 @@ export async function readStudioPreview(
 	now: Date,
 	tag: string = STUDIO_PREVIEW_TAG,
 ): Promise<Response> {
+	const slot = await liveSlot(cp, project, now, tag);
+	if (slot instanceof Response) return slot;
+	if (!slot) return json(200, { state: 'none' });
+	return json(200, { state: 'ready', url: slot.url, versionId: slot.versionId, reused: true } satisfies StudioPreview);
+}
+
+/** The slot under `tag` while it serves, or null: none, never released, or past its TTL. A refused read is relayed. */
+async function liveSlot(
+	cp: ControlPlaneCall,
+	project: StudioProject,
+	now: Date,
+	tag: string,
+): Promise<{ scopeId: string; url: string; versionId: string } | Response | null> {
 	const listed = await cp(`/verticals/${encodeURIComponent(project.slug)}/previews`);
 	// A project that was never released has no vertical yet: no slot, not an error.
-	if (listed.status === 404) return json(200, { state: 'none' });
+	if (listed.status === 404) return null;
 	if (!listed.ok) return listed;
 	const slot = z.array(previewRow).parse(await listed.json()).find((p) => p.tag === tag);
-	if (!slot?.url || !slot.versionId) return json(200, { state: 'none' });
-	if (slot.expiresAt && Date.parse(slot.expiresAt) <= now.getTime()) return json(200, { state: 'none' });
-	return json(200, { state: 'ready', url: slot.url, versionId: slot.versionId, reused: true } satisfies StudioPreview);
+	if (!slot?.url || !slot.versionId) return null;
+	if (slot.expiresAt && Date.parse(slot.expiresAt) <= now.getTime()) return null;
+	return { scopeId: slot.scopeId, url: slot.url, versionId: slot.versionId };
+}
+
+/** Where the plane's persona issuer answers the studio (`STUDIO_PERSONA_PATH` in the control plane). */
+const personaPath = (scopeId: string, leaf: 'personas' | 'ticket'): string =>
+	`/internal/builder/persona/${encodeURIComponent(scopeId)}/${leaf}`;
+
+/**
+ * Who the seeded slot can be signed in as (#3145), for the studio's "Sign in as…". Asked of the
+ * plane's persona issuer for `person` — the OIDC subject the studio's own session verified — over
+ * `internal`, the builder's credential, which the plane takes as the studio vouching for them. It
+ * applies the picker's checks: on the preview's team, and the preview an active clean room. A slot
+ * that is not seeded (made before #3108) has nobody to offer.
+ */
+export async function readStudioPersonas(
+	cp: ControlPlaneCall,
+	internal: ControlPlaneCall,
+	project: StudioProject,
+	person: string,
+	now: Date,
+): Promise<Response> {
+	const slot = await liveSlot(cp, project, now, STUDIO_PREVIEW_TAG);
+	if (slot instanceof Response) return slot;
+	if (!slot) return json(200, { personas: [] });
+	const res = await internal(personaPath(slot.scopeId, 'personas'), {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ externalId: person }),
+	});
+	return res.status === 404 ? json(200, { personas: [] }) : res;
+}
+
+/**
+ * Sign the frame in as one persona (#3145): a one-time ticket for `person` to be `sub` in the
+ * seeded slot, answered as the URL the frame opens. The plane's refusal is relayed as it came.
+ */
+export async function studioSignIn(
+	cp: ControlPlaneCall,
+	internal: ControlPlaneCall,
+	project: StudioProject,
+	person: string,
+	sub: string,
+	now: Date,
+): Promise<Response> {
+	const slot = await liveSlot(cp, project, now, STUDIO_PREVIEW_TAG);
+	if (slot instanceof Response) return slot;
+	if (!slot) return refuse(409, 'no sample-data preview is running: Run it first');
+	return await internal(personaPath(slot.scopeId, 'ticket'), {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ externalId: person, sub }),
+	});
 }
 
 /**

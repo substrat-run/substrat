@@ -364,3 +364,30 @@ describe('federated logout', () => {
     expect(named(out, LOGOUT_HINT_COOKIE).every((c) => c.includes('Max-Age=0'))).toBe(true);
   });
 });
+
+/**
+ * #3145: a seeded preview's issuer is the control plane's persona issuer, and the studio shows the
+ * preview in a cross-site frame, where a Lax or Strict cookie is never sent. Every cookie the login
+ * and the logout write there is `SameSite=None; Secure; Partitioned`; the suite above holds the
+ * Lax/Strict flags every other issuer keeps.
+ */
+describe('a persona issuer (seeded preview)', () => {
+  it('writes the flow, session and hint cookies, and their clears, as None, Secure and Partitioned', async () => {
+    ISSUER = `https://cp-${issuers}.test/persona/01JZ0000000000000000000${String(issuers).padStart(3, '0')}`;
+    cfg = { ...cfg, issuer: ISSUER };
+    const provider = oidcRpAuthProvider(cfg);
+    const login = await provider.handle(new Request(`${APP}/api/auth/login`));
+    const back = await signIn(provider);
+    const out = await provider.handle(new Request(`${APP}/api/auth/logout`));
+    const written = [
+      ...named(login, FLOW_COOKIE),
+      ...named(back, FLOW_COOKIE),
+      ...named(back, SESSION_COOKIE),
+      ...named(back, LOGOUT_HINT_COOKIE),
+      ...named(out, SESSION_COOKIE),
+      ...named(out, LOGOUT_HINT_COOKIE),
+    ];
+    expect(written).toHaveLength(6);
+    for (const header of written) expect(header).toMatch(/; SameSite=None; Secure; Partitioned$/);
+  });
+});

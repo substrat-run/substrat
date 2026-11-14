@@ -18,7 +18,7 @@ import {
   FLOW_MAXAGE,
   type OidcEnv,
 } from '@substrat-run/oidc-rp';
-import { mcpResourceOf } from '@substrat-run/contracts';
+import { isPersonaIssuer, mcpResourceOf } from '@substrat-run/contracts';
 import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { cookieDomainDecision } from './cookie-domain.js';
@@ -86,7 +86,15 @@ const envOf = (cfg: OidcRpConfig): OidcEnv => ({
   ).cleanupDomain ? `${cfg.sessionSecret}\u0000platform-domain-v2` : cfg.sessionSecret,
 });
 
-/** Serialize one Set-Cookie value — HttpOnly, and by default Lax on path=/ (the oidc-rp mount's flags). */
+/**
+ * Serialize one Set-Cookie value — HttpOnly, and by default Lax on path=/ (the oidc-rp mount's flags).
+ *
+ * `framed` is a seeded preview's deployment (#3145): the studio shows it in a cross-site frame,
+ * where no Lax or Strict cookie is ever sent, so its login would complete and land signed out.
+ * There every cookie is `SameSite=None; Secure; Partitioned` (CHIPS): stored apart for each
+ * top-level site, so a cookie set inside the studio is never sent anywhere else. A production
+ * install is never framed, and keeps its flags.
+ */
 function cookie(
   name: string,
   value: string,
@@ -95,16 +103,18 @@ function cookie(
   domain?: string | null,
   path = '/',
   sameSite: 'Lax' | 'Strict' = 'Lax',
+  framed = false,
 ): string {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
     `Path=${path}`,
     `Max-Age=${maxAge}`,
     'HttpOnly',
-    `SameSite=${sameSite}`,
+    `SameSite=${framed ? 'None' : sameSite}`,
   ];
   if (domain) parts.push(`Domain=${domain}`);
-  if (origin.startsWith('https:')) parts.push('Secure');
+  if (framed) parts.push('Secure', 'Partitioned');
+  else if (origin.startsWith('https:')) parts.push('Secure');
   return parts.join('; ');
 }
 
@@ -115,9 +125,9 @@ function cookie(
  * this hostname — so setting the domain variant also clears the host-only one, and
  * clearing (logout) always clears both.
  */
-function sessionCookies(value: string, origin: string, maxAge: number, domain: string | null): string[] {
-  if (!domain) return [cookie(SESSION_COOKIE, value, origin, maxAge)];
-  return [cookie(SESSION_COOKIE, value, origin, maxAge, domain), cookie(SESSION_COOKIE, '', origin, 0)];
+function sessionCookies(value: string, origin: string, maxAge: number, domain: string | null, framed: boolean): string[] {
+  if (!domain) return [cookie(SESSION_COOKIE, value, origin, maxAge, null, '/', 'Lax', framed)];
+  return [cookie(SESSION_COOKIE, value, origin, maxAge, domain, '/', 'Lax', framed), cookie(SESSION_COOKIE, '', origin, 0, null, '/', 'Lax', framed)];
 }
 
 /**
@@ -142,11 +152,11 @@ function sessionCookies(value: string, origin: string, maxAge: number, domain: s
  * multi-surface install (K-26) the sign-in is shared, so the sign-out has to work from
  * whichever surface the person is on rather than only the one they logged in through.
  */
-function hintCookies(value: string, origin: string, maxAge: number, domain: string | null): string[] {
-  if (!domain) return [cookie(LOGOUT_HINT_COOKIE, value, origin, maxAge, null, LOGOUT_PATH, 'Strict')];
+function hintCookies(value: string, origin: string, maxAge: number, domain: string | null, framed: boolean): string[] {
+  if (!domain) return [cookie(LOGOUT_HINT_COOKIE, value, origin, maxAge, null, LOGOUT_PATH, 'Strict', framed)];
   return [
-    cookie(LOGOUT_HINT_COOKIE, value, origin, maxAge, domain, LOGOUT_PATH, 'Strict'),
-    cookie(LOGOUT_HINT_COOKIE, '', origin, 0, null, LOGOUT_PATH, 'Strict'),
+    cookie(LOGOUT_HINT_COOKIE, value, origin, maxAge, domain, LOGOUT_PATH, 'Strict', framed),
+    cookie(LOGOUT_HINT_COOKIE, '', origin, 0, null, LOGOUT_PATH, 'Strict', framed),
   ];
 }
 
@@ -205,6 +215,7 @@ export function verifiedEmailOf(subject: AuthSubject | null): string | null {
 
 export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
   const env = envOf(cfg);
+  const framed = isPersonaIssuer(cfg.issuer);
 
   async function handle(request: Request): Promise<Response> {
     const discovery = mcpDiscovery(request, cfg.issuer);
@@ -233,20 +244,20 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
         prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
       });
-      return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE), ...cleanup]);
+      return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE, null, '/', 'Lax', framed), ...cleanup]);
     }
 
     if (url.pathname === '/api/auth/callback') {
       const flow = readCookie(request.headers.get('cookie'), FLOW_COOKIE);
-      const clearFlow = cookie(FLOW_COOKIE, '', origin, 0);
+      const clearFlow = cookie(FLOW_COOKIE, '', origin, 0, null, '/', 'Lax', framed);
       try {
         const { session, returnTo, idToken } = await completeLogin(env, origin, url, flow);
         return redirectWith(safePath(returnTo) ?? '/', [
           clearFlow,
-          ...sessionCookies(session, origin, SESSION_MAXAGE, domain),
+          ...sessionCookies(session, origin, SESSION_MAXAGE, domain, framed),
           // Same lifetime as the session, so the two expire together and a stale hint is
           // never the thing left over.
-          ...hintCookies(idToken, origin, SESSION_MAXAGE, domain),
+          ...hintCookies(idToken, origin, SESSION_MAXAGE, domain, framed),
           ...cleanup,
         ]);
       } catch (err) {
@@ -258,7 +269,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
 
     if (url.pathname === LOGOUT_PATH) {
       const local = safePath(url.searchParams.get('returnTo')) ?? '/';
-      const cleared = [...sessionCookies('', origin, 0, domain), ...hintCookies('', origin, 0, domain), ...cleanup];
+      const cleared = [...sessionCookies('', origin, 0, domain, framed), ...hintCookies('', origin, 0, domain, framed), ...cleanup];
       /**
        * `?federated` ALSO ends the issuer's own session (OIDC RP-Initiated Logout 1.0).
        * Without it the issuer's cookie silently signs the same person straight back in on

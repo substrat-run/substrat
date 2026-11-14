@@ -8,9 +8,11 @@ import {
 	STUDIO_PREVIEW_TAG,
 	personPlane,
 	readStudioDataPreview,
+	readStudioPersonas,
 	readStudioPreview,
 	runStudioDataPreview,
 	runStudioPreview,
+	studioSignIn,
 	type ControlPlaneCall,
 } from '../src/studio-preview.js';
 
@@ -64,11 +66,11 @@ describe('runStudioPreview', () => {
 
 describe('readStudioPreview', () => {
 	const now = new Date('2026-11-05T12:00:00Z');
-	const ci = { tag: 'pr-7', versionId: 'ver_0', url: 'https://x', expiresAt: null };
+	const ci = { scopeId: 'scp_0', tag: 'pr-7', versionId: 'ver_0', url: 'https://x', expiresAt: null };
 	it.each([
-		['the studio slot', { status: 200, body: [ci, { tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: '2026-11-06T00:00:00Z' }] }, { state: 'ready', url: ready.url, versionId: 'ver_1', reused: true }],
+		['the studio slot', { status: 200, body: [ci, { scopeId: 'scp_1', tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: '2026-11-06T00:00:00Z' }] }, { state: 'ready', url: ready.url, versionId: 'ver_1', reused: true }],
 		['none when only CI slots exist', { status: 200, body: [ci] }, { state: 'none' }],
-		['none for a slot past its TTL', { status: 200, body: [{ tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: '2026-11-05T11:59:59Z' }] }, { state: 'none' }],
+		['none for a slot past its TTL', { status: 200, body: [{ scopeId: 'scp_1', tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: '2026-11-05T11:59:59Z' }] }, { state: 'none' }],
 		['none for a project never released', { status: 404, body: { error: "unknown vertical 'acme/todo'" } }, { state: 'none' }],
 	])('reads %s', async (_name, answer, expected) => {
 		const { cp } = plane({ [previews]: answer });
@@ -147,5 +149,34 @@ describe('production data (#3108): the fork is made as the signed-in person', ()
 		const { cp } = plane({ [previews]: { body: [] }, [check]: answer });
 		const res = await readStudioDataPreview(cp, project, new Date('2026-11-05T12:00:00Z'));
 		expect(await res.json()).toEqual({ state: 'none', fork });
+	});
+});
+
+describe("sign in as… (#3145): the seeded slot's personas, and a ticket for one", () => {
+	const now = new Date('2026-11-05T12:00:00Z');
+	const slot = { body: [{ scopeId: 'scp_1', tag: 'studio', versionId: 'ver_1', url: ready.url, expiresAt: null }] };
+
+	it("asks the slot's own issuer, for the person the studio vouches for, and relays its answer", async () => {
+		const builder = plane({ [previews]: slot });
+		const internal = plane({
+			'/internal/builder/persona/scp_1/personas': { body: { personas: [{ sub: 'dev|ada', name: 'Ada', email: 'ada@example.test' }] } },
+			'/internal/builder/persona/scp_1/ticket': { status: 403, body: { detail: "only a member of the preview's team can sign in to it" } },
+		});
+		const personas = await readStudioPersonas(builder.cp, internal.cp, project, 'user-1', now);
+		expect(((await personas.json()) as { personas: unknown[] }).personas).toHaveLength(1);
+		const ticket = await studioSignIn(builder.cp, internal.cp, project, 'user-1', 'dev|ada', now);
+		expect(ticket.status).toBe(403);
+		expect(internal.calls).toEqual([
+			{ path: '/internal/builder/persona/scp_1/personas', method: 'POST', body: { externalId: 'user-1' } },
+			{ path: '/internal/builder/persona/scp_1/ticket', method: 'POST', body: { externalId: 'user-1', sub: 'dev|ada' } },
+		]);
+	});
+
+	it('offers nobody, and mints nothing, with no slot running', async () => {
+		const builder = plane({ [previews]: { body: [] } });
+		const internal = plane({});
+		expect(await (await readStudioPersonas(builder.cp, internal.cp, project, 'user-1', now)).json()).toEqual({ personas: [] });
+		expect((await studioSignIn(builder.cp, internal.cp, project, 'user-1', 'dev|ada', now)).status).toBe(409);
+		expect(internal.calls).toEqual([]);
 	});
 });
