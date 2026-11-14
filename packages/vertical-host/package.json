@@ -46,12 +46,12 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/model-providers": "workspace:^",
     "@substrat-run/vertical-auth": "workspace:^",
-    "ai": "7.0.159",
+    "ai": "7.0.169",
     "hono": "catalog:",
     "workers-ai-provider": "^4.0.0"
   },
   "devDependencies": {
-    "@scalar/api-reference": "1.76.4",
+    "@scalar/api-reference": "1.78.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
