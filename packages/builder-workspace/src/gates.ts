@@ -188,13 +188,19 @@ async function substratBlock(ws: Workspace, projectDir: string): Promise<{ permi
  * With no project tsconfig yet (the model phase, before scaffold) the file is
  * compiled under explicit defaults instead.
  */
+/**
+ * The model gate's compile. It never runs `exit` itself: the hosted sandbox runs every command in
+ * one persistent shell session, so an `exit` ends that shell and the SDK throws
+ * SessionTerminatedError, which the gate read as exit 127 on a model that compiled. `(exit $code)`
+ * sets the status in a subshell instead.
+ */
 function modelCompileCmd(projectDir: string): string {
 	const dir = `'${projectDir.replace(/'/g, "'\\''")}'`;
 	const throwaway = `${dir}/tsconfig.model-gate.json`;
 	const config = '{"extends":"./tsconfig.json","files":["spec/model.ts"],"include":[],"compilerOptions":{"noEmit":true}}';
 	return (
 		`if [ -f ${dir}/tsconfig.json ]; then ` +
-		`printf '%s' '${config}' > ${throwaway}; pnpm exec tsc -p ${throwaway}; code=$?; rm -f ${throwaway}; exit $code; ` +
+		`printf '%s' '${config}' > ${throwaway}; pnpm exec tsc -p ${throwaway}; code=$?; rm -f ${throwaway}; (exit $code); ` +
 		`else pnpm exec tsc --ignoreConfig --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext ${dir}/spec/model.ts; fi`
 	);
 }
