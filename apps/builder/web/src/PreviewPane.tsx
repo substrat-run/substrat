@@ -125,6 +125,10 @@ function HostedPreview() {
 	const [frame, reloadFrame] = useReducer((n: number) => n + 1, 0);
 	/** Each slot as last read or run, so switching kind shows that slot's app. */
 	const slots = useRef<Record<DataKind, StudioPreview>>({ sample: { state: 'none' }, production: { state: 'none' } });
+	/** Each slot's last Run failure, so switching away and back still shows it. */
+	const failures = useRef<Record<DataKind, string | null>>({ sample: null, production: null });
+	/** The kind on screen, for reads that land after the person has picked another. */
+	const shown = useRef<DataKind>('sample');
 	const [fork, setFork] = useState<StudioDataPreview['fork'] | null>(null);
 	/** Set by Run: the tab's opening read must not land on top of a Run already under way. */
 	const ran = useRef(false);
@@ -149,7 +153,7 @@ function HostedPreview() {
 	useEffect(() => {
 		void api.studioPreview().then((p) => {
 			slots.current.sample = p;
-			if (!ran.current) show(p);
+			if (!ran.current && shown.current === 'sample') show(p);
 		}, () => undefined);
 		void api.studioDataPreview().then(({ fork: f, ...p }) => {
 			slots.current.production = p;
@@ -160,7 +164,13 @@ function HostedPreview() {
 
 	function choose(next: DataKind): void {
 		setKind(next);
+		shown.current = next;
 		show(slots.current[next]);
+		const failed = failures.current[next];
+		if (failed) {
+			setState('error');
+			setError(failed);
+		}
 	}
 
 	async function run(): Promise<void> {
@@ -172,8 +182,10 @@ function HostedPreview() {
 		try {
 			const p = await (running === 'production' ? api.runStudioDataPreview() : api.runStudioPreview());
 			slots.current[running] = p;
+			failures.current[running] = null;
 			show(p);
 		} catch (e) {
+			failures.current[running] = (e as Error).message;
 			setState('error');
 			setError((e as Error).message);
 		}
@@ -211,6 +223,7 @@ function HostedPreview() {
 			</div>
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
 			{note && <pre className="dev-log">{note}</pre>}
+			{fork && !fork.ok && <pre className="dev-log">Production data: {fork.reason}</pre>}
 			{src ? (
 				<iframe key={frame} src={src} title="preview" />
 			) : (
@@ -222,7 +235,6 @@ function HostedPreview() {
 						: kind === 'production'
 							? 'Run deploys the saved source onto a private copy of the installed app\'s data; you sign in with the app\'s own login'
 							: 'Run deploys the saved source to a private preview of this project, with its sample data and people to sign in as'}
-					{fork && !fork.ok && <p>Production data: {fork.reason}</p>}
 				</div>
 			)}
 		</div>

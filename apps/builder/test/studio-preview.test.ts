@@ -79,39 +79,67 @@ describe('readStudioPreview', () => {
 });
 
 describe('production data (#3108): the fork is made as the signed-in person', () => {
-	it('mints a tenant token naming the person, and makes every call with it', async () => {
+	// The token cache lives as long as the isolate, so each case names its own person.
+	it('mints one tenant token naming the person, makes every call with it, and mints again on a 401', async () => {
 		const { cp, calls } = plane({ '/tenant-tokens': { status: 201, body: { token: 'stt1.x' } } });
 		const used: string[] = [];
-		const asPerson = await personPlane(cp, (token) => async () => {
+		const statuses = [200, 200, 401, 200];
+		const asPerson = personPlane(cp, (token) => async () => {
 			used.push(token);
-			return new Response('{}');
+			return new Response('{}', { status: statuses.shift() });
 		}, 'ten_a', 'prn_ann');
 		await asPerson('/anything');
-		expect(calls).toEqual([{ path: '/tenant-tokens', method: 'POST', body: { tenantId: 'ten_a', principal: 'prn_ann' } }]);
-		expect(used).toEqual(['stt1.x']);
+		await asPerson('/anything');
+		expect((await asPerson('/anything')).status).toBe(200);
+		const mint = { path: '/tenant-tokens', method: 'POST', body: { tenantId: 'ten_a', principal: 'prn_ann' } };
+		expect(calls).toEqual([mint, mint]);
+		expect(used).toHaveLength(4);
 	});
 
-	it('releases with the builder credential, then forks into the data slot as the person', async () => {
+	it('answers a call with the refused mint, and asks again next time', async () => {
+		const { cp, calls } = plane({ '/tenant-tokens': { status: 501, body: { detail: 'tenant tokens are not configured on this control plane' } } });
+		const asPerson = personPlane(cp, () => async () => new Response('{}'), 'ten_a', 'prn_bo');
+		const res = await asPerson('/anything');
+		expect(res.status).toBe(501);
+		expect(await res.json()).toMatchObject({ detail: expect.stringMatching(/not configured on this control plane$/) });
+		await asPerson('/anything');
+		expect(calls).toHaveLength(2);
+	});
+
+	const check = `${previews}/fork-check`;
+	const admitted = { body: { ok: true, sourceScopeId: 'scp_1' } };
+
+	it('asks first, releases with the builder credential, then forks into the data slot as the person', async () => {
 		const builder = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } } });
-		const person = plane({ [previews]: { status: 201, body: ready } });
+		const person = plane({ [check]: admitted, [previews]: { status: 201, body: ready } });
 		const res = await runStudioDataPreview(builder.cp, person.cp, project, 'ten_a', 'v');
 		expect(builder.calls.map((c) => c.path)).toEqual([deploy]);
-		expect(person.calls).toEqual([{ path: previews, method: 'POST', body: { tag: STUDIO_DATA_PREVIEW_TAG, versionId: 'ver_1' } }]);
+		expect(person.calls).toEqual([
+			{ path: check, method: 'GET', body: undefined },
+			{ path: previews, method: 'POST', body: { tag: STUDIO_DATA_PREVIEW_TAG, versionId: 'ver_1' } },
+		]);
 		expect(res.status).toBe(200);
+	});
+
+	it('refuses a person the plane would refuse before building anything', async () => {
+		const builder = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } } });
+		const person = plane({ [check]: { body: { ok: false, code: 'not-owner', reason: 'plane words' } } });
+		const res = await runStudioDataPreview(builder.cp, person.cp, project, 'ten_a', 'v');
+		expect(res.status).toBe(403);
+		expect(builder.calls).toEqual([]);
 	});
 
 	it("relays the plane's refusal of the person as it came", async () => {
 		const builder = plane({ [deploy]: { status: 201, body: { id: 'ver_1' } } });
 		const refusal = { detail: "copying scp_1's data takes its owner, or every role its owner holds there" };
-		const person = plane({ [previews]: { status: 403, body: refusal } });
+		const person = plane({ [check]: admitted, [previews]: { status: 403, body: refusal } });
 		const res = await runStudioDataPreview(builder.cp, person.cp, project, 'ten_a', 'v');
 		expect(res.status).toBe(403);
 		expect(await res.json()).toEqual(refusal);
 	});
 
-	const check = `${previews}/fork-check`;
 	it.each([
-		['admitted', { body: { ok: true, sourceScopeId: 'scp_1' } }, { ok: true }],
+		['admitted', admitted, { ok: true }],
 		['a project never released', { status: 404, body: {} }, { ok: false, reason: expect.stringMatching(/^not installed yet/) }],
 		["a refusal it words itself", { body: { ok: false, code: 'not-owner', reason: 'plane words' } }, { ok: false, reason: "only the app's owner can copy its production data" }],
 		["a refusal it has no words for", { body: { ok: false, code: 'new-code', reason: 'plane words' } }, { ok: false, reason: 'plane words' }],

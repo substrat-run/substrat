@@ -12790,7 +12790,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /** Why a fork-check says no, for a caller that words it itself. */
-  type ForkRefusalCode = 'not-installed' | 'several-installs' | 'not-owner';
+  type ForkRefusalCode = 'not-installed' | 'several-installs' | 'no-such-scope' | 'not-owner' | 'owner-unknown';
 
   /** The production scope a fork copies: the one named, or the only one there is. */
   const forkSource = async (
@@ -12808,7 +12808,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? owned[0]
         : undefined;
     if (source) return { source };
-    if (sourceScopeId) return { refused: 'not_found', code: 'not-installed', error: `no active prod scope ${sourceScopeId} for '${slug}'` };
+    if (sourceScopeId) return { refused: 'not_found', code: 'no-such-scope', error: `no active prod scope ${sourceScopeId} for '${slug}'` };
     if (owned.length === 0) {
       return { refused: 'conflict', code: 'not-installed', error: `no prod scope to fork for '${slug}' — provision one first, or pass empty:true for a clean-room preview` };
     }
@@ -12827,24 +12827,59 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    *
    * A credential naming nobody (a CI push token, the CLI, staff) keeps the rule it had: it can
    * already push code onto the production scope itself, so a fork reaches nothing more.
+   *
+   * `owner-unknown` is a roster the plane could not read, never a verdict about the person: a
+   * caller wording refusals itself must not tell the real owner they are not one.
    */
-  const forkRefusal = async (c: Context<{ Variables: Vars }>, source: Scope): Promise<string | null> => {
+  const forkRefusal = async (
+    c: Context<{ Variables: Vars }>,
+    source: Scope,
+  ): Promise<{ code: 'not-owner' | 'owner-unknown'; reason: string } | null> => {
     const person = memberPerson(c.get('principal'));
     if (!person) return null;
     const vertical = await verticalForScope(c, source);
-    if (!vertical) return `cannot ask '${source.vertical}' who owns ${source.id}, so its data is not copied`;
+    if (!vertical) return { code: 'owner-unknown', reason: `cannot ask '${source.vertical}' who owns ${source.id}, so its data is not copied` };
     let members: ScopeMember[];
     try {
       members = (await vertical.listMembers(source.tenantId, source.id)).members;
     } catch (e) {
       if (!(e instanceof ControlPlaneError)) throw e;
-      return `cannot read who owns ${source.id} (${e.message}), so its data is not copied`;
+      return { code: 'owner-unknown', reason: `cannot read who owns ${source.id} (${e.message}), so its data is not copied` };
     }
     const owner = members.find((m) => m.owner);
     const me = members.find((m) => m.principal === person);
     if (me?.owner) return null;
     if (me && owner && owner.roles.length > 0 && owner.roles.every((r) => me.roles.includes(r))) return null;
-    return `copying ${source.id}'s data takes its owner, or every role its owner holds there`;
+    return { code: 'not-owner', reason: `copying ${source.id}'s data takes its owner, or every role its owner holds there` };
+  };
+
+  /**
+   * The production data a create would leave the caller's code reading: the source it forks, AND
+   * the source of the preview already under the tag, since a create rebinds that one, carrying
+   * its data, whatever the body says (`empty`, another `sourceScopeId`). A preview whose source
+   * is gone is still a copy of it, so a person is refused rather than waved through.
+   */
+  const createRefusal = async (
+    c: Context<{ Variables: Vars }>,
+    tenantId: TenantId,
+    slug: string,
+    tag: string,
+    source: Scope | null,
+  ): Promise<string | null> => {
+    const judged = source ? [source] : [];
+    const held = (await c.var.admin.listScopes(c.get('actor'), { tenantId, vertical: slug })).find(
+      (s) => s.kind === 'preview' && s.slug === previewSlug(slug, tag),
+    )?.forkedFrom;
+    if (held && held !== source?.id) {
+      const heldSource = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, held);
+      if (heldSource) judged.push(heldSource);
+      else if (memberPerson(c.get('principal'))) return `preview '${tag}' holds a copy of ${held}, which is gone, so it is not rebound for you`;
+    }
+    for (const s of judged) {
+      const denied = await forkRefusal(c, s);
+      if (denied) return denied.reason;
+    }
+    return null;
   };
 
   // What a create with this body would decide about a fork, without making one — so a studio can
@@ -12855,8 +12890,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const requested = c.req.query('sourceScopeId');
     const picked = await forkSource(c, gate.tenantId, gate.slug, requested ? scopeIdSchema.parse(requested) : undefined);
     if ('refused' in picked) return c.json({ ok: false, code: picked.code, reason: picked.error });
-    const denied = await forkRefusal(c, picked.source);
-    return c.json(denied ? { ok: false, code: 'not-owner', reason: denied } : { ok: true, sourceScopeId: picked.source.id });
+    try {
+      const denied = await forkRefusal(c, picked.source);
+      return c.json(denied ? { ok: false, ...denied } : { ok: true, sourceScopeId: picked.source.id });
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+      throw e;
+    }
   });
 
   app.post('/verticals/:slug/previews', async (c) => {
@@ -12882,10 +12922,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const picked = await forkSource(c, tenantId, slug, body.sourceScopeId);
       if ('refused' in picked) return refuse(c, picked.refused, picked.error, picked.carried);
       source = picked.source;
-      const denied = await forkRefusal(c, source);
-      if (denied) return refuse(c, 'forbidden', denied);
     }
     try {
+      const denied = await createRefusal(c, tenantId, slug, body.tag, source);
+      if (denied) return refuse(c, 'forbidden', denied);
       const out = await orchestratedPreview(c, tenantId, slug, source, body);
       // #2450 step 2: the copy runs on; the same call, repeated, finishes the preview.
       if ('copying' in out) {

@@ -476,9 +476,15 @@ here, and "admin" is not a platform concept: a vertical names its own roles, so 
 is the bar. A credential that names nobody (a CI push token, the CLI, staff) keeps the rule it
 had, because it can already push code onto the production scope itself.
 
+A create under a tag that already holds a fork rebinds that fork, carrying its data, whatever the
+body asks for, so the person is judged against the scope that fork was copied from too, even on
+an `empty: true` create or one naming another source. A fork whose source scope is gone is
+refused to a person outright.
+
 `GET /verticals/:slug/previews/fork-check` answers what a create would decide, without making
-one, with a `code` for a caller that words it itself: `not-installed`, `several-installs` or
-`not-owner`. The builder studio reads it to offer "Production data" beside the seeded Run. It
+one, with a `code` for a caller that words it itself: `not-installed`, `several-installs`,
+`no-such-scope`, `not-owner`, or `owner-unknown` when the roster could not be read (a verdict on
+nobody, so a caller must not tell the person they are not the owner). The builder studio reads it to offer "Production data" beside the seeded Run. It
 forks under its own tag (`studio-data`), apart from the seeded `studio` slot, since a tag keeps
 the kind it began as. The studio makes the fork as the signed-in person: it asks the plane for a
 tenant token naming the login's principal in the team (`/internal/builder/identity-tenants`

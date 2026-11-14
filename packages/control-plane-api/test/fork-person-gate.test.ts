@@ -108,11 +108,11 @@ describe('a fork of production data is judged as the person the credential names
     expect(await check('desk', await as(principal))).toMatchObject(expected);
   });
 
-  it('refuses when the deployment cannot say who owns the scope', async () => {
+  it('refuses when the deployment cannot say who owns the scope, without calling the person no owner', async () => {
     membersAnswer = () => {
       throw new ControlPlaneError(404, 'no such route');
     };
-    expect(await check('desk', await as(owner))).toMatchObject({ ok: false, code: 'not-owner', reason: expect.stringMatching(/cannot read who owns/) });
+    expect(await check('desk', await as(owner))).toMatchObject({ ok: false, code: 'owner-unknown', reason: expect.stringMatching(/cannot read who owns/) });
   });
 
   it('keeps the old rule for a credential that names nobody', async () => {
@@ -126,16 +126,20 @@ describe('a fork of production data is judged as the person the credential names
     expect(await check('fresh', await as(owner))).toMatchObject({ ok: false, code: 'not-installed' });
   });
 
-  it('creates the fork for the owner and copies nothing for anyone else', async () => {
+  it('creates the fork for the owner, and rebinds it for nobody else, whatever the body says', async () => {
     membersAnswer = roster;
     exports = 0;
-    const create = async (principal: string, tag: string) =>
-      app.request('/verticals/desk/previews', { method: 'POST', headers: await as(principal), body: JSON.stringify({ tag, versionId }) });
-    const refused = await create(agent, 'studio-data');
+    const create = async (principal: string, extra: Record<string, unknown> = {}) =>
+      app.request('/verticals/desk/previews', {
+        method: 'POST', headers: await as(principal), body: JSON.stringify({ tag: 'studio-data', versionId, ...extra }),
+      });
+    const refused = await create(agent);
     expect(refused.status).toBe(403);
     expect(exports).toBe(0);
-    const created = await create(owner, 'studio-data');
+    const created = await create(owner);
     expect(created.status).toBe(201);
     expect(exports).toBe(1);
+    // A clean-room create under the same tag would rebind the fork, carrying its data.
+    expect((await create(agent, { empty: true })).status).toBe(403);
   });
 });

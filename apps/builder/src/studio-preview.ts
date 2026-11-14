@@ -155,29 +155,75 @@ export async function readStudioPreview(
 }
 
 /**
+ * The person tokens this isolate minted, by tenant and principal: tenant tokens carry no expiry,
+ * so one serves every later call for that person, as the dashboard's `tenantTokens` does. A
+ * failed mint is dropped, so the next call asks again.
+ */
+const personTokens = new Map<string, Promise<string | MintRefusal>>();
+
+type MintRefusal = { status: number; sentence: string };
+
+/** A refusal's sentence: the problem's `detail`, its deprecated `error`, or the status alone. */
+async function planeSentence(res: Response): Promise<string> {
+	const body = (await res.json().catch(() => null)) as { detail?: unknown; error?: unknown } | null;
+	const said = typeof body?.detail === 'string' ? body.detail : typeof body?.error === 'string' ? body.error : null;
+	return said ?? `the control plane answered ${res.status}`;
+}
+
+/**
  * The plane as the signed-in person (#3108): a tenant token for `tenantId` naming `principal`,
  * minted by the plane over the builder's own credential, as the dashboard mints its own. Every
- * call made with it is judged as that person, never as the builder.
+ * call made with it is judged as that person, never as the builder. A 401 mints once more, so a
+ * rotated `TENANT_TOKEN_SECRET` is a blip; a refused mint answers each call with its refusal.
  */
-export async function personPlane(
+export function personPlane(
 	cp: ControlPlaneCall,
 	callWith: (token: string) => ControlPlaneCall,
 	tenantId: string,
 	principal: string,
-): Promise<ControlPlaneCall> {
-	const res = await cp('/tenant-tokens', {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ tenantId, principal }),
-	});
-	if (!res.ok) throw new Error(`the control plane refused a credential for this person (${res.status})`);
-	return callWith(z.object({ token: z.string().min(1) }).parse(await res.json()).token);
+): ControlPlaneCall {
+	const key = `${tenantId}/${principal}`;
+	const mint = async (): Promise<string | MintRefusal> => {
+		const res = await cp('/tenant-tokens', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ tenantId, principal }),
+		});
+		if (!res.ok) return { status: res.status, sentence: `the control plane refused a credential for this person: ${await planeSentence(res)}` };
+		return z.object({ token: z.string().min(1) }).parse(await res.json()).token;
+	};
+	const token = (fresh: boolean): Promise<string | MintRefusal> => {
+		if (fresh) personTokens.delete(key);
+		const cached = personTokens.get(key);
+		if (cached) return cached;
+		const pending = mint().then(
+			(t) => {
+				if (typeof t !== 'string') personTokens.delete(key);
+				return t;
+			},
+			(e: unknown) => {
+				personTokens.delete(key);
+				throw e;
+			},
+		);
+		personTokens.set(key, pending);
+		return pending;
+	};
+	return async (path, init) => {
+		const once = async (fresh: boolean): Promise<Response> => {
+			const t = await token(fresh);
+			return typeof t === 'string' ? await callWith(t)(path, init) : refuse(t.status, t.sentence);
+		};
+		const res = await once(false);
+		return res.status === 401 ? await once(true) : res;
+	};
 }
 
 /** The production-data slot as it stands, and whether Run with production data would be admitted. */
 export async function readStudioDataPreview(asPerson: ControlPlaneCall, project: StudioProject, now: Date): Promise<Response> {
 	const slot = await readStudioPreview(asPerson, project, now, STUDIO_DATA_PREVIEW_TAG);
-	if (!slot.ok) return slot;
+	// The tab still opens on sample data; the reason is what the production option shows.
+	if (!slot.ok) return json(200, { state: 'none', fork: { ok: false, reason: await planeSentence(slot) } });
 	return json(200, { ...((await slot.json()) as object), fork: await forkAvailability(asPerson, project) });
 }
 
@@ -185,7 +231,7 @@ async function forkAvailability(asPerson: ControlPlaneCall, project: StudioProje
 	const res = await asPerson(`/verticals/${encodeURIComponent(project.slug)}/previews/fork-check`);
 	// Never released: no vertical yet, so nothing installed to copy.
 	if (res.status === 404) return { ok: false, reason: FORK_REASONS['not-installed']! };
-	if (!res.ok) return { ok: false, reason: `the control plane could not say (${res.status})` };
+	if (!res.ok) return { ok: false, reason: await planeSentence(res) };
 	const check = forkCheck.parse(await res.json());
 	if (check.ok) return { ok: true };
 	return { ok: false, reason: (check.code && FORK_REASONS[check.code]) || check.reason };
@@ -204,6 +250,10 @@ export async function runStudioDataPreview(
 	versionLabel: string,
 ): Promise<Response> {
 	if (!project.revision) return refuse(409, 'save source before running a preview');
+	// Asked before the build, which takes minutes: a person the plane would refuse learns it now,
+	// and leaves no released version behind. The create below still judges them.
+	const fork = await forkAvailability(asPerson, project);
+	if (!fork.ok) return refuse(403, `production data: ${fork.reason}`);
 	const released = await releaseRevision(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
 	if (!released.ok) return released;
 	const versionId = releasedVersion.parse(await released.json()).id;

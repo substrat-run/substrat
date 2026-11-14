@@ -344,8 +344,7 @@ app.all('/api/*', async (c) => {
 	// The plane as the signed-in person (#3108), for the calls it must judge as them: a fork of
 	// production data. A login linked to no principal in the team has nobody to be judged as.
 	const noPerson = `your login has no member record in team '${team.slug}', so production data cannot be copied for you`;
-	const asPerson = async (): Promise<ControlPlaneCall | null> =>
-		team.principal ? await personPlane(cp, cpWith, team.id, team.principal) : null;
+	const asPerson = (): ControlPlaneCall | null => (team.principal ? personPlane(cp, cpWith, team.id, team.principal) : null);
 	// The registry read, not project-source: opening the tab must not boot the sandbox.
 	const currentProject = async (): Promise<StudioProject | Response | null> => {
 		const listed = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/projects', { headers }));
@@ -362,11 +361,11 @@ app.all('/api/*', async (c) => {
 		const project = await currentProject();
 		if (project instanceof Response) return project;
 		if (!project) return c.json({ state: 'none', fork: { ok: false, reason: 'no project open' } });
-		const person = await asPerson();
+		const person = asPerson();
 		return person ? readStudioDataPreview(person, project, new Date()) : c.json({ state: 'none', fork: { ok: false, reason: noPerson } });
 	}
 	if (c.req.path === '/api/preview/data' && c.req.method === 'POST') {
-		const person = await asPerson();
+		const person = asPerson();
 		if (!person) return refuse(403, noPerson);
 		const projectResponse = await projectSource();
 		if (!projectResponse.ok) return projectResponse;
