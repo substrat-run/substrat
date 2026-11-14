@@ -1,5 +1,28 @@
 # @substrat-run/control-plane-api
 
+## 0.197.0
+
+### Minor Changes
+
+- 361c67b: The builder studio can run a preview on a copy of the installed app's production data, beside the sample-data one (#3108). A fork of production data asked for by a credential that names a person, as the studio's and the dashboard's do, now needs that person to be the app's owner, or to hold every role the owner holds in the app itself. `GET /verticals/:slug/previews/fork-check` says whether a fork would be admitted and why not, and the studio's membership read carries the login's principal in each team.
+
+### Patch Changes
+
+- 2fd76c2: contracts: download links, the read-side counterpart of upload links: the mint input, the path, and two kernel-authored events (`attachment.download-link-minted`, `attachment.download-link-revoked`).
+  kernel: `ctx.attachments.mintDownloadUrl` and `revokeDownloadLink`; `ScopeHost.openDownloadLink` reads one file as the principal who minted the link, re-checking their read key on every read.
+  adapter-sqlite: download links, in a new `_substrat_download_links` spine table that a copy leaves behind.
+  adapter-cloudflare: download links, in a new `_substrat_download_links` spine table that a copy leaves behind.
+  contract-tests: `downloadLinkContractSuite`, which both adapters run.
+  vertical-host: `mountDownloadLinkRedeem` serves a download link's file, streamed and seekable, and `workerDoor({ attachments: true })` mounts it; the invocation log redacts its secret.
+  control-plane-api: the platform entry re-emitted, so a pushed vertical's invocation log redacts a download link's secret.
+  create-substrat: the template's comment names download links.
+- Updated dependencies [7b93798]
+- Updated dependencies [2fd76c2]
+- Updated dependencies [361c67b]
+  - @substrat-run/kernel@0.197.0
+  - @substrat-run/contracts@0.197.0
+  - @substrat-run/control-plane-client@0.7.0
+
 ## 0.196.0
 
 ### Patch Changes

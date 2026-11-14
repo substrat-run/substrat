@@ -1,5 +1,32 @@
 # @substrat-run/vertical-host
 
+## 0.197.0
+
+### Minor Changes
+
+- 7b93798: kernel: `ScopeAttachments.openStream(id, { range })` reads one byte range, and a blob store may read it as a slice (`getRangeStream`).
+  adapter-sqlite: the file store reads a byte range as a slice.
+  adapter-cloudflare: R2 reads a byte range as a slice.
+  vertical-host: `door.attachments(c)` is the signed-in person's files; `workerDoor({ attachments: true })` serves and removes a file at `/api/attachments/:attachmentId`, streamed and seekable; `serveAttachment` answers a file request the same way, and the link-share download now streams and answers ranges.
+  create-substrat: a generated app serves its files through the door.
+- 2fd76c2: contracts: download links, the read-side counterpart of upload links: the mint input, the path, and two kernel-authored events (`attachment.download-link-minted`, `attachment.download-link-revoked`).
+  kernel: `ctx.attachments.mintDownloadUrl` and `revokeDownloadLink`; `ScopeHost.openDownloadLink` reads one file as the principal who minted the link, re-checking their read key on every read.
+  adapter-sqlite: download links, in a new `_substrat_download_links` spine table that a copy leaves behind.
+  adapter-cloudflare: download links, in a new `_substrat_download_links` spine table that a copy leaves behind.
+  contract-tests: `downloadLinkContractSuite`, which both adapters run.
+  vertical-host: `mountDownloadLinkRedeem` serves a download link's file, streamed and seekable, and `workerDoor({ attachments: true })` mounts it; the invocation log redacts its secret.
+  control-plane-api: the platform entry re-emitted, so a pushed vertical's invocation log redacts a download link's secret.
+  create-substrat: the template's comment names download links.
+
+### Patch Changes
+
+- Updated dependencies [7b93798]
+- Updated dependencies [2fd76c2]
+  - @substrat-run/kernel@0.197.0
+  - @substrat-run/contracts@0.197.0
+  - @substrat-run/vertical-auth@0.35.1
+  - @substrat-run/model-providers@0.5.87
+
 ## 0.196.0
 
 ### Patch Changes
