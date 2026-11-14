@@ -53,12 +53,17 @@ whether the suite is worth anything:
 
 - **Every denial the concept names.** Wrong role. One customer's data invisible
   to another. The cross-tenant attacker reaching nothing.
-- **Where the cross-tenant refusal lands.** `host.getScope` checks only that the
-  tenant and scope belong together: `getScope(attacker, theirTenant, yourScope)`
-  rejects with `unknown scope`, but the correct pair resolves for anyone. The
-  refusal then comes at `invoke`, as `permission denied`, and a narrowing read
-  answers empty rather than refusing. `template` `test/scenario.test.ts` shows all
-  of it.
+- **The cross-tenant step asserts the refusals behind the handle, never the
+  handle.** `host.getScope` checks only that the tenant and scope belong
+  together, never who asks: `getScope(otherTenantsPerson, yourTenant, yourScope)`
+  RESOLVES. Never assert it rejects — that assertion is false, and the build may
+  not fix it. Take the handle, then pin what is behind it: its operations reject
+  with `permission denied`, and its walks/listings answer empty. Only a
+  mismatched pair (their tenant, your scope) rejects with `unknown scope`, and
+  that is the directory, not isolation. `todo` `test/scenario.test.ts` ("Cleo,
+  in another tenant, reaches nothing at all", and her own-scope control after
+  it) is the shape; `template` `test/scenario.test.ts` shows the mismatched pair
+  too.
 - **A control beside every denial.** A closed door proves nothing on its own: the
   same assertion passes if access is broken for everyone, or if the module was
   never registered. Pair each refusal with a neighbouring door that opens.
