@@ -14,7 +14,8 @@
  * and this must never listen on a routable interface.
  *
  * Flags: `--root <path>` (monorepo root), `--max-steps <n>` (tool-loop ceiling
- * per pass, default 40), `--vertical <dir>` (adopt a project directory), and
+ * per pass, every phase; default 100 in scaffold, 40 elsewhere), `--vertical
+ * <dir>` (adopt a project directory), and
  * `--lanes` (or `SUBSTRAT_BUILDER_LANES=1`): run each build turn as an API lane
  * then a UI lane with disjoint write guards, gates once after both (#682,
  * phase.ts `planLanes`). Off by default until the eval sweep (#630) measures it.
@@ -78,6 +79,7 @@ import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
 	detectPhase,
 	skillsForPhase,
+	stepCeilingFor,
 	type BuildLane,
 	type BuildPhase,
 	buildContext,
@@ -101,7 +103,8 @@ function flag(name: string): string | undefined {
 
 const ROOT = flag('--root') ?? process.env.INIT_CWD ?? process.cwd();
 const PORT = Number(process.env.PORT ?? 8879);
-const MAX_STEPS = Number(flag('--max-steps') ?? 40);
+/** Absent, each phase takes its own ceiling (phase.ts stepCeilingFor). */
+const MAX_STEPS = flag('--max-steps') === undefined ? undefined : Number(flag('--max-steps'));
 const LANES_ENABLED = process.argv.includes('--lanes') || process.env.SUBSTRAT_BUILDER_LANES === '1';
 const PROJECTS_DIR = '.builder/projects';
 
@@ -185,7 +188,7 @@ async function makeGenerator(
 	return new AiSdkGenerator({
 		model: resolved.model,
 		label: resolved.label,
-		maxSteps: MAX_STEPS,
+		maxSteps: stepCeilingFor(phase, MAX_STEPS),
 		skills: phaseSkills,
 		explainError: explainProviderError(spec.split(':')[0] ?? 'anthropic'),
 		// Format-per-model (H1): frontier providers get search/replace edits,

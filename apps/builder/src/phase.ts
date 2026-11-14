@@ -51,6 +51,24 @@ export function isSpecPhase(phase: BuildPhase): boolean {
 	return phase === 'interview' || phase === 'model';
 }
 
+/** The step ceiling one generator pass gets in every phase but the build. */
+export const STEP_CEILING = 40;
+
+/**
+ * The build phase's ceiling. Scaffold is the one turn that writes the whole app
+ * from a plan; a 20-file plan took 40 + 28 + 34 steps hosted, so at 40 it was cut
+ * mid-plan. A continuation restarts with text-only history, re-reading what the
+ * cut pass had in context, so one longer pass is the better build. Still a hard
+ * bound: the turn loop's continuations (MAX_CONTINUATIONS) each get this ceiling too.
+ */
+export const BUILD_STEP_CEILING = 100;
+
+/** A pass's step ceiling: an operator's explicit `--max-steps` binds every phase. */
+export function stepCeilingFor(phase: BuildPhase, override?: number): number {
+	if (override !== undefined) return override;
+	return phase === 'scaffold' ? BUILD_STEP_CEILING : STEP_CEILING;
+}
+
 /**
  * The path a guard judges: the one the workspace will actually write. Every
  * guard here is a prefix test, and a prefix test over the RAW path is fooled by
