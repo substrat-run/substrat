@@ -50,6 +50,12 @@ record instead. This skill runs it, shows it, and stops.
    read it: show it again (step 3) rather than retrying with the new digest. Then the build
    may start.
 
+   **Where the Substrat approvals pane runs** (the plugin's mod, in Claude Code with mods on),
+   you do not run this line at all: the mod refuses it. Running `substrat plan` already opened
+   the pane with the delta, and the person approves there with their name and reason. Tell them
+   it is waiting in the pane; their approval comes back to you as a message, and then the build
+   may start.
+
 ## What you do not do
 
 - **Never pass `--approve` until the person has said yes in this conversation** — not on your

@@ -40,6 +40,30 @@ In Claude Desktop: **+** → Plugins → Add plugin.
 - **A `SessionStart` hook** — silent in any project that is not a Substrat vertical. In one
   that is, it tells the agent where the rules live and which docs slice describes the kernel
   version actually installed, so it does not answer from a cached memory of a 0.x API.
+- **The approvals pane** (`/substrat-approvals`), a Claude Code mod. When Claude runs
+  `substrat plan`, or a promote is refused until someone acknowledges what it changes, the
+  pane opens beside the chat with what the CLI printed: the concept delta, or the permission
+  and migration diffs. You approve there, with your name and reason for a design gate, and the
+  pane runs the exact CLI line: the digest you read, or the `--ack-*` flags the refusal named
+  with its `--review` token. Claude is told the outcome and carries on. A Bash call of Claude's
+  that passes `plan --approve` or an `--ack-*` flag itself is refused.
+
+### The approvals pane, in more detail
+
+In Claude Desktop you rarely type a command: Claude runs the CLI for you, so without the pane
+the approval flags would be typed by Claude. The skills tell it not to, and the pane makes
+that the easy path: Claude has no way to press the pane's buttons, only you do.
+
+It is a tripwire, not a security boundary. Claude could still run the CLI some other way,
+which would be a visible act in the transcript. What holds regardless is the control plane's
+review token, which refuses an acknowledgement of a diff that moved since it was printed, and
+CI.
+
+- **Needs** Claude Code with mods, which the desktop app's Code tab and a current terminal
+  both have. Without mods it does nothing and the plugin works as before.
+- **Turn it off** in `/config` → *Approvals pane*. The guard and the pane go together.
+- **Without it** you approve as before: Claude prints the diff, you say yes in the chat, and
+  the skills hold Claude to running the approval line only after that.
 
 There is deliberately no `start-dev-server` skill: Claude Desktop runs a project's dev
 servers natively, from the topology the vertical already declares.

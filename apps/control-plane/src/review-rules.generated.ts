@@ -3,7 +3,7 @@
 
 /** SHA-256 over the checklist's bytes followed by the procedure's (procedure.md, "Rules digest"). */
 export const REVIEW_RULES_DIGEST = 'b3071915682ac659f45208f8fbbb00dd773766fee62186c5c9f585dd6a580dde';
-export const REVIEW_PLUGIN_VERSION = '0.7.0';
+export const REVIEW_PLUGIN_VERSION = '0.8.0';
 
 export interface ReviewItemRule { readonly id: string; readonly title: string; readonly severity: 'blocking' | 'advisory'; readonly gates: readonly string[]; readonly judgement: boolean }
 export const REVIEW_ITEMS: readonly ReviewItemRule[] = [
