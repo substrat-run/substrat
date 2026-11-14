@@ -220,8 +220,9 @@ documented"; it is failing a gate.
 
 - **`test/scenario.test.ts`** — replay the spec's scenario headlessly against a temp dir:
   lifecycle happy path → **denials hold** (wrong role, portal isolation between two
-  customers, the other tenant's persona gets `unknown scope` / `permission denied`) →
-  pricing math exact to the öre → event consumed by the engine (if used) → state machine
+  customers; the other tenant's persona's `getScope` handle resolves, and every operation
+  behind it is `permission denied`, every walk empty — never assert `getScope` rejects, see
+  `demos/todo/test/scenario.test.ts`, "Cleo, in another tenant") → pricing math exact to the öre → event consumed by the engine (if used) → state machine
   can't skip. Denial assertions are not optional — they are the demo. Written from the
   **concept**, with literal inputs and outputs: a test derived from the model agrees with
   a wrong model perfectly and forever (`pnpm lint:tests` refuses one that reads it).
