@@ -1,5 +1,24 @@
 # @substrat-run/control-plane
 
+## 0.18.34
+
+### Patch Changes
+
+- 199be8c: control-plane-api: a connector dispatch or bind waits for a sweep writing the same scope's state, so the two can no longer push it over the cap together; a call that outlives its lease has its answer dropped, never written.
+  control-plane: a scope record a router kick could not read is logged.
+  router: the kick flags are no longer handed back to the caller; the intent flag's value is an internal scope id.
+- e879389: A router kick drains the routed scope and the scope its response names, never a preview or a fork.
+- 52ed903: A seeded preview's sign-in picker accepts the pick again: its page no longer sends `no-referrer`, which made the browser post `Origin: null` and the picker refuse every person.
+- f3c4166: A seeded preview can be signed into inside the builder studio's preview pane (#3145). The pane's new "Sign in as…" menu lists the preview's people; choosing one has the control plane mint a one-time ticket for the signed-in person, which the frame redeems without rendering any page of the persona issuer. A deployment whose issuer is a persona issuer (`isPersonaIssuer`, a seeded preview and nothing else) now sets its sign-in cookies `SameSite=None; Secure; Partitioned`, so they survive the studio's cross-site frame; every other install keeps `Lax`/`Strict`. A seeded preview picks this up when it is pushed again on the released `vertical-auth`.
+- 8c43424: Review runner: a ledger line still unwritten when a review job ends is retried until the review expires, instead of being dropped.
+- Updated dependencies [199be8c]
+- Updated dependencies [f3c4166]
+  - @substrat-run/control-plane-api@0.197.1
+  - @substrat-run/contracts@0.197.1
+  - @substrat-run/kernel@0.197.1
+  - @substrat-run/adapter-cloudflare@0.197.1
+  - @substrat-run/vertical-host@0.197.1
+
 ## 0.18.33
 
 ### Patch Changes
