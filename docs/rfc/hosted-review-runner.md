@@ -1,7 +1,7 @@
 ---
 status: accepted
 layer: plan
-description: The platform-hosted half of the Substrat review checklist (#2365). Accepted — every question was decided on 2026-10-18. One runner-neutral checklist, no model key in GitHub CI, mechanical gates first, the model trusted only for judgement items, advisory until a platform-owned script confirms; the reviewed change is a full-tree upload with the push, later the input of a controlled build. Decided: one pinned platform model behind the platform gateway, metered and budget-capped; a staff-granted entitlement plus a per-vertical switch; the review record as a first-class platform object that every surface views; promotion (never upload) gated on script-confirmed blocking findings once the platform builds the bundle; immutable, stored checklist versions; a seeded corpus kept running; findings readable by the owner tenant's source-bearing roles and the pushing credential, installers seeing at most a pass/fail summary the owner publishes.
+description: The platform-hosted half of the Substrat review checklist (#2365). Accepted — every question was decided on 2026-10-18. One runner-neutral checklist, no model key in GitHub CI, mechanical gates first, the model trusted only for judgement items, advisory until a platform-owned script confirms; the reviewed change is a full-tree upload with the push, later the input of a controlled build. Decided: one pinned platform model behind the platform gateway, metered and budget-capped; a staff-granted entitlement plus a per-vertical switch; the review record as a first-class platform object that every surface views; promotion (never upload) gated on script-confirmed blocking findings once the platform builds the bundle; immutable, stored checklist versions; a seeded corpus kept running; findings readable by the owner tenant's source-bearing roles and the pushing credential, installers seeing at most a pass/fail summary the owner publishes. Amendment A1 (proposed, §2.3): since D-66 the platform builds every release from a repository revision, so a customer review reads the revision a version was built from instead of an uploaded archive.
 ---
 
 # RFC: the hosted review runner
@@ -15,6 +15,11 @@ well (Q6d). Each question in §6 keeps its options, the reasoning and the cost o
 opens with a **Decided** line giving the answer. Where the answer differs from what the first
 revision recommended (Q10), or adds to it, the question says so. Q9 was decided before the others
 (§2, D5); its number is kept so the other answers keep theirs.
+
+**Amendment A1 is proposed and not decided** (§2.3, 2026-11-14). D-66, accepted ten days after
+this RFC, moved every release build onto the platform, which removes the premises D5 rested on.
+Each place A1 would change carries a pointer to §2.3; the text around the pointers is the decided
+text and stays in force until the human decides A1.
 
 Written against `origin/main` at `2a8c2712c`; the decisions were folded in against `23e90d2d2`.
 References are to sections and symbols, not lines. Issues and PRs are cited by number only.
@@ -94,6 +99,10 @@ one of Substrat's own branches, which has no version, with its review request, Q
 arrives it builds from that same archive, so moving from A to C changes who builds, not what is
 uploaded or stored. When an archive is uploaded, how long it is kept and what the diff is taken
 against are Q3b's.
+
+*(Proposed amendment A1, §2.3: under D-66 the platform builds every release from a repository revision, so a customer
+review reads that revision, with the previous reviewed release's revision as its base, and no
+archive is uploaded for it. B's two reasons for being dropped no longer hold.)*
 
 D3, D4 and D5 together are the builder studio's verification rule applied to review: *rank checks
 by who authored the oracle* (`docs/architecture/builder/studio.md` §9). A gate whose expected
@@ -211,6 +220,69 @@ platform's, and that the gates which load the vertical's code cannot, as they ar
 the set of checklist items a script may ever block on may be as small as S1. §9 lists this as
 unverified, and Q4 says what it means for blocking.
 
+### 2.3 Amendment A1 (proposed 2026-11-14): the reviewed change is the revision a build was made from
+
+**Status: proposed, awaiting the human.** Nothing below is decided until then.
+
+**What changed.** [D-66](../decisions/D-066-projects-use-github-or-artifacts-and-the-platform-builds-every-release.md)
+was accepted on 2026-10-28, after this RFC. A tenant-owned project has one source repository,
+in the tenant's GitHub or in Cloudflare Artifacts. `substrat push` commits the selected local
+source, uncommitted changes included, to that repository, and the platform builds every release
+from an immutable revision; client-built module uploads are retired. Each version the platform
+builds records its build in its manifest: `build: { id, projectId, revision, toolchain }`. The
+builder studio and the GitHub integration feed the same pipeline.
+
+**What that does to D5.** D5 rested on three facts, and D-66 changes each one:
+
+- *"The platform receives a built bundle, never source."* It now receives source and builds the
+  bundle itself.
+- *B was dropped* because read access to the customer's git was not guaranteed, and because B
+  would not tie the bundle to the commit. Under D-66 the platform reads the project's repository
+  to build every release, and the build ties the bundle to the revision.
+- *C, the controlled build, was future work.* It exists, for every version built since D-66.
+
+**Proposed.**
+
+1. **Input.** A customer review reads the revision a version was built from
+   (`manifest.build.revision`) in that version's project repository. Its base is the revision of
+   the last version of the same vertical whose review completed: Q3b's rule, with a revision in
+   place of an archive. The record names the source revision and the base revision where it named
+   two archive digests.
+2. **No archive for a customer review.** Nothing is uploaded beside the build, and nothing is
+   stored for the review but its record; the repository holds the source. Q3b's archive storage,
+   placement and retention apply only to phase-1 branch reviews of this repository. A revision that
+   can no longer be read when the review runs (a rewritten branch on GitHub, a removed repository)
+   is recorded `incomplete: revision unavailable`, never as clean.
+3. **The unpacker's one credential.** In place of a single-use handle to two archives, the
+   unpacker is issued a **read-only** token for the one project repository, per review, short-lived
+   (the builder's `repositoryAccess` with scope `read` is the existing seam). It fetches the two
+   revisions and applies §2.2's extraction rules to the checkout as it did to an archive. Nothing
+   else in Q6c changes: the gate half and the reader half hold nothing, and only the assembler
+   writes. §8's "no runner credential on the customer's git host" is read as no **write**
+   credential; this read token is the one exception, and it reaches one repository.
+4. **Trigger.** A review starts when a platform build of a vertical with review on (Q2) succeeds.
+   A CLI push, a builder session and a GitHub-integration build reach it by the same path, and a
+   preview (D-43) is a build like any other. No pull-request trigger is needed for any git host.
+5. **Phase 4's precondition.** Q8 makes the controlled build the exit from phase 3, because
+   blocking needs the reviewed source to be the deployed source. A version built by the platform
+   from the reviewed revision meets that by construction. Q4 still waits on Q7's thresholds and
+   on §2.2, as before.
+6. **Metering** (Q1b's open attribution form, decided on #2365 on 2026-11-14): the ledger line is
+   filed under the build's tenant, naming the vertical and the version, with operation
+   `review/read`, under the one platform sentinel scope. A staff branch review stays on the
+   platform tenant.
+7. **Unchanged:** a phase-1 review of a branch of this repository keeps the staff archive upload
+   (`substrat review upload`). This repository is not a project and its branches are not builds.
+
+**Open, for the human with A1.**
+
+- *Jurisdiction (Q3d).* Under D5 A the archive was placed by jurisdiction at upload. Under A1 the
+  source stays where the project's repository is, and only the review's processing can be placed.
+  Whether that meets Q3d B for a GitHub-hosted project is not established.
+- *A rewritten GitHub branch.* Artifacts revisions are kept by the platform; a tenant can rewrite
+  history on GitHub. A version whose revision is gone has no reviewable source, and item 2 records
+  that rather than reviewing something else.
+
 ## 3. What exists
 
 | Need | What `main` has | Gap |
@@ -220,8 +292,8 @@ unverified, and Q4 says what it means for blocking.
 | A gate runner over a sandbox | `packages/builder-workspace`: `gates.ts` runs the tier-1 gates (`install`, `model`, `typecheck`, `boundary-lint`, `permissions`, `api`, `scenario`, `migration-replay`) and reports `passed`/`failed`/`blocked`/`skipped`; under the `substrat` exit convention, exit 2 from Substrat's own tools reads as *blocked* ("we learned nothing"), never as *failed*. `container.ts` runs the same `Workspace` seam over a Cloudflare Sandbox container. | Built for the studio's own loop, where the code is ours to run. Nothing runs it against a pushed vertical's change. `install` runs first and the later gates run from the project's tree, which §2.2 does not allow for a platform-owned result. `runGates` reports `ok` when every gate is `passed` **or `skipped`**, which §5.1 does not allow either. |
 | Model calls and their ledger | `@substrat-run/model-providers` (provider table, catalogue, generated rate card); `createModelHost` in `@substrat-run/vertical-host` with an optional `guard` consulted before the call (the budget seam) and a `record` that yields one `ModelUsageLine` after it. A vertical raises the line as a `model-usage` platform intent and the drain writes it to the platform's ledger, kept 400 days (`MODEL_USAGE_RETENTION_DAYS`); the margin (`MODEL_MARGIN_PERCENT`) is applied at read time. The HTTP gateway row sends `cf-aig-collect-log-payload: false`, so the gateway logs counts and cost, not prompts. D-59. | The host runs **in the vertical**, so the line is self-reported and no budget is enforced on that path; #1073 designs the platform-side, connector-shaped host and is not built. The `env.AI` binding path names no gateway (D-59), so the payload-log setting does not apply on it. The review runner is platform code, so it can construct the host itself and write an observed line. `ModelAttribution` is fixed at five keys and **requires a `scope`**; a review is about a vertical version, not a scope (Q1b). |
 | Metering a tenant's usage in its own scope | `engine-metering`: an append-only ledger of quantities inside a scope, deduplicated per meter, with closed periods. It knows no prices and enforces no limit. ticket0 records its assistant's tokens there beside the platform intent. | A review runs outside every scope, so the engine is not where a review's cost lands; the model ledger is. Nothing meters container time. |
-| What the platform holds of a push | A **built bundle**, never source: the deploy endpoint runs in a Worker and cannot bundle (`docs/architecture/self-serve-deploy.md` §2). `versionOrigin` records `source` (`git`/`cli`), `gitRepo`, `gitCommit`, `gitRef`, and the CLI's push-gate receipt `gate` (`passed`/`skipped`/`none`, #955), all self-reported: *"the platform never lints the uploaded bundle (it receives built output, not source)"*. | **No copy of the change to review.** D5 adds the source archive. |
-| A link to the customer's git | The dashboard's GitHub App: installation tokens, repository and branch listing, `pull_request` webhooks, and `upsertPrComment`, which keeps one marked comment per pull request up to date. Repository CI setup (`setupRepoCi`) needs the installation to hold contents, workflow and secret write, and reads one file's metadata to update the workflow. It reads no source; *"The platform cannot build a PR's code — the repo's own CI does."* | GitHub only, and an installation that can write. Not used to obtain the change (D5 drops B). |
+| What the platform holds of a push | A **built bundle**, never source: the deploy endpoint runs in a Worker and cannot bundle (`docs/architecture/self-serve-deploy.md` §2). `versionOrigin` records `source` (`git`/`cli`), `gitRepo`, `gitCommit`, `gitRef`, and the CLI's push-gate receipt `gate` (`passed`/`skipped`/`none`, #955), all self-reported: *"the platform never lints the uploaded bundle (it receives built output, not source)"*. | **No copy of the change to review.** D5 adds the source archive. *(Proposed amendment A1, §2.3: since D-66 the platform builds from source and the manifest records `build.revision`.)* |
+| A link to the customer's git | The dashboard's GitHub App: installation tokens, repository and branch listing, `pull_request` webhooks, and `upsertPrComment`, which keeps one marked comment per pull request up to date. Repository CI setup (`setupRepoCi`) needs the installation to hold contents, workflow and secret write, and reads one file's metadata to update the workflow. It reads no source; *"The platform cannot build a PR's code — the repo's own CI does."* | GitHub only, and an installation that can write. Not used to obtain the change (D5 drops B). *(Proposed amendment A1, §2.3: the project repository, GitHub or Artifacts, is read for every build.)* |
 | Where a version is shown | The dashboard's Deployments tab, per vertical and per version, where `OriginTag` already renders the push-gate receipt and flags anything but `passed`; the promote dialog, backed by `PromotionReview` (the permission and migration diff); the console for staff; `substrat push` / `substrat versions` output. | No review status anywhere. |
 | Tenant-facing findings | The findings store (#1748): per tenant, recurring operational findings with a status (`open`, `acked`, `resolved`, `suppressed`) and suppress rules. An open or acked finding quiet past the 180-day horizon (`FINDING_RETENTION_DAYS`) is resolved as stale; a resolved or suppressed one past it is deleted. | A different thing with the same word: those are recurring and keyed by fingerprint, a review finding is about one version's code (Q3b). |
 | Turning a feature on for a tenant | Entitlements, stored in the directory and projected into each scope; granted per tenant by staff from the console. The builder studio's own entitlement is the precedent. | No review entitlement or per-vertical switch (Q2). |
@@ -250,6 +322,9 @@ credential.
   gets without waiting for it.
 
 None of the four writes to the customer's code, the version record or any scope.
+
+*(Proposed amendment A1, §2.3: for a customer review the unpacker fetches two revisions from the project's repository
+with a read-only token instead of reading two archives.)*
 
 ```
                                   ┌──▶ tree ─▶ gate half (container, no credential) ── status, exit code ─┐
@@ -444,6 +519,9 @@ the version, then 180 days (30 days from the push for a version nothing ever ser
 holds findings, digests and run metadata (the fields listed under *The record* below), and no
 transcript and no prompt. Two exceptions to "no archive without review" are listed under *When an
 archive is stored*: an admission-mandated review, and a phase-1 branch review.
+
+*(Proposed amendment A1, §2.3: no archive is stored for a customer review; what follows applies to phase-1 branch
+reviews and to the record.)*
 
 Two things are stored: the **source archive** (D5), which must exist from the push until the
 asynchronous review has run and which later reviews diff against, and the **review record**.
@@ -766,6 +844,8 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
     two tenants' code. Nothing on the model path caches responses; a provider prompt cache, where
     used, covers only the platform-held prefix (checklist and procedure), which is the same for
     every tenant.
+  - *(Proposed amendment A1, §2.3: the unpacker holds one read-only token for one project repository in place of
+    the archive handle.)*
 - **B. A without the container** for customer changes: only the gates that execute none of the
   customer's code and need no install run — which excludes boundary-lint's engine-ownership rule
   when engines are declared (§2.2, condition 3) — and everything else is `not run`.
@@ -955,7 +1035,7 @@ What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 
 ### Q9 — Decided
 
-Where the reviewed change comes from is decided: §2, D5.
+Where the reviewed change comes from is decided: §2, D5. *(Proposed amendment A1, §2.3: the revision a version was built from.)*
 
 ### Q10 — Who may read a review record
 
@@ -1020,7 +1100,7 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
 | Q6d | Confirm §2.2 | A: confirmed as written; only gates meeting all seven conditions are script-confirmed | nothing |
 | Q7 | False positives | A + B + C; corpus first and kept running after the gate is required; zero false positives expected of script-confirmed findings; per-item thresholds set by the human at phase 3 | Q3b |
 | Q8 | Rollout | A: phases 0–4, the controlled build before phase 4; phase 1 also reviews branches of this repository a maintainer authored or reviewed, uploaded by staff through the CLI, kept 30 days | D5, Q6c, #2388 or an equivalent, Q7 |
-| Q9 | Source of the change | D5: A (upload with the push) for phases 1–3, then C (controlled build); B dropped | — |
+| Q9 | Source of the change | D5: A (upload with the push) for phases 1–3, then C (controlled build); B dropped. Proposed A1 (§2.3): the revision a platform build was made from, for every phase | — |
 | Q10 | Who reads a record | D (changed from the recommended C): the owner tenant's roles that may see source-bearing views (the audience of the version's migration SQL), plus the pushing credential; installers of a listed vertical see at most an owner-published pass/fail summary (not built); staff reads access-logged, if the record's store is read through the logged path | D5 |
 
 ## 8. Not proposed
@@ -1033,6 +1113,7 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
   local runner reads it too.
 - **No runner credential on the customer's git host.** The one write to a git host this RFC
   allows is the dashboard's existing pull-request comment, made from the record (Q3a D).
+  *(Proposed amendment A1, §2.3: one read-only token for one project repository, per review; never a write.)*
 - **No change** under the excluded areas: the control plane's connection and email routes, the
   connect-round code, the social relay, the WfP upload path.
 
@@ -1057,7 +1138,8 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
 - **Whether `ModelAttribution` can take a review without a scope** (Q1b) without breaking the
   five-key limit's reason: unexamined.
 - **The archive format and the controlled build's input contract** (D5): to be designed together,
-  so the archive phase 0 uploads is the one phase 3 builds from.
+  so the archive phase 0 uploads is the one phase 3 builds from. *(Proposed amendment A1, §2.3: D-66 settled the
+  build's input as a repository revision; the archive remains only for phase-1 branch reviews.)*
 
 ## Alternatives rejected
 
