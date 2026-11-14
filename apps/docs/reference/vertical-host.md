@@ -622,9 +622,9 @@ a poll of this scope while the platform's pass polls another scope on the same F
 paces separately, so Fortnox may answer some requests "too many" and the poll waits them out, and
 every call spends a fresh budget. Ask when a person asks, not on a timer. `at` is when the
 poll finished, the "last fetched" a screen shows. A `failed` binding's `error` is the platform's
-words with a reference staff can trace. `in-progress` means another poll of that binding (the
-platform's own pass, or an earlier ask still running) was under way, so nothing ran for it and
-nothing was recorded; ask again later. An empty `bindings` means the scope has no binding of the
+words with a reference staff can trace. `in-progress` means another call writing that binding's
+state (the platform's own pass, an earlier ask still running, or an event being delivered to the
+connector) was under way, so nothing ran for it and nothing was recorded; ask again later. An empty `bindings` means the scope has no binding of the
 provider.
 
 A binding polled for this scope in the last minute refuses the whole call with `429`; nothing is

@@ -818,9 +818,12 @@ describe('router kick (platform-intents)', () => {
       PLATFORM_SECRET: 'sekret',
     } as unknown as Env;
 
-    // The user's response comes back immediately, unmodified — the kick is out of band.
+    // The user's response comes back immediately — the kick is out of band — and without the
+    // flag, which is the vertical's word to the router (its value may be an internal scope id).
     const res = await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx);
     expect(res.status).toBe(202);
+    expect(await res.text()).toBe('accepted');
+    expect(res.headers.get('x-substrat-platform-request')).toBeNull();
 
     await settle();
     expect(kick.calls()).toHaveLength(1);
@@ -917,6 +920,7 @@ describe('router kick (platform-intents)', () => {
       const vertical = spyVertical({ 'x-substrat-exported-events': '1' });
       const res = await worker.fetch(get('https://acme.example.com/api/invoke'), envWith(vertical.binding, kick), ctx);
       expect(res.status).toBe(200);
+      expect(res.headers.get('x-substrat-exported-events')).toBeNull();
       await settle();
       expect(kick.calls()).toHaveLength(1);
       expect(new URL(kick.calls()[0]!.url).pathname).toBe('/internal/drain-scope');

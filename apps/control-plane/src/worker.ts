@@ -2321,10 +2321,17 @@ export async function intentScopesOf(
   const admin = hostFor(env).admin;
   const parsed = scopeId.safeParse(named);
   const other = parsed.success && parsed.data !== routed ? parsed.data : null;
-  const [routedRec, namedRec] = await Promise.all([
-    admin.getScopeRecord(SWEEP_ACTOR, t, routed).catch(() => undefined),
-    other ? admin.getScopeRecord(SWEEP_ACTOR, t, other).catch(() => undefined) : undefined,
-  ]);
+  // A read that fails leaves its scope's intents to the sweep; said, so a kick that drained
+  // nothing is not read as a scope with nothing pending.
+  const read = (s: ScopeId) =>
+    admin.getScopeRecord(SWEEP_ACTOR, t, s).catch((err: unknown) => {
+      console.warn('router kick: a scope record could not be read; the sweep is the backstop', {
+        scopeId: s,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    });
+  const [routedRec, namedRec] = await Promise.all([read(routed), other ? read(other) : undefined]);
   const scopes = [{ scopeId: routed, rec: routedRec }];
   if (other && sameDeploymentScope(routedRec, namedRec)) scopes.push({ scopeId: other, rec: namedRec });
   return scopes;

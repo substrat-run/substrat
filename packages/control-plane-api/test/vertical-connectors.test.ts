@@ -234,6 +234,46 @@ describe('vertical-defined connectors — the platform side', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('drops an answer that arrives after the lease-held call ran out, so a late one writes no state', async () => {
+    await bind(a);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    answer = async () => {
+      await held;
+      return ok({ result: { landed: 1, more: false }, state: [{ key: 'cursor', value: 'late' }] });
+    };
+    const out = await verticalConnectorScopeSync({ ...deps(), leaseCallMs: 20 })(host, row, a);
+    expect(out).toMatchObject({ outcome: 'failed', errors: [expect.stringMatching(/lease was held/)] });
+    expect(await host.admin.getConnectorState(row.id, 'vc:sweep:' + a)).toBeNull(); // given back
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await stateAt(a, 'cursor')).toBeUndefined();
+  });
+
+  it("starts no call once the lease's deadline has passed in preparing it, even one that would answer at once", async () => {
+    await bind(a);
+    answer = async () => ok({ result: { landed: 1, more: false }, state: [{ key: 'cursor', value: 'late' }] });
+    // The lease is taken at NOW; every later read of the clock is past the call's deadline.
+    let reads = 0;
+    const past = new Date(Date.parse(NOW) + 15 * 60_000).toISOString();
+    const out = await verticalConnectorScopeSync({ ...deps(), now: () => (reads++ === 0 ? NOW : past) })(host, row, a);
+    expect(out).toMatchObject({ outcome: 'failed', errors: [expect.stringMatching(/lease was held/)] });
+    expect(calls).toEqual([]);
+    expect(await stateAt(a, 'cursor')).toBeUndefined();
+  });
+
+  it("writes none of an answer's state once another call has taken the scope's lease over", async () => {
+    await bind(a);
+    answer = async () => {
+      await host.admin.putConnectorState(row.id, 'vc:sweep:' + a, { holder: 'taker', until: new Date(Date.parse(NOW) + 60_000).toISOString() });
+      return ok({ result: { landed: 1, more: false }, state: [{ key: 'cursor', value: 'stale' }] });
+    };
+    const out = await verticalConnectorScopeSync(deps())(host, row, a);
+    expect(out).toMatchObject({ outcome: 'failed', errors: [expect.stringMatching(/lease was lost/)] });
+    expect(await stateAt(a, 'cursor')).toBeUndefined();
+    expect(await host.admin.getConnectorState(row.id, 'vc:sweep:' + a)).toMatchObject({ holder: 'taker' }); // not released from under the taker
+  });
+
   it('answers not-bound for a scope the connection is not bound to, or whose connector sweeps nothing', async () => {
     const sync = verticalConnectorScopeSync(deps());
     expect(await sync(host, row, a)).toEqual({ outcome: 'not-bound', pending: false, errors: [] });
@@ -496,6 +536,23 @@ describe('vertical-defined connectors — the platform side', () => {
       // Without the hook, a dotted kind is an unknown kind, as before.
       const bare = await drain([intent(kind, { executorId: PROVIDER, event: event('ok') })], false);
       expect([...bare.values()]).toEqual([expect.objectContaining({ status: 'failed', lastError: `no handler for platform-request kind '${kind}'` })]);
+    });
+
+    it("defers a dispatch while a sweep holds the scope's state lease, settling nothing, and delivers it once the lease is free", async () => {
+      await bind(a);
+      const lease = 'vc:sweep:' + a;
+      await host.admin.putConnectorState(row.id, lease, { holder: 'sweep', until: new Date(Date.parse(NOW) + 60_000).toISOString() });
+      answer = async () => ok({ state: [{ key: 'n', value: 1 }] });
+      const pending = intent(`connector:${PROVIDER}`, { executorId: PROVIDER, event: event('ok') });
+
+      // Deferred: not tried, so not settled, and the drain counts no attempt against it.
+      expect((await drain([pending], true)).has(pending.id)).toBe(false);
+      expect(calls).toEqual([]);
+
+      await host.admin.putConnectorState(row.id, lease, null);
+      expect((await drain([pending], true)).get(pending.id)).toMatchObject({ status: 'done' });
+      expect(await stateAt(a, 'n')).toBe(1);
+      expect(await host.admin.getConnectorState(row.id, lease)).toBeNull(); // given back
     });
 
     it("hands a scope's event its own connection once that is bound there, else the tenant's, never another scope's (#2732)", async () => {

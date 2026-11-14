@@ -678,9 +678,18 @@ export default {
       // #1904: the vertical's record of what ran, for the datapoint — and never for the caller.
       const carried = response.headers.get(INVOCATION_RECORD_HEADER);
       if (carried !== null) invocation = decodeInvocationRecord(carried);
-      if (carried !== null || limit.policyHeader) {
+      // The two kick flags below are the vertical's word to this router, read here and never
+      // handed on: the intent flag's value is an internal scope id (#3118), not the caller's.
+      const intentFlag = response.headers.get(PLATFORM_REQUEST_HEADER);
+      const exportsFlag = response.headers.get(EXPORTED_EVENTS_HEADER);
+      const internal = [
+        ...(carried !== null ? [INVOCATION_RECORD_HEADER] : []),
+        ...(intentFlag !== null ? [PLATFORM_REQUEST_HEADER] : []),
+        ...(exportsFlag !== null ? [EXPORTED_EVENTS_HEADER] : []),
+      ];
+      if (internal.length > 0 || limit.policyHeader) {
         response = withHeaders(response, {
-          ...(carried !== null ? { remove: [INVOCATION_RECORD_HEADER] } : {}),
+          ...(internal.length > 0 ? { remove: internal } : {}),
           ...(limit.policyHeader ? { set: { [RATE_LIMIT_POLICY_HEADER]: limit.policyHeader } } : {}),
         });
       }
@@ -692,10 +701,9 @@ export default {
       // flag's value may name another of the deployment's scopes (a worker serving several under
       // one hostname), which the control plane honours only within the routed scope's tenant
       // and vertical.
-      const intentFlag = response.headers.get(PLATFORM_REQUEST_HEADER);
       const flags = {
         platformRequests: intentFlag !== null,
-        exports: response.headers.get(EXPORTED_EVENTS_HEADER) !== null,
+        exports: exportsFlag !== null,
       };
       if (ctx && (flags.platformRequests || flags.exports)) {
         ctx.waitUntil(kickDrain(env, target, flags, scopeIdSchema.safeParse(intentFlag).data));
