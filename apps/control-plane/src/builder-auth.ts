@@ -1,6 +1,6 @@
 import { TENANT_HEADER } from '@substrat-run/control-plane-api';
 import type { BuilderAuth, BuilderIdentity } from '@substrat-run/control-plane-api';
-import { platformActorId, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
+import { platformActorId, type PlatformActorId, type PrincipalId, type TenantId } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { sessionFromHeaders, verifySession, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 
@@ -74,6 +74,12 @@ export const BUILDER_ENTITLEMENT = 'builder';
 /** A membership decorated with whether that tenant holds the studio entitlement. */
 export interface StudioTenant extends ResolvedTenant {
   entitled: boolean;
+  /**
+   * The login's principal in that tenant (#3108) — who the studio names when it asks the plane
+   * for a tenant token, so a fork of production data is judged as this person. The same lookup
+   * the dashboard resolves its signed-in node with.
+   */
+  principal?: PrincipalId;
 }
 
 /**
@@ -98,7 +104,8 @@ export async function studioTenantsFor(
           g.entitlementKey === BUILDER_ENTITLEMENT &&
           (g.expiresAt === null || g.expiresAt > now),
       );
-      return { ...t, entitled };
+      const principal = (await host.admin.resolveIdentity(t.id, PROVIDER, user.id))?.principal;
+      return { ...t, entitled, ...(principal ? { principal } : {}) };
     }),
   );
 }

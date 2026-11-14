@@ -18,6 +18,12 @@
  * project whose worker names no world gets a slot nobody can sign in to, and the plane's note
  * says so.
  *
+ * Or, on request, PRODUCTION DATA (#3108): a fork of the installed app under its own tag
+ * (`studio-data`), signed in through the app's real login. That copy is read by code the
+ * studio just built, so the plane admits it only for the app's owner, judged in the app's own
+ * scope. The studio therefore makes that call AS the signed-in person — a tenant token the plane
+ * mints naming them — and never with the builder's own credential, which names nobody.
+ *
  * Not a PR either: a per-PR preview is a GitHub Actions flow and exists only for GitHub
  * projects. That stays the separate "Create preview PR" step.
  */
@@ -26,6 +32,9 @@ import { refuse } from './problem.js';
 
 /** The one tag the studio's slot lives under — never a `pr-<n>`, which CI owns. */
 export const STUDIO_PREVIEW_TAG = 'studio';
+
+/** The production-data slot's tag: apart from the seeded one, since a tag keeps the kind it began as. */
+export const STUDIO_DATA_PREVIEW_TAG = 'studio-data';
 
 /** The control plane over the service binding: a path under its `/api`, and the request. */
 export type ControlPlaneCall = (path: string, init?: RequestInit) => Promise<Response>;
@@ -53,6 +62,21 @@ const previewRow = z.object({
 });
 
 export type StudioPreview = { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
+
+/** Whether a production-data preview would be admitted, and the studio's sentence when not. */
+export type ForkAvailability = { ok: true } | { ok: false; reason: string };
+
+const forkCheck = z.union([
+	z.object({ ok: z.literal(true), sourceScopeId: z.string() }),
+	z.object({ ok: z.literal(false), reason: z.string(), code: z.string().optional() }),
+]);
+
+/** The plane's reasons, in the studio's words where it has better ones. */
+const FORK_REASONS: Record<string, string> = {
+	'not-installed': 'not installed yet: production data comes from an installed app',
+	'several-installs': 'installed several times: pick the install to copy from the dashboard',
+	'not-owner': "only the app's owner can copy its production data",
+};
 
 const json = (status: number, body: unknown): Response =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -114,13 +138,137 @@ export async function runStudioPreview(
  * The studio's slot as it stands, or `{ state: 'none' }` — what the preview tab opens on. A slot
  * past its TTL is none: the sweep may already have reaped it, and its URL serves nothing.
  */
-export async function readStudioPreview(cp: ControlPlaneCall, project: StudioProject, now: Date): Promise<Response> {
+export async function readStudioPreview(
+	cp: ControlPlaneCall,
+	project: StudioProject,
+	now: Date,
+	tag: string = STUDIO_PREVIEW_TAG,
+): Promise<Response> {
 	const listed = await cp(`/verticals/${encodeURIComponent(project.slug)}/previews`);
 	// A project that was never released has no vertical yet: no slot, not an error.
 	if (listed.status === 404) return json(200, { state: 'none' });
 	if (!listed.ok) return listed;
-	const slot = z.array(previewRow).parse(await listed.json()).find((p) => p.tag === STUDIO_PREVIEW_TAG);
+	const slot = z.array(previewRow).parse(await listed.json()).find((p) => p.tag === tag);
 	if (!slot?.url || !slot.versionId) return json(200, { state: 'none' });
 	if (slot.expiresAt && Date.parse(slot.expiresAt) <= now.getTime()) return json(200, { state: 'none' });
 	return json(200, { state: 'ready', url: slot.url, versionId: slot.versionId, reused: true } satisfies StudioPreview);
+}
+
+/**
+ * The person tokens this isolate minted, by tenant and principal: tenant tokens carry no expiry,
+ * so one serves every later call for that person, as the dashboard's `tenantTokens` does. A
+ * failed mint is dropped, so the next call asks again.
+ */
+const personTokens = new Map<string, Promise<string | MintRefusal>>();
+
+type MintRefusal = { status: number; sentence: string };
+
+/** A refusal's sentence: the problem's `detail`, its deprecated `error`, or the status alone. */
+async function planeSentence(res: Response): Promise<string> {
+	const body = (await res.json().catch(() => null)) as { detail?: unknown; error?: unknown } | null;
+	const said = typeof body?.detail === 'string' ? body.detail : typeof body?.error === 'string' ? body.error : null;
+	return said ?? `the control plane answered ${res.status}`;
+}
+
+/**
+ * The plane as the signed-in person (#3108): a tenant token for `tenantId` naming `principal`,
+ * minted by the plane over the builder's own credential, as the dashboard mints its own. Every
+ * call made with it is judged as that person, never as the builder. A 401 mints once more, so a
+ * rotated `TENANT_TOKEN_SECRET` is a blip; a refused mint answers each call with its refusal.
+ */
+export function personPlane(
+	cp: ControlPlaneCall,
+	callWith: (token: string) => ControlPlaneCall,
+	tenantId: string,
+	principal: string,
+): ControlPlaneCall {
+	const key = `${tenantId}/${principal}`;
+	const mint = async (): Promise<string | MintRefusal> => {
+		const res = await cp('/tenant-tokens', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ tenantId, principal }),
+		});
+		if (!res.ok) return { status: res.status, sentence: `the control plane refused a credential for this person: ${await planeSentence(res)}` };
+		return z.object({ token: z.string().min(1) }).parse(await res.json()).token;
+	};
+	const token = (fresh: boolean): Promise<string | MintRefusal> => {
+		if (fresh) personTokens.delete(key);
+		const cached = personTokens.get(key);
+		if (cached) return cached;
+		const pending = mint().then(
+			(t) => {
+				if (typeof t !== 'string') personTokens.delete(key);
+				return t;
+			},
+			(e: unknown) => {
+				personTokens.delete(key);
+				throw e;
+			},
+		);
+		personTokens.set(key, pending);
+		return pending;
+	};
+	return async (path, init) => {
+		const once = async (fresh: boolean): Promise<Response> => {
+			const t = await token(fresh);
+			return typeof t === 'string' ? await callWith(t)(path, init) : refuse(t.status, t.sentence);
+		};
+		const res = await once(false);
+		return res.status === 401 ? await once(true) : res;
+	};
+}
+
+/** The production-data slot as it stands, and whether Run with production data would be admitted. */
+export async function readStudioDataPreview(asPerson: ControlPlaneCall, project: StudioProject, now: Date): Promise<Response> {
+	const slot = await readStudioPreview(asPerson, project, now, STUDIO_DATA_PREVIEW_TAG);
+	// The tab still opens on sample data; the reason is what the production option shows.
+	if (!slot.ok) return json(200, { state: 'none', fork: { ok: false, reason: await planeSentence(slot) } });
+	return json(200, { ...((await slot.json()) as object), fork: await forkAvailability(asPerson, project) });
+}
+
+async function forkAvailability(asPerson: ControlPlaneCall, project: StudioProject): Promise<ForkAvailability> {
+	const res = await asPerson(`/verticals/${encodeURIComponent(project.slug)}/previews/fork-check`);
+	// Never released: no vertical yet, so nothing installed to copy.
+	if (res.status === 404) return { ok: false, reason: FORK_REASONS['not-installed']! };
+	if (!res.ok) return { ok: false, reason: await planeSentence(res) };
+	const check = forkCheck.parse(await res.json());
+	if (check.ok) return { ok: true };
+	return { ok: false, reason: (check.code && FORK_REASONS[check.code]) || check.reason };
+}
+
+/**
+ * Release the project's revision and fork the installed app's data into the studio's
+ * production-data slot, as the signed-in person. The release is the builder's own act, as in
+ * `runStudioPreview`; the fork is the person's, so the plane judges them and relays its refusal.
+ */
+export async function runStudioDataPreview(
+	cp: ControlPlaneCall,
+	asPerson: ControlPlaneCall,
+	project: StudioProject,
+	tenantId: string,
+	versionLabel: string,
+): Promise<Response> {
+	if (!project.revision) return refuse(409, 'save source before running a preview');
+	// Asked before the build, which takes minutes: a person the plane would refuse learns it now,
+	// and leaves no released version behind. The create below still judges them.
+	const fork = await forkAvailability(asPerson, project);
+	if (!fork.ok) return refuse(403, `production data: ${fork.reason}`);
+	const released = await releaseRevision(cp, { ...project, revision: project.revision }, tenantId, versionLabel);
+	if (!released.ok) return released;
+	const versionId = releasedVersion.parse(await released.json()).id;
+	const created = await asPerson(`/verticals/${encodeURIComponent(project.slug)}/previews`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ tag: STUDIO_DATA_PREVIEW_TAG, versionId }),
+	});
+	if (!created.ok) return created;
+	const ready = createdPreview.parse(await created.json());
+	return json(200, {
+		state: 'ready',
+		url: ready.url,
+		versionId: ready.versionId,
+		reused: ready.reused,
+		...(ready.auth ? { authNote: ready.auth.note } : {}),
+	} satisfies StudioPreview);
 }

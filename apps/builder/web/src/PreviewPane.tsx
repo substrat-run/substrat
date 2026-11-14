@@ -8,12 +8,15 @@
  * - HOSTED (#2895): Run releases the saved revision onto the studio's preview
  *   slot and frames the slot's URL — the app on the stack it ships on, with no
  *   process in the sandbox to keep awake. A refusal is shown in its own words.
+ *   The slot holds the project's sample world by default; "production data"
+ *   (#3108) runs it on a copy of the installed app instead, offered only where
+ *   the control plane would admit it, and saying why where it would not.
  *
  * The manual URL field stays as an escape hatch for apps the user runs in their
  * own terminal.
  */
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { api, type StudioPreview } from './api.js';
+import { api, type StudioDataPreview, type StudioPreview } from './api.js';
 
 type DevState = 'stopped' | 'starting' | 'running' | 'error';
 
@@ -108,8 +111,11 @@ function LocalPreview() {
 }
 
 type HostedState = 'idle' | 'building' | 'ready' | 'error';
+/** Which slot Run deploys to: the sample world, or a copy of the installed app's data. */
+type DataKind = 'sample' | 'production';
 
 function HostedPreview() {
+	const [kind, setKind] = useState<DataKind>('sample');
 	const [state, setState] = useState<HostedState>('idle');
 	const [url, setUrl] = useState<string | null>(null);
 	const [note, setNote] = useState<string | null>(null);
@@ -117,11 +123,25 @@ function HostedPreview() {
 	const [manual, setManual] = useState('');
 	const [src, setSrc] = useState<string | null>(null);
 	const [frame, reloadFrame] = useReducer((n: number) => n + 1, 0);
+	/** Each slot as last read or run, so switching kind shows that slot's app. */
+	const slots = useRef<Record<DataKind, StudioPreview>>({ sample: { state: 'none' }, production: { state: 'none' } });
+	/** Each slot's last Run failure, so switching away and back still shows it. */
+	const failures = useRef<Record<DataKind, string | null>>({ sample: null, production: null });
+	/** The kind on screen, for reads that land after the person has picked another. */
+	const shown = useRef<DataKind>('sample');
+	const [fork, setFork] = useState<StudioDataPreview['fork'] | null>(null);
 	/** Set by Run: the tab's opening read must not land on top of a Run already under way. */
 	const ran = useRef(false);
 
 	function show(p: StudioPreview): void {
-		if (p.state !== 'ready') return;
+		setError(null);
+		if (p.state !== 'ready') {
+			setState('idle');
+			setUrl(null);
+			setSrc(null);
+			setNote(null);
+			return;
+		}
 		setState('ready');
 		setUrl(p.url);
 		setSrc(p.url);
@@ -131,30 +151,60 @@ function HostedPreview() {
 	}
 
 	useEffect(() => {
-		void api.studioPreview().then((p) => !ran.current && show(p), () => undefined);
+		void api.studioPreview().then((p) => {
+			slots.current.sample = p;
+			if (!ran.current && shown.current === 'sample') show(p);
+		}, () => undefined);
+		void api.studioDataPreview().then(({ fork: f, ...p }) => {
+			slots.current.production = p;
+			setFork(f);
+		}, () => setFork({ ok: false, reason: 'could not ask the control plane' }));
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
+	function choose(next: DataKind): void {
+		setKind(next);
+		shown.current = next;
+		show(slots.current[next]);
+		const failed = failures.current[next];
+		if (failed) {
+			setState('error');
+			setError(failed);
+		}
+	}
+
 	async function run(): Promise<void> {
 		ran.current = true;
+		const running = kind;
 		setState('building');
 		setError(null);
 		setNote(null);
 		try {
-			show(await api.runStudioPreview());
+			const p = await (running === 'production' ? api.runStudioDataPreview() : api.runStudioPreview());
+			slots.current[running] = p;
+			failures.current[running] = null;
+			show(p);
 		} catch (e) {
+			failures.current[running] = (e as Error).message;
 			setState('error');
 			setError((e as Error).message);
 		}
 	}
 
 	const busy = state === 'building';
+	const blocked = kind === 'production' && fork?.ok !== true;
 	const label =
 		state === 'building' ? 'building and deploying' : state === 'ready' ? 'ready' : state === 'error' ? 'failed' : 'not running';
 	return (
 		<div className="preview">
 			<div className="preview-bar">
-				<button className="pill" disabled={busy} onClick={() => void run()}>
+				<select value={kind} disabled={busy} onChange={(e) => choose(e.target.value as DataKind)} aria-label="preview data">
+					<option value="sample">Sample data</option>
+					<option value="production" disabled={fork?.ok !== true} title={fork && !fork.ok ? fork.reason : undefined}>
+						Production data{fork && !fork.ok ? ' (unavailable)' : ''}
+					</option>
+				</select>
+				<button className="pill" disabled={busy || blocked} onClick={() => void run()}>
 					{busy ? '… Running' : state === 'ready' ? '↻ Run again' : '▶ Run'}
 				</button>
 				<span className={`badge ${state === 'ready' ? 'ok' : state === 'error' ? 'bad' : 'warn'}`}>{label}</span>
@@ -173,13 +223,18 @@ function HostedPreview() {
 			</div>
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
 			{note && <pre className="dev-log">{note}</pre>}
+			{fork && !fork.ok && <pre className="dev-log">Production data: {fork.reason}</pre>}
 			{src ? (
 				<iframe key={frame} src={src} title="preview" />
 			) : (
 				<div className="empty">
 					{busy
-						? 'building the saved source and deploying it to this project\'s preview — this takes a few minutes…'
-						: 'Run deploys the saved source to a private preview of this project, with its own empty data'}
+						? kind === 'production'
+							? 'copying the installed app\'s data and deploying the saved source onto it — this takes a few minutes…'
+							: 'building the saved source and deploying it to this project\'s preview — this takes a few minutes…'
+						: kind === 'production'
+							? 'Run deploys the saved source onto a private copy of the installed app\'s data; you sign in with the app\'s own login'
+							: 'Run deploys the saved source to a private preview of this project, with its sample data and people to sign in as'}
 				</div>
 			)}
 		</div>

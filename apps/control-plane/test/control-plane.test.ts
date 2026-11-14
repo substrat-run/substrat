@@ -194,6 +194,8 @@ describe('builder auth — live self-serve path', () => {
 
   const sessionFor = (id: string, mail: string): Promise<string> =>
     mintSession(oidcEnv, { id, email: mail, name: 'Builder' });
+  /** The login's principal in the tenant — what the studio names when it forks as them (#3108). */
+  const me = principalId.parse(ulid());
 
   beforeAll(async () => {
     // The staff roster table must exist so staff auth fails closed (returns null, not
@@ -210,7 +212,7 @@ describe('builder auth — live self-serve path', () => {
       tenantId: t,
       provider: PROVIDER,
       externalId: userId,
-      principal: principalId.parse(ulid()),
+      principal: me,
     });
     await host.close();
   });
@@ -302,8 +304,8 @@ describe('builder auth — live self-serve path', () => {
     expect(res.status).toBe(403);
   });
 
-  it('a membership without the builder entitlement is listed, not entitled', async () => {
-    expect(await lookup()).toMatchObject({ entitled: false });
+  it('a membership without the builder entitlement is listed, not entitled, with the login\'s principal there', async () => {
+    expect(await lookup()).toMatchObject({ entitled: false, principal: me });
   });
 
   it('granting the builder entitlement to the TENANT entitles the membership', async () => {

@@ -27,6 +27,9 @@ export type StudioPreview =
 	| { state: 'none' }
 	| { state: 'ready'; url: string; versionId: string; reused: boolean; authNote?: string };
 
+/** GET /api/preview/data — the production-data slot, and whether Run may make one (#3108). */
+export type StudioDataPreview = StudioPreview & { fork: { ok: true } | { ok: false; reason: string } };
+
 export interface SessionInfo {
 	sourceProjects?: boolean;
 	root: string;
@@ -242,6 +245,9 @@ export const api = {
 	studioPreview: () => f('/api/preview').then((r) => j<StudioPreview>(r)),
 	/** Release the saved revision onto the slot. Minutes: it is a full build. */
 	runStudioPreview: () => f('/api/preview', { method: 'POST' }).then((r) => j<StudioPreview>(r)),
+	/** A preview over a copy of the installed app's data, as the signed-in person (#3108). */
+	studioDataPreview: () => f('/api/preview/data').then((r) => j<StudioDataPreview>(r)),
+	runStudioDataPreview: () => f('/api/preview/data', { method: 'POST' }).then((r) => j<StudioPreview>(r)),
 	dev: (action: 'start' | 'stop') =>
 		f('/api/dev', {
 			method: 'POST',
