@@ -960,6 +960,28 @@ describe('the job object: held results', () => {
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed' });
   });
 
+  it('a ledger line still unwritten when the job ends is kept alone and retried until written, or until the review expires', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const lines: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const at = Date.now();
+    await inObject(`line-${id}`, async (storage) => {
+      await storage.put('job', { reviewId: id, attempt: 0 });
+      await reviewAlarm(storage, deps(double([{ text: reply({ findings: [] }) }]), {}, { recordUsage: async () => { throw new Error('directory down'); } }), () => at);
+      expect(await storage.get('job')).toBeUndefined();
+      expect(await storage.getAlarm()).toBe(at + REVIEW_WRITE_RETRY_MS);
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage: async (u) => { lines.push(u.requestId); return { recorded: true }; } }), () => at);
+      expect(await storage.get('line')).toBeUndefined();
+
+      // The next wait would pass the receipt's expiry: the line is given up and the object emptied.
+      await storage.put('line', { usage: { requestId: id, line: {} }, until: new Date(at + REVIEW_WRITE_RETRY_MS).toISOString(), writes: 1 });
+      await reviewAlarm(storage, deps(double([]), {}, { recordUsage: async () => { throw new Error('directory down'); } }), () => at);
+      expect(await storage.get('line')).toBeUndefined();
+    });
+    expect(lines).toEqual([id]);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed' });
+  });
+
   it('a held result past the receipt’s expiry, within the expiry margin, or whose receipt was pruned, writes nothing and forgets the job', async () => {
     const expired = await stored(CHANGED.source, CHANGED.base);
     const closing = await stored(CHANGED.source, CHANGED.base);
