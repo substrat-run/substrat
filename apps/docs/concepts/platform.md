@@ -30,7 +30,7 @@ between what's shared and what isn't is the design:
 | **Routing** | Resolves `hostname → (tenant, scope, vertical, surface)`, then dispatches | The surfaces a manifest declares |
 | **Custom domains** | Hostname issuance, DNS validation, certificate lifecycle | — |
 | **Tenancy** | Tenant registry, scope directory, provisioning lifecycle | — |
-| **Identity** | Auth callbacks, principal derivation, capability minting | — |
+| **Identity** | Auth callbacks, principal derivation, capability minting, the persona issuer a seeded preview signs in through | — |
 | **Entitlements** | The entitlement store, operation gate and scope-local projection | The `entitlementKey` each manifest declares; how its plan and quota are used |
 | **History & analytics** | The event spine and its history tier | — |
 | **Copies** | Snapshots, forks, per-PR previews, per-scope PITR, directory backup/restore | — |
@@ -51,10 +51,11 @@ machinery.
 The platform also implements the deployment and lifecycle machinery for
 [scope stores](/concepts/scope-stores): separate objects a vertical declares by binding
 and driver. Their storage is included in full scope dumps, erasure, reaping and the
-storage meter. **Hosted scope stores are not available yet**: the driver registry is
-empty, so a push declaring one is refused. Store-driver releases have their own rollout
-and rollback, separate from a vertical's code release, and a release is used only once staff
-have approved it.
+storage meter. **Hosted scope stores are not available yet.** One driver is registered,
+`graph`, and it serves only the verticals its registration names. Store-driver releases
+have their own rollout and rollback, separate from a vertical's code release, and a release
+is used only once staff have approved it. None is approved yet, so a hosted push declaring
+a graph store passes the push check and is refused before anything is uploaded.
 
 ## Why the deployments don't merge
 
@@ -147,11 +148,14 @@ const id = ctx.requestPlatform({
 Authorization is the vertical's; isolation is the platform's. That split is why the intent is
 enqueued *after* the vertical's own `ctx.check`.
 
-On a hosted request, the vertical flags a newly queued intent in its response. The router
-then asks the control plane to drain that scope in the background, using the tenant and
-scope it resolved from the directory. This usually reduces the wait to seconds without
-holding up the response. If that notification fails, the durable intent stays queued for
-the control plane's periodic sweep.
+On a hosted request, the vertical flags a newly queued intent in its response, naming the
+scope the intent went into. The router then asks the control plane to drain in the
+background. The control plane always drains the scope the router resolved, and drains the
+named one too when both are live installs (active, not a preview or a fork) of the same
+tenant and vertical. It re-derives both from the directory, so the flag carries no
+authority. This usually reduces the wait to seconds without holding up the response. If
+that notification fails, the durable intent stays queued for the control plane's periodic
+sweep.
 
 **And the outcome comes back.** `ctx.platformRequests(filter)` reads this scope's own intent
 journal — newest first, filterable by `kind` and `status` — returning the same record the
@@ -173,7 +177,9 @@ the one it was provisioned against, running each vertical's declared
 [`schedules`](/concepts/modules#recurring-work-schedules), judging its declared freshness
 expectations, reaping expired previews and long-archived scopes and lapsed tenants,
 reconciling connectors, draining each scope's domain events to Tier 2 through the injected
-`EventSink` — absent a sink, nothing drains — and shipping the staff access log last. The
+`EventSink` — absent a sink, nothing drains — then pruning outbox rows drained more than
+90 days ago ([what the prune keeps](/concepts/events#drain)), and shipping the staff access
+log last. The
 full list with what each phase skips is on the [`platform-sweep.ts` row](/reference/kernel).
 Three of those phases leave a durable per-unit record that the console and `/sweep-runs`
 read — each live connection swept, each schedule run, each freshness verdict — when a
