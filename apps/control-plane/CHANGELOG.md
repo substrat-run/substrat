@@ -1,5 +1,43 @@
 # @substrat-run/control-plane
 
+## 0.19.0
+
+### Minor Changes
+
+- e52951e: A builder can start a code review of a vertical its workspace owns once staff grant the workspace the `review` entitlement: `substrat review upload` names the vertical (`--slug`, default the project's) and prints the record with `--json`, and `substrat review <id>` and `list` read the workspace's reviews. A workspace has at most five reviews in progress and fifty in a 30-day window, and a review's model usage is metered to it. `review` joins `PLATFORM_ENTITLEMENT_KEYS`, so no vertical can declare it.
+
+### Patch Changes
+
+- f2ef2be: Tenant tokens can carry an `issuerConfig` claim (`POST /tenant-tokens` takes `issuerConfig: true`), and with `requireIssuerConfigClaim` on, `/configure` refuses the issuer-only config keys (delegations, places, resources, redirects, an app's `substrat:auth`) from a tenant credential minted without it, with a 403 naming the prefix (#3177). The dashboard mints with the claim. The control plane's `CONFIGURE_REQUIRE_ISSUER_CLAIM` switch ships off: turn it on once this dashboard is deployed, so no isolate is still holding a token minted before it.
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [344f406]
+- Updated dependencies [f57381d]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [67d3b63]
+- Updated dependencies [f57381d]
+- Updated dependencies [d957538]
+- Updated dependencies [f2ef2be]
+- Updated dependencies [e52951e]
+- Updated dependencies [f57381d]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/adapter-cloudflare@0.198.0
+  - @substrat-run/vertical-host@0.198.0
+  - @substrat-run/oidc-rp@0.14.0
+  - @substrat-run/control-plane-api@0.198.0
+  - @substrat-run/connector-scrive@0.15.0
+  - @substrat-run/connector-bolagsverket@0.0.21
+  - @substrat-run/connector-fortnox@0.7.22
+  - @substrat-run/connector-mail-in@0.1.35
+  - @substrat-run/connector-microsoft365@0.0.59
+  - @substrat-run/connector-planima@0.2.95
+  - @substrat-run/connector-woocommerce@0.0.4
+  - @substrat-run/model-providers@0.5.88
+
 ## 0.18.34
 
 ### Patch Changes

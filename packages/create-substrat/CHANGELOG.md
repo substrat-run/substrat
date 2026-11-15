@@ -1,5 +1,11 @@
 # create-substrat
 
+## 0.18.2
+
+### Patch Changes
+
+- 508fec4: create-substrat: the template's AGENTS.md says how to call a model (the platform model host, never a provider key)
+
 ## 0.18.1
 
 ### Patch Changes

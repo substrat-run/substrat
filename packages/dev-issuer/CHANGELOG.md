@@ -1,5 +1,24 @@
 # @substrat-run/dev-issuer
 
+## 0.9.0
+
+### Minor Changes
+
+- f57381d: The dev issuer issues a refresh token for `offline_access` and answers `grant_type=refresh_token` with a fresh id_token, and serves the one-step `peer` token exchange from grants passed as `delegations` (or `--delegations <module>`), so a master app can call its plugin as the signed-in person locally (#3161).
+- f57381d: The local vertical broker carries a call made for a person (`onBehalf`), admitted by the target's own door and run as that person under the token's scope while the caller passes the target's peer admission, refused in the hosted door's words (the reason goes to a `peer-on-behalf-refused` log line), and answers `substrat.peer-client` with the target's client id; the dev issuer's harness adds `devPeople(…).delegated` (capped to the `delegations` it is given), `devDelegate` and `devRefreshStore`, so a master app calls its plugin as the signed-in person on dev servers (#3161).
+
+### Patch Changes
+
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/vertical-auth@0.36.0
+
 ## 0.8.1
 
 ### Patch Changes

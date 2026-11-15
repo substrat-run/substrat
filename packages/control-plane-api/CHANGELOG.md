@@ -1,5 +1,29 @@
 # @substrat-run/control-plane-api
 
+## 0.198.0
+
+### Minor Changes
+
+- 67d3b63: `substrat promote --review-only` reads what a promote to prod would change without promoting, and `substrat status` shows what prod serves, the promote waiting and what it needs, previews and recent failures; a builder may now read a promote's impact before promoting.
+- f57381d: A version's declared delegations travel in its permission registry: `substrat push` refuses a delegated key no module declares or one reserved to a system principal, the permission digest moves when a delegation changes (and stays put for a vertical that declares none), the promote diff lists each change by actor, keys and channels, and the control plane serves them on a version's flow.
+- f2ef2be: Tenant tokens can carry an `issuerConfig` claim (`POST /tenant-tokens` takes `issuerConfig: true`), and with `requireIssuerConfigClaim` on, `/configure` refuses the issuer-only config keys (delegations, places, resources, redirects, an app's `substrat:auth`) from a tenant credential minted without it, with a 403 naming the prefix (#3177). The dashboard mints with the claim. The control plane's `CONFIGURE_REQUIRE_ISSUER_CLAIM` switch ships off: turn it on once this dashboard is deployed, so no isolate is still holding a token minted before it.
+- e52951e: `substrat changes` lists a vertical's open changes, whichever provider holds them: its GitHub pull requests, or a studio project's chat branches, each with its checks and its preview (`GET /verticals/:slug/changes`, for a builder and the dashboard's team credential alike). A repository that cannot be read answers why instead of failing, and checks the GitHub App may not read show as `unknown` with the reason.
+
+### Patch Changes
+
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [67d3b63]
+- Updated dependencies [f57381d]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/control-plane-client@0.8.0
+
 ## 0.197.1
 
 ### Patch Changes

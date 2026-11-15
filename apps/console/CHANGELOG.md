@@ -1,5 +1,25 @@
 # @substrat-run/console
 
+## 0.14.115
+
+### Patch Changes
+
+- f57381d: The promote dialog, an app's Permissions tab, the Deployments ledger and the console's promote review name an app newly allowed, or no longer allowed, to act for a person in this one, and the keys and channels it gained or lost (#3161).
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [67d3b63]
+- Updated dependencies [f57381d]
+- Updated dependencies [f2ef2be]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/control-plane-api@0.198.0
+  - @substrat-run/elements@0.8.5
+
 ## 0.14.114
 
 ### Patch Changes

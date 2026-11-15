@@ -1,5 +1,11 @@
 # @substrat-run/oidc-rp
 
+## 0.14.0
+
+### Minor Changes
+
+- f57381d: `beginLogin` can ask for `offline_access`, and `completeLogin` returns the refresh token the issuer sends, giving the session a `sid` to keep it under when asked.
+
 ## 0.13.0
 
 ### Minor Changes

@@ -1,5 +1,39 @@
 # @substrat-run/dashboard
 
+## 0.49.16
+
+### Patch Changes
+
+- f57381d: The dashboard delivers each app's declared delegations to the team auth-server it signs in with, so another app of the team can act for a person in it. Delivered at install, delete, an Identity change and a version moved in the dashboard, and kept in step from the Apps list.
+
+  From this release the dashboard manages `substrat:delegations:<host>` from each app's declared `delegations`, and a grant delivered any other way is replaced on its next pass. Move a hand-delivered grant into the host's manifest (`channels: ['mcp']` for an MCP grant) before you deploy.
+
+- f2ef2be: Tenant tokens can carry an `issuerConfig` claim (`POST /tenant-tokens` takes `issuerConfig: true`), and with `requireIssuerConfigClaim` on, `/configure` refuses the issuer-only config keys (delegations, places, resources, redirects, an app's `substrat:auth`) from a tenant credential minted without it, with a 403 naming the prefix (#3177). The dashboard mints with the claim. The control plane's `CONFIGURE_REQUIRE_ISSUER_CLAIM` switch ships off: turn it on once this dashboard is deployed, so no isolate is still holding a token minted before it.
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [344f406]
+- Updated dependencies [f57381d]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [67d3b63]
+- Updated dependencies [f57381d]
+- Updated dependencies [f2ef2be]
+- Updated dependencies [e52951e]
+- Updated dependencies [f57381d]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/adapter-cloudflare@0.198.0
+  - @substrat-run/vertical-host@0.198.0
+  - @substrat-run/oidc-rp@0.14.0
+  - @substrat-run/control-plane-client@0.8.0
+  - @substrat-run/control-plane-api@0.198.0
+  - @substrat-run/connector-fortnox@0.7.22
+  - @substrat-run/engine-invites@0.9.75
+  - @substrat-run/engine-protocol@0.13.83
+  - @substrat-run/model-providers@0.5.88
+
 ## 0.49.15
 
 ### Patch Changes
