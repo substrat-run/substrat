@@ -196,7 +196,9 @@ export class BuilderAgent extends DurableObject<Env> {
 	 * refuses it, as a studio operation already refuses a second one; other builds do not.
 	 */
 	#claimStudio(entry: ProjectEntry): Response | null {
-		if (this.#builds.building(entry.slug)) return refuse(409, 'a build of this project is running');
+		// The busy refusal's own words, so the studio waits a build out as it waits out a turn.
+		const build = this.#builds.occupant(entry.slug);
+		if (build) return busyRefusal(build, Date.now());
 		this.#studioSlug = entry.slug;
 		return null;
 	}
@@ -1103,7 +1105,8 @@ export class BuilderAgent extends DurableObject<Env> {
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const entry = (await this.#registry()).projects.find((p) => p.id === id);
 				if (!entry) return refuse(404, `no project ${id}`);
-				if (this.#builds.building(entry.slug)) return refuse(409, 'a build of this project is running');
+				const build = this.#builds.occupant(entry.slug);
+				if (build) return busyRefusal(build, Date.now());
 				this.#occupy(`removing project "${entry.name}"`);
 				try {
 					// The repository first: a refused delete leaves the project listed and the

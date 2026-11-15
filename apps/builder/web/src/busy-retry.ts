@@ -3,7 +3,7 @@
  * sentence starts "project operation already in progress" and names what holds the project
  * (an agent turn, another preview, a build). That is a wait, not a failure: the caller retries
  * it with backoff for a bounded time, and fails with the sentence only once the bound is spent.
- * Any other error is not retried.
+ * Any other error is not retried. An aborted signal ends the wait at once, with its reason.
  */
 import { ApiError } from './api.js';
 
@@ -30,13 +30,28 @@ export interface BusyRetryOptions {
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
 	boundMs?: number;
+	/** Aborting it stops the wait: no further call is made, and the retry rejects with its reason. */
+	signal?: AbortSignal;
+}
+
+function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener('abort', done, { once: true });
+		function done(): void {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', done);
+			resolve();
+		}
+	});
 }
 
 export async function retryWhileBusy<T>(call: () => Promise<T>, opts: BusyRetryOptions = {}): Promise<T> {
 	const now = opts.now ?? Date.now;
-	const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+	const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
 	const deadline = now() + (opts.boundMs ?? BUSY_RETRY_BOUND_MS);
 	for (let attempt = 0; ; attempt++) {
+		opts.signal?.throwIfAborted();
 		try {
 			return await call();
 		} catch (e) {

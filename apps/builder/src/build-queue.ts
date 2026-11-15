@@ -82,6 +82,12 @@ export class BuildQueue {
 		return this.#building.has(key);
 	}
 
+	/** The running build of this vertical as an occupant a busy refusal names; null when none runs. */
+	occupant(key: string): Occupant | null {
+		const since = this.#building.get(key);
+		return since === undefined ? null : { what: `a build of ${key}`, since };
+	}
+
 	/**
 	 * Run `fn` once every earlier build of `key` has ended and `blocked()` is false — a
 	 * studio operation on the same project, which is not a build and so is not queued here.
@@ -99,10 +105,7 @@ export class BuildQueue {
 		void tail.then(() => { if (this.#tails.get(key) === tail) this.#tails.delete(key); });
 		const deadline = Date.now() + this.opts.waitMs;
 		try {
-			if (!(await before(prev, this.opts.waitMs))) {
-				const since = this.#building.get(key);
-				throw new BuildWaitExpired({ what: `a build of ${key}`, ...(since === undefined ? {} : { since }) });
-			}
+			if (!(await before(prev, this.opts.waitMs))) throw new BuildWaitExpired(this.occupant(key) ?? { what: `a build of ${key}` });
 			while (blocked()) {
 				if (Date.now() >= deadline) throw new BuildWaitExpired();
 				await new Promise((resolve) => setTimeout(resolve, this.opts.pollMs));

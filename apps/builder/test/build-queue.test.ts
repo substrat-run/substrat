@@ -32,9 +32,12 @@ describe('the build queue', () => {
 		await new Promise((r) => setTimeout(r, 20));
 		expect(secondRan).toBe(false);
 		expect(q.building('acme/crm')).toBe(true);
+		// What a studio operation's refusal names while it runs (#3163).
+		expect(q.occupant('acme/crm')).toMatchObject({ what: 'a build of acme/crm', since: expect.any(Number) });
 		first.finish('a');
 		await expect(Promise.all([a, b])).resolves.toEqual(['a', 'b']);
 		expect(q.building('acme/crm')).toBe(false);
+		expect(q.occupant('acme/crm')).toBeNull();
 	});
 
 	it('builds of different verticals run side by side', async () => {

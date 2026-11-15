@@ -125,6 +125,9 @@ function HostedPreview() {
 	const [error, setError] = useState<string | null>(null);
 	/** What a Run is waiting for while another operation holds the project. */
 	const [waiting, setWaiting] = useState<string | null>(null);
+	/** Ends that wait: the person's "stop waiting", or the pane going away. */
+	const waitAbort = useRef<AbortController | null>(null);
+	useEffect(() => () => waitAbort.current?.abort(), []);
 	const [manual, setManual] = useState('');
 	const [src, setSrc] = useState<string | null>(null);
 	const [frame, reloadFrame] = useReducer((n: number) => n + 1, 0);
@@ -217,22 +220,30 @@ function HostedPreview() {
 		setState('building');
 		setError(null);
 		setNote(null);
+		const abort = new AbortController();
+		waitAbort.current = abort;
 		try {
 			const p = await retryWhileBusy(
 				() => {
 					setWaiting(null);
 					return running === 'production' ? api.runStudioDataPreview() : api.runStudioPreview();
 				},
-				{ onWait: setWaiting },
+				{ onWait: setWaiting, signal: abort.signal },
 			);
 			slots.current[running] = p;
 			failures.current[running] = null;
 			show(p);
 		} catch (e) {
+			// Stopped while waiting: nothing was started, so the slot is shown as it was.
+			if (abort.signal.aborted) {
+				show(slots.current[running]);
+				return;
+			}
 			failures.current[running] = (e as Error).message;
 			setState('error');
 			setError((e as Error).message);
 		} finally {
+			if (waitAbort.current === abort) waitAbort.current = null;
 			setWaiting(null);
 		}
 	}
@@ -254,6 +265,7 @@ function HostedPreview() {
 					{busy ? '… Running' : state === 'ready' ? '↻ Run again' : '▶ Run'}
 				</button>
 				<span className={`badge ${state === 'ready' ? 'ok' : state === 'error' ? 'bad' : 'warn'}`}>{label}</span>
+				{waiting && <button className="pill" onClick={() => waitAbort.current?.abort()}>stop waiting</button>}
 				{personas.length > 0 && (
 					<select value={signedInAs} disabled={busy} onChange={(e) => void signInAs(e.target.value)} aria-label="sign in as">
 						<option value="">Sign in as…</option>

@@ -48,6 +48,15 @@ describe('retryWhileBusy', () => {
 		expect(calls).toBe(c.slept.length + 1);
 	});
 
+	it('stops waiting when its signal is aborted, making no further call', async () => {
+		const c = clock();
+		const stop = new AbortController();
+		let calls = 0;
+		const sleep = async (ms: number) => { await c.sleep(ms); stop.abort(new Error('stopped waiting')); };
+		await expect(retryWhileBusy(async () => { calls++; throw busy(); }, { ...c, sleep, signal: stop.signal })).rejects.toThrow('stopped waiting');
+		expect(calls).toBe(1);
+	});
+
 	it('does not retry any other error, a different 409 included', async () => {
 		for (const e of [new ApiError('save source before running a preview', 409, {}), new ApiError('platform build failed', 500, {}), new Error('network')]) {
 			const c = clock();
