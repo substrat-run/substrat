@@ -340,6 +340,14 @@ membership table consulted by hand in every handler, to get a revoke. The two-li
 reference is the [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
 (`src/module.ts`, `todo/share-list` and `todo/revoke-share`).
 
+## Calling a language model
+
+Use the platform model host: `createModelHost` from `@substrat-run/vertical-host/model`,
+called from `worker.ts` outside any operation. Set `"usesModels": true` under `substrat` in
+`package.json` so a push binds `env.AI`, and pass it as `aiBinding`. It runs on platform-held
+credentials, so **never add a provider key** to a vertical. Reference:
+<https://substrat.net/reference/vertical-host#createmodelhost-options-from-substrat-run-vertical-host-model>.
+
 ## The gates — run them, believe them
 
 ```sh
