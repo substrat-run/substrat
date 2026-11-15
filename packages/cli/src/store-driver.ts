@@ -52,6 +52,20 @@ function base64(bytes: Uint8Array): string {
 /** How deep a driver's tree may go: past it, it is not one package. How many files is set by the release's own limits. */
 const MAX_DEPTH = 16;
 
+/** How much one release may carry, as the walk and the pack count it. */
+export interface StoreReleaseLimits {
+  files: number;
+  modules: number;
+  bytes: number;
+}
+
+/** The limits the control plane enforces (#2300, D-68): what every pack is held to outside a test. */
+export const STORE_RELEASE_LIMITS: StoreReleaseLimits = {
+  files: STORE_RELEASE_MAX_FILES,
+  modules: STORE_RELEASE_MAX_MODULES,
+  bytes: STORE_RELEASE_MAX_BYTES,
+};
+
 /** Where a release's dependencies are, under `--dir`: the one directory the commit does not vouch for. */
 const VENDORED_DIR = 'python_modules';
 
@@ -69,7 +83,7 @@ const isVendored = (file: string) => file.startsWith(`${VENDORED_DIR}/`);
  * file from outside `dir`, or loop forever. More files, or more code modules, than a release
  * carries is refused as soon as the walk meets one, before anything is read.
  */
-export function packedFilesOf(dir: string): string[] {
+export function packedFilesOf(dir: string, limits: StoreReleaseLimits = STORE_RELEASE_LIMITS): string[] {
   const out: string[] = [];
   let code = 0;
   // The `/` form the packed list uses, so an error names `driver_graph/x.py` on every OS too.
@@ -86,11 +100,11 @@ export function packedFilesOf(dir: string): string[] {
         const file = shown(path);
         if (INSTALLER_MARKERS.includes(file)) continue;
         out.push(file);
-        if (out.length > STORE_RELEASE_MAX_FILES) {
-          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_FILES} files; a release carries at most ${STORE_RELEASE_MAX_FILES}`);
+        if (out.length > limits.files) {
+          throw new Error(`'${dir}' holds more than ${limits.files} files; a release carries at most ${limits.files}`);
         }
-        if (isPythonCodeModule(file) && ++code > STORE_RELEASE_MAX_MODULES) {
-          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_MODULES} code modules; a release carries at most ${STORE_RELEASE_MAX_MODULES} (${PYTHON_CODE_FORMS})`);
+        if (isPythonCodeModule(file) && ++code > limits.modules) {
+          throw new Error(`'${dir}' holds more than ${limits.modules} code modules; a release carries at most ${limits.modules} (${PYTHON_CODE_FORMS})`);
         }
       }
     }
@@ -128,8 +142,8 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
 }
 
 /** The driver's package under `dir`, as the upload body. `entry` is the module with the class. */
-export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
-  const files = packedFilesOf(dir);
+export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string, limits: StoreReleaseLimits = STORE_RELEASE_LIMITS): StoreDriverReleaseUpload {
+  const files = packedFilesOf(dir, limits);
   const packages = new Set<string>();
   const classes = new Map(files.map((path) => [path, classifyPythonStoreModule(path)] as const));
   // The fixture names its package too, as the server's module rule counts it.
@@ -142,7 +156,7 @@ export function packStoreDriverDir(dir: string, entry: string, sourceCommit: str
   const modules = files.map((name) => {
     const content = readFileSync(join(dir, name));
     total += content.byteLength;
-    if (total > STORE_RELEASE_MAX_BYTES) throw new Error(`the package is over ${STORE_RELEASE_MAX_BYTES} bytes at ${name}; a release carries at most ${STORE_RELEASE_MAX_BYTES}`);
+    if (total > limits.bytes) throw new Error(`the package is over ${limits.bytes} bytes at ${name}; a release carries at most ${limits.bytes}`);
     return { name, contentBase64: base64(content) };
   });
   return { sourceCommit, entry, modules };
