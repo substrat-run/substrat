@@ -6,7 +6,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import type { PersonResolveInput, PersonResolveOutput } from '@substrat-run/contracts';
-import { PEOPLE_DDL, PEOPLE_TTL_SECONDS, admitPerson, sqlPeopleStore, type PeopleDeps } from '../src/people.js';
+import {
+  PEOPLE_DDL,
+  PEOPLE_TTL_SECONDS,
+  admitDelegated,
+  admitPerson,
+  sqlPeopleStore,
+  type DelegatedDoor,
+  type PeopleDeps,
+} from '../src/people.js';
+import type { AuthSubject } from '../src/provider.js';
 import type { RegistrySql } from '../src/site-registry.js';
 
 const SCOPE = '01SCOPENOTES';
@@ -33,12 +42,14 @@ function world() {
     answer: { person: { id: BJORN, status: 'active', roles: ['member'] } } as unknown,
     down: false,
     asked: 0,
+    inputs: [] as PersonResolveInput[],
     bound: [] as string[],
     seats: [] as { add: string[]; remove: string[] }[],
   };
   const deps: PeopleDeps = {
-    resolve: async () => {
+    resolve: async (input) => {
       state.asked += 1;
+      state.inputs.push(input);
       if (state.down) throw new Error('master unreachable');
       return state.answer;
     },
@@ -49,7 +60,11 @@ function world() {
     now: () => new Date(state.now),
   };
   const later = (seconds: number) => void (state.now += seconds * 1000);
-  return { state, deps, later };
+  const rows = () => ({
+    logins: db.prepare('SELECT scope_id, sub, principal, status, expires_at FROM person_login').all(),
+    seats: db.prepare('SELECT scope_id, principal, roles FROM person_seat').all(),
+  });
+  return { state, deps, later, rows };
 }
 
 let w: ReturnType<typeof world>;
@@ -127,5 +142,72 @@ describe('admitPerson', () => {
     expect(await admitPerson(w.deps, SCOPE, login('bjorn-work'))).toEqual({ admitted: true, principal: BJORN });
     expect(w.state.bound).toEqual([`bjorn=${BJORN}`, `bjorn-work=${BJORN}`]);
     expect(w.state.seats).toHaveLength(1);
+  });
+});
+
+describe('admitDelegated', () => {
+  /** A token the plugin's `resolveOnBehalf` read: Björn, the master acting for him within `scope`. */
+  const delegated: AuthSubject = {
+    sub: 'bjorn',
+    email: 'bjorn@example.com',
+    emailVerified: true,
+    name: 'Björn',
+    delegation: { actor: 'todo-client', scope: ['notes:read'] },
+  };
+  const door = (subject: AuthSubject | null): DelegatedDoor & { verified: string[] } => {
+    const verified: string[] = [];
+    return { master: 'todo', issuer: 'https://issuer.test', verified, verify: async (token) => (verified.push(token), subject) };
+  };
+  const call = { token: 'peer-token', callerVertical: 'todo' };
+
+  it('admits the person the master answers for, with the scope as a cap that is written nowhere', async () => {
+    expect(await admitDelegated(w.deps, SCOPE, call, door(delegated))).toEqual({
+      admitted: true,
+      principal: BJORN,
+      scope: ['notes:read'],
+      actor: 'todo-client',
+    });
+    // A login never seen here reaches the master with the address the issuer verified.
+    expect(w.state.inputs).toEqual([{ issuer: 'https://issuer.test', sub: 'bjorn', verifiedEmail: 'bjorn@example.com' }]);
+  });
+
+  it.each<[string, Partial<AuthSubject>]>([
+    ['unverified', { emailVerified: false }],
+    ['not asserted either way', { emailVerified: undefined }],
+    ['absent', { email: null }],
+  ])('asks the master with no address when the token\'s is %s', async (_name, over) => {
+    await admitDelegated(w.deps, SCOPE, call, door({ ...delegated, ...over }));
+    expect(w.state.inputs).toEqual([{ issuer: 'https://issuer.test', sub: 'bjorn', verifiedEmail: null }]);
+  });
+
+  it('seats exactly what the same login signing in seats', async () => {
+    await admitDelegated(w.deps, SCOPE, call, door(delegated));
+    const signedIn = world();
+    await admitPerson(signedIn.deps, SCOPE, login('bjorn'));
+    expect(w.rows()).toEqual(signedIn.rows());
+    expect([w.state.bound, w.state.seats]).toEqual([signedIn.state.bound, signedIn.state.seats]);
+  });
+
+  it('refuses a caller that is not the master before reading the token', async () => {
+    const d = door(delegated);
+    expect(await admitDelegated(w.deps, SCOPE, { ...call, callerVertical: 'tasks' }, d)).toEqual({ admitted: false, reason: 'not-master' });
+    expect(d.verified).toEqual([]);
+    expect(w.state.asked).toBe(0);
+  });
+
+  it.each<[string, AuthSubject | null]>([
+    ['a token that does not verify', null],
+    ['a subject nobody acts for', { ...delegated, delegation: undefined }],
+  ])('refuses %s without asking the master', async (_name, subject) => {
+    expect(await admitDelegated(w.deps, SCOPE, call, door(subject))).toEqual({ admitted: false, reason: 'token-refused' });
+    expect(w.state.asked).toBe(0);
+  });
+
+  it.each<[string, () => void, 'blocked' | 'unavailable']>([
+    ['blocked', () => void (w.state.answer = { person: { id: BJORN, status: 'blocked', roles: ['member'] } }), 'blocked'],
+    ['unreachable', () => void (w.state.down = true), 'unavailable'],
+  ])('answers with the person refusal when the master says %s', async (_name, arrange, reason) => {
+    arrange();
+    expect(await admitDelegated(w.deps, SCOPE, call, door(delegated))).toEqual({ admitted: false, reason });
   });
 });

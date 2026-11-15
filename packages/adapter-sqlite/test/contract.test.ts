@@ -64,6 +64,7 @@ import {
   moduleLogContractSuite,
   verifiedEmailContractSuite,
   checkTallyContractSuite,
+  delegationCeilingContractSuite,
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
@@ -1418,6 +1419,19 @@ moduleLogContractSuite('adapter-sqlite', async () => {
   return {
     host,
     logs: () => lines,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #3161: a person acting through another app, capped by the delegated scope.
+delegationCeilingContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-ceiling-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

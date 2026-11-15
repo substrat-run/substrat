@@ -23,6 +23,7 @@ import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { cookieDomainDecision } from './cookie-domain.js';
 import { mcpDiscovery } from './mcp-discovery.js';
+import type { RefreshStore } from './session-refresh.js';
 
 /**
  * Standard OIDC as a full RELYING PARTY `AuthProvider` — the browser-login counterpart
@@ -56,11 +57,20 @@ export interface OidcRpConfig {
    */
   sharedIssuer?: boolean;
   /**
-   * Accept delegated bearers from these actors at this app's MCP endpoint (#1824) — see
-   * `OidcConfig.delegation`. Takes effect only with `sharedIssuer`: a team auth server is the
-   * issuer that mints them. Absent, a bearer carrying `act` is refused.
+   * Accept delegated tokens from these actors (#1824, #3161) — at this app's MCP endpoint on the
+   * `mcp` channel, through `resolveOnBehalf` on the `peer` channel — see `OidcConfig.delegation`.
+   * Takes effect only with `sharedIssuer`: a team auth server is the issuer that mints them.
+   * Absent, a bearer carrying `act` is refused, and `resolveOnBehalf` admits nothing.
    */
   delegation?: DelegationOption;
+  /**
+   * Keep each session's refresh token server-side, so this app can later act for the person at
+   * another app (`delegatedToken`, #3161). Set, login also asks for `offline_access`; the
+   * callback stores the token under a random `sid` the session cookie carries, logout deletes
+   * it, and a resolved session exposes `AuthSubject.sid`. The token never goes into a cookie.
+   * Absent, nothing is asked for or kept, exactly as before.
+   */
+  refreshStore?: RefreshStore;
   /**
    * Share the login across every surface under this parent domain (`acme.se` covers
    * `crm.` and `eka.` alike) — the session cookie is set with `Domain=…` instead of
@@ -172,14 +182,16 @@ function redirectWith(location: string, cookies: string[]): Response {
 // auth-server share an issuer and must never share a verifier that admits the other's
 // tokens; the delegation is, because a verifier built with it admits tokens one built
 // without it refuses (#1824).
-const bearerCache = new Map<string, AuthProvider>();
-function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
+type BearerVerifier = ReturnType<typeof oidcAuthProvider>;
+const bearerCache = new Map<string, BearerVerifier>();
+function bearerVerifier(cfg: OidcRpConfig): BearerVerifier {
   // A delivered `audience` still wins over it; `oidcAuthProvider` is where that is decided.
   const own = cfg.sharedIssuer ? cfg.clientId : undefined;
-  const delegation = cfg.delegation
+  const delegation: DelegationOption | undefined = cfg.delegation
     ? {
         actors: [...cfg.delegation.actors],
         ...(cfg.delegation.maxLifetimeSeconds === undefined ? {} : { maxLifetimeSeconds: cfg.delegation.maxLifetimeSeconds }),
+        ...(cfg.delegation.channels === undefined ? {} : { channels: [...cfg.delegation.channels] }),
       }
     : undefined;
   const key = JSON.stringify([
@@ -187,7 +199,10 @@ function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
     cfg.audience ?? '',
     own ?? '',
     // NaN would stringify as null and collide with "no bound", so the bound is keyed as text.
-    delegation ? [[...delegation.actors].sort(), String(delegation.maxLifetimeSeconds)] : null,
+    // Absent channels and `['mcp']` admit the same, but are keyed apart rather than relied on.
+    delegation
+      ? [[...delegation.actors].sort(), String(delegation.maxLifetimeSeconds), delegation.channels ? [...delegation.channels].sort() : null]
+      : null,
   ]);
   let p = bearerCache.get(key);
   if (!p) {
@@ -213,9 +228,26 @@ export function verifiedEmailOf(subject: AuthSubject | null): string | null {
   return identifyEmail({}, { id: subject.sub, email: subject.email ?? undefined, emailVerified: subject.emailVerified }).email;
 }
 
-export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
+export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider & Required<Pick<AuthProvider, 'resolveOnBehalf'>> {
   const env = envOf(cfg);
   const framed = isPersonaIssuer(cfg.issuer);
+  const store = cfg.refreshStore;
+
+  /**
+   * Forget the refresh token a session cookie names, if it names one. Never throws: the cookies
+   * are cleared on the response whatever happens here, and a row left behind is unreachable
+   * without the cookie that held its `sid`.
+   */
+  async function forgetRefresh(cookieHeader: string | null): Promise<void> {
+    if (!store) return;
+    const sid = (await verifySessionEnvelope(env, readCookie(cookieHeader, SESSION_COOKIE)))?.sid;
+    if (!sid) return;
+    try {
+      await store.delete(sid);
+    } catch (err) {
+      console.error('oidc.logout.refresh_delete_failed', { error: err instanceof Error ? err.name : typeof err });
+    }
+  }
 
   async function handle(request: Request): Promise<Response> {
     const discovery = mcpDiscovery(request, cfg.issuer);
@@ -243,6 +275,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         loginHint: url.searchParams.get('login_hint') || undefined,
         screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
         prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
+        ...(store ? { offlineAccess: true } : {}),
       });
       return redirectWith(location, [cookie(FLOW_COOKIE, flow, origin, FLOW_MAXAGE, null, '/', 'Lax', framed), ...cleanup]);
     }
@@ -251,7 +284,22 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
       const flow = readCookie(request.headers.get('cookie'), FLOW_COOKIE);
       const clearFlow = cookie(FLOW_COOKIE, '', origin, 0, null, '/', 'Lax', framed);
       try {
-        const { session, returnTo, idToken } = await completeLogin(env, origin, url, flow);
+        const { session, returnTo, idToken, user, refreshToken, sid } = await completeLogin(
+          env,
+          origin,
+          url,
+          flow,
+          store ? { keepRefreshToken: true } : {},
+        );
+        if (store && sid && refreshToken) {
+          // A store that fails costs this person delegated calls (the `sid` names no row, so
+          // `delegatedToken` asks them to sign in again), never the sign-in itself.
+          try {
+            await store.put(sid, { sub: user.id, refreshToken });
+          } catch (err) {
+            console.error('oidc.callback.refresh_store_failed', { error: err instanceof Error ? err.name : typeof err });
+          }
+        }
         return redirectWith(safePath(returnTo) ?? '/', [
           clearFlow,
           ...sessionCookies(session, origin, SESSION_MAXAGE, domain, framed),
@@ -268,6 +316,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
     }
 
     if (url.pathname === LOGOUT_PATH) {
+      await forgetRefresh(request.headers.get('cookie'));
       const local = safePath(url.searchParams.get('returnTo')) ?? '/';
       const cleared = [...sessionCookies('', origin, 0, domain, framed), ...hintCookies('', origin, 0, domain, framed), ...cleanup];
       /**
@@ -326,6 +375,9 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         // said, and an absent claim is a fact about the issuer, not a missing value.
         emailVerified: session.emailVerified,
         expiresAt: envelope.expiresAt,
+        // Only while this app keeps refresh tokens: a `sid` minted under a store that has since
+        // been taken away names a row nothing will read.
+        ...(store && envelope.sid ? { sid: envelope.sid } : {}),
       };
     }
     if (cookie) recordAuthCheck({ stage: 'session', outcome: 'refused', reason: 'session-invalid' });
@@ -335,5 +387,10 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
     return bearerVerifier(cfg).resolve(headers, url, options);
   }
 
-  return { handle, resolve };
+  /** The peer door (#3161): the bearer verifier's, which holds the delegation option. */
+  function resolveOnBehalf(token: string): Promise<AuthSubject | null> {
+    return bearerVerifier(cfg).resolveOnBehalf(token);
+  }
+
+  return { handle, resolve, resolveOnBehalf };
 }

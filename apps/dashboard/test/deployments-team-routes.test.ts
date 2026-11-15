@@ -63,7 +63,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, ctx?: unknown): Response | Promise<Response> };
 };
 
 const PROVIDER = 'authhero';
@@ -191,7 +191,7 @@ function req(method: string, path: string, opts: { sub?: string | null; cookieTe
   const cookie = [sub ? `sb_session=${sub}` : '', opts.cookieTeam ? `sb_team=${opts.cookieTeam}` : ''].filter(Boolean).join('; ');
   const headers: Record<string, string> = { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) };
   const body = opts.body === undefined || method === 'GET' ? {} : { body: JSON.stringify(opts.body) };
-  return app.request(path, { method, headers, ...body }, env);
+  return app.request(path, { method, headers, ...body }, env, { waitUntil: () => undefined, passThroughOnException: () => undefined });
 }
 
 const inTeam = (t: Team | TenantId, rest: string) => `/api/teams/${typeof t === 'string' ? t : t.tenant}${rest}`;

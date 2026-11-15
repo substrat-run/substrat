@@ -14,7 +14,7 @@
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
     "demo": "pnpm run dev",
-    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas ../todo/src/personas.ts"
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas ../todo/src/personas.ts --delegations src/delegations.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",

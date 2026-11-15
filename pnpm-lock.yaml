@@ -2333,6 +2333,12 @@ importers:
         specifier: ^6.2.3
         version: 6.2.15
     devDependencies:
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../adapter-sqlite
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../contract-tests
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../oidc-rp

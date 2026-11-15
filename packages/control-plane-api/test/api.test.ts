@@ -4993,6 +4993,40 @@ describe('control-plane API — vertical registry', () => {
     });
   });
 
+  /**
+   * #3161: the dashboard delivers a version's delegations off `/flow`, revoking what `[]` leaves
+   * out, and it must never revoke on a version that cannot say. So `/flow` serves the registry's
+   * rows, `[]` for a version a current CLI pushed that delegates nothing (its modules carry the
+   * field), and leaves the field out for one pushed before it.
+   */
+  it("serves a version's delegations, [] when it declares none, and nothing for an older push (#3161)", async () => {
+    const permissions = [{ key: 'fsm:job-create', description: 'Open a job', declaredBy: ['fsm'] }];
+    const manifest = (registryDelegations: unknown[] | undefined, moduleDelegations: unknown[] | undefined) =>
+      JSON.stringify({
+        version: 'flow',
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        registry: { permissions, roles: [], entityGrants: [], ...(registryDelegations ? { delegations: registryDelegations } : {}) },
+        modules: [{ id: 'fsm', permissions: [{ key: 'fsm:job-create', description: 'Open a job' }], ...(moduleDelegations ? { delegations: moduleDelegations } : {}) }],
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+    const flowOf = async (registryDelegations: unknown[] | undefined, moduleDelegations: unknown[] | undefined) => {
+      const id = ulid();
+      const res = await json('/verticals/fsm/versions', 'POST', version(id, { manifestJson: manifest(registryDelegations, moduleDelegations) }));
+      expect(res.status, await res.clone().text()).toBeLessThan(300);
+      return (await (await get(`/verticals/fsm/versions/${id}/flow`)).json()) as { delegations?: unknown };
+    };
+    const declared = { actor: 'todo', permissions: ['fsm:job-create'], channels: ['peer'] };
+    expect((await flowOf([{ ...declared, declaredBy: ['fsm'] }], [declared])).delegations).toEqual([declared]);
+    expect((await flowOf(undefined, [])).delegations).toEqual([]);
+    expect('delegations' in (await flowOf(undefined, undefined))).toBe(false);
+
+    // The digest-covered copy is held to the modules': a registry naming less is refused.
+    const refused = await json('/verticals/fsm/versions', 'POST', version(ulid(), { manifestJson: manifest(undefined, [declared]) }));
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("delegations 'todo': module declaration is absent from registry");
+  });
+
   it('returns a null registry for a version that retained no manifest (pre-#286)', async () => {
     // v3 was published from the bare `version()` fixture — no manifestJson.
     const res = await get(`/verticals/fsm/versions/${v3}/registry`);

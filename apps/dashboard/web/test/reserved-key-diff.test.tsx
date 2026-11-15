@@ -35,6 +35,16 @@ const MOVED_RESERVATION = "a:run is now reserved to a system principal: no perso
 const MOVED_HOLDER = 'now held by a system principal (holder: system), no longer a role a person can hold';
 const NEW_SYSTEM_ROLE = 'held by a system principal (holder: system), not a role a person can hold';
 
+/** #3161: an app newly allowed to act for a person here, and one whose keys widened. */
+const delegating = (delegations: PermissionRegistry['delegations']): PermissionRegistry => ({ ...from, delegations });
+const beforeD = delegating([{ actor: 'tasks', permissions: ['a:use'], channels: ['peer'], declaredBy: ['@acme/engine'] }]);
+const afterD = delegating([
+  { actor: 'tasks', permissions: ['a:use', 'a:run'], channels: ['peer'], declaredBy: ['@acme/engine'] },
+  { actor: 'todo', permissions: ['a:use'], channels: ['peer'], declaredBy: ['@acme/engine'] },
+]);
+const NEW_ACTOR = "todo may now act for a person here with a:use over peer (a ceiling over the person's own keys, never a grant)";
+const WIDENED_ACTOR = "tasks acting for a person here: now also with a:run (a ceiling over the person's own keys, never a grant)";
+
 describe('the Deployments ledger (#2430)', () => {
   it('marks the key that arrives reserved, the moved reservation, the moved holder and the new system-held role', () => {
     const items = permissionDiffItems(diffRegistries(from, to), from, to);
@@ -44,6 +54,12 @@ describe('the Deployments ledger (#2430)', () => {
     expect(items).toContainEqual({ kind: 'added', name: 'role host', note: `holds a:new; ${NEW_SYSTEM_ROLE}` });
     // A person's role that did not change is not a row, and an unmarked added key carries no mark.
     expect(items.find((i) => i.name === 'role member')).toBeUndefined();
+  });
+
+  it('names an app newly acting for a person, and one whose keys widened (#3161)', () => {
+    const items = permissionDiffItems(diffRegistries(beforeD, afterD), beforeD, afterD);
+    expect(items).toContainEqual({ kind: 'added', name: 'delegation todo', note: NEW_ACTOR });
+    expect(items).toContainEqual({ kind: 'changed', name: 'delegation tasks', note: WIDENED_ACTOR });
   });
 });
 
@@ -83,6 +99,22 @@ describe('the promote dialog and the Permissions tab (#2430)', () => {
     expect(container.textContent?.match(/role holder changed/g)).toHaveLength(1);
   });
 
+  it('the promote dialog names the apps acting for a person (#3161)', async () => {
+    await act(async () =>
+      root.render(
+        <PromoteDialog
+          slug="acme/helpdesk"
+          servingLabel="0.2.0"
+          incomingLabel="0.3.0"
+          checkpoint={{ permission: { kind: 'diff', diff: diffRegistries(beforeD, afterD), from: beforeD, to: afterD }, migration: null, acknowledged: {} }}
+          onAnswer={() => {}}
+        />,
+      ),
+    );
+    shows(NEW_ACTOR);
+    shows(WIDENED_ACTOR);
+  });
+
   it('the Permissions tab shows all four for an available update', async () => {
     vi.spyOn(api, 'appPermissions').mockResolvedValue({
       running: { versionId: 'V2', version: '0.2.0', registry: from },
@@ -96,5 +128,16 @@ describe('the promote dialog and the Permissions tab (#2430)', () => {
     shows(MOVED_HOLDER);
     shows(NEW_SYSTEM_ROLE);
     expect(container.textContent?.match(/role holder changed/g)).toHaveLength(1);
+  });
+
+  it('the Permissions tab names the apps acting for a person (#3161)', async () => {
+    vi.spyOn(api, 'appPermissions').mockResolvedValue({
+      running: { versionId: 'V2', version: '0.2.0', registry: beforeD },
+      update: { versionId: 'V3', version: '0.3.0', registry: afterD },
+    });
+    const app = { app_scope_id: 'S1', name: 'Acme HR', vertical_slug: 'acme/helpdesk', status: 'active' } as AppRow;
+    await act(async () => root.render(<AppPermissions teamId="T1" app={app} />));
+    shows(NEW_ACTOR);
+    shows(WIDENED_ACTOR);
   });
 });

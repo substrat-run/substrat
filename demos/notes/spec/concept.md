@@ -44,7 +44,17 @@ access away, that member loses Notes within five minutes, and nothing has to be 
 - **It fails closed.** If the answer is older than five minutes and Todo cannot be reached,
   Notes admits nobody.
 - **Roles.** Todo answers `member` for someone with plugin access; Notes maps that to its own
-  `writer` (read and write notes). A member without access is known and holds nothing.
+  `writer` (read and write notes, on the notepad and on Todo's items). A member without access is
+  known and holds nothing.
+- **Todo may act for a person here, with the notepad's keys only.** Todo calls Notes AS the person
+  signed in to it (`delegations` in the manifest, the `peer` channel): the call runs as that
+  person, capped to `note:read` and `note:write`. Item notes have keys of their own
+  (`item-note:read`, `item-note:write`) because their operations trust Notes' door to have asked
+  Todo to vouch for the list or item first, and a call made for a person does not pass that door.
+  Delegating them would let Todo write a note on any item id, or read every item note, as anyone.
+- **Only while Todo is switched on here.** Todo is declared a peer of Notes, allowlisted for
+  nothing and seated with `todo-peer:admit` (reserved to it, checked by no operation). A call made
+  for a person passes Todo's peer admission, so the operator's peer switch for Todo stops it.
 - **No name or address is copied.** The answer carries an id, a status and role keys. A note
   shows its author's id; showing a name is a later, separate read from Todo.
 
@@ -54,7 +64,7 @@ access away, that member loses Notes within five minutes, and nothing has to be 
 
 | Role | What they can do |
 | --- | --- |
-| `writer` | `note:read` — Read the notes in this workspace<br>`note:write` — Write a note |
+| `writer` | `item-note:read` — Read the notes on Todo items, once Todo has vouched for the list<br>`item-note:write` — Write a note on a Todo item, once Todo has vouched for it<br>`note:read` — Read the notes in this workspace<br>`note:write` — Write a note |
 
 <!-- /substrat:roles -->
 
@@ -98,6 +108,14 @@ _No lifecycle is declared: nothing here moves through stages._
 4. Ada takes Björn's access away. He keeps it until his copy expires, then is refused.
 5. With Todo unreachable and his copy expired, nobody is admitted.
 
+And the call Todo makes as a person (`test/delegated.test.ts`):
+
+1. Ada signs in at Todo and writes a note in Notes through Todo; Notes records her as its author.
+2. The same call cannot reach an item note, though Ada holds those keys in Notes.
+3. Björn is refused until Ada gives him plugin access, and again once his copy expires after she
+   takes it away.
+4. With Todo switched off as a peer of Notes, everyone is refused through Todo; on again, admitted.
+
 ## Decisions log
 
 - 2026-11-13: First version. One entity (`note`), two operations, two keys (`note:read`,
@@ -114,4 +132,11 @@ _No lifecycle is declared: nothing here moves through stages._
 - 2026-11-13: The notes on items are one tab in Todo, beside the lists' views, grouped by list and item.
   `notes/list-item-notes` takes no list to read every item note, and the door's `GET /api/item-notes`
   keeps only those on lists Todo vouches for, asking once per list. No key or role changed.
+- 2026-11-15: Todo may call Notes as the person signed in to it (#3161): a `delegations` entry for
+  `todo`, on the `peer` channel, with `note:read` and `note:write`. Item notes move to two keys of
+  their own, `item-note:read` and `item-note:write`, which `writer` also holds, so the delegation
+  cannot reach them: their operations rely on the door's vouch, which a delegated call skips.
+- 2026-11-15: Todo is declared a peer of Notes, allowlisted for no operation, holding one new key
+  reserved to it, `todo-peer:admit`, which no operation checks. A call Todo makes for a person
+  passes Todo's peer admission, so the peer switch is the operator's lever over it as well.
 

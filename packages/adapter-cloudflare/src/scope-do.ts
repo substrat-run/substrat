@@ -441,6 +441,11 @@ import {
   type CheckTally,
   registerTrashTargets,
   withheldKeysFor,
+  capCoverage,
+  delegationCeilingOf,
+  outsideCeiling,
+  parseScopeDelegation,
+  type ScopeDelegation,
   statefulTablesOf,
   afterMigration,
   afterRuntimeDdl,
@@ -3320,6 +3325,12 @@ export function defineScopeDO(
       systemDoorInstance?: string,
       /** K-61: the person's verified address, which only the coordinator's `getScope` sends. */
       verifiedEmail?: string | null,
+      /**
+       * #3161: the person is acting through another app, and `scope` caps every check the call
+       * makes. Plain data, re-parsed here. An old DO that ignored it would run the call uncapped,
+       * so the reply carries `delegation.honoured` and the coordinator refuses a success without it.
+       */
+      delegation?: ScopeDelegation,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -3327,6 +3338,8 @@ export function defineScopeDO(
       concurrency?: { version: string | null; ifMatchChecked: boolean };
       /** K-42: set iff this DO understood `impersonation`. See `invokeOrThrow`. */
       impersonation?: { honoured: boolean };
+      /** #3161: set iff this DO understood `delegation`. */
+      delegation?: { honoured: boolean };
       /** #1672: set iff this DO understood `capabilitySession`. */
       capability?: { honoured: boolean };
       /** #1706: set iff this DO understood `verticalCaller`. */
@@ -3377,6 +3390,7 @@ export function defineScopeDO(
             undefined,
             undefined,
             verifiedEmail,
+            delegation,
           );
         } catch (err) {
           if (err instanceof SystemDoorMovedError) return { result: undefined, platformRequests: 0, ...SYSTEM_DOOR_MOVED };
@@ -3402,6 +3416,7 @@ export function defineScopeDO(
             undefined,
             logTally,
             verifiedEmail,
+            delegation,
           ),
         );
       } catch (err) {
@@ -3445,6 +3460,8 @@ export function defineScopeDO(
       logTally?: { logLines: number; reached: boolean },
       /** K-61: see `invoke` above. */
       verifiedEmail?: string | null,
+      /** #3161: see `invoke` above. */
+      delegation?: ScopeDelegation,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -3466,6 +3483,8 @@ export function defineScopeDO(
       vertical?: { honoured: boolean };
       /** #1834: the acknowledgement for `systemDoorInstance`, on the same reasoning. */
       systemDoor?: { honoured: boolean };
+      /** #3161: the acknowledgement for `delegation`, on the same reasoning. */
+      delegation?: { honoured: boolean };
       /** #1705 PR 2: exported-type rows this commit added. Absent means none. */
       exported?: number;
       /**
@@ -3474,6 +3493,9 @@ export function defineScopeDO(
        */
       emitted?: EmittedReport;
     }> {
+      // #3161: the RPC is a boundary of its own, so the ceiling is parsed here too, before anything.
+      const delegated = parseScopeDelegation(delegation);
+      const ceiling = delegationCeilingOf(delegated);
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       // `not_found`, not a bare throw (#113): every vertical hand-matched this message
@@ -3608,6 +3630,12 @@ export function defineScopeDO(
           peerSubject = admitPeer(this.switchSql(), this.peers, verticalCaller, operation);
           idempotencySubjectRef = peerSubject;
         }
+        // #3161: a person's call arriving through a peer passes that peer's door too, on the same
+        // terms: the pin, then declared and switched on. No allowlist: the ceiling governs.
+        if (delegated?.via !== undefined) {
+          this.assertPeerDoor(delegated.via.vertical, systemDoorInstance);
+          admitPeer(this.switchSql(), this.peers, delegated.via, null);
+        }
         // #1672: the secrets this call mints — withheld from its idempotency recording, and
         // what the tripwire on its writes looks for.
         const minted: string[] = [];
@@ -3697,13 +3725,14 @@ export function defineScopeDO(
               withheld,
               checks,
               verifiedEmail,
+              ceiling,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
             // it. Keyed by SUBJECT, so a caller only ever reaches its own
             // responses; `idempotency.ts` states what that does not promise.
             if (idempotencyKey !== undefined && fingerprint !== undefined) {
-              const lookup = idempotencyLookupQuery(idempotencySubjectRef, idempotencyKey);
+              const lookup = idempotencyLookupQuery(idempotencySubjectRef, idempotencyKey, delegated);
               const prior = this.sql.exec(lookup.sql, ...lookup.params).toArray()[0] as
                 | IdempotencyRow
                 | undefined;
@@ -3764,6 +3793,7 @@ export function defineScopeDO(
                 redactSecrets(result, minted),
                 committedVersion,
                 at,
+                delegated,
               );
               this.sql.exec(record.sql, ...record.params);
               const prune = idempotencyPruneStatement(at);
@@ -3785,6 +3815,7 @@ export function defineScopeDO(
               result,
               platformRequests: 0,
               impersonation: { honoured: true },
+              ...(delegation !== undefined ? { delegation: { honoured: true } } : {}),
               ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
               ...(verticalCaller !== undefined ? { vertical: { honoured: true } } : {}),
               ...(systemDoorInstance !== undefined ? { systemDoor: { honoured: true } } : {}),
@@ -3852,6 +3883,8 @@ export function defineScopeDO(
           ...(exported > 0 ? { exported } : {}),
           ...(emitted ? { emitted } : {}),
           ...(impersonation ? { impersonation: { honoured: true } } : {}),
+          // #3161: the same, for a delegated person's ceiling.
+          ...(delegation !== undefined ? { delegation: { honoured: true } } : {}),
           // #1672: the acknowledgement the coordinator's skew check reads — see `invoke`.
           ...(capabilitySession !== undefined ? { capability: { honoured: true } } : {}),
           // #1706: the same, for the peer door.
@@ -5751,10 +5784,12 @@ export function defineScopeDO(
       tenantId: TenantId,
       scopeId: ScopeId | null,
       roleKey: string,
+      /** #3161: a delegated call's ceiling — a role carrying a key above it is not covered. */
+      ceiling?: ReadonlySet<string>,
     ): Promise<Coverage | null> {
       const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
       if (!role) return null;
-      return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
+      return capCoverage(await this.checker.covers(subject, role.permissions, { tenantId, scopeId }), role.permissions, ceiling);
     }
 
     /**
@@ -9668,6 +9703,8 @@ export function defineScopeDO(
       checks?: CheckTally,
       /** K-61: the person's verified address, from `getScope` alone. */
       verifiedEmail?: string | null,
+      /** #3161: a delegated call's ceiling — keys outside it are refused like `withheld`. */
+      ceiling?: ReadonlySet<string>,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -9731,7 +9768,7 @@ export function defineScopeDO(
         // #1642: parsed before the system actor's early return, which never reaches
         // the checker — a cast key would otherwise become that path's proof relation.
         const permission = assertPermissionKey(unparsed);
-        if (withheld?.has(permission)) {
+        if (withheld?.has(permission) || outsideCeiling(ceiling, permission)) {
           return { allowed: false as const, checked: permission, node: { tenantId, scopeId } };
         }
         if (systemActor) {
@@ -9765,7 +9802,7 @@ export function defineScopeDO(
         // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
         const refused = await this.reservedRoleRefusalFor(tenantId, roleKey, 'person');
         if (refused) throw substratError('forbidden', refused);
-        const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
+        const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey, ceiling);
         if (!bound) {
           throw unknownRoleError(roleKey);
         }
@@ -9943,7 +9980,7 @@ export function defineScopeDO(
           const permission = assertPermissionKey(unparsed);
           return grantedEntitiesForContext(
             checker, subject, permission, { tenantId, scopeId }, entityType, options, runCheck, withheld,
-            Boolean(systemActor),
+            Boolean(systemActor), ceiling,
           );
         },
         canAssign: runCanAssign,

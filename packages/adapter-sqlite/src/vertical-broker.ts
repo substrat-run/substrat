@@ -25,14 +25,26 @@
  * **What it deliberately cannot do.** Name a tenant (the target is searched in the caller's own
  * tenant only), name a principal (there is no parameter for one: a peer acts as itself), or reach
  * a preview (never resolved as a target, and refused as a caller).
+ *
+ * **A call made for a person (#3161).** `onBehalf` carries a delegated token, which is still not
+ * the caller naming anyone: the TARGET's harness verifies it (`delegated`, its person contract's
+ * door), and only a token it admits makes the call run as that person, with the token's `scope`
+ * as the ceiling. The calling vertical still passes the target's peer admission (declared in its
+ * `peers`, switched on), with no operation allowlist, so the peer switch stops it too. A refusal
+ * tells the caller only that it was refused, as the hosted door does; the reason goes to a log line
+ * without the token, which is never logged or echoed in an error.
  */
 import {
+  PEER_CLIENT_OPERATION,
+  peerOnBehalf,
   platformActorId,
   scopeId as scopeIdOf,
   substratError,
   tenantId as tenantIdOf,
   verticalSlug,
+  type PeerClientAnswer,
   type PlatformActorId,
+  type PrincipalId,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -50,6 +62,12 @@ export interface LocalVerticalCallerRef {
   scopeId: ScopeId;
 }
 
+/** `invoke`'s options: the target scope's own, and the person a call may be made for (#3161). */
+export interface LocalVerticalInvokeOptions extends InvokeOptions {
+  /** A delegated token for the target, as `peerCallRequest.onBehalf` carries it. */
+  onBehalf?: { token: string };
+}
+
 /** What a calling harness holds: calls out as ONE scope of ONE vertical, and nothing else. */
 export interface LocalVerticalClient {
   /**
@@ -57,8 +75,29 @@ export interface LocalVerticalClient {
    * caller. Throws `forbidden` when the caller is not a live primary instance or the target's
    * door refuses it, `not_found` when the target is not installed in the tenant, `conflict`
    * when the tenant runs more than one instance without a choice, or a choice is unavailable.
+   *
+   * With `onBehalf`, as the person the token names instead (#3161): `forbidden` when the target
+   * takes no delegated calls, its door does not admit the token, or the caller does not pass its
+   * peer admission; `unavailable` when that door could not ask the app it takes its people from.
    */
-  invoke<O = unknown>(target: string, operation: string, input?: unknown, options?: InvokeOptions): Promise<O>;
+  invoke<O = unknown>(target: string, operation: string, input?: unknown, options?: LocalVerticalInvokeOptions): Promise<O>;
+}
+
+/** What the target's harness answers for a call made for a person: its person contract's door. */
+export type LocalDelegatedAnswer =
+  | { admitted: true; principal: PrincipalId; scope: string[]; actor: string }
+  | { admitted: false; reason: string };
+
+/** Per target vertical: what the platform layer in front of its scopes answers (#3161). */
+export interface LocalVerticalTargetHooks {
+  /** The target's OIDC client, the answer to `PEER_CLIENT_OPERATION`. Absent answers null. */
+  clientId?: string;
+  /** Who a call carrying `onBehalf` is made for. Absent: the target takes no delegated calls. */
+  delegated?: (call: {
+    token: string;
+    caller: LocalVerticalCallerRef;
+    target: { tenantId: TenantId; scopeId: ScopeId };
+  }) => Promise<LocalDelegatedAnswer>;
 }
 
 export interface LocalVerticalBroker {
@@ -77,9 +116,15 @@ export interface LocalVerticalBroker {
  * slug. Each host holds its own directory, so the tenant a test or dev harness provisions must be
  * created on every host that serves one of its instances.
  */
-export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteScopeHost>>): LocalVerticalBroker {
+export function createLocalVerticalBroker(
+  hosts: Readonly<Record<string, SqliteScopeHost>>,
+  /** Keyed by the target's registry slug, as `hosts` is. */
+  targets: Readonly<Record<string, LocalVerticalTargetHooks>> = {},
+): LocalVerticalBroker {
   const hostOf = (vertical: string): SqliteScopeHost | undefined =>
     Object.prototype.hasOwnProperty.call(hosts, vertical) ? hosts[vertical] : undefined;
+  const hooksOf = (vertical: string): LocalVerticalTargetHooks | undefined =>
+    Object.prototype.hasOwnProperty.call(targets, vertical) ? targets[vertical] : undefined;
   // The broker is one in-process harness spanning hosts; no individual host directory has
   // both endpoints. Production's directory keeps this row durably instead.
   const bindings = new Map<string, { targetScopeId: ScopeId; invalidated: boolean; archiveRevision: string | null }>();
@@ -124,7 +169,8 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
         scopeId: scopeIdOf.parse(from.scopeId),
       };
       return {
-        async invoke<O>(target: string, operation: string, input?: unknown, options?: InvokeOptions): Promise<O> {
+        async invoke<O>(target: string, operation: string, input?: unknown, options?: LocalVerticalInvokeOptions): Promise<O> {
+          const { onBehalf, ...invokeOptions } = options ?? {};
           // 1. The caller, re-read from ITS host's directory on every call: a live, primary
           //    instance of the vertical it says it is, in the tenant it says. Suspended,
           //    archived, forked, preview — all refused here, before any target is looked up.
@@ -181,13 +227,44 @@ export function createLocalVerticalBroker(hosts: Readonly<Record<string, SqliteS
                 'bind the instance first',
             );
           }
-          // 3. The target's peer door, as the caller — admission and every check happen there.
+          const at = { tenantId: resolution.instance.tenantId, scopeId: resolution.instance.scopeId };
+          const hooks = hooksOf(target_);
+          // 3a. The platform layer's own answer (#3161), before any module or `peers` lookup: to a
+          //     caller that got this far, as the router answers any peer it dispatches. A client
+          //     id is no secret; every token the target's sign-in hands out names it.
+          if (operation === PEER_CLIENT_OPERATION) {
+            return { clientId: hooks?.clientId ?? null } satisfies PeerClientAnswer as O;
+          }
+          // 3b. A call made for a person: the target's own door says who, and the call runs as
+          //     them under the token's scope, while the caller passes the target's peer admission.
+          if (onBehalf !== undefined) {
+            // Parsed for the transport's bound; the refusal echoes nothing of what was sent.
+            if (!peerOnBehalf.safeParse(onBehalf).success) {
+              throw substratError('validation_failed', 'onBehalf: expected { token } with a token of 1–8192 characters');
+            }
+            // The hosted door's words and codes (`vertical-host`'s `/internal/vertical-invoke`).
+            if (!hooks?.delegated) throw substratError('forbidden', 'this app does not take calls for a person');
+            const answer = await hooks.delegated({ token: onBehalf.token, caller: { ...caller }, target: at });
+            if (!answer.admitted) {
+              // The reason is for the operator, on this line; the caller learns only that it was refused.
+              console.warn(JSON.stringify({ host: 'peer-on-behalf-refused', ...at, caller: caller.vertical, reason: answer.reason }));
+              throw answer.reason === 'unavailable'
+                ? substratError('unavailable', 'this call for a person cannot be answered now; retry')
+                : substratError('forbidden', 'this call for a person was refused');
+            }
+            // `via`: the target's peer admission for the caller, inside the scope on every invoke.
+            const stub = await targetHost!.getScope(answer.principal, at.tenantId, at.scopeId, {
+              delegation: { actor: answer.actor, scope: answer.scope, via: { vertical: caller.vertical, scope: caller.scopeId } },
+            });
+            return stub.invoke<O, unknown>(operation, input, invokeOptions);
+          }
+          // 3c. The target's peer door, as the caller — admission and every check happen there.
           const stub = await targetHost!.getVerticalScope(
             { vertical: caller.vertical, scope: caller.scopeId },
-            resolution.instance.tenantId,
-            resolution.instance.scopeId,
+            at.tenantId,
+            at.scopeId,
           );
-          return stub.invoke<O, unknown>(operation, input, options);
+          return stub.invoke<O, unknown>(operation, input, invokeOptions);
         },
       };
     },

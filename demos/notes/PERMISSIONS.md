@@ -5,14 +5,17 @@
 
 # Permission snapshot — @substrat-run/demo-notes
 
-2 keys · 1 modules · 1 roles
+5 keys · 1 modules · 1 roles
 
 ## 1. Registry — every key a registered manifest declares
 
-| Key | Description | Declared by |
-| --- | --- | --- |
-| `note:read` | Read the notes in this workspace | `@substrat-run/demo-notes` |
-| `note:write` | Write a note | `@substrat-run/demo-notes` |
+| Key | Description | Declared by | Reserved to a system principal |
+| --- | --- | --- | --- |
+| `item-note:read` | Read the notes on Todo items, once Todo has vouched for the list | `@substrat-run/demo-notes` | — |
+| `item-note:write` | Write a note on a Todo item, once Todo has vouched for it | `@substrat-run/demo-notes` | — |
+| `note:read` | Read the notes in this workspace | `@substrat-run/demo-notes` | — |
+| `note:write` | Write a note | `@substrat-run/demo-notes` | — |
+| `todo-peer:admit` | Todo's seat here as a peer, which its peer switch takes away; no operation checks it | `@substrat-run/demo-notes` | yes |
 
 ## 2. Roles — as defined by this vertical's provisioning code
 
@@ -20,16 +23,46 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `writer` | `note:read`, `note:write` |
+| `writer` | `item-note:read`, `item-note:write`, `note:read`, `note:write` |
 
 ## 3. Coverage — which roles hold each key
 
 | Key | Held by |
 | --- | --- |
+| `item-note:read` | `writer` |
+| `item-note:write` | `writer` |
 | `note:read` | `writer` |
 | `note:write` | `writer` |
+| `todo-peer:admit` | — no role — |
 
-## 4. Operations — which key each checks
+## 4. Other verticals — what each may do here
+
+Each is another vertical of the SAME tenant, calling through the platform as
+`vertical:<slug>`. It holds the permissions
+shown on every instance of this vertical from provisioning on, and no others: a key
+removed here stops being held on every instance at the first call after the promote
+(#2263). It may invoke only the operations shown (none: it may only receive). A tenant
+switches one off per scope with `revokeFromPeer`. A call it makes for a person, with a
+token this vertical verifies itself, runs as that person within the Delegations section
+below, and is admitted only while this vertical is admitted here and switched on (#3161).
+
+| Vertical | Declared by | May invoke | Holds |
+| --- | --- | --- | --- |
+| `todo` | `@substrat-run/demo-notes` | — none (receive only) — | `todo-peer:admit` |
+
+## 5. Delegations — which apps may act for a person here
+
+Each is another app of the SAME tenant, calling as a person signed in to it, with a token
+the team's auth-server exchanged for that person. The call runs as the person: the keys
+shown are a ceiling over what the person already holds here, never a grant, so a key the
+person lacks stays refused. `mcp` is the two-step exchange this vertical's MCP endpoint
+takes; `peer` lets the app act for anyone signed in to it, on a peer call, with no step here.
+
+| Actor | Declared by | May act with | Channels |
+| --- | --- | --- | --- |
+| `todo` | `@substrat-run/demo-notes` | `note:read`, `note:write` | `peer` |
+
+## 6. Operations — which key each checks
 
 The check each registered operation DECLARES it opens with, and what it narrows to. A
 proof walk lists this module's keys only; a composed engine's key it reaches is declared by
@@ -39,12 +72,12 @@ shapes.
 
 | Operation | Key | Checked on | Declared by |
 | --- | --- | --- | --- |
-| `notes/add-item-note` | `note:write` | the scope | `@substrat-run/demo-notes` |
+| `notes/add-item-note` | `item-note:write` | the scope | `@substrat-run/demo-notes` |
 | `notes/add-note` | `note:write` | the scope | `@substrat-run/demo-notes` |
-| `notes/list-item-notes` | `note:read` | the scope | `@substrat-run/demo-notes` |
+| `notes/list-item-notes` | `item-note:read` | the scope | `@substrat-run/demo-notes` |
 | `notes/list-notes` | `note:read` | the scope | `@substrat-run/demo-notes` |
 
-## 5. Not covered by this artifact
+## 7. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

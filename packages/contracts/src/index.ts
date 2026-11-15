@@ -96,6 +96,7 @@ export * from './manifest.js';
 export * from './openapi.js';
 export * from './deploy.js';
 export * from './reserved-keys.js';
+export * from './delegation-surface.js';
 export * from './entitlement-namespace.js';
 export * from './migration-diff.js';
 export * from './review-text.js';

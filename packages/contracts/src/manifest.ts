@@ -3,6 +3,7 @@ import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { eventType } from './events.js';
 import { uploadLinkPolicy } from './attachments.js';
 import { peerSpec } from './peer.js';
+import { MAX_DELEGATED_PERMISSIONS, delegationChannels } from './delegations.js';
 import { connectionLandingSpec } from './connection-landing.js';
 import { isKernelNamespace } from './object-ref.js';
 import { entityStateDeclaration } from './entity-state.js';
@@ -15,6 +16,30 @@ import { updatedStampDeclaration } from './entity-stamps.js';
 export const semverVersion = z
   .string()
   .regex(/^\d+\.\d+\.\d+(-[0-9A-Za-z-.]+)?(\+[0-9A-Za-z-.]+)?$/);
+
+/**
+ * One app of the tenant that may act for a person HERE (#3161), as a module manifest's
+ * `delegations` entry: the actor's registry slug, the keys of this vertical it may act with, and
+ * the token-exchange channels it may use (`delegations.ts`; absent is `mcp` alone, as for a
+ * delivered grant). The dashboard turns it into the delegation grant it delivers to the team's
+ * auth-server.
+ *
+ * The keys are a CEILING over what the person already holds here, never a grant: a delegated
+ * call runs as the person, so a key they lack stays refused whatever this lists, and one they
+ * hold but this omits is refused to the actor.
+ */
+export const manifestDelegation = z
+  .object({
+    actor: verticalSlug,
+    permissions: z
+      .array(permissionKey)
+      .min(1)
+      .max(MAX_DELEGATED_PERMISSIONS)
+      .refine((ks) => new Set(ks).size === ks.length, { message: 'a delegation lists each permission at most once' }),
+    channels: delegationChannels.optional(),
+  })
+  .strict();
+export type ManifestDelegation = z.infer<typeof manifestDelegation>;
 
 export const permissionDeclaration = z.object({
   key: permissionKey,
@@ -434,6 +459,15 @@ export const moduleManifest = z.object({
   //
   // Optional: additive-only surface (D-28) — every earlier manifest still parses.
   peers: z.array(peerSpec).optional(),
+  // DELEGATIONS (#3161): other apps of the same tenant that may act for a PERSON here — a master
+  // calling its plugin as the signed-in person, with that person's token exchanged at the issuer
+  // — each with the keys of this vertical it may act with. Where `peers` seats keys for the app
+  // itself, this grants nothing: the keys are a per-request ceiling over the person's own roles.
+  // PERMISSIONS.md renders it, so letting another app act for people here is part of the reviewed
+  // permission diff. See `manifestDelegation`.
+  //
+  // Optional: additive-only surface (D-28) — every earlier manifest still parses.
+  delegations: z.array(manifestDelegation).optional(),
   // CONNECTION LANDINGS (#2316): which operation a poll-only connector's data lands through,
   // per provider, and the key the connection holds while it does. Lifted into the permission
   // registry, so PERMISSIONS.md renders it and the permission digest moves with it: the key a
@@ -626,6 +660,19 @@ export const moduleManifest = z.object({
       });
     }
     peers.add(p.vertical);
+  }
+  // #3161: one entry per actor, for the reason `peers` has one per vertical: two would be read
+  // as their union, and a reviewer reading the second would not see the first.
+  const actors = new Set<string>();
+  for (const [i, d] of (m.delegations ?? []).entries()) {
+    if (actors.has(d.actor)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['delegations', i, 'actor'],
+        message: `module '${m.id}' declares a delegation to '${d.actor}' more than once — declare it once`,
+      });
+    }
+    actors.add(d.actor);
   }
   // #1232: a freshness expectation naming a type this module neither emits nor
   // consumes would read as permanently stale forever — a typo becoming a permanent

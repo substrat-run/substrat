@@ -557,6 +557,8 @@ import {
   asyncInvocationId,
   asyncLinePass,
   assertNoCallerPurge,
+  parseScopeDelegation,
+  type ScopeDelegation,
   purgeReportOf,
   purgeStillDue,
   assertBoundOperations,
@@ -1582,6 +1584,8 @@ interface ScopeStubRpc {
     systemDoorInstance?: string,
     /** K-61: the person's verified address, sent only for a stub `getScope` made. */
     verifiedEmail?: string | null,
+    /** #3161: a person acting through another app — the ceiling on every check the call makes. */
+    delegation?: ScopeDelegation,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -1595,6 +1599,11 @@ interface ScopeStubRpc {
      * impersonated principal with nothing stamped and no read-only bound.
      */
     impersonation?: { honoured: boolean };
+    /**
+     * #3161: present iff the DO understood `delegation`, on `impersonation`'s reasoning: an old DO
+     * that dropped it would run the call with the person's whole holdings, uncapped.
+     */
+    delegation?: { honoured: boolean };
     /**
      * Present iff the DO understood `preconditions` and the operation declares
      * `concurrency` (#129).
@@ -5887,12 +5896,23 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
+    // #3161: refused before anything is read, so a malformed ceiling never yields a stub.
+    const parsedDelegation = parseScopeDelegation(options?.delegation);
     // Lifecycle gates (control-plane.md §4.1/§4.2), the K-3 fail-closed path,
     // evaluated durably in the ControlPlaneDO. A throw propagates here.
     await this.assertLive(tenantId, scopeId, 'getScope');
 
     await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, undefined, undefined, undefined, options?.verifiedEmail ?? null);
+    // #3161: a person's call arriving through a peer goes through that peer's door, as
+    // `getVerticalScope` opens it (the name `peers` uses, the rewind hold, the pin), and the
+    // ScopeDO admits the peer inside its queue on every invoke.
+    if (parsedDelegation?.via) {
+      const via = peerCallerAt(collectPeers(this.peerSources), parsedDelegation.via);
+      const door = await this.openDoor('peer', via.vertical, scopeId);
+      const delegation = Object.freeze({ ...parsedDelegation, via });
+      return this.buildStub(tenantId, scopeId, principal, undefined, door, options, undefined, undefined, undefined, options?.verifiedEmail ?? null, delegation);
+    }
+    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, undefined, undefined, undefined, options?.verifiedEmail ?? null, parsedDelegation);
   }
 
   async getScopeStore(
@@ -7248,6 +7268,8 @@ export class CloudflareScopeHost implements ScopeHost {
     verticalCaller?: VerticalCaller,
     /** K-61: a parameter of its own, so only `getScope` can hand one over and no other door can. */
     verifiedEmail: string | null = null,
+    /** #3161: the same, for a person acting through another app. Already parsed by `getScope`. */
+    delegation?: ScopeDelegation,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const systemModuleId = door?.kind === 'system' ? (door.key as ModuleId) : undefined;
@@ -7345,6 +7367,7 @@ export class CloudflareScopeHost implements ScopeHost {
             verticalCaller,
             systemDoorInstance,
             verifiedEmail,
+            delegation,
           );
         // #1834: through the door (a module's, or #2029 a peer's), pinned to the instance its gate
         // read. A missed pin comes back as an answer, which `through` re-gates on.
@@ -7423,6 +7446,15 @@ export class CloudflareScopeHost implements ScopeHost {
           throw substratError(
             'unavailable',
             `${operation} ran on a scope host that did not understand the system door's pin. ` +
+              'Retry once the scope has been migrated',
+          );
+        }
+        // #3161, the same shape: a DO too old to know about delegation ran the call with the
+        // person's whole holdings. A success decided without the ceiling is refused.
+        if (delegation !== undefined && envelope.delegation?.honoured !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not understand delegated calls. ` +
               'Retry once the scope has been migrated',
           );
         }

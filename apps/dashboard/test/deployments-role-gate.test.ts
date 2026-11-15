@@ -66,7 +66,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 // specifier would pull it back into the config that cannot compile it.
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, ctx?: unknown): Response | Promise<Response> };
 };
 
 const PROVIDER = 'authhero';
@@ -180,6 +180,7 @@ describe('the team-scoped deployments write routes ask the caller’s role (#159
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
       env,
+      { waitUntil: () => undefined, passThroughOnException: () => undefined },
     );
 
   /** The declared routes name their team in the path (#2170). */

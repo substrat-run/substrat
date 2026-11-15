@@ -1,14 +1,16 @@
 ---
 status: proposed
 layer: plan
-description: A vertical takes its people from another app of the same tenant. It signs them in at the shared issuer, asks the other app who each login is by a peer call, and keeps the answer for a bounded time. The first slice is built on the pure host with a demo pair.
+description: A vertical takes its people from another app of the same tenant. It signs them in at the shared issuer, asks the other app who each login is by a peer call, and keeps the answer for a bounded time. The other app may also call it as the person signed in, with a token the issuer exchanged for them. Built on both hosts, with a demo pair.
 ---
 
 # RFC: a vertical that takes its people from another app
 
-**Status:** proposed; first slice built (pure host, `demos/notes` beside `demos/todo`) ·
-**Touches:** `@substrat-run/contracts` (`people.ts`), `@substrat-run/vertical-auth` (`people.ts`),
-`@substrat-run/dev-issuer` (`people.ts`), `demos/todo`, `demos/notes`
+**Status:** proposed; the door and the call made as a person are built on both hosts (#3161), with
+`demos/notes` beside `demos/todo` as the reference ·
+**Touches:** `@substrat-run/contracts` (`people.ts`, `delegations.ts`), `@substrat-run/vertical-auth`
+(`people.ts`, `delegate.ts`), `@substrat-run/kernel` (`delegation-ceiling.ts`),
+`@substrat-run/vertical-host` (`worker-door.ts`), `@substrat-run/dev-issuer`, `demos/todo`, `demos/notes`
 
 ## 1. The need
 
@@ -81,7 +83,7 @@ to the tenant directory as K-22 moved membership, is the decision this RFC asks 
 
 ## 4. What is built, and what is not
 
-Built, on the pure host:
+Built, on the pure host first:
 
 - the contract, the door and its SQL store, with the door's rules under test
   (`packages/vertical-auth/test/people.test.ts`);
@@ -96,11 +98,25 @@ Built, on the pure host:
   Notes stores them; Todo answers whether a person may see the item (`todo/vouch-access`, another
   system-held key the peer holds), and Notes' door asks before every read and write.
 
-Not built:
+Then, for #3161:
 
-- **The hosted door.** `workerDoor` has no people option, and the identity directory has no tables
-  for the copy. `sqlPeopleStore` is written over the directory's own SQL seam so that half is a
-  wiring change. Until it lands nothing deployed can depend on another app's people.
+- **The hosted door.** `workerDoor({ people })` (`packages/vertical-host/src/worker-door.ts`) takes a
+  dependent's people from its master, keeping the copy in the tenant's identity directory
+  (`identityPeopleStore`). A dependent names neither `invites` nor `join`, and has no owner claim.
+- **The call a master makes as a person** (§5.3, §6). The master keeps each session's refresh token
+  (`refreshTokens` hosted, `devRefreshStore` locally), trades it at the issuer for a token addressed
+  to the plugin on the `peer` channel, and makes the peer call with it: `peerAs` hosted, `devDelegate`
+  locally. The plugin's door verifies the token, admits the person it names as their own sign-in
+  would be, and the call runs as them with the token's keys as a per-call ceiling
+  (`packages/kernel/src/delegation-ceiling.ts`, on both adapters). The plugin declares which app may
+  act for its people and with which keys (`delegations` in its manifest); `PERMISSIONS.md` renders
+  it, and the dashboard delivers it to the team's issuer as the grant the exchange reads.
+- **The reference.** Todo writes and reads Notes' notepad as the signed-in person
+  (`GET`/`POST /api/plugins/notes/notes`, `demos/notes/test/delegated.test.ts`). Notes delegates its
+  notepad keys only: item notes have keys of their own, because their operations rely on the vouch
+  of §4's last item, which a call made as a person does not pass.
+
+Not built:
 - **A declaration `substrat push` reads.** A dependent says so in its host wiring and in
   `substrat.calls`. Nothing refuses a push whose master does not implement the contract, and install
   does not bind the two.
@@ -114,9 +130,13 @@ Not built:
   carries the plugin's screens in its own code. Whether a plugin ships its own UI pieces for the
   host to mount, and how they cross origins, is undecided.
 - **A check about another principal.** `todo/vouch-access` answers from the tables that mirror
-  Todo's grants, because an operation can only check its own caller. And Notes' operations trust
-  their door for the answer, because module code cannot make the call. A kernel check for another
-  principal, or a call made as the person (§5.3), would remove both.
+  Todo's grants, because an operation can only check its own caller. And Notes' item-note
+  operations trust their door for the answer, because module code cannot make the call. The call
+  made as a person does not remove either: it reaches an operation without passing the door, which
+  is why Notes keeps those operations out of what it delegates. A kernel check for another principal
+  would remove both.
+- **A record of who acted.** A call made as a person writes rows and events as the person. The
+  spine does not yet say that Todo made the call (§6).
 
 ## 5. Open questions
 
@@ -142,9 +162,14 @@ decided before a second plugin exists, even if it is built later.
 
 ### 5.3 Calls on a person's behalf
 
-A peer acts as the app. A plugin reading the master's data for one person needs either the token
-exchange #1824 built for MCP extended to peer calls, or the person's id as input, which a
-third-party plugin could set to anyone.
+**Answered (#3161): the `peer` channel.** A peer acts as the app. The token exchange #1824 built for
+MCP is extended with a second channel: the master presents a live token of the person, issued to it,
+names the plugin's client as the audience, and gets one access token with the person as `sub`, the
+master in `act`, and the keys the plugin delegated to it as `scope`. A peer call carries it as
+`onBehalf`. The person's id as input was not taken, because any caller could set it to anyone.
+
+The other direction is still open: a plugin reading the MASTER's data for one person would need the
+master to delegate to it, and no plugin does yet.
 
 ### 5.4 Whether this survives merging verticals and modules
 
@@ -153,7 +178,8 @@ and the bound stay as they are, and the peer call may become a read inside one a
 
 ## 6. Deployed: a host app that calls its plugin as the person
 
-**Proposed, not decided. It reverses a #1706 decision and needs a human's yes before any code.**
+**Decided (#3161): the token-verified form, not `actingFor`.** The first proposal is kept below,
+because what it reverses and what it costs are still the record of why the second was taken.
 
 Locally, Todo's page reaches Notes through the dev proxy, so one origin carries one session. Deployed,
 the two are separate origins with separate sessions, and the platform refuses a shared login cookie on
@@ -168,7 +194,46 @@ make a peer call act as a person" (`vertical-host`, `verticalInvokeBody`), and `
 states that the caller's signed-in user does not cross. That was right for a peer that is merely
 another app of the tenant. It is the thing to change here, and only here.
 
-### The proposal
+### What was built: the person's sign-in, proven
+
+The master does not say who it acts for; the issuer does. Todo holds the refresh token of the
+person's session at Todo, trades it for a fresh token of that person, and exchanges that for one
+addressed to Notes (§5.3). Notes' door verifies the token itself: its issuer, its audience (Notes'
+own client), the `peer` channel, and an `act` naming its master. Only then
+does it run the person contract's check, as a sign-in would, and the call runs as the person with the
+token's `scope` as the ceiling. The router passes the token through and never logs it.
+
+The difference from `actingFor` is what the plugin can rely on. With `actingFor` the master
+**asserts** a person, and nothing distinguishes a request P made from one Todo made up. With the
+token the master **proves** that P signed in to it: an exchange needs a token issued to Todo for P,
+which only P's sign-in at Todo produces. It does not prove that P is still signed in at the issuer.
+The refresh token outlives the issuer session it was issued under, and Todo's own session acts for P
+in Todo without one anyway. The bound that holds:
+
+- **The master cannot act for someone who never signed in to it**, and a schedule with no session
+  behind it cannot act at all.
+- **It can act for P while its own session for P lives**, up to that session's lifetime, and while
+  the issuer keeps honouring the refresh token.
+- **A ban at the issuer stops the next exchange.** The issuer's refresh grant reads no ban, so the
+  token exchange refuses a banned person itself, in the words it uses for no person at all.
+- **A block at the master stops the plugin within the person contract's TTL.** The plugin's door
+  runs the contract's check on every call, as a sign-in would.
+- **Signing out of the master stops it**: the sign-out deletes the master's refresh row.
+- **Signing out at the issuer alone does not.** The refresh token is not tied to that session, and
+  the master's own session still acts for P in the master.
+- **The keys are the plugin's to cap, per actor**, and reviewed in its `PERMISSIONS.md`. Under
+  `actingFor` Todo would have acted with everything the person holds.
+- **No kernel change to the peer door's caller.** A call made as a person is not a peer call with a
+  person bolted on: it does not pass the peer door, and `getScope` takes the person with a
+  `delegation` beside it.
+- **The bound is unchanged.** A token lives 300 s and the kept answer 300 s, so revoked access lands
+  within five minutes either way.
+
+What it still does not prove is that P is behind THIS request: Todo holds the refresh token for as
+long as its own session for P lives, and could use it while P is away. The spine does not record that Todo
+made a call (§4), so today nothing in the plugin's history shows it.
+
+### The proposal not taken: `actingFor`
 
 - **A declaration on the dependent.** Notes declares its identity source in its manifest,
   `identity: { from: 'todo', contract: 'identity.person@1' }` (§2 of the plan this RFC follows).

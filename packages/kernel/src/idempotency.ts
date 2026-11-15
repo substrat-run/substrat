@@ -9,6 +9,7 @@ import {
   type CheckSubject,
 } from '@substrat-run/contracts';
 import { isRedactedPayload } from './subject-redaction.js';
+import type { ScopeDelegation } from './delegation-ceiling.js';
 
 /**
  * The spine half of request idempotency (#116) — what remembers a key, and what
@@ -111,8 +112,13 @@ export interface IdempotentReplay {
  * vertical in a tenant share their grants (`vertical:<slug>`) but are two callers, and a key one
  * of them chose must not replay the response the other received.
  */
-export function idempotencySubject(subject: CheckSubject): string {
-  return subject.kind === 'vertical' ? `${subjectRef(subject)}@${subject.scope}` : subjectRef(subject);
+export function idempotencySubject(subject: CheckSubject, delegation?: ScopeDelegation): string {
+  const base = subject.kind === 'vertical' ? `${subjectRef(subject)}@${subject.scope}` : subjectRef(subject);
+  // #3161: a person acting through an app is a caller of its own, per actor and per ceiling. A
+  // replay runs no check, so a recording made outside this ceiling must be out of its reach.
+  return delegation
+    ? `${base}#delegated:${JSON.stringify([delegation.actor, [...new Set(delegation.scope)].sort()])}`
+    : base;
 }
 
 /**
@@ -136,12 +142,14 @@ export function assertIdempotencyKey(key: string): void {
 export function idempotencyLookupQuery(
   subject: CheckSubject,
   key: string,
+  /** #3161: the delegated call's keyspace — see `idempotencySubject`. */
+  delegation?: ScopeDelegation,
 ): { sql: string; params: [string, string] } {
   return {
     sql:
       'SELECT operation, fingerprint, result, oversized, entity_version ' +
       'FROM _substrat_idempotency WHERE subject = ? AND key = ?',
-    params: [idempotencySubject(subject), key],
+    params: [idempotencySubject(subject, delegation), key],
   };
 }
 
@@ -218,6 +226,8 @@ export function idempotencyRecordStatement(
   result: unknown,
   entityVersion: string | null,
   at: string,
+  /** #3161: the delegated call's keyspace — see `idempotencySubject`. */
+  delegation?: ScopeDelegation,
 ): { sql: string; params: [string, string, string, string, string | null, number, string | null, string] } {
   const serialised = result === undefined ? null : JSON.stringify(result) ?? null;
   const oversized = serialised !== null && serialised.length > IDEMPOTENCY_RESULT_LIMIT;
@@ -227,7 +237,7 @@ export function idempotencyRecordStatement(
       '(subject, key, operation, fingerprint, result, oversized, entity_version, recorded_at) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     params: [
-      idempotencySubject(subject),
+      idempotencySubject(subject, delegation),
       key,
       operation,
       fingerprint,

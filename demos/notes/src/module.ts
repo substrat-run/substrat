@@ -33,13 +33,13 @@ const bound = operationsFor(notesOperations)({
   },
 
   'notes/list-item-notes': async (ctx, input) => {
-    assertAllowed(await ctx.check(NOTES_PERM.noteRead));
+    assertAllowed(await ctx.check(NOTES_PERM.itemNoteRead));
     const { listId, ...page } = input;
     return ctx.page<ItemNoteRow>('item_note', listId === undefined ? page : { ...page, filters: { list_id: listId } });
   },
 
   'notes/add-item-note': async (ctx, input) => {
-    assertAllowed(await ctx.check(NOTES_PERM.noteWrite));
+    assertAllowed(await ctx.check(NOTES_PERM.itemNoteWrite));
     const id = ulid();
     ctx.sql.exec('INSERT INTO notes_item_notes (id, item_id, list_id, author_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
       id,

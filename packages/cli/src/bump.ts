@@ -720,6 +720,8 @@ export interface PermissionSnapshot {
   readonly schedules: Record<string, { keys: string[]; terms: string[] }>;
   /** Peer vertical and its declaring module (#1706) → the keys it holds here, then what it may invoke. */
   readonly peers: Record<string, { keys: string[]; terms: string[] }>;
+  /** #3161: an app that may act for a person here, and its declaring module → the keys it may act with, and its channels. */
+  readonly delegations: Record<string, { keys: string[]; channels: string[] }>;
   /**
    * Operation → the key it declares it checks, then how it narrows and who declares it (#2384).
    * `undefined` when the artifact has no Operations section: an emitter that predates it.
@@ -778,6 +780,7 @@ export function parsePermissions(text: string): PermissionSnapshot {
     grantShapes: {} as Record<string, { keys: string[]; terms: string[] }>,
     schedules: {} as Record<string, { keys: string[]; terms: string[] }>,
     peers: {} as Record<string, { keys: string[]; terms: string[] }>,
+    delegations: {} as Record<string, { keys: string[]; channels: string[] }>,
     unread: {} as Record<string, string>,
   } as PermissionSnapshot;
   for (const section of permissionsSections(text)) {
@@ -808,6 +811,14 @@ export function parsePermissions(text: string): PermissionSnapshot {
         snap.peers[`${firstKey(cells)} (declared by ${firstKey(cells.slice(1))})`] = {
           keys: codesIn(cells[cells.length - 1] ?? ''),
           terms: cells.slice(2, -1),
+        };
+      }
+    } else if (/^Delegations\b/.test(heading)) {
+      // | Actor | Declared by | May act with | Channels | — one row per declaring module, named by both, as a peer's is.
+      for (const cells of rowsOf(body)) {
+        snap.delegations[`${firstKey(cells)} (declared by ${firstKey(cells.slice(1))})`] = {
+          keys: codesIn(cells[2] ?? ''),
+          channels: codesIn(cells[3] ?? ''),
         };
       }
     } else if (/^Operations\b/.test(heading)) {
@@ -887,6 +898,22 @@ export function classifyPermissions(baseText: string | null, headText: string | 
       }
     }
   }
+
+  // #3161: another app acting for the people here. Gaining a key or a channel widens what it may do
+  // as them, flagged minor like any widening. Losing one, or the delegation going, breaks the app
+  // that acts: its calls are refused from the next promote, so that is major.
+  keyed(b.delegations, h.delegations, {
+    removed: (name, d) => push('major', `delegation ${name}`, `removed (acted with: ${d.keys.join(', ')}) — the acting app's calls are refused`, true),
+    added: (name, d) => flag(`delegation ${name}`, `added (may act with: ${d.keys.join(', ')}; over ${d.channels.join(', ')}) — widening`),
+    both: (name, bd, hd) => {
+      const keys = setDiff(bd.keys, hd.keys);
+      const channels = setDiff(bd.channels, hd.channels);
+      if (keys.removed.length) push('major', `delegation ${name}`, `may no longer act with ${keys.removed.join(', ')} — the acting app's calls with it are refused`, true);
+      if (channels.removed.length) push('major', `delegation ${name}`, `no longer over ${channels.removed.join(', ')} — the acting app's calls over it are refused`, true);
+      if (keys.added.length) flag(`delegation ${name}`, `may now act with ${keys.added.join(', ')} — widening`);
+      if (channels.added.length) flag(`delegation ${name}`, `now over ${channels.added.join(', ')} — widening`);
+    },
+  });
 
   // #2384: which key each operation checks. An operation moved to another key, or checked on
   // something else, is a permission change the checkpoint reads — never an unread section.

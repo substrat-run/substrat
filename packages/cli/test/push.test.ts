@@ -317,6 +317,20 @@ describe('permissionDigest — the promotion "permissions changed" signal (D-39)
     expect(await permissionDigest(before)).not.toBe(await permissionDigest(after));
   });
 
+  // #3161: the digest the builder gave this surface before registries carried delegations, pinned.
+  // A surface that delegates nothing, an empty list included, must keep it: otherwise every
+  // vertical's next push would ask a human to acknowledge a permission change that did not happen.
+  it('does not move for a surface that delegates nothing (#3161)', async () => {
+    const surface = {
+      modules: [
+        { manifest: { id: '@fixture/notes', permissions: [{ key: 'notes:read', description: 'Read a note' }, { key: 'notes:write', description: 'Write a note' }], delegations: [] } },
+        { manifest: { id: '@fixture/tags', permissions: [{ key: 'tags:read', description: 'Read tags' }] } },
+      ],
+      roles: [{ key: 'owner', permissions: ['notes:read', 'notes:write', 'tags:read'], source: 'vertical' }],
+    } as never;
+    expect(await permissionDigest(buildPermissionRegistry(surface))).toBe('52aec2edc123c04bb8faf3a060582606');
+  });
+
   it('hashes an explicit empty surface deterministically (there is no absent-registry path — D-41)', async () => {
     // A vertical exposing nothing ships an explicit empty registry; its digest is content-only,
     // never the worker bindings (the old placeholder bug).
@@ -938,6 +952,24 @@ export const permissions = {
     }
     const listed = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use'] } }));
     expect(listed.status, listed.stderr).toBe(0);
+  });
+
+  it.runIf(built)('…and refuses a delegation of a reserved key, in lint:permissions’ words (#3161)', () => {
+    const r = runCheck(
+      verticalWith(`
+export const permissions = {
+  modules: [{ manifest: { id: '@acme/engine-run', permissions: [
+    { key: 'run:use', description: 'Open a run' },
+    { key: 'run:drive', description: 'Drive a run', holder: 'system' },
+  ], delegations: [{ actor: 'todo', permissions: ['run:use', 'run:drive'] }] } }],
+  roles: [{ key: 'member', permissions: ['run:use'], source: 'vertical' }],
+  entityGrants: [],
+};
+`),
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/delegates 1 key\(s\) reserved to a system principal:\n {4}delegation `todo` → `run:drive`/);
+    expect(r.stdout).not.toMatch(/digest:/);
   });
 
   it.runIf(built)('…and refuses a system-held role holding a person’s key (K-55)', () => {

@@ -48,7 +48,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, ctx?: unknown): Response | Promise<Response> };
 };
 
 // Compile-time: what the worker answers is assignable to what the web reads. The two are
@@ -516,6 +516,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
         `/api/teams/${tenant}/deployments/${encodeURIComponent(SLUG)}/promote`,
         { method: 'POST', headers: { cookie: `sb_session=${subs.owner}`, 'content-type': 'application/json' }, body: JSON.stringify(body) },
         env,
+        { waitUntil: () => undefined, passThroughOnException: () => undefined },
       );
 
     it('a stale binding is a 412 the dialog can tell apart; a current one promotes', async () => {

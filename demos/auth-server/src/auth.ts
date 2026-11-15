@@ -750,6 +750,21 @@ function betterAuthFor(deps: AuthDeps) {
          */
         codeExpiresIn: 30 * 60,
         /**
+         * REFRESH-TOKEN REUSE GRACE (#3161). A refresh token is single-use: refreshing rotates
+         * it, and presenting the spent one again reads to the plugin as a stolen token replayed,
+         * so it deletes every refresh token the person holds at that client. A master app that
+         * keeps a person's refresh token to call its plugin as them refreshes from several
+         * isolates, and two of them refreshing at once would sign the person out of delegated
+         * calls everywhere. Inside this window a spent token presented again for the same scopes
+         * and resources gets the SAME response replayed (stored encrypted on the token's row);
+         * any other reuse inside it is refused without touching the family.
+         *
+         * The cost: a stolen refresh token replayed within 30 seconds of the rightful refresh is
+         * not detected, and its holder gets the same tokens, the next refresh token included.
+         * After the window, reuse is detected and revokes the family as before.
+         */
+        refreshTokenReuseInterval: 30,
+        /**
          * RESOURCE INDICATORS (RFC 8707), for the MCP endpoint every vertical mounts (#1619).
          *
          * A token for a `resource` is minted only if an `oauth_resource` row names it. Here

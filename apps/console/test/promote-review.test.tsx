@@ -112,6 +112,19 @@ describe('the console promote review (#1677)', () => {
     expect(text).toContain('held by a system principal (holder: system), not a role a person can hold');
   });
 
+  it('names an app newly allowed to act for a person here (#3161)', () => {
+    const surface = (delegations: unknown[]) =>
+      wire(
+        buildPermissionRegistry({
+          modules: [{ manifest: { id: '@substrat-run/engine-a', permissions: [{ key: 'a:read', description: 'Read' }], delegations } }] as never,
+          roles: [{ key: 'staff', permissions: ['a:read'] as never, source: 'vertical' }],
+        }),
+      );
+    const review = permissionReviewOf(surface([]), surface([{ actor: 'todo', permissions: ['a:read'], channels: ['peer'] }]));
+    const text = renderToString(createElement(PermissionDiffView, { review })).replace(/&#x27;/g, "'");
+    expect(text).toContain("! todo may now act for a person here with a:read over peer (a ceiling over the person's own keys, never a grant)");
+  });
+
   it('an empty itemised diff beside a moved digest names the unitemised field', () => {
     const a = registry(['a:read']);
     const b = { ...a, exports: [{ type: 'x.y' }] } as unknown as PermissionRegistry;

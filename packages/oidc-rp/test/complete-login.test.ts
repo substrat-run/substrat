@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { SignJWT, decodeJwt, exportJWK, generateKeyPair } from 'jose';
 import {
   beginLogin,
   completeLogin,
   mintSession,
   verifySession,
+  verifySessionEnvelope,
   USERINFO_TIMEOUT_MS,
   type OidcEnv,
 } from '../src/index.js';
@@ -40,6 +41,8 @@ let idTokenClaims: Record<string, unknown>;
 let userInfo: { status: number; body: unknown } | 'never answers' | null;
 let advertiseUserInfo: boolean;
 let issueAccessToken: boolean;
+/** The refresh token the stubbed token endpoint hands back, or null for none. */
+let refreshToken: string | null;
 let userInfoRequests: { authorization: string | null; deadline: boolean }[];
 
 beforeAll(async () => {
@@ -60,6 +63,7 @@ beforeEach(() => {
   userInfo = null;
   advertiseUserInfo = true;
   issueAccessToken = true;
+  refreshToken = null;
   userInfoRequests = [];
 
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -86,6 +90,7 @@ beforeEach(() => {
       return Response.json({
         id_token: idToken,
         ...(issueAccessToken ? { access_token: 'at-1', token_type: 'Bearer' } : {}),
+        ...(refreshToken ? { refresh_token: refreshToken } : {}),
       });
     }
     if (url === `${ISSUER}/userinfo`) {
@@ -118,7 +123,9 @@ afterEach(() => vi.unstubAllGlobals());
  * and nonce under test are the ones the library itself produced — the nonce rides to the
  * stub through a spare form field so the signed ID token can echo it back.
  */
-async function login(options: { userInfoTimeoutMs?: number } = {}): Promise<Awaited<ReturnType<typeof completeLogin>>> {
+async function login(
+  options: { userInfoTimeoutMs?: number; keepRefreshToken?: boolean } = {},
+): Promise<Awaited<ReturnType<typeof completeLogin>>> {
   const { location, flow } = await beginLogin(env, APP);
   const authorize = new URL(location);
   const state = authorize.searchParams.get('state')!;
@@ -318,5 +325,52 @@ describe('email_verified, carried and not decided', () => {
     // Most issuers never emit the claim, and `undefined` is already the honest answer.
     expect(userInfoRequests).toEqual([]);
     expect(user.emailVerified).toBeUndefined();
+  });
+});
+
+/**
+ * Keeping a refresh token (#3161): asked for only by a caller that opts in, returned when the
+ * issuer sends one, and keyed by a session id the session carries instead of the token.
+ */
+describe('offline access', () => {
+  it('asks for offline_access only when told to, adding no prompt and leaving the caller\'s untouched', async () => {
+    const params = async (opts: Parameters<typeof beginLogin>[2]) => new URL((await beginLogin(env, APP, opts)).location).searchParams;
+    const plain = await params({});
+    expect([plain.get('scope'), plain.get('prompt')]).toEqual(['openid email profile', null]);
+    const offline = await params({ offlineAccess: true });
+    expect([offline.get('scope'), offline.get('prompt')]).toEqual(['openid email profile offline_access', null]);
+    expect((await params({ offlineAccess: true, prompt: 'login' })).get('prompt')).toBe('login');
+  });
+
+  // One login per case: the helper's nonce relay wraps whatever `fetch` it finds.
+  it('returns the refresh token, and gives the session a sid that names it when the caller keeps it', async () => {
+    idTokenClaims = { sub: 'u-1', email: 'a@example.test', name: 'A' };
+    refreshToken = 'rt-1';
+    const kept = await login({ keepRefreshToken: true });
+    expect(kept.refreshToken).toBe('rt-1');
+    expect(kept.sid).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect((await verifySessionEnvelope(env, kept.session))?.sid).toBe(kept.sid);
+    // The session carries the key, never the token.
+    expect(JSON.stringify(decodeJwt(kept.session))).not.toContain('rt-1');
+  });
+
+  it('returns the refresh token with no sid when the caller does not keep it', async () => {
+    idTokenClaims = { sub: 'u-1', email: 'a@example.test', name: 'A' };
+    refreshToken = 'rt-1';
+    const notKept = await login();
+    expect(notKept.refreshToken).toBe('rt-1');
+    expect(notKept).not.toHaveProperty('sid');
+    expect(await verifySessionEnvelope(env, notKept.session)).not.toHaveProperty('sid');
+  });
+
+  it('gives no sid when the issuer sent no refresh token, and the session reads as before', async () => {
+    idTokenClaims = { sub: 'u-1', email: 'a@example.test', name: 'A' };
+    const result = await login({ keepRefreshToken: true });
+    expect(result).not.toHaveProperty('refreshToken');
+    expect(result).not.toHaveProperty('sid');
+    expect(await verifySessionEnvelope(env, result.session)).toEqual({
+      user: { id: 'u-1', email: 'a@example.test', name: 'A', emailVerified: undefined },
+      expiresAt: expect.any(String),
+    });
   });
 });

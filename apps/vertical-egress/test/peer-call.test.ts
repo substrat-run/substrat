@@ -73,6 +73,22 @@ describe('a peer call through egress (#1706)', () => {
     expect(internet).not.toHaveBeenCalled();
   });
 
+  it('a call made for a person hands its token to the router unchanged and logs it nowhere; the caller is still the dispatch (#3161)', async () => {
+    const TOKEN = 'eyJhbGciOiJSUzI1NiJ9.person-token.sig';
+    const spies = (['log', 'warn', 'error', 'info', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    const body = { vertical: 'acme/crm', operation: 'customer/list', onBehalf: { token: TOKEN } };
+    const peer = peerCalls();
+    expect((await call(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }), body)).status).toBe(200);
+    expect(peer.calls[0]!.request).toEqual(body);
+    expect(peer.calls[0]!.caller).toMatchObject({ vertical: 'acme/board-room', scopeId: '01JZ0000000000000000CA11R2' });
+    // The paths that do log: a dispatch with no identity, and a refusal relayed from the router.
+    expect((await call(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: undefined }), body)).status).toBe(403);
+    const refusing = peerCalls({ ok: false, status: 403, code: 'refused', message: 'this call for a person was refused' });
+    expect((await call(envWith({ PEER_CALLS: refusing.binding, OUTBOUND_POLICY: policy() }), body)).status).toBe(403);
+    expect(spies[1]!.mock.calls.length).toBeGreaterThan(0);
+    expect(spies.flatMap((s) => s.mock.calls).map((c) => JSON.stringify(c)).join('\n')).not.toContain('person-token');
+  });
+
   it('a body that tries to name its own caller is refused — the schema is strict', async () => {
     const peer = peerCalls();
     const res = await call(

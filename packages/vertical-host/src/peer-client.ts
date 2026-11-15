@@ -36,7 +36,17 @@ import {
  */
 export interface PeerClient {
   /** Invoke one operation on that vertical's instance in this tenant. */
-  invoke<O = unknown>(operation: string, input?: unknown, options?: { idempotencyKey?: string }): Promise<O>;
+  invoke<O = unknown>(operation: string, input?: unknown, options?: PeerInvokeOptions): Promise<O>;
+}
+
+export interface PeerInvokeOptions {
+  idempotencyKey?: string;
+  /**
+   * Make the call for a person (#3161): a delegated token the issuer minted for the target, which
+   * the target verifies itself. Without it the call runs as this vertical, as every peer call did.
+   * `workerDoor`'s `peerAs` obtains one; nothing here reads or logs it.
+   */
+  onBehalf?: { token: string };
 }
 
 export interface PeerClientOptions {
@@ -58,7 +68,7 @@ const REFUSAL_BY_STATUS: Record<number, ErrorCode> = {
 export function peerClient(vertical: string, options: PeerClientOptions = {}): PeerClient {
   const call = options.fetch ?? globalFetch;
   return {
-    async invoke<O>(operation: string, input?: unknown, invokeOptions?: { idempotencyKey?: string }): Promise<O> {
+    async invoke<O>(operation: string, input?: unknown, invokeOptions?: PeerInvokeOptions): Promise<O> {
       // #2192: the request this call is made from, so the target's line can name it as its
       // parent. Absent outside a stamped request, and on a platform entry that predates it.
       const parent = parentRequestIdOf(currentInvocationId());
@@ -72,6 +82,7 @@ export function peerClient(vertical: string, options: PeerClientOptions = {}): P
           ...(invokeOptions?.idempotencyKey === undefined
             ? {}
             : { idempotencyKey: invokeOptions.idempotencyKey }),
+          ...(invokeOptions?.onBehalf === undefined ? {} : { onBehalf: { token: invokeOptions.onBehalf.token } }),
         }),
       });
       const body = (await response.json().catch(() => null)) as { result?: unknown; error?: unknown } | null;

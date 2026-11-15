@@ -155,6 +155,8 @@ export interface PermissionRegistry {
   permissions: PermissionRegistryEntry[];
   roles: RoleDefinition[];
   entityGrants: EntityGrantShape[];
+  /** #3161: the apps that may act for a person here, with which keys, over which channels. */
+  delegations?: { actor: string; permissions: string[]; channels?: string[]; declaredBy: string[] }[];
 }
 /** One version + its declared registry — a running or update target on the Permissions tab. */
 export interface VersionRegistry {

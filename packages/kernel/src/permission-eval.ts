@@ -14,6 +14,7 @@ import type { Holdings, PermissionChecker } from './permission-checker.js';
 import { capabilityGrantOf, capabilityLive, type CapabilityRow } from './capability.js';
 import { isSwitchableSubjectKind } from './system-switch.js';
 import { walkGrantedEntities, type GrantedEntitiesPage, type GrantWalkRow } from './grant-scoped-read.js';
+import { outsideCeiling } from './delegation-ceiling.js';
 
 // Only createTupleEvaluator can register a checker. A provider cannot claim the
 // built-in tuple algebra's node-wide semantics for its own implementation.
@@ -54,8 +55,10 @@ export async function grantedEntitiesForContext(
   runCheck: (permission: PermissionKey, entity?: EntityRef) => Promise<Decision>,
   withheld?: ReadonlySet<string>,
   nodeOverride = false,
+  /** #3161: a delegated call's ceiling — a key outside it reads as one the caller holds nowhere. */
+  ceiling?: ReadonlySet<string>,
 ): Promise<GrantedEntitiesPage> {
-  if (withheld?.has(permission)) return { kind: 'ids', ids: [], nextCursor: null };
+  if (withheld?.has(permission) || outsideCeiling(ceiling, permission)) return { kind: 'ids', ids: [], nextCursor: null };
   if ((await runCheck(permission)).allowed) {
     return nodeOverride || nodeWideTupleCheckers.has(checker)
       ? { kind: 'all' }

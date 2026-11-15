@@ -30,6 +30,7 @@ import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 import { clearAppMcpResources, isSharedIssuer, registerAppMcpResources, type TeamIssuer } from './mcp-resources.js';
+import { clearAppDelegations } from './delegations.js';
 import { settleClientRedirects } from './client-redirects.js';
 import { appByScopeId } from './walk-all.js';
 
@@ -559,8 +560,8 @@ export async function deprovisionApp(
     /**
      * The team auth-server this app's MCP endpoint is registered at (#1619), which the
      * delete un-registers so the issuer stops minting for it — and takes the app's hostnames
-     * off its client there (#2904). The caller resolves it (it
-     * holds the issuer list). Absent, nothing is cleared: the Apps list's reconcile only
+     * off its client there (#2904), and revokes the delegations it gave (#3161). The caller
+     * resolves it (it holds the issuer list). Absent, nothing is cleared: the Apps list's reconcile only
      * walks apps that still exist, so it cannot clear this one afterwards.
      */
     mcpIssuerScopeId?: ScopeId;
@@ -583,6 +584,16 @@ export async function deprovisionApp(
       issuerScopeId: input.mcpIssuerScopeId,
     }).catch((e: unknown) =>
       console.error('dashboard: MCP resource un-registration failed', {
+        appScopeId: input.appScopeId,
+        reason: e instanceof Error ? e.message : String(e),
+      }),
+    );
+    // And every delegation it gave (#3161): no actor acts for its people any more.
+    await clearAppDelegations(input.controlPlane, {
+      hostScopeId: input.appScopeId,
+      issuerScopeId: input.mcpIssuerScopeId,
+    }).catch((e: unknown) =>
+      console.error('dashboard: delegation clear failed', {
         appScopeId: input.appScopeId,
         reason: e instanceof Error ? e.message : String(e),
       }),

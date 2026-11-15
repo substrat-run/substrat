@@ -164,6 +164,18 @@ for five minutes, with no refresh, and the vertical refuses a delegated token wh
 (`exp − iat`) is longer than that, or whose `iat` is more than 30 seconds ahead of its clock.
 `maxLifetimeSeconds` beside `actors` can lower the bound, never raise it.
 
+The record of who your app delegates to comes from your app's manifest. Declare each acting app
+with the keys it may use and the `mcp` channel:
+
+```ts
+delegations: [{ actor: 'helpdesk', permissions: ['orders:read'], channels: ['mcp'] }],
+```
+
+The dashboard delivers the declared set to the team auth server as `substrat:delegations:<host>`,
+and from this release it manages that entry: a grant delivered any other way is replaced on its
+next pass. If you delivered one by hand, move it into the host's manifest before you deploy, or
+the acting app loses it.
+
 Nothing accepts such a token until the vertical opts in, in two places:
 
 ```ts

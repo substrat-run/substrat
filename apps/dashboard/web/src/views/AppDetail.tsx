@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Dialog, Dropdown, IconButton, Input, Select, Switch, Table, Tabs, Textarea, type TableColumn } from '@substrat-run/ui/wa';
 import { ApiError as TeamApiError } from '../lib/api.generated';
 import { api, teamApi, isApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type DumpStore, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
-import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, RESERVED_KEY_MARK, reservationNote, roleHolderNote } from '../lib/registry-diff';
+import { delegationNote, diffRegistries, grantShapeHolderNotes, hasRegistryChange, RESERVED_KEY_MARK, reservationNote, roleHolderNote } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
@@ -1473,6 +1473,13 @@ export function AppPermissions({ teamId, app }: { teamId: string; app: AppRow })
                 {grantShapeHolderNotes(gc).map((n) => (
                   <span key={n} style={{ flexBasis: '100%', color: 'var(--text-secondary)' }}>{n}</span>
                 ))}
+              </div>
+            ))}
+            {diff!.delegationChanges.map((dc) => (
+              <div key={dc.actor} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind="warning">acting for a person</Pill>
+                <MonoTag>{dc.actor}</MonoTag>
+                <span style={{ color: 'var(--text-secondary)' }}>{delegationNote(dc)}</span>
               </div>
             ))}
           </div>

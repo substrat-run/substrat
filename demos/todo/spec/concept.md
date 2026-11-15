@@ -263,3 +263,7 @@ _No lifecycle is declared: nothing here moves through stages._
   key `people:vouch`, declared `holder: 'system'` and held only by the `notes` peer), so a plugin that
   keeps notes on items shows them only to the people the item is shared with. It answers from the
   list's owner and its shares. The list screen shows the plugin's notes under each item. No role changed.
+- 2026-11-15: Todo can call Notes as the signed-in person (#3161): Todo keeps the person's refresh token
+  for its session and trades it for a short-lived token Notes verifies itself. The other-verticals
+  section of `PERMISSIONS.md` now says a peer's admission also gates the calls it makes for a person.
+  No key or role of Todo's changed.

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, permissionDeclaration, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, manifestDelegation, permissionDeclaration, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
@@ -15,6 +15,8 @@ import { connectionLandingBind, connectionLandingOptions } from './connection-la
 import { connectionProvider } from './connections.js';
 import { verticalConnectorDeclarations, verticalConnectorProvider, type VerticalConnectorDeclaration } from './vertical-connector.js';
 import { issuerScopes } from './machine-client.js';
+import { MAX_DELEGATED_PERMISSIONS, delegationChannels } from './delegations.js';
+import { delegationOffenceLine, delegationOffences } from './delegation-surface.js';
 import {
   ownerGrantSets,
   reservedKeyLine,
@@ -1615,6 +1617,13 @@ export const deployModuleDeclaration = z.object({
    * lands nothing; absent means a CLI that predates it.
    */
   connections: z.array(z.object({ provider: connectionProvider, bind: connectionLandingBind.optional() })).optional(),
+  /**
+   * #3161: the module's `delegations`, so the control plane can hold `registry.delegations` to what
+   * the modules declare ({@link pushedDelegationProblems}) and tell a version that delegates to
+   * nobody from one pushed before the field. A current CLI sends it on every module, empty when the
+   * module delegates nothing; absent means a CLI that predates it.
+   */
+  delegations: z.array(manifestDelegation).optional(),
 });
 export type DeployModuleDeclaration = z.infer<typeof deployModuleDeclaration>;
 
@@ -1877,6 +1886,22 @@ export const permissionRegistryConnector = z
   .strict();
 export type PermissionRegistryConnector = z.infer<typeof permissionRegistryConnector>;
 
+/**
+ * One app of the tenant that may act for a person in this vertical (#3161): the module manifests'
+ * `delegations` for one actor, merged. Its keys are a ceiling over what the person holds here, so a
+ * widening is a permission change the promote checkpoint acknowledges, and it is in the digest.
+ *
+ * `channels` is carried only when it is not `mcp` alone (the default a delegation grant reads for
+ * an absent field), so a module writing `['mcp']` out and one leaving it off build the same row.
+ */
+export const permissionRegistryDelegation = z.object({
+  actor: verticalSlug,
+  permissions: z.array(permissionKey).min(1).max(MAX_DELEGATED_PERMISSIONS),
+  channels: delegationChannels.optional(),
+  declaredBy: z.array(moduleId).min(1),
+});
+export type PermissionRegistryDelegation = z.infer<typeof permissionRegistryDelegation>;
+
 export const permissionRegistry = z.object({
   permissions: z.array(permissionRegistryEntry),
   roles: z.array(roleDefinition),
@@ -1893,6 +1918,10 @@ export const permissionRegistry = z.object({
   connections: z.array(permissionRegistryConnection).optional(),
   // Vertical-defined connectors' standing grants. Optional and omitted when none, likewise.
   connectors: z.array(permissionRegistryConnector).optional(),
+  // #3161: which apps may act for a person here. Optional and omitted when none, likewise, so a
+  // vertical that delegates nothing keeps its digest. Absent therefore does NOT say "delegates to
+  // nobody": whether a version's CLI knew the field is read off its `modules` (`delegationsOf`).
+  delegations: z.array(permissionRegistryDelegation).optional(),
 });
 export type PermissionRegistry = z.infer<typeof permissionRegistry>;
 
@@ -1938,6 +1967,19 @@ export const pushedPermissionRegistry = permissionRegistry
       }
       if (connectors.has(c.provider)) ctx.addIssue({ code: 'custom', path: ['connectors'], message: `${where}: declared more than once` });
       connectors.add(c.provider);
+    }
+    // #3161: a delegated key is one the registry declares and does not reserve, each once, one row per actor.
+    const actors = new Set<string>();
+    for (const d of registry.delegations ?? []) {
+      const where = `delegations '${d.actor}'`;
+      for (const p of d.permissions) {
+        const key = keys.get(p);
+        if (!key) ctx.addIssue({ code: 'custom', path: ['delegations'], message: `${where}: delegates ${p}, which the registry does not declare` });
+        else if (key.holder === 'system') ctx.addIssue({ code: 'custom', path: ['delegations'], message: `${where}: delegates ${p}, which is reserved to a system principal` });
+      }
+      if (new Set(d.permissions).size !== d.permissions.length) ctx.addIssue({ code: 'custom', path: ['delegations'], message: `${where}: lists a key more than once` });
+      if (actors.has(d.actor)) ctx.addIssue({ code: 'custom', path: ['delegations'], message: `${where}: declared more than once` });
+      actors.add(d.actor);
     }
   });
 
@@ -2085,6 +2127,64 @@ export function pushedLandingProblems(
   }
   return problems;
 }
+
+/**
+ * #3161: `registry.delegations` against the delegations the module declarations carry, so the copy
+ * the permission digest covers cannot say other than what the modules declare: each actor's row is
+ * the one {@link delegationRowsOf} builds from them. Checked only when every module carries the
+ * field, as a current CLI sends it; an older CLI's push cannot be cross-checked.
+ */
+export function pushedDelegationProblems(
+  modules: readonly DeployModuleDeclaration[] | undefined,
+  registry: Pick<PermissionRegistry, 'delegations'>,
+): string[] {
+  if (modules === undefined || !modules.every((m) => m.delegations !== undefined)) return [];
+  let expected: PermissionRegistryDelegation[];
+  try {
+    expected = delegationRowsOf(modules.map((m) => ({ manifest: m })));
+  } catch (e) {
+    return [e instanceof Error ? e.message : String(e)];
+  }
+  const rows = registry.delegations ?? [];
+  const same = (a: PermissionRegistryDelegation, b: PermissionRegistryDelegation) =>
+    JSON.stringify([[...a.permissions].sort(), [...(a.channels ?? [])].sort(), [...a.declaredBy].sort()]) ===
+    JSON.stringify([[...b.permissions].sort(), [...(b.channels ?? [])].sort(), [...b.declaredBy].sort()]);
+  const problems: string[] = [];
+  for (const row of rows) {
+    const declared = expected.find((e) => e.actor === row.actor);
+    if (!declared) problems.push(`delegations '${row.actor}': registry lists a delegation no module declares`);
+    else if (!same(row, declared)) problems.push(`delegations '${row.actor}': registry row disagrees with module declarations`);
+  }
+  for (const e of expected) {
+    if (!rows.some((r) => r.actor === e.actor)) problems.push(`delegations '${e.actor}': module declaration is absent from registry`);
+  }
+  return problems;
+}
+
+/**
+ * #3161: which apps a stored version lets act for a person in it, as the module manifests declare
+ * them, or `null` when the version cannot say: pushed by a CLI that predates the field (its modules
+ * do not carry it), or with no modules at all. `[]` is a fact, a version that delegates to nobody,
+ * and a reader revokes on it; it must never revoke on `null`.
+ */
+export function delegationsOf(manifest: {
+  modules?: readonly DeployModuleDeclaration[];
+  registry?: Pick<PermissionRegistry, 'delegations'>;
+}): ManifestDelegationRow[] | null {
+  if (manifest.registry?.delegations) {
+    return manifest.registry.delegations.map((d) => ({
+      actor: d.actor,
+      permissions: [...d.permissions],
+      ...(d.channels ? { channels: [...d.channels] } : {}),
+    }));
+  }
+  const modules = manifest.modules;
+  if (!manifest.registry || !modules || modules.length === 0 || !modules.every((m) => m.delegations !== undefined)) return null;
+  return [];
+}
+
+/** A registry delegation without its `declaredBy`: the manifest's own shape, as a reader is served it. */
+export type ManifestDelegationRow = Omit<PermissionRegistryDelegation, 'declaredBy'>;
 
 /**
  * A vertical's declared permission surface, as the **single typed source** — the input the
@@ -2279,6 +2379,14 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   const exports = [...exportRows.values()].sort((a, b) => cmp(a.type, b.type));
   const imports = [...importRows.values()].sort((a, b) => cmp(a.from, b.from) || cmp(a.type, b.type));
   const connections = connectionRowsOf(input.modules, declaredKeys, reserved);
+  // #3161: `lint:permissions`' refusals, in its words (`delegation-surface.ts`).
+  const delegationProblems = delegationOffences(input.modules, declaredKeys, reserved).map((o) =>
+    o.reason === 'undeclared'
+      ? `${delegationOffenceLine(o)}: a key nothing here declares`
+      : `${delegationOffenceLine(o)}: reserved to a system principal, which no person holds, so the delegation could never use it`,
+  );
+  if (delegationProblems.length > 0) throw new Error(`buildPermissionRegistry: ${delegationProblems.join('; ')}`);
+  const delegations = delegationRowsOf(input.modules);
 
   return {
     permissions,
@@ -2287,7 +2395,59 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     ...(exports.length ? { exports } : {}),
     ...(imports.length ? { imports } : {}),
     ...(connections.length ? { connections } : {}),
+    // Omitted when none, so a vertical that delegates nothing keeps the digest it had.
+    ...(delegations.length ? { delegations } : {}),
   };
+}
+
+/** What a delegation that names no channel admits (`channelsOf` in `delegations.ts`). */
+const DEFAULT_DELEGATION_CHANNELS = ['mcp'];
+
+/**
+ * #3161: the modules' delegations as registry rows, one per actor. Two modules naming one actor on
+ * the same channels collapse into one row holding the union of their keys and naming both: each
+ * consents to its own keys, and the union is exactly their sum. Two naming it on DIFFERENT channels
+ * are refused. A grant carries one channel set for all its keys, so a merged row would hand one
+ * module's keys to a channel only the other consented to: `peer`, which lets the actor act for
+ * anyone signed in to it, reached by keys whose module asked for `mcp` alone. A union past
+ * `MAX_DELEGATED_PERMISSIONS` is refused too, since no grant could carry it.
+ */
+function delegationRowsOf(modules: readonly { manifest: Pick<ModuleManifest, 'id' | 'delegations'> }[]): PermissionRegistryDelegation[] {
+  const cmp = (a: string, b: string) => a.localeCompare(b);
+  const rows = new Map<string, { permissions: Set<string>; channels: string[]; declaredBy: string[] }>();
+  const problems: string[] = [];
+  // `?? []` although parsed manifests carry the field: the CLI imports a vertical's modules as plain JS.
+  for (const m of modules) {
+    for (const d of m.manifest.delegations ?? []) {
+      const channels = [...(d.channels ?? DEFAULT_DELEGATION_CHANNELS)].sort(cmp);
+      const row = rows.get(d.actor);
+      if (!row) {
+        rows.set(d.actor, { permissions: new Set(d.permissions), channels, declaredBy: [m.manifest.id] });
+      } else if (row.channels.join() !== channels.join()) {
+        problems.push(
+          `delegations '${d.actor}' (${m.manifest.id}): declares channels ${channels.join(', ')} where ${row.declaredBy.join(', ')} ` +
+            `declares ${row.channels.join(', ')}; one actor has one set of channels, so declare the same channels in both`,
+        );
+      } else {
+        for (const p of d.permissions) row.permissions.add(p);
+        row.declaredBy.push(m.manifest.id);
+      }
+    }
+  }
+  for (const [actor, row] of rows) {
+    if (row.permissions.size > MAX_DELEGATED_PERMISSIONS) {
+      problems.push(`delegations '${actor}': ${row.declaredBy.join(', ')} delegate ${row.permissions.size} keys together, more than ${MAX_DELEGATED_PERMISSIONS}`);
+    }
+  }
+  if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
+  return [...rows.entries()]
+    .sort(([a], [b]) => cmp(a, b))
+    .map(([actor, row]) => ({
+      actor: actor as PermissionRegistryDelegation['actor'],
+      permissions: [...row.permissions].sort(cmp) as PermissionRegistryDelegation['permissions'],
+      ...(row.channels.join() === DEFAULT_DELEGATION_CHANNELS.join() ? {} : { channels: row.channels as PermissionRegistryDelegation['channels'] }),
+      declaredBy: [...new Set(row.declaredBy)].sort(cmp) as PermissionRegistryDelegation['declaredBy'],
+    }));
 }
 
 /**

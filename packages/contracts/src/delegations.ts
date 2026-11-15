@@ -2,20 +2,37 @@ import { z } from 'zod';
 import { scopeId } from './ids.js';
 
 /**
- * DELEGATION between two apps that sign in at one team auth-server (#1824).
+ * DELEGATION between two apps that sign in at one team auth-server (#1824, #3161).
  *
- * A host app's users are signed in at the issuer. Another app of the same team, the ACTOR
- * (a help desk's assistant, say), wants to call the host's MCP endpoint on behalf of one of
- * those users. The issuer answers that with RFC 8693 token exchange, in two steps: the host
- * asks for an assertion addressed to the actor, and the actor trades it for an access token
- * for the host's MCP endpoint. Neither step is allowed unless the platform said the host
- * delegates to that actor, and for which of the host's permissions.
+ * A host app's users are signed in at the issuer. Another app of the same team, the ACTOR, wants
+ * to call the host on behalf of one of those people. The issuer answers that with RFC 8693 token
+ * exchange, on one of two CHANNELS, and neither is allowed unless the platform said the host
+ * delegates to that actor, on that channel, and for which of the host's permissions.
+ *
+ * - **`mcp`** (#1824): two steps. The HOST asks for an assertion addressed to the actor, and the
+ *   actor trades it for an access token for the host's MCP endpoint. A help desk's assistant
+ *   acting in another app is the shape: the host takes a step for every person it lets the actor
+ *   act for.
+ * - **`peer`** (#3161): one step. The ACTOR presents the live token of a person signed in to the
+ *   actor, names the host's OIDC client id as `audience`, and asks for an access token
+ *   (`requested_token_type` = {@link TOKEN_TYPE}.accessToken, which is what tells this exchange
+ *   from the second step of `mcp`). The token it gets has `sub` = the person, `aud` = the host's
+ *   client id, `act.sub` = the actor's client id, and `scope` = the granted keys, and the actor
+ *   presents it on a peer call (`peerCallRequest.onBehalf`). A master app calling its plugin as
+ *   the signed-in person is the shape.
+ *
+ * A grant names its channels, and one that names none means `mcp` alone ({@link channelsOf}), so
+ * every grant delivered before `peer` existed keeps exactly the meaning it had. `peer` has to be
+ * asked for by name because it is the wider of the two: with it, the actor can act for ANYONE
+ * signed in to the actor, and the host takes no step per person. An `mcp` grant never allowed
+ * that, so no grant may come to mean it by a default.
  *
  * This module is that statement's vocabulary. The dashboard delivers it, per host app, through
  * the issuer's platform-gated `/internal/configure`:
  *
  *     substrat:delegations:<host app scope id>  =  [{ "actor": "<actor app scope id>",
- *                                                    "permissions": ["tickets.read", …] }, …]
+ *                                                    "permissions": ["tickets.read", …],
+ *                                                    "channels": ["peer"] }, …]
  *
  * The value is the host's WHOLE set, not a delta, so re-sending it is a no-op, an actor that
  * drops out loses its grant, and `""` or `[]` revokes every one. The issuer re-reads the grant
@@ -59,15 +76,41 @@ const delegatedPermission = z
   .max(128)
   .regex(/^[\x21\x23-\x5b\x5d-\x7e]+$/, 'an OAuth scope token (RFC 6749 §3.3)');
 
-/** One actor the host delegates to, and which of the host's permissions it may act with. */
+/** The exchanges a grant may admit. See the module header for what each one is. */
+export const DELEGATION_CHANNELS = ['mcp', 'peer'] as const;
+export const delegationChannel = z.enum(DELEGATION_CHANNELS);
+export type DelegationChannel = z.infer<typeof delegationChannel>;
+
+/** What a grant that names no channel admits: the one channel there was before #3161. */
+const DEFAULT_CHANNELS: readonly DelegationChannel[] = ['mcp'];
+
+/**
+ * Channels as a grant or a manifest names them: at least one, each once. A channel named twice
+ * is refused rather than collapsed, so a delivery reads back exactly as it was written.
+ */
+export const delegationChannels = z
+  .array(delegationChannel)
+  .min(1)
+  .refine((cs) => new Set(cs).size === cs.length, 'a channel is named twice');
+
+/**
+ * One actor the host delegates to, which of the host's permissions it may act with, and on which
+ * channels. `channels` absent is `['mcp']`; read it through {@link channelsOf}, never directly.
+ */
 export const delegationGrant = z
   .object({
     actor: scopeId,
     permissions: z.array(delegatedPermission).min(1).max(MAX_DELEGATED_PERMISSIONS),
+    channels: delegationChannels.optional(),
   })
   .strict();
 
 export type DelegationGrant = z.infer<typeof delegationGrant>;
+
+/** The channels a grant admits, with the default applied: absent is `mcp` alone, never `peer`. */
+export const channelsOf = (grant: Pick<DelegationGrant, 'channels'>): DelegationChannel[] => [
+  ...(grant.channels ?? DEFAULT_CHANNELS),
+];
 
 /**
  * A host's whole set. An actor named twice is refused: which of the two grants would win is

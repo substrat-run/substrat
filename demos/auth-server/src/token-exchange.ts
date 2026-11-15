@@ -1,19 +1,23 @@
 import { DELEGATION_ASSERTION_AUDIENCE, TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_TYPE } from '@substrat-run/contracts';
 import type { SqlExec } from './introspect.js';
 import { grantFor } from './delegations.js';
+import { isPlaceholderAddress } from './placeholder-address.js';
 import { authMethodOf, registrationOfClient } from './places.js';
 import { platformOwnerOf } from './resources.js';
 
 /**
- * RFC 8693 TOKEN EXCHANGE at this issuer (#1824): one app of a team acting for another app's
- * user, gated by the platform's delegation grant (`delegations.ts`).
+ * RFC 8693 TOKEN EXCHANGE at this issuer (#1824, #3161): one app of a team acting for another
+ * app's user, gated by the platform's delegation grant (`delegations.ts`).
  *
  * `@better-auth/oauth-provider` implements `authorization_code`, `client_credentials` and
  * `refresh_token` and nothing else, so this grant is ours. The worker sends a token-endpoint
  * POST whose `grant_type` is token exchange here (`routes.ts`), and every other grant to the
  * plugin untouched.
  *
- * ## Two exchanges, told apart by the subject token
+ * ## Three exchanges, told apart by the subject token and the token asked for
+ *
+ * A and B are the grant's `mcp` channel, C is its `peer` channel (vocabulary in
+ * `@substrat-run/contracts`, `delegations.ts`). Each requires its channel in the grant.
  *
  *   A. **The host asks for an assertion addressed to the actor.** Authenticated as the host's
  *      client, it presents a token this issuer signed FOR it (the user's id_token, or an
@@ -26,14 +30,22 @@ import { platformOwnerOf } from './resources.js';
  *      host's MCP resources as `resource` (RFC 8707). It gets an access token for that
  *      resource, with the user as `sub`, the actor as `azp` and in `act`, and a scope no wider
  *      than the grant.
+ *   C. **The actor asks, in one step, for an access token for the host itself.** Authenticated
+ *      as the actor's client, it presents a token this issuer signed FOR it (the person's
+ *      id_token at the actor, or an access token issued to it), names the host's client as
+ *      `audience`, and asks for an access token (`requested_token_type`, which is what tells
+ *      this from A: A issues a JWT assertion). It gets the person as `sub`, the host's client
+ *      as `aud`, the actor as `azp` and in `act`, and a scope no wider than the grant: what
+ *      the actor presents on a peer call to the host. The host takes no step per person, so
+ *      a grant admits this only when it names `peer`.
  *
- * Neither issues a refresh token, and neither token outlives `EXCHANGED_TOKEN_TTL_SECONDS`;
- * B's never outlives the assertion it came from either.
+ * None issues a refresh token, and no token outlives `EXCHANGED_TOKEN_TTL_SECONDS`; B's never
+ * outlives the assertion it came from either.
  *
  * ## What decides, and what does not
  *
- * The grant decides, and it is re-read on BOTH exchanges. A's token carries `may_act`, and B's
- * carries `act`, as RFC 8693 describes them, but nothing here reads either to allow anything:
+ * The grant decides, and it is re-read on EVERY exchange. A's token carries `may_act`, and B's
+ * and C's carry `act`, as RFC 8693 describes them, but nothing here reads either to allow anything:
  * they are for the resource server and the audit trail. So revoking a grant refuses the next
  * exchange, including a B presenting an assertion minted while the grant stood. The app a
  * client IS comes from the platform's `place_app` binding (`places.ts`), never from the token
@@ -41,7 +53,7 @@ import { platformOwnerOf } from './resources.js';
  * since been re-registered to another scope, or bound to a host that has since moved, is dead.
  *
  * No chaining in this version: a subject token that is itself the product of an exchange (it
- * carries `act` or `substrat_delegation`) is refused at A, and B takes only an assertion.
+ * carries `act` or `substrat_delegation`) is refused at A and C, and B takes only an assertion.
  *
  * ## Order, and what a refusal says
  *
@@ -60,7 +72,7 @@ import { platformOwnerOf } from './resources.js';
 /** How long an exchanged token lives, in seconds. Short, because the grant is re-read only on the next exchange. */
 export const EXCHANGED_TOKEN_TTL_SECONDS = 300;
 
-/** The subject token types A accepts: a JWT this issuer signed for the host. */
+/** The subject token types A and C accept: a JWT this issuer signed for the requesting client. */
 const HOST_SUBJECT_TYPES: ReadonlySet<string> = new Set([TOKEN_TYPE.idToken, TOKEN_TYPE.jwt, TOKEN_TYPE.accessToken]);
 
 export interface TokenExchangeDeps {
@@ -205,6 +217,29 @@ async function verifiedSubject(deps: TokenExchangeDeps, token: string): Promise<
   return payload;
 }
 
+/**
+ * The person's address as this issuer holds it, for exchange C's token: `null` when `sub` names
+ * no user here, or a user banned now, `{}` when the user has no real address (a placeholder,
+ * which userinfo leaves out too, #2938), and otherwise `email` with `email_verified` as a
+ * boolean. `sub` is the user's id: no pairwise secret is configured (`auth.ts`).
+ *
+ * The ban is judged here because nothing upstream of an exchange judges it: the `admin`
+ * plugin refuses a banned user only when a session is CREATED, the plugin's refresh grant
+ * reads no ban, and a refresh token outlives the session it was issued under
+ * (`oauth_refresh_token.session_id` is `ON DELETE SET NULL`). So a subject token minted from a
+ * kept refresh token after a ban would otherwise still act for the person. A ban whose
+ * `ban_expires` (epoch ms) has passed is no ban, as the `admin` plugin reads it.
+ */
+function userAddressOf(deps: TokenExchangeDeps, sub: string): { email?: string; email_verified?: boolean } | null {
+  const row = deps.sql.exec('SELECT email, email_verified, banned, ban_expires FROM user WHERE id = ?', sub).toArray()[0] as
+    | { email: string; email_verified: number; banned: number | null; ban_expires: number | null }
+    | undefined;
+  if (!row) return null;
+  if (row.banned && !(row.ban_expires !== null && row.ban_expires < deps.nowSeconds * 1000)) return null;
+  if (isPlaceholderAddress(row.email)) return {};
+  return { email: row.email, email_verified: row.email_verified === 1 };
+}
+
 /** The substrat_delegation claim of an exchanged token, when it is well-formed. */
 interface DelegationClaim {
   stage: string;
@@ -224,7 +259,7 @@ function delegationClaimOf(payload: Record<string, unknown>): DelegationClaim | 
 
 /** How far a request got, for the refusal line: which exchange, and which client proved itself. */
 interface Progress {
-  stage: 'assertion' | 'access' | null;
+  stage: 'assertion' | 'access' | 'peer' | null;
   client: string | null;
 }
 
@@ -285,9 +320,14 @@ async function decide(
   const subject = await verifiedSubject(deps, subjectToken);
   if (!subject) return refuse('invalid_grant', 'the subject token is not a live token of this issuer');
 
-  // Which exchange this is: a subject with no delegation claim is a login (A), one with a
-  // delegation claim is the product of an earlier exchange (B, and only if it is an assertion).
+  // Which exchange this is: a subject with no delegation claim is a login, traded for an
+  // access token for the host (C) or for an assertion (A); one with a delegation claim is the
+  // product of an earlier exchange (B, and only if it is an assertion).
   if (subject['substrat_delegation'] === undefined) {
+    if (form.get('requested_token_type') === TOKEN_TYPE.accessToken) {
+      progress.stage = 'peer';
+      return peerFor(deps, form, credentials.clientId, client, subject, subjectType);
+    }
     progress.stage = 'assertion';
     return assertionFor(deps, form, credentials.clientId, client, subject, subjectType);
   }
@@ -329,13 +369,16 @@ async function assertionFor(
       : soleAudience(subject['aud']) === hostClientId ||
         audiencesOf(subject['aud']).some((a) => isResourceOf(deps.sql, a, host.appScopeId));
   if (!boundToHost) return refuse('invalid_grant', 'the subject token was not issued to this client');
+  // A person banned at this issuer is acted for by nobody, as at C.
+  if (!userAddressOf(deps, subject['sub'] as string)) return refuse('invalid_grant', 'the subject is not a user of this issuer');
 
   const actor = registrationOfClient(deps.sql, actorClientId);
   if (!actor || actor.tenantId !== host.tenantId) {
     return refuse('invalid_target', `${actorClientId} is not an app this client may delegate to`);
   }
+  // A grant without `mcp` is, for this exchange, no grant: `peer` admits C alone.
   const grant = grantFor(deps.sql, host.appScopeId, actor.appScopeId);
-  if (!grant) return refuse('invalid_target', `this client does not delegate to ${actorClientId}`);
+  if (!grant || !grant.channels.includes('mcp')) return refuse('invalid_target', `this client does not delegate to ${actorClientId}`);
 
   const requested = scopeList(form.get('scope'));
   const scope = requested ? requested.filter((s) => grant.permissions.includes(s)) : grant.permissions;
@@ -417,9 +460,12 @@ async function accessFor(
   if (hostNow.tenantId !== actorNow.tenantId) {
     return refuse('invalid_grant', 'the delegating app and this client are no longer in one team');
   }
-  // Revocation: the grant as it stands now, not as it stood when the assertion was minted.
+  // Revocation: the grant as it stands now, not as it stood when the assertion was minted —
+  // its channels included, so a grant re-delivered as `peer` alone stops admitting B.
   const grant = grantFor(deps.sql, delegation.host, delegation.actor);
-  if (!grant) return refuse('invalid_grant', 'the delegation behind this assertion has been revoked');
+  if (!grant || !grant.channels.includes('mcp')) {
+    return refuse('invalid_grant', 'the delegation behind this assertion has been revoked');
+  }
 
   if (subjectType !== TOKEN_TYPE.jwt) return refuse('invalid_request', `an assertion is presented as ${TOKEN_TYPE.jwt}`);
   const requestedType = form.get('requested_token_type');
@@ -458,6 +504,85 @@ async function accessFor(
   });
   deps.log?.(
     `auth-server: token exchange ${JSON.stringify({ stage: 'access', host: delegation.host, actor: delegation.actor, scope: scope.join(' ') })}`,
+  );
+  return {
+    status: 200,
+    body: {
+      access_token: token,
+      issued_token_type: TOKEN_TYPE.accessToken,
+      token_type: 'Bearer',
+      expires_in: exp - deps.nowSeconds,
+      scope: scope.join(' '),
+    },
+  };
+}
+
+/** Exchange C: the actor, in one step, for an access token to the host itself (#3161). */
+async function peerFor(
+  deps: TokenExchangeDeps,
+  form: URLSearchParams,
+  actorClientId: string,
+  actor: { appScopeId: string; tenantId: string },
+  subject: Record<string, unknown>,
+  subjectType: string,
+): Promise<TokenExchangeAnswer> {
+  if (!HOST_SUBJECT_TYPES.has(subjectType)) return refuse('invalid_request', 'unsupported subject_token_type');
+  if (form.has('resource')) return refuse('invalid_request', 'this exchange takes an audience, not a resource');
+  const audiences = form.getAll('audience');
+  if (audiences.length !== 1 || !audiences[0]) return refuse('invalid_request', 'exactly one audience is required');
+  const hostClientId = audiences[0];
+
+  // No chaining: a token that is itself the product of an exchange is not a login.
+  if (subject['act'] !== undefined) return refuse('invalid_grant', 'the subject token is already delegated');
+
+  // Issued to the actor, and to nobody else: an authorized party that is the actor (every one
+  // present), or none and `aud` the actor's client alone, which is its own id_token. Never a
+  // token for an MCP resource, unlike A: the person signed in at the actor, and a token some
+  // MCP client holds for the actor's endpoint is that client's. Without this, an app holding
+  // ANY live token of a person — one another app was issued — could act for them here.
+  const parties = [subject['azp'], subject['client_id']].filter((p) => p !== undefined);
+  const issuedToActor = parties.length > 0 ? parties.every((p) => p === actorClientId) : soleAudience(subject['aud']) === actorClientId;
+  if (!issuedToActor) return refuse('invalid_grant', 'the subject token was not issued to this client');
+  // One text for no user and a banned one, so a refusal says nothing about why.
+  const address = userAddressOf(deps, subject['sub'] as string);
+  if (!address) return refuse('invalid_grant', 'the subject is not a user of this issuer');
+
+  const host = registrationOfClient(deps.sql, hostClientId);
+  if (!host || host.tenantId !== actor.tenantId || host.appScopeId === actor.appScopeId) {
+    return refuse('invalid_target', `${hostClientId} is not an app this client may act for`);
+  }
+  const grant = grantFor(deps.sql, host.appScopeId, actor.appScopeId);
+  if (!grant || !grant.channels.includes('peer')) {
+    return refuse('invalid_target', `${hostClientId} does not delegate to this client`);
+  }
+
+  const requested = scopeList(form.get('scope'));
+  const scope = requested ? requested.filter((s) => grant.permissions.includes(s)) : grant.permissions;
+  if (scope.length === 0) return refuse('invalid_scope', 'none of the requested scope is delegated');
+
+  const exp = deps.nowSeconds + EXCHANGED_TOKEN_TTL_SECONDS;
+  // A bearer at no app by the ordinary rules: it carries `act`, which a vertical's bearer check
+  // (packages/vertical-auth/src/oidc.ts) admits only through a channel the host opted into,
+  // never as the person's own token. The address travels with its verification so the host can
+  // match the person by a verified address as it would at login, and it comes from this
+  // issuer's own record, never the subject token: Better Auth puts none on an id_token, and a
+  // token's claims are not where this issuer's truth lives.
+  const token = await deps.sign({
+    iss: deps.issuer,
+    sub: subject['sub'],
+    aud: hostClientId,
+    azp: actorClientId,
+    client_id: actorClientId,
+    scope: scope.join(' '),
+    act: { iss: deps.issuer, sub: actorClientId },
+    substrat_delegation: { stage: 'peer', host: host.appScopeId, actor: actor.appScopeId },
+    ...address,
+    iat: deps.nowSeconds,
+    exp,
+    jti: crypto.randomUUID(),
+  });
+  deps.log?.(
+    `auth-server: token exchange ${JSON.stringify({ stage: 'peer', host: host.appScopeId, actor: actor.appScopeId, scope: scope.join(' ') })}`,
   );
   return {
     status: 200,

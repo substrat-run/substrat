@@ -3,6 +3,7 @@
  * so `substrat promote` reads the same one. Re-exported here so the dashboard's imports stay put.
  */
 export {
+  delegationNote,
   diffRegistries,
   grantShapeHolderNotes,
   hasRegistryChange,

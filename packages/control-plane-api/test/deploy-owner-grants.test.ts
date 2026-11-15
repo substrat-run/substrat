@@ -38,7 +38,7 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  const push = async (manifest: { ownerGrants?: string[]; marked: boolean; modules?: unknown[]; omitRegistry?: boolean; connectors?: unknown[]; registryConnectors?: unknown[] }, slugged?: (slug: string, tenant: string) => void) => {
+  const push = async (manifest: { ownerGrants?: string[]; marked: boolean; modules?: unknown[]; omitRegistry?: boolean; connectors?: unknown[]; registryConnectors?: unknown[]; registryDelegations?: unknown[] }, slugged?: (slug: string, tenant: string) => void) => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: { method?: string }) => {
@@ -71,6 +71,7 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
           ...(manifest.connectors
             ? { connectors: manifest.registryConnectors ?? (manifest.connectors as { provider: string; grants: string[] }[]).map(({ provider, grants }) => ({ provider, grants })) }
             : {}),
+          ...(manifest.registryDelegations ? { delegations: manifest.registryDelegations } : {}),
         } } : {}),
         ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
         ...(manifest.modules ? { modules: manifest.modules } : {}),
@@ -121,6 +122,22 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
     expect(((await reservedGrant.json()) as { error: string }).error).toContain('owner grants of crm → crm:sync-run');
     expect(uploads.length).toBe(before);
     expect((await push({ marked: true, modules })).status).toBe(201);
+  });
+
+  it('holds registry.delegations to the delegations the modules declare, before upload (#3161)', async () => {
+    const delegation = { actor: 'todo', permissions: ['crm:contact-read'] };
+    const modules = [{ id: 'crm', permissions: [
+      { key: 'crm:contact-read', description: 'Read a contact' },
+      { key: 'crm:sync-run', description: 'Run a sync' },
+    ], delegations: [delegation] }];
+    const before = uploads.length;
+    const absent = await push({ marked: false, modules });
+    expect(absent.status).toBe(400);
+    expect(((await absent.json()) as { error: string }).error).toBe(
+      "manifest registry.delegations: delegations 'todo': module declaration is absent from registry",
+    );
+    expect(uploads.length).toBe(before);
+    expect((await push({ marked: false, modules, registryDelegations: [{ ...delegation, declaredBy: ['crm'] }] })).status).toBe(201);
   });
 
   it('requires a registry when modules are sent before uploading a bundle', async () => {

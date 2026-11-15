@@ -54,6 +54,8 @@ import {
   type MemberBinding,
 } from './member-directory.js';
 export type { InviteRow, MemberBinding } from './member-directory.js';
+import { PEOPLE_DDL, sqlPeopleStore, type LoginCopy } from './people.js';
+import { SESSION_REFRESH_DDL, sqlRefreshStore, type RefreshEntry } from './session-refresh.js';
 
 /**
  * Per-tenant identity directory and configuration store. Authentication belongs to
@@ -87,6 +89,12 @@ const SCHEMA_STATEMENTS: string[] = [
   // scope-DO wipe). Powers the in-app switcher + the worker's slug → scope resolution. The
   // table/queries live in `site-registry.ts` so they are unit-testable without a DO.
   ...SITE_REGISTRY_DDL,
+  // A plugin's copies of the people its master app answers for (`people.ts`, #3161): per login,
+  // who the master said it is and until when, and per person, the roles seated for them here.
+  ...PEOPLE_DDL,
+  // A master app's refresh tokens, keyed by the session that holds them (`session-refresh.ts`):
+  // what lets it obtain a live token of a signed-in person to call a plugin as them.
+  ...SESSION_REFRESH_DDL,
 ];
 
 // The OIDC session secret is generated per tenant and kept in this DO's storage.
@@ -404,6 +412,41 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   async listMemberBindings(scopeId: string): Promise<MemberBinding[]> {
     return listMemberBindingRows(this.registrySql, scopeId);
   }
+
+  /** What a plugin keeps for one login (#3161) — `PeopleStore.login`, for `identityPeopleStore`. */
+  async personLogin(scopeId: string, sub: string): Promise<LoginCopy | null> {
+    return sqlPeopleStore(this.registrySql).login(scopeId, sub);
+  }
+
+  /** `PeopleStore.saveLogin`. */
+  async savePersonLogin(scopeId: string, sub: string, copy: LoginCopy): Promise<void> {
+    return sqlPeopleStore(this.registrySql).saveLogin(scopeId, sub, copy);
+  }
+
+  /** `PeopleStore.seated`: the roles seated here for a person the master answers for. */
+  async personSeated(scopeId: string, principal: string): Promise<string[]> {
+    return sqlPeopleStore(this.registrySql).seated(scopeId, principal);
+  }
+
+  /** `PeopleStore.saveSeated`. */
+  async savePersonSeated(scopeId: string, principal: string, roles: string[]): Promise<void> {
+    return sqlPeopleStore(this.registrySql).saveSeated(scopeId, principal, roles);
+  }
+
+  /** The refresh token a session keeps (#3161) — `RefreshStore.get`, for `identityRefreshStore`. */
+  async sessionRefresh(sid: string): Promise<RefreshEntry | null> {
+    return sqlRefreshStore(this.registrySql).get(sid);
+  }
+
+  /** `RefreshStore.put`: keep, or replace with a rotated one, a session's refresh token. */
+  async putSessionRefresh(sid: string, entry: RefreshEntry): Promise<void> {
+    return sqlRefreshStore(this.registrySql).put(sid, entry);
+  }
+
+  /** `RefreshStore.delete`: forget a session's refresh token, at logout or when it is refused. */
+  async deleteSessionRefresh(sid: string): Promise<void> {
+    return sqlRefreshStore(this.registrySql).delete(sid);
+  }
 }
 
 /** A minimal stub shape — the identity DO's callable surface (avoids leaking the full class type). */
@@ -448,6 +491,13 @@ export type IdentityStub = {
   unbindPrincipal(scopeId: string, principal: string): Promise<string[]>;
   subjectsOf(scopeId: string, limit: number): Promise<string[]>;
   listMemberBindings(scopeId: string): Promise<MemberBinding[]>;
+  personLogin(scopeId: string, sub: string): Promise<LoginCopy | null>;
+  savePersonLogin(scopeId: string, sub: string, copy: LoginCopy): Promise<void>;
+  personSeated(scopeId: string, principal: string): Promise<string[]>;
+  savePersonSeated(scopeId: string, principal: string, roles: string[]): Promise<void>;
+  sessionRefresh(sid: string): Promise<RefreshEntry | null>;
+  putSessionRefresh(sid: string, entry: RefreshEntry): Promise<void>;
+  deleteSessionRefresh(sid: string): Promise<void>;
 };
 
 // Drift pin (#1802): every public IdentityDO method must be on IdentityStub, with the class's

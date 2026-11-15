@@ -20,9 +20,14 @@ export interface AppOptions {
    * adapter-sqlite's `devMailOutbox`, named here only by the stub options it adds.
    */
   outbox?: { kick(caller: DevCaller): Pick<ScopeStubOptions, 'onPlatformRequests'> };
+  /**
+   * Routes a harness adds beside this vertical's own, ahead of them. The Notes pair mounts Todo's
+   * calls to that plugin, made as the person signed in here, through it (`demos/notes`, #3161).
+   */
+  routes?: (app: Hono) => void;
 }
 
-export function createApp({ host, login, onJoined, outbox }: AppOptions): Hono {
+export function createApp({ host, login, onJoined, outbox, routes }: AppOptions): Hono {
   const app = new Hono();
   const joined = new Set<string>();
   // Every door goes through here, so an operation sees the address the issuer verified (K-61).
@@ -67,6 +72,8 @@ export function createApp({ host, login, onJoined, outbox }: AppOptions): Hono {
   // served. The platform's `/api/docs` renders this same document, which `routes.ts`
   // hands `mountOperations`.
   app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
+
+  routes?.(app);
 
   mountApi(app, async (c) => {
     // The identity directory says which tenant this login is in and which principal it is

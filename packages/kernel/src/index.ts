@@ -394,6 +394,8 @@ export {
   withheldKeysFor,
 } from './entity-trash.js';
 export type { PurgeDue, PurgeGateFacts, PurgePass, TrashRefusalDeps } from './entity-trash.js';
+export { capCoverage, delegationCeilingOf, outsideCeiling, parseScopeDelegation } from './delegation-ceiling.js';
+export type { ScopeDelegation } from './delegation-ceiling.js';
 export type { EntityStateDeps, EntityStatePlan, EntityStateVerbs, StateColumns } from './entity-state.js';
 export { addUpdatedStampPlans, watchUpdatedStamps } from './entity-stamps.js';
 export type { UpdatedStampPlan } from './entity-stamps.js';

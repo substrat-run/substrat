@@ -817,6 +817,9 @@ export async function handlePeerCall(
         operation: request.operation,
         ...(request.input === undefined ? {} : { input: request.input }),
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
+        // #3161: the person the call is made for, as a token only the TARGET verifies. Passed on
+        // unread and never logged; WHO is calling stays the dispatch's, above.
+        ...(request.onBehalf === undefined ? {} : { onBehalf: request.onBehalf }),
       }),
     });
   // RFC wire-signing step 2: the router signs the calls it makes itself (`iss` router, `kind` call),

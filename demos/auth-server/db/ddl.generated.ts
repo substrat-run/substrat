@@ -271,12 +271,16 @@ export const SCHEMA_STATEMENTS: string[] = [
   // exchange (`src/token-exchange.ts`) re-reads it on every exchange, which is what makes a
   // revocation take effect. Written ONLY by the platform's delivery
   // (`substrat:delegations:<host scope>`); the primary key serves both that host's whole-set
-  // replace and the exchange's single-row read.
+  // replace and the exchange's single-row read. `channels` (#3161) is the JSON array of
+  // exchanges the grant admits; NULL is a row delivered before the column existed, and reads
+  // as `mcp` alone, which is all such a row ever meant (`channelsOf` in contracts). Last, so
+  // a fresh store and one `db/upgrade.ts` added it to have the same column order.
   `CREATE TABLE IF NOT EXISTS delegation_grant (
     host_app_scope_id TEXT NOT NULL,
     actor_app_scope_id TEXT NOT NULL,
     permissions TEXT NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    channels TEXT,
     PRIMARY KEY (host_app_scope_id, actor_app_scope_id))`,
   // A PREVIEW's own clients (#1704, `src/preview-clients.ts`): every client the platform
   // minted for a preview scope. A delete selects from here and nothing else, so no client the

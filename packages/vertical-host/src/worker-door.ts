@@ -47,10 +47,22 @@
  * surface, minted from the session as the stub is, so a route never names whose files it reads; and
  * when the worker names `attachments`, the door serves and removes a file itself at
  * `/api/attachments/:attachmentId`, streamed and seekable, as the signed-in person.
+ *
+ * A vertical may take its people from another app of the tenant, its MASTER (#3161,
+ * docs/rfc/dependent-people.md): it names `people`, and a person signed in here is let in as the
+ * master says, through the person contract's door (`admitPerson`), never through the owner seat,
+ * an invite or a join. Such a dependent owns no people, so it names neither `invites` nor `join`,
+ * the owner-claim route is not mounted, and the platform's mint of a claim link is refused. The
+ * master may also CALL it as the signed-in person: the dependent verifies the delegated token
+ * the call carries (`platform.delegatedPeer`), and the call runs as the person, capped to the
+ * token's scope. The master's half is `refreshTokens` and `peerAs`.
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
+  PEER_CLIENT_OPERATION,
+  errorCodeOf,
+  peerClientAnswer,
   principalId,
   substratError,
   type CapabilityExchange,
@@ -62,10 +74,21 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { personaPrincipal, seatWorldWith, type ScopeAttachments, type ScopeHost, type ScopeStub, type ScopeStubOptions, type SeedWorld } from '@substrat-run/kernel';
+import {
+  globalFetch,
+  personaPrincipal,
+  samePeerVertical,
+  seatWorldWith,
+  type ScopeAttachments,
+  type ScopeHost,
+  type ScopeStub,
+  type ScopeStubOptions,
+  type SeedWorld,
+} from '@substrat-run/kernel';
 import {
   AuthConfigError,
   IdentityDO,
+  authorizationServersOf,
   instanceAuthFor,
   mintOwnerClaimLink,
   placesReporter,
@@ -87,9 +110,13 @@ import {
 } from '@substrat-run/vertical-auth/invite-routes';
 import { mountOwnerClaim, type OwnerClaimRouteDeps } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { mountSession, sessionAnswer } from '@substrat-run/vertical-auth/session-route';
+import { admitDelegated, admitPerson, identityPeopleStore, type PeopleDeps } from '@substrat-run/vertical-auth/people';
+import { DelegatedTokenError, delegatedToken } from '@substrat-run/vertical-auth/delegate';
+import { identityRefreshStore } from '@substrat-run/vertical-auth/session-refresh';
 import { hardenFileResponse, serveAttachment } from './attachment-serve.js';
 import { mountDownloadLinkRedeem } from './download-link.js';
 import { problemResponse } from './errors.js';
+import { peerClient } from './peer-client.js';
 import type { PlatformSurfaceDeps, SeedWorldHook } from './index.js';
 
 export { IdentityDO };
@@ -106,7 +133,7 @@ export interface WorkerDoorDeps<E extends object> {
   directory: (env: E, node: DoorNode) => IdentityStub;
   /** The routed (tenant, scope), from the router's assertion. */
   nodeFor: (req: Request, env: E) => DoorNode;
-  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost & Partial<Pick<ScopeHost, 'attachments'>> & Pick<ScopeHost, 'openDownloadLink'>;
+  hostFor: (env: E) => Pick<ScopeHost, 'getScope'> & OwnerClaimMintHost & ReturnType<OwnerClaimRouteDeps<E, DoorNode>['host']> & SelfShapeHost & DoorInviteHost & PersonaSeatHost & PeopleSeatHost & Partial<Pick<ScopeHost, 'attachments'>> & Pick<ScopeHost, 'openDownloadLink'>;
   /** The vertical's declared settings, resolved per scope with the delivered values. */
   envSpec: EnvVarSpec[];
   /**
@@ -145,7 +172,58 @@ export interface WorkerDoorDeps<E extends object> {
    * seeks with byte ranges. Omit it and none of the three is mounted; `attachments(c)` is there either way.
    */
   attachments?: true;
+  /**
+   * Take this vertical's people from another app of the tenant, its master (#3161). Named, a
+   * person signed in here is asked about at the master (a peer call as this app, kept in the
+   * tenant's identity directory for `ttlSeconds`) and let in as it says, and the master may call
+   * this app as a signed-in person with a delegated token. A refusal is 403, a master that does
+   * not answer 503. Not with `invites` or `join`: a dependent owns no people.
+   */
+  people?: DoorPeople;
+  /**
+   * Keep each session's refresh token in the tenant's identity directory (#3161), so `peerAs`
+   * can call another app as the signed-in person. Sign-in then also asks for `offline_access`.
+   */
+  refreshTokens?: true;
 }
+
+/** Where this vertical's people come from (#3161): the master app and its person contract. */
+export interface DoorPeople {
+  /** The master's vertical slug, as this app's `substrat.calls` names it. */
+  master: string;
+  /** The master's resolve operation (`identity.person@1`), e.g. `todo/resolve-person`. */
+  resolveOperation: string;
+  /** The master's role keys mapped onto this vertical's own. A key it does not name maps to nothing. */
+  roles(masterRoles: readonly string[]): readonly string[];
+  /** How long an answer is kept, the bound on how late a block lands. Defaults to the door's 300 s. */
+  ttlSeconds?: number;
+  /**
+   * This vertical's declared `delegations`, every registered module's: `MODULES.flatMap((m) =>
+   * m.manifest.delegations ?? [])`. A call the master makes for a person is capped to the keys the
+   * entries for the master on the `peer` channel name, whatever the token's `scope` says, so a
+   * narrowing lands with the version that declares it rather than when the issuer next hears of it.
+   * No such entry refuses every such call. Passed in because the door has no read of the host's
+   * registered manifests.
+   */
+  delegations: readonly { actor: string; permissions: readonly string[]; channels?: readonly string[] }[];
+}
+
+/**
+ * The keys `actor` may be delegated on the `peer` channel by `delegations`, or null when no entry
+ * names it there (absent `channels` is `mcp` alone, as for a delivered grant).
+ */
+function peerDelegationCeiling(delegations: DoorPeople['delegations'], actor: string): ReadonlySet<string> | null {
+  const entries = delegations.filter((d) => d.actor === actor && (d.channels ?? []).includes('peer'));
+  return entries.length === 0 ? null : new Set(entries.flatMap((d) => d.permissions));
+}
+
+/** The scope-local verbs a dependent seats and unseats a person's roles with (#3161). */
+export interface PeopleSeatHost {
+  revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
+}
+
+/** How long another app's answer to `PEER_CLIENT_OPERATION` is kept, per isolate. */
+const PEER_CLIENT_TTL_MS = 60_000;
 
 /** Where the door serves and removes a file when `attachments` is named (#3139). */
 export const DOOR_ATTACHMENT_PATH = '/api/attachments/:attachmentId';
@@ -215,18 +293,115 @@ export interface WorkerDoor<E extends object> {
    * here and never off `env`: a default rides as a binding every install of a script shares.
    */
   settings(env: E, node: DoorNode): Promise<InstanceAuth['settings']>;
+  /**
+   * Call another app of the tenant AS the signed-in person (#3161): a peer call carrying a
+   * delegated token for `vertical`, obtained at the issuer from the session's kept refresh token
+   * (`refreshTokens`). `scope` asks for fewer of the target's keys than were granted. 401 for
+   * nobody, or a session that keeps no refresh token (sign in again); 403 when the issuer or the
+   * target refuses; 503 when the issuer cannot be reached.
+   */
+  peerAs<O = unknown>(
+    c: Context<{ Bindings: E }>,
+    vertical: string,
+    operation: string,
+    input?: unknown,
+    options?: { scope?: readonly string[]; idempotencyKey?: string },
+  ): Promise<O>;
   /** Spread into `mountPlatformSurface`, so what the platform delivers lands in the directory. */
-  platform: DoorHooks<E> & { seedWorld?: SeedWorldHook<E> };
+  platform: DoorHooks<E> &
+    Required<Pick<PlatformSurfaceDeps<E>, 'peerClient'>> &
+    Pick<PlatformSurfaceDeps<E>, 'delegatedPeer'> & { seedWorld?: SeedWorldHook<E> };
 }
 
 export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoor<E> {
-  const wiring = (env: E, node: DoorNode): Promise<InstanceAuth> =>
-    instanceAuthFor({
-      directory: deps.directory(env, node),
+  if (deps.people && (deps.invites || deps.join)) {
+    throw new Error('workerDoor: a vertical that takes its people from another app (`people`) owns none, so it names neither `invites` nor `join`');
+  }
+  const people = deps.people;
+
+  /** `delegation` admits a delegated token on the `peer` channel only: the dependent's call door. */
+  const wiring = (env: E, node: DoorNode, delegation?: { actors: readonly string[]; channels: ['peer'] }): Promise<InstanceAuth> => {
+    const directory = deps.directory(env, node);
+    return instanceAuthFor({
+      directory,
       scopeId: node.scopeId,
       envSpec: deps.envSpec,
       env: env as unknown as Record<string, unknown>,
+      ...(deps.refreshTokens ? { refreshStore: identityRefreshStore(directory) } : {}),
+      ...(delegation ? { delegation } : {}),
     });
+  };
+
+  /** This instance's own OIDC client, or null when it signs nobody in at an issuer. */
+  const clientOf = (instance: InstanceAuth) =>
+    instance.identity?.mode === 'oidc' && instance.identity.issuer && instance.identity.clientId
+      ? { issuer: instance.identity.issuer, clientId: instance.identity.clientId, clientSecret: instance.identity.clientSecret ?? '' }
+      : null;
+
+  /**
+   * Another app's answer to `PEER_CLIENT_OPERATION`, kept per isolate for a minute: a client id
+   * changes only when the app's sign-in is reconfigured. A failure is not kept, and throws.
+   */
+  const clientIds = new Map<string, { clientId: string | null; until: number }>();
+  const peerClientIdOf = async (tenantId: TenantId, vertical: string): Promise<string | null> => {
+    const key = `${tenantId}/${vertical}`;
+    const held = clientIds.get(key);
+    if (held && held.until > Date.now()) return held.clientId;
+    const { clientId } = peerClientAnswer.parse(await peerClient(vertical).invoke(PEER_CLIENT_OPERATION));
+    if (clientIds.size >= 1_000) clientIds.clear();
+    clientIds.set(key, { clientId, until: Date.now() + PEER_CLIENT_TTL_MS });
+    return clientId;
+  };
+
+  /** The person contract's door over the tenant's directory and this scope's role verbs. */
+  const peopleDeps = (env: E, node: DoorNode, directory: IdentityStub, master: DoorPeople): PeopleDeps => {
+    const host = deps.hostFor(env);
+    return {
+      resolve: (login) => peerClient(master.master).invoke(master.resolveOperation, login),
+      store: identityPeopleStore(directory),
+      roles: master.roles,
+      bind: (sub, principal) => directory.bindPersona(node.scopeId, sub, principal),
+      // The master decided; seated as a PERSON's role, so a role holding a key reserved to a
+      // system principal is refused here whatever the master's mapping says (#2447).
+      seat: async (principal, { add, remove }) => {
+        const { assignScopeRole, revokeScopeRole } = host;
+        if (!assignScopeRole || !revokeScopeRole) {
+          throw substratError('unavailable', "this scope host cannot seat a person's roles — redeploy it");
+        }
+        for (const roleKey of remove) await revokeScopeRole.call(host, node.scopeId, principal, roleKey);
+        for (const roleKey of add) await assignScopeRole.call(host, node.scopeId, principal, roleKey, 'person');
+      },
+      now: () => new Date(),
+      ...(master.ttlSeconds === undefined ? {} : { ttlSeconds: master.ttlSeconds }),
+      onUnavailable: (error) =>
+        console.warn(
+          JSON.stringify({
+            host: 'door-people-unavailable',
+            ...node,
+            master: master.master,
+            code: errorCodeOf(error) ?? (error instanceof Error ? error.name : typeof error),
+          }),
+        ),
+    };
+  };
+
+  /** The issuer this instance's sign-ins name: what the master is told a login comes from. */
+  const issuerOf = (instance: InstanceAuth): string | null =>
+    authorizationServersOf({ identity: instance.identity, settings: instance.settings })[0] ?? null;
+
+  /** A signed-in person of a dependent, as its master says, or the refusal as a problem. */
+  const personOf = async (env: E, node: DoorNode, directory: IdentityStub, instance: InstanceAuth, subject: AuthSubject, master: DoorPeople) => {
+    const answer = await admitPerson(peopleDeps(env, node, directory, master), node.scopeId, {
+      issuer: issuerOf(instance),
+      sub: subject.sub,
+      verifiedEmail: verifiedEmailOf(subject),
+    });
+    if (answer.admitted) return answer.principal;
+    if (answer.reason === 'unavailable') {
+      throw substratError('unavailable', `'${master.master}', which this app takes its people from, did not answer; retry`);
+    }
+    throw substratError('forbidden', `'${master.master}' does not let this sign-in in here (${answer.reason})`);
+  };
 
   /** The provider a configuration selects; a refusal is its HTTP status, not a 500. */
   const providerOf = (instance: InstanceAuth): AuthProvider => {
@@ -274,9 +449,14 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     const instance = await wiring(env, node);
     const subject = await providerOf(instance).resolve(req.headers);
     const directory = deps.directory(env, node);
+    if (people) {
+      // A dependent: the master's answer, never the owner seat or an invite.
+      const principal = subject ? await personOf(env, node, directory, instance, subject, people) : null;
+      return { node, subject, principal, identity: instance.identity, instance };
+    }
     let principal = subject ? await directory.resolvePrincipal(node.scopeId, subject.sub) : null;
     if (subject && !principal) principal = await admit(env, node, directory, subject);
-    return { node, subject, principal, identity: instance.identity };
+    return { node, subject, principal, identity: instance.identity, instance };
   };
 
   /**
@@ -320,6 +500,49 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
   };
 
 
+
+  /**
+   * A peer call made for a person (#3161): admitted only from the master, with a token the
+   * issuer minted for THIS app on the `peer` channel whose actor is the master's own client.
+   * That client id is asked of the master itself, and only for a call the master made: a call
+   * from any other app is refused as `not-master` before anything is read. A master that does
+   * not say which client it is fails closed, as `unavailable`.
+   */
+  const delegatedPeer = (master: DoorPeople): NonNullable<PlatformSurfaceDeps<E>['delegatedPeer']> =>
+    async (env, node, caller, token) => {
+      // A push pinned to the tenant registers `<tenantSlug>/<slug>`: the same master, spelled as
+      // `substrat.calls` and the peer door spell it.
+      const callerVertical = samePeerVertical(caller.vertical, master.master, caller.tenantSlug ?? null) ? master.master : caller.vertical;
+      // This version's own declaration caps the call (#3161), before the token is read.
+      const ceiling = peerDelegationCeiling(master.delegations, master.master);
+      if (callerVertical === master.master && ceiling === null) return { admitted: false, reason: 'token-refused' };
+      let actors: string[] = [];
+      if (callerVertical === master.master) {
+        try {
+          const clientId = await peerClientIdOf(node.tenantId, master.master);
+          if (clientId !== null) actors = [clientId];
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              host: 'door-master-client-unavailable',
+              ...node,
+              master: master.master,
+              code: errorCodeOf(err) ?? (err instanceof Error ? err.name : typeof err),
+            }),
+          );
+          return { admitted: false, reason: 'unavailable' };
+        }
+      }
+      const instance = await wiring(env, node, { actors, channels: ['peer'] });
+      const provider = providerOf(instance);
+      const answer = await admitDelegated(peopleDeps(env, node, deps.directory(env, node), master), node.scopeId, { token, callerVertical }, {
+        master: master.master,
+        issuer: issuerOf(instance),
+        verify: async (t) => (provider.resolveOnBehalf ? provider.resolveOnBehalf(t) : null),
+      });
+      // Admitted only from the master, whose entry was found above.
+      return answer.admitted ? { ...answer, scope: answer.scope.filter((k) => ceiling!.has(k)) } : answer;
+    };
 
   /**
    * Seat the world in a seeded preview (#3108). A persona is linked in this tenant's identity
@@ -383,7 +606,7 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
           return {};
         },
       });
-      mountOwnerClaim(app, { nodeFor: deps.nodeFor, authProvider, directory: deps.directory, host: deps.hostFor });
+      if (!people) mountOwnerClaim(app, { nodeFor: deps.nodeFor, authProvider, directory: deps.directory, host: deps.hostFor });
       if (deps.invites) {
         mountMemberInvites(app, { signedIn, directory: deps.directory, host: deps.hostFor, invites: deps.invites });
       }
@@ -419,6 +642,38 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
 
     attachments: attachmentsOf,
 
+    async peerAs<O>(
+      c: Context<{ Bindings: E }>,
+      vertical: string,
+      operation: string,
+      input?: unknown,
+      options?: { scope?: readonly string[]; idempotencyKey?: string },
+    ): Promise<O> {
+      if (!deps.refreshTokens) throw new Error('workerDoor: peerAs needs `refreshTokens: true`, or no session keeps what it needs');
+      const { node, subject, principal, instance } = await callerOf(c.env, c.req.raw);
+      if (!principal || !subject) throw new HTTPException(401, { message: 'unauthorized' });
+      if (!subject.sid) throw substratError('unauthenticated', 'sign in again to act at another app');
+      const own = clientOf(instance);
+      if (!own) throw substratError('forbidden', 'this app signs nobody in at an issuer, so it cannot act for a person');
+      const audience = await peerClientIdOf(node.tenantId, vertical);
+      if (audience === null) throw substratError('forbidden', `'${vertical}' takes no calls for a person`);
+      let token: string;
+      try {
+        ({ token } = await delegatedToken(
+          { ...own, store: identityRefreshStore(deps.directory(c.env, node)), fetch: globalFetch },
+          { sid: subject.sid, audience, ...(options?.scope ? { scope: options.scope } : {}) },
+        ));
+      } catch (err) {
+        if (!(err instanceof DelegatedTokenError)) throw err;
+        // The error names the step and the issuer's code, never what was sent.
+        throw substratError(err.kind === 'reauth' ? 'unauthenticated' : err.kind === 'refused' ? 'forbidden' : 'unavailable', err.message);
+      }
+      return peerClient(vertical).invoke<O>(operation, input, {
+        onBehalf: { token },
+        ...(options?.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+      });
+    },
+
     settings: async (env, node) => (await wiring(env, node)).settings,
 
     platform: {
@@ -439,8 +694,12 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
         return owner ? principalId.parse(owner) : null;
       },
       ownerSeat: (env, ref) => deps.directory(env, ref).ownerSeat(ref.scopeId),
-      mintOwnerClaim: (env, ref, input) =>
-        mintOwnerClaimLink({ directory: deps.directory(env, ref), host: deps.hostFor(env) }, ref, input.origin, input.actor),
+      mintOwnerClaim: people
+        ? async () => {
+            throw substratError('conflict', `this app takes its people from '${people.master}', so it has no owner seat to claim`);
+          }
+        : (env, ref, input) =>
+            mintOwnerClaimLink({ directory: deps.directory(env, ref), host: deps.hostFor(env) }, ref, input.origin, input.actor),
       transferOwner: (env, ref, input) =>
         deps.directory(env, ref).transferOwner(ref.scopeId, input.from, input.to, input.toHoldsRole),
       completeOwnerTransfer: (env, ref, input) =>
@@ -448,6 +707,8 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       abandonOwnerTransfer: (env, ref, input) =>
         deps.directory(env, ref).abandonOwnerTransfer(ref.scopeId, input.from, input.to, input.toHoldsRole),
       ...(deps.world ? { seedWorld: seedWorld(deps.world) } : {}),
+      peerClient: async (env, node) => ({ clientId: clientOf(await wiring(env, node))?.clientId ?? null }),
+      ...(people ? { delegatedPeer: delegatedPeer(people) } : {}),
     },
   };
 }

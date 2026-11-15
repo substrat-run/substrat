@@ -379,6 +379,109 @@ describe('prompt=none answers without any UI', () => {
 });
 
 /**
+ * A master app keeps a person signed in (#3161). To call its plugin AS the person later, with
+ * the peer exchange (`src/token-exchange.ts`, exchange C), it needs a live token issued to
+ * itself, and its login's id_token is gone by then. So it asks for `offline_access` at sign-in
+ * and trades the refresh token for a fresh id_token. Nothing in this issuer turns that on: the
+ * plugin issues a refresh token for `offline_access` to any client allowed `authorization_code`,
+ * which is every client registered the way the dashboard registers an app's (DCR, the secret in
+ * the form body, no `grant_types`), and answers a refresh with an id_token while `openid` is in
+ * the scope. This pins both, since exchange C depends on them.
+ */
+describe('a platform-registered app refreshes to a live id_token (#3161)', () => {
+  // The dashboard's registration body (`apps/dashboard/src/auth-wiring.ts`), minus the logout
+  // URIs. An app's callback is https, as the plugin requires of a web client off loopback.
+  const redirect = 'https://master.acme.test/api/auth/callback';
+  async function registerApp(): Promise<{ clientId: string; clientSecret: string }> {
+    const reg = await call('/api/auth/oauth2/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Master App', redirect_uris: [redirect], token_endpoint_auth_method: 'client_secret_post' }),
+    });
+    expect(reg.status).toBe(201);
+    const body = (await reg.json()) as { client_id: string; client_secret: string };
+    return { clientId: body.client_id, clientSecret: body.client_secret };
+  }
+  const tokenCall = (app: { clientId: string; clientSecret: string }, form: Record<string, string>) =>
+    call('/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ...form, client_id: app.clientId, client_secret: app.clientSecret }).toString(),
+    });
+  /** One sign-in at the app asking for `offline_access`: its refresh token. */
+  async function signInOffline(app: { clientId: string; clientSecret: string }): Promise<string> {
+    const cookie = await signInAs(ADMIN);
+    const { verifier, challenge } = await pkce();
+    const authorize = await call(
+      authorizeUrl(app.clientId, 'st-offline', challenge, { scope: 'openid email profile offline_access', redirect_uri: redirect }),
+      { headers: { ...NAVIGATE, cookie } },
+    );
+    // Consent once: a second sign-in at the same app goes straight back with a code.
+    let back = authorize.headers.get('location') ?? '';
+    if (!back.startsWith(redirect)) {
+      const consent = await call('/api/auth/oauth2/consent', {
+        method: 'POST',
+        headers: { ...FROM_FETCH, cookie },
+        body: JSON.stringify({ accept: true, oauth_query: oauthQueryOf(back) }),
+      });
+      back = ((await consent.json()) as { url: string }).url;
+    }
+    const code = new URL(back).searchParams.get('code') ?? '';
+    const first = await tokenCall(app, { grant_type: 'authorization_code', code, redirect_uri: redirect, code_verifier: verifier });
+    expect(first.status).toBe(200);
+    const issued = (await first.json()) as { refresh_token?: string; scope: string };
+    expect(issued.scope.split(' ')).toContain('offline_access');
+    expect(issued.refresh_token).toBeTruthy();
+    return issued.refresh_token ?? '';
+  }
+  const refresh = (app: { clientId: string; clientSecret: string }, token: string) =>
+    tokenCall(app, { grant_type: 'refresh_token', refresh_token: token });
+
+  it('walks code with offline_access → refresh token → refresh grant → an id_token addressed to the app', async () => {
+    const app = await registerApp();
+    const issued = await signInOffline(app);
+    const refreshed = await refresh(app, issued);
+    expect(refreshed.status).toBe(200);
+    const tokens = (await refreshed.json()) as { id_token?: string; refresh_token?: string };
+    const claims = JSON.parse(
+      Buffer.from((tokens.id_token?.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'),
+    ) as Record<string, unknown>;
+    // What exchange C requires of a subject issued to the actor: `aud` the app alone, no other
+    // authorized party, and live. It carries no address: this plugin puts that in userinfo, not
+    // the id_token (see "email_verified travels with the address" below), which is why exchange
+    // C reads the address from the issuer's user record instead.
+    expect(claims).toMatchObject({ iss: ORIGIN, aud: app.clientId, sub: expect.any(String) });
+    expect(claims['azp'] === undefined || claims['azp'] === app.clientId).toBe(true);
+    expect(claims['exp'] as number).toBeGreaterThan(Date.now() / 1000);
+    // Rotated: the next refresh uses the new one.
+    expect(tokens.refresh_token).toBeTruthy();
+    expect(tokens.refresh_token).not.toBe(issued);
+  });
+
+  /**
+   * Two isolates of the app refreshing the same token at once. Without the reuse window the
+   * plugin reads the second as a stolen token replayed, and deletes every refresh token the
+   * person holds at the app: signed out of delegated calls everywhere (`refreshTokenReuseInterval`
+   * in `src/auth.ts`).
+   */
+  it('answers the same refresh token twice inside the reuse window, and the person’s other refresh token survives', async () => {
+    const app = await registerApp();
+    const other = await signInOffline(app);
+    const spent = await signInOffline(app);
+    const once = await refresh(app, spent);
+    expect(once.status).toBe(200);
+    const again = await refresh(app, spent);
+    expect(again.status).toBe(200);
+    // The same response, replayed: both isolates go on with one next refresh token.
+    const first = (await once.json()) as { refresh_token: string };
+    const second = (await again.json()) as { refresh_token: string };
+    expect(second.refresh_token).toBe(first.refresh_token);
+    expect((await refresh(app, other)).status).toBe(200);
+    expect((await refresh(app, first.refresh_token)).status).toBe(200);
+  });
+});
+
+/**
  * What this issuer says about an address (#1359). A Substrat relying party asks for
  * `openid email profile` and, by default, takes an address as an identifier only when the
  * issuer asserted `email_verified: true` about it — so whatever response carries `email`

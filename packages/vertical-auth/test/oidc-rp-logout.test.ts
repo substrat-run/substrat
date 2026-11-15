@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
-import { LOGOUT_HINT_COOKIE, LOGOUT_RETURN_COOKIE, SESSION_COOKIE, FLOW_COOKIE } from '@substrat-run/oidc-rp';
+import { LOGOUT_HINT_COOKIE, LOGOUT_RETURN_COOKIE, SESSION_COOKIE, FLOW_COOKIE, mintSession } from '@substrat-run/oidc-rp';
 import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
+import type { RefreshEntry, RefreshStore } from '../src/session-refresh.js';
 
 /**
  * RP-initiated logout through the hosted-vertical provider — the same question
@@ -24,6 +25,8 @@ let ISSUER: string;
 let cfg: OidcRpConfig;
 /** What this test's issuer advertises — `null` for one offering no RP-initiated logout. */
 let endSessionEndpoint: string | null;
+/** The refresh token this test's issuer hands back with the code, or null for none. */
+let refreshToken: string | null;
 
 let privateKey: CryptoKey;
 let jwks: { keys: object[] };
@@ -45,6 +48,7 @@ beforeEach(() => {
     sessionSecret: 'session-secret-000000000000000000000001',
   };
   endSessionEndpoint = `${ISSUER}/api/auth/oauth2/end-session`;
+  refreshToken = null;
 
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -67,7 +71,7 @@ beforeEach(() => {
         .setIssuedAt()
         .setExpirationTime('5m')
         .sign(privateKey);
-      return Response.json({ id_token: idToken, access_token: 'at-1', token_type: 'Bearer' });
+      return Response.json({ id_token: idToken, access_token: 'at-1', token_type: 'Bearer', ...(refreshToken ? { refresh_token: refreshToken } : {}) });
     }
     throw new Error(`unexpected fetch in test: ${url}`);
   }) as typeof fetch);
@@ -389,5 +393,72 @@ describe('a persona issuer (seeded preview)', () => {
     ];
     expect(written).toHaveLength(6);
     for (const header of written) expect(header).toMatch(/; SameSite=None; Secure; Partitioned$/);
+  });
+});
+
+/**
+ * #3161: a master app keeps each session's refresh token server-side to act for the person at a
+ * plugin later. The cookie carries a random `sid`, the store the token, and logout forgets it.
+ */
+describe('keeping a refresh token', () => {
+  const memoryStore = () => {
+    const rows = new Map<string, RefreshEntry>();
+    const store: RefreshStore = {
+      put: async (sid, entry) => void rows.set(sid, entry),
+      get: async (sid) => rows.get(sid) ?? null,
+      delete: async (sid) => void rows.delete(sid),
+    };
+    return { rows, store };
+  };
+  const sessionOf = (back: Response) => `${SESSION_COOKIE}=${encodeURIComponent(cookiesOf(back).get(SESSION_COOKIE)!)}`;
+
+  it('asks for offline_access, keeps the token under the sid the session names, and never in a cookie', async () => {
+    const { rows, store } = memoryStore();
+    refreshToken = 'rt-secret';
+    const provider = oidcRpAuthProvider({ ...cfg, refreshStore: store });
+    const login = new URL((await provider.handle(new Request(`${APP}/api/auth/login`))).headers.get('location')!);
+    expect(login.searchParams.get('scope')).toBe('openid email profile offline_access');
+    expect(login.searchParams.get('prompt')).toBeNull();
+
+    const back = await signIn(provider);
+    expect(setCookies(back).join('\n')).not.toContain('rt-secret');
+    const subject = await provider.resolve(new Headers({ cookie: sessionOf(back) }));
+    expect(subject?.sid).toEqual(expect.any(String));
+    expect([...rows]).toEqual([[subject!.sid, { sub: 'u-1', refreshToken: 'rt-secret' }]]);
+  });
+
+  it.each(['', '?federated'])('forgets the token at logout%s', async (query) => {
+    const { rows, store } = memoryStore();
+    refreshToken = 'rt-secret';
+    const provider = oidcRpAuthProvider({ ...cfg, refreshStore: store });
+    const back = await signIn(provider);
+    expect(rows.size).toBe(1);
+    await provider.handle(new Request(`${APP}/api/auth/logout${query}`, { headers: { cookie: sessionOf(back) } }));
+    expect(rows.size).toBe(0);
+  });
+
+  it('asks for and keeps nothing without a store, and exposes no sid', async () => {
+    refreshToken = 'rt-secret';
+    const provider = oidcRpAuthProvider(cfg);
+    const login = new URL((await provider.handle(new Request(`${APP}/api/auth/login`))).headers.get('location')!);
+    expect([login.searchParams.get('scope'), login.searchParams.get('prompt')]).toEqual(['openid email profile', null]);
+    const subject = await provider.resolve(new Headers({ cookie: sessionOf(await signIn(provider)) }));
+    expect(subject).not.toHaveProperty('sid');
+  });
+
+  it('resolves a session minted before the store exactly as before, with no sid', async () => {
+    const { store } = memoryStore();
+    const env = { OIDC_ISSUER: ISSUER, OIDC_CLIENT_ID: cfg.clientId, OIDC_CLIENT_SECRET: cfg.clientSecret, SESSION_SECRET: cfg.sessionSecret };
+    const old = `${SESSION_COOKIE}=${encodeURIComponent(await mintSession(env, { id: 'u-1', email: 'a@example.test' }))}`;
+    const before = await oidcRpAuthProvider(cfg).resolve(new Headers({ cookie: old }));
+    expect(before?.sub).toBe('u-1');
+    expect(await oidcRpAuthProvider({ ...cfg, refreshStore: store }).resolve(new Headers({ cookie: old }))).toEqual(before);
+    // And a session that does name a sid shows none once the app keeps no tokens.
+    const minted = `${SESSION_COOKIE}=${encodeURIComponent(await mintSession(env, { id: 'u-1' }, 3600, 'sid-x'))}`;
+    expect((await oidcRpAuthProvider({ ...cfg, refreshStore: store }).resolve(new Headers({ cookie: minted })))?.sid).toBe('sid-x');
+    expect(await oidcRpAuthProvider(cfg).resolve(new Headers({ cookie: minted }))).not.toHaveProperty('sid');
+    // And its logout touches nothing it does not have.
+    const out = await oidcRpAuthProvider({ ...cfg, refreshStore: store }).handle(new Request(`${APP}/api/auth/logout`, { headers: { cookie: old } }));
+    expect(out.status).toBe(302);
   });
 });

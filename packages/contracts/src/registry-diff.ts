@@ -19,6 +19,11 @@ export interface RegistryLike {
     holder?: EntityGrantHolder;
     bind?: { permission: string };
   }>;
+  /**
+   * #3161: which apps may act for a person here, with which keys, on which channels (absent:
+   * `mcp` alone). Optional, as on the registry: a version stored before the field has none.
+   */
+  delegations?: ReadonlyArray<{ actor: string; permissions: readonly string[]; channels?: readonly string[] }>;
 }
 
 /** One grant shape of a {@link RegistryLike}. */
@@ -80,6 +85,20 @@ export interface RegistryDiff {
      * writes it (null: none declared). Absent when unchanged.
      */
     holder?: { from: string | null; to: string | null };
+    isNew: boolean;
+    isGone: boolean;
+  }>;
+  /**
+   * #3161: the apps that may act for a person here whose delegation changed — keys or channels it
+   * gained or lost, or the actor appearing or vanishing. A key or a channel gained widens what
+   * another app may do as the people of this one, as a key a role gains widens what its holders may.
+   */
+  delegationChanges: Array<{
+    actor: string;
+    added: string[];
+    removed: string[];
+    addedChannels: string[];
+    removedChannels: string[];
     isNew: boolean;
     isGone: boolean;
   }>;
@@ -174,6 +193,27 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
       });
     }
   }
+  // #3161: an absent `channels` is `mcp` alone, so writing it out is no change.
+  const channelsOf = (d?: { channels?: readonly string[] }) => (d ? [...(d.channels ?? ['mcp'])] : []);
+  const fromDelegations = new Map((from.delegations ?? []).map((d) => [d.actor, d]));
+  const toDelegations = new Map((to.delegations ?? []).map((d) => [d.actor, d]));
+  const delegationChanges: RegistryDiff['delegationChanges'] = [];
+  for (const actor of new Set([...fromDelegations.keys(), ...toDelegations.keys()])) {
+    const before = fromDelegations.get(actor);
+    const after = toDelegations.get(actor);
+    const change = {
+      actor,
+      added: gained(before?.permissions, after?.permissions),
+      removed: gained(after?.permissions, before?.permissions),
+      addedChannels: gained(channelsOf(before), channelsOf(after)),
+      removedChannels: gained(channelsOf(after), channelsOf(before)),
+      isNew: !before && !!after,
+      isGone: !!before && !after,
+    };
+    if (change.added.length || change.removed.length || change.addedChannels.length || change.removedChannels.length || change.isNew || change.isGone) {
+      delegationChanges.push(change);
+    }
+  }
   const addedKeys = [...toKeys.keys()].filter((k) => !fromKeys.has(k));
   return {
     addedKeys,
@@ -183,7 +223,25 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
     reservedAddedKeys: addedKeys.filter((k) => toReserved.has(k)),
     roleChanges,
     grantChanges,
+    delegationChanges,
   };
+}
+
+/**
+ * #3161: a delegation change as one sentence, for every reader of the diff to show as written. The
+ * keys are a ceiling over what the person holds here, never a grant, and the sentence says so.
+ */
+export function delegationNote(c: RegistryDiff['delegationChanges'][number]): string {
+  if (c.isGone) return `${c.actor} may no longer act for a person here`;
+  const ceiling = "a ceiling over the person's own keys, never a grant";
+  if (c.isNew) return `${c.actor} may now act for a person here with ${c.added.join(', ')} over ${c.addedChannels.join(', ')} (${ceiling})`;
+  const parts = [
+    ...(c.added.length ? [`now also with ${c.added.join(', ')}`] : []),
+    ...(c.removed.length ? [`no longer with ${c.removed.join(', ')}`] : []),
+    ...(c.addedChannels.length ? [`now also over ${c.addedChannels.join(', ')}`] : []),
+    ...(c.removedChannels.length ? [`no longer over ${c.removedChannels.join(', ')}`] : []),
+  ];
+  return `${c.actor} acting for a person here: ${parts.join('; ')} (${ceiling})`;
 }
 
 /**
@@ -333,7 +391,8 @@ export function hasRegistryChange(d: RegistryDiff): boolean {
     d.changedKeys.length > 0 ||
     d.reservationChanges.length > 0 ||
     d.roleChanges.length > 0 ||
-    d.grantChanges.length > 0
+    d.grantChanges.length > 0 ||
+    d.delegationChanges.length > 0
   );
 }
 
@@ -350,12 +409,15 @@ export function registryDirection(d: RegistryDiff): RegistryDirection {
     d.addedKeys.length > 0 ||
     d.reservationChanges.some((c) => !c.reserved) ||
     d.roleChanges.some((r) => r.isNew || r.added.length > 0) ||
-    d.grantChanges.some((g) => g.isNew || g.added.length > 0 || !!g.bind?.to);
+    d.grantChanges.some((g) => g.isNew || g.added.length > 0 || !!g.bind?.to) ||
+    // #3161: another app gaining a key or a channel to act for the people here.
+    d.delegationChanges.some((c) => c.isNew || c.added.length > 0 || c.addedChannels.length > 0);
   const removes =
     d.removedKeys.length > 0 ||
     d.reservationChanges.some((c) => c.reserved) ||
     d.roleChanges.some((r) => r.isGone || r.removed.length > 0) ||
-    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || !!g.bind?.from);
+    d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || !!g.bind?.from) ||
+    d.delegationChanges.some((c) => c.isGone || c.removed.length > 0 || c.removedChannels.length > 0);
   // A description re-worded, or a holder moved (a grant shape's or a role's), is a change that is
   // neither: it keeps a diff from being "only".
   const other = d.changedKeys.length > 0 || d.grantChanges.some((g) => !!g.holder) || d.roleChanges.some((r) => !!r.holder);
@@ -395,6 +457,8 @@ export function unitemisedRegistryChanges(
     permissions: diff.addedKeys.length + diff.removedKeys.length + diff.changedKeys.length + diff.reservationChanges.length > 0,
     roles: diff.roleChanges.length > 0,
     entityGrants: diff.grantChanges.length > 0,
+    // #3161: itemised by actor, keys and channels. A move in `declaredBy` alone is not, so it is named.
+    delegations: diff.delegationChanges.length > 0,
   };
   const fields = [...new Set([...Object.keys(from), ...Object.keys(to)])].sort();
   return fields.filter((f) => !itemised[f] && canonical(from[f]) !== canonical(to[f]));

@@ -42,6 +42,13 @@ export interface AuthSubject {
    * (`OidcConfig.delegation`), so a caller that never reads this field never sees one.
    */
   delegation?: { actor: string; scope: string[] };
+  /**
+   * The session's id, present only on a COOKIE session that keeps a refresh token server-side
+   * (`OidcRpConfig.refreshStore`, #3161): the key a master app hands `delegatedToken` to call a
+   * plugin as this person. Absent on a bearer, on a session minted before the store was set, and
+   * on one whose issuer sent no refresh token, which is to say the app cannot act for them.
+   */
+  sid?: string;
 }
 
 /** Per-request facts a caller may hand `resolve`. Additive: a provider ignores what it does not use. */
@@ -66,4 +73,16 @@ export interface AuthProvider {
    * to this app's own resource, #1683) falls back to the `Host` header without it.
    */
   resolve(headers: Headers, url?: string, options?: ResolveOptions): Promise<AuthSubject | null>;
+  /**
+   * The person a peer call is made for (#3161): `token` is the delegated access token the
+   * calling app put in `peerCallRequest.onBehalf`. Admits ONLY a token minted on the `peer`
+   * channel for THIS app (its `aud` is this app's own client id), whose `act` is an actor the
+   * host opted in for on that channel, so the subject always carries `delegation` — its `scope`
+   * is the ceiling the caller must apply. Null for anything else, a plain sign-in token
+   * included. Optional: a provider that cannot take delegated calls does not have it.
+   *
+   * `resolve` never admits such a token, and this never admits what `resolve` does: the two are
+   * separate doors, so a route that only calls `resolve` cannot be reached as a delegated person.
+   */
+  resolveOnBehalf?(token: string): Promise<AuthSubject | null>;
 }
