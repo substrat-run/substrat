@@ -32,7 +32,7 @@ import { ClaudeCodeGenerator, claudeCodeModel } from './claude-code.js';
 import { loadEnvFiles } from './env.js';
 import { openReferences } from './reference.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
+import { PASS_TOKEN_BUDGET, stepCeilingFor, skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
 import { costOfSteps } from './pricing.js';
 import {
 	DEFAULT_MODEL,
@@ -58,7 +58,8 @@ interface Args {
 	readonly root: string;
 	readonly only?: readonly string[];
 	readonly modelFlag?: string;
-	readonly maxSteps: number;
+	/** Absent, each phase takes its own ceiling (phase.ts stepCeilingFor). */
+	readonly maxSteps?: number;
 	readonly maxTokens: number;
 	readonly maxTurns?: number;
 	readonly list: boolean;
@@ -81,12 +82,10 @@ function parseArgs(argv: readonly string[]): Args {
 		root: get('--root') ?? process.env.INIT_CWD ?? process.cwd(),
 		...(only ? { only: only.split(',').map((s) => s.trim()) } : {}),
 		modelFlag: get('--model'),
-		maxSteps: Number(get('--max-steps') ?? 40),
-		// 400k uncached-equivalent per turn. Generous on purpose: a real build turn
-		// runs well under it, and the run this exists to stop spent five times it.
-		// A tight budget would cut off honest work, which is the failure mode that
-		// makes people disable the guard.
-		maxTokens: Number(get('--max-tokens') ?? 400_000),
+		...(get('--max-steps') !== undefined ? { maxSteps: Number(get('--max-steps')) } : {}),
+		// The studio's own per-pass budget (phase.ts PASS_TOKEN_BUDGET), so an eval
+		// measures the generator the studio runs.
+		maxTokens: Number(get('--max-tokens') ?? PASS_TOKEN_BUDGET),
 		...(maxTurns ? { maxTurns: Number(maxTurns) } : {}),
 		list: argv.includes('--list'),
 		quiet: argv.includes('--quiet'),
@@ -104,7 +103,7 @@ const USAGE = `pnpm builder evals [options]
   --model <spec>      provider:model (default ${DEFAULT_MODEL}; also SUBSTRAT_BUILDER_MODEL);
                       claude-code:<sonnet|haiku|id> runs on your local Claude Code
                       login instead of an API key
-  --max-steps <n>     tool-loop ceiling per pass (default 40)
+  --max-steps <n>     tool-loop ceiling per pass (default: 100 in scaffold, 40 elsewhere)
   --from <stage>      start at model, scenario or scaffold, from the fixture's golden/ files
   --max-turns <n>     turn ceiling per fixture (fixture expect.json wins)
   --root <path>       monorepo root (default cwd)
@@ -251,7 +250,7 @@ async function main(): Promise<number> {
 				model: claudeCode,
 				cwd: join(ws.root, currentProjectDir),
 				skills: skillsForPhase(skills.byFile, phase, lane),
-				maxSteps: args.maxSteps,
+				maxSteps: stepCeilingFor(phase, args.maxSteps),
 				maxTokens: args.maxTokens,
 				denyWrite: writeGuardFor(phase, lane),
 			});
@@ -260,7 +259,7 @@ async function main(): Promise<number> {
 		return new AiSdkGenerator({
 			model: resolved.model,
 			label: resolved.label,
-			maxSteps: args.maxSteps,
+			maxSteps: stepCeilingFor(phase, args.maxSteps),
 			// The runaway ceiling. `maxSteps` bounds iterations and did not bound
 			// spend: #740's first real run hit the 40-step ceiling AND spent
 			// 2,036,785 input tokens in that one turn. Uncached-equivalent, so a
@@ -339,7 +338,10 @@ async function main(): Promise<number> {
 		ranAt: new Date().toISOString(),
 		modelSpec: chosen.spec,
 		pricedAs: pricingSpec,
-		maxSteps: args.maxSteps,
+		// A number, as in every earlier artifact: the ceiling outside scaffold. Scaffold's own
+		// is beside it, so a comparison across the change reads the same field the same way.
+		maxSteps: stepCeilingFor('model', args.maxSteps),
+		scaffoldMaxSteps: stepCeilingFor('scaffold', args.maxSteps),
 		// `forkScore` is derivable from `expectations`, and is written out anyway:
 		// the artifact is what two runs get compared through, and a comparison
 		// that has to re-derive the pairing is a comparison that will be done on

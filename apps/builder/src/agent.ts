@@ -68,6 +68,8 @@ import {
 	scenarioWriteGuard,
 	skillsForPhase,
 	SKILL_MANIFEST,
+	stepCeilingFor,
+	PASS_TOKEN_BUDGET,
 } from './phase.js';
 import { explainProviderFailure } from '@substrat-run/model-providers';
 import {
@@ -494,7 +496,10 @@ export class BuilderAgent extends DurableObject<Env> {
 		return new AiSdkGenerator({
 			model: resolved.model,
 			label: resolved.label,
-			maxSteps: 40,
+			maxSteps: stepCeilingFor(phase),
+			// The spend bound the step ceiling is not (phase.ts PASS_TOKEN_BUDGET), which the
+			// scaffold's longer ceiling makes owed here as much as in the evals.
+			maxTokens: PASS_TOKEN_BUDGET,
 			skills,
 			// The incident behind this: an exhausted qwen weekly quota rendered as
 			// "API key is invalid" in the chat pane. Name the real class, keep the

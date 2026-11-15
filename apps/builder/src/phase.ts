@@ -51,6 +51,32 @@ export function isSpecPhase(phase: BuildPhase): boolean {
 	return phase === 'interview' || phase === 'model';
 }
 
+/** The step ceiling one generator pass gets in every phase but the build. */
+export const STEP_CEILING = 40;
+
+/**
+ * The build phase's ceiling. Scaffold is the one turn that writes the whole app
+ * from a plan; a 20-file plan took 40 + 28 + 34 steps hosted, so at 40 it was cut
+ * mid-plan. A continuation restarts with text-only history, re-reading what the
+ * cut pass had in context, so one longer pass is the better build. Still a hard
+ * bound: the turn loop's continuations (MAX_CONTINUATIONS) each get this ceiling too.
+ */
+export const BUILD_STEP_CEILING = 100;
+
+/**
+ * The runaway ceiling on spend, per pass: 400k uncached-equivalent input tokens. Steps bound
+ * iterations and not spend — #740's first real run hit the 40-step ceiling AND spent 2,036,785
+ * input tokens in one turn — and a longer step ceiling widens that gap. Generous on purpose: a
+ * real build pass runs well under it, and a tight budget cuts off honest work.
+ */
+export const PASS_TOKEN_BUDGET = 400_000;
+
+/** A pass's step ceiling: an operator's explicit `--max-steps` binds every phase. */
+export function stepCeilingFor(phase: BuildPhase, override?: number): number {
+	if (override !== undefined) return override;
+	return phase === 'scaffold' ? BUILD_STEP_CEILING : STEP_CEILING;
+}
+
 /**
  * The path a guard judges: the one the workspace will actually write. Every
  * guard here is a prefix test, and a prefix test over the RAW path is fooled by

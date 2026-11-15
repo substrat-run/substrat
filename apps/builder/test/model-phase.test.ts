@@ -15,6 +15,7 @@ import {
   modelWriteGuard,
   PHASES,
   scenarioWriteGuard,
+  stepCeilingFor,
 } from '../src/phase.js';
 
 /** A workspace that exists exactly where told to. */
@@ -56,6 +57,20 @@ describe('the ladder', () => {
     expect(isSpecPhase('model')).toBe(true);
     expect(isSpecPhase('scaffold')).toBe(false);
     expect(isSpecPhase('iterate')).toBe(false);
+  });
+});
+
+describe('the step ceiling per phase', () => {
+  it('gives the build phase room for a whole plan in one pass', () => {
+    expect(stepCeilingFor('scaffold')).toBe(100);
+  });
+
+  it.each(['interview', 'model', 'scenario', 'iterate'] as const)('keeps %s at 40', (phase) => {
+    expect(stepCeilingFor(phase)).toBe(40);
+  });
+
+  it('holds every phase, the build included, to an explicit --max-steps', () => {
+    expect(PHASES.map((p) => stepCeilingFor(p, 12))).toEqual([12, 12, 12, 12, 12]);
   });
 });
 

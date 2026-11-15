@@ -34,7 +34,7 @@ import {
 import { loadEnvFiles } from './env.js';
 import { openReferences } from './reference.js';
 import { editToolFor, samplingFor } from './model-pairs.js';
-import { detectPhase, skillsForPhase } from './phase.js';
+import { detectPhase, skillsForPhase, stepCeilingFor } from './phase.js';
 import { loadSkills } from './skills.js';
 import {
 	DEFAULT_MODEL,
@@ -53,7 +53,8 @@ interface Args {
 	 * apps/builder/.env, which is the first place anyone would put it.
 	 */
 	readonly modelFlag?: string;
-	readonly maxSteps: number;
+	/** Absent, the phase's own ceiling (phase.ts stepCeilingFor). */
+	readonly maxSteps?: number;
 	readonly help: boolean;
 }
 
@@ -69,7 +70,7 @@ function parseArgs(argv: readonly string[]): Args {
 		vertical: get('--vertical') ?? '.builder/projects/spike',
 		conceptPath: get('--concept'),
 		modelFlag: get('--model'),
-		maxSteps: Number(get('--max-steps') ?? 40),
+		...(get('--max-steps') !== undefined ? { maxSteps: Number(get('--max-steps')) } : {}),
 		help: argv.includes('--help') || argv.includes('-h'),
 	};
 }
@@ -93,7 +94,7 @@ const USAGE = `pnpm builder dev [options]
   --model <spec>      provider:model (default ${DEFAULT_MODEL})
                       also: SUBSTRAT_BUILDER_MODEL
   --root <path>       workspace root (default cwd)
-  --max-steps <n>     tool-loop ceiling per turn (default 40)
+  --max-steps <n>     tool-loop ceiling per turn (default: 100 in scaffold, 40 elsewhere)
   --help
 
 Type a message to run a turn. /gates runs the gates alone, /quit exits.
@@ -142,11 +143,12 @@ async function main(): Promise<number> {
 	const references = openReferences((dir, id) => new LocalWorkspace({ root: join(ws.root, dir), id }));
 	const skills = await loadSkills(ws.root);
 
+	const phase = await detectPhase(projectWs);
 	const generator = new AiSdkGenerator({
 		model: model.model,
 		label: model.label,
-		maxSteps: args.maxSteps,
-		skills: skillsForPhase(skills.byFile, await detectPhase(projectWs)),
+		maxSteps: stepCeilingFor(phase, args.maxSteps),
+		skills: skillsForPhase(skills.byFile, phase),
 		explainError: explainProviderError(chosen.spec.split(':')[0] ?? 'anthropic'),
 		// Format-per-model (H1): frontier providers get search/replace edits.
 		editTool: editToolFor(chosen.spec),
