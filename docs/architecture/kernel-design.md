@@ -836,7 +836,7 @@ slug (a workspace prefix is not part of the key) and the keys the platform publi
 creates, so it may also declare any key that is not the bare slug of another registered vertical
 (a push declaring `provisions` is judged as a manager; the grant paths honour it only once staff
 grant the capability). A platform-granted key
-(`PLATFORM_ENTITLEMENT_KEYS`: the dashboard's and the builder studio's) is declarable by no
+(`PLATFORM_ENTITLEMENT_KEYS`: the dashboard's, the builder studio's and the review runner's) is declarable by no
 vertical. A push declaring anything else is refused (422). Where an install or a grant derives
 keys from a registry row (the dashboard install, a manager's `provision-tenant` /
 `set-entitlements`, a confined credential's grant) the same predicate filters the row, so a

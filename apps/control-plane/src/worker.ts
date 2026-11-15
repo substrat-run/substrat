@@ -19,7 +19,7 @@ import { sourceBuildService, builderTurnsService, githubConfig, installationToke
  */
 import { Hono, type Context } from 'hono';
 import { pruneReviews } from './review-store.js';
-import { createReviewApi } from './reviews.js';
+import { createReviewApi, REVIEW_ENTITLEMENT } from './reviews.js';
 import { ReviewJobDO } from './review-job.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv, type RelayScopeLookup } from './relay-caller.js';
@@ -1218,6 +1218,9 @@ const SWEEP_ACTOR = platformActorId.parse('01JZ00000000000000000000SW');
 // sweep so the admin log reads honestly: a `createConnection` under this id was a tenant
 // admin's relayed act (the principal is in the row's `createdBy`/`rotatedBy`), not staff.
 const CONNECTION_RELAY_ACTOR = platformActorId.parse('01JZ00000000000000000000CR');
+// The actor review intake reads a builder tenant's entitlements as: a subject for the access log,
+// not the builder's audited actor.
+const REVIEW_ENTITLEMENT_READER = platformActorId.parse('01JZ00000000000000000000RV');
 
 /**
  * `SCOPE_RETENTION_DAYS` → the sweep's `reapArchivedAfterDays`, or `undefined` when
@@ -3191,10 +3194,19 @@ export default {
     app.get('/api/auth/whoami', async (c) => c.json(await resolveWhoami(hostFor(c.env), c.env, c.req.raw)));
 
     // The API's general staff auth also accepts a service actor; review intake
-    // requires a signed-in person from the roster instead.
+    // requires a signed-in person: one from the roster, or a builder signed in for a
+    // tenant, who may review only a vertical that tenant owns (no push token: a person).
     app.route('/api', createReviewApi({
       bucket: () => env.REVIEW_SOURCES,
       authenticate: humanStaffActorFor(env) ?? (async () => null),
+      authenticateBuilder: async (request) => await oidcBuilderReader(hostFor(env), env)(request),
+      ownerOf: async (actor, slug) => (await hostFor(env).admin.listVerticals(actor)).find((v) => v.slug === slug)?.ownerTenant,
+      entitled: async (tenantId) => {
+        const now = new Date().toISOString();
+        return (await hostFor(env).admin.listEntitlements(REVIEW_ENTITLEMENT_READER, tenantId)).some(
+          (g) => g.entitlementKey === REVIEW_ENTITLEMENT && (g.expiresAt === null || g.expiresAt > now),
+        );
+      },
       ...(env.REVIEW_JOBS ? { startReview: (id: string) => env.REVIEW_JOBS!.get(env.REVIEW_JOBS!.idFromName(id)).start(id) } : {}),
     }));
 

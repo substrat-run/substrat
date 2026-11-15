@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterEach, expect, it } from 'vitest';
-import { assertCleanReviewTree, reviewArchive } from '../src/review-archive.js';
+import { assertCleanReviewTree, reviewArchive, reviewUploadForm } from '../src/review-archive.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -31,6 +31,27 @@ it('packs the committed tree as deterministic USTAR', () => {
   expect(tar.toString('utf8', 512, 512 + Buffer.byteLength('export const one = 1;\n'))).toBe('export const one = 1;\n');
   writeFileSync(join(dir, 'main.ts'), 'export const one = 2;\n');
   expect(() => assertCleanReviewTree(dir)).toThrow(/commit/);
+});
+
+it('names the vertical the upload is for: --slug, else the project\'s, beside the merge-base', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-upload-'));
+  dirs.push(dir);
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir });
+  git('init', '-q');
+  git('config', 'user.email', 'test@example.invalid');
+  git('config', 'user.name', 'Test');
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@acme/garden', substrat: { slug: 'garden' } }));
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  git('branch', 'main-line');
+  writeFileSync(join(dir, 'main.ts'), 'export const one = 1;\n');
+  git('add', '.');
+  git('commit', '-qm', 'change');
+  const project = reviewUploadForm(dir, { base: 'main-line' });
+  expect(project.get('slug')).toBe('garden');
+  expect(project.get('baseSha256')).toBe(reviewArchive(dir, 'main-line').sha256);
+  expect(reviewUploadForm(dir, { slug: 'orchard' }).get('slug')).toBe('orchard');
+  expect(reviewUploadForm(dir, {}).get('base')).toBeNull();
 });
 
 it('round-trips the repository docs that need deterministic PAX path extensions', () => {

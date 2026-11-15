@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV3 } from 'ai/test';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createModelHost } from '@substrat-run/vertical-host/model';
 import { walkReviewArchive } from '../src/review-archive.js';
@@ -102,6 +102,19 @@ describe('review job: the reader half with a model double', () => {
     expect(lines.filter((l) => l.attribution.tenant === platformTenant)).toMatchObject([
       { requestId: id, inputTokens: 1200, attribution: { operation: 'review/read', vertical: '@substrat-run/review-runner' } },
     ]);
+  });
+
+  it('(a1) a builder review files its ledger line under its own tenant, not the platform', async () => {
+    const actor = platformActorId.parse(ulid());
+    const tenant = tenantId.parse(ulid());
+    const [src, base] = [await archive(CHANGED.source), await archive(CHANGED.base)];
+    const { id } = await receiveReview(bucket, actor, {
+      source: src.file, sourceSha256: src.sha256, base: base.file, baseSha256: base.sha256, tenant: { tenantId: tenant, vertical: 'acme/garden' },
+    });
+    await runReviewJob(id, 0, deps(double([{ text: reply({ findings: [] }) }])));
+    const lines = await new CloudflareScopeHost({ scope: testEnv.SCOPE as never, controlPlane: testEnv.CONTROL_PLANE as never })
+      .admin.listModelUsage(actor, { scopeId: REVIEW_SENTINEL_SCOPE });
+    expect(lines.filter((l) => l.requestId === id).map((l) => l.attribution.tenant)).toEqual([tenant]);
   });
 
   it('(a2) marks changed lines in the prompt and drops a finding on an unchanged line', async () => {

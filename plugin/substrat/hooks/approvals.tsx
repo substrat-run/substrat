@@ -13,6 +13,9 @@
  *
  * A tripwire, not a boundary: the agent could still script around it. What holds is the
  * control plane's review token (#2333) and CI. Without mods the plugin works as before.
+ *
+ * The pane also starts a code review of the project's committed branch (`substrat review
+ * upload` against the merge-base with origin/main) and hands its id back to the agent.
  */
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine } from 'claude-code'
@@ -27,6 +30,7 @@ import {
   promoteArgs,
   promoteRefusalIn,
   refusalFor,
+  reviewUploadIn,
   substratCalls,
   waitingPromoteIn,
 } from './approvals-parse'
@@ -37,6 +41,7 @@ const TITLE = 'Substrat approvals'
 // Change a tag when its value's fields change: it declines what an earlier version stored.
 const plan = atom({ plugin: 'substrat', key: 'plan' } as const, null, { shape: 'plan-1' })
 const promote = atom({ plugin: 'substrat', key: 'promote' } as const, null, { shape: 'promote-1' })
+const review = atom({ plugin: 'substrat', key: 'review' } as const, null, { shape: 'review-1' })
 
 /** A CLI run can wait on the control plane; a promote applies migrations. */
 const RUN_MS = 300_000
@@ -171,6 +176,32 @@ async function acknowledge($: Engine) {
   }
 }
 
+/**
+ * Uploads the project's committed branch for a code review, against the merge-base with
+ * origin/main as `substrat review upload --base` computes it, and tells the agent the id.
+ */
+async function startReview($: Engine) {
+  if ((await read($, review))?.status.kind === 'running') return
+  await update($, review, () => ({ id: null, state: null, status: RUNNING }))
+  try {
+    const r = await $.process.run([...lastLauncher, 'review', 'upload', '--base', 'origin/main', '--json'], {
+      cwd: await $.session.cwd(),
+      timeoutMs: RUN_MS,
+    })
+    const stored = r.exitCode === 0 ? reviewUploadIn(r.stdout) : undefined
+    if (!stored) {
+      await update($, review, () => ({ id: null, state: null, status: failed(outputOf(r) || `substrat review upload exited ${r.exitCode}`) }))
+      return
+    }
+    await update($, review, () => ({ ...stored, status: IDLE }))
+    void $.prompt.submit({
+      text: `I started a Substrat code review of this branch in the approvals pane: review ${stored.id} is ${stored.state}. Read it with \`substrat review ${stored.id} --wait\`.`,
+    })
+  } catch (err) {
+    await update($, review, () => ({ id: null, state: null, status: failed(String(err)) }))
+  }
+}
+
 export const register: Register = (on, options) => {
   // `/config` → Approvals pane: off leaves the plugin as it was before the mod, skills and all.
   if (options.approvals === false) return
@@ -228,6 +259,25 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
     const p = await read($, plan)
     const q = await read($, promote)
+    const r = await read($, review)
+    // The code review row, in either state of the pane: the button, and the review it started.
+    const codeReview = (
+      <Box flexDirection="column">
+        {r?.id && (
+          <Text>
+            Review {r.id}: {r.state}
+          </Text>
+        )}
+        {r?.status.kind === 'failed' && <Text color="error">{r.status.message}</Text>}
+        {r?.status.kind === 'running' ? (
+          <Text dimColor>Uploading the branch for review…</Text>
+        ) : (
+          <Box gap={1}>
+            <Button key="start-review" label="Start a code review" onPress={() => void startReview($)} />
+          </Box>
+        )}
+      </Box>
+    )
 
     if (p === null && q === null) {
       return (
@@ -237,6 +287,7 @@ export const register: Register = (on, options) => {
           <Box gap={1}>
             <Button key="check-plane" label="Check for a waiting promote" onPress={() => void checkPlane($)} />
           </Box>
+          {codeReview}
         </Box>
       )
     }
@@ -313,6 +364,7 @@ export const register: Register = (on, options) => {
             {p.status.kind === 'running' && <Text dimColor>Approving…</Text>}
           </Box>
         )}
+        {codeReview}
       </Box>
     )
   })
