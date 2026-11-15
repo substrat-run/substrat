@@ -357,6 +357,7 @@ const WIRE_KEY_UPLOADER = 'control-plane';
 const STORE_ONLY = {
   R2_LAKE_CATALOG_TOKEN: 'handed to `wrangler pipelines setup` — lives in the pipeline config',
   R2_LAKE_SEND_TOKEN: 'only for a sender outside Workers; the shipper uses a [[pipelines]] binding',
+  CF_DEPLOY_TOKEN: 'minted by scripts/env-provision.mjs — what wrangler deploys with, here and in CI',
 };
 
 /**
@@ -668,11 +669,7 @@ function cmdGenerate() {
   let filled = 0;
   for (const key of targets) {
     if (values[key] && !force) continue;
-    // Every *_SECRET_BOX_KEY wants base64 of 32 raw bytes; the worker refuses anything
-    // that does not decode to exactly 32 ("must decode to 32 bytes"). Keying this off the
-    // exact name minted CP_SECRET_BOX_KEY as 64 hex chars, which decodes to 48 and is
-    // rejected. The rest are opaque hex tokens, where the encoding carries no meaning.
-    const value = key.endsWith('SECRET_BOX_KEY') ? randBase64(32) : randHex(32);
+    const value = generateValue(key);
     // Replace a blank `KEY=` line if present, else append.
     const re = new RegExp(`^(${key}=).*$`, 'm');
     if (re.test(text)) text = text.replace(re, `$1${value}`);
@@ -752,6 +749,16 @@ async function cmdVerticals() {
   }
   if (failures) fail(`${failures} secret put(s) failed`);
   console.log('✓ done. Vertical scripts verify router/platform calls with the current secrets immediately.');
+}
+
+/**
+ * A fresh value for a GENERATABLE key. Every *_SECRET_BOX_KEY wants base64 of 32 raw bytes;
+ * the worker refuses anything that does not decode to exactly 32 ("must decode to 32 bytes").
+ * Keying this off the exact name minted CP_SECRET_BOX_KEY as 64 hex chars, which decodes to 48
+ * and is rejected. The rest are opaque hex tokens, where the encoding carries no meaning.
+ */
+function generateValue(key) {
+  return key.endsWith('SECRET_BOX_KEY') ? randBase64(32) : randHex(32);
 }
 
 function randHex(bytes) {
@@ -849,4 +856,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
 }
 
-export { MANIFEST, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER, WIRE_KEY_ISSUERS, WIRE_KEY_UPLOADER, parseEnvText };
+export {
+  MANIFEST,
+  GENERATABLE,
+  STORE_KEY_AUDIENCES,
+  STORE_KEY_UPLOADER,
+  WIRE_KEY_ISSUERS,
+  WIRE_KEY_UPLOADER,
+  generateValue,
+  parseEnvText,
+};

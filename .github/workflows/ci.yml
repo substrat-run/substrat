@@ -806,7 +806,9 @@ jobs:
     timeout-minutes: 25
     concurrency: deploy-test # never overlap two test deploys
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # The test env's own deploy token, minted by `pnpm env:provision --env test`; the shared one
+      # (which release.yml deploys prod with) only until that secret exists.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_TEST || secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       # Account ids the committed wrangler configs deliberately do not name, so a fork
       # inherits placeholders rather than this account's resources
