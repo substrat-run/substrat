@@ -31,7 +31,7 @@ import { rmSync } from 'node:fs';
 import { ask } from './prompt.js';
 import { doctor } from './doctor.js';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
-import { browserLogin } from './login.js';
+import { browserLogin, LOGIN_HOW_TO_SET, loginWorkspace } from './login.js';
 import {
   push,
   readVerticalMeta,
@@ -424,56 +424,24 @@ async function cmdLogin(): Promise<void> {
   // so signing in as a different account actually works.
   const bearerToken = await browserLogin(cp, { fresh: argv.includes('--fresh') });
 
-  // Resolve the builder's workspace so `promote`/`scope` just work (builder-plane.md §5).
-  // `push` never uses this default — its workspace is the project's (package.json pin).
-  // One tenant → store it; several → --workspace, else pick on a TTY; none → they still
-  // need to sign up in the app. Whatever happens here, the session below is saved: a
-  // completed browser login is never thrown away over the choice of a default.
+  // The default workspace (`loginWorkspace`). Whatever happens there, the session below is
+  // saved: a completed browser login is never thrown away over the choice of a default.
   const { user, tenants } = await fetchWhoami(cp, { authorization: `Bearer ${bearerToken}` }).catch(
     () => ({ user: null, tenants: [] as { id: string; slug: string; name: string }[] }),
   );
-  const byKey = (key: string) => tenants.find((t) => t.slug === key || t.id === key);
-  // When no choice is made, the previous default survives only if THIS account can act for
-  // it — a re-login keeps an earlier pick, a different account does not inherit a stranger's.
-  const kept = existing.defaultTenant === undefined ? undefined : byKey(existing.defaultTenant)?.slug;
-  const howToSet = '  set one with `substrat login --workspace <slug>`, or pass --tenant <slug> (or SUBSTRAT_TENANT) per command.';
-  let defaultTenant = kept;
-  let refused: string | undefined;
-  if (wanted !== undefined) {
-    // Slug or id, as the prompt takes — not the prompt's list number, which shifts as
-    // memberships change and would make a scripted login pick a different workspace.
-    const hit = byKey(wanted);
-    if (hit) {
-      defaultTenant = hit.slug;
-      console.log(`  default workspace: ${defaultTenant}`);
-    } else {
-      defaultTenant = kept;
-      const valid = user ? tenants.map((t) => t.slug).join(', ') || '(none yet)' : '(could not list them)';
-      refused = `'${wanted}' is not one of your workspaces (yours: ${valid}) — signed in, ${kept ? `default workspace stays '${kept}'` : 'no default workspace set'}`;
-    }
-  } else if (tenants.length === 1) {
-    defaultTenant = tenants[0]!.slug;
-    console.log(`  workspace: ${defaultTenant}`);
-  } else if (tenants.length > 1) {
-    console.log('  you belong to several workspaces:');
-    tenants.forEach((t, i) => console.log(`    ${i + 1}. ${t.name}  [${t.slug}]`));
+  const { defaultTenant, refused } = await loginWorkspace({
+    wanted,
+    tenants,
+    signedIn: Boolean(user),
+    storedDefault: existing.defaultTenant,
     // Without a TTY the question would go unanswered (see `ask`) — do not ask it.
-    const pick = interactive ? await ask(`  default workspace [1-${tenants.length}, or a slug]: `) : undefined;
-    if (pick === undefined) {
-      defaultTenant = kept;
-      console.log(kept ? `  default workspace stays: ${kept} (none chosen)` : '  no default workspace set (none chosen).');
-      console.log(howToSet);
-    } else {
-      defaultTenant = tenants[Number(pick) - 1]?.slug ?? byKey(pick)?.slug ?? tenants[0]!.slug;
-      console.log(`  default workspace: ${defaultTenant} (promote/scope use it; push pins one per project)`);
-    }
-  } else if (user) {
-    console.log('  no workspace yet — create one at your dashboard, then `substrat push`.');
-  }
+    pick: interactive ? (count) => ask(`  default workspace [1-${count}, or a slug]: `) : undefined,
+    log: (line) => console.log(line),
+  });
   const path = saveConfig({ ...existing, controlPlaneUrl: cp, bearerToken, defaultTenant });
   console.log(`✓ signed in${user?.email ? ` as ${user.email}` : ''}. session saved to ${path}`);
   if (refused) {
-    console.log(howToSet);
+    console.log(LOGIN_HOW_TO_SET);
     throw new Error(refused); // main() prints it and exits non-zero — a script must not read this as success
   }
 }

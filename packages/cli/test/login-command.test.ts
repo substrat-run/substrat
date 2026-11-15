@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CliConfig } from '../src/config.js';
+import { LOGIN_HOW_TO_SET, loginWorkspace } from '../src/login.js';
 
 /**
  * `substrat login` with no TTY — an agent, piped stdin, some Windows terminals. readline
@@ -12,6 +13,10 @@ import type { CliConfig } from '../src/config.js';
  * control-plane URL". Run through the BUILT CLI with stdin a closed pipe: the patched
  * `spawn` plays the browser (it completes the loopback callback from the URL it was handed)
  * and the patched `fetch` plays the control plane (token exchange + whoami).
+ *
+ * A run starts the whole CLI in a fresh Node, seconds on a CI runner, so only what needs a
+ * process is run that way: that nothing waits on a prompt nobody can answer, and the exit
+ * code. Which default workspace a login stores is `loginWorkspace`'s, tested in-process below.
  */
 
 const cli = new URL('../dist/cli.js', import.meta.url).href;
@@ -86,12 +91,15 @@ function login(args: string[], tenants: (typeof tenantA)[], existing?: CliConfig
 const out = (r: Run) => r.stdout + r.stderr;
 
 describe('substrat login without a TTY', () => {
-  it('with no --cp, uses the public plane, says so, and saves the session', () => {
-    const r = login(['--fresh'], [tenantA]);
+  it('with no --cp and several workspaces, asks nothing: uses the public plane, says so, and saves the session', () => {
+    const r = login(['--fresh'], [tenantA, tenantB]);
     expect(r.status, out(r)).toBe(0);
     expect(r.stdout).toContain('control-plane URL: https://console.substrat.net/api');
     expect(r.fetched).toContain('https://console.substrat.net/api/auth/cli/token');
-    expect(r.config).toMatchObject({ controlPlaneUrl: 'https://console.substrat.net/api', bearerToken: 'session-token', defaultTenant: 'tenant-a' });
+    expect(r.config).toMatchObject({ controlPlaneUrl: 'https://console.substrat.net/api', bearerToken: 'session-token' });
+    expect(r.config).not.toHaveProperty('defaultTenant');
+    expect(r.stdout).not.toContain('default workspace [');
+    expect(r.stdout).toContain('substrat login --workspace <slug>');
 
     // The browser got the whole authorize URL: state and challenge intact, as one argument.
     expect(r.opened).toHaveLength(1);
@@ -105,68 +113,46 @@ describe('substrat login without a TTY', () => {
     expect(r.opened[0]!.cmd).not.toMatch(/^cmd(\.exe)?$/i);
   });
 
-  it('with no --cp, keeps the stored control-plane URL', () => {
-    const r = login([], [tenantA], { controlPlaneUrl: 'https://cp.example/api' });
-    expect(r.status, out(r)).toBe(0);
-    expect(r.fetched).toContain('https://cp.example/api/auth/cli/token');
-    expect(r.config).toMatchObject({ controlPlaneUrl: 'https://cp.example/api', bearerToken: 'session-token' });
-  });
-
-  it('one workspace: stores it as the default', () => {
-    const r = login(['--cp', 'https://cp.example/api'], [tenantA]);
-    expect(r.status, out(r)).toBe(0);
-    expect(r.config).toMatchObject({ controlPlaneUrl: 'https://cp.example/api', bearerToken: 'session-token', defaultTenant: 'tenant-a' });
-  });
-
-  it('clears a previous account default when the signed-in account has no workspaces', () => {
-    const r = login(['--cp', 'https://cp.example/api'], [], { defaultTenant: 'tenant-a' });
-    expect(r.status).toBe(0);
-    expect(r.config).toMatchObject({ bearerToken: 'session-token' });
-    expect(r.config).not.toHaveProperty('defaultTenant');
-  });
-
-  it('several workspaces, no --workspace: saves the session, asks nothing, prints how to choose', () => {
-    const r = login(['--cp', 'https://cp.example/api'], [tenantA, tenantB]);
-    expect(r.status, out(r)).toBe(0);
-    expect(r.config).toMatchObject({ bearerToken: 'session-token' });
-    expect(r.config).not.toHaveProperty('defaultTenant');
-    expect(r.stdout).not.toContain('default workspace [');
-    expect(r.stdout).toContain('substrat login --workspace <slug>');
-    expect(r.stdout).toContain('SUBSTRAT_TENANT');
-  });
-
-  it("several workspaces, no --workspace: keeps this account's earlier default", () => {
-    const own = login(['--cp', 'https://cp.example/api'], [tenantA, tenantB], { defaultTenant: 'tenant-b' });
-    expect(own.status, out(own)).toBe(0);
-    expect(own.config).toMatchObject({ bearerToken: 'session-token', defaultTenant: 'tenant-b' });
-  });
-
-  it("several workspaces, no --workspace: clears another account's earlier default", () => {
-    const foreign = login(['--cp', 'https://cp.example/api'], [tenantA, tenantB], { defaultTenant: 'other-co' });
-    expect(foreign.status, out(foreign)).toBe(0);
-    expect(foreign.config).toMatchObject({ bearerToken: 'session-token' });
-    expect(foreign.config).not.toHaveProperty('defaultTenant');
-  });
-
-  it('--workspace <slug> stores that default without asking', () => {
-    const r = login(['--cp', 'https://cp.example/api', '--workspace', 'tenant-b'], [tenantA, tenantB]);
-    expect(r.status, out(r)).toBe(0);
-    expect(r.config).toMatchObject({ bearerToken: 'session-token', defaultTenant: 'tenant-b' });
-    expect(r.stdout).not.toContain('default workspace [');
-  });
-
-  it('--workspace <id> stores the slug', () => {
-    const r = login(['--cp', 'https://cp.example/api', '--workspace', 'ten_b'], [tenantA, tenantB]);
-    expect(r.status, out(r)).toBe(0);
-    expect(r.config).toMatchObject({ defaultTenant: 'tenant-b' });
-  });
-
-  it('an unknown --workspace still saves the session, lists the valid slugs, and exits non-zero', () => {
-    const r = login(['--cp', 'https://cp.example/api', '--workspace', 'nope'], [tenantA, tenantB]);
+  it('an unknown --workspace keeps the stored control-plane URL, still saves the session, lists the valid slugs, and exits non-zero', () => {
+    const r = login(['--workspace', 'nope'], [tenantA, tenantB], { controlPlaneUrl: 'https://cp.example/api' });
     expect(r.status, out(r)).not.toBe(0);
+    expect(r.fetched).toContain('https://cp.example/api/auth/cli/token');
     expect(r.config).toMatchObject({ controlPlaneUrl: 'https://cp.example/api', bearerToken: 'session-token' });
     expect(r.config).not.toHaveProperty('defaultTenant');
     expect(r.stderr).toMatch(/error: 'nope' is not one of your workspaces/);
     expect(r.stderr).toContain('tenant-a, tenant-b');
+  });
+});
+
+describe('the default workspace a login stores', () => {
+  const choose = async (tenants: (typeof tenantA)[], opts: { wanted?: string; storedDefault?: string } = {}) => {
+    const lines: string[] = [];
+    const result = await loginWorkspace({ wanted: opts.wanted, tenants, signedIn: true, storedDefault: opts.storedDefault, pick: undefined, log: (line) => lines.push(line) });
+    return { ...result, lines };
+  };
+
+  it.each([
+    ['one workspace: stores it', [tenantA], {}, 'tenant-a'],
+    ['no workspaces: clears an earlier default', [], { storedDefault: 'tenant-a' }, undefined],
+    ['several, none chosen: sets none', [tenantA, tenantB], {}, undefined],
+    ["several, none chosen: keeps this account's earlier default", [tenantA, tenantB], { storedDefault: 'tenant-b' }, 'tenant-b'],
+    ["several, none chosen: clears another account's earlier default", [tenantA, tenantB], { storedDefault: 'other-co' }, undefined],
+    ['--workspace <slug> stores it', [tenantA, tenantB], { wanted: 'tenant-b' }, 'tenant-b'],
+    ['--workspace <id> stores the slug', [tenantA, tenantB], { wanted: 'ten_b' }, 'tenant-b'],
+  ] as const)('%s', async (_, tenants, opts, expected) => {
+    const r = await choose([...tenants], opts);
+    expect(r.defaultTenant).toBe(expected);
+    expect(r.refused).toBeUndefined();
+  });
+
+  it('several, none chosen, prints the list and how to choose', async () => {
+    const r = await choose([tenantA, tenantB]);
+    expect(r.lines).toEqual(['  you belong to several workspaces:', '    1. Tenant A  [tenant-a]', '    2. Tenant B  [tenant-b]', '  no default workspace set (none chosen).', LOGIN_HOW_TO_SET]);
+  });
+
+  it('an unknown --workspace is refused, naming the valid slugs, and keeps the earlier default', async () => {
+    const r = await choose([tenantA, tenantB], { wanted: 'nope', storedDefault: 'tenant-a' });
+    expect(r.defaultTenant).toBe('tenant-a');
+    expect(r.refused).toBe("'nope' is not one of your workspaces (yours: tenant-a, tenant-b) — signed in, default workspace stays 'tenant-a'");
   });
 });
