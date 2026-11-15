@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { readVerticalMeta } from './push.js';
 
 const BLOCK = 512;
 const MAX_COMPRESSED = 32 * 1024 * 1024;
@@ -146,9 +147,29 @@ export function reviewArchive(cwd: string, ref: string): { bytes: Uint8Array; sh
   return { bytes: compressed, sha256: createHash('sha256').update(compressed).digest('hex') };
 }
 
-/** A staff branch review only describes the committed source. */
+/** A branch review only describes the committed source. */
 export function assertCleanReviewTree(cwd: string): void {
   if (git(['status', '--porcelain', '--untracked-files=all'], cwd).byteLength) {
     throw new Error('commit the branch before uploading it for review');
   }
+}
+
+/**
+ * The upload `substrat review upload` posts: HEAD's committed tree, the merge-base with `base`
+ * when one is named, and the vertical the review is for: `slug`, else the project's, as `push`
+ * derives it. A builder's review must name one; a staff review's is not recorded.
+ */
+export function reviewUploadForm(cwd: string, options: { base?: string; slug?: string }): FormData {
+  const form = new FormData();
+  const source = reviewArchive(cwd, 'HEAD');
+  form.set('source', new Blob([source.bytes as Uint8Array<ArrayBuffer>], { type: 'application/gzip' }), 'source.tar.gz');
+  form.set('sourceSha256', source.sha256);
+  if (options.base) {
+    const archive = reviewArchive(cwd, git(['merge-base', 'HEAD', options.base], cwd).toString('utf8').trim());
+    form.set('base', new Blob([archive.bytes as Uint8Array<ArrayBuffer>], { type: 'application/gzip' }), 'base.tar.gz');
+    form.set('baseSha256', archive.sha256);
+  }
+  const slug = options.slug ?? readVerticalMeta(cwd).slug;
+  if (slug) form.set('slug', slug);
+  return form;
 }

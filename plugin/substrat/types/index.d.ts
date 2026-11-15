@@ -32,11 +32,19 @@ export type PromoteApproval = {
   readonly status: Status;
 };
 
+/** A code review the person started from the pane: the id and state the upload answered. */
+export type CodeReview = {
+  readonly id: string | null;
+  readonly state: string | null;
+  readonly status: Status;
+};
+
 declare module 'claude-code' {
   interface PluginState {
     substrat: {
       plan: Shaped<PlanApproval | null>;
       promote: Shaped<PromoteApproval | null>;
+      review: Shaped<CodeReview | null>;
     };
   }
 }

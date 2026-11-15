@@ -233,3 +233,15 @@ export function waitingPromoteIn(stdout: string): PromoteRefusal | undefined {
     text: v.text,
   }
 }
+
+/** The review `substrat review upload --json` stored: its id and state, or undefined for anything else. */
+export function reviewUploadIn(stdout: string): { id: string; state: string } | undefined {
+  let r: unknown
+  try {
+    r = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  const v = r as { id?: unknown; state?: unknown }
+  return typeof v.id === 'string' && typeof v.state === 'string' ? { id: v.id, state: v.state } : undefined
+}

@@ -32,7 +32,7 @@ export const REVIEW_WRITE_RETRY_MS = 60_000;
 export interface ReviewConfig {
   /** `provider:model` on the gateway row. Unset: every review is skipped. */
   readonly model?: string | undefined;
-  /** The platform's own team tenant the ledger line is filed under. Unset: the line is not written. */
+  /** The platform's own team tenant a staff review's ledger line is filed under. Unset: that line is not written. */
   readonly platformTenant?: string | undefined;
   readonly maxDiffBytes?: number | undefined;
   readonly maxInputTokens?: number | undefined;
@@ -181,7 +181,8 @@ export async function reviewOnce(
   if (estimateTokens(system) + estimateTokens(prompt) > maxInputTokens) {
     return skipped(`too large: over ${maxInputTokens} estimated input tokens`, sent);
   }
-  const tenant = tenantId.safeParse(deps.config.platformTenant);
+  // A builder's review is spent on its tenant's behalf, as a builder turn is; a staff review on the platform's own.
+  const tenant = tenantId.safeParse(receipt.tenantId ?? deps.config.platformTenant);
   const attribution = modelAttribution.parse({
     tenant: tenant.success ? tenant.data : UNSET_TENANT, scope: REVIEW_SENTINEL_SCOPE,
     vertical: REVIEW_RUNNER_VERTICAL, version: REVIEW_PLUGIN_VERSION, operation: REVIEW_OPERATION,

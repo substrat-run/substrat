@@ -235,3 +235,21 @@ describe('a promote waiting in prod, pushed outside the session', () => {
     await ui.unmount()
   })
 })
+
+describe('a code review started from the pane', () => {
+  test('uploads the branch against origin/main, shows the review, and tells the agent its id', async ($, on) => {
+    const { runs, prompts } = engine(on, argv =>
+      argv.includes('upload') ? { exitCode: 0, stdout: JSON.stringify({ id: 'r-0001', state: 'received', expiresAt: '2026-12-15T00:00:00.000Z' }) } : { exitCode: 1 },
+    )
+    await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'start-review' })
+
+    const last = runs.at(-1)!
+    expect(last.slice(last.indexOf('review'))).toEqual(['review', 'upload', '--base', 'origin/main', '--json'])
+    expect(await ui.find({ type: 'Text', text: /Review r-0001: received/ })).toBeDefined()
+    expect(prompts.at(-1)).toContain('review r-0001 is received')
+    await ui.unmount()
+  })
+})

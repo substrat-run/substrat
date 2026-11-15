@@ -50,6 +50,9 @@ In Claude Desktop: **+** → Plugins → Add plugin.
   in prod without having run in the session (one your CI deploy pushed on merge, say) shows
   there too: `/substrat-approvals` and the pane's *Check for a waiting promote* ask the control
   plane through `substrat promote --review-only`.
+  The pane's *Start a code review* uploads the project's committed branch for the hosted
+  review (`substrat review upload --base origin/main`) and tells Claude the review's id. A
+  builder may review a vertical its workspace owns once staff have granted the workspace the `review` entitlement, five reviews in progress at a time.
 
 ### The approvals pane, in more detail
 
