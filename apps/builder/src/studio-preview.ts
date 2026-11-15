@@ -9,7 +9,7 @@
  * through `repositoryAccess`, so a GitHub project and an Artifacts project take the same path.
  *
  * Always CLEAN-ROOM (`empty: true`): a fork would copy the tenant's live data into a page
- * anyone holding the builder entitlement can open, and that entitlement is not a data
+ * anyone on the team can open, and team membership in the studio is not a data
  * permission. A tag's reuse keeps the scope it has, so every Run after the first rebinds
  * the same URL and refreshes its TTL.
  *

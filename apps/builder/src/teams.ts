@@ -41,8 +41,8 @@ const teamsCache = new Map<string, { teams: Team[]; until: number }>();
 
 /**
  * The teams (= tenants, dashboard-teams.md) this login builds for, from the
- * shared directory — each flagged with the `builder` entitlement (the studio's
- * gate). One subrequest per request that needs it; the CP answers from its own
+ * shared directory. Each carries the CP's `builder` entitlement flag, which the
+ * studio no longer gates on (every team may use it). One subrequest per request that needs it; the CP answers from its own
  * DO, so this is a directory read, not a fan-out.
  */
 export async function teamsFor(env: TeamsEnv, sub: string): Promise<Team[]> {

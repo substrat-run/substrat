@@ -1,6 +1,6 @@
 /**
- * The studio's staff check (src/staff.ts, #1359). Staff bypass the builder entitlement,
- * and the roster keys on the address — so an address the issuer did not verify must never
+ * The studio's staff check (src/staff.ts, #1359). Staff pass the gate without a team, and the
+ * roster keys on the address — so an address the issuer did not verify must never
  * be looked up, by default, with nothing configured. The roster here is a stub that
  * lists one address and records whether it was asked at all.
  */
@@ -63,7 +63,7 @@ describe('deniedDetail', () => {
 		expect(deniedDetail(session(undefined), 'unasserted')).toMatch(/sign in again/);
 	});
 
-	it('keeps the entitlement sentence for an address that was looked up', () => {
-		expect(deniedDetail(session(true), undefined)).toMatch(/not enabled for/);
+	it('tells an address that was looked up that it has no team yet', () => {
+		expect(deniedDetail(session(true), undefined)).toMatch(/not on a team yet/);
 	});
 });
