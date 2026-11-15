@@ -15041,6 +15041,53 @@
                                 ],
                                 "additionalProperties": false
                               }
+                            },
+                            "delegations": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "actor": {
+                                    "type": "string",
+                                    "pattern": "^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+                                  },
+                                  "permissions": {
+                                    "minItems": 1,
+                                    "maxItems": 64,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "maxLength": 41,
+                                      "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
+                                    }
+                                  },
+                                  "channels": {
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "enum": [
+                                        "mcp",
+                                        "peer"
+                                      ]
+                                    }
+                                  },
+                                  "declaredBy": {
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*\\/)?[a-z0-9-~][a-z0-9-._~]*$"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "actor",
+                                  "permissions",
+                                  "declaredBy"
+                                ],
+                                "additionalProperties": false
+                              }
                             }
                           },
                           "required": [
@@ -15376,6 +15423,53 @@
                                 "required": [
                                   "provider",
                                   "grants"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "delegations": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "actor": {
+                                    "type": "string",
+                                    "pattern": "^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+                                  },
+                                  "permissions": {
+                                    "minItems": 1,
+                                    "maxItems": 64,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "maxLength": 41,
+                                      "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
+                                    }
+                                  },
+                                  "channels": {
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "enum": [
+                                        "mcp",
+                                        "peer"
+                                      ]
+                                    }
+                                  },
+                                  "declaredBy": {
+                                    "minItems": 1,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*\\/)?[a-z0-9-~][a-z0-9-._~]*$"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "actor",
+                                  "permissions",
+                                  "declaredBy"
                                 ],
                                 "additionalProperties": false
                               }
