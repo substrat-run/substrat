@@ -126,6 +126,20 @@ Two options change the topology:
   lets a vertical deploy as its own isolated Workers-for-Platforms script with no platform
   binding — the shape [ticket0](/verticals/ticket0) ships in.
 
+  A CP-less host has no directory to hold a `(tenant, scope)` pair against, so each scope checks
+  the tenant against its **own storage**: the receipt written when it was provisioned, or failing
+  that a role row for the tenant. A scope with **neither** is *unrecorded*, and the host refuses it
+  exactly like a foreign pair — `not_found`, `unknown scope for tenant` — even when the router
+  routed the request to this deployment. Routing alone does not admit it.
+
+  The caller cannot tell the two refusals apart; the host's own log can. Every refusal of an
+  unrecorded scope writes one `warn` line, `{"substrat":"tenant-unrecorded-refused", "tenantId",
+  "scopeId", "door"}`, where `door` is the host method the call came through. Seeing it on a 404
+  means the scope has not converged, not that the request named the wrong tenant. The platform's
+  own paths record the tenant without passing that door — a provision or reconcile (every
+  `substrat push` runs one), a restore or snapshot, a lifecycle delivery to a scope that already
+  holds data — so re-pushing the vertical, or re-provisioning the scope, clears it.
+
 ## How the semantics map
 
 | Contract guarantee | Implementation here |
