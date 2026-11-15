@@ -25,12 +25,14 @@ import {
   connectionBindingOptions,
   relayConnectionBind,
   relayConnectionBindings,
+  relayConnectionCheckout,
   relayConnectionSync,
   relayConnectionUnbind,
   relayConnectionUpsert,
   verticalConnectorInspector,
   type ConnectionBindingRelayOptions,
   type ConnectionSyncRelayOptions,
+  type PaymentCheckout,
   type ScopeSync,
   type ScopeSyncResult,
   type VerticalConnectorDeps,
@@ -484,6 +486,57 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       const busy = await syncA(syncing(recording({ outcome: 'in-progress', pending: false, errors: [] })));
       expect(busy.bindings.map((x) => x.outcome)).toEqual(['in-progress', 'in-progress']);
       expect(await host.admin.listSweepRuns(relayActor, { kind: 'connector', scopeId: a })).toEqual([]);
+    });
+  });
+
+  describe('checkout (#3189)', () => {
+    const asked: [ConnectionId, ScopeId, string][] = [];
+    const checkout: PaymentCheckout = async (_h, row, s, request) => {
+      asked.push([row.id, s, request.reference]);
+      return { connectionId: row.id, checkoutId: 'cs_test_1', url: 'https://checkout.example.com/cs_test_1', expiresAt: '2026-11-15T11:00:00.000Z' as never, live: false };
+    };
+    const paying = (proven = true) => ({ ...landings(proven), checkout: (provider: string) => (provider === 'planima' || provider === 'fortnox' ? checkout : undefined) });
+    const order = (s: ScopeId, provider = 'planima') => ({
+      tenantId: t,
+      scopeId: s,
+      provider,
+      reference: 'order-17',
+      currency: 'SEK',
+      lines: [{ name: 'Mug', quantity: 1, unitAmount: '99.50' }],
+      successUrl: 'https://shop.example.com/paid',
+      cancelUrl: 'https://shop.example.com/cart',
+    });
+    beforeEach(() => {
+      asked.length = 0;
+    });
+
+    it('opens the checkout through the one connection bound to the scope, and never guesses between two', async () => {
+      await runs('on-request');
+      const ofA = await own(a);
+      await relayConnectionBind(host, relayActor, bindBody(a, ofA), landings());
+
+      expect(await relayConnectionCheckout(host, relayActor, order(a), paying())).toMatchObject({ connectionId: ofA, checkoutId: 'cs_test_1', live: false });
+      expect(asked).toEqual([[ofA, a, 'order-17']]);
+
+      // The tenant's connection bound to the same scope: which account takes the money is the vertical's to say.
+      const tenants = connectionId.parse(ulid());
+      await host.admin.createConnection(relayActor, { id: tenants, tenantId: t, vertical: SLUG, provider: 'planima', label: 'tenant', secret: { token: 'tok' } });
+      await host.admin.grantToConnection(relayActor, { connectionId: tenants, permission: LAND, node: { tenantId: t, scopeId: a }, grantedBy: relayActor });
+      await bindPlanimaScope(host, { tenantId: t, scopeId: a, vertical: SLUG, operation: 'drive/land', permission: LAND, connectionId: tenants });
+      expect(await refusal(relayConnectionCheckout(host, relayActor, order(a), paying()))).toBe(409);
+      expect(asked).toHaveLength(1);
+    });
+
+    it('refuses an unproven caller, a provider that takes no payments, a scope with nothing bound, and a malformed order', async () => {
+      await runs('on-request');
+      await relayConnectionBind(host, relayActor, bindBody(a, await own(a)), landings());
+
+      expect(await refusal(relayConnectionCheckout(host, relayActor, order(a), paying(false)))).toBe(403);
+      expect(await refusal(relayConnectionCheckout(host, relayActor, order(a, 'scrive'), paying()))).toBe(501);
+      expect(await refusal(relayConnectionCheckout(host, relayActor, order(a, 'fortnox'), paying()))).toBe(409);
+      expect(await refusal(relayConnectionCheckout(host, relayActor, order(b), paying()))).toBe(409);
+      expect(await refusal(relayConnectionCheckout(host, relayActor, { ...order(a), lines: [] }, paying()))).toBe(400);
+      expect(asked).toEqual([]);
     });
   });
 

@@ -19,15 +19,19 @@ export {
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL, PROVEN_CALLER_REFUSAL } from './connection-relay.js';
 // #2732: a scope binds its own connection to itself, unbinds it, and reads its bindings' status.
+// #3189: a scope opens a checkout through the payment connection bound to it.
 export {
   relayConnectionBind,
   relayConnectionBindings,
   relayConnectionSync,
+  relayConnectionCheckout,
   relayConnectionUnbind,
   SYNC_OPERATION_PREFIX,
   type ConnectionBindingRelayOptions,
   type ConnectionSyncRelayOptions,
   type ScopeSync,
+  type PaymentCheckout,
+  type ConnectionCheckoutRelayOptions,
   type ScopeSyncResult,
 } from './connection-binding-relay.js';
 export type { ConnectionCandidateContext, ConnectionCandidatePrepare, ConnectionCandidatePreparer, ConnectionCandidateProbe, VerticalConnectorDeclarationOf } from './connection-relay.js';

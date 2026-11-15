@@ -3302,7 +3302,7 @@ export type {
   ConnectLinkListRequest,
   ConnectLinkRevokeRequest,
 } from './connect-link.js';
-export { upsertConnection, bindConnection, unbindConnection, listBindings, syncConnections, ConnectionRequestError } from './connections.js';
+export { upsertConnection, bindConnection, unbindConnection, listBindings, syncConnections, requestCheckout, ConnectionRequestError } from './connections.js';
 export type {
   ConnectionRelayAccess,
   UpsertConnectionRequest,
@@ -3310,6 +3310,7 @@ export type {
   UnbindConnectionRequest,
   ListBindingsRequest,
   SyncConnectionsRequest,
+  CheckoutRequest,
 } from './connections.js';
 export * from './mcp.js';
 export { externalInput, externalJson, externalResult } from './wire.js';

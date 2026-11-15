@@ -111,6 +111,7 @@ needs may not exist yet.
 | [Fortnox](/connectors/fortnox) | Accounting | **Live-verified** (`0.x`) — poll-only, reads bookkeeping as SIE4; client-credentials auth, so no refresh token to rotate. The live run corrected the export charset (PC8/CP437, not latin1) | Fortnox (Swedish accounting) |
 | [Planima](/connectors/planima) | Facility maintenance | **Built, not yet live-verified** (`0.x`) — poll-only and read-only, reads a maintenance plan and its costed actions; one static API token, so nothing to rotate. Every claim still rests on the published OpenAPI document and a mock that shares its reading | Planima (Swedish maintenance planning) |
 | [WooCommerce](/connectors/woocommerce) | Commerce | **Built, not yet verified against a production store** (private) — poll-only and read-only; lands products and orders in a provider-neutral commerce shape, so another store platform's connector can feed the same app. Checked against a real WooCommerce in Docker in CI | WooCommerce (WordPress online stores) |
+| [Stripe](/connectors/stripe) | Payments | **Built, not yet verified against a Stripe account** (private) — opens a hosted checkout from your app inside the request, hears Stripe's webhook and re-reads the outcome from Stripe, and lands it in a provider-neutral payment shape. Every claim rests on Stripe's API reference and a mock that shares its reading | Stripe (cards, wallets, bank debits) |
 | Bolagsverket | Company registers | **Connection only, not yet live-verified** (private): you can paste your own client id and secret from Bolagsverket into the dashboard and test the connection, but an app cannot ask for a validation through the platform yet. The client behind it validates a Swedish organisation number (name, legal form, address, SNI codes, whether it is active, deregistered, in liquidation or bankrupt) over the free value-datasets API. Every response shape still rests on community clients, not a recording | Bolagsverket (Swedish Companies Registration Office) |
 | [Inbound mail](/connectors/mail-in) | Mail, inbound | **Built** — a scope's address on `in.substrat.run`, delivered through the operation the app declares, attachments stored as files; refused at SMTP time when unknown, revoked or off its allowlist | the platform (Cloudflare Email Routing) |
 
@@ -123,7 +124,7 @@ Categories, as they will fill in (from the master plan's build list):
 - **Accounting** — Fortnox, Visma
 - **Facility maintenance** — Planima
 - **Commerce** — WooCommerce, Shopify
-- **Payments** — Swish
+- **Payments** — Stripe, Swish
 - **E-invoicing & EDI** — Peppol, Ahlsell / Rexel / Sonepar
 
 ## How these pages are organized

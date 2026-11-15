@@ -182,11 +182,15 @@ export interface StripeConnectorOptions {
   callbackBase?: string;
 }
 
-/** A checkout the relay refuses, with the status it answers. Never carries the provider's raw answer. */
+/**
+ * A checkout the relay refuses, with the status it answers: 400 for an ask Stripe or this connector
+ * will not charge, 409 for a reference or connection in the wrong state, 503 for a Stripe that did
+ * not answer usefully. Carries Stripe's own words only where they are the vertical's to act on.
+ */
 export class StripeCheckoutRefusal extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 409 | 503,
   ) {
     super(message);
     this.name = 'StripeCheckoutRefusal';
@@ -333,10 +337,10 @@ export async function createStripeCheckout(
     );
   } catch (err) {
     if (err instanceof StripeApiError && err.refused) {
-      throw new StripeCheckoutRefusal("Stripe no longer accepts this connection's key; the tenant reconnects Stripe", 502);
+      throw new StripeCheckoutRefusal("Stripe no longer accepts this connection's key; the tenant reconnects Stripe", 409);
     }
     if (err instanceof StripeApiError && err.forbidden) {
-      throw new StripeCheckoutRefusal("this connection's key may not open a checkout; it needs Checkout Sessions: Write", 502);
+      throw new StripeCheckoutRefusal("this connection's key may not open a checkout; it needs Checkout Sessions: Write", 409);
     }
     if (err instanceof StripeApiError && err.status >= 400 && err.status < 500) {
       // Stripe refused what was asked (an amount below its minimum, a currency the account does
@@ -345,7 +349,7 @@ export async function createStripeCheckout(
     }
     throw err;
   }
-  if (!session.url) throw new StripeCheckoutRefusal('Stripe opened the checkout without a page to send the buyer to', 502);
+  if (!session.url) throw new StripeCheckoutRefusal('Stripe opened the checkout without a page to send the buyer to', 503);
 
   const row: StripeCheckoutRow = {
     checkoutId: session.id,

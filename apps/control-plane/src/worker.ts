@@ -157,6 +157,7 @@ import {
   relayConnectionBind,
   relayConnectionBindings,
   relayConnectionSync,
+  relayConnectionCheckout,
   relayConnectionUnbind,
   ConnectionRelayError,
   relayConnectUrl,
@@ -242,6 +243,7 @@ import {
   connectorSweepersFor,
   connectorSweepEveryMinutesFor,
   connectionBindersFor,
+  paymentCheckoutsFor,
   scopeOwnable,
   type ConnectorEnv,
 } from './connectors.js';
@@ -3559,6 +3561,24 @@ export default {
         }),
       ),
     );
+    // #3189: open a hosted checkout through the payment connection bound to the scope, inside the
+    // vertical's request: the buyer is sent to the provider's page, and the outcome lands later
+    // through the binding. The binding relays' gate (proven caller, primary scope), so a preview
+    // or a fork never charges anyone.
+    app.post(
+      '/internal/connections/checkout',
+      bindingRelay((env, host, body, proven) =>
+        relayConnectionCheckout(host, CONNECTION_RELAY_ACTOR, body, {
+          proven,
+          landings: {
+            read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+            binders: connectionBindersFor(env),
+            binderFor: verticalConnectorBinderFor(env, host, CONNECTION_RELAY_ACTOR),
+          },
+          checkout: (provider) => paymentCheckoutsFor(env)[provider],
+        }),
+      ),
+    );
     app.post('/internal/connections/bind', bindingRelay(bindingChange(relayConnectionBind)));
     app.post('/internal/connections/unbind', bindingRelay(bindingChange(relayConnectionUnbind)));
     app.post(
@@ -3719,7 +3739,8 @@ export default {
     // pushed script must never hold it. Unauthenticated by design where the provider signs
     // nothing (Scrive does not), so the per-dispatch token minted into the URL is the entire
     // authentication, compared in constant time against the ledger row by the connector's own
-    // handler. On a match the same reconcile the sweep runs re-reads the provider's truth and
+    // handler. Where the provider does sign (Stripe, #3189), the handler also checks the signature
+    // over the raw body, which is why the route hands it the body as text. On a match the same reconcile the sweep runs re-reads the provider's truth and
     // records it back through the vertical's `/internal/connector-*` surface (the host's
     // connectorDelegation) — push collapses the sweep's latency, never replaces it. Every
     // rejection is one uniform 404 (the WHY stays in the log), so the response is no oracle
@@ -3733,7 +3754,9 @@ export default {
       app.post(callback.route, async (c) => {
         const ref = c.req.param() as Record<string, string | undefined>;
         try {
-          const outcome = await callback.handle(c.env, hostFor(c.env), ref);
+          // As text, unparsed: a provider that signs its calls (Stripe) signs these exact bytes.
+          const request = { body: await c.req.text(), headers: c.req.raw.headers };
+          const outcome = await callback.handle(c.env, hostFor(c.env), ref, request);
           if (!outcome.accepted) {
             console.log(`[${tag}] rejected (${outcome.reason})`);
             return refuse('not_found', 'not found');

@@ -1,15 +1,17 @@
-import { PLATFORM_SECRET_HEADER, problemCodeOf, problemDetail, connectionBindResult, connectionBindingsResult, connectionRelayResult, connectionSyncResult, connectionUnbindResult } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, problemCodeOf, problemDetail, connectionBindResult, connectionBindingsResult, connectionCheckoutResult, connectionRelayResult, connectionSyncResult, connectionUnbindResult } from '@substrat-run/contracts';
 import type {
   ConnectionBindingsRequest,
   ConnectionBindingsResult,
   ConnectionBindRequest,
   ConnectionBindResult,
+  ConnectionCheckoutResult,
   ConnectionRelayResult,
   ConnectionSyncRequest,
   ConnectionSyncResult,
   ConnectionUnbindRequest,
   ConnectionUnbindResult,
   ErrorCode,
+  connectionCheckoutRequest,
   connectionRelayRequest,
   z,
 } from '@substrat-run/contracts';
@@ -57,6 +59,7 @@ export type BindConnectionRequest = ConnectionRelayAccess & ConnectionBindReques
 export type UnbindConnectionRequest = ConnectionRelayAccess & ConnectionUnbindRequest;
 export type ListBindingsRequest = ConnectionRelayAccess & ConnectionBindingsRequest;
 export type SyncConnectionsRequest = ConnectionRelayAccess & ConnectionSyncRequest;
+export type CheckoutRequest = ConnectionRelayAccess & z.input<typeof connectionCheckoutRequest>;
 
 /** The relay refused, or answered something other than its result. Carries the status so a caller can map it. */
 export class ConnectionRequestError extends Error {
@@ -132,4 +135,25 @@ export function listBindings(request: ListBindingsRequest): Promise<ConnectionBi
  */
 export function syncConnections(request: SyncConnectionsRequest): Promise<ConnectionSyncResult> {
   return relay(request, '/internal/connections/sync', connectionSyncResult, `poll ${request.provider} bindings`);
+}
+
+/**
+ * Open a hosted checkout for the scope (#3189), through the payment connection of `provider` bound
+ * to it, and answer the page to send the buyer to. Call it from the worker, on the request it is
+ * serving, after the vertical's operation has decided what to charge — the operation is the
+ * authorizing act, as for every relay here:
+ *
+ * ```ts
+ * const order = await scope.invoke<{ reference: string; lines: CheckoutLine[] }>('shop/checkout', { cartId });
+ * const { url } = await requestCheckout({ ...access, provider: 'stripe', currency: 'SEK', ...order, successUrl, cancelUrl });
+ * return c.redirect(url, 303);
+ * ```
+ *
+ * The outcome is not in the answer: it lands later through the binding's operation as a
+ * `paymentChange`, keyed by `reference`. Asking again for a reference while its checkout is open
+ * answers the same page; a reference already paid is refused with 409, and so is a scope with no
+ * payment connection bound. A preview or fork is refused with 403: it never charges anyone.
+ */
+export function requestCheckout(request: CheckoutRequest): Promise<ConnectionCheckoutResult> {
+  return relay(request, '/internal/connections/checkout', connectionCheckoutResult, `open a ${request.provider} checkout`);
 }

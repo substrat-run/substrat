@@ -5,6 +5,7 @@ import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/c
 import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
 import { PLANIMA_CONNECTION_GRANTS } from '@substrat-run/connector-planima';
 import { WOOCOMMERCE_CONNECTION_GRANTS } from '@substrat-run/connector-woocommerce';
+import { STRIPE_CALLBACK_ROUTE, STRIPE_CONNECTION_GRANTS } from '@substrat-run/connector-stripe';
 import {
   CONNECTORS,
   connectionBindersFor,
@@ -12,6 +13,7 @@ import {
   connectorGrantsFor,
   connectorSweepersFor,
   connectorSweepEveryMinutesFor,
+  paymentCheckoutsFor,
 } from '../src/connectors.js';
 
 /**
@@ -33,6 +35,7 @@ describe('connector registry', () => {
     expect(providers).toContain('fortnox');
     expect(providers).toContain('planima');
     expect(providers).toContain('woocommerce');
+    expect(providers).toContain('stripe');
     expect(Object.keys(connectionInspectorsFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorSweepersFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorGrantsFor()).sort()).toEqual([...providers].sort());
@@ -99,6 +102,7 @@ describe('connector registry', () => {
     expect(connectorGrantsFor()['fortnox']).toBe(FORTNOX_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['planima']).toBe(PLANIMA_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['woocommerce']).toBe(WOOCOMMERCE_CONNECTION_GRANTS);
+    expect(connectorGrantsFor()['stripe']).toBe(STRIPE_CONNECTION_GRANTS);
   });
 
   it('every registered connector answers both probes', () => {
@@ -176,6 +180,11 @@ describe('connector registry', () => {
   it('mounts each connector callback at the route the connector itself declares', () => {
     const scrive = CONNECTORS.find((c) => c.provider === 'scrive');
     expect(scrive?.callback?.route).toBe(SCRIVE_CALLBACK_ROUTE);
+    expect(CONNECTORS.find((c) => c.provider === 'stripe')?.callback?.route).toBe(STRIPE_CALLBACK_ROUTE);
+  });
+
+  it('opens a checkout only through a connector that takes payments (#3189)', () => {
+    expect(Object.keys(paymentCheckoutsFor(ENV))).toEqual(['stripe']);
   });
 
   it('refuses to act with no provider base rather than defaulting to the testbed', async () => {
@@ -202,7 +211,7 @@ describe('connector registry', () => {
 it('registered poll binding doors preserve the vertical landing configuration', async () => {
   const id = connectionId.parse('01JZ0000000000000000000001');
   const target = { tenantId: '01JZ0000000000000000000002', scopeId: '01JZ0000000000000000000003', vertical: 'acme-crm' };
-  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record']] as const) {
+  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record'], ['woocommerce', 'shop/record-commerce', 'commerce:record'], ['stripe', 'shop/record-payment', 'payment:record']] as const) {
     const records = new Map<string, unknown>();
     const host = {
       connectionGrantsInScope: async () => [{ connectionId: id, permission: permissionKey.parse(permission) }],
@@ -226,7 +235,8 @@ describe('connection binders (#2316)', () => {
   it('binds from a declaration only for a provider whose inspector binds, with the door\'s options (#2316)', () => {
     const binders = connectionBindersFor(ENV);
     // Scrive is dispatched, not polled: nothing to bind, so a declaration for it binds nothing.
-    expect(Object.keys(binders).sort()).toEqual(['fortnox', 'microsoft365', 'planima', 'woocommerce']);
+    expect(Object.keys(binders).sort()).toEqual(['fortnox', 'microsoft365', 'planima', 'stripe', 'woocommerce']);
+    expect(binders['stripe']!.bindBeforeGrant).toBeTypeOf('function');
     expect(binders['woocommerce']!.bindBeforeGrant).toBeTypeOf('function');
     // No options: a WooCommerce binding names its operation and permission, and nothing else.
     expect(() => binders['woocommerce']!.options!({ window: null })).toThrow();
