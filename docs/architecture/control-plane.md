@@ -329,11 +329,17 @@ Three decisions worth not re-litigating:
   a backup: a copy that did not finish has none, so it is never listed and never lets a reap
   wipe. The restore stages the entries back at the deployment, which loads the stage, and the
   reap's `backupRef` names that restore route. `GET …/backups/:capturedAt` serves only a copy
-  stored in one entry, and answers `413` for one stored in several. Limits that remain: the
-  backup and its restore each run inside one request, the scope's stores stay whole in the
-  manifest, and a scope that keeps writing faster than the copy catches up is refused after
-  three attempts (409), which aborts a reap that asked for a backup. A copy written before #2839 is one whole dump at the manifest's key,
-  and reads, serves and restores as a copy of one entry.
+  stored in one entry, and answers `413` for one stored in several. A scope's stores (D-69,
+  [#2872](https://github.com/substrat-run/substrat/issues/2872)) are stored the same way: each
+  store page is its own `store-page` object, and the manifest holds only a descriptor per store
+  in `storeEntries` (binding, driver, stage, entry count, revision), never the store's rows. A
+  restore reads those pages one at a time, so no call holds a whole store. Limits that remain:
+  the backup and its restore each run inside one request, which moves at most 300 store pages or
+  20 s (past it the move is refused with nothing changed, 409), and a scope that keeps writing
+  faster than the copy catches up is refused after three attempts (409), which aborts a reap that
+  asked for a backup. A copy written before #2839 is one whole dump at the manifest's key, and
+  reads, serves and restores as a copy of one entry; a manifest written before #2872 has no
+  `storeEntries` and carries its stores inline in `stores`, which a restore still reads.
 - **Full fidelity, never masked.** The `GET …/export` route masks by default because it
   hands bytes to a *caller* (§6's governed pull). A backup goes platform→platform and is
   never handed out, so the masking default does not apply — and a masked dump restores a
