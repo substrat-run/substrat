@@ -7,18 +7,37 @@ import { RUNTIME_BASELINE } from '@substrat-run/contracts';
 const src = (file: string) => JSON.stringify(fileURLToPath(new URL(`../src/${file}`, import.meta.url)));
 
 /**
- * A worker over the identity DO: `/` reads the empty owner seat, and `/stores` drives the people
- * and refresh stores a hosted plugin and master build over the stub (#3161), through real RPC.
+ * A worker over the identity DO: `/` reads the empty owner seat, `/stores` drives the people
+ * and refresh stores a hosted plugin and master build over the stub (#3161), through real RPC,
+ * and `/sweep` plants refresh rows of an expired session (the subclass writes the timestamp a
+ * week-old sign-in would have) and signs in once more (#3179).
  */
 const source = `
   import { IdentityDO } from ${src('identity-do.ts')};
   import { identityPeopleStore } from ${src('people.ts')};
   import { identityRefreshStore } from ${src('session-refresh.ts')};
-  export { IdentityDO };
+  export class PlantingIdentityDO extends IdentityDO {
+    plantRefresh(sid, sub, updatedAt) {
+      this.ctx.storage.sql.exec('INSERT INTO session_refresh (sid, sub, refresh_token, updated_at) VALUES (?, ?, ?, ?)', sid, sub, 'rt-' + sid, updatedAt);
+    }
+  }
   export default {
     async fetch(request, env) {
       const stub = env.IDENTITY.get(env.IDENTITY.idFromName('tenant-a'));
-      if (new URL(request.url).pathname !== '/stores') return Response.json({ owner: await stub.getOwnerOfRecord('scope-a') });
+      const path = new URL(request.url).pathname;
+      if (path === '/sweep') {
+        const sweep = env.IDENTITY.get(env.IDENTITY.idFromName('tenant-sweep'));
+        const day = 24 * 60 * 60 * 1000;
+        await sweep.plantRefresh('sid-expired', 'ada', new Date(Date.now() - 8 * day).toISOString());
+        await sweep.plantRefresh('sid-other-device', 'ada', new Date(Date.now() - 6 * day).toISOString());
+        await sweep.putSessionRefresh('sid-new', { sub: 'ada', refreshToken: 'rt-new' });
+        return Response.json({
+          expired: await sweep.sessionRefresh('sid-expired'),
+          otherDevice: await sweep.sessionRefresh('sid-other-device'),
+          signedIn: await sweep.sessionRefresh('sid-new'),
+        });
+      }
+      if (path !== '/stores') return Response.json({ owner: await stub.getOwnerOfRecord('scope-a') });
       const people = identityPeopleStore(stub);
       const copy = { principal: '01JZ0000000000000000BJ0RN0', status: 'active', expiresAt: '2026-11-15T10:00:00.000Z' };
       await people.saveLogin('scope-a', 'bjorn', copy);
@@ -55,7 +74,7 @@ beforeAll(async () => {
     modules: [{ type: 'ESModule', path: 'worker.js', contents: result.outputFiles[0]!.text }],
     compatibilityDate: RUNTIME_BASELINE,
     compatibilityFlags: [],
-    durableObjects: { IDENTITY: { className: 'IdentityDO', useSQLite: true } },
+    durableObjects: { IDENTITY: { className: 'PlantingIdentityDO', useSQLite: true } },
   });
 });
 afterAll(async () => {
@@ -78,5 +97,15 @@ it('keeps a plugin\'s person copies and a master\'s session refresh tokens, over
     seated: ['writer'],
     kept: { sub: 'ada', refreshToken: 'rt-2' },
     afterDelete: null,
+  });
+});
+
+it("sweeps an expired session's refresh token when someone signs in, and keeps the same person's other device", async () => {
+  const response = await runtime.dispatchFetch('https://acme.example/sweep');
+  expect(response.status, await response.clone().text()).toBe(200);
+  expect(await response.json()).toEqual({
+    expired: null,
+    otherDevice: { sub: 'ada', refreshToken: 'rt-sid-other-device' },
+    signedIn: { sub: 'ada', refreshToken: 'rt-new' },
   });
 });

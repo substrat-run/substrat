@@ -22,7 +22,11 @@ export function verificationReason(error: unknown): AuthCheck['reason'] | undefi
   }
 }
 
-export function bearerRefused(reason: AuthCheck['reason'], outcome: 'refused' | 'error' = 'refused'): null {
-  recordAuthCheck({ stage: 'bearer', outcome, reason });
+export function refusedAt(
+  stage: AuthCheck['stage'],
+  reason: AuthCheck['reason'],
+  outcome: 'refused' | 'error' = 'refused',
+): null {
+  recordAuthCheck({ stage, outcome, reason });
   return null;
 }
