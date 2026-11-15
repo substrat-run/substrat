@@ -554,7 +554,20 @@ export class ScriveApi {
     await this.post(documentId, 'delete');
   }
 
-  private async post(documentId: string, action: 'trash' | 'delete'): Promise<void> {
+  /**
+   * Withdraw a PENDING document (#3127): `POST /api/v2/documents/{id}/cancel`, "Cancel a
+   * pending document". After it no party can sign. Scrive answers `409` when the document is
+   * not pending, so a caller that must know why reads the document back with `get`; that
+   * answer is a {@link ScriveApiError} with `status: 409`, which is how it is told apart.
+   *
+   * Taken from Scrive's API documentation (it needs the `DOC_SEND` privilege the dispatch
+   * already uses), not yet measured against the testbed the way `start` and `update` were.
+   */
+  async cancel(documentId: string): Promise<void> {
+    await this.post(documentId, 'cancel');
+  }
+
+  private async post(documentId: string, action: 'trash' | 'delete' | 'cancel'): Promise<void> {
     const res = await this.conn.fetch(`${this.baseUrl}/api/v2/documents/${documentId}/${action}`, {
       method: 'POST',
       headers: this.headers(),
