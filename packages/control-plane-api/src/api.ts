@@ -2326,6 +2326,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
+    // Whom a promote would break, read before promoting (#1705 PR 3) — the listing the promote's own
+    // 409 already hands a builder, so `substrat promote --review-only` shows the whole review
+    // without promoting. Owner-checked and narrowed to the caller in the handler.
+    { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote-impact$/ },
     { method: 'GET', re: /\/projects$/ },
     { method: 'POST', re: /\/projects$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/deploy$/ },

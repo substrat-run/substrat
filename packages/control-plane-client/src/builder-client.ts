@@ -1,4 +1,4 @@
-import type { EntitlementGrant, EntitlementGrantInput, Page } from '@substrat-run/contracts';
+import type { EntitlementGrant, EntitlementGrantInput, OpsFailureEntry, Page } from '@substrat-run/contracts';
 
 import type {
   ConnectionScopeBindingInput,
@@ -10,6 +10,7 @@ import type {
   BoundScopeVersion,
   ChannelRow,
   ExportBreakAck,
+  ExportBreaks,
   HostnameRow,
   ListingRecord,
   PromoteAcknowledge,
@@ -158,6 +159,23 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
     base: string,
   ): Promise<{ migrations: M | null; review?: PromoteReviewBinding }> {
     return this.read(`/verticals/${seg(slug)}/versions/${seg(versionId)}/migrations?base=${seg(base)}`);
+  }
+
+  /**
+   * Which installed apps promoting `versionId` would break (#1705 PR 3), read BEFORE promoting:
+   * the caller's own tenant's apps by name, any other tenant's only as a count. The same listing
+   * a refused promote carries, so `substrat promote --review-only` can show the whole review.
+   */
+  promotionImpact(slug: string, channel: string, versionId: string): Promise<ExportBreaks> {
+    return this.read(`/verticals/${seg(slug)}/channels/${seg(channel)}/promote-impact?versionId=${seg(versionId)}`);
+  }
+
+  /**
+   * The caller's own ops failures for one vertical (#559 step 5), newest first: why a deploy,
+   * preview or provision of it failed. The control plane forces the tenant filter.
+   */
+  listOpsFailures(vertical: string, page?: PageRequest): Promise<Page<OpsFailureEntry>> {
+    return this.read(`/ops-failures${queryOf({ vertical }, page)}`);
   }
 
   promoteChannel(
