@@ -32,7 +32,7 @@ import { ClaudeCodeGenerator, claudeCodeModel } from './claude-code.js';
 import { loadEnvFiles } from './env.js';
 import { openReferences } from './reference.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { BUILD_STEP_CEILING, STEP_CEILING, stepCeilingFor, skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
+import { PASS_TOKEN_BUDGET, stepCeilingFor, skillsForPhase, writeGuardFor, type BuildLane, type BuildPhase } from './phase.js';
 import { costOfSteps } from './pricing.js';
 import {
 	DEFAULT_MODEL,
@@ -83,11 +83,9 @@ function parseArgs(argv: readonly string[]): Args {
 		...(only ? { only: only.split(',').map((s) => s.trim()) } : {}),
 		modelFlag: get('--model'),
 		...(get('--max-steps') !== undefined ? { maxSteps: Number(get('--max-steps')) } : {}),
-		// 400k uncached-equivalent per turn. Generous on purpose: a real build turn
-		// runs well under it, and the run this exists to stop spent five times it.
-		// A tight budget would cut off honest work, which is the failure mode that
-		// makes people disable the guard.
-		maxTokens: Number(get('--max-tokens') ?? 400_000),
+		// The studio's own per-pass budget (phase.ts PASS_TOKEN_BUDGET), so an eval
+		// measures the generator the studio runs.
+		maxTokens: Number(get('--max-tokens') ?? PASS_TOKEN_BUDGET),
 		...(maxTurns ? { maxTurns: Number(maxTurns) } : {}),
 		list: argv.includes('--list'),
 		quiet: argv.includes('--quiet'),
@@ -340,7 +338,10 @@ async function main(): Promise<number> {
 		ranAt: new Date().toISOString(),
 		modelSpec: chosen.spec,
 		pricedAs: pricingSpec,
-		maxSteps: args.maxSteps ?? { scaffold: BUILD_STEP_CEILING, other: STEP_CEILING },
+		// A number, as in every earlier artifact: the ceiling outside scaffold. Scaffold's own
+		// is beside it, so a comparison across the change reads the same field the same way.
+		maxSteps: stepCeilingFor('model', args.maxSteps),
+		scaffoldMaxSteps: stepCeilingFor('scaffold', args.maxSteps),
 		// `forkScore` is derivable from `expectations`, and is written out anyway:
 		// the artifact is what two runs get compared through, and a comparison
 		// that has to re-derive the pairing is a comparison that will be done on

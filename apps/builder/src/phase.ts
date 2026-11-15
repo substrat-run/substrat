@@ -63,6 +63,14 @@ export const STEP_CEILING = 40;
  */
 export const BUILD_STEP_CEILING = 100;
 
+/**
+ * The runaway ceiling on spend, per pass: 400k uncached-equivalent input tokens. Steps bound
+ * iterations and not spend — #740's first real run hit the 40-step ceiling AND spent 2,036,785
+ * input tokens in one turn — and a longer step ceiling widens that gap. Generous on purpose: a
+ * real build pass runs well under it, and a tight budget cuts off honest work.
+ */
+export const PASS_TOKEN_BUDGET = 400_000;
+
 /** A pass's step ceiling: an operator's explicit `--max-steps` binds every phase. */
 export function stepCeilingFor(phase: BuildPhase, override?: number): number {
 	if (override !== undefined) return override;
