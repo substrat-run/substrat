@@ -31,7 +31,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 }));
 
 const { default: app } = (await import(/* @vite-ignore */ '../src/worker.js')) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, ctx?: unknown): Response | Promise<Response> };
 };
 
 const staff = platformActorId.parse(ulid());
@@ -109,7 +109,7 @@ const send = (as: 'owner' | 'admin' | 'member' | 'viewer', method: string, path:
   method,
   headers: { cookie: `sb_session=${as}; sb_team=${team[1]}`, 'content-type': 'application/json' },
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-}, env);
+}, env, { waitUntil: () => undefined, passThroughOnException: () => undefined });
 const path = (suffix: string) => `/api/teams/${team[0]}/apps/${appScope[0]}/${suffix}`;
 
 it('keeps a dump store through export and restore route parsing', async () => {

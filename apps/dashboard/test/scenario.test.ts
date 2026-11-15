@@ -548,6 +548,8 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     await deprovisionApp(host, { node: acme, appScopeId, controlPlane: cp(), mcpIssuerScopeId: issuerScope });
     expect(configured).toEqual([
       { scopeId: issuerScope, entries: [{ key: `substrat:resources:${appScopeId}`, value: '' }] },
+      // Every delegation it gave is revoked (#3161).
+      { scopeId: issuerScope, entries: [{ key: `substrat:delegations:${appScopeId}`, value: '' }] },
       // Its client's URIs come off too (#2904): the hostnames are about to be released.
       { scopeId: issuerScope, entries: [{ key: `substrat:redirects:${appScopeId}`, value: '' }] },
     ]);

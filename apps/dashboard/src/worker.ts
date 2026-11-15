@@ -75,6 +75,7 @@ import {
 import { businessGrid, businessRows, lifecycleMovesOf, type BusinessVolumesAnswer, type BusinessUnavailable } from './business-volumes.js';
 import { placesReconcile, reconcilePlaces, type PlacesAppAuth } from './places.js';
 import { reconcileClientRedirects, redirectsReconcile, settleClientRedirects } from './client-redirects.js';
+import { delegationsReconcile, logDelegations, reconcileDelegations, runningDelegationsReader, type DelegationsReconcile } from './delegations.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
@@ -873,6 +874,49 @@ function syncAppIssuerIn(ctx: TeamContext, appScopeId: string, opts: { mcp: bool
 /** The Apps list's MCP reconcile, once per isolate per TEAM until it converges (#1619). */
 const mcpReconcile = new McpReconcileGate();
 
+/** One pass over the team's delegation grants (#3161, `delegations.ts`), as the caller. */
+async function delegationsPassFor(
+  host: ReturnType<typeof hostFor>,
+  node: DashboardNode,
+  cp: TenantNarrowedControlPlane,
+): Promise<DelegationsReconcile> {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  // The tenant slug is not caught: without it a pinned install of an actor reads as absent,
+  // and the pass would revoke its grant over a failed read.
+  const [apps, slugs, tenant] = await Promise.all([allApps(dash), oidcProviderSlugsFor(host, cp), cp.getTenant()]);
+  return reconcileDelegations({
+    apps,
+    isIssuer: (a) => slugs.has(a.vertical_slug),
+    issuerOf: async (appScopeId) =>
+      ((await dash.invoke('dashboard/get-app-auth', { appScopeId })) as { issuer?: string } | null)?.issuer ?? null,
+    declaredOf: runningDelegationsReader(cp),
+    tenantSlug: tenant?.slug ?? null,
+    controlPlane: cp,
+  });
+}
+
+/**
+ * Re-deliver the team's delegation grants after a write that can change them: an install or a
+ * delete (an actor a host names starts or stops resolving), an Identity change, or a version
+ * moved here. After the response and best-effort; the Apps list's pass converges what this
+ * did not.
+ */
+function syncDelegationsIn({ c, host, node }: TeamContext): void {
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  c.executionCtx.waitUntil(
+    delegationsPassFor(host, node, cp)
+      .then((result) => void logDelegations(node.tenantId, result))
+      .catch((e: unknown) => console.error('dashboard: delegation sync failed', e instanceof Error ? e.message : String(e))),
+  );
+}
+
+/** Run a write, then `syncDelegationsIn` once it succeeded. */
+async function thenSyncDelegations<T>(ctx: TeamContext, work: Promise<T>): Promise<T> {
+  const result = await work;
+  syncDelegationsIn(ctx);
+  return result;
+}
+
 /**
  * The slugs whose instances count as `oidc-issuer` providers for this caller (#427):
  * capability-declared verticals from the local registry + the shared plane's catalog
@@ -1456,6 +1500,21 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
     c.executionCtx.waitUntil(
       placesPass.catch((e: unknown) =>
         console.error('dashboard: places reconcile failed', e instanceof Error ? e.message : String(e)),
+      ),
+    );
+  }
+  // Every app's delegation grants at its team auth-server (#3161, `delegations.ts`): how an
+  // install that predates them converges, and how a version promoted outside the dashboard
+  // reaches the issuer. Gated like places; every pass delivers each known set again.
+  const delegationsPass = delegationsReconcile.run(node.tenantId, apps, async () => {
+    const result = await delegationsPassFor(host, node, cp);
+    logDelegations(node.tenantId, result);
+    return result;
+  });
+  if (delegationsPass) {
+    c.executionCtx.waitUntil(
+      delegationsPass.catch((e: unknown) =>
+        console.error('dashboard: delegation reconcile failed', e instanceof Error ? e.message : String(e)),
       ),
     );
   }
@@ -5783,15 +5842,18 @@ const routeHandlers = {
   'dashboard/write-finding-explanation': async (ctx, input) => findingExplanationIn(ctx, input, true),
   'dashboard/get-process-note': async (ctx, input) => processNoteIn(ctx, input, false),
   'dashboard/write-process-note': async (ctx, input) => processNoteIn(ctx, input, true),
-  'dashboard/install-app': async (ctx, body) => installAppIn(ctx, body),
+  // Each write that can change a delegation grant re-delivers the team's (#3161).
+  'dashboard/install-app': async (ctx, body) => thenSyncDelegations(ctx, installAppIn(ctx, body)),
   'dashboard/remove-app': async (ctx, { id }) => {
-    await removeAppIn(ctx, id);
+    await thenSyncDelegations(ctx, removeAppIn(ctx, id));
     return { removed: true as const };
   },
-  'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
-  'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
-  'dashboard/update-installed-app': async (ctx, { scopeId: app, ...body }) => updateInstalledAppIn(ctx, app, body),
-  'dashboard/bind-installed-app': async (ctx, { scopeId: app, ...body }) => bindInstalledAppIn(ctx, app, body),
+  'dashboard/retry-app': async (ctx, { scopeId: failed }) => thenSyncDelegations(ctx, retryAppIn(ctx, failed)),
+  'dashboard/resume-app': async (ctx, { scopeId: stuck }) => thenSyncDelegations(ctx, resumeAppIn(ctx, stuck)),
+  'dashboard/update-installed-app': async (ctx, { scopeId: app, ...body }) =>
+    thenSyncDelegations(ctx, updateInstalledAppIn(ctx, app, body)),
+  'dashboard/bind-installed-app': async (ctx, { scopeId: app, ...body }) =>
+    thenSyncDelegations(ctx, bindInstalledAppIn(ctx, app, body)),
   'dashboard/list-app-bookmarks': async (ctx, { scopeId: app }) => appBookmarksIn(ctx, app),
   'dashboard/list-app-migrations': async (ctx, { scopeId: app }) => appMigrationsIn(ctx, app),
   'dashboard/get-app-deployments': async (ctx, { scopeId: app, ...page }) => appDeploymentsIn(ctx, app, listPageQuery.parse(page)),
@@ -5817,7 +5879,7 @@ const routeHandlers = {
   'dashboard/app-change-member-role': async (ctx, { scopeId: app, principal, ...body }) => appChangeMemberRoleIn(ctx, app, principal, body),
   'dashboard/app-remove-member': async (ctx, { scopeId: app, principal }) => appRemoveMemberIn(ctx, app, principal),
   'dashboard/get-app-auth': async (ctx, { scopeId: app }) => getAppAuthIn(ctx, app),
-  'dashboard/set-app-auth': async (ctx, { scopeId: app, choice }) => setAppAuthIn(ctx, app, choice),
+  'dashboard/set-app-auth': async (ctx, { scopeId: app, choice }) => thenSyncDelegations(ctx, setAppAuthIn(ctx, app, choice)),
   'dashboard/list-app-snapshots': async (ctx, { scopeId: app }) => listAppSnapshotsIn(ctx, app),
   'dashboard/create-app-snapshot': async (ctx, { scopeId: app, ttlDays }) => createAppSnapshotIn(ctx, app, ttlDays),
   'dashboard/delete-app-snapshot': async (ctx, { scopeId: app, snapshotId }) => deleteAppSnapshotIn(ctx, app, snapshotId),
@@ -5883,7 +5945,7 @@ const routeHandlers = {
   'dashboard/app-log-facets': async (ctx, input) => appLogCountsIn(ctx, input, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-facets']['output']>>,
   'dashboard/list-catalog': async (ctx) => teamCatalogIn(ctx),
   'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
-  'dashboard/promote-deployment': async (ctx, body) => promoteDeploymentIn(ctx, body),
+  'dashboard/promote-deployment': async (ctx, body) => thenSyncDelegations(ctx, promoteDeploymentIn(ctx, body)),
   'dashboard/get-promotion-review': async (ctx, { slug, versionId }) => promotionReviewIn(ctx, slug, versionId),
   'dashboard/list-channel-history': async (ctx, { slug, channel }) => channelHistoryIn(ctx, slug, channel),
   'dashboard/list-deployment-failures': async (ctx, { slug }) => deploymentFailuresIn(ctx, slug),

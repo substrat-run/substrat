@@ -36,7 +36,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, ctx?: unknown): Response | Promise<Response> };
 };
 
 it('keeps app owner, roster and auth reads on the path team when another tab switches the cookie', async () => {
@@ -85,7 +85,7 @@ it('keeps app owner, roster and auth reads on the path team when another tab swi
       method,
       headers: { cookie: `sb_session=${sub}; sb_team=${teams[1]}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }, env);
+    }, env, { waitUntil: () => undefined, passThroughOnException: () => undefined });
     const path = `/api/teams/${teams[0]}/apps/${apps[0]}`;
 
     expect((await send('GET', `${path}/owner-seat`)).status).toBe(200);

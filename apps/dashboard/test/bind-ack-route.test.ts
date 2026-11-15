@@ -50,7 +50,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, ctx?: unknown): Response | Promise<Response> };
 };
 
 const PROVIDER = 'authhero';
@@ -143,6 +143,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
       `/api/teams/${tenant}${path}`,
       { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${OWNER_SUB}` }, body: JSON.stringify(body) },
       env,
+      { waitUntil: () => undefined, passThroughOnException: () => undefined },
     );
     if (res.ok) return res.status === 204 ? undefined : res.json();
     const parsed = await res.json().catch(() => null);

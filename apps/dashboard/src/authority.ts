@@ -78,7 +78,8 @@ import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import type { MeteredUsageOut } from './routes.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
+import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, manifestDelegation, substratError, type BindAcknowledgement, type ExportBreak, type ManifestDelegation, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
+import { z } from 'zod';
 import {
   ControlPlaneError,
   ControlPlaneTransport,
@@ -2403,6 +2404,19 @@ export class TenantNarrowedControlPlane {
       `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`,
     );
     return res?.calls ?? null;
+  }
+
+  /**
+   * Which apps of the tenant one VERSION lets act for a person in it (#3161, the module
+   * manifests' `delegations`), read off `/flow` beside `calls`. `null` is "not known": a
+   * version stored without the field, or a plane that does not serve it, which a caller must
+   * keep apart from `[]`, a version that delegates to nobody. A failed read throws.
+   */
+  async versionDelegations(verticalSlug: string, versionId: string): Promise<ManifestDelegation[] | null> {
+    const res = await this.call<{ delegations?: unknown }>(
+      `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`,
+    );
+    return res?.delegations == null ? null : z.array(manifestDelegation).parse(res.delegations);
   }
 
   // -- read-only scope-DB introspection (§5.4 admin-query RPC; the Data tab) ---
