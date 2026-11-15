@@ -5,13 +5,13 @@
  *
  * 1. OIDC (AuthHero, via @substrat-run/oidc-rp) + ACCESS: platform staff
  *    (`staff_actor` in the CP's auth D1, read-only here — builder-studio.md
- *    §1.1) or membership in a team holding the `builder` ENTITLEMENT
- *    (builder-plane.md §7, resolved by the identity-tenants lookup below;
- *    granted per tenant in the console like any SKU, expiry applied CP-side).
- *    Access follows the team, never a platform-side email list — the studio is
- *    a product a tenant holds, and holding it grants nothing on the control
- *    plane. Staff bypass the entitlement (they can enter any of their teams);
- *    a per-member `builder:use` role is the planned narrowing (§15).
+ *    §1.1) or membership in ANY team (resolved by the identity-tenants lookup
+ *    below). The studio is open to every team: the `builder` entitlement
+ *    (builder-plane.md §7) used to gate it and is deliberately no longer read
+ *    here — the console can still grant it, and per-team spending limits are
+ *    what will narrow access next. Access follows the team, never a
+ *    platform-side email list, and holding it grants nothing on the control
+ *    plane. A per-member `builder:use` role is the planned narrowing (§15).
  * 2. Team membership (builder-studio.md §14): every studio URL and API call is
  *    scoped to a TEAM (= tenant, dashboard-teams.md), and each team gets its
  *    own BuilderAgent DO — `idFromName(tenantId)`, mirroring the per-tenant
@@ -238,9 +238,8 @@ app.get('/api/auth/denied', (c) =>
 /**
  * The gate. Order matters: OIDC session first, then access — platform staff
  * (one D1 read, and the decision is made: no directory walk on a staff asset
- * request) or membership in a team holding the `builder` entitlement (the
- * directory lookup, stashed on the context so /api/me and the per-team
- * dispatch reuse it). For a NON-staff user this is one directory lookup per
+ * request) or membership in any team (the directory lookup, stashed on the
+ * context so /api/me and the per-team dispatch reuse it). For a NON-staff user this is one directory lookup per
  * request, assets included — acceptable at studio scale (the alternative, an
  * ungated shell, would leak the app to any authenticated account); lookups go
  * through the TEAMS_TTL_MS cache in teams.ts, so the CP subrequest is paid once
@@ -261,11 +260,11 @@ app.use('*', async (c, next) => {
 	const { staff, refused } = await staffAccessOf(c.env, user);
 	// Staff are decided by the one D1 read above — no directory walk on their
 	// asset requests. Only a non-staff user needs teams AT THE GATE (their access
-	// IS the entitled set); the walk is deferred for staff until a route that
+	// IS their memberships); the walk is deferred for staff until a route that
 	// actually needs teams (usableTeams below).
 	let usable: Team[] | null = null;
 	if (!staff) {
-		usable = (await teamsFor(c.env, user.id)).filter((t) => t.entitled);
+		usable = await teamsFor(c.env, user.id);
 		if (usable.length === 0) {
 			// Same split as the 401 above: a page for browsers, JSON for API callers.
 			const detail = deniedDetail(user, refused);
@@ -281,9 +280,9 @@ app.use('*', async (c, next) => {
 	await next();
 });
 
-/** The teams the caller may act in: membership AND (entitlement OR staff).
- * Non-staff: the gate already resolved and filtered them. Staff: resolved here,
- * on the routes that need them — every membership is usable (the bypass). */
+/** The teams the caller may act in: every membership.
+ * Non-staff: the gate already resolved them. Staff: resolved here, on the
+ * routes that need them. */
 async function usableTeams(c: Context<{ Bindings: Env }>): Promise<Team[]> {
 	const cached = c.get('teams' as never) as Team[] | null;
 	if (cached) return cached;
@@ -305,7 +304,7 @@ app.get('/api/usage', async (c) => {
 
 /** Who am I, and which teams can I build for. The SPA calls this first; a 404
  * from the local server (mode A) is its cue that there are no teams to pick.
- * The teams are the gate's usable set (entitled ones, all for staff); `staff`
+ * The teams are the caller's memberships; `staff`
  * drives what the SPA offers (the studio-wide usage tab), never what the
  * worker enforces — the /api/usage gate above is the enforcement. */
 app.get('/api/me', async (c) => {

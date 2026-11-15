@@ -26,12 +26,13 @@ export async function staffAccessOf(
 	return { staff: row !== null };
 }
 
-/** The 403 sentence for someone with no studio access. An address the roster never got
- * to look up says so: for a session minted before the claim was carried, signing in
- * again is the whole fix. Still names the email, never the app. */
+/** The 403 sentence for someone with no studio access — a non-staff login that belongs to
+ * no team yet. An address the roster never got to look up says so: for a session minted
+ * before the claim was carried, signing in again is the whole fix. Still names the email,
+ * never the app. */
 export function deniedDetail(user: SessionUser, refused: EmailRefusal | undefined): string {
 	const who = user.email ?? 'this account';
 	return refused === 'unasserted' || refused === 'unverified'
 		? `The builder studio could not check ${who}: ${emailRefusalMessage(refused)}.`
-		: `The builder studio is not enabled for ${who}'s team yet.`;
+		: `${who} is not on a team yet. Sign up in the dashboard to create one, or ask a team owner to invite you.`;
 }
