@@ -3,7 +3,9 @@
 The platform's `/internal/*` management contract — the routes the control plane calls to
 provision, reconcile, introspect, snapshot, export/restore, bookmark/rewind and configure an
 install — plus the `application/problem+json` error envelope, **authored once and mounted**
-into a vertical's [Hono](https://hono.dev) worker.
+into a vertical's [Hono](https://hono.dev) worker. The `/model` export, `createModelHost`,
+is how a vertical calls a language model on platform-held credentials, with no provider key
+of its own; it has [its own section](#createmodelhost-options-—-from-substrat-run-vertical-host-model) below.
 
 Before this package every sandbox-clean vertical hand-copied those routes and a Hono
 `onError` into its own `worker.ts`. The copies drifted — route sets disagreed and some
@@ -701,7 +703,7 @@ import { createModelHost } from '@substrat-run/vertical-host/model';
 
 const models = createModelHost({
   env,                                        // the worker's own bindings — platform-held credentials
-  aiBinding: env.AI,                          // the Workers AI binding: the cloudflare row then needs no credential
+  aiBinding: env.AI,                          // the Workers AI binding: the cloudflare row then needs no credential (bound when package.json declares substrat.usesModels)
   factories: { anthropic: createAnthropic },  // the direct rows this bundle statically carries
   guard: async ({ spec, attribution }) => {   // policy, before the bytes go out — throw to refuse
     if (await spentToday(attribution.tenant) > budget) throw new Error('daily budget exhausted');
@@ -717,6 +719,12 @@ const run = await models.run({
 run.text;        // the answer
 run.line;        // the ModelUsageLine, already handed to `record`
 ```
+
+**No provider key.** A vertical that answers with a model declares `"usesModels": true` under
+`substrat` in its `package.json`. A push then binds the platform's model runtime to the
+worker as `env.AI`, versioned with the code like `outbound`; without the declaration there is no
+binding. The Cloudflare row then runs with no credential on the script, and the platform's own
+account pays. `demos/ticket0/src/worker.ts` (`modelHostFor`) is a worked example.
 
 What it does, in order: resolve the spec against **platform-held** credentials (only the
 row's own variables — never a per-install token); consult `guard`; run; turn the AI SDK's

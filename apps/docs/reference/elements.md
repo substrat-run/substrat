@@ -283,6 +283,14 @@ for the same model. If your source receives events over the wire, read them with
 `readAssistantStreamEvent` so that a newer server cannot break an older page. Add `cancel()` to
 offer a Stop button; without it, none is drawn.
 
+**Where the answer comes from.** `api.ask` above is a route on your vertical's worker, and the
+worker calls the model with the platform's model host,
+[`createModelHost`](/reference/vertical-host),
+which runs on platform-held credentials. Do not add a provider key to the vertical. Declare
+`"usesModels": true` under `substrat` in its `package.json` so a push binds `env.AI`, and call
+`models.run({ spec, attribution, system, messages })` from the route, outside any operation.
+The route returns `run.text`, and the source yields it as the `text-delta` above.
+
 | | |
 |---|---|
 | Properties | `model`; `labels`, a partial `AssistantLabels` over the English defaults |
