@@ -10,11 +10,14 @@ mechanics of the `substrat` CLI live in the how-to; the *shape* lives here.
 
 Two distinct acts, deliberately not fused:
 
-- A **push** uploads a version. The CLI builds your worker locally, POSTs the bundle plus a
-  manifest to the control plane, and the control plane records an immutable version (a
-  `deploymentRef`, a permission digest, a migration digest). A push does **not** serve anything.
-  The CLI refuses a bundle before uploading it when it imports a Node builtin the worker's
-  compatibility flags do not provide, since workerd would refuse to start it.
+- A **push** submits a version. The CLI collects a source snapshot and POSTs it to the control
+  plane; the **platform** installs (`pnpm install --frozen-lockfile`), builds and bundles it, and
+  records an immutable version (a `deploymentRef`, a permission digest, a migration digest). A push
+  does **not** serve anything. Because the platform installs with pnpm alone, the snapshot needs a
+  committed `pnpm-lock.yaml` at its root: the CLI refuses the push before uploading when there is
+  none. A bundle that imports a Node builtin the worker's compatibility flags do not provide is
+  refused, since workerd would refuse to start it: by the platform build on a push, and on your
+  machine by `substrat push --check`, which builds the worker locally and runs the same check.
 - A **promotion** points a **channel** at a version and makes scopes run it. This is the deploy.
 
 The split exists because "here is a new build" and "run this build against real data" are

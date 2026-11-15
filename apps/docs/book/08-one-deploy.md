@@ -11,9 +11,10 @@ acts, deliberately not fused.**
 substrat push
 ```
 
-The CLI builds your worker locally, then POSTs the bundle plus a manifest to the control
-plane, which records an **immutable version**: a `deploymentRef`, a permission digest, a
-migration digest.
+The CLI collects a source snapshot and POSTs it to the control plane. The platform installs
+it with `pnpm install --frozen-lockfile` (so a `pnpm-lock.yaml` must be committed at the
+source root) and builds it, then records an **immutable version**: a `deploymentRef`, a
+permission digest, a migration digest.
 
 That is all. Nothing is serving the new code. A push is cheap and reversible — it adds a
 row to a registry. The reason for the split is that "here is a new build" and "run this
