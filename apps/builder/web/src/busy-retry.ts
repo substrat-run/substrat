@@ -36,6 +36,8 @@ export interface BusyRetryOptions {
 
 function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	return new Promise<void>((resolve) => {
+		// An abort that came before this sleep is not replayed to a listener added now.
+		if (signal?.aborted) return resolve();
 		const timer = setTimeout(done, ms);
 		signal?.addEventListener('abort', done, { once: true });
 		function done(): void {
@@ -60,7 +62,10 @@ export async function retryWhileBusy<T>(call: () => Promise<T>, opts: BusyRetryO
 			const wait = BUSY_BACKOFF_MS[Math.min(attempt, BUSY_BACKOFF_MS.length - 1)]!;
 			if (now() + wait > deadline) throw e;
 			opts.onWait?.(occupant);
+			opts.signal?.throwIfAborted();
 			await sleep(wait);
+			// A timer may fire late (a backgrounded tab): no attempt starts past the bound.
+			if (now() > deadline) throw e;
 		}
 	}
 }

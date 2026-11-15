@@ -55,6 +55,20 @@ describe('retryWhileBusy', () => {
 		const sleep = async (ms: number) => { await c.sleep(ms); stop.abort(new Error('stopped waiting')); };
 		await expect(retryWhileBusy(async () => { calls++; throw busy(); }, { ...c, sleep, signal: stop.signal })).rejects.toThrow('stopped waiting');
 		expect(calls).toBe(1);
+
+		// Aborted while the call was in flight: rejects at once, never sleeping.
+		const early = new AbortController();
+		const slept = c.slept.length;
+		await expect(retryWhileBusy(async () => { early.abort(new Error('gone')); throw busy(); }, { ...c, signal: early.signal })).rejects.toThrow('gone');
+		expect(c.slept.length).toBe(slept);
+	});
+
+	it('makes no attempt past its bound when a wait overruns it', async () => {
+		const c = clock();
+		let calls = 0;
+		const late = async (ms: number) => { await c.sleep(ms + BUSY_RETRY_BOUND_MS); };
+		await expect(retryWhileBusy(async () => { calls++; throw busy(); }, { ...c, sleep: late })).rejects.toThrow(/^project operation already in progress/);
+		expect(calls).toBe(1);
 	});
 
 	it('does not retry any other error, a different 409 included', async () => {
