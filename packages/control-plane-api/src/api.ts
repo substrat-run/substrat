@@ -13060,10 +13060,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       const read = await options.githubChanges({ tenantId, ...github, installationId });
       if ('unavailable' in read) return none(read.unavailable, repository);
-      // A PR's preview: its sticky tag, else its newest per-build one (`ci.ts`).
+      // A PR's preview: its sticky tag, else its newest per-build one (`ci.ts`). Newest by id: a
+      // scope id is a ULID, minted when the scope is, so it orders clean-room previews (which
+      // carry no `forkedAt`) as well as forks.
       const previews = (await c.var.admin.listScopes(actor, { tenantId, vertical: slug }))
         .filter((s) => s.kind === 'preview')
-        .sort((a, b) => ((a.forkedAt ?? '') < (b.forkedAt ?? '') ? 1 : -1))
+        .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
         .map((s) => ({ id: s.id, tag: s.slug?.split('--').at(-1) ?? '' }));
       const previewOf = async (n: number): Promise<VerticalChange['preview']> => {
         const hit = previews.find((p) => p.tag === previewTag(n)) ?? previews.find((p) => p.tag.startsWith(buildPreviewTagPrefix(n)));

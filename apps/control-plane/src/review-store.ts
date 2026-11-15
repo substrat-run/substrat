@@ -200,6 +200,27 @@ export async function writeReviewResult(bucket: R2Bucket, id: string, result: Re
   return (await bucket.put(resultKey(id), JSON.stringify(result), { onlyIf: { etagDoesNotMatch: '*' } })) !== null;
 }
 
+/** A result with nothing read: the shape every early exit starts from. */
+export function emptyReviewResult(receipt: ReviewReceipt, startedAt: string): Omit<ReviewResult, 'state' | 'reason' | 'finishedAt'> {
+  return {
+    gates: gatesNotRun(), findings: [], checkedClean: [], notApplicable: [], notSent: [], deleted: [], fullTree: receipt.baseSha256 === null,
+    model: null, runner: { version: REVIEW_PLUGIN_VERSION }, usage: null, dropped: 0, parseFailures: 0, startedAt,
+    checklistDigest: REVIEW_RULES_DIGEST, pluginVersion: REVIEW_PLUGIN_VERSION,
+  };
+}
+
+/**
+ * Closes a review whose reader half never started: `incomplete`, with the reason. Without it the
+ * receipt stays `received` with nothing to move it on, and counts against the workspace's reviews
+ * in progress until it expires.
+ */
+export async function closeUnstartedReview(bucket: R2Bucket, id: string, reason: string, now = new Date()): Promise<boolean> {
+  const receipt = await readReceipt(bucket, id);
+  if (!receipt) return false;
+  const at = now.toISOString();
+  return writeReviewResult(bucket, id, { ...emptyReviewResult(receipt, at), state: 'incomplete', reason, finishedAt: at });
+}
+
 export async function readReview(bucket: R2Bucket, reader: ReviewReader, id: string, now = new Date()): Promise<ReviewRecord | null> {
   const receipt = await readReceipt(bucket, id);
   if (!receipt || Date.parse(receipt.expiresAt) <= now.getTime()) return null;

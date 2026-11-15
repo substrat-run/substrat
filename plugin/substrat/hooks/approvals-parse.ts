@@ -244,6 +244,7 @@ export function reviewUploadIn(stdout: string): { id: string; state: string } | 
   } catch {
     return undefined
   }
+  if (typeof r !== 'object' || r === null) return undefined
   const v = r as { id?: unknown; state?: unknown }
   return typeof v.id === 'string' && typeof v.state === 'string' ? { id: v.id, state: v.state } : undefined
 }
@@ -262,16 +263,19 @@ export function changesIn(stdout: string): OpenChanges | undefined {
   } catch {
     return undefined
   }
+  if (typeof r !== 'object' || r === null) return undefined
   const v = r as { provider?: unknown; repository?: unknown; reason?: unknown; changes?: unknown }
   if (v.provider !== null && v.provider !== 'github' && v.provider !== 'artifacts') return undefined
   if (!Array.isArray(v.changes)) return undefined
   const str = (x: unknown) => (typeof x === 'string' ? x : null)
   const changes: OpenChanges['changes'][number][] = []
-  for (const c of v.changes as Record<string, unknown>[]) {
+  for (const entry of v.changes as unknown[]) {
+    if (typeof entry !== 'object' || entry === null) return undefined
+    const c = entry as Record<string, unknown>
     const checks = c.checks as { state?: unknown; failing?: unknown } | undefined
     const preview = c.preview as { tag?: unknown; url?: unknown } | null | undefined
     if (typeof c.id !== 'string' || typeof c.title !== 'string' || typeof c.branch !== 'string') return undefined
-    if (!checks || !CHECK_STATES.has(checks.state as string) || !Array.isArray(checks.failing)) return undefined
+    if (typeof checks !== 'object' || checks === null || !CHECK_STATES.has(checks.state as string) || !Array.isArray(checks.failing)) return undefined
     changes.push({
       id: c.id,
       title: c.title,

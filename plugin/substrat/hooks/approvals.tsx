@@ -150,15 +150,20 @@ async function checkPlane($: Engine) {
   await Promise.all([checkChanges($, launch), checkWaitingPromote($, launch)])
 }
 
-/** The open pull requests or studio chat branches, with checks and previews. Quiet when the CLI has no answer. */
+/**
+ * The open pull requests or studio chat branches, with checks and previews. Quiet when the CLI
+ * has no answer, and a failed refresh clears what an earlier one showed: passing checks read
+ * before the failure are not passing checks now.
+ */
 async function checkChanges($: Engine, launch: Launch) {
+  let open: OpenChanges | undefined
   try {
     const r = await $.process.run([...launch.launcher, 'changes', '--json'], { cwd: launch.cwd, timeoutMs: RUN_MS })
-    const open = r.exitCode === 0 ? changesIn(r.stdout) : undefined
-    if (open) await update($, changes, () => open)
+    open = r.exitCode === 0 ? changesIn(r.stdout) : undefined
   } catch {
     // No CLI, no network or no vertical here: nothing is shown.
   }
+  await update($, changes, () => open ?? null)
 }
 
 /**

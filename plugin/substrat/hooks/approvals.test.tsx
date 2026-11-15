@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { changesIn, promoteRefusalIn, refusalFor, substratCalls, waitingPromoteIn } from './approvals-parse'
+import { changesIn, promoteRefusalIn, refusalFor, reviewUploadIn, substratCalls, waitingPromoteIn } from './approvals-parse'
 
 const PANE = {
   plugin: 'substrat',
@@ -288,10 +288,16 @@ describe('the open changes', () => {
     expect(changesIn(UNREAD)?.changes[1]?.checks.state).toBe('unknown')
     expect(changesIn(JSON.stringify({ provider: 'gitlab', changes: [] }))).toBeUndefined()
     expect(changesIn('error: unknown command changes')).toBeUndefined()
+    // Valid JSON of the wrong shape is no answer either, not a throw.
+    for (const wrong of ['null', '7', JSON.stringify({ provider: 'github', changes: [null] }), JSON.stringify({ provider: 'github', changes: [{ id: '#1', title: 't', branch: 'b', checks: null }] })]) {
+      expect(changesIn(wrong)).toBeUndefined()
+    }
+    expect(reviewUploadIn('null')).toBeUndefined()
   })
 
-  test('checking the plane lists each change with its checks and preview', async ($, on) => {
-    const { runs } = engine(on, argv => (argv.includes('changes') ? { exitCode: 0, stdout: CHANGES } : { exitCode: 0, stdout: '{}' }))
+  test('checking the plane lists each change with its checks and preview; a failed refresh clears it', async ($, on) => {
+    let down = false
+    const { runs } = engine(on, argv => (down ? { exitCode: 1, stderr: 'network down' } : argv.includes('changes') ? { exitCode: 0, stdout: CHANGES } : { exitCode: 0, stdout: '{}' }))
     await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
 
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -301,6 +307,10 @@ describe('the open changes', () => {
     expect(await ui.find({ type: 'Text', text: /#12 Void invoices/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /checks fail: test · preview https:\/\/acme--pr-12\.global\.substrat\.run/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /checks pass/ })).toBeDefined()
+    // Passing checks read before the failure are not shown as passing now.
+    down = true
+    await ui.press({ key: 'check-plane' })
+    expect(await ui.find({ type: 'Text', text: /checks pass/ })).toBeUndefined()
     await ui.unmount()
   })
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { PlatformActorId, TenantId } from '@substrat-run/contracts';
 import { refuse, refuseStatus } from './problem.js';
-import { listReviews, readReview, receiveReview, ReviewCollisionError, ReviewValidationError, type ReviewReader, type ReviewRecord } from './review-store.js';
+import { closeUnstartedReview, listReviews, readReview, receiveReview, ReviewCollisionError, ReviewValidationError, type ReviewReader, type ReviewRecord } from './review-store.js';
 
 const INTAKE_BODY_MAX = 2 * 32 * 1024 * 1024 + 1024 * 1024;
 const MAX_LIVE_REVIEWS_PER_ACTOR = 20;
@@ -166,11 +166,19 @@ export function createReviewApi(deps: {
         ...(tenant ? { tenant } : {}),
       });
       if (deps.startReview) {
-        // Stored is stored: a job that fails to start leaves the review `received`, which the
-        // record says, and the upload still answers 201.
-        await deps.startReview(record.id).catch((error: unknown) => {
+        // Stored is stored, and the upload still answers 201. A job that fails to start closes
+        // the review `incomplete`: nothing else would move it on from `received`, where it would
+        // count against the workspace's reviews in progress until it expired.
+        const started = await deps.startReview(record.id).then(() => true, (error: unknown) => {
           console.error('review.job.unstarted', { reviewId: record.id, message: error instanceof Error ? error.message : String(error) });
+          return false;
         });
+        if (!started) {
+          await closeUnstartedReview(access.bucket, record.id, 'review job did not start').catch((error: unknown) => {
+            console.error('review.job.unclosed', { reviewId: record.id, message: error instanceof Error ? error.message : String(error) });
+          });
+          return Response.json(viewFor(p, (await readReview(access.bucket, readerFor(p), record.id)) ?? record), { status: 201 });
+        }
       }
       return Response.json(viewFor(p, record), { status: 201 });
     } catch (error) {

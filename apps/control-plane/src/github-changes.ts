@@ -34,19 +34,25 @@ interface Pull {
 /** A check run that did not pass. `neutral` and `skipped` are not failures. */
 const FAILED = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 
-/** One head's checks: its check runs, else (none reported) its commit statuses. */
-function checksOf(
-  runs: readonly { name: string; status: string; conclusion: string | null }[],
-  statuses: readonly { context: string; state: string }[],
-): ChangeChecks {
-  if (runs.length > 0) {
-    const failing = runs.filter((r) => r.status === 'completed' && FAILED.has(r.conclusion ?? '')).map((r) => r.name);
-    const pending = runs.some((r) => r.status !== 'completed');
-    return { state: failing.length > 0 ? 'failure' : pending ? 'pending' : 'success', failing };
-  }
-  if (statuses.length === 0) return { state: 'none', failing: [] };
-  const failing = statuses.filter((s) => s.state === 'failure' || s.state === 'error').map((s) => s.context);
-  const pending = statuses.some((s) => s.state === 'pending');
+/** The most check runs or commit statuses one page answers with. */
+const PAGE = 100;
+
+type Run = { name: string; status: string; conclusion: string | null };
+type Status = { context: string; state: string };
+
+/**
+ * One head's checks: its check runs and its commit statuses together, since a head may carry both
+ * and either may fail. A read that ended short of what GitHub counted is `unknown`, never a
+ * success read off the pages that arrived.
+ */
+function checksOf(runs: readonly Run[], statuses: readonly Status[], complete: boolean): ChangeChecks {
+  const failing = [
+    ...runs.filter((r) => r.status === 'completed' && FAILED.has(r.conclusion ?? '')).map((r) => r.name),
+    ...statuses.filter((s) => s.state === 'failure' || s.state === 'error').map((s) => s.context),
+  ];
+  if (!complete) return { state: 'unknown', failing };
+  if (runs.length === 0 && statuses.length === 0) return { state: 'none', failing: [] };
+  const pending = runs.some((r) => r.status !== 'completed') || statuses.some((s) => s.state === 'pending');
   return { state: failing.length > 0 ? 'failure' : pending ? 'pending' : 'success', failing };
 }
 
@@ -83,14 +89,30 @@ export async function readGithubChanges(cfg: GithubConfig, input: { owner: strin
       reason: `the GitHub App cannot read checks for ${repository}: approve its checks and commit statuses read permissions`,
     };
   }
+  /** Every page of one list GitHub counts in `total_count`, and whether all of it arrived. */
+  const readAll = async <K extends string, T>(path: string, key: K): Promise<{ items: T[]; complete: boolean }> => {
+    const items: T[] = [];
+    for (let page = 1; ; page++) {
+      const body = await read<{ total_count: number } & Record<K, T[]>>(checksToken!, `${path}?per_page=${PAGE}&page=${page}`);
+      items.push(...body[key]);
+      if (items.length >= body.total_count) return { items, complete: true };
+      if (body[key].length === 0) return { items, complete: false };
+    }
+  };
+  let short = false;
   const changes: GithubChange[] = new Array(pulls.length);
   for (let i = 0; i < pulls.length; i += CHECKS_AT_ONCE) {
     await Promise.all(pulls.slice(i, i + CHECKS_AT_ONCE).map(async (p, j) => {
       const sha = encodeURIComponent(p.head.sha);
-      const runs = (await read<{ check_runs: { name: string; status: string; conclusion: string | null }[] }>(checksToken!, `/commits/${sha}/check-runs?per_page=100`)).check_runs;
-      const statuses = runs.length > 0 ? [] : (await read<{ statuses: { context: string; state: string }[] }>(checksToken!, `/commits/${sha}/status`)).statuses;
-      changes[i + j] = changeOf(p, checksOf(runs, statuses));
+      const [runs, statuses] = await Promise.all([
+        readAll<'check_runs', Run>(`/commits/${sha}/check-runs`, 'check_runs'),
+        readAll<'statuses', Status>(`/commits/${sha}/status`, 'statuses'),
+      ]);
+      const complete = runs.complete && statuses.complete;
+      if (!complete) short = true;
+      changes[i + j] = changeOf(p, checksOf(runs.items, statuses.items, complete));
     }));
   }
+  if (short) return { changes, reason: `GitHub answered fewer checks than it counted for some heads in ${repository}: their checks are unknown` };
   return { changes };
 }

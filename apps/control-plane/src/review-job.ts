@@ -6,7 +6,7 @@ import { createModelHost, type ModelHost, type ModelRun } from '@substrat-run/ve
 import { diffReview, REVIEW_MAX_DIFF_BYTES } from './review-diff.js';
 import { assemble, estimateTokens, gatesNotRun, parseReply, reviewPrompt, reviewSystem } from './review-reader.js';
 import { REVIEW_PLUGIN_VERSION, REVIEW_RULES_DIGEST } from './review-rules.generated.js';
-import { hasReviewResult, readReceipt, readReviewArchive, writeReviewResult, type ReviewReceipt, type ReviewResult } from './review-store.js';
+import { emptyReviewResult, hasReviewResult, readReceipt, readReviewArchive, writeReviewResult, type ReviewReceipt, type ReviewResult } from './review-store.js';
 
 /**
  * The platform-owned scope every review's usage line is filed under until reviews belong to a
@@ -83,15 +83,6 @@ const positive = (value: number | undefined, fallback: number) => (value !== und
 /** Parse a numeric config var; anything that is not a positive number is the default. */
 export const configNumber = (raw: string | undefined): number | undefined => (raw ? Number(raw) : undefined);
 
-/** A result with nothing read: the shape every early exit starts from. */
-function emptyResult(receipt: ReviewReceipt, startedAt: string): Omit<ReviewResult, 'state' | 'reason' | 'finishedAt'> {
-  return {
-    gates: gatesNotRun(), findings: [], checkedClean: [], notApplicable: [], notSent: [], deleted: [], fullTree: receipt.baseSha256 === null,
-    model: null, runner: { version: REVIEW_PLUGIN_VERSION }, usage: null, dropped: 0, parseFailures: 0, startedAt,
-    checklistDigest: REVIEW_RULES_DIGEST, pluginVersion: REVIEW_PLUGIN_VERSION,
-  };
-}
-
 /** A ledger line still to be written, deduplicated on the review id. */
 export interface UsageToRecord { readonly requestId: string; readonly line: ModelUsageLine }
 
@@ -139,7 +130,7 @@ export async function reviewOnce(
   if (!receipt || await hasReviewResult(deps.bucket, reviewId)) return { kind: 'gone' };
   // Inside the expiry margin no result would be written, so nothing is read and no model is paid for it.
   if (insideExpiryMargin(receipt.expiresAt, now().getTime())) return { kind: 'gone' };
-  const empty = emptyResult(receipt, now().toISOString());
+  const empty = emptyReviewResult(receipt, now().toISOString());
   const gates = empty.gates;
   const finish = async (result: Omit<ReviewResult, 'finishedAt'>, usage?: UsageToRecord): Promise<ReviewAttempt> =>
     ({ kind: 'result', result: capped({ ...result, finishedAt: now().toISOString() }), expiresAt: receipt.expiresAt, ...(usage ? { usage } : {}) });
@@ -453,7 +444,7 @@ async function stoppedResult(bucket: R2Bucket, reviewId: string, reason: string)
   const receipt = await readReceipt(bucket, reviewId);
   if (!receipt || await hasReviewResult(bucket, reviewId)) return { kind: 'gone' };
   const at = new Date().toISOString();
-  return { kind: 'result', result: { ...emptyResult(receipt, at), state: 'incomplete', reason, finishedAt: at }, expiresAt: receipt.expiresAt };
+  return { kind: 'result', result: { ...emptyReviewResult(receipt, at), state: 'incomplete', reason, finishedAt: at }, expiresAt: receipt.expiresAt };
 }
 
 /**
@@ -463,7 +454,11 @@ async function stoppedResult(bucket: R2Bucket, reviewId: string, reason: string)
  */
 export class ReviewJobDO extends DurableObject<ReviewJobEnv> {
   async start(reviewId: string): Promise<void> {
-    if (await this.ctx.storage.get('job')) return;
+    // A job stored by a start that failed before its alarm was set is armed again, not skipped.
+    if (await this.ctx.storage.get('job')) {
+      if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now());
+      return;
+    }
     await this.ctx.storage.put('job', { reviewId, attempt: 0 } satisfies ReviewJobState);
     await this.ctx.storage.setAlarm(Date.now());
   }

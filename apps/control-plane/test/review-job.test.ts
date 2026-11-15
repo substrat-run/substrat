@@ -329,7 +329,7 @@ describe('the production gateway path', () => {
 });
 
 describe('the job object and the upload', () => {
-  it('the upload starts the reader half for the stored review and still answers 201 when starting fails', async () => {
+  it('the upload starts the reader half for the stored review, and when starting fails still answers 201 with the review closed `incomplete`', async () => {
     const actor = platformActorId.parse(ulid());
     const started: string[] = [];
     const api = createReviewApi({ bucket: () => bucket, authenticate: async () => actor, startReview: async (id) => { started.push(id); throw new Error('no object'); } });
@@ -340,7 +340,11 @@ describe('the job object and the upload', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const response = await api.request('/reviews', { method: 'POST', body: form });
     expect(response.status).toBe(201);
-    expect(started).toEqual([((await response.json()) as { id: string }).id]);
+    const body = (await response.json()) as { id: string };
+    expect(started).toEqual([body.id]);
+    // Closed, so it no longer counts as in progress: nothing else would move it on.
+    expect(body).toMatchObject({ state: 'incomplete', reason: 'review job did not start' });
+    expect(await readReview(bucket, actor, body.id)).toMatchObject({ state: 'incomplete' });
   });
 
   it('a transient error bumps the attempt and re-arms the alarm; a runner error writes a record and forgets the job', async () => {
@@ -475,6 +479,16 @@ describe('the job object and the upload', () => {
     await bucket.put(`records/${id}.json`, JSON.stringify({ ...receipt, checklistDigest: 'f'.repeat(64), pluginVersion: '0.0.1' }));
     await runReviewJob(id, 0, deps(double([{ text: reply({ findings: [] }) }])));
     expect(await readReview(bucket, actor, id)).toMatchObject({ checklistDigest: REVIEW_RULES_DIGEST, pluginVersion: expect.not.stringMatching(/^0\.0\.1$/) });
+  });
+
+  it('a start that finds its job stored with no alarm (a failed first start) arms it again', async () => {
+    const { id } = await stored(CHANGED.source, null);
+    const stub = testEnv.REVIEW_JOBS.get(testEnv.REVIEW_JOBS.idFromName(`rearm-${id}`)) as unknown as { start(id: string): Promise<void> };
+    await runInDurableObject(stub as never, (_instance, state: DurableObjectState) => state.storage.put('job', { reviewId: id, attempt: 0 }));
+    await runInDurableObject(stub as never, async (instance, state: DurableObjectState) => {
+      await (instance as unknown as { start(id: string): Promise<void> }).start(id);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
   });
 
   it('with no model configured, the job object started by the upload records `skipped` and forgets the job', async () => {

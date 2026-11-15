@@ -91,7 +91,8 @@ describe('the open changes of a vertical', () => {
   it('reads a GitHub vertical’s pull requests with their previews, and a hosted one’s chat branches', async () => {
     const [version] = await host.admin.listVersions(staff, 'acme/garden');
     // #12 has its sticky preview and a per-build one, and the sticky one is its preview; #13 has
-    // only a per-build one, which stands in for it.
+    // only per-build ones, and the newest stands in for it — none of them a fork, so none carries
+    // a `forkedAt` to order by.
     const previewUrl = async (tag: string) => {
       const preview = await app.request('/verticals/acme%2Fgarden/previews', {
         method: 'POST', headers: asStaff, body: JSON.stringify({ tag, versionId: version!.id, empty: true }),
@@ -101,7 +102,8 @@ describe('the open changes of a vertical', () => {
     };
     const sticky = await previewUrl('pr-12');
     await previewUrl('pr-12-555');
-    const build = await previewUrl('pr-13-777');
+    await previewUrl('pr-13-777');
+    const build = await previewUrl('pr-13-778');
     const openConnection = vi.spyOn(host.admin, 'openConnection').mockResolvedValue({ secret: { installationId: '42' } } as never);
 
     const github = await changes('garden');
@@ -109,7 +111,7 @@ describe('the open changes of a vertical', () => {
     const read = verticalChanges.parse(github.body);
     expect(read).toMatchObject({ provider: 'github', repository: 'acme-org/garden' });
     expect(read.changes.map((c) => [c.id, c.checks.state, c.preview])).toEqual([
-      ['#13', 'failure', { tag: 'pr-13-777', url: build }],
+      ['#13', 'failure', { tag: 'pr-13-778', url: build }],
       ['#12', 'failure', { tag: 'pr-12', url: sticky }],
     ]);
     expect(openConnection).toHaveBeenCalledWith(acme, 'dashboard', 'github', 'acme-org');

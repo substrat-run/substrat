@@ -1612,7 +1612,7 @@ async function cmdReview(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const plane = planeFor(controlPlaneUrl, header);
   if (sub === 'upload') {
-    const dir = resolvePath(positional(1) ?? '.');
+    const dir = resolvePath(positional(1, ['json']) ?? '.');
     assertCleanReviewTree(dir);
     const form = reviewUploadForm(dir, { base: flag('base'), slug: flag('slug') });
     const response = await plane.request('/reviews', { method: 'POST', body: form });

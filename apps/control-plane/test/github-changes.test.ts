@@ -22,6 +22,10 @@ async function fakeGithub(answer: (path: string, body: unknown) => Response | un
   return { cfg, seen };
 }
 
+/** A page of a list GitHub counts, as the check-runs and combined-status reads answer. */
+const runs = (check_runs: unknown[], total_count = check_runs.length) => Response.json({ total_count, check_runs });
+const statuses = (list: unknown[], total_count = list.length) => Response.json({ total_count, statuses: list });
+
 const pull = (number: number, sha: string) => ({
   number, title: `PR ${number}`, html_url: `https://github.com/acme/garden/pull/${number}`,
   updated_at: '2026-11-15T10:00:00Z', user: { login: 'ada' }, head: { ref: `feat-${number}`, sha },
@@ -33,16 +37,17 @@ describe('the open pull requests of a connected repository', () => {
       if (path.endsWith('/access_tokens')) return Response.json({ token: 'read-token' });
       if (path.startsWith('/repos/acme/garden/pulls?')) return Response.json([pull(3, 'c3'), pull(2, 'c2'), pull(1, 'c1')]);
       if (path.startsWith('/repos/acme/garden/commits/c3/check-runs')) {
-        return Response.json({ check_runs: [
+        return runs([
           { name: 'test', status: 'completed', conclusion: 'failure' },
           { name: 'lint', status: 'in_progress', conclusion: null },
           { name: 'docs', status: 'completed', conclusion: 'skipped' },
-        ] });
+        ]);
       }
-      if (path.startsWith('/repos/acme/garden/commits/c2/check-runs')) return Response.json({ check_runs: [{ name: 'test', status: 'queued', conclusion: null }] });
-      // No check runs on c1: its commit statuses answer instead.
-      if (path.startsWith('/repos/acme/garden/commits/c1/check-runs')) return Response.json({ check_runs: [] });
-      if (path === '/repos/acme/garden/commits/c1/status') return Response.json({ statuses: [{ context: 'ci/legacy', state: 'success' }] });
+      if (path.startsWith('/repos/acme/garden/commits/c2/check-runs')) return runs([{ name: 'test', status: 'queued', conclusion: null }]);
+      // No check runs on c1: its commit statuses answer alone.
+      if (path.startsWith('/repos/acme/garden/commits/c1/check-runs')) return runs([]);
+      if (path.startsWith('/repos/acme/garden/commits/c1/status')) return statuses([{ context: 'ci/legacy', state: 'success' }]);
+      if (path.includes('/status?')) return statuses([]);
       return undefined;
     });
     const read = await readGithubChanges(cfg, { owner: 'acme', repo: 'garden', installationId: '42' });
@@ -81,5 +86,31 @@ describe('the open pull requests of a connected repository', () => {
     ]);
     expect('changes' in read && read.reason).toContain('cannot read checks for acme/garden');
     expect(seen.some((s) => s.path.includes('/commits/'))).toBe(false);
+  });
+
+  it('a failure on a later page or in a commit status beside passing runs fails the head; a short read is unknown', async () => {
+    const pass = (name: string) => ({ name, status: 'completed', conclusion: 'success' });
+    const { cfg } = await fakeGithub((path) => {
+      if (path.endsWith('/access_tokens')) return Response.json({ token: 'read-token' });
+      if (path.startsWith('/repos/acme/garden/pulls?')) return Response.json([pull(3, 'c3'), pull(2, 'c2'), pull(1, 'c1')]);
+      // c3: 101 runs over two pages, the one failure on the second.
+      if (path.startsWith('/repos/acme/garden/commits/c3/check-runs')) {
+        return path.endsWith('page=1') ? runs(Array.from({ length: 100 }, (_, n) => pass(`job-${n}`)), 101) : runs([{ name: 'last', status: 'completed', conclusion: 'failure' }], 101);
+      }
+      // c2: a passing run, and a failing commit status beside it.
+      if (path.startsWith('/repos/acme/garden/commits/c2/check-runs')) return runs([pass('test')]);
+      if (path.startsWith('/repos/acme/garden/commits/c2/status')) return statuses([{ context: 'ci/legacy', state: 'failure' }]);
+      // c1: GitHub counts two runs and the pages run out after one.
+      if (path.startsWith('/repos/acme/garden/commits/c1/check-runs')) return path.endsWith('page=1') ? runs([pass('test')], 2) : runs([], 2);
+      if (path.includes('/status?')) return statuses([]);
+      return undefined;
+    });
+    const read = await readGithubChanges(cfg, { owner: 'acme', repo: 'garden', installationId: '42' });
+    expect('changes' in read && read.changes.map((c) => [c.id, c.checks])).toEqual([
+      ['#3', { state: 'failure', failing: ['last'] }],
+      ['#2', { state: 'failure', failing: ['ci/legacy'] }],
+      ['#1', { state: 'unknown', failing: [] }],
+    ]);
+    expect('changes' in read && read.reason).toContain('fewer checks than it counted');
   });
 });
