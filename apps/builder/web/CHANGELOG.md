@@ -1,5 +1,18 @@
 # @substrat-run/builder-web
 
+## 0.5.0
+
+### Minor Changes
+
+- 31d22d3: The studio has chats: "New chat" starts a fresh conversation on a branch of its own, and earlier chats stay listed to resume. A chat's turns and editor saves commit to its branch, never to the project's base branch, so a release (which builds the base) and a GitHub deploy workflow watching it see a chat's work only once it is merged — by "Merge into main" for a studio project, which runs the checks first when the base has moved, or by a pull request on GitHub for a connected repository. A project's existing conversation becomes its first chat.
+
+### Patch Changes
+
+- 43ca811: A busy studio's 409 names what holds the project and since when, and the preview's Run waits for it (up to ten minutes) instead of failing.
+- 8f27bbe: The studio chat's tool-call groups keep their height in a long conversation, instead of collapsing to thin grey lines.
+- cba76b0: The preview pane's notes no longer look like errors: they are drawn in the page's own colours, the production-data reason shows only while Production data is chosen, and the sign-in note gives way to the "Sign in as…" menu.
+- fbe60d9: The preview pane says why "Sign in as…" is missing when the preview's sign-in package is too old to stay signed in inside the studio, and how to update it, instead of offering people whose sign-in would land signed out.
+
 ## 0.4.19
 
 ### Patch Changes
