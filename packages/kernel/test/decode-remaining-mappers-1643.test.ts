@@ -36,7 +36,7 @@ const DDL = `
   CREATE TABLE _substrat_outbox (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, occurred_at TEXT NOT NULL, actor TEXT NOT NULL,
     entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT, authorization TEXT,
-    impersonation TEXT, pii_class TEXT NOT NULL, subject_id TEXT, operation TEXT, version TEXT,
+    impersonation TEXT, delegation TEXT, pii_class TEXT NOT NULL, subject_id TEXT, operation TEXT, version TEXT,
     caused_by TEXT, invocation_id TEXT
   );
   CREATE TABLE _substrat_deliveries (

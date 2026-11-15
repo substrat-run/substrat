@@ -4,10 +4,14 @@
  * write, the grant-scoped read behind a filtered list, and `ctx.canAssign`'s bound — and one whose
  * every run answers differently, so a replay can be told from a fresh run. It declares one peer,
  * allowlisted for nothing, whose admission a person's call arriving through it must pass.
+ *
+ * #3176: `ceiling/note` emits about a note twice, once inside `ctx.atomic`, and a consumer of that
+ * event emits about the same note in turn: what a delegated call's spine record must reach, and
+ * what it must not.
  */
 import { z } from 'zod';
-import { defineEntities, defineOperations, manifestOperations, moduleManifest, permissionKey } from '@substrat-run/contracts';
-import { assertAllowed, operationsFor, type ModuleRegistration } from '@substrat-run/kernel';
+import { defineEntities, defineOperations, manifestOperations, moduleManifest, permissionKey, type DomainEvent } from '@substrat-run/contracts';
+import { assertAllowed, operationsFor, type ModuleRegistration, type OperationContext } from '@substrat-run/kernel';
 
 export const DELEGATION_CEILING_MODULE_ID = '@test/delegation-ceiling';
 export const CEILING_A = permissionKey.parse('ceiling:a');
@@ -16,6 +20,10 @@ export const CEILING_ENTITY = 'ceiling_thing';
 /** The declared peer a person's call may arrive through, and the one key it is seated with. */
 export const CEILING_PEER = 'ceiling-peer';
 export const CEILING_PEER_KEY = permissionKey.parse('ceiling:peer');
+/** #3176: what `ceiling/note` emits (twice), and what the consumer of that emits in turn. */
+export const CEILING_NOTED = 'ceiling.noted';
+export const CEILING_ECHOED = 'ceiling.echoed';
+export const CEILING_NOTE_ENTITY = 'ceiling_note';
 
 const entities = defineEntities({});
 const ok = z.object({ ok: z.boolean() });
@@ -36,7 +44,16 @@ const ceilingOperations = defineOperations(entities, ['ceiling:a', 'ceiling:b'] 
     permission: 'ceiling:a',
     output: z.object({ covered: z.boolean(), missing: z.array(z.string()) }),
   },
+  'ceiling/note': {
+    summary: 'Asks for A and emits about a note, once directly and once inside ctx.atomic',
+    permission: 'ceiling:a',
+    input: z.object({ id: z.string() }),
+    output: ok,
+  },
 });
+
+const noteEvent = (type: string, id: string) =>
+  ({ type, schemaVersion: 1, entity: { entityType: CEILING_NOTE_ENTITY, entityId: id }, piiClass: 'none', payload: { id } }) as const;
 
 /** The tenant role the suite seats the person in: both keys. */
 export const CEILING_ROLE = 'ceiling-both';
@@ -53,7 +70,7 @@ export const delegationCeilingMod: ModuleRegistration = {
         'ceiling:b': 'a key the person holds and did not delegate',
         'ceiling:peer': 'the declared peer\'s seat, which its switch moves; no operation checks it',
       },
-      consumes: [],
+      consumes: [{ type: CEILING_NOTED, schemaVersion: 1 }],
     }),
     peers: [{ vertical: CEILING_PEER, operations: [], permissions: [CEILING_PEER_KEY] }],
     attachmentTargets: [],
@@ -96,5 +113,16 @@ export const delegationCeilingMod: ModuleRegistration = {
       const { covered, missing } = await ctx.canAssign(CEILING_ROLE);
       return { covered, missing: [...missing] };
     },
+    'ceiling/note': async (ctx, { id }) => {
+      assertAllowed(await ctx.check(CEILING_A));
+      ctx.emit(noteEvent(CEILING_NOTED, id));
+      await ctx.atomic(async () => ctx.emit(noteEvent(CEILING_NOTED, id)));
+      return { ok: true };
+    },
   }),
+  consumers: {
+    [CEILING_NOTED]: (ctx: OperationContext, event: DomainEvent) => {
+      ctx.emit(noteEvent(CEILING_ECHOED, event.entity.entityId));
+    },
+  },
 };

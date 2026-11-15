@@ -9,6 +9,7 @@ import {
   timelineEntry,
   type Actor,
   type DataSubjectId,
+  type DelegationStamp,
   type EventAuthorization,
   type EventId,
   type HistoryEntry,
@@ -51,6 +52,8 @@ const S = ULID(1, '01JS') as ScopeId;
 const PRINCIPAL = ULID(7, '01JP');
 const AT = '2026-09-01T00:00:00.000Z';
 const STAMP: ImpersonationStamp = { session: ULID(9, '01JQ'), by: ULID(8, '01JB') } as ImpersonationStamp;
+/** #3176: the app a delegated call was made by. */
+const DELEGATED: DelegationStamp = { actor: 'client-todo' };
 
 const OUTBOX_DDL = `
   CREATE TABLE _substrat_outbox (
@@ -58,7 +61,7 @@ const OUTBOX_DDL = `
     occurred_at TEXT NOT NULL, tenant_id TEXT NOT NULL, scope_id TEXT NOT NULL,
     actor TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
     pii_class TEXT NOT NULL, subject_id TEXT, payload TEXT, authorization TEXT,
-    impersonation TEXT, operation TEXT, version TEXT, caused_by TEXT, invocation_id TEXT,
+    impersonation TEXT, delegation TEXT, operation TEXT, version TEXT, caused_by TEXT, invocation_id TEXT,
     drained_at TEXT
   );
   CREATE TABLE _substrat_deliveries (
@@ -70,7 +73,7 @@ const OUTBOX_DDL = `
 const DENIALS_DDL = `
   CREATE TABLE _substrat_denials (
     id TEXT PRIMARY KEY, actor TEXT NOT NULL, permission TEXT NOT NULL, tenant_id TEXT NOT NULL,
-    scope_id TEXT, operation TEXT, impersonation TEXT, invocation_id TEXT, at TEXT NOT NULL,
+    scope_id TEXT, operation TEXT, impersonation TEXT, delegation TEXT, invocation_id TEXT, at TEXT NOT NULL,
     drained_at TEXT
   )`;
 
@@ -94,6 +97,7 @@ function eventRow(n: number, over: Cells = {}): Cells {
     payload: JSON.stringify({ n }),
     authorization: JSON.stringify([{ permission: 'thing:write' }]),
     impersonation: JSON.stringify(STAMP),
+    delegation: JSON.stringify(DELEGATED),
     operation: 'thing/update',
     version: 'v-1',
     caused_by: null,
@@ -144,6 +148,7 @@ function strictHistoryOf(row: RawOutboxRow): HistoryEntry {
       row.authorization === null ? null : (JSON.parse(row.authorization) as EventAuthorization[]),
     impersonation:
       row.impersonation === null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
+    delegation: row.delegation == null ? null : (JSON.parse(row.delegation) as DelegationStamp),
     piiClass: row.pii_class as PiiClass,
     subjectId: row.subject_id as DataSubjectId | null,
     operation: row.operation,
@@ -163,6 +168,7 @@ function strictDenialOf(row: DenialRow): PermissionDenial {
     operation: row.operation ?? null,
     impersonation:
       row.impersonation == null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
+    delegation: row.delegation == null ? null : (JSON.parse(row.delegation) as DelegationStamp),
     invocationId: row.invocation_id ?? null,
     at: row.at,
     drainedAt: row.drained_at ?? null,
@@ -183,6 +189,7 @@ function strictEventOf(row: RawOutboxRow) {
     ...(row.subject_id ? { subjectId: row.subject_id } : {}),
     ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
     ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
+    ...(row.delegation ? { delegation: JSON.parse(row.delegation) } : {}),
     ...(row.operation ? { operation: row.operation } : {}),
     payload: row.payload === null ? undefined : JSON.parse(row.payload),
   });
@@ -328,6 +335,7 @@ describe('denial reads — tolerant (#1636)', () => {
     scope_id: S,
     operation: 'thing/read',
     impersonation: JSON.stringify(STAMP),
+    delegation: JSON.stringify(DELEGATED),
     invocation_id: 'call-1',
     at: AT,
     drained_at: null,

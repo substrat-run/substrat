@@ -343,6 +343,7 @@ import {
   withheldKeysFor,
   capCoverage,
   delegationCeilingOf,
+  delegationStampOf,
   outsideCeiling,
   parseScopeDelegation,
   type ScopeDelegation,
@@ -1431,6 +1432,10 @@ const KERNEL_DDL = `
     -- session/by). NULL is the ordinary case — nobody was impersonating — and the
     -- actor column above stays the principal the permission model answered about.
     impersonation TEXT,
+    -- #3176: the app that made this call FOR the person (JSON {actor}), when it was a
+    -- delegated call (#3161). NULL is the ordinary case -- nobody acted for anyone -- and
+    -- the actor column above stays the person, as it does under impersonation.
+    delegation TEXT,
     -- #1231: the invoke() string this event was emitted from. NULL is two facts the
     -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
     -- row written before the column.
@@ -1504,6 +1509,8 @@ const KERNEL_DDL = `
     operation TEXT,
     -- K-42: WHICH of the two actors was refused is exactly what this log is for.
     impersonation TEXT,
+    -- #3176: the app a refused delegated call was made by (JSON {actor}). NULL = nobody.
+    delegation TEXT,
     -- #1525: the INVOCATION this refusal happened during, the same id #1237 stamps on
     -- every event of a call. A denial joins to nothing but actor and time otherwise —
     -- the operation column names what was attempted, never WHICH attempt — so "what
@@ -2085,6 +2092,8 @@ interface OutboxRow {
   /** K-42: the staff actor + session, when the event was raised under one. NULL is
    *  the ordinary case, and a row written before impersonation existed. */
   impersonation: string | null;
+  /** #3176: the app a delegated call was made by. NULL = nobody acted for anyone. */
+  delegation: string | null;
   /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
   operation: string | null;
   /** #1242: the version REGISTRY id the host ran at emit. NULL = host was handed no
@@ -7183,6 +7192,7 @@ export class SqliteScopeHost implements ScopeHost {
           const checks: CheckTally = { calls: 0 };
           const ctx = this.operationContext(
             rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld, checks, verifiedEmail, ceiling,
+            delegation,
           );
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
@@ -7342,7 +7352,7 @@ export class SqliteScopeHost implements ScopeHost {
             // statement in autocommit, AFTER the rollback, so the denial survives it.
             if (err instanceof PermissionDenied)
               // Inside the actor task that set it, so the field is this call's own (#1237).
-              this.recordDenial(rt, subject, operation, err, rt.invocationId, session);
+              this.recordDenial(rt, subject, operation, err, rt.invocationId, session, delegation);
             // #1745: a refused transition, recorded the same way and for the same reason —
             // the rollback took every trace of the attempt with it.
             this.recordRefusal(rt, subject, operation, err, rt.invocationId, session);
@@ -8411,6 +8421,8 @@ export class SqliteScopeHost implements ScopeHost {
     invocationId: string | null,
     /** K-42: the session the refused call ran under, when it ran under one. */
     impersonation?: ImpersonationSession,
+    /** #3176: the delegation the refused call was made under, when it was made for a person. */
+    delegation?: ScopeDelegation,
   ): void {
     // Only an ENFORCED denial (assertAllowed, which attaches the checked permission +
     // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` is its
@@ -8421,8 +8433,8 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare(
         `INSERT INTO _substrat_denials
            (id, actor, permission, tenant_id, scope_id, operation, impersonation,
-            invocation_id, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            delegation, invocation_id, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         ulid(),
@@ -8432,6 +8444,7 @@ export class SqliteScopeHost implements ScopeHost {
         err.node.scopeId ?? null,
         operation,
         impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+        delegation ? JSON.stringify(delegationStampOf(delegation)) : null,
         // #1525: the call this refusal belongs to, as the caller named it.
         invocationId,
         new Date().toISOString(),
@@ -14802,6 +14815,12 @@ export class SqliteScopeHost implements ScopeHost {
     verifiedEmail: string | null = null,
     /** #3161: a delegated call's ceiling — keys outside it are refused like `withheld`. */
     ceiling?: ReadonlySet<string>,
+    /**
+     * #3176: the delegation this invocation was made under, stamped on every event it emits
+     * (sub-transactions and the kernel's own events included). Only `getScope`'s stub passes
+     * one, so a consumer's, a schedule's or an import's context never carries it.
+     */
+    delegation?: ScopeDelegation,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -14820,6 +14839,8 @@ export class SqliteScopeHost implements ScopeHost {
     // operation writes about who did what carries it; nothing module code passes
     // can add it, change it or drop it.
     const stamp = impersonation ? impersonationStampOf(impersonation) : undefined;
+    // #3176: the app acting for the person, computed once on the same terms.
+    const delegationStamp = delegation ? delegationStampOf(delegation) : undefined;
 
     /**
      * The operation's instant (#812), read ONCE when the context is built.
@@ -14985,6 +15006,7 @@ export class SqliteScopeHost implements ScopeHost {
         actor: overrideActor ?? actorOf(subject),
         ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
         ...(stamp ? { impersonation: stamp } : {}),
+        ...(delegationStamp ? { delegation: delegationStamp } : {}),
         // #1231: kernel-stamped like the two above — `domainEventInput.parse`
         // already stripped anything module code tried to smuggle under this key.
         ...(operation ? { operation } : {}),
@@ -14994,8 +15016,8 @@ export class SqliteScopeHost implements ScopeHost {
           `INSERT INTO _substrat_outbox
              (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
               entity_type, entity_id, pii_class, subject_id, authorization,
-              impersonation, operation, version, caused_by, invocation_id, payload)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              impersonation, delegation, operation, version, caused_by, invocation_id, payload)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           full.id,
@@ -15011,6 +15033,7 @@ export class SqliteScopeHost implements ScopeHost {
           full.subjectId ?? null,
           full.authorization ? JSON.stringify(full.authorization) : null,
           full.impersonation ? JSON.stringify(full.impersonation) : null,
+          full.delegation ? JSON.stringify(full.delegation) : null,
           full.operation ?? null,
           // #1242: host configuration, not envelope data — the version is a fact
           // about the process, so it never rides `DomainEvent` for module code to
@@ -15739,6 +15762,10 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_outbox', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_platform_requests', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_denials', 'impersonation', 'impersonation TEXT');
+    // #3176: the delegated-call stamp, on K-42's terms: nullable, and the null on every row
+    // already there means "nobody acted for anyone", since none of them could have.
+    this.ensureColumn(db, '_substrat_outbox', 'delegation', 'delegation TEXT');
+    this.ensureColumn(db, '_substrat_denials', 'delegation', 'delegation TEXT');
     // #1525: the invocation a refusal happened during, on a scope DB created before the
     // column. Nullable, and the null is honestly "no id was carried" — a past denial's
     // call cannot be decided afterwards, exactly as #1237's outbox column argued.

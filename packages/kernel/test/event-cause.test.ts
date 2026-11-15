@@ -31,6 +31,7 @@ const DDL = `
     payload TEXT,
     authorization TEXT,
     impersonation TEXT,
+    delegation TEXT,
     pii_class TEXT NOT NULL,
     subject_id TEXT,
     operation TEXT,

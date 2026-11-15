@@ -120,3 +120,22 @@ export const delegationGrants = z
   .array(delegationGrant)
   .max(MAX_DELEGATION_ACTORS)
   .refine((grants) => new Set(grants.map((g) => g.actor)).size === grants.length, 'an actor is named twice');
+
+/**
+ * What a call made FOR a person by another app leaves on the spine (#3176): which app acted.
+ *
+ * The call runs as the person, so the envelope's `actor` (and a denial's) is the person: the
+ * permission model answered about them, the domain fact is theirs. This says which app was
+ * making the call for them, the way K-42's `impersonation` says who held the keyboard. It is
+ * the delegation's `actor`, the app's client id as the issuer names it, and nothing else: the
+ * delegated keys are the app's declaration (its manifest and `PERMISSIONS.md`), and the keys
+ * this call actually used are already in the event's `authorization` (K-34), so repeating up
+ * to {@link MAX_DELEGATED_PERMISSIONS} keys on every row would add bytes and no fact.
+ *
+ * Stamped kernel-side on K-34's pattern: absent from `DomainEventInput`, so module code can
+ * neither claim a delegation nor drop one.
+ */
+export const delegationStamp = z.object({
+  actor: z.string().min(1),
+});
+export type DelegationStamp = z.infer<typeof delegationStamp>;

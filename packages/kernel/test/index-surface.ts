@@ -386,6 +386,8 @@ export const INDEX_VALUE_EXPORTS = [
   'deadlineFetch',
   'delegatedRevokeSql',
   'delegationCeilingOf',
+  // #3176: the record a delegated call leaves on the outbox and the denial log.
+  'delegationStampOf',
   'denialListQuery',
   'denialSummaryQuery',
   'denialTotalsQuery',

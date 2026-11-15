@@ -41,6 +41,8 @@ export interface OutboxEnvelopeRow {
   subject_id: string | null;
   authorization: string | null;
   impersonation: string | null;
+  /** #3176: optional, for a row read from a store that predates the column. */
+  delegation?: string | null;
   operation: string | null;
   payload: string | null;
 }
@@ -108,6 +110,8 @@ function envelopeCandidate(row: OutboxEnvelopeRow, into: Collected): Record<stri
     // was impersonating, because `DomainEvent.impersonation` is optional — the
     // shape module code never sees is also the shape it cannot branch on.
     ...(row.impersonation != null ? { impersonation: json('impersonation', row.impersonation) } : {}),
+    // #3176: the app a delegated call was made by, on the same rule: absent when nobody was.
+    ...(row.delegation != null ? { delegation: json('delegation', row.delegation) } : {}),
     // #1231: absent rather than null, the same shape rule as the stamp above.
     ...(row.operation != null ? { operation: row.operation } : {}),
     payload: row.payload == null ? undefined : json('payload', row.payload),

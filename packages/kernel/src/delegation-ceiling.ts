@@ -12,7 +12,14 @@
  * through it) and the grant-scoped read behind a filtered list. A refusal looks exactly like a
  * check the person fails, and counts as a check (#2387) the same way.
  */
-import { substratError, verticalCaller, type Coverage, type PermissionKey, type VerticalCaller } from '@substrat-run/contracts';
+import {
+  substratError,
+  verticalCaller,
+  type Coverage,
+  type DelegationStamp,
+  type PermissionKey,
+  type VerticalCaller,
+} from '@substrat-run/contracts';
 
 /** `getScope`'s `delegation` (#3161): who is acting for the person, and the keys they may use. */
 export interface ScopeDelegation {
@@ -51,6 +58,14 @@ export function parseScopeDelegation(value: unknown): ScopeDelegation | undefine
   const caller = verticalCaller.safeParse(via);
   if (!caller.success) throw refused('delegation.via', 'expected { vertical, scope }');
   return Object.freeze({ actor, scope: Object.freeze([...scope]), via: Object.freeze(caller.data) });
+}
+
+/**
+ * What a delegated call records on every event and denial it writes (#3176): the app that acted
+ * for the person, and only that. See `delegationStamp` for why the scope is not kept.
+ */
+export function delegationStampOf(delegation: ScopeDelegation): DelegationStamp {
+  return { actor: delegation.actor };
 }
 
 /** The ceiling a delegation puts on a call, or undefined for a person acting directly. */

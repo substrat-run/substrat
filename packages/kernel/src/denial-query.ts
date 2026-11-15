@@ -29,7 +29,7 @@ import { rowDecoder, UNDECODED_ACTOR, UNDECODED_PERMISSION } from './row-decode.
 
 /** Every column of `_substrat_denials`, in the order `mapDenialRow` expects. */
 const DENIAL_COLUMNS =
-  'id, actor, permission, tenant_id, scope_id, operation, impersonation, invocation_id, at, drained_at';
+  'id, actor, permission, tenant_id, scope_id, operation, impersonation, delegation, invocation_id, at, drained_at';
 
 /** The raw row shape, as either adapter hands it back. */
 export interface DenialRow {
@@ -41,6 +41,8 @@ export interface DenialRow {
   operation: string | null;
   /** K-42: the staff actor + session, as JSON, when the refusal was under one. */
   impersonation: string | null;
+  /** #3176: the app the refused call was made for the person by, as JSON. NULL = nobody. */
+  delegation?: string | null;
   /** #1525: the invocation the refusal happened during. NULL = none was carried. */
   invocation_id: string | null;
   at: string;
@@ -91,6 +93,8 @@ export function mapDenialRow(row: DenialRow): PermissionDenial {
     scopeId: d.nullable('scope_id', shape.scopeId, row.scope_id ?? null),
     operation: d.nullable('operation', shape.operation, row.operation ?? null),
     impersonation: d.json('impersonation', shape.impersonation, row.impersonation ?? null, null),
+    // #3176: `?? null` for a legacy store's row with the column absent, as `invocation_id` below.
+    delegation: d.json('delegation', shape.delegation, row.delegation ?? null, null),
     // #1525: which CALL was refused, not merely which operation — the join that lets
     // "same call" reach a request's refusals. `?? null` rather than a bare read, for
     // the row a legacy store hands back with the column absent.
