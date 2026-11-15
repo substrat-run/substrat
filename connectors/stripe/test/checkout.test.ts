@@ -85,13 +85,17 @@ describe('stripe connector — opening a checkout', () => {
       if (init?.method === 'POST' && url.endsWith('/v1/checkout/sessions')) await held;
       return direct(url, init as never);
     }) as typeof direct;
-    const first = w.checkout();
-    await expect(w.checkout()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/being opened/) });
+    // Either may win the claim: the loser is refused without waiting, the winner waits on Stripe.
+    const asks = [w.checkout(), w.checkout()];
+    const refused = await Promise.any(asks.map((ask) => ask.then(() => Promise.reject(new Error('opened')), (err: unknown) => err)));
+    expect(refused).toMatchObject({ status: 409, message: expect.stringMatching(/being opened/) });
     release();
-    const opened = await first;
+    const settled = await Promise.allSettled(asks);
+    const opened = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    expect(opened).toHaveLength(1);
     expect(mock.sessions.size).toBe(1);
     // Once opened, the claim holds the session, and the same ask is answered from it.
-    expect((await w.checkout()).checkoutId).toBe(opened.checkoutId);
+    expect((await w.checkout()).checkoutId).toBe(opened[0]!.checkoutId);
   });
 
   it.each([
