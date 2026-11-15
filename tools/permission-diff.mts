@@ -61,6 +61,12 @@ interface PeerLike {
   operations: string[];
   permissions: string[];
 }
+/** #3161: an app that may act for a person here, with which keys, on which exchange channels. */
+interface DelegationLike {
+  actor: string;
+  permissions: string[];
+  channels?: string[];
+}
 interface ConnectionLike {
   provider: string;
   operation: string;
@@ -77,6 +83,7 @@ interface ModuleLike {
     /** #119: where a purge schedule's horizon is declared. */
     entityStates?: { entityType: string; purgeAfterDays?: number }[];
     peers?: PeerLike[];
+    delegations?: DelegationLike[];
     events?: EventsLike;
     /** Upload links: which attachment targets admit a single-use upload URL, and under what policy. */
     attachmentTargets?: {
@@ -363,6 +370,13 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
         if (!registeredOps.has(op)) orphans.push(`peer ${code(peer.vertical)} → operation ${code(op)} (not registered)`);
       }
     }
+    // #3161: a delegation's keys are the ceiling an actor's call for a person runs under; one no
+    // module declares can never be held by the person, so the ceiling admits nothing, silently.
+    for (const d of m.manifest.delegations ?? []) {
+      for (const p of d.permissions) {
+        if (!declaredBy.has(p)) orphans.push(`delegation ${code(d.actor)} → ${code(p)}`);
+      }
+    }
     // #2316: a connection landing's key is granted to every connection of the provider; its
     // operation is what the connector invokes. Either one missing lands nothing, every pass.
     for (const l of m.manifest.connections ?? []) {
@@ -390,6 +404,21 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     reservedKeys,
   );
   if (offences.length) cannot(reservedKeyMessage(rel, entry, offences, reservedKeys));
+  // #3161: a delegated call runs as a person, and no person holds a reserved key, so delegating
+  // one could only ever be refused. Named here rather than left to read as a working ceiling.
+  const reservedDelegated = modules.flatMap((m) =>
+    (m.manifest.delegations ?? []).flatMap((d) =>
+      d.permissions.filter((p) => reservedKeys.has(p)).map((p) => `delegation ${code(d.actor)} → ${code(p)}`),
+    ),
+  );
+  if (reservedDelegated.length) {
+    cannot(
+      `${rel} delegates ${reservedDelegated.length} key(s) reserved to a system principal:\n` +
+        reservedDelegated.map((o) => `    ${o}`).join('\n') +
+        `\n\n  A delegated call runs as the person, and no person holds a key declared\n` +
+        `  \`holder: 'system'\`, so the delegation could never use it. Remove it from the delegation.`,
+    );
+  }
 
   const holders = new Map<string, string[]>();
   for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);
@@ -536,6 +565,33 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       ...peers.map(
         (p) =>
           `| ${code(p.vertical)} | ${code(p.module)} | ${sorted(p.operations).map(code).join(', ') || '— none (receive only) —'} | ${sorted(p.permissions).map(code).join(', ')} |`,
+      ),
+      ``,
+    );
+    section += 1;
+  }
+
+  // §_. Delegations (#3161): the other apps of the tenant that may act for a PERSON here, with
+  // which keys and over which exchange channels. Letting another app act for people lands in this
+  // section, in the reviewed diff. Rendered only when one is declared, so no other artifact moves.
+  const delegations = modules
+    .flatMap((m) => (m.manifest.delegations ?? []).map((d) => ({ module: m.manifest.id, ...d })))
+    .sort((a, b) => a.actor.localeCompare(b.actor) || a.module.localeCompare(b.module));
+  if (delegations.length) {
+    out.push(
+      `## ${section}. Delegations — which apps may act for a person here`,
+      ``,
+      `Each is another app of the SAME tenant, calling as a person signed in to it, with a token`,
+      `the team's auth-server exchanged for that person. The call runs as the person: the keys`,
+      `shown are a ceiling over what the person already holds here, never a grant, so a key the`,
+      `person lacks stays refused. \`mcp\` is the two-step exchange this vertical's MCP endpoint`,
+      `takes; \`peer\` lets the app act for anyone signed in to it, on a peer call, with no step here.`,
+      ``,
+      `| Actor | Declared by | May act with | Channels |`,
+      `| --- | --- | --- | --- |`,
+      ...delegations.map(
+        (d) =>
+          `| ${code(d.actor)} | ${code(d.module)} | ${sorted(d.permissions).map(code).join(', ')} | ${sorted(d.channels ?? ['mcp']).map(code).join(', ')} |`,
       ),
       ``,
     );

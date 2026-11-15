@@ -324,3 +324,58 @@ test('a landing holding a key nothing declares is refused, like a peer\'s (#2316
   assert.notEqual(r.status, 0);
   assert.match(r.stderr + r.stdout, /connection `fortnox` → `ledger:record`/);
 });
+
+/** #3161: a fixture vertical whose one module declares `delegations`. */
+const writeDelegationFixture = (dir: string, delegations: unknown[]): string => {
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module', substrat: { permissions: 'src/p.mjs' } }));
+  writeFileSync(
+    join(dir, 'src/p.mjs'),
+    `export const permissions = {
+  entityGrants: [],
+  roles: [{ key: 'owner', permissions: ['notes:read', 'notes:write'], source: 'vertical' }],
+  modules: [{ manifest: {
+    id: '@fixture/notes',
+    permissions: [
+      { key: 'notes:read', description: 'read a note' },
+      { key: 'notes:write', description: 'write a note' },
+      { key: 'notes:sweep', description: 'sweep', holder: 'system' },
+    ],
+    attachmentTargets: [],
+    delegations: ${JSON.stringify(delegations)},
+  } }],
+};`,
+  );
+  return dir;
+};
+
+test('a declared delegation gets a row: the actor, the module, the sorted keys, the channels, mcp when none (#3161)', () => {
+  const dir = writeDelegationFixture(mkdtempSync(join(tmpdir(), 'permission-diff-')), [
+    { actor: 'todo', permissions: ['notes:write', 'notes:read'], channels: ['peer'] },
+    { actor: 'helpdesk', permissions: ['notes:read'] },
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 0, r.stderr);
+  const md = rendered(dir);
+  assert.match(md, /## \d+\. Delegations — which apps may act for a person here/);
+  assert.match(md, /\| `todo` \| `@fixture\/notes` \| `notes:read`, `notes:write` \| `peer` \|/);
+  assert.match(md, /\| `helpdesk` \| `@fixture\/notes` \| `notes:read` \| `mcp` \|/);
+});
+
+test('a delegation of a key nothing declares is refused, like a peer\'s (#3161)', () => {
+  const dir = writeDelegationFixture(mkdtempSync(join(tmpdir(), 'permission-diff-')), [
+    { actor: 'todo', permissions: ['notes:delete'], channels: ['peer'] },
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /delegation `todo` → `notes:delete`/);
+});
+
+test('a delegation of a key reserved to a system principal is refused: no person holds it (#3161)', () => {
+  const dir = writeDelegationFixture(mkdtempSync(join(tmpdir(), 'permission-diff-')), [
+    { actor: 'todo', permissions: ['notes:read', 'notes:sweep'], channels: ['peer'] },
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /reserved to a system principal:\n {4}delegation `todo` → `notes:sweep`/);
+});
