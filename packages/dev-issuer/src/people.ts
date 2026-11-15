@@ -11,10 +11,22 @@
  * It replaces `devLogin`'s `caller` for such a vertical rather than extending it: that one asks
  * the pool which tenant a login lives in, and a dependent's login lives wherever the other app
  * says. The dev server serves ONE scope of the dependent, and names it.
+ *
+ * The same door takes a call the other app makes AS a person (#3161): `delegated` reads the token
+ * the local broker carried, and admits the person it names exactly as their own sign-in would be.
  */
 import type { PersonResolveInput, PlatformActorId, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { AuthSubject } from '@substrat-run/vertical-auth/provider';
 import { verifiedEmailOf } from '@substrat-run/vertical-auth/oidc-rp-provider';
-import { PEOPLE_DDL, admitPerson, sqlPeopleStore, type PersonRefusal } from '@substrat-run/vertical-auth/people';
+import {
+  PEOPLE_DDL,
+  admitDelegated,
+  admitPerson,
+  sqlPeopleStore,
+  type DelegatedRefusal,
+  type PeopleDeps,
+  type PersonRefusal,
+} from '@substrat-run/vertical-auth/people';
 import type { DevCaller, DevLogin } from './harness.js';
 import type { DevSqliteDatabase } from './member-invites.js';
 
@@ -37,8 +49,16 @@ export interface DevPeopleHost {
 }
 
 export interface DevPeopleOptions {
-  /** `devLogin(…)`: the relying party. Only its verified subject is read. */
-  login: Pick<DevLogin, 'subject' | 'issuer'>;
+  /**
+   * `devLogin(…)`: the relying party. Its verified subject is read, and `resolveOnBehalf` for a
+   * call made for a person; without it, `delegated` refuses every token.
+   */
+  login: Pick<DevLogin, 'subject' | 'issuer'> & Partial<Pick<DevLogin, 'resolveOnBehalf'>>;
+  /**
+   * The registry slug of the app this vertical takes its people from (#3161): the only caller
+   * whose calls made for a person `delegated` takes. Absent, it takes none.
+   */
+  master?: string;
   /** A SQLite database of the dev server's own: `new Database(join(dataDir, 'people.sqlite'))`. */
   db: DevSqliteDatabase;
   /** Usually the `SqliteScopeHost` the dev server runs on. */
@@ -65,6 +85,16 @@ export interface DevPeople {
    * app does not let this login in (or did not answer), the caller otherwise.
    */
   caller(headers: Headers): Promise<{ caller: DevCaller } | { refused: PersonRefusal } | null>;
+  /**
+   * Who a peer call made for a person is (#3161): `token` is what the call's `onBehalf` carried,
+   * `callerVertical` the vertical the broker says is calling. The person is admitted as their own
+   * sign-in would be; `scope` is the ceiling the caller applies to this one call, and is written
+   * nowhere. `not-master` for any caller but `master`, `token-refused` for a token that does not
+   * verify as a `peer` delegation for this client.
+   */
+  delegated(call: { token: string; callerVertical: string }): Promise<
+    { caller: DevCaller; scope: string[]; actor: string } | { refused: DelegatedRefusal }
+  >;
 }
 
 export function devPeople(opts: DevPeopleOptions): DevPeople {
@@ -78,32 +108,29 @@ export function devPeople(opts: DevPeopleOptions): DevPeople {
     },
   });
   const { tenantId, scopeId } = opts.node;
+  const deps: PeopleDeps = {
+    resolve: opts.resolve,
+    store,
+    roles: opts.roles,
+    bind: (sub, principal) =>
+      opts.host.admin.linkIdentity(opts.actor, { provider: opts.provider, externalId: sub, principal, tenantId, scopeId }),
+    seat: async (principalId, { add, remove }) => {
+      const node = { tenantId, scopeId };
+      for (const roleKey of remove) await opts.host.admin.unassignRole(opts.actor, { principalId, roleKey, node });
+      for (const roleKey of add) await opts.host.admin.assignRole(opts.actor, { principalId, roleKey, node });
+    },
+    now: opts.now ?? (() => new Date()),
+    ...(opts.ttlSeconds === undefined ? {} : { ttlSeconds: opts.ttlSeconds }),
+    onUnavailable: (error) =>
+      console.warn(`dev-issuer: the app that owns the people did not answer: ${error instanceof Error ? error.message : String(error)}`),
+  };
 
   return {
     async caller(headers) {
       const subject = await opts.login.subject(headers);
       if (!subject) return null;
       const verifiedEmail = verifiedEmailOf(subject);
-      const answer = await admitPerson(
-        {
-          resolve: opts.resolve,
-          store,
-          roles: opts.roles,
-          bind: (sub, principal) =>
-            opts.host.admin.linkIdentity(opts.actor, { provider: opts.provider, externalId: sub, principal, tenantId, scopeId }),
-          seat: async (principalId, { add, remove }) => {
-            const node = { tenantId, scopeId };
-            for (const roleKey of remove) await opts.host.admin.unassignRole(opts.actor, { principalId, roleKey, node });
-            for (const roleKey of add) await opts.host.admin.assignRole(opts.actor, { principalId, roleKey, node });
-          },
-          now: opts.now ?? (() => new Date()),
-          ...(opts.ttlSeconds === undefined ? {} : { ttlSeconds: opts.ttlSeconds }),
-          onUnavailable: (error) =>
-            console.warn(`dev-issuer: the app that owns the people did not answer: ${error instanceof Error ? error.message : String(error)}`),
-        },
-        scopeId,
-        { issuer: opts.login.issuer, sub: subject.sub, verifiedEmail },
-      );
+      const answer = await admitPerson(deps, scopeId, { issuer: opts.login.issuer, sub: subject.sub, verifiedEmail });
       if (!answer.admitted) return { refused: answer.reason };
       return {
         caller: {
@@ -115,6 +142,35 @@ export function devPeople(opts: DevPeopleOptions): DevPeople {
           email: subject.email,
           verifiedEmail,
         },
+      };
+    },
+
+    async delegated(call) {
+      if (opts.master === undefined) return { refused: 'not-master' };
+      const verify = opts.login.resolveOnBehalf;
+      // The verified subject, kept for the caller's name and address.
+      const seen: { subject?: AuthSubject | null } = {};
+      const answer = await admitDelegated(deps, scopeId, call, {
+        master: opts.master,
+        issuer: opts.login.issuer,
+        verify: async (token) => (seen.subject = verify ? await verify(token) : null),
+      });
+      if (!answer.admitted) return { refused: answer.reason };
+      // Admitted only after `verify` answered this subject.
+      const person = seen.subject!;
+      return {
+        caller: {
+          principal: answer.principal,
+          tenantId,
+          scopeId,
+          sub: person.sub,
+          display: person.name ?? person.email ?? person.sub,
+          email: person.email,
+          // A delegated token proves nothing about the address (K-61): another app is acting.
+          verifiedEmail: null,
+        },
+        scope: answer.scope,
+        actor: answer.actor,
       };
     },
   };

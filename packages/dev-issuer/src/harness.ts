@@ -15,14 +15,21 @@
  * speaks OIDC and this is an ordinary relying party — which is the property the whole
  * package exists to preserve.
  */
+import { HTTPException } from 'hono/http-exception';
 import { oidcRpAuthProvider, verifiedEmailOf } from '@substrat-run/vertical-auth/oidc-rp-provider';
+import type { DelegationOption } from '@substrat-run/vertical-auth/oidc';
 import type { AuthSubject } from '@substrat-run/vertical-auth/provider';
+import { DelegatedTokenError, delegatedToken, type DelegatedTokenDeps } from '@substrat-run/vertical-auth/delegate';
+import { SESSION_REFRESH_DDL, sqlRefreshStore, type RefreshStore } from '@substrat-run/vertical-auth/session-refresh';
 import { DEV_CLIENT_ID } from './issuer.js';
-import type {
-  PlatformActorId,
-  PrincipalId,
-  ScopeId,
-  TenantId,
+import type { DevSqliteDatabase } from './member-invites.js';
+import {
+  PEER_CLIENT_OPERATION,
+  peerClientAnswer,
+  type PlatformActorId,
+  type PrincipalId,
+  type ScopeId,
+  type TenantId,
 } from '@substrat-run/contracts';
 
 /**
@@ -60,6 +67,16 @@ export interface DevLoginOptions {
    * subject; a subject it admits is linked in the pool, so the next request resolves as anyone does.
    */
   admit?: (sub: string, verifiedEmail: string | null) => Promise<{ principal: PrincipalId; tenantId: TenantId; scopeId: ScopeId } | null>;
+  /**
+   * Keep each session's refresh token (#3161), so this app can call a plugin as the person
+   * signed in (`devDelegate`) — `devRefreshStore(…)`. Login then asks for `offline_access`.
+   */
+  refreshStore?: RefreshStore;
+  /**
+   * The apps this one lets act for its people (#3161): a plugin names its master's client here,
+   * with `channels: ['peer']`, and `resolveOnBehalf` admits the tokens that master obtains.
+   */
+  delegation?: DelegationOption;
 }
 
 export interface DevCaller {
@@ -88,32 +105,47 @@ export interface DevLogin {
   subject(headers: Headers): Promise<AuthSubject | null>;
   /** The caller behind this request, or null when nobody is signed in. */
   caller(headers: Headers): Promise<DevCaller | null>;
+  /**
+   * The person a peer call is made for (#3161): the provider's `resolveOnBehalf`, which admits
+   * only a `peer`-channel token minted for this client by an actor `delegation` names.
+   */
+  resolveOnBehalf(token: string): Promise<AuthSubject | null>;
   /** The issuer origin in use — for the boot banner. */
   issuer: string;
+  /** This app's OIDC client at the issuer: the `aud` of its sign-ins, the actor of its delegations. */
+  clientId: string;
 }
 
 export const DEV_ISSUER_DEFAULT = 'http://localhost:8879';
 
+/** What the dev issuer is handed as a client secret: it registers no clients and checks none. */
+const DEV_CLIENT_SECRET = 'dev-issuer-checks-no-secret';
+
 export function devLogin(opts: DevLoginOptions): DevLogin {
   const issuer = opts.issuer ?? process.env.OIDC_ISSUER ?? DEV_ISSUER_DEFAULT;
+  const clientId = opts.clientId ?? process.env.OIDC_CLIENT_ID ?? DEV_CLIENT_ID;
   const auth = oidcRpAuthProvider({
     issuer,
     // The dev issuer registers no clients and checks no secret; a hosted instance is
     // handed real ones through `substrat:auth`. Overridable so this same harness can be
     // pointed at an issuer that does care.
-    clientId: opts.clientId ?? process.env.OIDC_CLIENT_ID ?? DEV_CLIENT_ID,
-    clientSecret: opts.clientSecret ?? process.env.OIDC_CLIENT_SECRET ?? 'dev-issuer-checks-no-secret',
+    clientId,
+    clientSecret: opts.clientSecret ?? process.env.OIDC_CLIENT_SECRET ?? DEV_CLIENT_SECRET,
     sessionSecret: opts.sessionSecret ?? process.env.SESSION_SECRET ?? 'substrat-local-dev-session-secret',
     // Held to the rule a hosted vertical on a team auth-server is held to (#1683): a bearer
     // must be this app's own — `/dev/token`'s default audience, or an MCP token for this
     // origin's endpoint — so a script that works here works there.
     sharedIssuer: true,
+    ...(opts.refreshStore ? { refreshStore: opts.refreshStore } : {}),
+    ...(opts.delegation ? { delegation: opts.delegation } : {}),
   });
 
   return {
     issuer,
+    clientId,
     handle: (request) => auth.handle(request),
     subject: (headers) => auth.resolve(headers),
+    resolveOnBehalf: (token) => auth.resolveOnBehalf(token),
     async caller(headers) {
       const subject = await auth.resolve(headers);
       if (!subject) return null;
@@ -135,6 +167,121 @@ export function devLogin(opts: DevLoginOptions): DevLogin {
         email: subject.email,
         verifiedEmail,
       };
+    },
+  };
+}
+
+/**
+ * Where a master's dev server keeps each session's refresh token (#3161): `session_refresh` in a
+ * SQLite file of its own, as `devPeople` keeps its answers. Hand it to `devLogin` and `devDelegate`.
+ */
+export function devRefreshStore(db: DevSqliteDatabase): RefreshStore {
+  for (const stmt of SESSION_REFRESH_DDL) db.exec(stmt);
+  return sqlRefreshStore({
+    exec(query, ...params) {
+      const stmt = db.prepare(query);
+      if (stmt.reader) return stmt.all(...params) as Record<string, unknown>[];
+      stmt.run(...params);
+      return [];
+    },
+  });
+}
+
+/** The slice of the local broker's client `devDelegate` calls through: one scope of the master. */
+export interface DevPeerClient {
+  invoke<O = unknown>(
+    target: string,
+    operation: string,
+    input?: unknown,
+    options?: { onBehalf?: { token: string }; idempotencyKey?: string },
+  ): Promise<O>;
+}
+
+export interface DevDelegateOptions {
+  /** The master's `devLogin(…)`, built with `refreshStore`. */
+  login: Pick<DevLogin, 'subject' | 'issuer' | 'clientId'>;
+  /** The store `login` keeps refresh tokens in. */
+  store: RefreshStore;
+  /** This client's secret at the issuer. The dev issuer checks none, so the default is a placeholder. */
+  clientSecret?: string;
+  /** `broker.clientFor(<the master's scope>)`. */
+  peer: DevPeerClient;
+}
+
+export interface DevDelegate {
+  /**
+   * Call `operation` on the master's instance of plugin `vertical` as the person signed in on
+   * `headers`. Throws an `HTTPException`: 401 when nobody is signed in or the session cannot act
+   * for them (signed in before refresh tokens were kept, or the issuer refused the one kept; sign
+   * in again), 403 when the issuer will not delegate to that plugin or it signs nobody in, 503
+   * when the issuer could not be reached. The plugin's own refusals come through as it threw them.
+   */
+  invoke<O = unknown>(
+    headers: Headers,
+    vertical: string,
+    operation: string,
+    input?: unknown,
+    options?: { scope?: readonly string[]; idempotencyKey?: string },
+  ): Promise<O>;
+}
+
+const DELEGATED_STATUS = { reauth: 401, refused: 403, unavailable: 503 } as const;
+
+/**
+ * The master's side of a call to its plugin as the signed-in person, on a dev server (#3161):
+ * the session's refresh token buys a live token of the person, which the dev issuer exchanges for
+ * one addressed to the plugin's client, and the local broker carries the call with it. A token is
+ * obtained for every call and used at once, so none is held between calls.
+ */
+export function devDelegate(opts: DevDelegateOptions): DevDelegate {
+  const deps: DelegatedTokenDeps = {
+    issuer: opts.login.issuer,
+    clientId: opts.login.clientId,
+    clientSecret: opts.clientSecret ?? process.env.OIDC_CLIENT_SECRET ?? DEV_CLIENT_SECRET,
+    store: opts.store,
+    // The global looked up at call time, called as a plain function.
+    fetch: (input, init) => globalThis.fetch(input, init as RequestInit),
+  };
+  /** Each plugin's client id, once it has answered with one. */
+  const clients = new Map<string, string>();
+  const clientOf = async (vertical: string): Promise<string> => {
+    const known = clients.get(vertical);
+    if (known !== undefined) return known;
+    const { clientId } = peerClientAnswer.parse(await opts.peer.invoke(vertical, PEER_CLIENT_OPERATION));
+    if (clientId === null) throw new HTTPException(403, { message: `'${vertical}' signs nobody in, so it takes no calls made for a person` });
+    clients.set(vertical, clientId);
+    return clientId;
+  };
+
+  return {
+    async invoke<O>(
+      headers: Headers,
+      vertical: string,
+      operation: string,
+      input?: unknown,
+      options: { scope?: readonly string[]; idempotencyKey?: string } = {},
+    ): Promise<O> {
+      const subject = await opts.login.subject(headers);
+      if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
+      if (!subject.sid) {
+        throw new HTTPException(401, { message: 'sign in again: this session was started before it could act for you elsewhere' });
+      }
+      const audience = await clientOf(vertical);
+      let token: string;
+      try {
+        ({ token } = await delegatedToken(deps, {
+          sid: subject.sid,
+          audience,
+          ...(options.scope ? { scope: options.scope } : {}),
+        }));
+      } catch (error) {
+        if (!(error instanceof DelegatedTokenError)) throw error;
+        throw new HTTPException(DELEGATED_STATUS[error.kind], { message: error.message, cause: error });
+      }
+      return opts.peer.invoke<O>(vertical, operation, input, {
+        onBehalf: { token },
+        ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+      });
     },
   };
 }
