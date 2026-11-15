@@ -244,7 +244,7 @@ function HostedPreview() {
 				<select value={kind} disabled={busy} onChange={(e) => choose(e.target.value as DataKind)} aria-label="preview data">
 					<option value="sample">Sample data</option>
 					<option value="production" disabled={fork?.ok !== true} title={fork && !fork.ok ? fork.reason : undefined}>
-						Production data{fork && !fork.ok ? ' (unavailable)' : ''}
+						Production data{fork && !fork.ok ? ` (unavailable: ${fork.reason})` : ''}
 					</option>
 				</select>
 				<button className="pill" disabled={busy || blocked} onClick={() => void run()}>
@@ -277,8 +277,10 @@ function HostedPreview() {
 			</div>
 			{personaNote && <pre className="dev-log note">{personaNote}</pre>}
 			{error && <pre className="dev-log" role="alert">{error}</pre>}
-			{note && <pre className="dev-log">{note}</pre>}
-			{fork && !fork.ok && <pre className="dev-log">Production data: {fork.reason}</pre>}
+			{/* The plane's sign-in note describes the picker page; once "Sign in as…" is up, the menu says it. */}
+			{note && personas.length === 0 && <pre className="dev-log note">{note}</pre>}
+			{/* Why production data is unavailable, only while it is the one chosen; the option's label says it, since a disabled option cannot be chosen to show this. */}
+			{kind === 'production' && fork && !fork.ok && <pre className="dev-log note">Production data: {fork.reason}</pre>}
 			{src ? (
 				<iframe key={frame} src={src} title="preview" />
 			) : (
