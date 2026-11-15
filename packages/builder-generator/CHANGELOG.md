@@ -1,5 +1,12 @@
 # @substrat-run/builder-generator
 
+## 0.12.14
+
+### Patch Changes
+
+- Updated dependencies [15951d1]
+  - @substrat-run/builder-workspace@0.13.13
+
 ## 0.12.13
 
 ### Patch Changes

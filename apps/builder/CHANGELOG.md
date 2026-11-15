@@ -1,5 +1,24 @@
 # @substrat-run/builder
 
+## 0.14.0
+
+### Minor Changes
+
+- 31d22d3: The studio has chats: "New chat" starts a fresh conversation on a branch of its own, and earlier chats stay listed to resume. A chat's turns and editor saves commit to its branch, never to the project's base branch, so a release (which builds the base) and a GitHub deploy workflow watching it see a chat's work only once it is merged — by "Merge into main" for a studio project, which runs the checks first when the base has moved, or by a pull request on GitHub for a connected repository. A project's existing conversation becomes its first chat.
+
+### Patch Changes
+
+- fdc8b37: The build (scaffold) phase gets a 100-step ceiling per pass, so a normal vertical's build finishes in one turn; every other phase keeps 40.
+- 43ca811: A busy studio's 409 names what holds the project and since when, and the preview's Run waits for it (up to ten minutes) instead of failing.
+- 8f27bbe: The studio chat's tool-call groups keep their height in a long conversation, instead of collapsing to thin grey lines.
+- 15951d1: The studio's Code and Model tabs show a hosted project's files again: the file listing no longer depends on NUL bytes the container's exec drops, and recovery refuses the empty work snapshot that listing saved instead of reading it as every file deleted.
+- 815f7db: The scenario phase's cross-tenant step asserts the refusals behind the handle (operations denied, walks empty), never that `getScope` rejects.
+- cba76b0: The preview pane's notes no longer look like errors: they are drawn in the page's own colours, the production-data reason shows only while Production data is chosen, and the sign-in note gives way to the "Sign in as…" menu.
+- fbe60d9: The preview pane says why "Sign in as…" is missing when the preview's sign-in package is too old to stay signed in inside the studio, and how to update it, instead of offering people whose sign-in would land signed out.
+- Updated dependencies [15951d1]
+  - @substrat-run/builder-workspace@0.13.13
+  - @substrat-run/builder-generator@0.12.14
+
 ## 0.13.15
 
 ### Patch Changes
