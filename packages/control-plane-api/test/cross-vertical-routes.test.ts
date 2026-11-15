@@ -489,10 +489,14 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
   it('the impact read, before promoting, names the same apps narrowed the same way — and moves nothing', async () => {
     const impact = (headers: Record<string, string>, slug: string) =>
       app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote-impact?versionId=${v2}`, { headers });
+    // A builder reads it too (`substrat promote --review-only`), narrowed as the 409 narrows it:
+    // its own tenant's app named, the other tenant a count, never an id.
     const own = await impact(asBuilder, 'feed');
-    // A builder is not on the impact route's allowlist: the push token promotes from the CLI,
-    // whose 409 carries the listing. The dashboard's tenant credential and staff read it.
-    expect(own.status).toBe(403);
+    expect(own.status).toBe(200);
+    const ownText = await own.text();
+    expect(JSON.parse(ownText)).toMatchObject({ otherTenants: 1 });
+    expect((JSON.parse(ownText) as { affected: { tenantId: string }[] }).affected.map((b) => b.tenantId)).toEqual([t]);
+    expect(ownText).not.toContain(u);
     const asStaffRead = await impact(asStaff, FEED);
     expect(asStaffRead.status).toBe(200);
     const body = (await asStaffRead.json()) as { affected: { tenantId: string }[]; otherTenants?: number };

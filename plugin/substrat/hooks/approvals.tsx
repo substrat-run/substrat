@@ -28,6 +28,7 @@ import {
   promoteRefusalIn,
   refusalFor,
   substratCalls,
+  waitingPromoteIn,
 } from './approvals-parse'
 
 const PANE = 'substrat-approvals'
@@ -116,6 +117,31 @@ async function approvePlan($: Engine) {
   }
 }
 
+/**
+ * How the pane starts the CLI when it asks on its own: as the agent last started it in this
+ * session, else the published CLI. The review it reads is the control plane's, so any CLI that
+ * knows `--review-only` gives the same answer.
+ */
+let lastLauncher: readonly string[] = ['npx', '--yes', '@substrat-run/cli@latest']
+
+/**
+ * Asks the control plane whether a promote waits for the person, whoever pushed it: a vertical
+ * deployed by its CI on merge is refused there, in a log this session never ran, and the pane
+ * would otherwise be empty while the dashboard asks. Shows what it finds unless the pane is
+ * already showing a promote. Quiet when the directory is no vertical or nothing waits.
+ */
+async function checkPlane($: Engine) {
+  if ((await read($, promote)) !== null) return
+  const launch = { launcher: lastLauncher, cwd: await $.session.cwd() }
+  try {
+    const r = await $.process.run([...launch.launcher, 'promote', '--review-only', '--json'], { cwd: launch.cwd, timeoutMs: RUN_MS })
+    const waiting = r.exitCode === 0 ? waitingPromoteIn(r.stdout) : undefined
+    if (waiting) await update($, promote, cur => cur ?? { ...waiting, launch, status: IDLE })
+  } catch {
+    // No CLI, no network or no vertical here: nothing is shown, as before.
+  }
+}
+
 async function acknowledge($: Engine) {
   const p = await read($, promote)
   if (!p) return
@@ -127,7 +153,7 @@ async function acknowledge($: Engine) {
       await update($, promote, () => null)
       $.ui.toast(`${p.slug} promoted`)
       void $.prompt.submit({
-        text: `I acknowledged ${p.acks.join(', ')} and promoted ${p.slug} ${p.versionId} in the Substrat approvals pane.\n\n${tail(outputOf(r))}`,
+        text: `${p.acks.length === 0 ? 'I promoted' : `I acknowledged ${p.acks.join(', ')} and promoted`} ${p.slug} ${p.versionId} in the Substrat approvals pane.\n\n${tail(outputOf(r))}`,
       })
       return
     }
@@ -157,6 +183,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: PANE }, async $ => {
     await $.ui.open({ id: PANE, title: TITLE })
+    await checkPlane($)
 
     return { text: 'Substrat approvals pane opened.' }
   })
@@ -164,6 +191,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const calls = substratCalls(e.command)
     if (calls.length === 0) return next(e)
+    lastLauncher = calls[calls.length - 1]!.launcher
 
     const sessionCwd = await $.session.cwd()
     // A design gate is shown even when the call is refused: it is the delta the agent wanted
@@ -205,7 +233,10 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Text dimColor>Nothing is waiting for your approval.</Text>
-          <Text dimColor>A design gate or a refused promote shows here when Claude runs one.</Text>
+          <Text dimColor>A design gate or a refused promote shows here when Claude runs one, and so does a promote waiting in prod.</Text>
+          <Box gap={1}>
+            <Button key="check-plane" label="Check for a waiting promote" onPress={() => void checkPlane($)} />
+          </Box>
         </Box>
       )
     }
@@ -217,18 +248,27 @@ export const register: Register = (on, options) => {
             <Text bold>
               Promote {q.slug} {q.versionId}
             </Text>
-            <Text>
-              Production refused this promote until you have read what changes. Acknowledging runs{' '}
-              {q.acks.join(' ')}
-              {q.review ? ' for exactly the review below.' : '.'}
-            </Text>
+            {q.acks.length === 0 ? (
+              <Text>Nothing in this promote needs acknowledging. Promoting runs it as shown below.</Text>
+            ) : (
+              <Text>
+                Production refuses this promote until you have read what changes. Acknowledging runs{' '}
+                {q.acks.join(' ')}
+                {q.review ? ' for exactly the review below.' : '.'}
+              </Text>
+            )}
             <Markdown text={'```text\n' + q.text + '\n```'} />
             {q.status.kind === 'failed' && <Text color="error">{q.status.message}</Text>}
             {q.status.kind === 'running' ? (
               <Text dimColor>Promoting…</Text>
             ) : (
               <Box gap={1}>
-                <Button key="promote-ack" variant="primary" label="Acknowledge and promote" onPress={() => void acknowledge($)} />
+                <Button
+                  key="promote-ack"
+                  variant="primary"
+                  label={q.acks.length === 0 ? 'Promote' : 'Acknowledge and promote'}
+                  onPress={() => void acknowledge($)}
+                />
                 <Button key="promote-dismiss" label="Not now" onPress={() => void update($, promote, () => null)} />
               </Box>
             )}

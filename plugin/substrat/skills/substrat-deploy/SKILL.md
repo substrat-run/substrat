@@ -73,6 +73,16 @@ promotion changes migrations (<old> → <new>) — acknowledge it explicitly to 
 
 A digest is not a diff. Producing the diff is step 5.
 
+**When the promote ran somewhere else** — the vertical's CI deploys on merge, so the refusal
+is in a workflow log, not in your terminal — read the same review without promoting:
+
+```sh
+substrat status                  # what prod serves, the promote waiting and the acks it needs
+substrat promote --review-only   # both diffs, the apps it breaks, and the --review token
+```
+
+Both default to this project's slug and the newest admitted version, and neither promotes.
+
 ## 5. Present the checkpoint, then stop
 
 The platform tells you *that* the surface moved. Only the repository can say *how*, so

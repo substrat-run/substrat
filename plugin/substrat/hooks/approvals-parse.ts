@@ -199,3 +199,37 @@ export function cwdFor(sessionCwd: string, cd: string | undefined): string {
   if (cd === undefined) return sessionCwd;
   return cd.startsWith('/') ? cd : `${sessionCwd.replace(/\/$/, '')}/${cd}`;
 }
+
+/**
+ * A promote waiting for a person, read off `substrat promote --review-only --json`: the review
+ * of the newest admitted version against what prod serves, whoever pushed it — a CI deploy on
+ * merge included, which no call in this session ran. Undefined when nothing waits (a first
+ * promotion asks nothing of a person, and a version prod already serves needs no promote) or
+ * when the output is not that answer.
+ */
+export function waitingPromoteIn(stdout: string): PromoteRefusal | undefined {
+  let r: unknown
+  try {
+    r = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  const v = r as {
+    slug?: unknown
+    serving?: { versionId?: unknown } | null
+    incoming?: { versionId?: unknown }
+    needs?: unknown
+    review?: unknown
+    text?: unknown
+  }
+  if (typeof v.slug !== 'string' || typeof v.incoming?.versionId !== 'string' || typeof v.text !== 'string') return undefined
+  if (!v.serving || v.serving.versionId === v.incoming.versionId) return undefined
+  if (!Array.isArray(v.needs) || !v.needs.every((f) => typeof f === 'string' && f.startsWith('--ack-'))) return undefined
+  return {
+    slug: v.slug,
+    versionId: v.incoming.versionId,
+    acks: v.needs as string[],
+    review: typeof v.review === 'string' ? v.review : null,
+    text: v.text,
+  }
+}

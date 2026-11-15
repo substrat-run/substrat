@@ -50,6 +50,8 @@ const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, 
     undefined,
   ],
   listChannels: [(c) => c.listChannels('v'), undefined, '/verticals/v/channels', undefined],
+  promotionImpact: [(c) => c.promotionImpact('v', 'prod', 'ver 1'), undefined, '/verticals/v/channels/prod/promote-impact?versionId=ver%201', undefined],
+  listOpsFailures: [(c) => c.listOpsFailures('t/v', { limit: 5 }), undefined, '/ops-failures?vertical=t%2Fv&limit=5', undefined],
   getVersionRegistry: [(c) => c.getVersionRegistry('v', 'id/1'), undefined, '/verticals/v/versions/id%2F1/registry', undefined],
   getVersionMigrations: [
     (c) => c.getVersionMigrations('v', 'new', 'old base'),

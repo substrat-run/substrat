@@ -46,7 +46,10 @@ In Claude Desktop: **+** → Plugins → Add plugin.
   and migration diffs. You approve there, with your name and reason for a design gate, and the
   pane runs the exact CLI line: the digest you read, or the `--ack-*` flags the refusal named
   with its `--review` token. Claude is told the outcome and carries on. A Bash call of Claude's
-  that passes `plan --approve` or an `--ack-*` flag itself is refused.
+  that passes `plan --approve` or an `--ack-*` flag itself is refused. A promote that waits
+  in prod without having run in the session (one your CI deploy pushed on merge, say) shows
+  there too: `/substrat-approvals` and the pane's *Check for a waiting promote* ask the control
+  plane through `substrat promote --review-only`.
 
 ### The approvals pane, in more detail
 

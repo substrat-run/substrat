@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { promoteRefusalIn, refusalFor, substratCalls } from './approvals-parse'
+import { promoteRefusalIn, refusalFor, substratCalls, waitingPromoteIn } from './approvals-parse'
 
 const PANE = {
   plugin: 'substrat',
@@ -183,6 +183,55 @@ describe('the promote checkpoint', () => {
 
     expect(await ui.find({ type: 'Text', text: /changed since this was shown/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', key: 'promote-ack' })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+/** What `substrat promote --review-only --json` answers for a promote waiting in prod. */
+const WAITING = JSON.stringify({
+  slug: 'acme',
+  channel: 'prod',
+  serving: { versionId: '01JX9ZV0AA', version: '1.3.0' },
+  incoming: { versionId: '01JX9ZV3Q8', version: '1.4.0' },
+  needs: ['--ack-migrations'],
+  review: `01JX9ZV0AA:${'e'.repeat(64)}`,
+  command: `substrat promote acme --version 01JX9ZV3Q8 --ack-migrations --review 01JX9ZV0AA:${'e'.repeat(64)}`,
+  text: 'prod serves 01JX9ZV0AA (1.3.0); promoting 01JX9ZV3Q8 (1.4.0).',
+})
+
+describe('a promote waiting in prod, pushed outside the session', () => {
+  test('reads the review the CLI answers, and nothing when nothing waits', () => {
+    expect(waitingPromoteIn(WAITING)).toEqual({
+      slug: 'acme',
+      versionId: '01JX9ZV3Q8',
+      acks: ['--ack-migrations'],
+      review: `01JX9ZV0AA:${'e'.repeat(64)}`,
+      text: 'prod serves 01JX9ZV0AA (1.3.0); promoting 01JX9ZV3Q8 (1.4.0).',
+    })
+    const served = JSON.parse(WAITING) as Record<string, unknown>
+    expect(waitingPromoteIn(JSON.stringify({ ...served, serving: { versionId: '01JX9ZV3Q8' } }))).toBeUndefined()
+    expect(waitingPromoteIn(JSON.stringify({ ...served, serving: null }))).toBeUndefined()
+    expect(waitingPromoteIn(JSON.stringify({ ...served, needs: ['--force'] }))).toBeUndefined()
+    expect(waitingPromoteIn('error: not signed in')).toBeUndefined()
+  })
+
+  test('the empty pane asks the control plane, and acknowledging runs exactly the reviewed line', async ($, on) => {
+    const { runs, prompts } = engine(on, argv =>
+      argv.includes('--review-only') ? { exitCode: 0, stdout: WAITING } : { exitCode: 0, stdout: '✓ acme → prod now points at 01JX9ZV3Q8' },
+    )
+    await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'check-plane' })
+    expect(runs.at(-1)?.slice(-3)).toEqual(['promote', '--review-only', '--json'])
+    expect(await ui.find({ type: 'Text', text: /Promote acme 01JX9ZV3Q8/ })).toBeDefined()
+
+    await ui.press({ key: 'promote-ack' })
+    const last = runs.at(-1)!
+    expect(last.slice(last.indexOf('promote'))).toEqual([
+      'promote', 'acme', '--version', '01JX9ZV3Q8', '--ack-migrations', '--review', `01JX9ZV0AA:${'e'.repeat(64)}`,
+    ])
+    expect(prompts.at(-1)).toContain('acknowledged --ack-migrations and promoted acme 01JX9ZV3Q8')
     await ui.unmount()
   })
 })
