@@ -572,7 +572,9 @@ describe('scope-local entitlements — a CP-less hosted vertical (#304)', () => 
     });
     host.registerModule(billedMod); // populates the coordinator's operation→SKU map
     await provision(enforced, [grant('billed', { quota: 250, plan: 'pro' })]);
-    await provision(strict, []); // entitlements projected, but 'billed' not among them
+    // Entitlements projected, but 'billed' not among them: only another product's key, and the
+    // right one under a prefixed name, which the refusal must not name to the caller (#3105).
+    await provision(strict, [grant('workorder'), grant('t-0wv2mwk4j5/billed')]);
     await provision(legacy); // no entitlements projected — pre-#304 shape
   });
 
@@ -591,7 +593,12 @@ describe('scope-local entitlements — a CP-less hosted vertical (#304)', () => 
 
   it('fails closed on a projected scope that does NOT hold the SKU (strict enforcement)', async () => {
     const stub = await host.getScope(owner, t, strict);
-    await expect(stub.invoke('billed/act')).rejects.toThrow(/not entitled/);
+    const err = await stub.invoke('billed/act').then(() => null, (e: Error) => e);
+    expect(errorCodeOf(err)).toBe('not_found');
+    // The scope DO's own gate: the caller reads the operation and its key, never what else the
+    // tenant holds (#3105). The held keys go to the server-side line.
+    expect(err?.message).toBe("operation not entitled: billed/act — tenant does not hold 'billed'");
+    expect(err?.message).not.toMatch(/holds|workorder|t-0wv2mwk4j5/);
   });
 
   it('trusts upstream on a scope provisioned before entitlements were projected (no false denial)', async () => {

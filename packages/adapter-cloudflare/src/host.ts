@@ -324,7 +324,7 @@ import {
   isSizedByteStream,
   openAttachmentByteStream,
   putAttachmentBytes,
-  entitlementDenial,
+  refuseEntitlement,
   requiredEntitlementFor,
   type OperationEntitlement,
   foldMeterReading,
@@ -7330,21 +7330,22 @@ export class CloudflareScopeHost implements ScopeHost {
           systemModuleId,
         );
         if (requiredKey && !(await cp.tenantHoldsEntitlement(tenantId, requiredKey))) {
-          // Required AND held (#691) — a second CP read, but only on the denial path.
+          // Required AND held (#691) — a second CP read, but only on the denial path. The held
+          // keys go to the server-side line; the caller reads the operation and the key (#3105).
           const now = new Date().toISOString();
           const all = await cp.listEntitlements(tenantId).catch(() => []);
           return Promise.reject(
-            substratError(
-              'not_found',
-              entitlementDenial(
-                operation,
-                requiredKey,
-                all.map((r) => ({
-                  key: r.entitlement_key,
-                  expired: r.expires_at !== null && r.expires_at <= now,
-                })),
-              ),
-            ),
+            refuseEntitlement({
+              operation,
+              requiredKey,
+              held: all.map((r) => ({
+                key: r.entitlement_key,
+                expired: r.expires_at !== null && r.expires_at <= now,
+              })),
+              tenantId,
+              scopeId,
+              requestId: invokeOptions?.invocationId,
+            }),
           );
         }
         // K-42: resolved per invoke, so expiry and `endImpersonation` both bite.
