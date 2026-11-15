@@ -1,6 +1,6 @@
 import { recordAuthCheck, type AuthCheck } from '@substrat-run/contracts/auth-diagnostics';
 import type { DelegationChannel } from '@substrat-run/contracts';
-import { bearerRefused, verificationReason } from './auth-diagnostics.js';
+import { refusedAt, verificationReason } from './auth-diagnostics.js';
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
 import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
@@ -386,6 +386,8 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider & Required<Pick<
     ) {
       warnAudienceRefusesDelegation(cfg.issuer, cfg.audience);
     }
+    // The peer door records under its own stage, so its refusals never read as the bearer door's.
+    const stage = onBehalf ? 'peer' : 'bearer';
     let discovering = true;
     let resolvingKey = false;
     try {
@@ -400,7 +402,7 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider & Required<Pick<
         issuer: cfg.issuer,
         ...(cfg.audience ? { audience: cfg.audience } : {}),
       });
-      if (!payload.sub) return bearerRefused('subject-missing');
+      if (!payload.sub) return refusedAt(stage, 'subject-missing');
       // Host code, so the real clock is right here (jose reads the same one for `exp`).
       const now = Math.floor(Date.now() / 1000);
       let delegation: AuthSubject['delegation'];
@@ -409,24 +411,24 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider & Required<Pick<
         // bearer rules below applies to it.
         const admitted =
           cfg.delegation && cfg.clientId ? peerDelegationOf(payload, cfg.delegation, cfg.clientId, now) : 'delegation-refused';
-        if (typeof admitted === 'string') return bearerRefused(admitted);
+        if (typeof admitted === 'string') return refusedAt(stage, admitted);
         delegation = admitted;
       } else if (payload['substrat_delegation'] !== undefined && payload['act'] === undefined) {
         // A delegation ASSERTION — the first step of the exchange, which a `substrat_delegation`
         // claim with no `act` marks — is a bearer at no app, on every configuration: it is a
         // credential for the exchange, and only the exchange takes it. `may_act` alone decides
         // nothing here: RFC 8693 §4.4 lets any issuer put it on an ordinary subject token.
-        return bearerRefused('assertion-not-access-token');
+        return refusedAt(stage, 'assertion-not-access-token');
       } else if (payload['act'] !== undefined) {
         // A token carrying `act` is a delegation, on every configuration: admitted only through
         // the opt-in, and never by the rules below, which would take it as the user's own.
         const admitted =
           cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, options?.delegated, url, now) : null;
-        if (!admitted) return bearerRefused('delegation-refused');
+        if (!admitted) return refusedAt(stage, 'delegation-refused');
         delegation = admitted;
       } else if (!cfg.audience && cfg.clientId) {
         const resources = cfg.resourceOf ? ownResources(headers, url, cfg.resourceOf) : [];
-        if (!isOwnToken(payload, cfg.clientId, resources, cfg.resourceOf)) return bearerRefused('token-not-for-app');
+        if (!isOwnToken(payload, cfg.clientId, resources, cfg.resourceOf)) return refusedAt(stage, 'token-not-for-app');
       }
       const meta = payload as Record<string, unknown>;
       // `email_verified`, read exactly as `@substrat-run/oidc-rp` reads it on the
@@ -456,14 +458,14 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider & Required<Pick<
         ...(typeof payload.exp === 'number' ? { expiresAt: new Date(payload.exp * 1000).toISOString() } : {}),
         ...(delegation ? { delegation } : {}),
       };
-      recordAuthCheck({ stage: 'bearer', outcome: 'accepted', reason: 'verified' });
+      recordAuthCheck({ stage, outcome: 'accepted', reason: 'verified' });
       return subject;
     } catch (error) {
       // Never copy an exception message, payload or claim value into diagnostics.
       // Key resolution runs inside jose, so track that boundary independently of its errors.
       const reason = discovering ? 'discovery-failed'
         : verificationReason(error) ?? (resolvingKey ? 'key-resolution-failed' : 'verification-failed');
-      return bearerRefused(reason, ['discovery-failed', 'key-resolution-failed', 'verification-failed'].includes(reason) ? 'error' : 'refused');
+      return refusedAt(stage, reason, ['discovery-failed', 'key-resolution-failed', 'verification-failed'].includes(reason) ? 'error' : 'refused');
     }
   }
 

@@ -4,7 +4,8 @@
  * A diagnostic describes a check, never grants authority. Unknown fields are discarded
  * on both write and read; tokens, claims, identities and exception messages have no slot.
  */
-export const AUTH_CHECK_STAGES = ['bearer', 'session', 'mcp-audience', 'mcp-caller'] as const;
+/** `peer`: the door a plugin admits its master's call for a person through (`resolveOnBehalf`). */
+export const AUTH_CHECK_STAGES = ['bearer', 'session', 'mcp-audience', 'mcp-caller', 'peer'] as const;
 export const AUTH_CHECK_OUTCOMES = ['accepted', 'refused', 'absent', 'error'] as const;
 export const AUTH_CHECK_REASONS = [
   'verified', 'session-invalid', 'credential-missing', 'discovery-failed', 'key-resolution-failed',

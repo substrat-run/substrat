@@ -86,6 +86,8 @@ const peerClaims = (over: Record<string, unknown> = {}): Record<string, unknown>
 const peerToken = (over: Record<string, unknown> = {}, opts?: SignOptions) => token(peerClaims(over), opts);
 const onBehalf = async (cfg: OidcRpConfig, t: string) => oidcRpAuthProvider(cfg).resolveOnBehalf(t);
 const reasons = () => checks.map((c) => c.reason);
+/** The door each check was recorded at: the peer door's never read as the bearer door's (#3179). */
+const stages = () => [...new Set(checks.map((c) => c.stage))];
 
 describe('resolveOnBehalf admits a peer-channel delegation, and nothing else', () => {
   it('admits the exchange shape and reads the person as a sign-in would', async () => {
@@ -98,6 +100,7 @@ describe('resolveOnBehalf admits a peer-channel delegation, and nothing else', (
       delegation: { actor: MASTER, scope: ['notes:read', 'notes:write'] },
     });
     expect(reasons()).toEqual(['verified']);
+    expect(stages()).toEqual(['peer']);
   });
 
   it('refuses without the peer opt-in: no option, an mcp-only one (the default), no shared issuer', async () => {
@@ -108,6 +111,7 @@ describe('resolveOnBehalf admits a peer-channel delegation, and nothing else', (
     expect(await onBehalf({ ...base, delegation: { actors: [MASTER], channels: [] } }, t)).toBeNull();
     expect(await onBehalf({ ...peer, sharedIssuer: false }, t)).toBeNull();
     expect(reasons()).toEqual(Array(5).fill('delegation-refused'));
+    expect(stages()).toEqual(['peer']);
   });
 
   it("refuses a token minted for another app — a different plugin's client id, several audiences, an MCP resource", async () => {
@@ -115,6 +119,7 @@ describe('resolveOnBehalf admits a peer-channel delegation, and nothing else', (
       expect(await onBehalf(both, await peerToken({ aud }))).toBeNull();
     }
     expect(reasons()).toEqual(Array(3).fill('token-not-for-app'));
+    expect(stages()).toEqual(['peer']);
   });
 
   it('refuses the MCP channel\'s delegated token, and an ordinary sign-in token of ours', async () => {
@@ -150,6 +155,7 @@ describe('resolveOnBehalf admits a peer-channel delegation, and nothing else', (
   it('keeps the signature check', async () => {
     expect(await onBehalf(peer, await peerToken({}, { key: otherKey }))).toBeNull();
     expect(reasons()).toEqual(['signature-invalid']);
+    expect(stages()).toEqual(['peer']);
   });
 });
 
@@ -162,6 +168,7 @@ describe('resolve never admits a peer token', () => {
     expect(await auth.resolve(bearer, RESOURCE, { delegated: { resource: RESOURCE } })).toBeNull();
     expect(await auth.resolve(new Headers({ authorization: `Bearer ${t}`, host: 'notes.example' }))).toBeNull();
     expect(reasons()).toEqual(Array(3).fill('delegation-refused'));
+    expect(stages()).toEqual(['bearer']);
   });
 
   it('twin: the MCP-channel token is still admitted at the MCP endpoint when mcp is a channel, and not when only peer is', async () => {
