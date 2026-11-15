@@ -69,8 +69,9 @@ assertion is genuinely wrong, say so and stop rather than softening it;
 because a test built from the model cannot disagree with the model.
 
 What it contains, and why each rule earns its place: migrations journal → happy path → **denials hold**
-(wrong role; portal isolation between two customers; the cross-tenant attacker
-gets `unknown scope`/`permission denied`) → pricing math exact → events
+(wrong role; portal isolation between two customers; the cross-tenant attacker's
+handle resolves, and every operation behind it is `permission denied`, every walk
+empty) → pricing math exact → events
 consumed → state machine can't skip. Truths that decide whether it's worth
 anything:
 
