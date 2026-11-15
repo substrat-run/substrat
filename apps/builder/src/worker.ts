@@ -410,10 +410,12 @@ app.all('/api/*', async (c) => {
 	if (c.req.path === '/api/release' && c.req.method === 'POST') {
 		const projectResponse = await projectSource('release');
 		if (!projectResponse.ok) return projectResponse;
-		const project = await projectResponse.json() as StudioProject;
-		if (!project.revision) return refuse(409, 'save source before building a release');
+		const project = await projectResponse.json() as StudioProject & { baseRevision?: string | null; repository?: { branch?: string } };
+		// A release builds the base branch, which a chat reaches only by being merged (chats.ts).
+		const base = project.repository?.branch ?? 'main';
+		if (!project.baseRevision) return refuse(409, `nothing is on ${base} yet; merge a chat into ${base} first`);
 		const { version } = await c.req.json() as { version?: string };
-		return releaseRevision(cp, { ...project, revision: project.revision }, team.id, version);
+		return releaseRevision(cp, { ...project, revision: project.baseRevision }, team.id, version);
 	}
 	if (c.req.path === '/api/verticals' && c.req.method === 'GET') {
 		return cp(`/verticals?ownerTenant=${encodeURIComponent(team.id)}&limit=200`);

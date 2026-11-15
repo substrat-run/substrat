@@ -9,6 +9,7 @@
  * pointed at with `--vertical`. A vertical already deployed from the project is
  * the dashboard's, not the studio's, and keeps running.
  */
+import { chatStorageKeys } from './chats.js';
 
 interface Listed {
 	readonly id: string;
@@ -40,9 +41,12 @@ export function withoutProject<T extends Listed>(
 	return { registry: { currentId, projects }, removed };
 }
 
-/** Every key the hosted agent (agent.ts) stores under one project's id. */
-export function projectStorageKeys(id: string): string[] {
-	return [`state:${id}`, `phase:${id}`, `snapshot:${id}`, `record:${id}`, `record-turn:${id}`, `record-turn-seq:${id}`];
+/**
+ * Every key the hosted agent (agent.ts) stores for one project: each chat's (chats.ts). A
+ * project from before chats has its keys under its own id, which is its first chat's.
+ */
+export function projectStorageKeys(id: string, chatIds: readonly string[] = []): string[] {
+	return [...new Set([id, ...chatIds])].flatMap(chatStorageKeys);
 }
 
 /**

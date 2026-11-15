@@ -75,6 +75,27 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .pd-dir { font-size: 11.5px; color: var(--text-tertiary); }
 .pd-new { color: var(--text-brand); border-top: 1px solid var(--border-subtle); border-radius: 0 0 6px 6px; }
 
+/* chat bar — the current chat, its siblings, and how its branch reaches the base */
+.chat-bar-wrap { position: relative; border-bottom: 1px solid var(--border-subtle); }
+.chat-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 13px; }
+.chat-bar .spacer { flex: 1; }
+.chat-title {
+	background: none; border: 1px solid transparent; border-radius: 6px; padding: 3px 8px;
+	font: inherit; font-weight: 500; color: var(--text-primary); cursor: pointer;
+	max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-title:hover:not(:disabled) { border-color: var(--border-default); background: var(--surface-hover); }
+.chat-status { font-size: 11.5px; color: var(--text-tertiary); white-space: nowrap; }
+.chat-status.unmerged { color: var(--text-brand); }
+.chat-dropdown { left: 12px; top: 44px; }
+.chat-notice {
+	display: flex; align-items: flex-start; gap: 8px; padding: 6px 12px 8px;
+	font-size: 12.5px; color: var(--text-secondary); white-space: pre-wrap;
+	max-height: 160px; overflow: auto;
+}
+.chat-notice span { flex: 1; }
+.chat-notice.error { color: var(--status-danger-fg, var(--status-warning-fg)); }
+
 /* new-project dialog — the picker modal shell, sized down to a single prompt */
 .prompt-dialog { width: min(420px, 92vw); }
 .prompt-input {

@@ -36,9 +36,9 @@ describe('ownedProjectDir', () => {
 it('projectStorageKeys names every per-project key the hosted agent writes', () => {
 	// A key added to agent.ts and missed here would outlive the project it belongs to.
 	const source = readFileSync(fileURLToPath(new URL('../src/agent.ts', import.meta.url)), 'utf8');
-	const keyed = /storage\.(?:get|put)(?:<[^>]+>)?\(`([a-z-]+):\$\{(?:entry\.)?id\}`/g;
-	// `snapshotKey(entry)` builds its key in a helper rather than at the call.
-	const written = new Set([...source.matchAll(keyed), ...source.matchAll(/`(snapshot):\$\{entry\.id\}`/g)].map((m) => m[1]));
+	const keyed = /storage\.(?:get|put)(?:<[^>]+>)?\(`([a-z-]+):\$\{(?:entry\.|chat\.)?id\}`/g;
+	// `snapshotKey(chat)` builds its key in a helper rather than at the call.
+	const written = new Set([...source.matchAll(keyed), ...source.matchAll(/`(snapshot):\$\{chat\.id\}`/g)].map((m) => m[1]));
 	expect(written.size).toBeGreaterThan(0);
 	const named = projectStorageKeys('ID').map((k) => k.split(':')[0]);
 	expect([...written].sort()).toEqual([...named].sort());

@@ -294,10 +294,23 @@ an existing tenant-owned vertical with a connected GitHub repository.
 The container is disposable. Source workspaces live outside the platform checkout, so
 each repository installs its own dependencies and lockfile. The host runs its checkers
 from the image toolchain; ancestor contract types support the model phase before a
-project has its own package manifest. Opening a project clones its branch into a project-specific
-workspace; a clean existing checkout advances only by fast-forward. Turns and editor saves
-commit and push source. A concurrent remote writer causes a refused push rather than an
-overwrite. The repository interface owns Git access; the builder uses the same workflow
+project has its own package manifest. Opening a project clones it into a project-specific
+workspace; a clean existing checkout advances only by fast-forward. A concurrent remote writer
+causes a refused push rather than an overwrite.
+
+A project's work happens in **chats**, each a conversation on a branch of its own
+(`builder/<chat-id>`, `apps/builder/src/chats.ts`). Turns and editor saves commit and push to
+the current chat's branch, never to the project's base branch: the base is what a release
+builds and what a GitHub deploy workflow watches, so it moves only when a chat is merged. A
+new chat starts from the base's tip, so it is a fresh context for the model and a fresh tree
+at once, and a resumed chat is still on the code its conversation was about. Each chat keeps
+its own history, record thread, editor snapshot and phase; one checkout per project switches
+between their branches, parking a chat's uncommitted work in its snapshot. An Artifacts
+project merges in the studio: a fast-forward when the base has not moved, otherwise a merge
+on the chat's branch that moves the base only through green gates and no conflict. A GitHub
+project's chat merges by pull request on GitHub, where the repository's own review and checks
+apply; the studio never writes a connected repository's base. A project from before chats
+has its conversation adopted as its first chat, under the keys it already had. The repository interface owns Git access; the builder uses the same workflow
 for either provider. GitHub access is scoped to a repository in the tenant's active
 installation connection. Artifacts tokens are repo-scoped and expire after ten minutes.
 Credentials are transient and are not stored in Git remotes.

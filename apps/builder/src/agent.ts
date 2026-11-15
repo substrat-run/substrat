@@ -2,7 +2,7 @@
  * BuilderAgent — the studio's durable home, now with EXECUTION (#625 shell,
  * #626 workspace; builder-studio.md §7.1).
  *
- * State (registry, per-project history, model choice) lives in DO storage under
+ * State (registry, per-chat history, model choice) lives in DO storage under
  * keys mirroring the local `.builder/` files. Execution runs in the Sandbox
  * container (builder.Dockerfile — the monorepo, warm): the DO builds a
  * `ContainerWorkspace` over the sandbox stub and reuses the SAME turn loop the
@@ -11,7 +11,8 @@
  * from the image (the container has `.claude/skills/`), read once and cached.
  *
  * Source lives in tenant-owned GitHub or Cloudflare Artifacts repositories (D-66).
- * The container is disposable; source is pushed after commits. Project and session
+ * The container is disposable; source is pushed after commits, to the current
+ * chat's branch — the base moves only by a merge (chats.ts). Project and session
  * metadata, plus disposable editor snapshots, live in this tenant's agent DO.
  *
  * /api/dev (local dev processes) stays 503 here: the hosted preview is a preview
@@ -30,6 +31,7 @@ import {
 import {
 	checkModel,
 	ContainerWorkspace,
+	gateReport,
 	modelEmitWarning,
 	runGates,
 	runTurn,
@@ -85,7 +87,8 @@ import { underProject, withinProject } from './project-path.js';
 import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { collectRelease, RELEASE_DIR } from './release-files.js';
-import { assertPnpmLockfile, checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
+import { assertPnpmLockfile, checkedExec, checkoutBranch, checkoutRepository, mergeIntoBase, remoteTip, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
+import { chatStatus, chatStorageKeys, compareUrl, newChat, titleFrom, withChats, withoutChat, type ChatEntry } from './chats.js';
 
 const REPO = '/workspace';
 const TOOLCHAIN = '/workspace/substrat';
@@ -107,10 +110,14 @@ interface ProjectEntry {
 	slug: string;
 	repository: ProjectRepository;
 	directory: string;
+	/** The base branch's commit as last known here: what a release builds (chats.ts). */
 	revision?: string;
 	dir: string;
 	createdAt: string;
 	updatedAt: string;
+	/** Each a line of work on its own branch; unset on a project from before chats (chats.ts). */
+	chats?: ChatEntry[];
+	currentChatId?: string;
 }
 
 interface Registry {
@@ -232,14 +239,14 @@ export class BuilderAgent extends DurableObject<Env> {
 		);
 	}
 
-	async #current(): Promise<{ reg: Registry; entry: ProjectEntry }> {
+	/** The current project and its current chat — every studio route works on that pair. */
+	async #current(): Promise<{ entry: ProjectEntry; chat: ChatEntry }> {
 		const reg = await this.#registry();
-		let entry = reg.projects.find((p) => p.id === reg.currentId) ?? reg.projects[0];
-		if (!entry) {
-			entry = await this.#createProject('Untitled', `${this.#tenantSlug || this.#tenant}/draft-${ulid().toLowerCase()}`);
-			return { reg: await this.#registry(), entry };
-		}
-		return { reg, entry };
+		const found = reg.projects.find((p) => p.id === reg.currentId) ?? reg.projects[0]
+			?? await this.#createProject('Untitled', `${this.#tenantSlug || this.#tenant}/draft-${ulid().toLowerCase()}`);
+		const { entry, chat, changed } = withChats(found);
+		if (changed) await this.#putEntry(entry);
+		return { entry, chat };
 	}
 
 	// ── execution plumbing ────────────────────────────────────────────────────
@@ -307,33 +314,41 @@ export class BuilderAgent extends DurableObject<Env> {
 	 * this is the one place that sees the loss: the next caller finds a repository. Returns how
 	 * many files that work changed.
 	 */
-	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<number> {
-		const fresh = !(await this.#hasRepository(pair, entry));
-		await checkoutRepository(pair.sb, await this.#access(entry, 'read', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
-		const head = await pair.sb.exec('git rev-parse --verify HEAD', { cwd: this.#repoRoot(entry) });
-		if (head.exitCode === 0 && entry.revision !== head.stdout.trim()) {
-			entry.revision = head.stdout.trim();
+	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry, chat: ChatEntry): Promise<number> {
+		const root = this.#repoRoot(entry);
+		// One checkout per project, on the current chat's branch. The chat it leaves keeps its
+		// unfinished work in its own snapshot, put back below when that chat is next opened.
+		const { fresh, from, fromBase } = await checkoutBranch(pair.sb, await this.#access(entry, 'read', this.#tenant), root, chat.branch, entry.repository.branch, async (branch) => {
+			const left = entry.chats?.find((c) => c.branch === branch);
+			if (left) await this.#saveSnapshot(pair.sb, entry, left, 'work');
+		});
+		const head = await pair.sb.exec('git rev-parse --verify HEAD', { cwd: root });
+		const at = head.exitCode === 0 ? head.stdout.trim() : null;
+		if (at && (chat.revision !== at || (fromBase && chat.startRevision !== at))) {
+			chat.revision = at;
+			if (fromBase) chat.startRevision = at;
 			await this.#putEntry(entry);
 		}
-		const work = fresh ? workIn(await this.ctx.storage.get<string>(this.#snapshotKey(entry))) : null;
+		const work = fresh || from !== null ? workIn(await this.ctx.storage.get<string>(this.#snapshotKey(chat))) : null;
 		return work ? await restoreWork(this.#sourceWs(pair.sb, entry), entry.directory, work) : 0;
 	}
 
-	async #saveSource(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
-		entry.revision = await saveRepository(pair.sb, await this.#access(entry, 'write', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
-		entry.updatedAt = new Date().toISOString();
+	/** Push the chat's commit to the chat's branch — never the base (chats.ts). */
+	async #saveSource(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry, chat: ChatEntry): Promise<void> {
+		chat.revision = await saveRepository(pair.sb, await this.#access(entry, 'write', this.#tenant), this.#repoRoot(entry), chat.branch);
+		chat.updatedAt = entry.updatedAt = new Date().toISOString();
 		await this.#putEntry(entry);
 	}
 
-	#snapshotKey(entry: ProjectEntry): string { return `snapshot:${entry.id}`; }
+	#snapshotKey(chat: ChatEntry): string { return `snapshot:${chat.id}`; }
 
 	/**
 	 * Cache the working tree for the browser. A `work` snapshot marks a tree with uncommitted
 	 * work in it, the copy a lost container is restored from (progress.ts), and only a
 	 * `commit` one clears that. A `fill` answers a cache miss, so it writes only into a miss.
 	 */
-	async #saveSnapshot(sb: SandboxLike, entry: ProjectEntry, kind: 'work' | 'commit' | 'fill'): Promise<boolean> {
-		const key = this.#snapshotKey(entry);
+	async #saveSnapshot(sb: SandboxLike, entry: ProjectEntry, chat: ChatEntry, kind: 'work' | 'commit' | 'fill'): Promise<boolean> {
+		const key = this.#snapshotKey(chat);
 		try {
 			const snap = await snapshotWorkspace(this.#sourceWs(sb, entry), entry.directory);
 			// A turn may have stored its work while this one was reading the tree.
@@ -342,7 +357,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			return true;
 		} catch (err) {
 			// The file endpoints remain available, but a stale tree in the browser needs a trace.
-			console.error('snapshot.save.failed', { projectId: entry.id }, err);
+			console.error('snapshot.save.failed', { projectId: entry.id, chatId: chat.id }, err);
 			// The work is committed, so the copy left behind must not be restored over it.
 			if (kind === 'commit') await this.ctx.storage.delete(key);
 			return false;
@@ -411,14 +426,12 @@ export class BuilderAgent extends DurableObject<Env> {
 					await repositoryGit(sb, access, ['fetch', access.remote, request.revision!], root);
 					await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout --detach ${shellQuote(request.revision!)}`, root);
 					revision = await checkedExec(sb, 'git rev-parse HEAD', root);
-					entry.revision = revision;
 				}
 				await log.begin('prepare the build');
 				await assertPnpmLockfile(sb, root);
 				const directory = submittedDirectory ?? entry.directory;
 				entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
 				await this.#putEntry(entry);
-				await this.ctx.storage.delete(this.#snapshotKey(entry));
 				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'building', startedAt: new Date().toISOString() });
 				const toolchain = await checkedExec(sb, 'cat /workspace/substrat/.toolchain-id');
 				const input = { root: directory === '.' ? root : `${root}/${directory}`, slug, request: { ...request, snapshot: undefined, revision } };
@@ -482,8 +495,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		if (dropped.length) await this.ctx.storage.delete(dropped.map((id) => `${RECORD_PREFIX}${id}`));
 	}
 
-	async #cachedSnapshot(entry: ProjectEntry): Promise<Response | null> {
-		const value = await this.ctx.storage.get<string>(this.#snapshotKey(entry));
+	async #cachedSnapshot(chat: ChatEntry): Promise<Response | null> {
+		const value = await this.ctx.storage.get<string>(this.#snapshotKey(chat));
 		return value ? new Response(value, { headers: { 'content-type': 'application/json' } }) : null;
 	}
 
@@ -553,8 +566,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		const { message } = (await req.json().catch(() => ({}))) as { message?: string };
 		if (!message?.trim()) return refuse(400, 'message required');
 
-		const { entry } = await this.#current();
-		const state = await this.#state(entry.id);
+		const { entry, chat } = await this.#current();
+		const state = await this.#state(chat.id);
 		const modelSpec =
 			((await this.ctx.storage.get('modelSpec')) as string | undefined) ?? 'anthropic:claude-opus-5';
 
@@ -578,6 +591,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		this.#abort = new AbortController();
 		const signal = this.#abort.signal;
 		state.turnNo += 1;
+		if (chat.titleSource === 'auto' && state.history.length === 0) chat.title = titleFrom(message);
 		// The turn's identity for metering: the dedupe key that makes a replayed
 		// usage report record nothing (#646).
 		const turnId = ulid();
@@ -604,29 +618,29 @@ export class BuilderAgent extends DurableObject<Env> {
 		const run = async (): Promise<void> => {
 			try {
 				record = await TurnRecord.open(this.env, {
-					threadId: ((await this.ctx.storage.get(`record:${entry.id}`)) as string | undefined) ?? null,
-					title: entry.name,
+					threadId: ((await this.ctx.storage.get(`record:${chat.id}`)) as string | undefined) ?? null,
+					title: `${entry.name} · ${chat.title}`,
 					projectId: entry.id,
 					// The worker forwards the team on every request; were it ever missing, the
 					// summary is refused (and logged) rather than filed under a team nobody has.
 					tenantId: this.#tenant,
 					turnId,
-					unfinishedTurnId: (await this.ctx.storage.get(`record-turn:${entry.id}`)) as string | undefined,
-					unfinishedFirstSeq: (await this.ctx.storage.get(`record-turn-seq:${entry.id}`)) as number | undefined,
+					unfinishedTurnId: (await this.ctx.storage.get(`record-turn:${chat.id}`)) as string | undefined,
+					unfinishedFirstSeq: (await this.ctx.storage.get(`record-turn-seq:${chat.id}`)) as number | undefined,
 					message,
 					actor,
 					model: modelSpec,
 				});
 				if (record) {
-					await this.ctx.storage.put(`record:${entry.id}`, record.threadId);
+					await this.ctx.storage.put(`record:${chat.id}`, record.threadId);
 					// Cleared when the turn reaches rest; still set means it never did.
-					await this.ctx.storage.put(`record-turn:${entry.id}`, turnId);
+					await this.ctx.storage.put(`record-turn:${chat.id}`, turnId);
 					// Where its events begin, so the turn after a lost one can say where it was.
-					await this.ctx.storage.put(`record-turn-seq:${entry.id}`, record.firstSeq);
+					await this.ctx.storage.put(`record-turn-seq:${chat.id}`, record.firstSeq);
 				}
-				// A slept container reopens the authoritative Git branch.
+				// A slept container reopens the chat's branch.
 				// A turn that died before committing left its work in the snapshot.
-				const carried = await this.#restoreProject(pair, entry);
+				const carried = await this.#restoreProject(pair, entry, chat);
 				if (carried) record?.note('work-recovered', `${carried} files restored from the last snapshot`, { files: carried });
 				if (entry.directory === '.') {
 					const head = await sb.exec('git rev-parse HEAD', { cwd: this.#repoRoot(entry) });
@@ -676,14 +690,14 @@ export class BuilderAgent extends DurableObject<Env> {
 				/** The tree as it stands, where the browser reads it and a lost container restores from. */
 				const shareWork = async (): Promise<void> => {
 					lastSnapshot = Date.now();
-					if (await this.#saveSnapshot(sb, entry, 'work')) emit({ type: 'workspace-updated' });
+					if (await this.#saveSnapshot(sb, entry, chat, 'work')) emit({ type: 'workspace-updated' });
 				};
 
 				const runPass = async (text: string, carriedReport?: string): Promise<boolean> => {
 					let assistant = '';
 					let truncated = false;
 					// A continuation opens here too, and its container may not be the last pass's.
-					const recovered = (await this.#hasRepository(pair, entry)) ? 0 : await this.#restoreProject(pair, entry);
+					const recovered = (await this.#hasRepository(pair, entry)) ? 0 : await this.#restoreProject(pair, entry, chat);
 					if (recovered) {
 						record?.note('work-recovered', `${recovered} files restored from the last snapshot`, { files: recovered });
 						emit({ type: 'workspace-updated' });
@@ -770,10 +784,10 @@ export class BuilderAgent extends DurableObject<Env> {
 					if (turn.commit) {
 						emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
 						// The commit is durable once pushed to the authoritative repository.
-						await this.#saveSource(pair, entry);
+						await this.#saveSource(pair, entry, chat);
 						// The SPA's container-free read path — refresh it while the
 						// container is provably awake and at the commit it just made.
-						await this.#saveSnapshot(pair.sb, entry, 'commit');
+						await this.#saveSnapshot(pair.sb, entry, chat, 'commit');
 					}
 					return turn;
 				};
@@ -794,7 +808,7 @@ export class BuilderAgent extends DurableObject<Env> {
 
 				const after = await detectPhase(projectWs);
 				if (after !== phase) emit({ type: 'phase', phase: after });
-				await this.ctx.storage.put(`phase:${entry.id}`, after);
+				await this.ctx.storage.put(`phase:${chat.id}`, after);
 
 				state.history.push(...transcript);
 				if (signal.aborted) outcome = { kind: 'stopped' };
@@ -806,11 +820,11 @@ export class BuilderAgent extends DurableObject<Env> {
 				clearInterval(heartbeat);
 				if (record) {
 					await record.finish(outcome);
-					await this.ctx.storage.delete(`record-turn:${entry.id}`);
-					await this.ctx.storage.delete(`record-turn-seq:${entry.id}`);
+					await this.ctx.storage.delete(`record-turn:${chat.id}`);
+					await this.ctx.storage.delete(`record-turn-seq:${chat.id}`);
 				}
-				await this.ctx.storage.put(`state:${entry.id}`, state);
-				entry.updatedAt = new Date().toISOString();
+				await this.ctx.storage.put(`state:${chat.id}`, state);
+				chat.updatedAt = entry.updatedAt = new Date().toISOString();
 				await this.#putEntry(entry);
 				this.#releaseStudio();
 				this.#abort = null;
@@ -872,19 +886,22 @@ export class BuilderAgent extends DurableObject<Env> {
 				// Claimed before the registry read, so nothing slips in; named once the project is known.
 				this.#occupy('another operation');
 				try {
-					const { entry } = await this.#current();
+					const { entry, chat } = await this.#current();
 					this.#occupant!.what = sourcePurpose(url.searchParams.get('for'), entry.name);
 					const building = this.#claimStudio(entry);
 					if (building) return building;
 					// Resolve the remote before pinning a release, including a newly connected
-					// GitHub project that has not had a studio turn yet.
-					await this.#restoreProject(this.#sandboxPair(entry.id), entry);
-					return json(200, entry);
+					// GitHub project that has not had a studio turn yet. A preview runs the chat's
+					// commit; a release builds the base's, which only a merge moves.
+					const pair = this.#sandboxPair(entry.id);
+					await this.#restoreProject(pair, entry, chat);
+					const baseRevision = await remoteTip(pair.sb, await this.#access(entry, 'read', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
+					return json(200, { ...entry, revision: chat.revision, baseRevision });
 				} finally { this.#releaseStudio(); }
 			}
 			case 'GET /api/session': {
-				const { entry } = await this.#current();
-				const state = await this.#state(entry.id);
+				const { entry, chat } = await this.#current();
+				const state = await this.#state(chat.id);
 				const modelSpec =
 					((await this.ctx.storage.get('modelSpec')) as string | undefined) ??
 					'anthropic:claude-opus-5';
@@ -899,12 +916,14 @@ export class BuilderAgent extends DurableObject<Env> {
 					root: REPO,
 					vertical: entry.dir,
 					project: { id: entry.id, name: entry.name, nameSource: entry.nameSource },
+					chat: { id: chat.id, title: chat.title, branch: chat.branch },
+					base: entry.repository.branch,
 					repoMode: entry.directory === '.' ? 'project' : 'scoped',
 					sourceProjects: true,
 					// Last phase persisted by a turn. Truthful without booting the
 					// container: only turns mutate the workspace, so the value can't
 					// be stale — null just means "no turn yet" (UI hides the stepper).
-					phase: ((await this.ctx.storage.get(`phase:${entry.id}`)) as string | undefined) ?? null,
+					phase: ((await this.ctx.storage.get(`phase:${chat.id}`)) as string | undefined) ?? null,
 					modelSpec,
 					endpoint,
 					endpointSource: endpoint ? 'worker secret' : undefined,
@@ -917,10 +936,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				});
 			}
 			case 'GET /api/record': {
-				// The current project's conversation record, a page after `?after=<seq>`.
+				// The current chat's conversation record, a page after `?after=<seq>`.
 				// Only a thread this team's own project names is ever read.
-				const { entry } = await this.#current();
-				const threadId = (await this.ctx.storage.get(`record:${entry.id}`)) as string | undefined;
+				const { chat } = await this.#current();
+				const threadId = (await this.ctx.storage.get(`record:${chat.id}`)) as string | undefined;
 				if (!threadId) return json(200, { threadId: null, events: [], lastSeq: 0 });
 				const after = Number(url.searchParams.get('after') ?? '0');
 				if (!Number.isInteger(after) || after < 0) return refuse(400, 'after must be a non-negative integer');
@@ -935,9 +954,9 @@ export class BuilderAgent extends DurableObject<Env> {
 				this.#abort?.abort();
 				return json(200, { ok: true });
 			case 'POST /api/gates': {
-				const { entry } = await this.#current();
+				const { entry, chat } = await this.#current();
 				const pair = this.#sandboxPair(entry.id);
-				await this.#restoreProject(pair, entry);
+				await this.#restoreProject(pair, entry, chat);
 				// Source checkout already established the repository boundary.
 				return json(200, await runGates(this.#sourceWs(pair.sb, entry), entry.directory, standaloneGates(entry.directory)));
 			}
@@ -947,24 +966,24 @@ export class BuilderAgent extends DurableObject<Env> {
 				// this landed) → build once from the container and cache it; a project
 				// with no repo at all is an honest 404 and the SPA falls back to the
 				// per-directory endpoints below.
-				const { entry } = await this.#current();
-				const cached = await this.#cachedSnapshot(entry);
+				const { entry, chat } = await this.#current();
+				const cached = await this.#cachedSnapshot(chat);
 				if (cached) {
 					return new Response(cached.body, {
 						headers: { 'content-type': 'application/json' },
 					});
 				}
 				const pair = this.#sandboxPair(entry.id);
-				await this.#restoreProject(pair, entry);
+				await this.#restoreProject(pair, entry, chat);
 				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${this.#repoRoot(entry)}/.git`)}`);
 				if (probe.exitCode !== 0) return refuse(404, 'no snapshot yet');
-				await this.#saveSnapshot(pair.sb, entry, 'fill');
-				const built = await this.#cachedSnapshot(entry);
+				await this.#saveSnapshot(pair.sb, entry, chat, 'fill');
+				const built = await this.#cachedSnapshot(chat);
 				if (!built) return refuse(404, 'no snapshot yet');
 				return new Response(built.body, { headers: { 'content-type': 'application/json' } });
 			}
 			case 'GET /api/files': {
-				const { entry } = await this.#current();
+				const { entry, chat } = await this.#current();
 				const path = url.searchParams.get('path') ?? entry.dir;
 				// The same containment the write route applies, and this is the half that
 				// is deployed: a read was jailed only to the REPO, so the file pane served
@@ -972,7 +991,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				const rel = underProject(path, entry.dir);
 				if (rel === null) return refuse(403, `reads are limited to ${entry.dir}/`);
 				const pair = this.#sandboxPair(entry.id);
-				await this.#restoreProject(pair, entry);
+				await this.#restoreProject(pair, entry, chat);
 				// Through the PROJECT-rooted workspace, so the read is confined twice. NOTE
 				// the asymmetry with the local server: `ContainerWorkspace.resolveWithin` is
 				// purely lexical — the files live in the container, so it cannot realpath the
@@ -1002,7 +1021,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				}
 			}
 			case 'PUT /api/file': {
-				const { entry } = await this.#current();
+				const { entry, chat } = await this.#current();
 				const { path, content } = (await req.json().catch(() => ({}))) as {
 					path?: string;
 					content?: string;
@@ -1025,17 +1044,17 @@ export class BuilderAgent extends DurableObject<Env> {
 				this.#occupy(`saving a file in project "${entry.name}"`);
 				try {
 					const pair = this.#sandboxPair(entry.id);
-					await this.#restoreProject(pair, entry);
+					await this.#restoreProject(pair, entry, chat);
 					await this.#projectWs(pair.sb, entry.dir).writeFile(rel, content);
 					const sourcePath = entry.directory === '.' ? rel : `${entry.directory}/${rel}`;
 					await checkedExec(pair.sb, `git -c core.hooksPath=/dev/null add -- ${shellQuote(sourcePath)} && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=builder@substrat.invalid commit --allow-empty -m 'Save source'`, this.#repoRoot(entry));
-					await this.#saveSource(pair, entry);
+					await this.#saveSource(pair, entry, chat);
 					// Patch the stored snapshot so a reload before the next commit still
 					// shows this save. Best-effort: absent snapshot → next commit builds it.
 					// Inside the claim, or a turn's newer snapshot could be written over.
 					try {
-						const key = this.#snapshotKey(entry);
-						const obj = await this.#cachedSnapshot(entry);
+						const key = this.#snapshotKey(chat);
+						const obj = await this.#cachedSnapshot(chat);
 						if (obj) {
 							const snap = (await obj.json()) as { files: Record<string, string> };
 							// `rel`, not a slice of the raw path: the slice of a traversal path
@@ -1074,8 +1093,8 @@ export class BuilderAgent extends DurableObject<Env> {
 				}
 			}
 			case 'GET /api/history': {
-				const { entry } = await this.#current();
-				return json(200, (await this.#state(entry.id)).history);
+				const { chat } = await this.#current();
+				return json(200, (await this.#state(chat.id)).history);
 			}
 			case 'GET /api/projects': {
 				const reg = await this.#registry();
@@ -1119,7 +1138,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					// repository is the team's own and is never deleted.
 					if (entry.repository.kind === 'artifacts') await this.env.ARTIFACTS.delete(entry.repository.name);
 					await this.#sandboxPair(entry.id).raw.destroy().catch(() => undefined);
-					await this.ctx.storage.delete(projectStorageKeys(entry.id));
+					await this.ctx.storage.delete(projectStorageKeys(entry.id, entry.chats?.map((c) => c.id)));
 					// Read again: a build of another vertical may have written its entry meanwhile.
 					const next = withoutProject(await this.#registry(), entry.id);
 					if (next) await this.#save(next.registry);
@@ -1130,12 +1149,94 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (this.#busy) return this.#refuseBusy();
 				const { name } = (await req.json().catch(() => ({}))) as { name?: string };
 				if (!name?.trim()) return refuse(400, 'name required');
-				const { reg, entry } = await this.#current();
+				const { entry } = await this.#current();
 				entry.name = name.trim();
 				entry.nameSource = 'user';
 				entry.updatedAt = new Date().toISOString();
-				await this.#save(reg);
+				await this.#putEntry(entry);
 				return json(200, entry);
+			}
+			case 'GET /api/chats': {
+				const { entry, chat } = await this.#current();
+				const repository = entry.repository;
+				const chats = [...(entry.chats ?? [])].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).map((c) => ({
+					...c,
+					status: chatStatus(c),
+					// A GitHub project's chat merges by pull request, never from here (chats.ts).
+					...(repository.kind === 'github' && c.revision ? { compareUrl: compareUrl(repository, c) } : {}),
+				}));
+				return json(200, { current: chat.id, base: repository.branch, merge: repository.kind === 'github' ? 'pull-request' : 'studio', chats });
+			}
+			case 'POST /api/chats': {
+				// A new chat is a fresh conversation AND a fresh branch, started from the base on the
+				// next checkout — so nothing another chat did and has not merged is in its tree.
+				if (this.#busy) return this.#refuseBusy();
+				const { entry } = await this.#current();
+				const chat = newChat(ulid(), new Date().toISOString());
+				entry.chats = [...(entry.chats ?? []), chat];
+				entry.currentChatId = chat.id;
+				await this.#putEntry(entry);
+				return json(200, chat);
+			}
+			case 'POST /api/chats/select': {
+				if (this.#busy) return this.#refuseBusy();
+				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
+				const { entry } = await this.#current();
+				const chat = entry.chats?.find((c) => c.id === id);
+				if (!chat) return refuse(404, `no chat ${id}`);
+				entry.currentChatId = chat.id;
+				await this.#putEntry(entry);
+				return json(200, chat);
+			}
+			case 'POST /api/chats/remove': {
+				// The conversation and its caches go; the branch stays in the repository, where a
+				// pull request may still name it.
+				if (this.#busy) return this.#refuseBusy();
+				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
+				const { entry } = await this.#current();
+				if (!entry.chats?.some((c) => c.id === id)) return refuse(404, `no chat ${id}`);
+				const next = withoutChat(entry, id!);
+				if (!next) return refuse(409, 'a project keeps at least one chat');
+				await this.#putEntry(next.entry);
+				await this.ctx.storage.delete(chatStorageKeys(next.removed.id));
+				return json(200, { removed: next.removed.id, current: next.entry.currentChatId });
+			}
+			case 'POST /api/chats/merge': {
+				// The one way a studio project's base moves: the current chat's branch merged into
+				// it, only through green gates when the base moved on meanwhile (repositories.ts).
+				if (this.#busy) return this.#refuseBusy();
+				const { entry, chat } = await this.#current();
+				if (entry.repository.kind === 'github') {
+					return refuse(409, chat.revision
+						? `a GitHub project merges by pull request: ${compareUrl(entry.repository, chat)}`
+						: 'this chat has no commits to merge yet');
+				}
+				const building = this.#claimStudio(entry);
+				if (building) return building;
+				this.#occupy(`merging "${chat.title}" into ${entry.repository.branch} in project "${entry.name}"`);
+				try {
+					const pair = this.#sandboxPair(entry.id);
+					await this.#restoreProject(pair, entry, chat);
+					if (chatStatus(chat) === 'empty') return refuse(409, 'this chat has no commits to merge yet');
+					const result = await mergeIntoBase(
+						pair.sb,
+						await this.#access(entry, 'write', this.#tenant),
+						this.#repoRoot(entry),
+						chat.branch,
+						entry.repository.branch,
+						async () => gateReport(await runGates(this.#sourceWs(pair.sb, entry), entry.directory, standaloneGates(entry.directory))),
+					);
+					if (!result.ok) return refuse(409, result.detail);
+					if (result.how === 'merge') {
+						chat.revision = result.revision;
+						await this.#saveSnapshot(pair.sb, entry, chat, 'commit');
+					}
+					chat.mergedRevision = chat.revision;
+					entry.revision = result.revision;
+					chat.updatedAt = entry.updatedAt = new Date().toISOString();
+					await this.#putEntry(entry);
+					return json(200, { how: result.how, revision: result.revision, base: entry.repository.branch });
+				} finally { this.#releaseStudio(); }
 			}
 			default:
 				return refuse(503, 'not hosted yet: /api/dev (preview processes) lands with the #626 follow-ups');

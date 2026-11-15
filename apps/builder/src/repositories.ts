@@ -129,3 +129,115 @@ export async function saveRepository(sb: SandboxLike, access: RepositoryAccess, 
   await repositoryGit(sb, access, ['push', access.remote, `HEAD:refs/heads/${branch}`], root);
   return revision;
 }
+
+/** The remote branch's commit, or null when the remote has no such branch. */
+export async function remoteTip(sb: SandboxLike, access: RepositoryAccess, root: string, branch: string): Promise<string | null> {
+  const line = await repositoryGit(sb, access, ['ls-remote', '--heads', access.remote, `refs/heads/${branch}`], root);
+  return line.split(/\s/)[0] || null;
+}
+
+async function isAncestor(sb: SandboxLike, root: string, a: string, b: string): Promise<boolean> {
+  return (await sb.exec(`git merge-base --is-ancestor ${shellQuote(a)} ${shellQuote(b)}`, { cwd: root })).exitCode === 0;
+}
+
+/**
+ * Put the checkout at `root` on a chat's branch. A chat works on a branch of its own, never on
+ * the project's base, so a turn cannot reach the branch a deploy reads. A branch not pushed yet
+ * starts from the base's tip, or empty when the base has no commit either.
+ *
+ * On the branch already, this is `checkoutRepository`: edits are kept and a moved remote is
+ * fast-forwarded. Switching from another chat's branch with edits in the tree hands them to
+ * `park` first, and then discards them, so one chat's unfinished work never lands in another's.
+ * A tree on a branch no chat owns (a project from before chats, on its base) carries its edits
+ * over: the new branch starts at the same commit, so nothing conflicts. Returns the branch the
+ * checkout was on (null when it was fresh or already on `branch`), and whether `branch` was
+ * started here from the base: a chat with no commit of its own yet.
+ */
+export async function checkoutBranch(
+  sb: SandboxLike,
+  access: RepositoryAccess,
+  root: string,
+  branch: string,
+  base: string,
+  park?: (from: string) => Promise<void>,
+): Promise<{ fresh: boolean; from: string | null; fromBase: boolean }> {
+  for (const name of [branch, base]) await checkedExec(sb, `git check-ref-format --branch ${shellQuote(name)}`);
+  const fresh = (await sb.exec(`test -d ${shellQuote(`${root}/.git`)}`)).exitCode !== 0;
+  if (fresh) await repositoryGit(sb, access, ['clone', '--no-checkout', access.remote, root]);
+  const current = fresh ? null : (await sb.exec('git symbolic-ref --short -q HEAD', { cwd: root })).stdout.trim() || null;
+  if (current === branch) {
+    await checkoutRepository(sb, access, root, branch);
+    return { fresh: false, from: null, fromBase: false };
+  }
+  if (current && (await checkedExec(sb, 'git status --porcelain', root)) && current.startsWith(CHAT_BRANCH_PREFIX)) {
+    await park?.(current);
+    await checkedExec(sb, 'git -c core.hooksPath=/dev/null reset -q --hard && git clean -fdq', root);
+  }
+  const start = (await remoteTip(sb, access, root, branch)) ? branch : (await remoteTip(sb, access, root, base)) ? base : null;
+  if (start) {
+    await repositoryGit(sb, access, ['fetch', access.remote, `refs/heads/${start}`], root);
+    await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout -B ${shellQuote(branch)} FETCH_HEAD`, root);
+  } else {
+    await checkedExec(sb, `git checkout -q --orphan ${shellQuote(branch)}`, root);
+    // An orphan keeps the old branch's files staged; an empty base starts empty.
+    if (!fresh) await checkedExec(sb, 'git read-tree --empty && git clean -fdq', root);
+  }
+  return { fresh, from: current, fromBase: start !== branch };
+}
+
+/** Every chat branch starts with this; the base never does. */
+export const CHAT_BRANCH_PREFIX = 'builder/';
+
+export type MergeResult =
+  | { ok: true; revision: string; how: 'fast-forward' | 'merge' | 'up-to-date' }
+  | { ok: false; reason: 'uncommitted' | 'conflict' | 'gates'; detail: string };
+
+/**
+ * Bring the chat branch checked out at `root` into `base`. A chat that only adds to the base
+ * moves it forward. One the base moved away from is merged with it here, on the chat's branch,
+ * and the base moves only when `gates` passes the merged tree (it answers null, or the red
+ * report): a conflict or a red gate leaves both branches where they were. Both pushes are the
+ * ordinary compare-and-swap, so a base that moved meanwhile refuses rather than being
+ * overwritten.
+ */
+export async function mergeIntoBase(
+  sb: SandboxLike,
+  access: RepositoryAccess,
+  root: string,
+  branch: string,
+  base: string,
+  gates: () => Promise<string | null>,
+): Promise<MergeResult> {
+  if (await checkedExec(sb, 'git status --porcelain', root)) {
+    return { ok: false, reason: 'uncommitted', detail: 'this chat has uncommitted changes; let its turn finish first' };
+  }
+  const head = await checkedExec(sb, 'git rev-parse HEAD', root);
+  if (!(await remoteTip(sb, access, root, base))) {
+    await repositoryGit(sb, access, ['push', access.remote, `HEAD:refs/heads/${base}`], root);
+    return { ok: true, revision: head, how: 'fast-forward' };
+  }
+  await repositoryGit(sb, access, ['fetch', access.remote, `refs/heads/${base}`], root);
+  const tip = await checkedExec(sb, 'git rev-parse FETCH_HEAD', root);
+  if (await isAncestor(sb, root, head, tip)) return { ok: true, revision: tip, how: 'up-to-date' };
+  if (await isAncestor(sb, root, tip, head)) {
+    await repositoryGit(sb, access, ['push', access.remote, `HEAD:refs/heads/${base}`], root);
+    return { ok: true, revision: head, how: 'fast-forward' };
+  }
+  const merge = await sb.exec(
+    `git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=builder@substrat.invalid merge --no-ff --no-edit -m ${shellQuote(`Merge ${base} into ${branch}`)} FETCH_HEAD`,
+    { cwd: root },
+  );
+  if (merge.exitCode !== 0) {
+    const files = (await sb.exec('git diff --name-only --diff-filter=U', { cwd: root })).stdout.trim().split('\n').filter(Boolean);
+    await checkedExec(sb, 'git merge --abort', root);
+    return { ok: false, reason: 'conflict', detail: `${base} changed the same lines as this chat${files.length ? ` in ${files.join(', ')}` : ''}; ask the chat to bring in ${base} and resolve them` };
+  }
+  const red = await gates();
+  if (red !== null) {
+    await checkedExec(sb, `git -c core.hooksPath=/dev/null reset -q --hard ${shellQuote(head)}`, root);
+    return { ok: false, reason: 'gates', detail: `merged with ${base}, the project fails its checks; nothing was merged:\n${red}` };
+  }
+  await repositoryGit(sb, access, ['push', access.remote, `HEAD:refs/heads/${branch}`], root);
+  await repositoryGit(sb, access, ['push', access.remote, `HEAD:refs/heads/${base}`], root);
+  return { ok: true, revision: await checkedExec(sb, 'git rev-parse HEAD', root), how: 'merge' };
+}
