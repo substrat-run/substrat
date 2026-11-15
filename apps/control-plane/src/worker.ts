@@ -18,6 +18,7 @@ import { sourceBuildService, builderTurnsService, githubConfig, installationToke
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono, type Context } from 'hono';
+import { readGithubChanges } from './github-changes.js';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi, REVIEW_ENTITLEMENT } from './reviews.js';
 import { ReviewJobDO } from './review-job.js';
@@ -3811,6 +3812,11 @@ export default {
           const response = await gh(cfg, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, `Bearer ${token}`);
           if (!response.ok) throw new ControlPlaneError(404, 'repository is not accessible through this tenant connection');
           return { remote: `https://github.com/${owner}/${repo}.git`, token };
+        },
+        githubChanges: async ({ owner, repo, installationId }) => {
+          const cfg = githubConfig(env);
+          if (!cfg) return { unavailable: 'this control plane has no GitHub App configured' };
+          return readGithubChanges(cfg, { owner, repo, installationId });
         },
         // RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment's verifier.
         wireUpload: { rollout: env.WIRE_KEYS_ROLLOUT, routerKeys: env.WIRE_ROUTER_PUBLIC_KEYS, platformKeys: env.WIRE_PLATFORM_PUBLIC_KEYS },

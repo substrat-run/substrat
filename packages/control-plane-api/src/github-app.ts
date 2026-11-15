@@ -98,11 +98,19 @@ export async function gh(cfg: GithubConfig, url: string, auth: string, init?: Re
   });
 }
 
-/** Mint a short-lived installation access token (acts on the repos the tenant granted). */
-export async function installationToken(cfg: GithubConfig, installationId: string, repository?: { name: string; write: boolean }): Promise<string> {
+/**
+ * Mint a short-lived installation access token (acts on the repos the tenant granted). With a
+ * repository, the token reaches that one alone, with `permissions` when given, else its contents.
+ */
+export async function installationToken(
+  cfg: GithubConfig,
+  installationId: string,
+  repository?: { name: string; write: boolean; permissions?: Readonly<Record<string, 'read' | 'write'>> },
+): Promise<string> {
+  const permissions = repository?.permissions ?? { contents: repository?.write ? 'write' : 'read', metadata: 'read' };
   const res = await gh(cfg, `/app/installations/${encodeURIComponent(installationId)}/access_tokens`, `Bearer ${await appJwt(cfg)}`, {
     method: 'POST',
-    ...(repository ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repositories: [repository.name], permissions: { contents: repository.write ? 'write' : 'read', metadata: 'read' } }) } : {}),
+    ...(repository ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repositories: [repository.name], permissions }) } : {}),
   });
   if (!res.ok) throw new Error(`github: installation token failed (${res.status})`);
   return ((await res.json()) as { token: string }).token;
