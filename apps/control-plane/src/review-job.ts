@@ -181,15 +181,17 @@ export async function reviewOnce(
   // The deadline aborts the call itself, so a late answer is never received; what the provider
   // consumed before the abort may still be billed, and has no ledger line. `maxRetries: 0` makes
   // this attempt exactly one HTTP call.
+  await beforeCall();
   // Past the reading window intake no longer counts this review as in progress, so its slot may
-  // be another's: a job that reaches the model this late (a receipt read failing for over an
-  // hour, say) calls none.
-  if (now().getTime() - Date.parse(receipt.createdAt) > REVIEW_READING_WINDOW_MS) {
+  // be another's. A call must therefore START early enough that its own deadline ends inside the
+  // window, and this is read after `beforeCall`, so no wait there can carry a job across it: a
+  // job this late (a receipt read failing for over an hour, say) calls no model.
+  const modelTimeoutMs = positive(deps.config.modelTimeoutMs, REVIEW_MODEL_TIMEOUT_MS);
+  if (now().getTime() + modelTimeoutMs > Date.parse(receipt.createdAt) + REVIEW_READING_WINDOW_MS) {
     return finish({ ...empty, ...sent, state: 'incomplete', reason: 'reading window passed' });
   }
-  await beforeCall();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new ModelTimeout()), positive(deps.config.modelTimeoutMs, REVIEW_MODEL_TIMEOUT_MS));
+  const timer = setTimeout(() => controller.abort(new ModelTimeout()), modelTimeoutMs);
   let run: ModelRun;
   try {
     run = await host.run({

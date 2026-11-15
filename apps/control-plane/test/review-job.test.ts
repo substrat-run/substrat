@@ -9,7 +9,7 @@ import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview, type ChangedFile } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, reviewOnce, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -263,13 +263,24 @@ describe('review job: the reader half with a model double', () => {
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'model timed out', notSent: [{ path: 'pnpm-lock.yaml', rule: 'lockfile' }] });
   });
 
-  it('a job reaching the model after the reading window (its storage down for over an hour) calls none and writes `incomplete`', async () => {
+  it('a job whose call could run past the reading window calls no model and writes `incomplete`', async () => {
     const { id, actor } = await stored(CHANGED.source, CHANGED.base);
     const model = double([{ text: reply({ findings: [] }) }]);
     const late = () => new Date(Date.now() + REVIEW_READING_WINDOW_MS + 60_000);
+    // Its storage down for over an hour: past the window outright.
     await runReviewJob(id, 0, deps(model, {}, { now: late }));
     expect(model.calls.n).toBe(0);
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'reading window passed' });
+    // Inside the window when it starts, but its call's deadline would end past it, after a wait
+    // in `beforeCall`: the clock is read after that wait.
+    const second = await stored(CHANGED.source, CHANGED.base);
+    let clock = Date.now();
+    const timeout = 60_000;
+    const attempt = await reviewOnce(second.id, 0, deps(model, { modelTimeoutMs: timeout }, { now: () => new Date(clock) }), async () => {
+      clock += REVIEW_READING_WINDOW_MS - timeout + 1_000;
+    });
+    expect(model.calls.n).toBe(0);
+    expect(attempt).toMatchObject({ kind: 'result', result: { state: 'incomplete', reason: 'reading window passed' } });
   });
 
   it.each([

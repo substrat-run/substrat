@@ -141,6 +141,9 @@ async function approvePlan($: Engine) {
  */
 let lastLauncher: readonly string[] = ['npx', '--yes', '@substrat-run/cli@latest']
 
+/** Counts `checkChanges` starts, so an answer that arrives after a newer refresh began is dropped. */
+let changesGeneration = 0
+
 /**
  * Asks the control plane what waits for the person: the vertical's open changes, and whether a
  * promote waits, whoever pushed it.
@@ -156,6 +159,7 @@ async function checkPlane($: Engine) {
  * before the failure are not passing checks now.
  */
 async function checkChanges($: Engine, launch: Launch) {
+  const generation = ++changesGeneration
   let open: OpenChanges | undefined
   try {
     const r = await $.process.run([...launch.launcher, 'changes', '--json'], { cwd: launch.cwd, timeoutMs: RUN_MS })
@@ -163,6 +167,9 @@ async function checkChanges($: Engine, launch: Launch) {
   } catch {
     // No CLI, no network or no vertical here: nothing is shown.
   }
+  // Refreshes can overlap (the button does not wait): only the latest one started is shown, so a
+  // late answer never replaces a newer failure.
+  if (generation !== changesGeneration) return
   await update($, changes, () => open ?? null)
 }
 

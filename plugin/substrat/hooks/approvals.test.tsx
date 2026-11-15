@@ -37,7 +37,8 @@ const REFUSED = [
 const DELTA = '# Concept delta — acme\n\nAgainst `origin/main` (the merge-base with HEAD). Digest `0a1b2c3d4e5f`.\n\n+ entity Invoice gains `voidedAt`\n'
 
 /** The engine beneath the plugin: every CLI run is recorded and answered by `cli`. */
-function engine(on: On, cli: (argv: readonly string[]) => { exitCode: number; stdout?: string; stderr?: string }) {
+type CliAnswer = { exitCode: number; stdout?: string; stderr?: string }
+function engine(on: On, cli: (argv: readonly string[]) => CliAnswer | Promise<CliAnswer>) {
   const runs: string[][] = []
   const prompts: string[] = []
   on('command.register', () => ({ value: { command: 'substrat-approvals' } }))
@@ -45,9 +46,9 @@ function engine(on: On, cli: (argv: readonly string[]) => { exitCode: number; st
   on('ui.toast', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work/acme' }))
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     runs.push([...e.argv])
-    const r = e.argv[0] === 'git' ? { exitCode: 0, stdout: 'Ada Lovelace\n' } : cli(e.argv)
+    const r = e.argv[0] === 'git' ? { exitCode: 0, stdout: 'Ada Lovelace\n' } : await cli(e.argv)
     return { value: { stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false, ...r } }
   })
   on('prompt.submit', (_, e) => {
@@ -310,6 +311,30 @@ describe('the open changes', () => {
     // Passing checks read before the failure are not shown as passing now.
     down = true
     await ui.press({ key: 'check-plane' })
+    expect(await ui.find({ type: 'Text', text: /checks pass/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('an earlier refresh answering after a later one failed does not bring its checks back', async ($, on) => {
+    let release = (): void => {}
+    const slow = new Promise<void>(resolve => { release = resolve })
+    let n = 0
+    engine(on, async argv => {
+      if (!argv.includes('changes')) return { exitCode: 0, stdout: '{}' }
+      if (++n === 1) {
+        await slow
+        return { exitCode: 0, stdout: CHANGES }
+      }
+      return { exitCode: 1, stderr: 'network down' }
+    })
+    await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const first = ui.press({ key: 'check-plane' })
+    await ui.press({ key: 'check-plane' })
+    release()
+    await first
+    await new Promise(resolve => setTimeout(resolve, 20))
     expect(await ui.find({ type: 'Text', text: /checks pass/ })).toBeUndefined()
     await ui.unmount()
   })
