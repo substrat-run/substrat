@@ -107,6 +107,9 @@
 		// to these comma-separated staff addresses, through the EMAIL binding below. Unset ⇒
 		// nothing is sent and the console's Issues view stays the only place failures show.
 		//   "STAFF_ALERT_EMAIL": "ops@example.com"
+		// #3177: `/configure` refuses issuer-only config keys from a tenant credential minted
+		// without `issuerConfig`. Off until a dashboard that mints with it is live; then:
+		//   "CONFIGURE_REQUIRE_ISSUER_CLAIM": "true"
 	},
 	// Staff sign-in is OIDC against AuthHero (jose + Web Crypto) — no Node built-ins.
 	// OIDC config is entirely secrets, nothing checked in (locally: .dev.vars):

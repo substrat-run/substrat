@@ -15,7 +15,7 @@ const TENANT_TOKEN_SECRET = 'test-tenant-token-secret';
 export function tenantPlane(
   host: ControlPlaneApiOptions['host'],
   actor: PlatformActorId,
-  extra: Pick<ControlPlaneApiOptions, 'lakeQuery'> = {},
+  extra: Pick<ControlPlaneApiOptions, 'lakeQuery' | 'requireIssuerConfigClaim'> = {},
 ) {
   return createControlPlaneApi({
     host,
