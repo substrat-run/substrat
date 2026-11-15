@@ -7,8 +7,8 @@
  * `provisionScopeLocal`) whose ScopeDO bundles two engines:
  *
  *   - **metering** — the usage ledger, one entry per turn and model (metering.ts);
- *   - **assistant** — the record of each project's conversation, one thread per
- *     project, every turn's events appended as they happen (record.ts);
+ *   - **assistant** — the record of each project's conversations, one thread per
+ *     chat (chats.ts), every turn's events appended as they happen (record.ts);
  *
  * and one module of the studio's own: **turns**, a summary row per turn across
  * every team, which is what the console filters on (turns.ts).

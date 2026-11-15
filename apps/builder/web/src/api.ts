@@ -22,6 +22,29 @@ export interface ProjectInfo {
 	updatedAt: string;
 }
 
+/**
+ * A chat of the current project — a conversation on a branch of its own (src/chats.ts).
+ * `status` is `empty` before its first commit, `merged` while the base has its last one.
+ */
+export interface ChatInfo {
+	id: string;
+	title: string;
+	branch: string;
+	status: 'empty' | 'unmerged' | 'merged';
+	updatedAt: string;
+	/** A GitHub project's: where a pull request into the base is opened. */
+	compareUrl?: string;
+}
+
+export interface ChatsInfo {
+	current: string;
+	/** The branch a chat merges into, and a release builds. */
+	base: string;
+	/** `studio`: the studio merges. `pull-request`: GitHub does, through a PR. */
+	merge: 'studio' | 'pull-request';
+	chats: ChatInfo[];
+}
+
 /** GET/POST /api/preview — the worker's answer (src/studio-preview.ts). */
 export type StudioPreview =
 	| { state: 'none' }
@@ -43,6 +66,9 @@ export interface SessionInfo {
 	root: string;
 	vertical: string;
 	project: Pick<ProjectInfo, 'id' | 'name' | 'nameSource'>;
+	/** The hosted studio's current chat and the base it merges into; the local server has neither. */
+	chat?: Pick<ChatInfo, 'id' | 'title' | 'branch'>;
+	base?: string;
 	/** 'project' = the vertical is its own git repo (§4.6); 'scoped' = legacy demos/*. */
 	repoMode: 'project' | 'scoped';
 	/** The build-phase ladder position — a workspace fact, computed server-side
@@ -217,6 +243,30 @@ export const api = {
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ id }),
 		}).then((r) => j<{ removed: string; current: string | null }>(r)),
+	/** Null where the host has no chats (the local server): one conversation per project there. */
+	chats: async (): Promise<ChatsInfo | null> => {
+		const r = await f('/api/chats');
+		if (r.status === 404) return null;
+		return j<ChatsInfo>(r);
+	},
+	newChat: () => f('/api/chats', { method: 'POST' }).then((r) => j<ChatInfo>(r)),
+	selectChat: (id: string) =>
+		f('/api/chats/select', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ id }),
+		}).then((r) => j<ChatInfo>(r)),
+	removeChat: (id: string) =>
+		f('/api/chats/remove', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ id }),
+		}).then((r) => j<{ removed: string; current: string }>(r)),
+	/** Merge the current chat into the base. Minutes when the base moved: the gates run first. */
+	mergeChat: () =>
+		f('/api/chats/merge', { method: 'POST' }).then((r) =>
+			j<{ how: 'fast-forward' | 'merge' | 'up-to-date'; revision: string; base: string }>(r),
+		),
 	renameProject: (name: string) =>
 		f('/api/project', {
 			method: 'PUT',

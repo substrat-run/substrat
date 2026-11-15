@@ -12,6 +12,7 @@ import { Badge, Button } from '@substrat-run/ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, setApiTeam, streamTurn, type BuildPhase, type MeInfo, type PlanAssumption, type SessionInfo, type TeamInfo } from './api.js';
 import { appendEvent, Chat, type ChatItem } from './Chat.js';
+import { ChatBar } from './ChatBar.js';
 import { CodePane } from './CodePane.js';
 import { ConceptPane } from './ConceptPane.js';
 import { GatesPane } from './GatesPane.js';
@@ -318,6 +319,7 @@ export function App() {
 						name={session.project.name}
 						sourceProjects={session.sourceProjects ?? false}
 						dir={session.vertical}
+						base={session.base}
 						busy={busy}
 						onChanged={reloadProject}
 					/>
@@ -326,7 +328,7 @@ export function App() {
 				)}
 				{session && (
 					<Badge status={session.repoMode === 'project' ? 'brand' : 'warning'} dot={false}>
-						{session.repoMode === 'project' ? 'own repo · main' : 'scoped · monorepo'}
+						{session.repoMode === 'project' ? `own repo · ${session.chat?.branch ?? 'main'}` : 'scoped · monorepo'}
 					</Badge>
 				)}
 				{phase && <PhaseStepper phase={phase} />}
@@ -347,6 +349,7 @@ export function App() {
 
 			<div className="main">
 				<div className="chat-col">
+					<ChatBar busy={busy} refreshKey={refreshKey} onChanged={reloadProject} />
 					{/* Post-build apply: queued chips become one follow-up edit turn.
 					    Dismissible; never blocks; generation never waited on it. */}
 					{!busy && queued.length > 0 && (

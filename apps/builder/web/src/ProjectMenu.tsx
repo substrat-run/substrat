@@ -15,6 +15,8 @@ export function ProjectMenu(props: {
 	name: string;
 	sourceProjects: boolean;
 	dir: string;
+	/** The branch a release builds; chats reach it by merging (ChatBar). */
+	base?: string;
 	busy: boolean;
 	/** Called after a switch/create/rename so the app reloads session + chat. */
 	onChanged: () => void;
@@ -251,7 +253,7 @@ export function ProjectMenu(props: {
 			{releasing && <div className="picker-backdrop" onClick={() => !saving && setReleasing(false)}>
 				<div className="picker prompt-dialog" onClick={(e) => e.stopPropagation()}>
 					<h2>Build release</h2>
-					<p>Build the saved source on the platform. Promotion is a separate step.</p>
+					<p>Build what is on {props.base ?? 'the base branch'} on the platform — a chat's work is in it once merged. Promotion is a separate step.</p>
 					<label>Version<input className="prompt-input" value={version} onChange={(e) => setVersion(e.target.value)} disabled={saving} /></label>
 					{error && <p role="alert">{error}</p>}
 					{releaseResult && <p role="status">{releaseResult}</p>}
