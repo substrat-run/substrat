@@ -51,17 +51,20 @@
  *
  * Another app may call this endpoint FOR a user, with a token the team auth-server minted by
  * RFC 8693 exchange: the user as `sub`, the app acting as `act`, and a `scope` of this
- * vertical's permission keys. That scope is a CEILING, not a grant: a call is allowed only
- * when the tool's leading permission key is inside it, and then the operation's own
- * `ctx.check` still asks whether the user holds it. So a delegated call does at most what
- * the user may AND what was delegated.
+ * vertical's permission keys. That scope is a CEILING, not a grant, held in two places. This
+ * mount refuses a tool whose leading permission key is outside it, early and in words an
+ * agent can read. The kernel holds every permission decision the call then makes (#3178):
+ * the stub is minted with `getScope(…, { delegation })`, so a second `ctx.check`, an entity
+ * check or a grant-scoped read refuses a key outside the scope exactly as it refuses one the
+ * user lacks. So a delegated call does at most what the user may AND what was delegated.
  *
  * The bearer verifier (`@substrat-run/vertical-auth`) decides whether a delegated token is
  * admitted at all, and only through this mount's CHANNEL: `mcpChannelOf(c)` names the resource
  * this endpoint answers as, for the span of its own `resolveStub` call and nowhere else, and
  * the verifier admits a delegated token only when handed it. The subject it resolves reports
- * the delegation, the vertical's `resolveStub` hands that back with `setMcpDelegation`, and
- * every `tools/call` is held to it before the operation is invoked. Two things fail closed:
+ * the delegation, and the vertical's `resolveStub` hands it to both holders in one call,
+ * `mcpScopeOptions(c, subject)`: it parks it for this mount's per-tool check and returns the
+ * `getScope` options that carry it to the kernel. Two things fail closed:
  *
  *  - A tool with no single leading key (`narrows`, or no permission declared) is out of
  *    every delegated scope, since no key says what it reaches.
@@ -69,6 +72,9 @@
  *    That is a host that admitted the token without wiring the ceiling, or a verifier too
  *    old to know `act` and taking it for the user. Read without the signature, like the
  *    audience check below, which is safe for the same reason: it can only refuse.
+ *
+ * What this mount cannot see is whether the stub carries the delegation: a `resolveStub` that
+ * calls `setMcpDelegation` alone gets the per-tool check and nothing behind it.
  */
 import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
 
@@ -86,7 +92,7 @@ import {
   errorCodeOf,
 } from '@substrat-run/contracts';
 import { externalInput, externalResult } from './wire.js';
-import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import { PermissionDenied, type PersonScopeOptions, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
@@ -526,8 +532,9 @@ export interface McpDelegation {
 export const MCP_DELEGATION_KEY = 'substratMcpDelegation';
 
 /**
- * Hand the MCP mount the delegation this request's subject was admitted with — call it in
- * `resolveStub`, with the resolved subject's `delegation`. `undefined` (a user acting
+ * Hand the MCP mount the delegation this request's subject was admitted with. This is the
+ * per-tool half alone: `mcpScopeOptions` does it and also returns the `getScope` options that
+ * carry the delegation to the kernel, and is the one to call. `undefined` (a user acting
  * directly) sets nothing. A request whose bearer carries `act` and that never reaches this
  * has every tool call refused, so forgetting it fails closed.
  */
@@ -537,6 +544,27 @@ export function setMcpDelegation(c: Context, delegation: McpDelegation | undefin
     actor: delegation.actor,
     scope: [...delegation.scope],
   });
+}
+
+/**
+ * Hand an MCP request's admitted delegation to both of its holders, in one call (#3178): this
+ * mount's per-tool check (`setMcpDelegation`) and the kernel, through the `getScope` options it
+ * returns. Call it in `resolveStub` with the resolved subject and spread the answer into the
+ * stub's `getScope`:
+ *
+ *     const subject = await provider.resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+ *     return host.getScope(principal, tenantId, scopeId, { ...mcpScopeOptions(c, subject) });
+ *
+ * A subject with no delegation (a user acting directly, or nobody) sets nothing and returns `{}`.
+ */
+export function mcpScopeOptions(
+  c: Context,
+  subject: { readonly delegation?: McpDelegation | undefined } | null | undefined,
+): Pick<PersonScopeOptions, 'delegation'> {
+  const delegation = subject?.delegation;
+  if (!delegation) return {};
+  setMcpDelegation(c, delegation);
+  return { delegation: { actor: delegation.actor, scope: [...delegation.scope] } };
 }
 
 /**
@@ -557,10 +585,10 @@ export interface McpChannel {
  * clears it as that call returns, so every other handler — a REST route, a middleware reading
  * after `next()`, a stray route at the same path — sees `null`.
  *
- * Hand it to the verifier with the request's URL, then hand the subject's delegation back:
+ * Hand it to the verifier with the request's URL, then hand the subject's delegation on:
  *
  *     const subject = await provider.resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
- *     setMcpDelegation(c, subject?.delegation);
+ *     return host.getScope(principal, tenantId, scopeId, { ...mcpScopeOptions(c, subject) });
  *
  * A vertical serving its own MCP surface that passes `delegated` itself owns the ceiling there.
  */

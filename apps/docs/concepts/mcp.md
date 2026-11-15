@@ -182,13 +182,17 @@ Nothing accepts such a token until the vertical opts in, in two places:
 const instance = await instanceAuthFor({ directory, scopeId, envSpec, env, delegation: { actors: [actorClientId] } });
 
 async function stub(c: Context) {
-  // mcpChannelOf and setMcpDelegation are from @substrat-run/vertical-host
+  // mcpChannelOf and mcpScopeOptions are from @substrat-run/vertical-host
   const subject = await instance.provider().resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
   if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
-  setMcpDelegation(c, subject.delegation);
-  // … map subject.sub to a principal and return the scope stub, as before
+  // … map subject.sub to a principal, as before
+  return host.getScope(principal, tenantId, scopeId, { ...mcpScopeOptions(c, subject) });
 }
 ```
+
+`mcpScopeOptions(c, subject)` hands the delegation to both places that hold a call to it: the
+endpoint's check of each tool, and the kernel, through the `getScope` options it returns. For a
+user acting directly it returns `{}` and sets nothing.
 
 `mcpChannelOf(c)` is the MCP endpoint serving the request: the resource it answers as, set by
 the endpoint around its own `resolveStub` call and `null` everywhere else — on every REST
@@ -240,19 +244,20 @@ What each half does:
   endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
   does: holding every call to `subject.delegation.scope`. Nothing checks that it does.
 - **The endpoint holds every call to the scope.** A tool runs only when its leading
-  permission key is in `scope`, and then the operation's own check still asks whether the
-  user holds it. So a delegated call does at most what the user may and what was delegated.
-  A tool whose operation declares no single leading key (`narrows`) is outside every scope.
-  A refusal is an in-band tool error, the same as a denied permission.
+  permission key is in `scope`. A tool whose operation declares no single leading key
+  (`narrows`) is outside every scope. A refusal is an in-band tool error, the same as a
+  denied permission.
+- **The kernel holds every check behind it.** The stub `getScope` mints with the
+  delegation refuses a key outside `scope` at every decision the operation makes: a second
+  `ctx.check`, an entity check, the grant-scoped read behind a filtered list. It refuses it
+  exactly as it refuses a key the user lacks. So a delegated call does at most what the user
+  may and what was delegated.
 
-If the endpoint is handed nothing (`setMcpDelegation` was not called), every tool call
+If the endpoint is handed nothing (`mcpScopeOptions` was not called), every tool call
 made with a bearer carrying `act` is refused. That covers a vertical that opted in to the
-verifier and forgot the second line.
-
-The scope is checked against the tool's declared leading key, not each check the
-operation makes. An operation whose handler checks another key as well checks it against
-everything the user holds. So delegate only keys whose tools check nothing wider than the
-key itself.
+verifier and forgot the second line. The endpoint cannot see whether the stub carries the
+delegation, so a stub that hands it over with `setMcpDelegation` alone gets the tool check
+and nothing behind it.
 
 ### What is deliberately not here
 
