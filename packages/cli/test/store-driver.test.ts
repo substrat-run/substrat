@@ -18,6 +18,7 @@ import {
   packedFilesOf,
   packStoreDriverDir,
   skippedInstallerMarkersOf,
+  STORE_RELEASE_LIMITS,
   sourceCommitOf,
   storeDriverPackLines,
   storeDriverStatusLines,
@@ -156,40 +157,40 @@ describe('packStoreDriverDir (#2300)', () => {
   });
 
   it('refuses a release over the module count, at the walk and with the release limit, or the byte cap', () => {
-    const many: Record<string, string> = { 'driver_graph/store.py': '' };
-    for (let i = 1; i < STORE_RELEASE_MAX_MODULES; i++) many[`python_modules/m${i}.py`] = '';
-    const counted = driverDir(many);
+    // The pack is held to the limits the control plane parses with; the cases below shrink them,
+    // so the boundary is walked with a handful of files rather than thousands.
+    expect(STORE_RELEASE_LIMITS).toEqual({ files: STORE_RELEASE_MAX_FILES, modules: STORE_RELEASE_MAX_MODULES, bytes: STORE_RELEASE_MAX_BYTES });
+    const limits = { files: 6, modules: 3, bytes: 16 };
+    const counted = driverDir({ 'driver_graph/store.py': '', 'python_modules/m1.py': '', 'python_modules/m2.py': '' });
     try {
-      // Exactly the limit packs, and is what the control plane parses.
-      const body = packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT);
-      expect(body.modules).toHaveLength(STORE_RELEASE_MAX_MODULES);
-      expect(storeDriverReleaseUpload.safeParse(body).success).toBe(true);
-      // Data files beside them count toward the byte cap only (D-68), so the release still packs and parses.
+      // Exactly the limit packs.
+      expect(packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT, limits).modules).toHaveLength(limits.modules);
+      // Data files beside them count toward the file and byte caps only (D-68), so the release still packs.
       writeFileSync(join(counted, 'python_modules/zone.txt'), '');
       writeFileSync(join(counted, 'python_modules/m1.pyi'), '');
-      const withData = packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT);
-      expect(withData.modules).toHaveLength(STORE_RELEASE_MAX_MODULES + 2);
-      expect(storeDriverReleaseUpload.safeParse(withData).success).toBe(true);
+      expect(packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT, limits).modules).toHaveLength(limits.modules + 2);
       // One more code module is refused by the walk, before anything is read or classified, naming the release's limit.
       writeFileSync(join(counted, 'python_modules/one_more.so'), '');
-      const over = `holds more than ${STORE_RELEASE_MAX_MODULES} code modules; a release carries at most ${STORE_RELEASE_MAX_MODULES} (${PYTHON_CODE_FORMS})`;
-      expect(() => packedFilesOf(counted)).toThrow(over);
-      expect(() => packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT)).toThrow(over);
+      const over = `holds more than ${limits.modules} code modules; a release carries at most ${limits.modules} (${PYTHON_CODE_FORMS})`;
+      expect(() => packedFilesOf(counted, limits)).toThrow(over);
+      expect(() => packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT, limits)).toThrow(over);
     } finally {
       rmSync(counted, { recursive: true, force: true });
     }
-    // More files than a release carries is refused by the walk too, data files included.
+    // Exactly the file limit packs, data files included; one more is refused by the walk too.
     const crowded: Record<string, string> = { 'driver_graph/store.py': '' };
-    for (let i = 1; i <= STORE_RELEASE_MAX_FILES; i++) crowded[`python_modules/data/f${i}`] = '';
+    for (let i = 1; i < limits.files; i++) crowded[`python_modules/data/f${i}`] = '';
     const files = driverDir(crowded);
     try {
-      expect(() => packedFilesOf(files)).toThrow(`holds more than ${STORE_RELEASE_MAX_FILES} files; a release carries at most ${STORE_RELEASE_MAX_FILES}`);
+      expect(packedFilesOf(files, limits)).toHaveLength(limits.files);
+      writeFileSync(join(files, 'python_modules/data/one_more'), '');
+      expect(() => packedFilesOf(files, limits)).toThrow(`holds more than ${limits.files} files; a release carries at most ${limits.files}`);
     } finally {
       rmSync(files, { recursive: true, force: true });
     }
-    const huge = driverDir({ 'driver_graph/store.py': 'x'.repeat(STORE_RELEASE_MAX_BYTES + 1) });
+    const huge = driverDir({ 'driver_graph/store.py': 'x'.repeat(limits.bytes + 1) });
     try {
-      expect(() => packStoreDriverDir(huge, 'driver_graph/store.py', COMMIT)).toThrow(new RegExp(`${STORE_RELEASE_MAX_BYTES}`));
+      expect(() => packStoreDriverDir(huge, 'driver_graph/store.py', COMMIT, limits)).toThrow(`the package is over ${limits.bytes} bytes`);
     } finally {
       rmSync(huge, { recursive: true, force: true });
     }
