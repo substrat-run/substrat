@@ -125,6 +125,16 @@ const WEBHOOK_RETRY_MS = 60 * 60 * 1000;
 /** A session is reused only while it stays open at least this much longer. */
 const REUSE_MARGIN_MS = 5 * 60 * 1000;
 const DEFAULT_EXPIRY_MINUTES = 60;
+/** How long a reference claimed for an opening stays claimed if the opening never finishes. */
+const CLAIM_MS = 2 * 60 * 1000;
+
+/**
+ * Stripe takes an expiry from 30 minutes to 24 hours after it creates the session, measured on its
+ * clock when the request lands; asking for exactly either bound is refused after a little latency.
+ */
+function stripeExpirySeconds(minutes: number): number {
+  return Math.min(Math.max(minutes * 60, 30 * 60 + 60), 24 * 60 * 60 - 60);
+}
 
 const BINDING_PREFIX = 'stripe:binding:';
 const CHECKOUT_PREFIX = 'stripe:checkout:';
@@ -143,6 +153,12 @@ export interface StripeBinding {
   /** The permission `operation` checks, which the connection must hold on `scopeId`. */
   permission: string;
   boundAt: string;
+}
+
+/** What a reference is held by: the session opened for it, or a claim while one is being opened. */
+interface StripeReferenceRow {
+  checkoutId?: string;
+  claimedAt?: string;
 }
 
 /** One session this connection opened, as the directory keeps it. */
@@ -308,13 +324,20 @@ export async function createStripeCheckout(
 
   const refKey = await referenceKey(scopeId, request.reference);
   const held = await host.admin.getConnectorState(connection.id, refKey);
-  const previous = typeof held === 'object' && held !== null ? await checkoutRowOf(host, connection.id, (held as { checkoutId: string }).checkoutId) : null;
+  const ref = typeof held === 'object' && held !== null ? (held as StripeReferenceRow) : null;
+  const busy = () => new StripeCheckoutRefusal(`a checkout for reference '${request.reference}' is being opened by another request; ask again in a moment`, 409);
+  if (ref && !ref.checkoutId && now - Date.parse(ref.claimedAt ?? '') < CLAIM_MS) throw busy();
+  const previous = ref?.checkoutId ? await checkoutRowOf(host, connection.id, ref.checkoutId) : null;
   if (previous) {
     const reused = await reuseOrClose(host, connection.id, api, previous, digest, now, options);
     if (reused) return reused;
   }
+  // One ask opens a session for a reference at a time. Without the claim, two asks arriving together
+  // would both find nothing open, both open a session, and the buyer could pay both.
+  const claim: StripeReferenceRow = { claimedAt: iso(now) };
+  if (!(await host.admin.swapConnectorState(connection.id, refKey, held, claim))) throw busy();
 
-  const expiresAt = Math.floor(now / 1000) + (request.expiresInMinutes ?? DEFAULT_EXPIRY_MINUTES) * 60;
+  const expiresAt = Math.floor(now / 1000) + stripeExpirySeconds(request.expiresInMinutes ?? DEFAULT_EXPIRY_MINUTES);
   const metadata = { substrat_connection: connection.id, substrat_scope: scopeId, substrat_reference: request.reference };
   let session: StripeCheckoutSession;
   try {
@@ -336,6 +359,8 @@ export async function createStripeCheckout(
       `substrat-checkout-${mintToken()}`,
     );
   } catch (err) {
+    // Nothing was opened: let the next ask have the reference.
+    await host.admin.swapConnectorState(connection.id, refKey, claim, held ?? null).catch(() => undefined);
     if (err instanceof StripeApiError && err.refused) {
       throw new StripeCheckoutRefusal("Stripe no longer accepts this connection's key; the tenant reconnects Stripe", 409);
     }

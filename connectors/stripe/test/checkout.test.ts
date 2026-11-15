@@ -36,6 +36,7 @@ describe('stripe connector — opening a checkout', () => {
       expiresAt: '2026-11-15T11:00:00.000Z',
       live: false,
     });
+    expect((await w.checkout({ reference: 'order-30', expiresInMinutes: 30 })).expiresAt).toBe('2026-11-15T10:31:00.000Z');
     const session = mock.sessions.get(answer.checkoutId)!;
     // 2 × 99.50 + 50 SEK, in öre.
     expect(session).toMatchObject({ amount_total: 24900, currency: 'sek', client_reference_id: 'order-17', customer_email: 'asa@example.com' });
@@ -70,6 +71,27 @@ describe('stripe connector — opening a checkout', () => {
       [first.checkoutId, 'open'],
       [first.checkoutId, 'expired'],
     ]);
+  });
+
+  it('refuses a second ask for a reference while the first is still opening its session', async () => {
+    const mock = new StripeMock();
+    w = await world(mock);
+    await w.bind();
+    // Hold the first ask's call to Stripe open, so the second arrives mid-opening.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const direct = mock.fetch;
+    w.options.fetch = (async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'POST' && url.endsWith('/v1/checkout/sessions')) await held;
+      return direct(url, init as never);
+    }) as typeof direct;
+    const first = w.checkout();
+    await expect(w.checkout()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/being opened/) });
+    release();
+    const opened = await first;
+    expect(mock.sessions.size).toBe(1);
+    // Once opened, the claim holds the session, and the same ask is answered from it.
+    expect((await w.checkout()).checkoutId).toBe(opened.checkoutId);
   });
 
   it.each([
