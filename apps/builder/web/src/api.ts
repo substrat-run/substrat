@@ -257,7 +257,7 @@ export const api = {
 	studioDataPreview: () => f('/api/preview/data').then((r) => j<StudioDataPreview>(r)),
 	runStudioDataPreview: () => f('/api/preview/data', { method: 'POST' }).then((r) => j<StudioPreview>(r)),
 	/** The seeded slot's people, and a one-time URL that signs the frame in as one of them (#3145). */
-	studioPersonas: () => f('/api/preview/personas').then((r) => j<{ personas: StudioPersona[] }>(r)),
+	studioPersonas: () => f('/api/preview/personas').then((r) => j<{ personas: StudioPersona[]; note?: string }>(r)),
 	studioSignIn: (sub: string) =>
 		f('/api/preview/sign-in', {
 			method: 'POST',

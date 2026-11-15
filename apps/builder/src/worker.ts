@@ -41,6 +41,7 @@ import { STUDIO_MODULES } from './studio.js';
 import { BUILD_ID_HEADER, interruptionOf, isBuildId, ulid } from './build-log.js';
 import { interruptedResponse, refuse, unhandledResponse } from './problem.js';
 import {
+	FramedSignInCache,
 	personPlane,
 	readStudioDataPreview,
 	readStudioPersonas,
@@ -100,6 +101,9 @@ function turnQuery(params: URLSearchParams): Record<string, unknown> {
 	if (params.get('troubled') === 'true') query.troubled = true;
 	return query;
 }
+
+/** Whether each preview version's login holds inside the studio's frame, probed once per version. */
+const framedSignIn = new FramedSignInCache();
 
 /** The tenant-selection header — same name, same meaning as the CP API's. */
 const TENANT_HEADER = 'x-substrat-tenant';
@@ -370,7 +374,7 @@ app.all('/api/*', async (c) => {
 	if (c.req.path === '/api/preview/personas' && c.req.method === 'GET') {
 		const project = await currentProject();
 		if (project instanceof Response) return project;
-		return project ? readStudioPersonas(cp, internal, project, person, new Date()) : c.json({ personas: [] });
+		return project ? readStudioPersonas(cp, internal, (url, init) => fetch(url, init), project, person, new Date(), framedSignIn) : c.json({ personas: [] });
 	}
 	if (c.req.path === '/api/preview/sign-in' && c.req.method === 'POST') {
 		const project = await currentProject();
