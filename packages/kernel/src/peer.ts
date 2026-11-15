@@ -220,7 +220,9 @@ const NO_KEYS: ReadonlySet<string> = new Set<string>();
  * a K-35 denial: no permission was checked, exactly as for a capability's allowlist. Returns the
  * check subject the operation then runs as, with every ordinary `ctx.check` inside it.
  *
- * `operation: null` is a delivery (#1705), which names no operation and so meets no allowlist.
+ * `operation: null` is a delivery (#1705), which names no operation and so meets no allowlist, or
+ * a call made for a person through this peer (#3161, `ScopeDelegation.via`), which the person's
+ * own holdings and the delegation's ceiling govern instead.
  */
 export function admitPeer(
   db: SwitchSql,

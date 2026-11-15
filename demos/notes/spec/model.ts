@@ -39,12 +39,16 @@ export const notesEntities = defineEntities({
 });
 
 /**
+ * `todo-peer:admit` is Todo's own seat here as a declared peer (`peers` in `src/manifest.ts`),
+ * reserved to it and checked by no operation. A call Todo makes for a person passes Todo's peer
+ * admission, and the operator's peer switch for Todo works by taking this seat away.
+ *
  * Item notes have keys of their own. Their operations trust the door to have asked Todo first
  * (`src/app.ts`), and a call Todo makes AS a person (`delegations` in `src/manifest.ts`) reaches
  * an operation without passing that door: it is delegated the notepad's keys only, so the
  * kernel's ceiling refuses it any item note.
  */
-export const NOTES_PERMISSIONS = ['note:read', 'note:write', 'item-note:read', 'item-note:write'] as const;
+export const NOTES_PERMISSIONS = ['note:read', 'note:write', 'item-note:read', 'item-note:write', 'todo-peer:admit'] as const;
 
 export const notesOperations = defineOperations(notesEntities, NOTES_PERMISSIONS)({
   'notes/add-note': {

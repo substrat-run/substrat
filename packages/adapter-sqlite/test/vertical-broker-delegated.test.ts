@@ -1,16 +1,18 @@
 /**
  * The local broker carrying a call made for a PERSON (#3161): the target's harness says who the
  * token is (its `delegated` hook, the person contract's door), and the call runs on the target as
- * that person with the token's scope as a ceiling. Not the peer door: the plugin declares no
- * `peers`, so a call that went through it would be refused as `forbidden`.
+ * that person with the token's scope as a ceiling. Not the peer door's allowlist: the plugin
+ * declares the master as a peer allowlisted for nothing, so a call as the master itself would be
+ * refused. The peer's admission still applies: declared, and switched on.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   PEER_CLIENT_OPERATION,
   errorCodeOf,
+  moduleManifest,
   permissionKey,
   platformActorId,
   principalId,
@@ -27,8 +29,11 @@ const PLUGIN = 'acme/plugin';
 /** Takes peer calls from the master (`peerMod` declares it), and no call made for a person. */
 const BARE = 'acme/bare';
 const MASTER = PEER_CALLER;
+/** Another app of the tenant, which the plugin does not declare as a peer. */
+const STRANGER = 'acme/stranger';
 const A = permissionKey.parse('ceiling:a');
 const B = permissionKey.parse('ceiling:b');
+const PEER_KEY = permissionKey.parse('ceiling:peer');
 const TOKEN = 'a-delegated-token-that-must-never-be-echoed';
 
 const refusal = (p: Promise<unknown>): Promise<unknown> => p.then(() => undefined, (e: unknown) => e);
@@ -43,6 +48,7 @@ describe('the local broker: a call made for a person (#3161)', () => {
   const plugin = hostIn('substrat-delegated-plugin-');
   const bare = hostIn('substrat-delegated-bare-');
   const master = hostIn('substrat-delegated-master-');
+  const stranger = hostIn('substrat-delegated-stranger-');
 
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
@@ -55,7 +61,7 @@ describe('the local broker: a call made for a person (#3161)', () => {
   let answer: LocalDelegatedAnswer;
   const asked: Parameters<NonNullable<LocalVerticalTargetHooks['delegated']>>[0][] = [];
   const broker = createLocalVerticalBroker(
-    { [PLUGIN]: plugin, [BARE]: bare, [MASTER]: master },
+    { [PLUGIN]: plugin, [BARE]: bare, [MASTER]: master, [STRANGER]: stranger },
     {
       [PLUGIN]: {
         clientId: 'plugin-client',
@@ -69,6 +75,7 @@ describe('the local broker: a call made for a person (#3161)', () => {
 
   let pluginScope: ScopeId;
   let callerScope: ScopeId;
+  let strangerScope: ScopeId;
   const client = () => broker.clientFor({ vertical: MASTER, tenantId: t, scopeId: callerScope });
   const forPerson = (operation: string, target = PLUGIN) => client().invoke(target, operation, undefined, { onBehalf: { token: TOKEN } });
 
@@ -80,9 +87,13 @@ describe('the local broker: a call made for a person (#3161)', () => {
   };
 
   beforeAll(async () => {
-    plugin.registerModule(delegationCeilingMod);
+    // The ceiling fixture with the master declared as its peer, allowlisted for nothing.
+    plugin.registerModule({
+      ...delegationCeilingMod,
+      manifest: moduleManifest.parse({ ...delegationCeilingMod.manifest, peers: [{ vertical: MASTER, operations: [], permissions: [PEER_KEY] }] }),
+    });
     bare.registerModule(peerMod);
-    for (const host of [plugin, bare, master]) {
+    for (const host of [plugin, bare, master, stranger]) {
       await host.admin.createTenant(staff, { id: t, slug: `delegated-${t.slice(-10).toLowerCase()}`, name: 'Delegated' });
     }
     await plugin.admin.grantEntitlement(staff, t, 'delegation-ceiling');
@@ -94,10 +105,11 @@ describe('the local broker: a call made for a person (#3161)', () => {
     pluginScope = await scopeOn(plugin, PLUGIN);
     await scopeOn(bare, BARE);
     callerScope = await scopeOn(master, MASTER);
+    strangerScope = await scopeOn(stranger, STRANGER);
   });
 
   afterAll(async () => {
-    for (const host of [plugin, bare, master]) await host.close();
+    for (const host of [plugin, bare, master, stranger]) await host.close();
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
   });
 
@@ -117,18 +129,52 @@ describe('the local broker: a call made for a person (#3161)', () => {
     await expect(client().invoke(BARE, 'peer/list')).resolves.toBeDefined();
     const e = await refusal(forPerson('peer/list', BARE));
     expect(errorCodeOf(e)).toBe('forbidden');
-    expect((e as Error).message).toContain('takes no calls made for a person');
-    expect((e as Error).message).not.toContain(TOKEN);
+    expect((e as Error).message).toBe('this app does not take calls for a person');
   });
 
-  it('a token the target’s door refuses is permission_denied, naming only the reason; a door that could not ask is unavailable', async () => {
-    answer = { admitted: false, reason: 'token-refused' };
-    const e = await refusal(forPerson('ceiling/a'));
-    expect(errorCodeOf(e)).toBe('permission_denied');
-    expect((e as Error).message).toContain('token-refused');
-    expect((e as Error).message).not.toContain(TOKEN);
-    answer = { admitted: false, reason: 'unavailable' };
-    expect(errorCodeOf(await refusal(forPerson('ceiling/a')))).toBe('unavailable');
+  it('a token the target’s door refuses is forbidden in the hosted door’s words, the reason on the operator’s line only; a door that could not ask is unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      answer = { admitted: false, reason: 'token-refused' };
+      const e = await refusal(forPerson('ceiling/a'));
+      expect(errorCodeOf(e)).toBe('forbidden');
+      expect((e as Error).message).toBe('this call for a person was refused');
+      answer = { admitted: false, reason: 'unavailable' };
+      const u = await refusal(forPerson('ceiling/a'));
+      expect(errorCodeOf(u)).toBe('unavailable');
+      expect((u as Error).message).toBe('this call for a person cannot be answered now; retry');
+      const lines = warn.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
+      const at = { tenantId: t, scopeId: pluginScope, caller: MASTER };
+      expect(lines).toEqual([
+        { host: 'peer-on-behalf-refused', ...at, reason: 'token-refused' },
+        { host: 'peer-on-behalf-refused', ...at, reason: 'unavailable' },
+      ]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(TOKEN);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the caller must pass the target’s peer admission: switched off there, an admitted token runs nothing; on again, it runs', async () => {
+    answer = { admitted: true, principal: alice, scope: [A], actor: 'master-client' };
+    const peerSwitch = { vertical: MASTER, node: { tenantId: t, scopeId: pluginScope }, reason: 'incident' };
+    await plugin.admin.revokeFromPeer(staff, peerSwitch);
+    try {
+      const e = await refusal(forPerson('ceiling/a'));
+      expect(errorCodeOf(e)).toBe('forbidden');
+      expect((e as Error).message).toContain('switched off on this scope');
+    } finally {
+      await plugin.admin.restoreToPeer(staff, { ...peerSwitch, reason: 'resolved' });
+    }
+    await expect(forPerson('ceiling/a')).resolves.toEqual({ ok: true });
+  });
+
+  it('a target that does not declare the caller as a peer refuses an admitted token', async () => {
+    answer = { admitted: true, principal: alice, scope: [A], actor: 'master-client' };
+    const other = broker.clientFor({ vertical: STRANGER, tenantId: t, scopeId: strangerScope });
+    const e = await refusal(other.invoke(PLUGIN, 'ceiling/a', undefined, { onBehalf: { token: TOKEN } }));
+    expect(errorCodeOf(e)).toBe('forbidden');
+    expect((e as Error).message).toContain('not a declared peer');
   });
 
   it('an admitted token runs as the person, under its scope: a held key outside it is refused', async () => {

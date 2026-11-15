@@ -36,6 +36,7 @@ import { createApp as createTodoApp } from '@substrat-run/demo-todo/src/app.js';
 import { grantOwner, linkDevPersonas, reconcileOwnerGrants, seed as seedTodo, type World } from '@substrat-run/demo-todo/src/seed.js';
 import { createApp } from './app.js';
 import { NOTES_CLIENT_ID, TODO_CLIENT_ID } from './delegations.js';
+import { notesManifest } from './manifest.js';
 import { ROLES, rolesFromTodo } from './provision.js';
 import { notesCallRoutes } from './todo-calls.js';
 import { DEV_PROVIDER, buildPair, installNotes } from './seed.js';
@@ -98,6 +99,8 @@ async function boot() {
   const people = devPeople({
     login,
     master: 'todo',
+    // What Todo may do here for a person, as this version declares it; the token is capped to it.
+    delegations: notesManifest.delegations ?? [],
     db: new Database(join(DATA, 'people.sqlite')),
     host: notes,
     actor: staff,

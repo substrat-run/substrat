@@ -5897,13 +5897,22 @@ export class CloudflareScopeHost implements ScopeHost {
     options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
     // #3161: refused before anything is read, so a malformed ceiling never yields a stub.
-    const delegation = parseScopeDelegation(options?.delegation);
+    const parsedDelegation = parseScopeDelegation(options?.delegation);
     // Lifecycle gates (control-plane.md §4.1/§4.2), the K-3 fail-closed path,
     // evaluated durably in the ControlPlaneDO. A throw propagates here.
     await this.assertLive(tenantId, scopeId, 'getScope');
 
     await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, undefined, undefined, undefined, options?.verifiedEmail ?? null, delegation);
+    // #3161: a person's call arriving through a peer goes through that peer's door, as
+    // `getVerticalScope` opens it (the name `peers` uses, the rewind hold, the pin), and the
+    // ScopeDO admits the peer inside its queue on every invoke.
+    if (parsedDelegation?.via) {
+      const via = peerCallerAt(collectPeers(this.peerSources), parsedDelegation.via);
+      const door = await this.openDoor('peer', via.vertical, scopeId);
+      const delegation = Object.freeze({ ...parsedDelegation, via });
+      return this.buildStub(tenantId, scopeId, principal, undefined, door, options, undefined, undefined, undefined, options?.verifiedEmail ?? null, delegation);
+    }
+    return this.buildStub(tenantId, scopeId, principal, undefined, undefined, options, undefined, undefined, undefined, options?.verifiedEmail ?? null, parsedDelegation);
   }
 
   async getScopeStore(

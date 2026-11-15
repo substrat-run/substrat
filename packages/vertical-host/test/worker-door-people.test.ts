@@ -176,6 +176,8 @@ const PEOPLE = {
   master: 'todo',
   resolveOperation: 'todo/resolve-person',
   roles: (master: readonly string[]) => (master.includes('admin') ? ['editor'] : []),
+  // What this dependent's manifest declares: the master may act with both notepad keys, on peer.
+  delegations: [{ actor: 'todo', permissions: ['notes:read', 'notes:write'], channels: ['peer'] }],
 };
 
 function dependent(directory = directoryOf(), host = hostOf(), people: Parameters<typeof workerDoor>[0]['people'] = PEOPLE) {
@@ -288,6 +290,25 @@ describe('a dependent takes a call made for a person (#3161)', () => {
     expect(host.getScope).not.toHaveBeenCalled();
   });
 
+  it('the token’s keys are capped to what this version declares for the master on the peer channel', async () => {
+    identity = { mode: 'oidc', issuer: ISSUER, clientId: 'notes-client' };
+    // The token still carries notes:read (the issuer's copy lags); this version declares notes:write only.
+    const { door } = dependent(undefined, undefined, { ...PEOPLE, delegations: [{ actor: 'todo', permissions: ['notes:write'], channels: ['peer'] }] });
+    expect(await door.platform.delegatedPeer!({}, node, caller('todo'), GOOD)).toMatchObject({ admitted: true, scope: [] });
+  });
+
+  it.each([
+    ['no delegation at all', []],
+    ['one for the master off the peer channel', [{ actor: 'todo', permissions: ['notes:read'] }]],
+    ['one for another app', [{ actor: 'stranger', permissions: ['notes:read'], channels: ['peer'] }]],
+  ] as const)('with %s declared, a call from the master is token-refused before anything is asked', async (_label, delegations) => {
+    identity = { mode: 'oidc', issuer: ISSUER, clientId: 'notes-client' };
+    const { door, host } = dependent(undefined, undefined, { ...PEOPLE, delegations });
+    expect(await door.platform.delegatedPeer!({}, node, caller('todo'), GOOD)).toEqual({ admitted: false, reason: 'token-refused' });
+    expect(net.peer).toEqual([]);
+    expect(host.assignScopeRole).not.toHaveBeenCalled();
+  });
+
   it('a token that does not verify is token-refused', async () => {
     identity = { mode: 'oidc', issuer: ISSUER, clientId: 'notes-client' };
     const { door } = dependent();
@@ -326,9 +347,13 @@ describe('a master calls its plugin as the signed-in person: peerAs (#3161)', ()
     return { door, app, directory };
   }
 
+  // A session of its own per case: `delegatedToken` keeps tokens per (issuer, client, sid) for the
+  // isolate, so a shared sid would answer a later case from an earlier one's tokens.
+  let sid: string;
   beforeEach(() => {
     identity = { mode: 'oidc', issuer: ISSUER, clientId: 'todo-client', clientSecret: 's3cret' };
-    subject = signedIn({ sid: 'sid-1' });
+    sid = `sid-${ulid()}`;
+    subject = signedIn({ sid });
   });
 
   it('refreshes the session, exchanges for the plugin’s client, and calls it with the token', async () => {
@@ -340,7 +365,7 @@ describe('a master calls its plugin as the signed-in person: peerAs (#3161)', ()
     expect(wired[0]!.refreshStore).toBeDefined();
     expect(net.issuer.map((f) => f['grant_type'])).toEqual(['refresh_token', 'urn:ietf:params:oauth:grant-type:token-exchange']);
     expect(net.issuer[1]).toMatchObject({ audience: 'notes-client', client_id: 'todo-client', requested_token_type: TOKEN_TYPE.accessToken });
-    expect(directory.putSessionRefresh).toHaveBeenCalledWith('sid-1', { sub: 'ada-sub', refreshToken: 'rt-2' });
+    expect(directory.putSessionRefresh).toHaveBeenCalledWith(sid, { sub: 'ada-sub', refreshToken: 'rt-2' });
     expect(net.peer.at(-1)).toEqual({ vertical: 'notes', operation: 'notes/list', input: { item: 'i-1' }, onBehalf: { token: 'delegated-at' } });
   });
 

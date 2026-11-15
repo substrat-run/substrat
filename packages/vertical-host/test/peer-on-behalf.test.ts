@@ -166,6 +166,34 @@ describe('/internal/vertical-invoke for a person (#3161)', () => {
     expect((await post(door, call('peer/list'))).status).toBe(200);
   });
 
+  describe("the calling vertical passes this scope's peer admission too", () => {
+    const peerSwitch = { vertical: PEER_CALLER, node: { tenantId: t, scopeId: s }, reason: 'incident' };
+
+    it('switched off here, a call for a person through it is refused 403 and runs nothing; on again, it runs', async () => {
+      answer = { admitted: true, principal: ada, scope: [READ, WRITE], actor: 'todo-client' };
+      await sqlite.admin.revokeFromPeer(staff, peerSwitch);
+      try {
+        const res = await post(door, call('peer/note', { id: 'switched-off', body: 'x' }));
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: 'forbidden', detail: expect.stringContaining('switched off on this scope') });
+        expect(await actorOf('switched-off')).toBeUndefined();
+        expect(lines()[0]).toMatchObject({ status: 403, problemCode: 'forbidden', principalKind: 'principal', operation: 'peer/note' });
+      } finally {
+        await sqlite.admin.restoreToPeer(staff, { ...peerSwitch, reason: 'resolved' });
+      }
+      expect((await post(door, call('peer/note', { id: 'switched-on', body: 'x' }))).status).toBe(200);
+      expect(await actorOf('switched-on')).toBe(ada);
+    });
+
+    it('a vertical this scope does not declare as a peer is refused, whatever its token admitted', async () => {
+      answer = { admitted: true, principal: ada, scope: [READ, WRITE], actor: 'todo-client' };
+      const res = await post(door, { ...call('peer/note', { id: 'undeclared', body: 'x' }), caller: { vertical: 'stranger', scope: callerScope } });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'forbidden', detail: expect.stringContaining('not a declared peer') });
+      expect(await actorOf('undeclared')).toBeUndefined();
+    });
+  });
+
   it.each([
     ['not-master', 403],
     ['token-refused', 403],

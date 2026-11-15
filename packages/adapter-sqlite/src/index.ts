@@ -5031,8 +5031,12 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
-    // #3161: refused before anything is read, so a malformed ceiling never yields a stub.
-    const delegation = parseScopeDelegation(options?.delegation);
+    // #3161: refused before anything is read, so a malformed ceiling never yields a stub. A peer it
+    // arrived through is named as this vertical's `peers` names it, as `getVerticalScope` does.
+    const parsedDelegation = parseScopeDelegation(options?.delegation);
+    const delegation = parsedDelegation?.via
+      ? Object.freeze({ ...parsedDelegation, via: peerCallerAt(this.peerDeclarations(), parsedDelegation.via) })
+      : parsedDelegation;
     const row = this.directory
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
@@ -7152,6 +7156,9 @@ export class SqliteScopeHost implements ScopeHost {
           // #1706: the peer door's admission, on the same terms — every invoke, inside the
           // actor task. An undeclared peer, a switched-off one, or an operation off its
           // allowlist is refused `forbidden` before anything opens; no key was checked.
+          // #3161: a person's call arriving through a peer passes that peer's admission too, on the
+          // same terms and in the same place: declared, and switched on. No allowlist: the ceiling governs.
+          if (delegation?.via) admitPeer(switchSqlOf(rt.db), this.peerDeclarations(), delegation.via, null);
           const subject: CheckSubject =
             authority.kind === 'capability-session'
               ? {

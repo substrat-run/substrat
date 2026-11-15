@@ -29,8 +29,10 @@
  * **A call made for a person (#3161).** `onBehalf` carries a delegated token, which is still not
  * the caller naming anyone: the TARGET's harness verifies it (`delegated`, its person contract's
  * door), and only a token it admits makes the call run as that person, with the token's `scope`
- * as the ceiling. Such a call does not pass the peer door, since it is not the calling vertical
- * acting. The token is never logged or echoed in an error.
+ * as the ceiling. The calling vertical still passes the target's peer admission (declared in its
+ * `peers`, switched on), with no operation allowlist, so the peer switch stops it too. A refusal
+ * tells the caller only that it was refused, as the hosted door does; the reason goes to a log line
+ * without the token, which is never logged or echoed in an error.
  */
 import {
   PEER_CLIENT_OPERATION,
@@ -75,8 +77,8 @@ export interface LocalVerticalClient {
    * when the tenant runs more than one instance without a choice, or a choice is unavailable.
    *
    * With `onBehalf`, as the person the token names instead (#3161): `forbidden` when the target
-   * takes no delegated calls, `permission_denied` when its door does not admit the token, and
-   * `unavailable` when that door could not ask the app it takes its people from.
+   * takes no delegated calls, its door does not admit the token, or the caller does not pass its
+   * peer admission; `unavailable` when that door could not ask the app it takes its people from.
    */
   invoke<O = unknown>(target: string, operation: string, input?: unknown, options?: LocalVerticalInvokeOptions): Promise<O>;
 }
@@ -234,23 +236,25 @@ export function createLocalVerticalBroker(
             return { clientId: hooks?.clientId ?? null } satisfies PeerClientAnswer as O;
           }
           // 3b. A call made for a person: the target's own door says who, and the call runs as
-          //     them under the token's scope. Not the peer door: the calling vertical is not acting.
+          //     them under the token's scope, while the caller passes the target's peer admission.
           if (onBehalf !== undefined) {
             // Parsed for the transport's bound; the refusal echoes nothing of what was sent.
             if (!peerOnBehalf.safeParse(onBehalf).success) {
               throw substratError('validation_failed', 'onBehalf: expected { token } with a token of 1–8192 characters');
             }
-            if (!hooks?.delegated) {
-              throw substratError('forbidden', `vertical '${target_}' takes no calls made for a person`);
-            }
+            // The hosted door's words and codes (`vertical-host`'s `/internal/vertical-invoke`).
+            if (!hooks?.delegated) throw substratError('forbidden', 'this app does not take calls for a person');
             const answer = await hooks.delegated({ token: onBehalf.token, caller: { ...caller }, target: at });
             if (!answer.admitted) {
+              // The reason is for the operator, on this line; the caller learns only that it was refused.
+              console.warn(JSON.stringify({ host: 'peer-on-behalf-refused', ...at, caller: caller.vertical, reason: answer.reason }));
               throw answer.reason === 'unavailable'
-                ? substratError('unavailable', `vertical '${target_}' could not say who this call is made for`)
-                : substratError('permission_denied', `vertical '${target_}' did not admit the person this call is made for (${answer.reason})`);
+                ? substratError('unavailable', 'this call for a person cannot be answered now; retry')
+                : substratError('forbidden', 'this call for a person was refused');
             }
+            // `via`: the target's peer admission for the caller, inside the scope on every invoke.
             const stub = await targetHost!.getScope(answer.principal, at.tenantId, at.scopeId, {
-              delegation: { actor: answer.actor, scope: answer.scope },
+              delegation: { actor: answer.actor, scope: answer.scope, via: { vertical: caller.vertical, scope: caller.scopeId } },
             });
             return stub.invoke<O, unknown>(operation, input, invokeOptions);
           }

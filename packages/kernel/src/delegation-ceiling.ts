@@ -12,7 +12,7 @@
  * through it) and the grant-scoped read behind a filtered list. A refusal looks exactly like a
  * check the person fails, and counts as a check (#2387) the same way.
  */
-import { substratError, type Coverage, type PermissionKey } from '@substrat-run/contracts';
+import { substratError, verticalCaller, type Coverage, type PermissionKey, type VerticalCaller } from '@substrat-run/contracts';
 
 /** `getScope`'s `delegation` (#3161): who is acting for the person, and the keys they may use. */
 export interface ScopeDelegation {
@@ -20,6 +20,13 @@ export interface ScopeDelegation {
   readonly actor: string;
   /** The keys delegated to `actor`: a ceiling over what the person holds. Empty admits nothing. */
   readonly scope: readonly string[];
+  /**
+   * The calling vertical, when the person's call arrives as a PEER call: the scope admits it as
+   * its peer door admits that peer (`admitPeer`: declared in `peers`, switched on), on every
+   * invoke, inside the scope's serialized task, so the operator's peer switch stops it as it stops
+   * the peer acting as itself. No operation allowlist applies: the ceiling governs what it may do.
+   */
+  readonly via?: VerticalCaller;
 }
 
 const refused = (path: string, message: string) =>
@@ -35,12 +42,15 @@ export function parseScopeDelegation(value: unknown): ScopeDelegation | undefine
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw refused('delegation', 'expected { actor, scope }');
   }
-  const { actor, scope } = value as { actor?: unknown; scope?: unknown };
+  const { actor, scope, via } = value as { actor?: unknown; scope?: unknown; via?: unknown };
   if (typeof actor !== 'string' || actor.length === 0) throw refused('delegation.actor', 'expected a non-empty string');
   if (!Array.isArray(scope) || !scope.every((k): k is string => typeof k === 'string')) {
     throw refused('delegation.scope', 'expected an array of strings');
   }
-  return Object.freeze({ actor, scope: Object.freeze([...scope]) });
+  if (via === undefined) return Object.freeze({ actor, scope: Object.freeze([...scope]) });
+  const caller = verticalCaller.safeParse(via);
+  if (!caller.success) throw refused('delegation.via', 'expected { vertical, scope }');
+  return Object.freeze({ actor, scope: Object.freeze([...scope]), via: Object.freeze(caller.data) });
 }
 
 /** The ceiling a delegation puts on a call, or undefined for a person acting directly. */

@@ -197,6 +197,24 @@ export interface DoorPeople {
   roles(masterRoles: readonly string[]): readonly string[];
   /** How long an answer is kept, the bound on how late a block lands. Defaults to the door's 300 s. */
   ttlSeconds?: number;
+  /**
+   * This vertical's declared `delegations`, every registered module's: `MODULES.flatMap((m) =>
+   * m.manifest.delegations ?? [])`. A call the master makes for a person is capped to the keys the
+   * entries for the master on the `peer` channel name, whatever the token's `scope` says, so a
+   * narrowing lands with the version that declares it rather than when the issuer next hears of it.
+   * No such entry refuses every such call. Passed in because the door has no read of the host's
+   * registered manifests.
+   */
+  delegations: readonly { actor: string; permissions: readonly string[]; channels?: readonly string[] }[];
+}
+
+/**
+ * The keys `actor` may be delegated on the `peer` channel by `delegations`, or null when no entry
+ * names it there (absent `channels` is `mcp` alone, as for a delivered grant).
+ */
+function peerDelegationCeiling(delegations: DoorPeople['delegations'], actor: string): ReadonlySet<string> | null {
+  const entries = delegations.filter((d) => d.actor === actor && (d.channels ?? []).includes('peer'));
+  return entries.length === 0 ? null : new Set(entries.flatMap((d) => d.permissions));
 }
 
 /** The scope-local verbs a dependent seats and unseats a person's roles with (#3161). */
@@ -495,6 +513,9 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       // A push pinned to the tenant registers `<tenantSlug>/<slug>`: the same master, spelled as
       // `substrat.calls` and the peer door spell it.
       const callerVertical = samePeerVertical(caller.vertical, master.master, caller.tenantSlug ?? null) ? master.master : caller.vertical;
+      // This version's own declaration caps the call (#3161), before the token is read.
+      const ceiling = peerDelegationCeiling(master.delegations, master.master);
+      if (callerVertical === master.master && ceiling === null) return { admitted: false, reason: 'token-refused' };
       let actors: string[] = [];
       if (callerVertical === master.master) {
         try {
@@ -514,11 +535,13 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
       }
       const instance = await wiring(env, node, { actors, channels: ['peer'] });
       const provider = providerOf(instance);
-      return admitDelegated(peopleDeps(env, node, deps.directory(env, node), master), node.scopeId, { token, callerVertical }, {
+      const answer = await admitDelegated(peopleDeps(env, node, deps.directory(env, node), master), node.scopeId, { token, callerVertical }, {
         master: master.master,
         issuer: issuerOf(instance),
         verify: async (t) => (provider.resolveOnBehalf ? provider.resolveOnBehalf(t) : null),
       });
+      // Admitted only from the master, whose entry was found above.
+      return answer.admitted ? { ...answer, scope: answer.scope.filter((k) => ceiling!.has(k)) } : answer;
     };
 
   /**

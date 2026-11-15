@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { CEILING_A, CEILING_B, CEILING_ROLE, delegationCeilingMod } from './delegation-ceiling-module.js';
+import { CEILING_A, CEILING_B, CEILING_PEER, CEILING_ROLE, delegationCeilingMod } from './delegation-ceiling-module.js';
 
 const ACTOR = 'client-todo';
 
@@ -108,8 +108,53 @@ export function delegationCeilingContractSuite(adapterName: string, makeFixture:
       expect(await codeOf(none.invoke('ceiling/a'))).toBe('permission_denied');
     });
 
+    describe('arriving through a peer (`via`)', () => {
+      // A scope of its own with no vertical, so the peer switch is moved here on both adapters.
+      const p = scopeId.parse(ulid());
+      const via = (vertical: string = CEILING_PEER, tenantSlug?: string) => ({ vertical, scope: scopeId.parse(ulid()), ...(tenantSlug ? { tenantSlug } : {}) });
+      const through = (vertical?: string, tenantSlug?: string) =>
+        host.getScope(alice, t, p, { delegation: { actor: ACTOR, scope: [CEILING_A], via: via(vertical, tenantSlug) } });
+      const peerSwitch = { vertical: CEILING_PEER, node: { tenantId: t, scopeId: p }, reason: 'incident' };
+
+      beforeAll(async () => {
+        await host.provisionScope(staff, { tenantId: t, scopeId: p });
+        await host.admin.activateScope(staff, t, p);
+      });
+
+      it('a declared peer, switched on, lets the call in, still under the ceiling and with no allowlist', async () => {
+        const stub = await through();
+        expect(await stub.invoke('ceiling/a')).toEqual({ ok: true });
+        expect(await codeOf(stub.invoke('ceiling/b'))).toBe('permission_denied');
+        // Pushed pinned to this tenant, the same peer (#2252), as at the peer door.
+        expect(await (await through(`ceiling-tenant/${CEILING_PEER}`, 'ceiling-tenant')).invoke('ceiling/a')).toEqual({ ok: true });
+      });
+
+      it('a vertical this one does not declare as a peer is refused', async () => {
+        expect(await codeOf((await through('ceiling-stranger')).invoke('ceiling/a'))).toBe('forbidden');
+      });
+
+      it('the peer switched off refuses the call made through it, and nothing else; on again, it passes', async () => {
+        const stub = await through();
+        await host.admin.revokeFromPeer(staff, peerSwitch);
+        try {
+          expect(await codeOf(stub.invoke('ceiling/a'))).toBe('forbidden');
+          expect(await codeOf((await through()).invoke('ceiling/a'))).toBe('forbidden');
+          expect(await (await host.getScope(alice, t, p)).invoke('ceiling/a')).toEqual({ ok: true });
+          expect(await (await as([CEILING_A])).invoke('ceiling/a')).toEqual({ ok: true });
+        } finally {
+          await host.admin.restoreToPeer(staff, { ...peerSwitch, reason: 'resolved' });
+        }
+        expect(await stub.invoke('ceiling/a')).toEqual({ ok: true });
+      });
+    });
+
     it('a malformed delegation is refused at the door, never ignored', async () => {
-      for (const delegation of [{ actor: '', scope: [CEILING_A] }, { actor: ACTOR, scope: CEILING_A }, { actor: ACTOR }]) {
+      for (const delegation of [
+        { actor: '', scope: [CEILING_A] },
+        { actor: ACTOR, scope: CEILING_A },
+        { actor: ACTOR },
+        { actor: ACTOR, scope: [CEILING_A], via: { vertical: CEILING_PEER } },
+      ]) {
         expect(await codeOf(host.getScope(alice, t, s, { delegation } as never))).toBe('validation_failed');
       }
     });

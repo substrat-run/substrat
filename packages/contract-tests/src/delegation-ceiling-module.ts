@@ -2,7 +2,8 @@
  * The fixture behind `delegationCeilingContractSuite` (#3161): two keys a person holds, and
  * operations that ask for each in the ways a ceiling has to reach — a plain check, a check after a
  * write, the grant-scoped read behind a filtered list, and `ctx.canAssign`'s bound — and one whose
- * every run answers differently, so a replay can be told from a fresh run.
+ * every run answers differently, so a replay can be told from a fresh run. It declares one peer,
+ * allowlisted for nothing, whose admission a person's call arriving through it must pass.
  */
 import { z } from 'zod';
 import { defineEntities, defineOperations, manifestOperations, moduleManifest, permissionKey } from '@substrat-run/contracts';
@@ -12,6 +13,9 @@ export const DELEGATION_CEILING_MODULE_ID = '@test/delegation-ceiling';
 export const CEILING_A = permissionKey.parse('ceiling:a');
 export const CEILING_B = permissionKey.parse('ceiling:b');
 export const CEILING_ENTITY = 'ceiling_thing';
+/** The declared peer a person's call may arrive through, and the one key it is seated with. */
+export const CEILING_PEER = 'ceiling-peer';
+export const CEILING_PEER_KEY = permissionKey.parse('ceiling:peer');
 
 const entities = defineEntities({});
 const ok = z.object({ ok: z.boolean() });
@@ -44,9 +48,14 @@ export const delegationCeilingMod: ModuleRegistration = {
     kernelContract: '^0.0.1',
     migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
     ...manifestOperations(ceilingOperations, {
-      permissions: { 'ceiling:a': 'the delegated key', 'ceiling:b': 'a key the person holds and did not delegate' },
+      permissions: {
+        'ceiling:a': 'the delegated key',
+        'ceiling:b': 'a key the person holds and did not delegate',
+        'ceiling:peer': 'the declared peer\'s seat, which its switch moves; no operation checks it',
+      },
       consumes: [],
     }),
+    peers: [{ vertical: CEILING_PEER, operations: [], permissions: [CEILING_PEER_KEY] }],
     attachmentTargets: [],
     entitlementKey: 'delegation-ceiling',
   }),

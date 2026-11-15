@@ -3630,6 +3630,12 @@ export function defineScopeDO(
           peerSubject = admitPeer(this.switchSql(), this.peers, verticalCaller, operation);
           idempotencySubjectRef = peerSubject;
         }
+        // #3161: a person's call arriving through a peer passes that peer's door too, on the same
+        // terms: the pin, then declared and switched on. No allowlist: the ceiling governs.
+        if (delegated?.via !== undefined) {
+          this.assertPeerDoor(delegated.via.vertical, systemDoorInstance);
+          admitPeer(this.switchSql(), this.peers, delegated.via, null);
+        }
         // #1672: the secrets this call mints — withheld from its idempotency recording, and
         // what the tripwire on its writes looks for.
         const minted: string[] = [];

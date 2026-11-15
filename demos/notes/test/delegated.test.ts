@@ -8,7 +8,7 @@
  * contract door admits whoever the token names. Only the door's clock is the test's, so the time
  * Todo's answer is kept for is crossed by moving it.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,7 @@ import { PEOPLE_TTL_SECONDS, createDevIssuer, devDelegate, devLogin, devPeople, 
 import { PERSONAS } from '@substrat-run/demo-todo/src/personas.js';
 import { createApp as createTodoApp } from '@substrat-run/demo-todo/src/app.js';
 import { DELEGATIONS, NOTES_CLIENT_ID, TODO_CLIENT_ID } from '../src/delegations.js';
+import { notesManifest } from '../src/manifest.js';
 import { rolesFromTodo } from '../src/provision.js';
 import { DEV_PROVIDER, installNotes, seedPair, type Pair } from '../src/seed.js';
 import { NOTES_VIA_TODO, notesCallRoutes } from '../src/todo-calls.js';
@@ -96,6 +97,7 @@ beforeAll(async () => {
   const people = devPeople({
     login: notesLogin,
     master: 'todo',
+    delegations: notesManifest.delegations ?? [],
     db: new Database(join(dir, 'people.sqlite')),
     host: pair.notes,
     actor: world.staff,
@@ -161,13 +163,33 @@ describe('Todo calls Notes as the person signed in to Todo', () => {
     expect((await notes(bjorn)).status).toBe(403);
   });
 
-  it('refuses a call for a Notes scope the harness does not serve, before reading the token', async () => {
+  it('refuses everyone through Todo while the operator has Todo switched off as a peer here, and admits them again once on', async () => {
+    const peerSwitch = { vertical: 'todo', node: pair.node, reason: 'incident' };
+    await pair.notes.admin.revokeFromPeer(pair.world.staff, peerSwitch);
+    try {
+      expect((await notes(ada)).status).toBe(403);
+      expect(await codeOf(delegate.invoke(ada, 'notes', 'notes/list-notes', {}))).toBe('forbidden');
+    } finally {
+      await pair.notes.admin.restoreToPeer(pair.world.staff, { ...peerSwitch, reason: 'resolved' });
+    }
+    expect((await notes(ada)).status).toBe(200);
+  });
+
+  it('refuses a call for a Notes scope the harness does not serve, before reading the token, saying why only on the operator’s line', async () => {
     const { world } = pair;
     // Notes installed in Todo's other tenant too, and Todo's scope there calling it as Ada.
-    await installNotes(pair.notes, { staff: world.staff, tenant: world.otherTenant });
+    const other = await installNotes(pair.notes, { staff: world.staff, tenant: world.otherTenant });
     const elsewhere = devDelegate({ login: todoLogin, store, peer: pair.todoClientFor({ tenantId: world.otherTenant, scopeId: world.otherScope }) });
-    const refused = await elsewhere.invoke(ada, 'notes', 'notes/list-notes', {}).catch((e: unknown) => e);
-    expect(errorCodeOf(refused)).toBe('permission_denied');
-    expect((refused as Error).message).toContain('not-served');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refused = await elsewhere.invoke(ada, 'notes', 'notes/list-notes', {}).catch((e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect((refused as Error).message).toBe('this call for a person was refused');
+      expect(warn.mock.calls.map((c) => JSON.parse(String(c[0])) as unknown)).toContainEqual({
+        host: 'peer-on-behalf-refused', ...other, caller: 'todo', reason: 'not-served',
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

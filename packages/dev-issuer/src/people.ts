@@ -59,6 +59,13 @@ export interface DevPeopleOptions {
    * whose calls made for a person `delegated` takes. Absent, it takes none.
    */
   master?: string;
+  /**
+   * This vertical's declared `delegations` (#3161): `notesManifest.delegations`. A call `master`
+   * makes for a person is capped to the keys the entries for it on the `peer` channel name, whatever
+   * the token's `scope` says; with no such entry, `delegated` refuses every token. As the hosted
+   * door's `people.delegations`.
+   */
+  delegations?: readonly { actor: string; permissions: readonly string[]; channels?: readonly string[] }[];
   /** A SQLite database of the dev server's own: `new Database(join(dataDir, 'people.sqlite'))`. */
   db: DevSqliteDatabase;
   /** Usually the `SqliteScopeHost` the dev server runs on. */
@@ -147,6 +154,11 @@ export function devPeople(opts: DevPeopleOptions): DevPeople {
 
     async delegated(call) {
       if (opts.master === undefined) return { refused: 'not-master' };
+      // This vertical's own declaration caps the call, before the token is read (absent `channels`
+      // is `mcp` alone). A caller other than the master is `admitDelegated`'s to refuse.
+      const entries = (opts.delegations ?? []).filter((d) => d.actor === opts.master && (d.channels ?? []).includes('peer'));
+      if (call.callerVertical === opts.master && entries.length === 0) return { refused: 'token-refused' };
+      const ceiling = new Set(entries.flatMap((d) => d.permissions));
       const verify = opts.login.resolveOnBehalf;
       // The verified subject, kept for the caller's name and address.
       const seen: { subject?: AuthSubject | null } = {};
@@ -169,7 +181,7 @@ export function devPeople(opts: DevPeopleOptions): DevPeople {
           // A delegated token proves nothing about the address (K-61): another app is acting.
           verifiedEmail: null,
         },
-        scope: answer.scope,
+        scope: answer.scope.filter((k) => ceiling.has(k)),
         actor: answer.actor,
       };
     },

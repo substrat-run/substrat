@@ -15,6 +15,7 @@ import {
   TOKEN_EXCHANGE_GRANT_TYPE,
   TOKEN_TYPE,
   errorCodeOf,
+  moduleManifest,
   permissionKey,
   type PersonResolveInput,
   type PlatformActorId,
@@ -27,7 +28,7 @@ import { createLocalVerticalBroker } from '@substrat-run/adapter-sqlite/vertical
 import { delegationCeilingMod } from '@substrat-run/contract-tests';
 import { createDevIssuer } from '../src/issuer.js';
 import { devDelegate, devLogin, devRefreshStore } from '../src/harness.js';
-import { devPeople, type DevPeopleHost } from '../src/people.js';
+import { devPeople, type DevPeopleHost, type DevPeopleOptions } from '../src/people.js';
 
 // Loopback, as the real dev issuer is: the relying party accepts a plain-http issuer only there.
 const ISSUER = 'http://localhost:18881';
@@ -41,6 +42,9 @@ const STRANGER = 'acme/stranger';
 const PROVIDER = 'oidc:dev-issuer';
 const A = permissionKey.parse('ceiling:a');
 const B = permissionKey.parse('ceiling:b');
+const PEER_KEY = permissionKey.parse('ceiling:peer');
+/** What the plugin's manifest declares: the master may act with A on the peer channel. */
+const DECLARED: DevPeopleOptions['delegations'] = [{ actor: MASTER, permissions: [A], channels: ['peer'] }];
 
 const app = createDevIssuer({
   personas: [
@@ -126,10 +130,11 @@ describe('devPeople.delegated: the plugin’s door for a call made for a person 
     },
   };
   const node = { tenantId: T, scopeId: id(4) as ScopeId };
-  const peopleWith = (master?: string) =>
+  const peopleWith = (master?: string, delegations: DevPeopleOptions['delegations'] = DECLARED) =>
     devPeople({
       login: pluginLogin,
       ...(master === undefined ? {} : { master }),
+      delegations,
       db: new Database(':memory:'),
       host,
       actor: STAFF,
@@ -167,6 +172,17 @@ describe('devPeople.delegated: the plugin’s door for a call made for a person 
     expect(resolved.length).toBe(asked);
   });
 
+  it('caps the token’s keys to what this vertical declares for the master on the peer channel, and refuses with no such entry', async () => {
+    const token = await peerToken('dev|ada');
+    // The issuer still delegates A; this version declares B only.
+    expect(await peopleWith(MASTER, [{ actor: MASTER, permissions: [B], channels: ['peer'] }]).delegated({ token, callerVertical: MASTER })).toMatchObject({ scope: [] });
+    const asked = resolved.length;
+    for (const declared of [[], [{ actor: MASTER, permissions: [A] }], [{ actor: STRANGER, permissions: [A], channels: ['peer' as const] }]]) {
+      expect(await peopleWith(MASTER, declared).delegated({ token, callerVertical: MASTER })).toEqual({ refused: 'token-refused' });
+    }
+    expect(resolved.length).toBe(asked);
+  });
+
   it('refuses a token that is not a peer delegation for this client: the person’s own sign-in token included', async () => {
     const { access_token } = (await (await post('/dev/token', { sub: 'dev|ada', audience: PLUGIN_CLIENT })).json()) as { access_token: string };
     expect(await people.delegated({ token: access_token, callerVertical: MASTER })).toEqual({ refused: 'token-refused' });
@@ -193,6 +209,7 @@ describe('devDelegate: the master calls its plugin as the signed-in person, end 
   const people = devPeople({
     login: pluginLogin,
     master: MASTER,
+    delegations: DECLARED,
     db: new Database(':memory:'),
     host: plugin,
     actor: STAFF,
@@ -233,7 +250,12 @@ describe('devDelegate: the master calls its plugin as the signed-in person, end 
   };
 
   beforeAll(async () => {
-    plugin.registerModule(delegationCeilingMod);
+    // The ceiling fixture with the master declared as its peer: a call made for a person passes
+    // the plugin's peer admission for the calling vertical.
+    plugin.registerModule({
+      ...delegationCeilingMod,
+      manifest: moduleManifest.parse({ ...delegationCeilingMod.manifest, peers: [{ vertical: MASTER, operations: [], permissions: [PEER_KEY] }] }),
+    });
     const scopes: [SqliteScopeHost, ScopeId, string][] = [[master, masterScope, MASTER], [plugin, pluginScope, PLUGIN], [stranger, strangerScope, STRANGER]];
     for (const [host, scopeId, vertical] of scopes) {
       await host.admin.createTenant(STAFF, { id: T, slug: 'delegate-tenant', name: 'Delegate' });

@@ -52,6 +52,9 @@ access away, that member loses Notes within five minutes, and nothing has to be 
   (`item-note:read`, `item-note:write`) because their operations trust Notes' door to have asked
   Todo to vouch for the list or item first, and a call made for a person does not pass that door.
   Delegating them would let Todo write a note on any item id, or read every item note, as anyone.
+- **Only while Todo is switched on here.** Todo is declared a peer of Notes, allowlisted for
+  nothing and seated with `todo-peer:admit` (reserved to it, checked by no operation). A call made
+  for a person passes Todo's peer admission, so the operator's peer switch for Todo stops it.
 - **No name or address is copied.** The answer carries an id, a status and role keys. A note
   shows its author's id; showing a name is a later, separate read from Todo.
 
@@ -111,6 +114,7 @@ And the call Todo makes as a person (`test/delegated.test.ts`):
 2. The same call cannot reach an item note, though Ada holds those keys in Notes.
 3. Björn is refused until Ada gives him plugin access, and again once his copy expires after she
    takes it away.
+4. With Todo switched off as a peer of Notes, everyone is refused through Todo; on again, admitted.
 
 ## Decisions log
 
@@ -132,4 +136,7 @@ And the call Todo makes as a person (`test/delegated.test.ts`):
   `todo`, on the `peer` channel, with `note:read` and `note:write`. Item notes move to two keys of
   their own, `item-note:read` and `item-note:write`, which `writer` also holds, so the delegation
   cannot reach them: their operations rely on the door's vouch, which a delegated call skips.
+- 2026-11-15: Todo is declared a peer of Notes, allowlisted for no operation, holding one new key
+  reserved to it, `todo-peer:admit`, which no operation checks. A call Todo makes for a person
+  passes Todo's peer admission, so the peer switch is the operator's lever over it as well.
 

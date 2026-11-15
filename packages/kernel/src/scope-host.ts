@@ -1096,7 +1096,9 @@ export interface PersonScopeOptions extends ScopeStubOptions {
    * `ctx.grant`/`ctx.revoke`'s re-check, `ctx.canAssign`, the guards and the host's own checks before
    * the handler — refuses a key outside `scope` exactly as it refuses a key the person lacks. An
    * empty `scope` admits nothing. Absent: the person acting directly, as before. A malformed one is
-   * refused at `getScope` (`validation_failed`), never ignored.
+   * refused at `getScope` (`validation_failed`), never ignored. With `via`, the call also passes
+   * the peer door's admission for that vertical (declared, switched on) on every invoke, and is
+   * refused `forbidden` as the peer itself would be.
    */
   delegation?: ScopeDelegation;
 }

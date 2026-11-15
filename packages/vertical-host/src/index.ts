@@ -2532,7 +2532,8 @@ export function mountPlatformSurface<Env extends object>(
   // #3161: two things before that. `PEER_CLIENT_OPERATION` is the platform's own question and is
   // answered here, before any module is looked up. And a body carrying `onBehalf` runs as the
   // person its token names, only once `delegatedPeer` verified it and admitted them, with the
-  // token's scope as the kernel's ceiling; it never falls back to running as the peer.
+  // token's scope as the kernel's ceiling, and only while the calling vertical passes the scope's
+  // peer admission (declared, switched on); it never falls back to running as the peer.
   app.post('/internal/vertical-invoke', async (c) => {
     const body = verticalInvokeBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
@@ -2577,8 +2578,10 @@ export function mountPlatformSurface<Env extends object>(
             : substratError('forbidden', ON_BEHALF_REFUSED);
         }
         if (!host.getScope) throw substratError('unavailable', 'this deployment cannot run a call for a person (#3161) — redeploy it');
+        // `via`: the calling vertical must also pass this scope's peer admission (declared in
+        // `peers`, switched on), so the operator's peer switch stops calls made for people too.
         const stub = await host.getScope(admitted.principal, body.tenantId, body.scopeId, {
-          delegation: { actor: admitted.actor, scope: admitted.scope },
+          delegation: { actor: admitted.actor, scope: admitted.scope, via: body.caller },
         });
         principalKind = stub.subjectKind ?? principalKind;
         result = await stub.invoke(body.operation, externalInput(body.input), options);
