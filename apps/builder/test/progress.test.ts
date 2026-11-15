@@ -32,6 +32,15 @@ describe('a turn’s work between commits', () => {
 		expect(await ws.exists('other.ts')).toBe(true);
 	});
 
+	it('restores nothing from a snapshot with no files, rather than deleting the tree', async () => {
+		const ws = new LocalWorkspace({ root: await mkdtemp(join(tmpdir(), 'builder-progress-')) });
+		await ws.writeFile('src/kept.ts', 'committed');
+		expect((await ws.exec('git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -q -m t')).exitCode).toBe(0);
+
+		expect(await restoreWork(ws, '.', { files: {}, skipped: ['src/kept.tspackage.json'] })).toBe(0);
+		expect(await ws.exists('src/kept.ts')).toBe(true);
+	});
+
 	it('finds work only in a snapshot marked as holding it', () => {
 		const files = { 'a.ts': 'x' };
 		expect(workIn(JSON.stringify({ work: true, files, skipped: ['b.png'] }))).toEqual({ files, skipped: ['b.png'] });
