@@ -114,7 +114,7 @@ export class ScriveMock {
   private partySeq = 0;
   private touches = 0;
   failWith: number | undefined;
-  /** Reject one action (`setfile`, `update`, `start`, `trash`, `delete`) with this status — one step failing on demand. */
+  /** Reject one action (`setfile`, `update`, `start`, `trash`, `delete`, `cancel`) with this status — one step failing on demand. */
   readonly failOn: Partial<Record<string, number>> = {};
   private readonly onCallback: ScriveMockOptions['onCallback'];
   private readonly strictDelivery: boolean;
@@ -369,7 +369,7 @@ export class ScriveMock {
         return respondBytes(new TextEncoder().encode(`%PDF sealed ${doc.id} ${doc.status}`));
       }
 
-      const m = /^\/api\/v2\/documents\/([^/]+)\/(setfile|update|start|get|trash|delete)$/.exec(path);
+      const m = /^\/api\/v2\/documents\/([^/]+)\/(setfile|update|start|get|trash|delete|cancel)$/.exec(path);
       if (!m) return respond(404, { error: `mock: no route for ${path}` });
       const [, id, action] = m;
       const doc = this.documents.get(id!);
@@ -380,6 +380,20 @@ export class ScriveMock {
 
       if (action === 'trash') {
         doc.trashed = true;
+        return respond(200, this.wire(doc));
+      }
+      if (action === 'cancel') {
+        // Scrive's documented rule (#3127): only a PENDING document can be cancelled, and
+        // anything else answers 409. A cancelled document can no longer be signed.
+        if (doc.status !== 'pending') {
+          return respond(409, {
+            error_message: `mock: document is ${doc.status}, not pending`,
+            error_type: 'document_state_error',
+            http_code: 409,
+          });
+        }
+        doc.status = 'canceled';
+        this.fireCallback(doc);
         return respond(200, this.wire(doc));
       }
       if (action === 'delete') {

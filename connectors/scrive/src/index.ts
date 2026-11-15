@@ -307,8 +307,37 @@ export interface ScriveDispatchState {
     /** The document's `mtime` when the file was refused; absent when the provider gave none. */
     mtime?: string;
   };
+  /**
+   * Set once the vertical took this request set out of signing and the connector settled the
+   * provider's document (#3127): `protocol.voided` or `protocol.signatures-cancelled` arrived and
+   * the document was cancelled at Scrive, or was found already ended there.
+   *
+   * It settles the row. The sweep stops polling it, no sealed copy is landed for it, and a new
+   * request on the same instance is sent as a new document rather than dropped by the dispatch
+   * guard. The row stays, so the activity view still shows what went out and how it ended.
+   */
+  withdrawn?: ScriveWithdrawal;
   dispatchedAt: string;
 }
+
+/** How a dispatch left signing — see `ScriveDispatchState.withdrawn`. */
+export interface ScriveWithdrawal {
+  /** When the engine withdrew it: the withdrawing event's `occurredAt`. */
+  at: string;
+  /** The engine event that withdrew it. */
+  by: ScriveWithdrawalEvent;
+  /**
+   * The provider document's status once settled: `canceled` when this connector's cancel
+   * landed; `rejected` or `timedout` when Scrive had ended it already; `closed` when every
+   * party had signed at Scrive before the cancel landed, which also puts each request the
+   * instance did not record into `needsAttention`.
+   */
+  providerStatus: string;
+}
+
+/** The engine events that take a request set out of signing (#3127). */
+export type ScriveWithdrawalEvent = 'protocol.voided' | 'protocol.signatures-cancelled';
+const WITHDRAWAL_EVENTS: readonly ScriveWithdrawalEvent[] = ['protocol.voided', 'protocol.signatures-cancelled'];
 
 /** One request a poll could not record, and why — see `ScriveDispatchState.needsAttention`. */
 export interface ScriveAttention {
@@ -397,6 +426,38 @@ function namesSupportPosition(
 const DISPATCH_PREFIX = 'scrive:dispatch:';
 /** The connector-state key for one signature request set. */
 const dispatchKey = (instanceId: string): string => `${DISPATCH_PREFIX}${instanceId}`;
+/**
+ * Where a withdrawn dispatch is kept once a NEW request set on the same instance goes out
+ * (#3127). Under the dispatch prefix, so the activity view still lists it and the provider
+ * view still marks its document as sent from here; the sweep skips it because it is withdrawn.
+ */
+const retiredDispatchKey = (instanceId: string, documentId: string): string =>
+  `${dispatchKey(instanceId)}:${documentId}`;
+/**
+ * A withdrawal that found no dispatch row (#3127): the engine withdrew the request before
+ * its `signatures-requested` delivery had sent a document (that delivery failing and being
+ * retried, say). Kept so the retry does not send a document for a request already withdrawn.
+ * Outside the dispatch prefix: it is no dispatch, and the sweep and the activity view have
+ * nothing to do with it.
+ */
+const withdrawnKey = (instanceId: string): string => `scrive:withdrawn:${instanceId}`;
+
+/** See `withdrawnKey`. `voidedAt` withdraws every request; `cancelledAt` those emitted up to it. */
+interface ScriveWithdrawnMark {
+  instanceId: string;
+  voidedAt?: string;
+  cancelledAt?: string;
+}
+
+/** Whether a `withdrawnKey` mark withdraws the request set an event emitted at `requestedAt`. */
+const markWithdraws = (mark: ScriveWithdrawnMark | undefined, requestedAt: string): boolean =>
+  mark !== undefined &&
+  (mark.voidedAt !== undefined || (mark.cancelledAt !== undefined && requestedAt <= mark.cancelledAt));
+
+/** Why a party Scrive reports signed is not recorded on a withdrawn request (#3127). */
+const SIGNED_AFTER_WITHDRAWAL =
+  'provider reports a signature, but the request was withdrawn in the scope (voided or cancelled) ' +
+  'before it was recorded — Scrive holds a signature the instance refused';
 
 /** The payload half of `protocol.signatures-requested` this connector reads. */
 /**
@@ -488,13 +549,30 @@ function scriveAuthMethod(
   return authLevel === 'strong' ? 'se_bankid' : fallback;
 }
 
+/** The payload half of `protocol.voided` / `protocol.signatures-cancelled` this connector reads. */
+const signingWithdrawn = z.object({ instanceId: z.string().min(1) });
+
 /**
- * Build the handler. Register it with `host.registerConnector`.
+ * Build the handler. Register it with `registerScriveConnector`, which registers it once per
+ * event it answers: `protocol.signatures-requested` sends a document, and `protocol.voided` /
+ * `protocol.signatures-cancelled` cancel it (#3127). One handler for all three, because a host
+ * that routes deliveries to the platform runs exactly one handler per provider.
  *
- * Only reacts to `method: 'scrive'` — a vertical asking for BankID through
+ * Only sends for `method: 'scrive'` — a vertical asking for BankID through
  * another provider emits the same event, and this must not answer for it.
  */
 export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandler {
+  const dispatch = scriveDispatch(options);
+  return async (ctx, event: DomainEvent) => {
+    if ((WITHDRAWAL_EVENTS as readonly string[]).includes(event.type)) {
+      return withdrawScriveDispatch(ctx, event, options.baseUrl);
+    }
+    return dispatch(ctx, event);
+  };
+}
+
+/** The `protocol.signatures-requested` half of {@link scriveConnector}: send the document. */
+function scriveDispatch(options: ScriveConnectorOptions): ConnectorHandler {
   const baseUrl = options.baseUrl;
   const defaultAuthMethod = options.defaultAuthMethod ?? 'standard';
 
@@ -514,7 +592,18 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     const prior = (await ctx.admin.getConnectorState(conn.id, key)) as
       | ScriveDispatchState
       | undefined;
-    if (prior) return; // already dispatched — do nothing, idempotently
+    if (prior && !prior.withdrawn) return; // already dispatched — do nothing, idempotently
+    // A withdrawn row is settled, not a reason to drop a NEW request set on the same
+    // instance (#3127): after `cancelSignatureRequests` the vertical asks again, and that
+    // request goes out as a new document. The withdrawn request itself, redelivered, does not.
+    if (prior && sameRequestSet(prior, payload.parties)) return;
+    // Withdrawn before any document went out (#3127): this delivery is the retry of a request
+    // the vertical has since voided or cancelled, and sending it now would invite parties to
+    // sign something the instance already let go of.
+    const withdrawnMark = (await ctx.admin.getConnectorState(conn.id, withdrawnKey(payload.instanceId))) as
+      | ScriveWithdrawnMark
+      | undefined;
+    if (markWithdraws(withdrawnMark, event.occurredAt)) return;
 
     // Resolve every party's authentication method BEFORE the first call (#620).
     // It no longer refuses anything (#687), so nothing here can orphan a draft —
@@ -791,8 +880,160 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       ...(webhookToken ? { webhookToken } : {}),
       dispatchedAt: event.occurredAt,
     };
+    // The withdrawn dispatch this one replaces keeps its row under a key of its own (#3127),
+    // so the activity view still shows the document that went out first and how it ended.
+    if (prior) await ctx.admin.putConnectorState(conn.id, retiredDispatchKey(prior.instanceId, prior.documentId), prior);
     await ctx.admin.putConnectorState(conn.id, key, state);
+
+    // A withdrawal delivered while this document was being sent found no row and left a mark
+    // instead. Read it once more now the row exists, and settle the document it withdrew.
+    const lateMark = (await ctx.admin.getConnectorState(conn.id, withdrawnKey(payload.instanceId))) as
+      | ScriveWithdrawnMark
+      | undefined;
+    if (markWithdraws(lateMark, event.occurredAt)) {
+      await settleWithdrawal(ctx.admin, conn.id, new ScriveApi(conn, baseUrl), key, state, {
+        by: lateMark!.voidedAt !== undefined ? 'protocol.voided' : 'protocol.signatures-cancelled',
+        at: lateMark!.voidedAt ?? lateMark!.cancelledAt!,
+      });
+    }
   };
+}
+
+/** Whether a dispatch row carries exactly the request ids this event names. */
+const sameRequestSet = (
+  state: ScriveDispatchState,
+  parties: readonly { requestId: string }[],
+): boolean => {
+  const sent = new Set(state.parties.map((p) => p.requestId));
+  return sent.size === parties.length && parties.every((p) => sent.has(p.requestId));
+};
+
+/**
+ * The `protocol.voided` / `protocol.signatures-cancelled` half of {@link scriveConnector}
+ * (#3127): the vertical took the request set out of signing, so the document sent for it is
+ * cancelled at Scrive and no party can sign it any more.
+ *
+ * - **No Scrive connection** for the scope's vertical: nothing can have been sent from here,
+ *   so there is nothing to cancel. Returns rather than throws, so voiding a protocol in a
+ *   tenant that never connected Scrive does not fail a delivery.
+ * - **A live dispatch row** for a request emitted no later than this event: cancel it — see
+ *   {@link settleWithdrawal}.
+ * - **Every party already recorded**: the instance was signed before it was voided. The
+ *   document is closed at Scrive and there is nothing to withdraw.
+ * - **Already withdrawn**: a redelivery; nothing to do.
+ * - **No row, or only a row for a LATER request**: the withdrawn request had not gone out yet
+ *   (its delivery failing and retrying). A mark under `withdrawnKey` stops that retry from
+ *   sending it. A later request's document is never touched.
+ *
+ * The void `reason` is not sent to Scrive. Its cancel call takes none, and the reason is the
+ * vertical's own text about its own process, which this connector has no cause to put in
+ * front of the provider.
+ */
+async function withdrawScriveDispatch(
+  ctx: Parameters<ConnectorHandler>[0],
+  event: DomainEvent,
+  baseUrl: string,
+): Promise<void> {
+  const { instanceId } = signingWithdrawn.parse(event.payload);
+  const by = event.type as ScriveWithdrawalEvent;
+  if (!(await ctx.admin.openConnection(ctx.tenantId, ctx.vertical, 'scrive'))) return;
+  const conn = await ctx.connection('scrive');
+
+  const key = dispatchKey(instanceId);
+  const state = (await ctx.admin.getConnectorState(conn.id, key)) as ScriveDispatchState | undefined;
+  if (state && state.dispatchedAt <= event.occurredAt) {
+    if (state.withdrawn) return;
+    const recorded = new Set(state.recordedRequestIds ?? []);
+    if (state.parties.length > 0 && state.parties.every((p) => recorded.has(p.requestId))) return;
+    await settleWithdrawal(ctx.admin, conn.id, new ScriveApi(conn, baseUrl), key, state, { by, at: event.occurredAt });
+    return;
+  }
+
+  const markKey = withdrawnKey(instanceId);
+  const mark = ((await ctx.admin.getConnectorState(conn.id, markKey)) as ScriveWithdrawnMark | undefined) ?? {
+    instanceId,
+  };
+  await ctx.admin.putConnectorState(
+    conn.id,
+    markKey,
+    by === 'protocol.voided'
+      ? { ...mark, voidedAt: mark.voidedAt ?? event.occurredAt }
+      : {
+          ...mark,
+          cancelledAt:
+            mark.cancelledAt !== undefined && mark.cancelledAt > event.occurredAt ? mark.cancelledAt : event.occurredAt,
+        },
+  );
+}
+
+/** The provider statuses a withdrawal settles on. Any other is retried. */
+const SETTLED_STATUSES = new Set(['canceled', 'rejected', 'timedout', 'closed']);
+
+/**
+ * Cancel one dispatch's document at Scrive and settle its ledger row (#3127).
+ *
+ * Idempotent, and honest about the race with a signing party. Scrive answers `409` to a
+ * cancel on a document that is no longer pending, so a 409 reads the document back:
+ *
+ * - `canceled`, `rejected`, `timedout`: it had ended already. Settled.
+ * - `closed`: every party signed at Scrive before the cancel landed. Scrive holds a signed
+ *   agreement the instance refused, so each request the instance did not record goes into
+ *   `needsAttention`, where the activity view shows it, rather than into a swallowed error.
+ * - anything else (still `pending` after a 409): thrown, so the delivery retries.
+ *
+ * The row is re-read before it is written: a reconcile may have recorded a signature since
+ * the caller read it, and its write must not be lost.
+ */
+async function settleWithdrawal(
+  admin: HostAdmin,
+  connection: ConnectionId,
+  api: ScriveApi,
+  key: string,
+  state: ScriveDispatchState,
+  withdrawal: { by: ScriveWithdrawalEvent; at: string },
+): Promise<void> {
+  let providerStatus = 'canceled';
+  let doc: ScriveDocument | undefined;
+  try {
+    await api.cancel(state.documentId);
+  } catch (err) {
+    if (!(err instanceof ScriveApiError) || err.status !== 409) throw err;
+    doc = await api.get(state.documentId);
+    providerStatus = doc.status;
+  }
+  if (!SETTLED_STATUSES.has(providerStatus)) {
+    throw new Error(
+      `scrive refused to cancel document ${state.documentId} and reports it ${providerStatus} — ` +
+        `retrying until it is cancelled or ends`,
+    );
+  }
+
+  const fresh = ((await admin.getConnectorState(connection, key)) as ScriveDispatchState | undefined) ?? state;
+  if (fresh.documentId !== state.documentId) return; // the row moved on to a newer request set
+  const recorded = new Set(fresh.recordedRequestIds ?? []);
+  const attention = [...(fresh.needsAttention ?? [])];
+  if (doc && providerStatus === 'closed') {
+    const offset = fresh.senderParty ? 1 : 0;
+    for (const [i, party] of fresh.parties.entries()) {
+      if (recorded.has(party.requestId) || attention.some((a) => a.requestId === party.requestId)) continue;
+      const providerParty =
+        party.providerPartyId !== undefined
+          ? doc.parties.find((p) => p.id === party.providerPartyId)
+          : doc.parties[i + offset];
+      attention.push({
+        requestId: party.requestId,
+        // Closed means every signatory signed; the provider's own time when the party is found.
+        signedAt: providerParty?.sign_time ?? doc.mtime ?? withdrawal.at,
+        reason: SIGNED_AFTER_WITHDRAWAL,
+      });
+    }
+  }
+  const { needsAttention: _previous, ...rest } = fresh;
+  await admin.putConnectorState(connection, key, {
+    ...rest,
+    ...(attention.length ? { needsAttention: attention } : {}),
+    withdrawn: { at: withdrawal.at, by: withdrawal.by, providerStatus },
+  } satisfies ScriveDispatchState);
 }
 
 /**
@@ -806,12 +1047,20 @@ export function registerScriveConnector(
   host: ScopeHost,
   options: ScriveConnectorOptions & { id?: string; retry?: ConnectorOptions },
 ): void {
-  host.registerConnector(
-    options.id ?? 'scrive',
-    'protocol.signatures-requested',
-    scriveConnector(options),
-    { ...SCRIVE_RETRY, ...options.retry },
-  );
+  registerEach(host, options.id ?? 'scrive', scriveConnector(options), { ...SCRIVE_RETRY, ...options.retry });
+}
+
+/**
+ * Register one handler under every event this connector answers (#3127). A registration takes
+ * one event type, so the withdrawals ride ids of their own (`<id>.protocol.voided`, …) — and
+ * name the SAME provider as the sending registration, so a host that routes deliveries to the
+ * platform sends all three to the one `connector:<provider>` handler.
+ */
+function registerEach(host: ScopeHost, id: string, handler: ConnectorHandler, options: ConnectorOptions): void {
+  host.registerConnector(id, 'protocol.signatures-requested', handler, options);
+  for (const type of WITHDRAWAL_EVENTS) {
+    host.registerConnector(`${id}.${type}`, type, handler, { ...options, provider: options.provider ?? id });
+  }
 }
 
 /** The retry policy both registrations share — see `registerScriveConnector`. */
@@ -839,9 +1088,9 @@ export function declareScriveConnector(
   host: ScopeHost,
   options: { id?: string; retry?: ConnectorOptions } = {},
 ): void {
-  host.registerConnector(
+  registerEach(
+    host,
     options.id ?? 'scrive',
-    'protocol.signatures-requested',
     async () => {
       throw new Error(
         'scrive: this host registered the connector for routing only — the dispatching host runs it',
@@ -1003,10 +1252,22 @@ export async function reconcileScriveDispatch(
       recorded.push({ requestId: party.requestId, signedAt });
       done.add(party.requestId);
     } catch (err) {
-      // A request already resolved (a racing poll, or a redelivery) is not an
+      const msg = err instanceof Error ? err.message : String(err);
+      // A request the engine CANCELLED (#3127) is the opposite of done: the vertical voided the
+      // instance or withdrew its requests, and this party signed at Scrive anyway. Counting it
+      // recorded is how the ledger came to say "signed" over a refused signature. It goes to a
+      // person instead.
+      //
+      // Read off the engine's own refusal text (`signature request is already cancelled: …`).
+      // The conflict's structured extensions carry only `reason: 'request_resolved'`, which a
+      // signed request shares, and the contracts' conflict shape keeps no other field.
+      if (/\balready cancelled\b/i.test(msg)) {
+        unrecorded(party.requestId, signedAt, SIGNED_AFTER_WITHDRAWAL);
+        return;
+      }
+      // A request already signed (a racing poll, or a redelivery) is not an
       // error to this driver — the signature is on the instance, which is the
       // goal. Anything else is real and propagates.
-      const msg = err instanceof Error ? err.message : String(err);
       if (/already/i.test(msg)) {
         done.add(party.requestId);
         return;
@@ -1031,6 +1292,12 @@ export async function reconcileScriveDispatch(
         continue;
       }
       if (!providerParty.sign_time) continue; // not signed yet
+      // Withdrawn (#3127): the engine has cancelled every outstanding request, so there is
+      // nothing to record, only something for a person to see.
+      if (state.withdrawn) {
+        unrecorded(party.requestId, providerParty.sign_time, SIGNED_AFTER_WITHDRAWAL);
+        continue;
+      }
       if (!party.ref) {
         unrecorded(party.requestId, providerParty.sign_time, NO_REF);
         continue;
@@ -1048,6 +1315,10 @@ export async function reconcileScriveDispatch(
     const providerParty = doc.parties[i + partyOffset];
     const signedAt = providerParty?.sign_time ?? null;
     if (!signedAt) continue; // not signed yet
+    if (state.withdrawn) {
+      unrecorded(party.requestId, signedAt, SIGNED_AFTER_WITHDRAWAL);
+      continue;
+    }
     const providerName = providerNameOf(providerParty);
     const elsewhere = doc.parties.filter(
       (p) => p !== providerParty && p.is_signatory !== false && providerNameOf(p) === party.label,
@@ -1087,7 +1358,13 @@ export async function reconcileScriveDispatch(
   // A file held as too large is not fetched again by a passive pass until the provider says the document
   // changed; an explicit reconcile or a callback retries it.
   const heldStill = options.honourHeld === true && sealedHeld !== undefined && sealedHeld.mtime === doc.mtime;
-  if (doc.status === 'closed' && complete && !sealedAttachmentId && heldStill) {
+  if (state.withdrawn && !sealedAttachmentId) {
+    // A document the vertical withdrew is no agreement of the instance's (#3127): its sealed
+    // copy must never land on the instance as the customer-facing proof of a signature.
+    if (doc.status === 'closed') {
+      sealedDocument = { skipped: 'the request was withdrawn in the scope; the sealed copy is not stored' };
+    }
+  } else if (doc.status === 'closed' && complete && !sealedAttachmentId && heldStill) {
     sealedDocument = { skipped: sealedHeld!.reason };
   } else if (doc.status === 'closed' && complete && !sealedAttachmentId) {
     sealedHeld = undefined;
@@ -1130,17 +1407,25 @@ export async function reconcileScriveDispatch(
   // found already done, which used to be re-learned on every poll.
   const attentionChanged =
     JSON.stringify(needsAttention) !== JSON.stringify(state.needsAttention ?? []);
-  if (
+  const changed =
     recorded.length ||
     pinned ||
     attentionChanged ||
     done.size !== (state.recordedRequestIds?.length ?? 0) ||
     sealedAttachmentId !== state.sealedAttachmentId ||
-    JSON.stringify(sealedHeld) !== JSON.stringify(state.sealedHeld)
-  ) {
-    const { needsAttention: _previous, sealedHeld: _held, ...rest } = state;
+    JSON.stringify(sealedHeld) !== JSON.stringify(state.sealedHeld);
+  // A withdrawal (#3127) runs in a delivery, not here, and may have settled this row while the
+  // provider was being read. Its mark is kept rather than written over, and a row that has since
+  // moved on to a newer request set is not this reconcile's to write.
+  const latest = changed
+    ? ((await admin.getConnectorState(connectionId, key)) as ScriveDispatchState | undefined)
+    : undefined;
+  if (changed && (!latest || latest.documentId === state.documentId)) {
+    const withdrawn = state.withdrawn ?? latest?.withdrawn;
+    const { needsAttention: _previous, sealedHeld: _held, withdrawn: _withdrawn, ...rest } = state;
     await admin.putConnectorState(connectionId, key, {
       ...rest,
+      ...(withdrawn ? { withdrawn } : {}),
       parties,
       recordedRequestIds: [...done],
       ...(needsAttention.length ? { needsAttention } : {}),
@@ -1428,9 +1713,13 @@ export async function scriveConnectionActivity(
       status:
         attention.size > 0
           ? `needs attention — ${attention.size} ${attention.size === 1 ? 'party' : 'parties'} not recorded`
-          : live
-            ? (DOCUMENT_STATUS[live.status] ?? live.status)
-            : ledgerStatus,
+          : state.withdrawn
+            ? // #3127: withdrawn outranks the provider's word. Scrive's `closed` reads "signed",
+              // which for a withdrawn request is the opposite of what the instance holds.
+              `withdrawn — ${state.withdrawn.by === 'protocol.voided' ? 'protocol voided' : 'signature requests cancelled'}`
+            : live
+              ? (DOCUMENT_STATUS[live.status] ?? live.status)
+              : ledgerStatus,
       at: asInstant(state.dispatchedAt),
       facts: [
         ...state.parties.slice(0, 24).map((p) => ({
@@ -1454,6 +1743,17 @@ export async function scriveConnectionActivity(
             ? 'the vertical’s own document'
             : 'attestation sheet (no document was bound)',
         },
+        ...(state.withdrawn
+          ? [
+              {
+                label: 'At Scrive',
+                value:
+                  state.withdrawn.providerStatus === 'canceled'
+                    ? 'document cancelled'
+                    : `document was already ${DOCUMENT_STATUS[state.withdrawn.providerStatus] ?? state.withdrawn.providerStatus} when it was withdrawn`,
+              },
+            ]
+          : []),
         ...(state.sealedAttachmentId ? [{ label: 'Sealed copy', value: 'stored on the instance' }] : []),
         ...(state.sealedHeld && !state.sealedAttachmentId ? [{ label: 'Sealed copy', value: `not stored: ${state.sealedHeld.reason}` }] : []),
         ...(live?.mtime ? [{ label: 'Provider last change', value: live.mtime }] : []),
@@ -1629,9 +1929,11 @@ export async function sweepScriveReconciliations(
 
   for (const { value } of entries) {
     const state = value as ScriveDispatchState;
-    // The ledger already knows this one is done — don't poll a settled document.
+    // The ledger already knows this one is done — don't poll a settled document. A withdrawn
+    // one (#3127) is settled too: its parties are never all recorded, and polling it on every
+    // pass, forever, is what this used to do.
     const done = new Set(state.recordedRequestIds ?? []);
-    if (state.parties.length > 0 && state.parties.every((p) => done.has(p.requestId))) {
+    if (state.withdrawn || (state.parties.length > 0 && state.parties.every((p) => done.has(p.requestId)))) {
       result.skipped += 1;
       continue;
     }

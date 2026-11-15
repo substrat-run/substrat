@@ -33,6 +33,15 @@ mismatch, and it is idempotent across polls. `sweepScriveReconciliations(host, c
 (`listConnectorState(id, 'scrive:dispatch:')`) and reconciles every outstanding instance, skipping
 those already complete and stepping past a provider error on any one.
 
+**Withdrawal.** When the vertical voids the instance (`protocol.voided`) or withdraws its requests
+(`protocol.signatures-cancelled`), the connector cancels the Scrive document
+(`POST /api/v2/documents/{id}/cancel`) and marks the ledger row `withdrawn`, so the sweep stops
+polling it. A 409 is read back: `canceled`/`rejected`/`timedout` are settled, while `closed` (every
+party signed before the cancel landed) puts each unrecorded request in `needsAttention`. A signature
+on a cancelled request is never counted as recorded, and a new request on the same instance goes out
+as a new document. The connector does not notify the parties and does not send the void reason to
+Scrive. `registerScriveConnector` registers the one handler for all three events.
+
 ## Using it
 
 ```ts

@@ -24,8 +24,8 @@ unverified. See [What's missing](#what-s-missing).
 | **Category** | E-signing & identity |
 | **Status** | Published — both halves built (outbound + return path + poll driver); two caveats: the vertical must schedule the poll, and BankID is off on the testbed |
 | **Package** | [`@substrat-run/connector-scrive`](https://www.npmjs.com/package/@substrat-run/connector-scrive) — public, `0.x`; npm carries the current version |
-| **Consumes** | `protocol.signatures-requested` |
-| **Registered with** | `registerConnector('scrive', 'protocol.signatures-requested', …)` |
+| **Consumes** | `protocol.signatures-requested`, `protocol.voided`, `protocol.signatures-cancelled` |
+| **Registered with** | `registerScriveConnector(host, { baseUrl })` — one handler, registered once per event |
 
 ## What it consumes
 
@@ -105,6 +105,38 @@ Given a `scrive` signature request, the connector:
 Retry is tuned for a contract, not a directory write: **8 attempts**, 5-second base backoff, up
 to a 15-minute ceiling. Giving up on a signature after the executor default of five tries would
 be giving up on a contract.
+
+## Taking a document out of signing
+
+A vertical takes a document out of signing in two ways: `voidProtocol` (`protocol.voided`) and
+`cancelSignatureRequests` (`protocol.signatures-cancelled`, the renegotiation path). Either way the
+engine cancels the pending requests, and the connector **cancels the Scrive document**
+(`POST /api/v2/documents/{id}/cancel`), so no invited party can sign it any more.
+
+- **Scrive answers 409** when the document is no longer pending, so the connector reads it back.
+  `canceled`, `rejected` and `timedout` mean it had ended already. `closed` means every party
+  signed at Scrive before the cancel landed: each request the instance did not record is shown as
+  **needs attention** on the connection's activity view. Scrive then holds a signed agreement the
+  instance refused, and a person has to decide what that means.
+- **The dispatch row is settled** (`withdrawn`). The sweep stops polling it, no sealed copy is
+  stored for it, and a signature Scrive reports on it is never counted as recorded.
+- **A new request on the same instance goes out as a new document.** After
+  `cancelSignatureRequests` and a fresh `requestSignatures`, the first document keeps its row in
+  the activity view, marked withdrawn.
+- **A request withdrawn before its document went out** (its delivery failing and retrying) is
+  never sent.
+- **Voiding a signed instance** leaves its closed document alone; there is nothing to withdraw.
+
+Two things the connector deliberately does not do:
+
+- **It does not tell the parties.** Scrive's API documentation does not say whether a cancelled
+  document notifies the invited parties, so the vertical should not count on it. A party who was
+  invited should hear from the vertical that the document was withdrawn.
+- **It does not send the void reason to Scrive.** The cancel call takes none, and the reason is
+  the vertical's own text.
+
+A vertical deployed before this change gets the new registrations by upgrading the connector and
+pushing again.
 
 ## Reaching the signature back
 
