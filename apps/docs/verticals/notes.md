@@ -37,6 +37,9 @@ notepad is the whole product, so the only thing on the page is who is let in. It
   exist.
 - **Nothing personal is copied.** The answer carries no name and no address. Notes keeps which
   login is which id, and the roles it seated.
+- **Todo can call Notes as the person signed in to it.** The call carries a token the issuer
+  exchanged for that person, Notes' door checks it, and the call runs as them, capped to the
+  notepad's keys. See [Todo calling Notes as a person](#todo-calling-notes-as-a-person).
 
 ## At a glance
 
@@ -45,12 +48,12 @@ notepad is the whole product, so the only thing on the page is who is let in. It
 | **Package** | `@substrat-run/demo-notes` |
 | **Engines composed** | *none* — kernel only |
 | **Own tables** | `notes_notes` · `notes_item_notes` |
-| **Roles** | `writer` (read and write notes), seated only by the door: Todo's `member` answer maps to it |
-| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/notes/PERMISSIONS.md) — 2 keys, 1 module, 1 role |
+| **Roles** | `writer` (read and write notes, on the notepad and on items), seated only by the door: Todo's `member` answer maps to it |
+| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/notes/PERMISSIONS.md) — 4 keys, 1 module, 1 role, 1 delegation (`todo`, notepad keys, `peer`) |
 | **Calls** | `todo`, for `todo/resolve-person` and `todo/vouch-access`, and nothing else |
 | **Auth** | [OIDC only](/concepts/identity), at the same issuer as Todo |
 | **Apps** | API only (`:8881`). The dev command runs a copy of Todo's API (`:8882`) and Todo's web app (`:5278`), which draws the plugin |
-| **Status** | Runs locally — the hosted door does not take this option yet |
+| **Status** | Runs locally. The hosted door and the call made as a person are built (`workerDoor({ people })`, `peerAs`); this pair is not deployed |
 
 ## The cast & what's denied
 
@@ -93,10 +96,45 @@ test's hands: a member with access is let in as the same id, another tenant's me
 access taken away is lost when the kept answer expires and not before, and nobody is admitted
 on an expired answer while Todo is down.
 
+## Todo calling Notes as a person
+
+Todo also calls Notes **as the person signed in to Todo**. Todo's API, as this pair serves it,
+has two routes that do it:
+
+```bash
+GET  http://localhost:8882/api/plugins/notes/notes       # the notepad, read as you
+POST http://localhost:8882/api/plugins/notes/notes       # {"text": "..."}, written as you
+```
+
+Todo keeps the refresh token of your session, trades it at the issuer for a token addressed to
+Notes, and the broker carries the call with it. Notes' door checks that token (issued for Notes,
+on the `peer` channel, by Todo) and lets you in as your own sign-in would, so a note written this
+way has your id as its author. What it may do is capped by Notes' manifest:
+
+```ts
+delegations: [{ actor: 'todo', permissions: ['note:read', 'note:write'], channels: ['peer'] }],
+```
+
+**Item notes are left out on purpose.** `notes/add-item-note` and `notes/list-item-notes` trust
+Notes' door to have asked Todo whether you may see the list or item, and a call made for a person
+does not pass that door. If they checked the notepad's keys, Todo could write a note on any item id,
+or read every item note, as anyone signed in. So they have keys of their own, `item-note:read` and
+`item-note:write`, which `writer` holds and the delegation does not: through Todo they are `403`
+even for Ada.
+
+The routes need a session from Todo's own sign-in (a `/dev/token` bearer has none, and is `401`).
+Each app signs in as its own client, `todo` and `notes`, and the issuer the dev command starts takes
+Notes' delegation with `--delegations src/delegations.ts`, read off the manifest.
+
+`test/delegated.test.ts` signs Ada and Björn in at Todo through the real login round-trip and drives
+these routes: Ada writes and reads a note and Notes records her as its author; the same call cannot
+reach an item note though she holds those keys; Björn is refused, admitted once given access, and
+refused again once his kept answer expires after it is taken away.
+
 ## Deliberately out of scope
 
 Names (a note shows its author's id), access per plugin (Todo keeps one flag per member for all
-plugins), and anything deployed. Todo's app draws the plugin's features in its own code and
+plugins), and deploying this pair. Todo's app draws the plugin's features in its own code and
 reaches its API through the dev proxy, so both are one origin; deployed, a plugin is another
 origin, and how a plugin ships screens for the app it belongs to is still open. Notes trusts its own door for whether an item may be seen: the
 operation behind the route cannot ask Todo itself, since module code has no network.

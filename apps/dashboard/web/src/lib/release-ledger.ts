@@ -1,6 +1,6 @@
 import { reviewLine, type EmittedModel, type MigrationDiff } from '@substrat-run/contracts';
 import type { ChannelHistoryEntry, DeploymentVersion, ReleaseRow } from './api';
-import { grantShapeHolderNotes, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDiff, type RegistryLike } from './registry-diff';
+import { delegationNote, grantShapeHolderNotes, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDiff, type RegistryLike } from './registry-diff';
 
 /**
  * The Deployments tab's derivations (#1767): the running → available comparison as
@@ -50,6 +50,9 @@ export function permissionDiffItems(diff: RegistryDiff, from: RegistryLike, to: 
       const note = [signed(g.added, g.removed), ...grantShapeHolderNotes(g)].filter(Boolean).join('; ');
       items.push({ kind: 'changed', name: `grant on ${g.entityType}`, note });
     }
+  }
+  for (const c of diff.delegationChanges) {
+    items.push({ kind: c.isNew ? 'added' : c.isGone ? 'removed' : 'changed', name: `delegation ${c.actor}`, note: delegationNote(c) });
   }
   return items;
 }

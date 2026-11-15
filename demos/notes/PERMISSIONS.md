@@ -5,12 +5,14 @@
 
 # Permission snapshot — @substrat-run/demo-notes
 
-2 keys · 1 modules · 1 roles
+4 keys · 1 modules · 1 roles
 
 ## 1. Registry — every key a registered manifest declares
 
 | Key | Description | Declared by |
 | --- | --- | --- |
+| `item-note:read` | Read the notes on Todo items, once Todo has vouched for the list | `@substrat-run/demo-notes` |
+| `item-note:write` | Write a note on a Todo item, once Todo has vouched for it | `@substrat-run/demo-notes` |
 | `note:read` | Read the notes in this workspace | `@substrat-run/demo-notes` |
 | `note:write` | Write a note | `@substrat-run/demo-notes` |
 
@@ -20,16 +22,30 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `writer` | `note:read`, `note:write` |
+| `writer` | `item-note:read`, `item-note:write`, `note:read`, `note:write` |
 
 ## 3. Coverage — which roles hold each key
 
 | Key | Held by |
 | --- | --- |
+| `item-note:read` | `writer` |
+| `item-note:write` | `writer` |
 | `note:read` | `writer` |
 | `note:write` | `writer` |
 
-## 4. Operations — which key each checks
+## 4. Delegations — which apps may act for a person here
+
+Each is another app of the SAME tenant, calling as a person signed in to it, with a token
+the team's auth-server exchanged for that person. The call runs as the person: the keys
+shown are a ceiling over what the person already holds here, never a grant, so a key the
+person lacks stays refused. `mcp` is the two-step exchange this vertical's MCP endpoint
+takes; `peer` lets the app act for anyone signed in to it, on a peer call, with no step here.
+
+| Actor | Declared by | May act with | Channels |
+| --- | --- | --- | --- |
+| `todo` | `@substrat-run/demo-notes` | `note:read`, `note:write` | `peer` |
+
+## 5. Operations — which key each checks
 
 The check each registered operation DECLARES it opens with, and what it narrows to. A
 proof walk lists this module's keys only; a composed engine's key it reaches is declared by
@@ -39,12 +55,12 @@ shapes.
 
 | Operation | Key | Checked on | Declared by |
 | --- | --- | --- | --- |
-| `notes/add-item-note` | `note:write` | the scope | `@substrat-run/demo-notes` |
+| `notes/add-item-note` | `item-note:write` | the scope | `@substrat-run/demo-notes` |
 | `notes/add-note` | `note:write` | the scope | `@substrat-run/demo-notes` |
-| `notes/list-item-notes` | `note:read` | the scope | `@substrat-run/demo-notes` |
+| `notes/list-item-notes` | `item-note:read` | the scope | `@substrat-run/demo-notes` |
 | `notes/list-notes` | `note:read` | the scope | `@substrat-run/demo-notes` |
 
-## 5. Not covered by this artifact
+## 6. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

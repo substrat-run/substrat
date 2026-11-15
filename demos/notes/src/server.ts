@@ -9,8 +9,8 @@
  *
  *     pnpm --filter @substrat-run/demo-notes dev
  *
- *     # sign in as a persona, for a script: the issuer's own shortcut
- *     curl -s localhost:8879/dev/token -d '{"sub":"dev|bjorn"}' -H 'content-type: application/json'
+ *     # sign in as a persona, for a script: the issuer's own shortcut, for Notes' own client
+ *     curl -s localhost:8879/dev/token -d '{"sub":"dev|bjorn","audience":"notes"}' -H 'content-type: application/json'
  *     curl -s localhost:8881/api/notes -H "authorization: Bearer $TOKEN"
  *
  * Three processes: the issuer, this API (with Todo's beside it), and Todo's own web app on :5278
@@ -19,17 +19,25 @@
  *
  * Björn is refused until Ada gives him plugin access on Todo's Plugins screen, and again after
  * she takes it away, within `PEOPLE_TTL_SECONDS` (30 here, 300 for the door's own default).
+ *
+ * Todo also calls Notes AS the person signed in to it (#3161): `GET`/`POST /api/plugins/notes/notes`
+ * on Todo's port read and write the notepad as them. That needs a sign-in through Todo's login
+ * (a `/dev/token` bearer has no session to act from), the issuer started with Notes' delegations
+ * (the `issuer` script passes `--delegations src/delegations.ts`), and distinct clients: Todo signs
+ * in as `todo`, Notes as `notes`.
  */
 import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
-import { devLogin, devPeople } from '@substrat-run/dev-issuer';
+import { devDelegate, devLogin, devPeople, devRefreshStore } from '@substrat-run/dev-issuer';
 import { createApp as createTodoApp } from '@substrat-run/demo-todo/src/app.js';
 import { grantOwner, linkDevPersonas, reconcileOwnerGrants, seed as seedTodo, type World } from '@substrat-run/demo-todo/src/seed.js';
 import { createApp } from './app.js';
-import { rolesFromTodo } from './provision.js';
+import { NOTES_CLIENT_ID, TODO_CLIENT_ID } from './delegations.js';
+import { ROLES, rolesFromTodo } from './provision.js';
+import { notesCallRoutes } from './todo-calls.js';
 import { DEV_PROVIDER, buildPair, installNotes } from './seed.js';
 
 const DATA = process.env.DATA_DIR ?? '.data';
@@ -37,7 +45,7 @@ const CAST = join(DATA, 'pair.json');
 
 async function boot() {
   mkdirSync(DATA, { recursive: true });
-  const { todo, notes, peerFor } = buildPair(DATA);
+  const { todo, notes, peerFor, todoClientFor, servePeople } = buildPair(DATA);
 
   // Seed once. A pair on disk means both worlds already exist.
   let saved: { world: World; notesScope: string };
@@ -60,21 +68,36 @@ async function boot() {
   // would otherwise refuse Notes that key until `.data` is wiped.
   await todo.provisionScope(staff, { tenantId: world.tenant, scopeId: scopeId.parse(world.scope), vertical: 'todo' });
   await notes.provisionScope(staff, { ...node, vertical: 'notes' });
+  // And Notes' roles, which a deploy defines from the vertical's own: a world saved before a role
+  // gained a key would otherwise refuse that key to everyone holding the role.
+  for (const role of ROLES) await notes.admin.defineRole(staff, node.tenantId, role);
 
-  const todoLogin = devLogin({ directory: todo.admin, actor: staff, provider: DEV_PROVIDER });
+  // Todo keeps each session's refresh token, so it can call Notes as the person signed in.
+  const refresh = devRefreshStore(new Database(join(DATA, 'todo-refresh.sqlite')));
+  const todoLogin = devLogin({ clientId: TODO_CLIENT_ID, refreshStore: refresh, directory: todo.admin, actor: staff, provider: DEV_PROVIDER });
+  const delegate = devDelegate({ login: todoLogin, store: refresh, peer: todoClientFor({ tenantId: node.tenantId, scopeId: scopeId.parse(world.scope) }) });
   const todoApp = createTodoApp({
     host: todo,
     login: todoLogin,
     onJoined: (caller) => grantOwner(todo, staff, { tenantId: caller.tenantId, scopeId: caller.scopeId }, caller.principal),
+    routes: notesCallRoutes(delegate),
   });
 
   // Notes' own relying party at the same issuer. Its `caller` is never asked: who a login is
-  // here is Todo's to say, through the person contract.
-  const login = devLogin({ directory: notes.admin, actor: staff, provider: DEV_PROVIDER });
+  // here is Todo's to say, through the person contract. It takes the tokens Todo obtains to act
+  // for a person, on the peer channel, and no other app's.
+  const login = devLogin({
+    clientId: NOTES_CLIENT_ID,
+    delegation: { actors: [TODO_CLIENT_ID], channels: ['peer'] },
+    directory: notes.admin,
+    actor: staff,
+    provider: DEV_PROVIDER,
+  });
   const ttlSeconds = Number(process.env.PEOPLE_TTL_SECONDS ?? 30);
   const peer = peerFor(node);
   const people = devPeople({
     login,
+    master: 'todo',
     db: new Database(join(DATA, 'people.sqlite')),
     host: notes,
     actor: staff,
@@ -86,6 +109,7 @@ async function boot() {
     // The bound is the same mechanism at any value; `PEOPLE_TTL_SECONDS=300` shows the real one.
     ttlSeconds,
   });
+  servePeople(people, node);
   const app = createApp({
     host: notes,
     login,

@@ -9,7 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { clipReviewText, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, RESERVED_KEY_MARK, reservationNote, reviewLine, reviewSql, roleHolderNote, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, delegationNote, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, RESERVED_KEY_MARK, reservationNote, reviewLine, reviewSql, roleHolderNote, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1324,6 +1324,7 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
       `entity grant ${g.entityType}: ${g.isNew ? 'new' : g.isGone ? 'removed' : ''} ${g.added.map((k) => `+${k}`).concat(g.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
       ...grantShapeHolderNotes(g).map((n) => `  ${n}`),
     ]),
+    ...diff.delegationChanges.map((c) => `! ${delegationNote(c)}`),
     ...unitemised.map((f) => `~ ${f} (not itemised)`),
   ];
   return (

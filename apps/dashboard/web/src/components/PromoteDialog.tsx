@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox, Dialog } from '@substrat-run/ui/wa';
-import { grantShapeHolderNotes, registryDirection, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
+import { delegationNote, grantShapeHolderNotes, registryDirection, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
 import { outstanding, readyToPromote, type Acks, type Checkpoint, type PermissionSection, type Unverifiable } from '../lib/promote-review';
 import { ExportBreakAck } from './ExportBreakAck';
 import { PromoteMigrations } from './PromoteMigrations';
@@ -224,6 +224,13 @@ function PermissionBody({ section, servingLabel, incomingLabel }: { section: Per
               status={g.isNew ? 'new shape' : g.isGone ? 'shape removed' : g.added.length > 0 ? 'shape widened' : 'shape narrowed'}
               kind={g.isGone ? 'neutral' : g.added.length > 0 || g.isNew ? 'warning' : 'neutral'}
             />
+          ))}
+        </Group>
+      )}
+      {diff.delegationChanges.length > 0 && (
+        <Group label="Apps acting for a person" kind="warning">
+          {diff.delegationChanges.map((c) => (
+            <KeyLine key={c.actor} k={c.actor} note={delegationNote(c)} />
           ))}
         </Group>
       )}

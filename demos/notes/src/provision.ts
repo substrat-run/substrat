@@ -15,7 +15,11 @@ export const MODULES = [notesModule];
  * answers, through {@link rolesFromTodo}, and takes it away the same way.
  */
 export const ROLES: RoleDefinition[] = [
-  { key: 'writer', permissions: [NOTES_PERM.noteRead, NOTES_PERM.noteWrite], source: 'vertical' },
+  {
+    key: 'writer',
+    permissions: [NOTES_PERM.noteRead, NOTES_PERM.noteWrite, NOTES_PERM.itemNoteRead, NOTES_PERM.itemNoteWrite],
+    source: 'vertical',
+  },
 ];
 
 /**

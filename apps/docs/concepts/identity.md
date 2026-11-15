@@ -305,7 +305,8 @@ signature and issuer. What else it checks depends on whose issuer it is.
   when the app's own client is the one it was issued to. A token carrying `act` (another app acting
   for the user) is a `401` too, unless the app has opted in to [delegated
   calls](/concepts/mcp#a-call-made-for-a-user-by-another-app), and the token exchange's
-  intermediate assertion is a `401` on every issuer. The
+  intermediate assertion is a `401` on every issuer. A plugin also takes one on a peer call from
+  the app it takes its people from, and nowhere else ([below](#calling-a-plugin-as-the-person)). The
   dashboard tells the app its issuer is shared (the `substrat:auth:shared-issuer` delivery) at
   install and on every Identity change. Apps installed earlier are told the next time anyone on the
   team opens the Apps list.
@@ -418,6 +419,57 @@ reached, nobody is admitted.
 | nobody | `403` |
 | nothing (unreachable, answer expired) | `503` |
 
-`ctx.check` is unchanged and makes no network call. The hosted door does not take this option yet:
-today it runs on the pure host, and `demos/notes` beside `demos/todo` is the runnable pair.
+`ctx.check` is unchanged and makes no network call. Hosted, the plugin names the other app in
+`workerDoor({ people: { master, resolveOperation, roles } })`, and the answers are kept in the
+tenant's identity directory. A plugin owns no people, so it names neither `invites` nor `join`, and
+has no owner seat. `demos/notes` beside `demos/todo` is the runnable pair.
+
+### Calling a plugin as the person
+
+The app that owns the people can also call its plugin **as the person signed in to it**: Todo writes a
+note in Notes as Ada, and Notes records Ada as its author. The person's sign-in is proven, not
+claimed. The calling app trades the refresh token of the person's session at the issuer for a token
+addressed to the plugin, and the peer call carries it. The plugin checks that token itself before it
+lets the call in.
+
+Each side wires one thing more:
+
+- **The plugin declares who may act for its people, and with which of its keys**, in its manifest:
+
+  ```ts
+  delegations: [{ actor: 'todo', permissions: ['note:read', 'note:write'], channels: ['peer'] }],
+  ```
+
+  `PERMISSIONS.md` renders it, so letting another app act for people is in the reviewed permission
+  diff. The dashboard delivers it to the team's auth server, which exchanges no token it was
+  not given a grant for.
+  Hosted, the plugin's door takes such a call from its `people.master` only. Locally,
+  `devLogin({ clientId, delegation: { actors: ['todo'], channels: ['peer'] } })` and
+  `devPeople({ master: 'todo', … })` do the same, and the dev issuer takes the grant with
+  `--delegations`.
+- **The calling app keeps refresh tokens and makes the call.** Hosted, `workerDoor({ refreshTokens:
+  true })`, then `door.peerAs(c, 'notes', 'notes/add-note', { text })`, with the plugin in
+  `substrat.calls` as for any peer call. Locally, `devLogin({ refreshStore: devRefreshStore(db) })`
+  and `devDelegate({ login, store, peer })`. Sign-in then asks for `offline_access`. A session
+  started before that has no refresh token, and the call is `401` until the person signs in again.
+
+What a call made this way can do:
+
+- **It runs as the person.** `ctx.principal` is them, their roles in the plugin decide every check,
+  and rows and events are theirs.
+- **The plugin's keys are a ceiling, never a grant.** A key the delegation does not list is refused
+  even when the person holds it; a key the person lacks stays refused whatever the delegation lists.
+  Keep out any operation that relies on the door having checked something first: Notes' item notes
+  trust the door to have asked Todo whether the person may see the item, and a call made for a
+  person does not pass that door, so they have keys of their own that Notes does not delegate.
+- **The person is let in as their own sign-in would be.** Their kept answer must be fresh, or the
+  other app asked again, and `active`. So the bound is unchanged: a member whose plugin access is
+  taken away is refused within five minutes. The token the call carries lives five minutes too.
+- **It is not a peer call with a person attached.** It does not pass the plugin's peer door, and
+  holds none of the keys the calling app holds there as a peer.
+
+What it cannot do: act for someone who never signed in to the calling app, or act from a schedule
+with no session behind it. Nothing proves the person is behind each request: the calling app holds the
+refresh token for as long as the session lives. Nothing yet records in the plugin which app made a
+call. Its history shows the person.
 

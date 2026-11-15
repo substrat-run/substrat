@@ -38,7 +38,13 @@ export const notesEntities = defineEntities({
   },
 });
 
-export const NOTES_PERMISSIONS = ['note:read', 'note:write'] as const;
+/**
+ * Item notes have keys of their own. Their operations trust the door to have asked Todo first
+ * (`src/app.ts`), and a call Todo makes AS a person (`delegations` in `src/manifest.ts`) reaches
+ * an operation without passing that door: it is delegated the notepad's keys only, so the
+ * kernel's ceiling refuses it any item note.
+ */
+export const NOTES_PERMISSIONS = ['note:read', 'note:write', 'item-note:read', 'item-note:write'] as const;
 
 export const notesOperations = defineOperations(notesEntities, NOTES_PERMISSIONS)({
   'notes/add-note': {
@@ -75,7 +81,7 @@ export const notesOperations = defineOperations(notesEntities, NOTES_PERMISSIONS
    */
   'notes/add-item-note': {
     summary: 'Write a note on a Todo item',
-    permission: 'note:write',
+    permission: 'item-note:write',
     input: z.object({ itemId: z.string().min(1), listId: z.string().min(1), text: z.string().min(1) }),
     output: notesEntities.item_note.fields,
     emits: {
@@ -94,7 +100,7 @@ export const notesOperations = defineOperations(notesEntities, NOTES_PERMISSIONS
    */
   'notes/list-item-notes': {
     summary: 'The notes on the items of one Todo list, or of every list',
-    permission: 'note:read',
+    permission: 'item-note:read',
     // Without a list, every item note: the door's route keeps only those on lists Todo vouches for.
     input: z.object({ listId: z.string().min(1).optional() }),
     output: notesEntities.item_note.fields,

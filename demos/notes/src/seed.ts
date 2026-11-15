@@ -8,16 +8,26 @@
  *
  * Nobody is seated in Notes. Its scope starts empty and stays that way until a person signs in
  * and Todo says who they are.
+ *
+ * The broker also carries a call Todo makes AS a person (#3161). What answers for it is the
+ * platform layer in front of Notes' scopes, which locally is this harness: Notes' client id, and
+ * its person contract's door for the token the call carries (`servePeople`).
  */
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { createLocalVerticalBroker, type LocalVerticalClient } from '@substrat-run/adapter-sqlite/vertical-broker';
+import {
+  createLocalVerticalBroker,
+  type LocalDelegatedAnswer,
+  type LocalVerticalClient,
+} from '@substrat-run/adapter-sqlite/vertical-broker';
 import { scopeId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
+import type { DevPeople } from '@substrat-run/dev-issuer';
 import { DEV_PROVIDER } from '@substrat-run/demo-todo/src/personas.js';
 import { buildHost as buildTodoHost, seed as seedTodo, type World as TodoWorld } from '@substrat-run/demo-todo/src/seed.js';
 import { notesManifest } from './manifest.js';
 import { MODULES, ROLES, permissions } from './provision.js';
+import { NOTES_CLIENT_ID } from './delegations.js';
 
 export { DEV_PROVIDER };
 
@@ -54,20 +64,53 @@ export interface Pair {
   node: { tenantId: TenantId; scopeId: ScopeId };
   /** Calls out as that scope of Notes, and as nothing else. */
   peer: LocalVerticalClient;
+  /** Calls out as Todo's scope `node`: the master, calling its plugin. */
+  todoClientFor(node: { tenantId: TenantId; scopeId: ScopeId }): LocalVerticalClient;
+  /**
+   * Answer calls made for a person with `people`, Notes' door for its ONE scope `node`. Until
+   * this is called, every such call is refused.
+   */
+  servePeople(people: Pick<DevPeople, 'delegated'>, node: Pair['node']): void;
 }
 
 /** The hosts over `dir`, and the broker between them. Seeds nothing. */
-export function buildPair(dir: string): Pick<Pair, 'todo' | 'notes'> & { peerFor(node: Pair['node']): LocalVerticalClient } {
+export function buildPair(
+  dir: string,
+): Pick<Pair, 'todo' | 'notes' | 'todoClientFor' | 'servePeople'> & { peerFor(node: Pair['node']): LocalVerticalClient } {
   const todo = buildTodoHost(join(dir, 'todo'));
   const notes = buildHost(join(dir, 'notes'));
-  const broker = createLocalVerticalBroker({ todo, notes });
-  return { todo, notes, peerFor: (node) => broker.clientFor({ vertical: 'notes', ...node }) };
+  let served: { people: Pick<DevPeople, 'delegated'>; node: Pair['node'] } | undefined;
+  const broker = createLocalVerticalBroker(
+    { todo, notes },
+    {
+      notes: {
+        clientId: NOTES_CLIENT_ID,
+        async delegated({ token, caller, target }): Promise<LocalDelegatedAnswer> {
+          // The door admits a person into the one scope it serves, and `devPeople` does not know
+          // which scope the broker resolved: a call for any other is refused here, before the token.
+          if (!served || target.tenantId !== served.node.tenantId || target.scopeId !== served.node.scopeId) {
+            return { admitted: false, reason: 'not-served' };
+          }
+          const answer = await served.people.delegated({ token, callerVertical: caller.vertical });
+          if ('refused' in answer) return { admitted: false, reason: answer.refused };
+          return { admitted: true, principal: answer.caller.principal, scope: answer.scope, actor: answer.actor };
+        },
+      },
+    },
+  );
+  return {
+    todo,
+    notes,
+    peerFor: (node) => broker.clientFor({ vertical: 'notes', ...node }),
+    todoClientFor: (node) => broker.clientFor({ vertical: 'todo', ...node }),
+    servePeople: (people, node) => void (served = { people, node }),
+  };
 }
 
 /** A fresh pair: Todo's world seeded, Notes installed beside it. */
 export async function seedPair(dir: string): Promise<Pair> {
-  const { todo, notes, peerFor } = buildPair(dir);
-  const world = await seedTodo(todo);
-  const node = await installNotes(notes, world);
-  return { todo, notes, world, node, peer: peerFor(node) };
+  const { peerFor, ...pair } = buildPair(dir);
+  const world = await seedTodo(pair.todo);
+  const node = await installNotes(pair.notes, world);
+  return { ...pair, world, node, peer: peerFor(node) };
 }
