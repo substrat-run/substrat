@@ -125,7 +125,7 @@
     "test:problem-codes": "tsx --test tools/problem-codes-emit.test.mts"
   },
   "devDependencies": {
-    "@babel/parser": "^7.29.12",
+    "@babel/parser": "^7.29.14",
     "@babel/types": "^7.29.7",
     "@changesets/cli": "^2.31.0",
     "@substrat-run/contracts": "workspace:*",
@@ -141,10 +141,10 @@
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
-    "oxlint": "1.90.0",
-    "oxlint-tsgolint": "7.0.2005",
+    "oxlint": "1.93.0",
+    "oxlint-tsgolint": "7.0.2007",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "wrangler": "^4.156.1"
+    "wrangler": "^4.161.0"
   }
 }
