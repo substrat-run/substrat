@@ -9,11 +9,14 @@ import { installFakeWrangler } from './fake-wrangler.js';
  * Push a throwaway project declaring `substrat` in its package.json, and answer the manifest
  * the push assembled, or the error it refused with before upload.
  */
-function pushed(substrat: Record<string, unknown>): { status: number | null; stderr: string; manifests: Record<string, unknown>[] } {
+function pushed(
+  substrat: Record<string, unknown>,
+  permissions = 'export const permissions = { modules: [], roles: [], entityGrants: [] };',
+): { status: number | null; stderr: string; manifests: Record<string, unknown>[] } {
   const dir = mkdtempSync(join(tmpdir(), 'peer-push-'));
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'board', type: 'module', substrat: { permissions: 'permissions.mjs', ...substrat } }));
-    writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
+    writeFileSync(join(dir, 'permissions.mjs'), permissions);
     writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ main: 'worker.ts', compatibility_date: '2026-07-01' }));
     writeFileSync(join(dir, 'worker.ts'), 'export default { fetch: () => new Response("ok") };');
     installFakeWrangler(dir);
@@ -75,4 +78,24 @@ it('push refuses a sign-in scope among the declared issuer scopes, before upload
   expect(refused.status).not.toBe(0);
   expect(refused.stderr).toContain('substrat.issuerScopes');
   expect(refused.manifests).toEqual([]);
+});
+
+// #3161: the delegations ride in the registry the digest covers, and on every module, `[]` included,
+// which is how the control plane tells "delegates to nobody" from a CLI that predates the field.
+it('push carries the delegations in the registry and on every module', () => {
+  const result = pushed(
+    {},
+    `export const permissions = { roles: [], entityGrants: [], modules: [
+      { manifest: { id: '@acme/board', permissions: [{ key: 'board:read', description: 'Read' }],
+        delegations: [{ actor: 'todo', permissions: ['board:read'], channels: ['peer'] }] } },
+      { manifest: { id: '@acme/tags', permissions: [] } },
+    ] };`,
+  );
+  expect(result.status, result.stderr).toBe(0);
+  const manifest = result.manifests[0] as { registry: { delegations?: unknown }; modules: { id: string; delegations?: unknown }[] };
+  expect(manifest.registry.delegations).toEqual([{ actor: 'todo', permissions: ['board:read'], channels: ['peer'], declaredBy: ['@acme/board'] }]);
+  expect(manifest.modules.map((m) => [m.id, m.delegations])).toEqual([
+    ['@acme/board', [{ actor: 'todo', permissions: ['board:read'], channels: ['peer'] }]],
+    ['@acme/tags', []],
+  ]);
 });

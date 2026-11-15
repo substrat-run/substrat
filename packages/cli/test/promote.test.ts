@@ -209,6 +209,18 @@ describe('the diff formatters', () => {
     ]);
   });
 
+  it('formatRegistryDiff: another app acting for a person here is itemised by actor, keys and channels (#3161)', () => {
+    const delegating = (delegations: unknown[]) => ({ ...reg(), delegations }) as unknown as PermissionRegistry;
+    const todo = (permissions: string[], channels?: string[]) => ({ actor: 'todo', permissions, ...(channels ? { channels } : {}), declaredBy: ['desk'] });
+    expect(formatRegistryDiff(reg(), delegating([todo(['desk:read'], ['peer'])]), true)).toEqual([
+      "+ delegation todo may now act for a person here with desk:read over peer (a ceiling over the person's own keys, never a grant)",
+    ]);
+    expect(formatRegistryDiff(delegating([todo(['desk:read'])]), delegating([todo(['desk:read', 'desk:new'], ['mcp', 'peer'])]), true)).toEqual([
+      "~ delegation todo acting for a person here: now also with desk:new; now also over peer (a ceiling over the person's own keys, never a grant)",
+    ]);
+    expect(formatRegistryDiff(delegating([todo(['desk:read'])]), reg(), true)).toEqual(['- delegation todo may no longer act for a person here']);
+  });
+
   // Copilot on #1766: the digest hashes the whole registry, the diff itemises keys, roles and
   // grant shapes. A change in anything else must never print as "none".
   const withExports = (type: string) =>

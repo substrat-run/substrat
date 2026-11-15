@@ -8,9 +8,10 @@ describe.runIf(built)('push carries its loaded module permission declarations (#
       { id: 'helpdesk', ownerGrants: ['helpdesk:read'] },
     ]));
     expect(manifest.modules).toEqual([
-      // `connections` on every module, empty when it lands nothing (#2732): absent marks an older CLI.
-      { id: '@acme/engine-work', permissions: [{ key: 'engine-work:read', description: 'Read', holder: 'system' }], connections: [] },
-      { id: 'helpdesk', permissions: [{ key: 'helpdesk:read', description: 'Read' }], ownerGrants: ['helpdesk:read'], connections: [] },
+      // `connections` (#2732) and `delegations` (#3161) on every module, empty when it declares none:
+      // absent marks an older CLI.
+      { id: '@acme/engine-work', permissions: [{ key: 'engine-work:read', description: 'Read', holder: 'system' }], connections: [], delegations: [] },
+      { id: 'helpdesk', permissions: [{ key: 'helpdesk:read', description: 'Read' }], ownerGrants: ['helpdesk:read'], connections: [], delegations: [] },
     ]);
     expect(manifest.registry.permissions.map(({ key, declaredBy }) => ({ key, declaredBy }))).toEqual([
       { key: 'engine-work:read', declaredBy: ['@acme/engine-work'] },

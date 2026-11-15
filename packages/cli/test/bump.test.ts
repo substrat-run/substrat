@@ -647,7 +647,7 @@ describe('unrecognised structure is major — never a silent lower bump', () => 
   });
 
   it('an unknown PERMISSIONS.md section changing is major and flagged; the derived §3 is prose', () => {
-    const r = perms((t) => `${t}\n## 6. Delegations\n\n| From | To |\n| --- | --- |\n| \`a\` | \`b\` |\n`);
+    const r = perms((t) => `${t}\n## 6. Federations\n\n| From | To |\n| --- | --- |\n| \`a\` | \`b\` |\n`);
     expect(r.bump).toBe('major');
     expect(r.changes[0]?.flagged).toBe(true);
     expect(perms((t) => t.replace('| `list:manage` | — no role — |', '| `list:manage` | — nobody — |')).bump).toBe('patch');
@@ -713,6 +713,26 @@ describe('PERMISSIONS.md', () => {
       PERMS + peers(row('@acme/vertical', '`todo/get`', '`list:manage`, `list:read`'), second),
     );
     expect(first).toMatchObject({ bump: 'minor', changes: [{ path, flagged: true }] });
+  });
+
+  it('a delegation gaining an actor, a key or a channel is a flagged minor; losing one is major; never an unread section (#3161)', () => {
+    const row = (keys: string, channels = '`mcp`') => `| \`todo\` | \`@acme/vertical\` | ${keys} | ${channels} |\n`;
+    const delegations = (...rows: string[]) =>
+      `\n## 6. Delegations — which apps may act for a person here\n\n| Actor | Declared by | May act with | Channels |\n| --- | --- | --- | --- |\n${rows.join('')}`;
+    const path = 'delegation todo (declared by @acme/vertical)';
+    const narrow = PERMS + delegations(row('`list:read`'));
+    expect(parsePermissions(narrow).unread).toEqual({});
+    expect(classifyPermissions(PERMS, narrow)).toMatchObject({ bump: 'minor', changes: [{ path, level: 'minor', flagged: true }] });
+    const wide = PERMS + delegations(row('`list:create`, `list:read`', '`mcp`, `peer`'));
+    expect(classifyPermissions(narrow, wide)).toMatchObject({
+      bump: 'minor',
+      changes: [
+        { path, level: 'minor', flagged: true, detail: expect.stringMatching(/act with list:create/) },
+        { path, level: 'minor', flagged: true, detail: expect.stringMatching(/over peer/) },
+      ],
+    });
+    expect(classifyPermissions(wide, narrow)).toMatchObject({ bump: 'major', changes: [{ path, level: 'major', flagged: true }, { path, level: 'major', flagged: true }] });
+    expect(classifyPermissions(narrow, PERMS)).toMatchObject({ bump: 'major', changes: [{ path, level: 'major', flagged: true }] });
   });
 
   /** PERMS with §1 as the emitter writes it once some key is reserved: a fourth cell, `yes` or `—`, on every row. */

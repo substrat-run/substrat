@@ -20,6 +20,7 @@
  * never acknowledges a diff they were not shown.
  */
 import {
+  delegationNote,
   diffRegistries,
   grantShapeHolderNotes,
   RESERVED_KEY_MARK,
@@ -207,6 +208,8 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
       shape('grant shape', g, g.entityType),
       ...grantShapeHolderNotes(g).map((n) => `  ${n}`),
     ]),
+    // #3161: another app acting for the people here, by actor.
+    ...diff.delegationChanges.map((c) => `${c.isGone ? '-' : c.isNew ? '+' : '~'} delegation ${delegationNote(c)}`),
   ];
   const unitemised = unitemisedRegistryChanges(from, to, diff);
   if (unitemised.length > 0) {

@@ -15,6 +15,8 @@ import {
   ATTACHMENT_BLOB_BINDING,
   buildPermissionRegistry,
   declaredOwnerGrants,
+  delegationOffences,
+  reservedDelegationMessage,
   ownerGrantSets,
   reservedKeyMessage,
   reservedKeyOffences,
@@ -524,6 +526,11 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     reserved,
   );
   if (offences.length > 0) throw new Error(reservedKeyMessage(basename(resolve(dir)), entry, offences, reserved));
+  // #3161: a delegated key reserved to a system principal, refused in `lint:permissions`' words. An
+  // undeclared one is refused by the registry build below, on the same line `lint:permissions` prints.
+  const declared = new Set(mod.permissions.modules.flatMap((m) => m.manifest.permissions.map((p) => p.key as string)));
+  const reservedDelegated = delegationOffences(mod.permissions.modules, declared, reserved).filter((o) => o.reason === 'reserved');
+  if (reservedDelegated.length > 0) throw new Error(reservedDelegationMessage(basename(resolve(dir)), reservedDelegated));
   // #1234: the declared half of a declared-vs-observed finding — what the modules say
   // they emit and consume, which exists nowhere off their manifests.
   const declaredEvents = flattenDeclaredEvents(mod.permissions);
@@ -550,6 +557,11 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       // #2732: the landings, so the control plane can hold registry.connections to them. Sent on
       // every module, empty when it lands nothing: an absent field is what marks an older CLI.
       connections: (manifest.connections ?? []).map(({ provider, bind }) => ({ provider, ...(bind === 'on-request' ? { bind } : {}) })),
+      // #3161: the delegations, so the control plane can hold registry.delegations to them and tell
+      // "delegates to nobody" from an older CLI. Sent on every module, empty when it delegates nothing.
+      delegations: (manifest.delegations ?? []).map(({ actor, permissions, channels }) => ({
+        actor, permissions: [...permissions], ...(channels ? { channels: [...channels] } : {}),
+      })),
     })),
     envSpec: spec,
     // #1232: the same import that yields the permission surface already holds every

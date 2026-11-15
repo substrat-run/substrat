@@ -259,7 +259,9 @@ import {
   pushedConnectorProblems,
   pushedModuleRegistryProblems,
   pushedLandingProblems,
+  pushedDelegationProblems,
   pushedPermissionRegistry,
+  delegationsOf,
   deploymentRefFor,
   stableDeploymentRefFor,
   nextMigrationTag,
@@ -9348,6 +9350,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #2732: a landing's mode as the modules declare it, so an on-request one is never stored as every-install.
         const landingProblems = pushedLandingProblems(checked.data.modules, registry.data);
         if (landingProblems.length > 0) return refuseManifest({ path: ['registry', 'connections'], message: landingProblems.join('; ') });
+        // #3161: the digest-covered copy of the delegations says what the modules declare.
+        const delegationProblems = pushedDelegationProblems(checked.data.modules, registry.data);
+        if (delegationProblems.length > 0) return refuseManifest({ path: ['registry', 'delegations'], message: delegationProblems.join('; ') });
       }
       // #2430: an owner grant is a person's, so it holds no key the registry reserves.
       const ownerGrants = pushedOwnerGrantProblems(checked.data);
@@ -9470,6 +9475,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
+    const delegations = parsed ? delegationsOf(parsed) : null;
     return c.json({
       declaredEvents: parsed?.declaredEvents ?? null,
       // Whether that surface is the whole declaration or a sample cut at the cap. The
@@ -9488,6 +9494,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // pushed before the declaration existed is unenforced, which a reader must be able
       // to tell from a version that declares it calls nothing.
       calls: parsed?.calls ?? null,
+      // #3161: which apps may act for a person in this version, off its registry. Left out when the
+      // version cannot say (`delegationsOf`: pushed before the field), which a reader keeps apart
+      // from `[]`: it revokes on `[]` and must never revoke on a version that did not say.
+      ...(delegations === null ? {} : { delegations }),
     });
   });
 
@@ -10549,6 +10559,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (moduleProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.permissions: ${moduleProblems.join('; ')}`);
     const landingProblems = pushedLandingProblems(manifest.modules, manifest.registry);
     if (landingProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.connections: ${landingProblems.join('; ')}`);
+    const delegationProblems = pushedDelegationProblems(manifest.modules, manifest.registry);
+    if (delegationProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.delegations: ${delegationProblems.join('; ')}`);
     // #2430: an owner grant is a person's, so it holds no key the registry reserves.
     const ownerGrants = pushedOwnerGrantProblems(manifest);
     if (ownerGrants.length > 0) return refuse(c, 'validation_failed', `manifest ownerGrants: ${ownerGrants.join('; ')}`);

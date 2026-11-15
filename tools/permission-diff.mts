@@ -35,6 +35,8 @@ import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { repoRoot, toPosix } from './repo-path.mjs';
 import { declaredOwnerGrants, ownerGrantSets, reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
+// #3161: the delegation refusals `buildPermissionRegistry` and so `substrat push` apply, read from source.
+import { delegationOffenceLine, delegationOffences, reservedDelegationMessage } from '../packages/contracts/src/delegation-surface.ts';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
@@ -372,11 +374,7 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     }
     // #3161: a delegation's keys are the ceiling an actor's call for a person runs under; one no
     // module declares can never be held by the person, so the ceiling admits nothing, silently.
-    for (const d of m.manifest.delegations ?? []) {
-      for (const p of d.permissions) {
-        if (!declaredBy.has(p)) orphans.push(`delegation ${code(d.actor)} → ${code(p)}`);
-      }
-    }
+    for (const o of delegationOffences([m], declaredBy, new Set())) orphans.push(delegationOffenceLine(o));
     // #2316: a connection landing's key is granted to every connection of the provider; its
     // operation is what the connector invokes. Either one missing lands nothing, every pass.
     for (const l of m.manifest.connections ?? []) {
@@ -406,19 +404,8 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   if (offences.length) cannot(reservedKeyMessage(rel, entry, offences, reservedKeys));
   // #3161: a delegated call runs as a person, and no person holds a reserved key, so delegating
   // one could only ever be refused. Named here rather than left to read as a working ceiling.
-  const reservedDelegated = modules.flatMap((m) =>
-    (m.manifest.delegations ?? []).flatMap((d) =>
-      d.permissions.filter((p) => reservedKeys.has(p)).map((p) => `delegation ${code(d.actor)} → ${code(p)}`),
-    ),
-  );
-  if (reservedDelegated.length) {
-    cannot(
-      `${rel} delegates ${reservedDelegated.length} key(s) reserved to a system principal:\n` +
-        reservedDelegated.map((o) => `    ${o}`).join('\n') +
-        `\n\n  A delegated call runs as the person, and no person holds a key declared\n` +
-        `  \`holder: 'system'\`, so the delegation could never use it. Remove it from the delegation.`,
-    );
-  }
+  const reservedDelegated = delegationOffences(modules, declaredBy, reservedKeys).filter((o) => o.reason === 'reserved');
+  if (reservedDelegated.length) cannot(reservedDelegationMessage(rel, reservedDelegated));
 
   const holders = new Map<string, string[]>();
   for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);
