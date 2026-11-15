@@ -1,5 +1,13 @@
 # @substrat-run/builder
 
+## 0.14.1
+
+### Patch Changes
+
+- Updated dependencies [ad74d85]
+- Updated dependencies [c02f6eb]
+  - @substrat-run/cli@0.59.2
+
 ## 0.14.0
 
 ### Minor Changes
