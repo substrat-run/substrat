@@ -1,11 +1,11 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, tenantId, type TenantId } from '@substrat-run/contracts';
 import { SERVICE_TOKEN_HEADER } from '@substrat-run/control-plane-api';
 import { ulid } from '@substrat-run/kernel';
-import { createReviewApi } from '../src/reviews.js';
+import { createReviewApi, MAX_KEPT_REVIEWS_PER_TENANT, MAX_REVIEWS_IN_PROGRESS_PER_TENANT, REVIEW_READING_WINDOW_MS } from '../src/reviews.js';
 import { validateReviewArchive } from '../src/review-archive.js';
-import { pruneReviews, readReview, receiveReview, ReviewCollisionError } from '../src/review-store.js';
+import { pruneReviews, readReview, receiveReview, ReviewCollisionError, writeReviewResult } from '../src/review-store.js';
 import { archive, archiveRaw, BLOCK, octal, tar } from './review-fixtures.js';
 
 const bucket = (env as unknown as { REVIEW_SOURCES: R2Bucket }).REVIEW_SOURCES;
@@ -247,5 +247,99 @@ describe('phase-0 review intake', () => {
     expect(await readReview(bucket, a, receipt.id, new Date('2026-02-01T00:00:00.000Z'))).toBeNull();
     await pruneReviews(bucket, new Date('2026-02-01T00:00:00.000Z'));
     expect(await bucket.get(`archives/${receipt.id}/source.tar.gz`)).toBeNull();
+  });
+});
+
+describe('a builder review', () => {
+  const tenantA = tenantId.parse(ulid());
+  const tenantB = tenantId.parse(ulid());
+  const tenantFull = tenantId.parse(ulid());
+  const owners: Record<string, TenantId> = { 'acme/garden': tenantA, 'beta/garden': tenantB, 'full/garden': tenantFull };
+  const builders = {
+    a1: { actor: actor(), tenantId: tenantA, tenantSlug: 'acme' },
+    a2: { actor: actor(), tenantId: tenantA, tenantSlug: 'acme' },
+    b: { actor: actor(), tenantId: tenantB, tenantSlug: 'beta' },
+    full: { actor: actor(), tenantId: tenantFull, tenantSlug: 'full' },
+  };
+  const builderApp = (store: R2Bucket = bucket) => createReviewApi({
+    bucket: () => store,
+    authenticate: async () => null,
+    authenticateBuilder: async (r) => builders[r.headers.get('x-test-builder') as keyof typeof builders] ?? null,
+    ownerOf: async (_actor, slug) => owners[slug],
+    entitled: async (tenant) => tenant !== tenantB || reviewsForB,
+  });
+  let reviewsForB = true;
+  const upload = async (who: keyof typeof builders, slug?: string, store?: R2Bucket) => {
+    const src = await archive();
+    const form = new FormData();
+    form.set('source', src.file);
+    form.set('sourceSha256', src.sha256);
+    if (slug !== undefined) form.set('slug', slug);
+    return builderApp(store).request('http://test/reviews', { method: 'POST', headers: { 'x-test-builder': who }, body: form });
+  };
+  const get = (who: keyof typeof builders, path: string) => builderApp().request(`http://test${path}`, { headers: { 'x-test-builder': who } });
+
+  it('is recorded under its tenant for a vertical the tenant owns, read by that tenant only, and refused for any other vertical', async () => {
+    const created = await upload('a1', 'garden');
+    expect(created.status).toBe(201);
+    const record = await created.json() as { id: string; tenantId: string; vertical: string; actor?: string };
+    expect(record).toMatchObject({ tenantId: tenantA, vertical: 'acme/garden', state: 'received' });
+    expect(record.actor).toBeUndefined();
+
+    expect((await get('a2', `/reviews/${record.id}`)).status).toBe(200);
+    expect((await (await get('a2', '/reviews')).json() as { entries: Array<{ id: string }> }).entries.map((e) => e.id)).toContain(record.id);
+    expect((await get('b', `/reviews/${record.id}`)).status).toBe(404);
+    expect((await (await get('b', '/reviews')).json() as { entries: unknown[] }).entries).toEqual([]);
+
+    for (const [slug, status] of [['beta/garden', 403], ['orchard', 403], [undefined, 400]] as const) {
+      const refused = await upload('a1', slug);
+      expect(refused.status, String(slug)).toBe(status);
+      expect(refused.headers.get('content-type')).toContain('application/problem+json');
+    }
+  });
+
+  it('starts none for a workspace without the review entitlement, and still reads its own', async () => {
+    const kept = await upload('b', 'garden');
+    expect(kept.status).toBe(201);
+    reviewsForB = false;
+    try {
+      const refused = await upload('b', 'garden');
+      expect(refused.status).toBe(403);
+      expect(await refused.text()).toContain('`review` entitlement');
+      expect((await get('b', `/reviews/${((await kept.json()) as { id: string }).id}`)).status).toBe(200);
+    } finally {
+      reviewsForB = true;
+    }
+  });
+
+  it('bounds a workspace by reviews in progress, then by reviews kept, whichever member starts them', async () => {
+    const src = await archive();
+    const receive = (now?: Date) =>
+      receiveReview(bucket, actor(), { source: src.file, sourceSha256: src.sha256, tenant: { tenantId: tenantFull, vertical: 'full/garden' } }, now);
+    const at = new Date().toISOString();
+    const finish = (id: string) =>
+      writeReviewResult(bucket, id, {
+        state: 'skipped', reason: 'test', gates: [], findings: [], checkedClean: [], notApplicable: [], notSent: [], deleted: [],
+        fullTree: true, model: null, runner: { version: 'test' }, usage: null, dropped: 0, parseFailures: 0,
+        startedAt: at, finishedAt: at, checklistDigest: 'd', pluginVersion: 'p',
+      });
+    // Left `received` past the reading window (a job that never started and could not be closed):
+    // these spend nothing and hold no slot.
+    const stranded = new Date(Date.now() - REVIEW_READING_WINDOW_MS - 60_000);
+    for (let n = 0; n < MAX_REVIEWS_IN_PROGRESS_PER_TENANT; n++) await receive(stranded);
+    const inProgress = [];
+    for (let n = 0; n < MAX_REVIEWS_IN_PROGRESS_PER_TENANT - 1; n++) inProgress.push(await receive());
+    expect((await upload('full', 'garden')).status).toBe(201);
+    expect((await upload('full', 'garden')).status).toBe(429);
+    // A finished review frees its slot…
+    await finish(inProgress[0]!.id);
+    expect((await upload('full', 'garden')).status).toBe(201);
+    // …and still counts toward what the workspace may keep in the retention window.
+    for (const r of inProgress.slice(1)) await finish(r.id);
+    // The stranded and in-progress ones plus the two admitted are kept; fill the window to its bound.
+    for (let kept = 2 * MAX_REVIEWS_IN_PROGRESS_PER_TENANT + 1; kept < MAX_KEPT_REVIEWS_PER_TENANT; kept++) await finish((await receive()).id);
+    const refused = await upload('full', 'garden');
+    expect(refused.status).toBe(429);
+    expect(await refused.text()).toContain(`${MAX_KEPT_REVIEWS_PER_TENANT} reviews per workspace in 30 days`);
   });
 });

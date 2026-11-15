@@ -17,6 +17,7 @@ describe('platform source releases', () => {
   const build = vi.fn<SourceBuildService['build']>();
   const projects = vi.fn<SourceBuildService['projects']>();
   const record = vi.fn<SourceBuildService['record']>();
+  const changes = vi.fn<SourceBuildService['changes']>();
   const deploy = vi.fn(async () => {});
   const revision = 'a'.repeat(40);
   let builderHeaders: Record<string, string>;
@@ -40,7 +41,7 @@ describe('platform source releases', () => {
     });
     app = createControlPlaneApi({
       host, authenticate: UNSAFE_devPlatformActorAuth(), authenticateBuilder: pushTokenBuilderAuth(secret),
-      sourceBuilds: { build, projects, record }, deployVertical: deploy,
+      sourceBuilds: { build, projects, record, changes }, deployVertical: deploy,
     });
     const token = await mintPushToken(secret, { actor: await pushActorFor(tenant), tenantId: tenant, tenantSlug: 'acme' });
     builderHeaders = { 'x-service-token': token, 'content-type': 'application/json' };

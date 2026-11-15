@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { chatStatus, compareUrl, newChat, titleFrom, withChats, withoutChat } from '../src/chats.js';
+import { chatStatus, compareUrl, newChat, openChanges, titleFrom, withChats, withoutChat } from '../src/chats.js';
 import { projectStorageKeys } from '../src/project-removal.js';
 
 const project = { id: '01JPROJECT', createdAt: '2026-01-01' };
@@ -47,5 +47,44 @@ describe('chats', () => {
 		const statuses = [newChat('A', 'x'), { ...chat, startRevision: 'r2' }, chat, { ...chat, mergedRevision: 'r2' }].map(chatStatus);
 		expect(statuses).toEqual(['empty', 'empty', 'unmerged', 'merged']);
 		expect(compareUrl({ owner: 'acme', repo: 'todo.app', branch: 'release/main' }, chat)).toBe('https://github.com/acme/todo.app/compare/release/main...builder/a?expand=1');
+	});
+
+	it('lists the open builder/ branches of the asked project only, newest first, and no GitHub chat', () => {
+		const work = (id: string, updatedAt: string, more = {}) => ({ ...newChat(id, '2026-01-01'), updatedAt, revision: `r-${id}`, startRevision: 'r0', ...more });
+		const hosted = { kind: 'artifacts', name: 'garden', remote: 'https://artifacts.example/garden.git', branch: 'main' } as const;
+		const projects = [
+			{
+				slug: 'acme/garden', updatedAt: '2026-01-05', repository: hosted,
+				chats: [
+					work('A', '2026-01-02'),
+					work('B', '2026-01-04'),
+					work('M', '2026-01-03', { mergedRevision: 'r-M' }),
+					newChat('E', '2026-01-04'),
+					// A chat on a branch outside the studio's namespace is never listed.
+					work('X', '2026-01-05', { branch: 'main' }),
+				],
+			},
+			{ slug: 'acme/other', updatedAt: '2026-01-06', repository: hosted, chats: [work('O', '2026-01-06')] },
+			{ slug: 'acme/linked', updatedAt: '2026-01-06', repository: { kind: 'github', owner: 'acme', repo: 'linked', branch: 'main', directory: '.' } as const, chats: [work('G', '2026-01-06')] },
+		];
+		const garden = openChanges(projects, 'acme/garden');
+		expect(garden.repository).toEqual({ kind: 'artifacts', name: 'garden', branch: 'main' });
+		expect(garden.changes).toEqual([
+			{ id: 'B', title: 'New chat', branch: 'builder/b', updatedAt: '2026-01-04', head: 'r-B' },
+			{ id: 'A', title: 'New chat', branch: 'builder/a', updatedAt: '2026-01-02', head: 'r-A' },
+		]);
+		expect(openChanges(projects, 'acme/linked')).toEqual({ repository: { kind: 'github', owner: 'acme', repo: 'linked', branch: 'main' }, changes: [] });
+		expect(openChanges(projects, 'acme/none')).toEqual({ repository: null, changes: [] });
+	});
+
+	it('answers the control plane only past the service token, and only on a GET', () => {
+		// The worker does not stand up in a unit test either; the gate's order is read off the source.
+		const worker = readFileSync(fileURLToPath(new URL('../src/worker.ts', import.meta.url)), 'utf8');
+		const gate = worker.indexOf("if (!c.env.CP_SERVICE_TOKEN || supplied !== c.env.CP_SERVICE_TOKEN) return refuse(403, 'forbidden');");
+		const route = worker.indexOf("const changesRead = c.req.method === 'GET' && path === '/internal/changes';");
+		expect(gate).toBeGreaterThan(worker.indexOf("app.all('/internal/*'"));
+		expect(route).toBeGreaterThan(gate);
+		// Answered by the tenant's own agent: the one the forwarded tenant names.
+		expect(worker.slice(route)).toMatch(/^[\s\S]*?const agent = c\.env\.BUILDER_AGENT\.get\(c\.env\.BUILDER_AGENT\.idFromName\(tenant\)\);/);
 	});
 });

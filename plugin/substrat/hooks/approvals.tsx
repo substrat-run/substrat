@@ -13,20 +13,25 @@
  *
  * A tripwire, not a boundary: the agent could still script around it. What holds is the
  * control plane's review token (#2333) and CI. Without mods the plugin works as before.
+ *
+ * The pane also starts a code review of the project's committed branch (`substrat review
+ * upload` against the merge-base with origin/main) and hands its id back to the agent.
  */
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Launch } from '../types'
+import type { Launch, OpenChanges } from '../types'
 import {
   approveArgs,
+  changesIn,
   cwdFor,
   digestIn,
   planArgs,
   promoteArgs,
   promoteRefusalIn,
   refusalFor,
+  reviewUploadIn,
   substratCalls,
   waitingPromoteIn,
 } from './approvals-parse'
@@ -37,6 +42,8 @@ const TITLE = 'Substrat approvals'
 // Change a tag when its value's fields change: it declines what an earlier version stored.
 const plan = atom({ plugin: 'substrat', key: 'plan' } as const, null, { shape: 'plan-1' })
 const promote = atom({ plugin: 'substrat', key: 'promote' } as const, null, { shape: 'promote-1' })
+const review = atom({ plugin: 'substrat', key: 'review' } as const, null, { shape: 'review-1' })
+const changes = atom({ plugin: 'substrat', key: 'changes' } as const, null, { shape: 'changes-1' })
 
 /** A CLI run can wait on the control plane; a promote applies migrations. */
 const RUN_MS = 300_000
@@ -46,6 +53,16 @@ const RUNNING = { kind: 'running' } as const
 const failed = (message: string) => ({ kind: 'failed', message }) as const
 const outputOf = (r: { stdout: string; stderr: string }) => [r.stdout, r.stderr].filter(s => s.trim()).join('\n').trim()
 const tail = (text: string, lines = 12) => text.split('\n').slice(-lines).join('\n')
+const CHECKS: Record<OpenChanges['changes'][number]['checks']['state'], string> = {
+  success: 'checks pass',
+  failure: 'checks fail',
+  pending: 'checks running',
+  none: 'no checks',
+  unknown: 'checks unknown',
+}
+/** One change's checks and preview, as the pane prints them under its title. */
+const changeLine = (ch: OpenChanges['changes'][number]) =>
+  `${CHECKS[ch.checks.state]}${ch.checks.failing.length > 0 ? `: ${ch.checks.failing.join(', ')}` : ''}${ch.preview ? ` · preview ${ch.preview.url ?? ch.preview.tag}` : ''}`
 
 /** Shows a design gate: kept who and why if it is the same gate, then rendered fresh. */
 async function showPlan($: Engine, launch: Launch, args: string[]) {
@@ -124,15 +141,46 @@ async function approvePlan($: Engine) {
  */
 let lastLauncher: readonly string[] = ['npx', '--yes', '@substrat-run/cli@latest']
 
+/** Counts `checkChanges` starts, so an answer that arrives after a newer refresh began is dropped. */
+let changesGeneration = 0
+
 /**
- * Asks the control plane whether a promote waits for the person, whoever pushed it: a vertical
- * deployed by its CI on merge is refused there, in a log this session never ran, and the pane
- * would otherwise be empty while the dashboard asks. Shows what it finds unless the pane is
- * already showing a promote. Quiet when the directory is no vertical or nothing waits.
+ * Asks the control plane what waits for the person: the vertical's open changes, and whether a
+ * promote waits, whoever pushed it.
  */
 async function checkPlane($: Engine) {
-  if ((await read($, promote)) !== null) return
   const launch = { launcher: lastLauncher, cwd: await $.session.cwd() }
+  await Promise.all([checkChanges($, launch), checkWaitingPromote($, launch)])
+}
+
+/**
+ * The open pull requests or studio chat branches, with checks and previews. Quiet when the CLI
+ * has no answer, and a failed refresh clears what an earlier one showed: passing checks read
+ * before the failure are not passing checks now.
+ */
+async function checkChanges($: Engine, launch: Launch) {
+  const generation = ++changesGeneration
+  let open: OpenChanges | undefined
+  try {
+    const r = await $.process.run([...launch.launcher, 'changes', '--json'], { cwd: launch.cwd, timeoutMs: RUN_MS })
+    open = r.exitCode === 0 ? changesIn(r.stdout) : undefined
+  } catch {
+    // No CLI, no network or no vertical here: nothing is shown.
+  }
+  // Refreshes can overlap (the button does not wait): only the latest one started is shown, so a
+  // late answer never replaces a newer failure.
+  if (generation !== changesGeneration) return
+  await update($, changes, () => open ?? null)
+}
+
+/**
+ * Whether a promote waits for the person, whoever pushed it: a vertical deployed by its CI on
+ * merge is refused there, in a log this session never ran, and the pane would otherwise be empty
+ * while the dashboard asks. Shows what it finds unless the pane is already showing a promote.
+ * Quiet when the directory is no vertical or nothing waits.
+ */
+async function checkWaitingPromote($: Engine, launch: Launch) {
+  if ((await read($, promote)) !== null) return
   try {
     const r = await $.process.run([...launch.launcher, 'promote', '--review-only', '--json'], { cwd: launch.cwd, timeoutMs: RUN_MS })
     const waiting = r.exitCode === 0 ? waitingPromoteIn(r.stdout) : undefined
@@ -168,6 +216,32 @@ async function acknowledge($: Engine) {
     )
   } catch (err) {
     await update($, promote, cur => (cur === null ? null : { ...cur, status: failed(String(err)) }))
+  }
+}
+
+/**
+ * Uploads the project's committed branch for a code review, against the merge-base with
+ * origin/main as `substrat review upload --base` computes it, and tells the agent the id.
+ */
+async function startReview($: Engine) {
+  if ((await read($, review))?.status.kind === 'running') return
+  await update($, review, () => ({ id: null, state: null, status: RUNNING }))
+  try {
+    const r = await $.process.run([...lastLauncher, 'review', 'upload', '--base', 'origin/main', '--json'], {
+      cwd: await $.session.cwd(),
+      timeoutMs: RUN_MS,
+    })
+    const stored = r.exitCode === 0 ? reviewUploadIn(r.stdout) : undefined
+    if (!stored) {
+      await update($, review, () => ({ id: null, state: null, status: failed(outputOf(r) || `substrat review upload exited ${r.exitCode}`) }))
+      return
+    }
+    await update($, review, () => ({ ...stored, status: IDLE }))
+    void $.prompt.submit({
+      text: `I started a Substrat code review of this branch in the approvals pane: review ${stored.id} is ${stored.state}. Read it with \`substrat review ${stored.id} --wait\`.`,
+    })
+  } catch (err) {
+    await update($, review, () => ({ id: null, state: null, status: failed(String(err)) }))
   }
 }
 
@@ -228,15 +302,59 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
     const p = await read($, plan)
     const q = await read($, promote)
+    const r = await read($, review)
+    // The code review row, in either state of the pane: the button, and the review it started.
+    const codeReview = (
+      <Box flexDirection="column">
+        {r?.id && (
+          <Text>
+            Review {r.id}: {r.state}
+          </Text>
+        )}
+        {r?.status.kind === 'failed' && <Text color="error">{r.status.message}</Text>}
+        {r?.status.kind === 'running' ? (
+          <Text dimColor>Uploading the branch for review…</Text>
+        ) : (
+          <Box gap={1}>
+            <Button key="start-review" label="Start a code review" onPress={() => void startReview($)} />
+          </Box>
+        )}
+      </Box>
+    )
+    const c = await read($, changes)
+
+    const changeList = c !== null && (
+      <Box flexDirection="column">
+        <Text bold>Changes{c.repository ? ` in ${c.repository}` : ''}</Text>
+        {(c.reason !== null || c.provider === null) && <Text dimColor>{c.reason ?? 'No repository can be read.'}</Text>}
+        {c.provider !== null && c.changes.length === 0 && <Text dimColor>No open changes.</Text>}
+        {c.changes.map(ch => (
+          <Box key={ch.id} flexDirection="column">
+            <Text>
+              {ch.id} {ch.title} ({ch.branch})
+            </Text>
+            {ch.checks.state === 'failure' ? (
+              <Text color="error">{changeLine(ch)}</Text>
+            ) : (
+              <Text dimColor>{changeLine(ch)}</Text>
+            )}
+          </Box>
+        ))}
+      </Box>
+    )
 
     if (p === null && q === null) {
       return (
-        <Box flexDirection="column">
-          <Text dimColor>Nothing is waiting for your approval.</Text>
-          <Text dimColor>A design gate or a refused promote shows here when Claude runs one, and so does a promote waiting in prod.</Text>
-          <Box gap={1}>
-            <Button key="check-plane" label="Check for a waiting promote" onPress={() => void checkPlane($)} />
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection="column">
+            <Text dimColor>Nothing is waiting for your approval.</Text>
+            <Text dimColor>A design gate or a refused promote shows here when Claude runs one, and so does a promote waiting in prod.</Text>
           </Box>
+          <Box gap={1}>
+            <Button key="check-plane" label="Check for a waiting promote and open changes" onPress={() => void checkPlane($)} />
+          </Box>
+          {changeList}
+          {codeReview}
         </Box>
       )
     }
@@ -313,6 +431,8 @@ export const register: Register = (on, options) => {
             {p.status.kind === 'running' && <Text dimColor>Approving…</Text>}
           </Box>
         )}
+        {changeList}
+        {codeReview}
       </Box>
     )
   })

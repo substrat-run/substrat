@@ -2,19 +2,19 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV3 } from 'ai/test';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createModelHost } from '@substrat-run/vertical-host/model';
 import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview, type ChangedFile } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, reviewOnce, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
 import { REVIEW_RULES_DIGEST } from '../src/review-rules.generated.js';
-import { readReview, receiveReview, reviewHeadline, writeReviewResult } from '../src/review-store.js';
+import { readReview, receiveReview, REVIEW_READING_WINDOW_MS, reviewHeadline, writeReviewResult } from '../src/review-store.js';
 import { createReviewApi } from '../src/reviews.js';
 import { archive } from './review-fixtures.js';
 
@@ -102,6 +102,19 @@ describe('review job: the reader half with a model double', () => {
     expect(lines.filter((l) => l.attribution.tenant === platformTenant)).toMatchObject([
       { requestId: id, inputTokens: 1200, attribution: { operation: 'review/read', vertical: '@substrat-run/review-runner' } },
     ]);
+  });
+
+  it('(a1) a builder review files its ledger line under its own tenant, not the platform', async () => {
+    const actor = platformActorId.parse(ulid());
+    const tenant = tenantId.parse(ulid());
+    const [src, base] = [await archive(CHANGED.source), await archive(CHANGED.base)];
+    const { id } = await receiveReview(bucket, actor, {
+      source: src.file, sourceSha256: src.sha256, base: base.file, baseSha256: base.sha256, tenant: { tenantId: tenant, vertical: 'acme/garden' },
+    });
+    await runReviewJob(id, 0, deps(double([{ text: reply({ findings: [] }) }])));
+    const lines = await new CloudflareScopeHost({ scope: testEnv.SCOPE as never, controlPlane: testEnv.CONTROL_PLANE as never })
+      .admin.listModelUsage(actor, { scopeId: REVIEW_SENTINEL_SCOPE });
+    expect(lines.filter((l) => l.requestId === id).map((l) => l.attribution.tenant)).toEqual([tenant]);
   });
 
   it('(a2) marks changed lines in the prompt and drops a finding on an unchanged line', async () => {
@@ -250,6 +263,26 @@ describe('review job: the reader half with a model double', () => {
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'model timed out', notSent: [{ path: 'pnpm-lock.yaml', rule: 'lockfile' }] });
   });
 
+  it('a job whose call could run past the reading window calls no model and writes `incomplete`', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const model = double([{ text: reply({ findings: [] }) }]);
+    const late = () => new Date(Date.now() + REVIEW_READING_WINDOW_MS + 60_000);
+    // Its storage down for over an hour: past the window outright.
+    await runReviewJob(id, 0, deps(model, {}, { now: late }));
+    expect(model.calls.n).toBe(0);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'reading window passed' });
+    // Inside the window when it starts, but its call's deadline would end past it, after a wait
+    // in `beforeCall`: the clock is read after that wait.
+    const second = await stored(CHANGED.source, CHANGED.base);
+    let clock = Date.now();
+    const timeout = 60_000;
+    const attempt = await reviewOnce(second.id, 0, deps(model, { modelTimeoutMs: timeout }, { now: () => new Date(clock) }), async () => {
+      clock += REVIEW_READING_WINDOW_MS - timeout + 1_000;
+    });
+    expect(model.calls.n).toBe(0);
+    expect(attempt).toMatchObject({ kind: 'result', result: { state: 'incomplete', reason: 'reading window passed' } });
+  });
+
   it.each([
     ['a failed ledger write still completes the review', { platformTenant }, async () => { throw new Error('directory down'); }, 1],
     ['no platform tenant writes no ledger line', { platformTenant: undefined }, async () => ({ recorded: true }), 0],
@@ -316,7 +349,7 @@ describe('the production gateway path', () => {
 });
 
 describe('the job object and the upload', () => {
-  it('the upload starts the reader half for the stored review and still answers 201 when starting fails', async () => {
+  it('the upload starts the reader half for the stored review, and when starting fails still answers 201 with the review closed `incomplete`', async () => {
     const actor = platformActorId.parse(ulid());
     const started: string[] = [];
     const api = createReviewApi({ bucket: () => bucket, authenticate: async () => actor, startReview: async (id) => { started.push(id); throw new Error('no object'); } });
@@ -327,7 +360,11 @@ describe('the job object and the upload', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const response = await api.request('/reviews', { method: 'POST', body: form });
     expect(response.status).toBe(201);
-    expect(started).toEqual([((await response.json()) as { id: string }).id]);
+    const body = (await response.json()) as { id: string };
+    expect(started).toEqual([body.id]);
+    // Closed, so it no longer counts as in progress: nothing else would move it on.
+    expect(body).toMatchObject({ state: 'incomplete', reason: 'review job did not start' });
+    expect(await readReview(bucket, actor, body.id)).toMatchObject({ state: 'incomplete' });
   });
 
   it('a transient error bumps the attempt and re-arms the alarm; a runner error writes a record and forgets the job', async () => {
@@ -462,6 +499,16 @@ describe('the job object and the upload', () => {
     await bucket.put(`records/${id}.json`, JSON.stringify({ ...receipt, checklistDigest: 'f'.repeat(64), pluginVersion: '0.0.1' }));
     await runReviewJob(id, 0, deps(double([{ text: reply({ findings: [] }) }])));
     expect(await readReview(bucket, actor, id)).toMatchObject({ checklistDigest: REVIEW_RULES_DIGEST, pluginVersion: expect.not.stringMatching(/^0\.0\.1$/) });
+  });
+
+  it('a start that finds its job stored with no alarm (a failed first start) arms it again', async () => {
+    const { id } = await stored(CHANGED.source, null);
+    const stub = testEnv.REVIEW_JOBS.get(testEnv.REVIEW_JOBS.idFromName(`rearm-${id}`)) as unknown as { start(id: string): Promise<void> };
+    await runInDurableObject(stub as never, (_instance, state: DurableObjectState) => state.storage.put('job', { reviewId: id, attempt: 0 }));
+    await runInDurableObject(stub as never, async (instance, state: DurableObjectState) => {
+      await (instance as unknown as { start(id: string): Promise<void> }).start(id);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
   });
 
   it('with no model configured, the job object started by the upload records `skipped` and forgets the job', async () => {

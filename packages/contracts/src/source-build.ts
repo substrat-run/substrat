@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { versionOrigin } from './registry.js';
+import type { HostedChanges } from './changes.js';
 
 export const SOURCE_BYTES_MAX = 48 * 1024 * 1024;
 export const SOURCE_FILES_MAX = 20_000;
@@ -131,4 +132,6 @@ export interface SourceBuildService {
   projects(tenantId: string, request: Request): Promise<Response>;
   /** Null when the tenant's builder holds no record of that build. */
   record(tenantId: string, buildId: string): Promise<SourceBuildRecord | null>;
+  /** The tenant's studio project for `slug` and its open chat branches; `repository: null` when it keeps none. */
+  changes(tenantId: string, slug: string): Promise<HostedChanges>;
 }

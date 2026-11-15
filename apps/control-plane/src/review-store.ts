@@ -1,4 +1,4 @@
-import type { PlatformActorId } from '@substrat-run/contracts';
+import type { PlatformActorId, TenantId } from '@substrat-run/contracts';
 import { validateReviewArchive } from './review-archive.js';
 import type { NotSentRule } from './review-diff.js';
 import { gatesNotRun, type ReviewFinding, type ReviewGate } from './review-reader.js';
@@ -45,6 +45,8 @@ export interface ReviewResult {
 export interface ReviewRecord extends Omit<ReviewResult, 'state' | 'startedAt' | 'finishedAt'> {
   id: string;
   actor: PlatformActorId;
+  tenantId?: TenantId;
+  vertical?: string;
   sourceSha256: string;
   baseSha256: string | null;
   checklistDigest: string;
@@ -57,10 +59,14 @@ export interface ReviewRecord extends Omit<ReviewResult, 'state' | 'startedAt' |
   headline: string;
 }
 
-/** The stored receipt (phase 0's shape, unchanged). */
+/** The stored receipt (phase 0's shape; a builder's adds the tenant and the vertical). */
 export interface ReviewReceipt {
   id: string;
   actor: PlatformActorId;
+  /** A builder's review only: the tenant it belongs to, which alone may read it. Absent on a staff review. */
+  tenantId?: TenantId;
+  /** A builder's review only: the registry id of the vertical, owned by `tenantId` at intake. */
+  vertical?: string;
   sourceSha256: string;
   baseSha256: string | null;
   checklistDigest: string;
@@ -115,15 +121,30 @@ const REVIEW_DAYS = 30;
 const recordKey = (id: string) => `records/${id}.json`;
 const resultKey = (id: string) => `results/${id}.json`;
 const archiveKey = (id: string, kind: 'source' | 'base') => `archives/${id}/${kind}.tar.gz`;
-const actorPrefix = (actor: PlatformActorId) => `actors/${encodeURIComponent(actor)}/`;
-const indexKey = (actor: PlatformActorId, createdAt: string, id: string) =>
-  `${actorPrefix(actor)}${String(8_640_000_000_000_000 - Date.parse(createdAt)).padStart(16, '0')}-${id}`;
+/** Who a read is for: a staff person by actor, or a builder's tenant, whose members share its reviews. */
+export type ReviewReader = PlatformActorId | { tenantId: TenantId };
+const readerPrefix = (reader: ReviewReader) =>
+  typeof reader === 'string' ? `actors/${encodeURIComponent(reader)}/` : `tenants/${encodeURIComponent(reader.tenantId)}/`;
+const readerOf = (receipt: Pick<ReviewReceipt, 'actor' | 'tenantId'>): ReviewReader =>
+  receipt.tenantId === undefined ? receipt.actor : { tenantId: receipt.tenantId };
+const indexKey = (reader: ReviewReader, createdAt: string, id: string) =>
+  `${readerPrefix(reader)}${String(8_640_000_000_000_000 - Date.parse(createdAt)).padStart(16, '0')}-${id}`;
 const expiryKey = (expiresAt: string, id: string) => `expiry/${expiresAt}/${id}`;
+
+/**
+ * How long a `received` review holds an in-progress slot. Its job reads the model within about 21
+ * minutes (REVIEW_MAX_ATTEMPTS calls of REVIEW_MODEL_TIMEOUT_MS, and the retry waits between them);
+ * after that it calls no model — the job starts none whose deadline would end past the window
+ * (`reviewOnce`), however long its storage was down — so an older `received` review (a job that never started and could not be closed, or one
+ * still retrying its write) spends nothing and holds no slot. It is left `received`, so a late
+ * result can still be written.
+ */
+export const REVIEW_READING_WINDOW_MS = 60 * 60_000;
 
 export async function receiveReview(
   bucket: R2Bucket,
   actor: PlatformActorId,
-  input: { source: File; sourceSha256: string; base?: File; baseSha256?: string },
+  input: { source: File; sourceSha256: string; base?: File; baseSha256?: string; tenant?: { tenantId: TenantId; vertical: string } },
   now = new Date(),
 ): Promise<ReviewRecord> {
   if (input.base && !input.baseSha256 || !input.base && input.baseSha256) {
@@ -140,6 +161,7 @@ export async function receiveReview(
   const expiresAt = new Date(now.getTime() + REVIEW_DAYS * 86_400_000).toISOString();
   const receipt: ReviewReceipt = {
     id, actor,
+    ...(input.tenant ? { tenantId: input.tenant.tenantId, vertical: input.tenant.vertical } : {}),
     sourceSha256: input.sourceSha256,
     baseSha256: input.baseSha256 ?? null,
     checklistDigest: REVIEW_CHECKLIST_DIGEST,
@@ -156,7 +178,7 @@ export async function receiveReview(
     await putNew(archiveKey(id, 'source'), await input.source.arrayBuffer());
     if (input.base) await putNew(archiveKey(id, 'base'), await input.base.arrayBuffer());
     await putNew(recordKey(id), JSON.stringify(receipt));
-    await putNew(indexKey(actor, createdAt, id), id);
+    await putNew(indexKey(readerOf(receipt), createdAt, id), id);
     await putNew(expiryKey(expiresAt, id), id);
   } catch (error) {
     await Promise.allSettled(createdKeys.map((key) => bucket.delete(key)));
@@ -188,18 +210,41 @@ export async function writeReviewResult(bucket: R2Bucket, id: string, result: Re
   return (await bucket.put(resultKey(id), JSON.stringify(result), { onlyIf: { etagDoesNotMatch: '*' } })) !== null;
 }
 
-export async function readReview(bucket: R2Bucket, actor: PlatformActorId, id: string, now = new Date()): Promise<ReviewRecord | null> {
+/** A result with nothing read: the shape every early exit starts from. */
+export function emptyReviewResult(receipt: ReviewReceipt, startedAt: string): Omit<ReviewResult, 'state' | 'reason' | 'finishedAt'> {
+  return {
+    gates: gatesNotRun(), findings: [], checkedClean: [], notApplicable: [], notSent: [], deleted: [], fullTree: receipt.baseSha256 === null,
+    model: null, runner: { version: REVIEW_PLUGIN_VERSION }, usage: null, dropped: 0, parseFailures: 0, startedAt,
+    checklistDigest: REVIEW_RULES_DIGEST, pluginVersion: REVIEW_PLUGIN_VERSION,
+  };
+}
+
+/**
+ * Closes a review whose reader half never started: `incomplete`, with the reason. Without it the
+ * receipt stays `received` with nothing to move it on, and counts against the workspace's reviews
+ * in progress until it expires.
+ */
+export async function closeUnstartedReview(bucket: R2Bucket, id: string, reason: string, now = new Date()): Promise<boolean> {
   const receipt = await readReceipt(bucket, id);
-  if (!receipt || receipt.actor !== actor || Date.parse(receipt.expiresAt) <= now.getTime()) return null;
+  if (!receipt) return false;
+  const at = now.toISOString();
+  return writeReviewResult(bucket, id, { ...emptyReviewResult(receipt, at), state: 'incomplete', reason, finishedAt: at });
+}
+
+export async function readReview(bucket: R2Bucket, reader: ReviewReader, id: string, now = new Date()): Promise<ReviewRecord | null> {
+  const receipt = await readReceipt(bucket, id);
+  if (!receipt || Date.parse(receipt.expiresAt) <= now.getTime()) return null;
+  if (typeof reader === 'string' ? receipt.actor !== reader : receipt.tenantId !== reader.tenantId) return null;
   const result = (await (await bucket.get(resultKey(id)))?.json<ReviewResult>()) ?? null;
   return recordOf(receipt, result);
 }
 
-export async function listReviews(bucket: R2Bucket, actor: PlatformActorId, cursor?: string, now = new Date()): Promise<{ entries: ReviewRecord[]; cursor: string | null }> {
-  const listed = await bucket.list({ prefix: actorPrefix(actor), limit: 100, ...(cursor ? { cursor } : {}) });
+export async function listReviews(bucket: R2Bucket, reader: ReviewReader, cursor?: string, now = new Date()): Promise<{ entries: ReviewRecord[]; cursor: string | null }> {
+  const prefix = readerPrefix(reader);
+  const listed = await bucket.list({ prefix, limit: 100, ...(cursor ? { cursor } : {}) });
   const entries = await Promise.all(listed.objects.map(async (object) => {
-    const id = object.key.slice(actorPrefix(actor).length + 17);
-    return readReview(bucket, actor, id, now);
+    const id = object.key.slice(prefix.length + 17);
+    return readReview(bucket, reader, id, now);
   }));
   return { entries: entries.filter((entry): entry is ReviewRecord => entry !== null), cursor: listed.truncated ? listed.cursor : null };
 }
@@ -219,7 +264,7 @@ export async function pruneReviews(bucket: R2Bucket, now = new Date()): Promise<
       if (!receipt) { await bucket.delete(object.key); continue; }
       await bucket.delete([
         recordKey(receipt.id), resultKey(receipt.id), archiveKey(receipt.id, 'source'), archiveKey(receipt.id, 'base'),
-        indexKey(receipt.actor, receipt.createdAt, receipt.id),
+        indexKey(readerOf(receipt), receipt.createdAt, receipt.id),
         expiryKey(receipt.expiresAt, receipt.id),
       ]);
       removed++;

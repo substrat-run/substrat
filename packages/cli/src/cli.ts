@@ -26,7 +26,6 @@
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join, resolve as resolvePath } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { ask } from './prompt.js';
 import { doctor } from './doctor.js';
@@ -57,12 +56,13 @@ import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, parseReviewToken, promote, type PromoteResult } from './promote.js';
 import { formatPromoteReview, readPromoteReview } from './promote-review.js';
 import { formatStatus, readStatus } from './status.js';
+import { formatChanges, readChanges } from './changes.js';
 import { setListing, requestPublish } from './listing.js';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, parseWaitMs, publishStoreDriver, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { approvalFromFiles, approvalLines, approvalStatusLines, revokeStoreDriverUntilComplete, storeDriverReviewText, uploadApprovalLine } from './store-driver-approval.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
-import { assertCleanReviewTree, reviewArchive } from './review-archive.js';
+import { assertCleanReviewTree, reviewUploadForm } from './review-archive.js';
 import { formatReview, type ReviewRecordView } from './review-report.js';
 import { failureMessage } from './problem.js';
 import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
@@ -153,11 +153,15 @@ Usage:
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
   substrat version                            print the CLI version (also --version, -v)
-  substrat review upload [dir] [--base <ref>]  upload a committed staff branch; the plane's
-                                               reader half reads it (no gates run yet)
+  substrat review upload [dir] [--base <ref>] [--slug <s>] [--json]
+                                               upload a committed branch for review; the plane's
+                                               reader half reads it (no gates run yet). A builder
+                                               names a vertical its workspace owns (--slug, default
+                                               the project's); staff grant the workspace the
+                                               \`review\` entitlement first. 5 in progress at once
   substrat review <id> [--wait]                print your review in the checklist's report
                                                shape; --wait polls until it has run (10 min)
-  substrat review list                         list your reviews
+  substrat review list                         list your reviews (a builder: its workspace's)
   substrat dev      [dir] [--no-trace]         run the project's dev script with local request traces
   substrat push     [dir] [--promote prod]     push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
@@ -224,6 +228,9 @@ Usage:
                                               the promote waiting for a person and what it
                                               needs, recent versions, live previews, recent
                                               failures. The slug defaults to this project's
+  substrat changes  [slug] [--json]           the open changes: GitHub pull requests, or a
+                                              hosted repository's studio chat branches, with
+                                              each one's checks and preview
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
                                               store a release of a scope-store driver (staff, signed in)
@@ -761,6 +768,15 @@ async function cmdStatus(): Promise<void> {
   const status = await readStatus({ controlPlaneUrl, header, slug });
   if (argv.includes('--json')) console.log(JSON.stringify(status, null, 2));
   else console.log(formatStatus(status).join('\n'));
+}
+
+/** `substrat changes [slug]` — the open pull requests or chat branches, checks and previews. */
+async function cmdChanges(): Promise<void> {
+  const slug = projectSlug();
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  const changes = await readChanges({ controlPlaneUrl, header, slug });
+  if (argv.includes('--json')) console.log(JSON.stringify(changes, null, 2));
+  else console.log(formatChanges(changes).join('\n'));
 }
 
 async function cmdPromote(): Promise<void> {
@@ -1593,27 +1609,18 @@ async function cmdWhoami(): Promise<void> {
 async function cmdReview(): Promise<void> {
   const sub = argv[1];
   if (!sub) throw new Error('usage: substrat review upload [dir] [--base <ref>] | review list | review <id>');
-  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token') });
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const plane = planeFor(controlPlaneUrl, header);
   if (sub === 'upload') {
-    const dir = resolvePath(positional(1) ?? '.');
+    const dir = resolvePath(positional(1, ['json']) ?? '.');
     assertCleanReviewTree(dir);
-    const source = reviewArchive(dir, 'HEAD');
-    const form = new FormData();
-    form.set('source', new Blob([source.bytes as Uint8Array<ArrayBuffer>], { type: 'application/gzip' }), 'source.tar.gz');
-    form.set('sourceSha256', source.sha256);
-    const baseRef = flag('base');
-    if (baseRef) {
-      const base = execFileSync('git', ['merge-base', 'HEAD', baseRef], { cwd: dir, encoding: 'utf8' }).trim();
-      const archive = reviewArchive(dir, base);
-      form.set('base', new Blob([archive.bytes as Uint8Array<ArrayBuffer>], { type: 'application/gzip' }), 'base.tar.gz');
-      form.set('baseSha256', archive.sha256);
-    }
+    const form = reviewUploadForm(dir, { base: flag('base'), slug: flag('slug') });
     const response = await plane.request('/reviews', { method: 'POST', body: form });
     const body = await response.text();
     if (!response.ok) throw new Error(failureMessage('review upload failed', response.status, body));
     const record = JSON.parse(body) as { id: string; state: string; expiresAt: string };
-    console.log(`review ${record.id}: ${record.state} (expires ${record.expiresAt}); read it with \`substrat review ${record.id} --wait\``);
+    if (argv.includes('--json')) console.log(JSON.stringify(record, null, 2));
+    else console.log(`review ${record.id}: ${record.state} (expires ${record.expiresAt}); read it with \`substrat review ${record.id} --wait\``);
     return;
   }
   if (sub !== 'list') {
@@ -1677,6 +1684,8 @@ async function main(): Promise<void> {
       return argv.includes('--review-only') ? cmdPromoteReview() : cmdPromote();
     case 'status':
       return cmdStatus();
+    case 'changes':
+      return cmdChanges();
     case 'publish':
       return cmdPublish();
     case 'store-driver':

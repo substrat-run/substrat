@@ -1,4 +1,4 @@
-import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
+import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
 import type { BuilderTurnsService } from './builder-turns.js';
 import { SourceBuildInterrupted } from './source-builds.js';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
@@ -145,6 +145,8 @@ import {
   type StoreDriverRegistration,
   SOCIAL_RELAY_VERTICALS,
   isVerticalConnectorProvider,
+  previewTag,
+  buildPreviewTagPrefix,
 } from '@substrat-run/contracts';
 import type {
   ScopeDumpTable,
@@ -459,6 +461,9 @@ export interface ConnectionInspector {
 /** The body of a connection's test message (#2343), plain enough to be the same in HTML and text. */
 const SEND_TEST_TEXT = 'This is a test message from a mail connection. It reached you, so its sender address can send.';
 
+/** One open pull request as `githubChanges` reads it; the route adds its preview. */
+export type GithubChange = Omit<VerticalChange, 'preview'> & { number: number };
+
 export interface ControlPlaneApiOptions {
   /** Monotonic clock for the bounded tenant usage composition (injectable in tests). */
   meteredUsageNow?: () => number;
@@ -590,6 +595,14 @@ export interface ControlPlaneApiOptions {
   /** The builder studio's turn summaries, read for the console. Absent ⇒ its routes 501. */
   builderTurns?: BuilderTurnsService;
   githubRepositoryAccess?: (tenantId: string, owner: string, repo: string, installationId: string, scope: 'read' | 'write') => Promise<{ remote: string; token: string }>;
+  /**
+   * The open pull requests of one GitHub repository, newest first, each with its head's checks
+   * (`GET /verticals/:slug/changes`). Injected like `githubRepositoryAccess`, so this package
+   * makes no GitHub reads of its own; a read-only token, never returned. `unavailable` is a
+   * repository the installation cannot read, as the sentence the caller is shown; `reason`, a
+   * part it could not read (checks). Absent ⇒ the route answers no provider and says why.
+   */
+  githubChanges?: (input: { tenantId: string; owner: string; repo: string; installationId: string }) => Promise<{ changes: GithubChange[]; reason?: string } | { unavailable: string }>;
 
   /**
    * Uploads the store script for each declared scope store before the vertical's own
@@ -1836,6 +1849,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote-impact$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
+  // The open pull requests or hosted chat branches of a vertical the tenant owns, with checks and previews.
+  { method: 'GET', re: /\/verticals\/[^/]+\/changes$/, pin: 'owner' },
   { method: 'POST', re: /\/verticals\/[^/]+\/previews$/, pin: 'owner' },
   // #3108: whether a fork would be admitted, and why not — read before offering one.
   { method: 'GET', re: /\/verticals\/[^/]+\/previews\/fork-check$/, pin: 'owner' },
@@ -2381,6 +2396,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'POST', re: /\/verticals\/[^/]+\/previews$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/previews$/ },
     { method: 'DELETE', re: /\/verticals\/[^/]+\/previews\/[^/]+$/ },
+    // The open changes of the builder's OWN vertical (`substrat changes`): its pull requests or
+    // hosted chat branches, checks and previews. Owner-checked in the handler like the previews.
+    { method: 'GET', re: /\/verticals\/[^/]+\/changes$/ },
     // The builder's slice of the ops-failure record (#559 step 5): why did MY deploy /
     // preview / provision fail. Tenant-narrowed in the handler (the forced-filter
     // pattern, like GET /scopes); the allowlist alone is not authz.
@@ -12998,6 +13016,70 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
     }
     return c.json(out);
+  });
+
+  // The open changes of one vertical the caller owns, whichever provider holds them: a GitHub
+  // repository's open pull requests, or a hosted repository's `builder/<id>` chat branches, each
+  // with its checks and its preview. The repository is the studio's project for the slug, else
+  // the GitHub repository the newest CI push came from. A repository that cannot be read is an
+  // answer, not a failure: `provider: null` and the reason, never a 5xx for "not connected".
+  app.get('/verticals/:slug/changes', async (c) => {
+    const gate = await previewVertical(c);
+    if ('error' in gate) return refuse(c, gate.refused, gate.error);
+    const { tenantId, slug } = gate;
+    const actor = c.get('actor');
+    const none = (reason: string, repository: string | null = null) =>
+      c.json({ provider: null, repository, changes: [], reason } satisfies VerticalChanges);
+    try {
+      const hosted = options.sourceBuilds ? await options.sourceBuilds.changes(tenantId, slug) : null;
+      const project = hosted?.repository ?? null;
+      if (hosted && project?.kind === 'artifacts') {
+        // A hosted chat runs no checks and has no preview of its own (studio-preview.ts).
+        const changes: VerticalChange[] = hosted.changes.map((ch) => ({
+          ...ch, url: null, author: null, checks: { state: 'none', failing: [] }, preview: null,
+        }));
+        return c.json({ provider: 'artifacts', repository: project.name, changes } satisfies VerticalChanges);
+      }
+      let github = project?.kind === 'github' ? { owner: project.owner, repo: project.repo } : null;
+      if (!github) {
+        const pushed = (await c.var.admin.listVersions(actor, slug, { limit: 20, order: 'desc' }))
+          .map((v) => v.origin?.gitRepo)
+          .find((r) => r !== undefined && /^[\w-]+\/[\w.-]+$/.test(r));
+        const [owner, repo] = pushed?.split('/') ?? [];
+        if (owner && repo) github = { owner, repo };
+      }
+      if (!github) {
+        return none(`no repository is known for '${slug}': it is no studio project, and none of its recent versions was pushed from GitHub Actions`);
+      }
+      const repository = `${github.owner}/${github.repo}`;
+      if (!options.githubChanges) return none('this control plane does not read GitHub repositories', repository);
+      const connection = await c.var.admin.openConnection(tenantId, 'dashboard', 'github', github.owner);
+      const installationId = connection?.secret.installationId;
+      if (typeof installationId !== 'string') {
+        return none(`this team has no GitHub connection for '${github.owner}': connect it in the dashboard to read ${repository}`, repository);
+      }
+      const read = await options.githubChanges({ tenantId, ...github, installationId });
+      if ('unavailable' in read) return none(read.unavailable, repository);
+      // A PR's preview: its sticky tag, else its newest per-build one (`ci.ts`). Newest by id: a
+      // scope id is a ULID, minted when the scope is, so it orders clean-room previews (which
+      // carry no `forkedAt`) as well as forks.
+      const previews = (await c.var.admin.listScopes(actor, { tenantId, vertical: slug }))
+        .filter((s) => s.kind === 'preview')
+        .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+        .map((s) => ({ id: s.id, tag: s.slug?.split('--').at(-1) ?? '' }));
+      const previewOf = async (n: number): Promise<VerticalChange['preview']> => {
+        const hit = previews.find((p) => p.tag === previewTag(n)) ?? previews.find((p) => p.tag.startsWith(buildPreviewTagPrefix(n)));
+        if (!hit) return null;
+        const hostname = (await c.var.admin.listHostnames(actor, { scopeId: hit.id }))[0]?.hostname;
+        return { tag: hit.tag, url: hostname ? `https://${hostname}` : null };
+      };
+      const changes: VerticalChange[] = [];
+      for (const { number, ...change } of read.changes) changes.push({ ...change, preview: await previewOf(number) });
+      return c.json({ provider: 'github', repository, changes, ...(read.reason ? { reason: read.reason } : {}) } satisfies VerticalChanges);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return relayRefusal(c, e);
+      throw e;
+    }
   });
 
   app.delete('/verticals/:slug/previews/:tag', async (c) => {

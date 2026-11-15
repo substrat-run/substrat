@@ -8,6 +8,8 @@
  * all read off what the CLI printed, and the control plane still refuses a stale token.
  */
 
+import type { OpenChanges } from '../types'
+
 /** One `substrat` invocation inside a Bash command: its launcher, its arguments, and the
  *  directory a `cd` earlier in the same command moved to, if one did. */
 export type SubstratCall = { readonly launcher: readonly string[]; readonly args: readonly string[]; readonly cd?: string };
@@ -232,4 +234,56 @@ export function waitingPromoteIn(stdout: string): PromoteRefusal | undefined {
     review: typeof v.review === 'string' ? v.review : null,
     text: v.text,
   }
+}
+
+/** The review `substrat review upload --json` stored: its id and state, or undefined for anything else. */
+export function reviewUploadIn(stdout: string): { id: string; state: string } | undefined {
+  let r: unknown
+  try {
+    r = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  if (typeof r !== 'object' || r === null) return undefined
+  const v = r as { id?: unknown; state?: unknown }
+  return typeof v.id === 'string' && typeof v.state === 'string' ? { id: v.id, state: v.state } : undefined
+}
+
+const CHECK_STATES = new Set(['success', 'failure', 'pending', 'none', 'unknown'])
+
+/**
+ * The open changes `substrat changes --json` answers: each pull request or studio chat branch
+ * with its checks and preview, or, when none can be read, why. Undefined when the output is not
+ * that answer (an older CLI, an error printed instead).
+ */
+export function changesIn(stdout: string): OpenChanges | undefined {
+  let r: unknown
+  try {
+    r = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  if (typeof r !== 'object' || r === null) return undefined
+  const v = r as { provider?: unknown; repository?: unknown; reason?: unknown; changes?: unknown }
+  if (v.provider !== null && v.provider !== 'github' && v.provider !== 'artifacts') return undefined
+  if (!Array.isArray(v.changes)) return undefined
+  const str = (x: unknown) => (typeof x === 'string' ? x : null)
+  const changes: OpenChanges['changes'][number][] = []
+  for (const entry of v.changes as unknown[]) {
+    if (typeof entry !== 'object' || entry === null) return undefined
+    const c = entry as Record<string, unknown>
+    const checks = c.checks as { state?: unknown; failing?: unknown } | undefined
+    const preview = c.preview as { tag?: unknown; url?: unknown } | null | undefined
+    if (typeof c.id !== 'string' || typeof c.title !== 'string' || typeof c.branch !== 'string') return undefined
+    if (typeof checks !== 'object' || checks === null || !CHECK_STATES.has(checks.state as string) || !Array.isArray(checks.failing)) return undefined
+    changes.push({
+      id: c.id,
+      title: c.title,
+      branch: c.branch,
+      url: str(c.url),
+      checks: { state: checks.state as OpenChanges['changes'][number]['checks']['state'], failing: checks.failing.filter(f => typeof f === 'string') },
+      preview: preview && typeof preview.tag === 'string' ? { tag: preview.tag, url: str(preview.url) } : null,
+    })
+  }
+  return { provider: v.provider, repository: str(v.repository), reason: str(v.reason), changes }
 }
