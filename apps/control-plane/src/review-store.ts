@@ -131,6 +131,16 @@ const indexKey = (reader: ReviewReader, createdAt: string, id: string) =>
   `${readerPrefix(reader)}${String(8_640_000_000_000_000 - Date.parse(createdAt)).padStart(16, '0')}-${id}`;
 const expiryKey = (expiresAt: string, id: string) => `expiry/${expiresAt}/${id}`;
 
+/**
+ * How long a `received` review holds an in-progress slot. Its job reads the model within about 21
+ * minutes (REVIEW_MAX_ATTEMPTS calls of REVIEW_MODEL_TIMEOUT_MS, and the retry waits between them);
+ * after that it calls no model — the job refuses to (`reviewOnce`), however long its storage was
+ * down — so an older `received` review (a job that never started and could not be closed, or one
+ * still retrying its write) spends nothing and holds no slot. It is left `received`, so a late
+ * result can still be written.
+ */
+export const REVIEW_READING_WINDOW_MS = 60 * 60_000;
+
 export async function receiveReview(
   bucket: R2Bucket,
   actor: PlatformActorId,

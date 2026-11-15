@@ -14,7 +14,7 @@ import {
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
 import { REVIEW_RULES_DIGEST } from '../src/review-rules.generated.js';
-import { readReview, receiveReview, reviewHeadline, writeReviewResult } from '../src/review-store.js';
+import { readReview, receiveReview, REVIEW_READING_WINDOW_MS, reviewHeadline, writeReviewResult } from '../src/review-store.js';
 import { createReviewApi } from '../src/reviews.js';
 import { archive } from './review-fixtures.js';
 
@@ -261,6 +261,15 @@ describe('review job: the reader half with a model double', () => {
     expect(model.calls.aborted).toBe(true);
     expect(recordUsage).not.toHaveBeenCalled();
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'model timed out', notSent: [{ path: 'pnpm-lock.yaml', rule: 'lockfile' }] });
+  });
+
+  it('a job reaching the model after the reading window (its storage down for over an hour) calls none and writes `incomplete`', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const model = double([{ text: reply({ findings: [] }) }]);
+    const late = () => new Date(Date.now() + REVIEW_READING_WINDOW_MS + 60_000);
+    await runReviewJob(id, 0, deps(model, {}, { now: late }));
+    expect(model.calls.n).toBe(0);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'reading window passed' });
   });
 
   it.each([

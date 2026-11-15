@@ -6,7 +6,7 @@ import { createModelHost, type ModelHost, type ModelRun } from '@substrat-run/ve
 import { diffReview, REVIEW_MAX_DIFF_BYTES } from './review-diff.js';
 import { assemble, estimateTokens, gatesNotRun, parseReply, reviewPrompt, reviewSystem } from './review-reader.js';
 import { REVIEW_PLUGIN_VERSION, REVIEW_RULES_DIGEST } from './review-rules.generated.js';
-import { emptyReviewResult, hasReviewResult, readReceipt, readReviewArchive, writeReviewResult, type ReviewReceipt, type ReviewResult } from './review-store.js';
+import { emptyReviewResult, hasReviewResult, REVIEW_READING_WINDOW_MS, readReceipt, readReviewArchive, writeReviewResult, type ReviewReceipt, type ReviewResult } from './review-store.js';
 
 /**
  * The platform-owned scope every review's usage line is filed under until reviews belong to a
@@ -181,6 +181,12 @@ export async function reviewOnce(
   // The deadline aborts the call itself, so a late answer is never received; what the provider
   // consumed before the abort may still be billed, and has no ledger line. `maxRetries: 0` makes
   // this attempt exactly one HTTP call.
+  // Past the reading window intake no longer counts this review as in progress, so its slot may
+  // be another's: a job that reaches the model this late (a receipt read failing for over an
+  // hour, say) calls none.
+  if (now().getTime() - Date.parse(receipt.createdAt) > REVIEW_READING_WINDOW_MS) {
+    return finish({ ...empty, ...sent, state: 'incomplete', reason: 'reading window passed' });
+  }
   await beforeCall();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new ModelTimeout()), positive(deps.config.modelTimeoutMs, REVIEW_MODEL_TIMEOUT_MS));

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { PlatformActorId, TenantId } from '@substrat-run/contracts';
 import { refuse, refuseStatus } from './problem.js';
-import { closeUnstartedReview, listReviews, readReview, receiveReview, ReviewCollisionError, ReviewValidationError, type ReviewReader, type ReviewRecord } from './review-store.js';
+import { closeUnstartedReview, listReviews, REVIEW_READING_WINDOW_MS, readReview, receiveReview, ReviewCollisionError, ReviewValidationError, type ReviewReader, type ReviewRecord } from './review-store.js';
 
 const INTAKE_BODY_MAX = 2 * 32 * 1024 * 1024 + 1024 * 1024;
 const MAX_LIVE_REVIEWS_PER_ACTOR = 20;
@@ -14,14 +14,8 @@ const MAX_LIVE_REVIEWS_PER_ACTOR = 20;
  */
 export const MAX_REVIEWS_IN_PROGRESS_PER_TENANT = 5;
 export const MAX_KEPT_REVIEWS_PER_TENANT = 50;
-/**
- * How long a `received` review holds an in-progress slot. Its job reads the model within about 21
- * minutes (REVIEW_MAX_ATTEMPTS calls of REVIEW_MODEL_TIMEOUT_MS, and the retry waits between them);
- * after that it calls no model, so an older `received` review — a job that never started and
- * could not be closed, or one still retrying its write — spends nothing and holds no slot. It is
- * left `received`, so a late result can still be written.
- */
-export const REVIEW_READING_WINDOW_MS = 60 * 60_000;
+/** How long a `received` review holds an in-progress slot (review-store.ts). */
+export { REVIEW_READING_WINDOW_MS };
 /**
  * What makes the runner available to a builder's tenant (hosted-review-runner.md Q2): a key only
  * staff grant (`PLATFORM_ENTITLEMENT_KEYS`, so no vertical can declare it and no tenant grant
