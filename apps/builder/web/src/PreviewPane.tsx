@@ -168,6 +168,8 @@ function HostedPreview() {
 		void api.studioPersonas().then((r) => {
 			setPersonas(r.personas);
 			setPersonaNote(r.note ?? null);
+			// The plane's note points at a sign-in this frame would drop: the stale note replaces it.
+			if (r.note) setNote(null);
 		}, () => undefined);
 	}, [kind, state, url]);
 

@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	FramedSignInCache,
 	STALE_AUTH_NOTE,
 	STUDIO_DATA_PREVIEW_TAG,
 	STUDIO_PREVIEW_TAG,
@@ -211,6 +212,17 @@ describe("sign in as… (#3145): the seeded slot's personas, and a ticket for on
 		const internal = plane(offering);
 		const res = await readStudioPersonas(builder.cp, internal.cp, fetchPreview, project, 'user-1', now);
 		expect(await res.json()).toEqual(expected);
+	});
+
+	it('probes a version once, and asks again only while the answer is undecided', async () => {
+		const builder = plane({ [previews]: slot });
+		const internal = plane(offering);
+		const framed = new FramedSignInCache();
+		const unreachable: PreviewFetch = async () => { throw new TypeError('network connection lost'); };
+		await readStudioPersonas(builder.cp, internal.cp, unreachable, project, 'user-1', now, framed);
+		const { fetchPreview, probed } = login(partitioned);
+		for (let i = 0; i < 2; i++) await readStudioPersonas(builder.cp, internal.cp, fetchPreview, project, 'user-1', now, framed);
+		expect(probed).toHaveLength(1);
 	});
 
 	it('offers nobody, and mints nothing, with no slot running', async () => {
