@@ -181,7 +181,7 @@ describe('the app request reads (#1746)', () => {
   it('mints the credential for the signed-in member, so the plane can name them (#977)', async () => {
     await read(appScope, 'volume');
     // Once per (tenant, person) per isolate — this tenant is fresh, so this read minted it.
-    expect(mints).toEqual([{ tenantId: tenant, principal: owner }]);
+    expect(mints).toEqual([{ tenantId: tenant, principal: owner, issuerConfig: true }]);
   });
 
   it('never lets the query name the tenant or the scope', async () => {

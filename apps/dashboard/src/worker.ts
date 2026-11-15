@@ -366,7 +366,9 @@ function controlPlaneFor(
     const fleet = new ControlPlaneTransport({ baseUrl, actor: null, serviceToken, fetch: fetchImpl });
     const res = await fleet.request('/tenant-tokens', {
       method: 'POST',
-      body: JSON.stringify(principal ? { tenantId, principal } : { tenantId }),
+      // #3177: `issuerConfig` lets this credential deliver the issuer-only config keys
+      // (delegations, places, resources, redirects, an app's auth). The dashboard is their writer.
+      body: JSON.stringify({ tenantId, ...(principal ? { principal } : {}), issuerConfig: true }),
     });
     if (!res.ok) {
       throw new HTTPException(503, {

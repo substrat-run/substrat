@@ -428,6 +428,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   TENANT_TOKEN_SECRET?: string;
   /**
+   * #3177: `'true'` ⇒ `/configure` refuses an issuer-only config key from a tenant credential
+   * minted without `issuerConfig`. Unset (off) until a dashboard that asks for the claim is
+   * deployed; turning it on first fails the deliveries of every dashboard isolate still
+   * holding an older token.
+   */
+  CONFIGURE_REQUIRE_ISSUER_CLAIM?: string;
+  /**
    * Keys the pseudonymizer behind a MASKED scope export (#1034). Not a decryption key —
    * it never reaches the dump and no mapping is stored — so what it buys is stability:
    * with it set, two pulls of the same scope read the same, which is what makes a masked
@@ -3775,6 +3782,7 @@ export default {
           ? { authenticateTenantService: tenantTokenAuth(env.TENANT_TOKEN_SECRET, SERVICE_ACTOR) }
           : {}),
         tenantTokenSecret: env.TENANT_TOKEN_SECRET,
+        requireIssuerConfigClaim: env.CONFIGURE_REQUIRE_ISSUER_CLAIM === 'true',
         pushTokenSecret: env.PUSH_TOKEN_SECRET,
         maskSalt: env.MASK_SALT,
         verticals: verticalsFor(env),

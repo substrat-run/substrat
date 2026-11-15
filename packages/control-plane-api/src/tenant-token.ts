@@ -71,6 +71,11 @@ interface TenantTokenClaim {
   principal?: string;
   /** K-42: the staff member acting as `principal`, when one was. */
   impersonation?: ImpersonationStamp;
+  /**
+   * #3177: may deliver the issuer-only config keys (`issuer-config.ts`) through `/configure`.
+   * Set only by the staff mint, and only the dashboard asks for it.
+   */
+  issuerConfig?: true;
   /** Informational — no expiry in v1, exactly as push tokens have none. */
   iat: number;
 }
@@ -93,13 +98,14 @@ interface TenantTokenClaim {
  */
 export async function mintTenantToken(
   secret: string,
-  identity: { tenantId: TenantId; principal?: PrincipalId; impersonation?: ImpersonationStamp },
+  identity: { tenantId: TenantId; principal?: PrincipalId; impersonation?: ImpersonationStamp; issuerConfig?: boolean },
 ): Promise<string> {
   const claim: TenantTokenClaim = {
     v: 1,
     tenantId: identity.tenantId,
     ...(identity.principal ? { principal: identity.principal } : {}),
     ...(identity.principal && identity.impersonation ? { impersonation: identity.impersonation } : {}),
+    ...(identity.issuerConfig ? { issuerConfig: true as const } : {}),
     iat: Date.now(),
   };
   return signToken(PREFIX, secret, claim);
@@ -121,6 +127,7 @@ export async function verifyTenantToken(secret: string, token: string): Promise<
       if (claim.principal === undefined) return null;
       impersonationStamp.parse(claim.impersonation);
     }
+    if (claim.issuerConfig !== undefined && claim.issuerConfig !== true) return null;
     return claim;
   } catch {
     return null;
@@ -143,12 +150,13 @@ export function tenantTokenAuth(secret: string, actor: PlatformActorId): TenantS
     const claim = await verifyTenantToken(secret, presented);
     if (!claim) return null;
     const tenantId = tenantIdSchema.parse(claim.tenantId);
-    if (claim.principal === undefined) return { actor, tenantId };
+    const issuerConfig = claim.issuerConfig ? { issuerConfig: true as const } : {};
+    if (claim.principal === undefined) return { actor, tenantId, ...issuerConfig };
     const onBehalfOf: OnBehalfOf = {
       principal: principalId.parse(claim.principal),
       tenantId,
       ...(claim.impersonation ? { impersonation: impersonationStamp.parse(claim.impersonation) } : {}),
     };
-    return { actor, tenantId, onBehalfOf };
+    return { actor, tenantId, onBehalfOf, ...issuerConfig };
   };
 }

@@ -224,6 +224,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
+import { issuerOnlyConfigKeyOf } from './issuer-config.js';
 import { abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
@@ -714,6 +715,14 @@ export interface ControlPlaneApiOptions {
    * re-mints on its next request, so that is the revocation lever, not an outage.
    */
   tenantTokenSecret?: string;
+  /**
+   * #3177: `POST /tenants/:t/scopes/:s/configure` refuses an issuer-only key
+   * (`issuer-config.ts`) from a tenant credential minted without `issuerConfig`. Off by
+   * default: a dashboard isolate holding a token minted before it asked for the claim would
+   * fail its deliveries until it recycled. Turn it on once a dashboard that mints with
+   * `issuerConfig: true` has been deployed.
+   */
+  requireIssuerConfigClaim?: boolean;
   /**
    * Keys the pseudonymizer behind a masked export (#1034, `pseudonymize.ts`). The salt
    * never reaches the dump and no mapping is stored, so it is not a decryption key —
@@ -2249,6 +2258,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           actor: tenant.actor,
           tenantId: tenant.tenantId,
           ...(tenant.onBehalfOf ? { onBehalfOf: tenant.onBehalfOf } : {}),
+          ...(tenant.issuerConfig ? { issuerConfig: true as const } : {}),
         };
       }
     }
@@ -6600,6 +6610,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const input = configureInstanceBody.parse(await c.req.json());
+    // #3177: an issuer applies what it is handed, so a key only the platform writes needs a
+    // credential minted to write it. The refusal names the prefix, never the value.
+    const p = c.get('principal');
+    if (options.requireIssuerConfigClaim && p.kind === 'tenant' && !p.issuerConfig) {
+      const held = input.entries.map((e) => issuerOnlyConfigKeyOf(e.key)).find((k) => k !== undefined);
+      if (held) return refuse(c, 'forbidden', `forbidden: '${held}' is issuer-only config, and this credential may not deliver it`);
+    }
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
@@ -11494,7 +11511,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!options.tenantTokenSecret) {
       return refuseStatus(c, 501, 'tenant tokens are not configured on this control plane');
     }
-    const { tenantId, principal, impersonation } = z
+    const { tenantId, principal, impersonation, issuerConfig } = z
       .object({
         tenantId: tenantIdSchema,
         // #977: the signed-in person the token will act for — attribution on every admin
@@ -11502,6 +11519,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         principal: principalIdSchema.optional(),
         // K-42: the staff member acting as `principal`. Meaningless without the person.
         impersonation: impersonationStamp.optional(),
+        // #3177: may deliver the issuer-only config keys. Only the dashboard asks for it.
+        issuerConfig: z.boolean().optional(),
       })
       .refine((b) => !b.impersonation || b.principal, { message: 'impersonation names no principal' })
       .parse(await c.req.json());
@@ -11509,7 +11528,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // for a tenant with no directory row reaches nothing except creating that row
     // (`POST /tenants`, body-pinned to the same id), which is the sign-up bootstrap.
     // See the mint's docblock in tenant-token.ts.
-    const token = await mintTenantToken(options.tenantTokenSecret, { tenantId, principal, impersonation });
+    const token = await mintTenantToken(options.tenantTokenSecret, { tenantId, principal, impersonation, issuerConfig });
     return c.json({ token }, 201);
   });
 

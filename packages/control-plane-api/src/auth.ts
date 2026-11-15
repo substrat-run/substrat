@@ -214,6 +214,8 @@ export interface TenantServiceIdentity {
    * audit row records it beside `actor`; it widens nothing — the pin is `tenantId`.
    */
   onBehalfOf?: OnBehalfOf;
+  /** #3177: the credential may deliver the issuer-only config keys (`issuer-config.ts`). */
+  issuerConfig?: true;
 }
 
 /**
@@ -241,7 +243,7 @@ export type Principal =
   // prefixing (#417), and a tenant principal resolves a slug through the
   // `x-substrat-tenant` header instead — which the plane pins to this same tenant.
   // Carrying one would be a copy that can go stale for no reader's benefit.
-  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId; onBehalfOf?: OnBehalfOf };
+  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId; onBehalfOf?: OnBehalfOf; issuerConfig?: true };
 
 /**
  * The tenant a principal is CONFINED to, or null when it is fleet-wide staff.

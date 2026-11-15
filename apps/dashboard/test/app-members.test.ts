@@ -141,7 +141,7 @@ describe('the app members routes (#1150)', () => {
     ]);
     // Every plane call rode a token minted for THIS person in THIS tenant — the caller the app bounds.
     expect(mints.length).toBeGreaterThan(0);
-    for (const m of mints) expect(m).toEqual({ tenantId: tenant, principal: owner });
+    for (const m of mints) expect(m).toEqual({ tenantId: tenant, principal: owner, issuerConfig: true });
   });
 
   it('relays the app’s role refusal to a viewer as given', async () => {
@@ -149,7 +149,7 @@ describe('the app members routes (#1150)', () => {
     const res = await call(`${appPath}/${member}/role`, 'POST', { from: 'agent', to: 'lead' }, 'sub-viewer');
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(/do not hold perm:use/);
-    expect(mints).toContainEqual({ tenantId: tenant, principal: viewer });
+    expect(mints).toContainEqual({ tenantId: tenant, principal: viewer, issuerConfig: true });
   });
 
   it('refuses another team’s app, and a malformed change, before asking the plane', async () => {
