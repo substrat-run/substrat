@@ -1,5 +1,12 @@
 # @substrat-run/cli
 
+## 0.59.2
+
+### Patch Changes
+
+- ad74d85: `substrat login`'s choice of default workspace moves into `loginWorkspace` in the login module, unchanged in behaviour.
+- c02f6eb: `packedFilesOf` and `packStoreDriverDir` take an optional `limits` (files, code modules, bytes), defaulting to `STORE_RELEASE_LIMITS`, the control plane's own limits. `substrat store-driver upload` behaves as before.
+
 ## 0.59.1
 
 ### Patch Changes
