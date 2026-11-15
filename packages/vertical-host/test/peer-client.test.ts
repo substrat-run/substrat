@@ -67,6 +67,18 @@ describe('peerClient (#1706)', () => {
     });
   });
 
+  it('carries a delegated token as `onBehalf` when given one (#3161), and names no caller beside it', async () => {
+    const fetchImpl = ok(null);
+    const client = peerClient('acme/notes', { fetch: fetchImpl as unknown as typeof fetch });
+    await client.invoke('notes/list', { item: 'i-1' }, { onBehalf: { token: 'eyJ.t.s' } });
+    expect(JSON.parse(String((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({
+      vertical: 'acme/notes',
+      operation: 'notes/list',
+      input: { item: 'i-1' },
+      onBehalf: { token: 'eyJ.t.s' },
+    });
+  });
+
   it('an operation that returns nothing answers null rather than throwing', async () => {
     const client = peerClient('acme/crm', { fetch: ok(null) as unknown as typeof fetch });
     await expect(client.invoke('customer/touch')).resolves.toBeNull();

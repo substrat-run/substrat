@@ -49,7 +49,10 @@ import {
   isSizedByteStream,
   knownLengthInit,
   globalFetch,
+  type ScopeStub,
+  type PersonScopeOptions,
 } from '@substrat-run/kernel';
+import type { DelegatedRefusal } from '@substrat-run/vertical-auth/people';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
 import { isVerticalConnectors, runConnectorCall, type VerticalConnectors } from './connectors.js';
@@ -180,6 +183,11 @@ import {
   type SystemScheduleEntry,
   verticalCaller,
   verticalSlug as verticalSlugOf,
+  PEER_CLIENT_OPERATION,
+  peerClientAnswer,
+  peerOnBehalf,
+  substratError,
+  type PeerClientAnswer,
   type PeerSwitchOutcome,
   type VerticalCaller,
   exportReadInput,
@@ -672,6 +680,11 @@ export interface VerticalScopeHost {
     input?: unknown,
     options?: InvokeOptions,
   ): Promise<unknown>;
+  /**
+   * A person's stub (#3161): what a peer call made FOR a person runs through, once
+   * `PlatformSurfaceDeps.delegatedPeer` admitted them, with the token's scope as the ceiling.
+   */
+  getScope?(principal: PrincipalId, tenantId: TenantId, scopeId: ScopeId, options?: PersonScopeOptions): Promise<ScopeStub>;
   /** The far end of the peer kill switch (#1706). Optional, 501 when absent, like the rest. */
   peerSwitchLocal?(
     scopeId: ScopeId,
@@ -1247,8 +1260,11 @@ const lifecycleBody = z.object({
  * `/internal/vertical-invoke` body (#1706) — one operation, invoked as a PEER vertical.
  *
  * STRICT, and that is part of the contract rather than tidiness: the caller is `caller` and
- * nothing else. A body that also names a principal, a session or a capability is refused,
- * so no field a future caller adds can make a peer call act as a person.
+ * nothing else. The body names no principal, session or capability, and one that tries is
+ * refused. The only way a peer call runs as a person is `onBehalf` (#3161): a delegated token
+ * the caller obtained at the issuer, which THIS app verifies itself (`delegatedPeer`) — its
+ * audience must be this app and its actor the app this one takes its people from. Nothing in the
+ * body is believed for identity; a token that does not verify runs nothing.
  */
 const verticalInvokeBody = z
   .object({
@@ -1258,6 +1274,7 @@ const verticalInvokeBody = z
     operation: z.string().min(1),
     input: z.unknown().optional(),
     idempotencyKey: z.string().min(1).optional(),
+    onBehalf: peerOnBehalf.optional(),
   })
   .strict();
 
@@ -1415,12 +1432,43 @@ export interface PlatformSurfaceDeps<Env> {
   seedWorld?: SeedWorldHook<Env>;
 
   /**
+   * This app's OIDC client id, the answer to the built-in `PEER_CLIENT_OPERATION` (#3161), which
+   * a caller names as `audience` when it asks the issuer for a token to call this app as a
+   * person. `workerDoor`'s `platform` supplies it. Omit ⇒ `{ clientId: null }`: this app signs
+   * nobody in at an issuer.
+   */
+  peerClient?: (env: Env, node: { tenantId: TenantId; scopeId: ScopeId }) => Promise<PeerClientAnswer>;
+  /**
+   * Who a peer call carrying `onBehalf` is made for (#3161): the token verified by this app, and
+   * the person it names admitted as their own sign-in would be. `workerDoor`'s `platform`
+   * supplies it when the worker names `people`. Omit ⇒ every such call is refused (403): this
+   * app takes no calls for a person. The caller is the platform's, never the body's.
+   */
+  delegatedPeer?: (
+    env: Env,
+    node: { tenantId: TenantId; scopeId: ScopeId },
+    caller: VerticalCaller,
+    token: string,
+  ) => Promise<DelegatedPeerAnswer>;
+
+  /**
    * Extra error mapping, tried BEFORE the default envelope. Return a `{status, message}`
    * to override, or `undefined` to fall through to the default. Use it for a vertical's
    * own domain errors; the platform routes here never need it.
    */
   mapError?: (err: unknown) => { status: number; message: string } | undefined;
 }
+
+/**
+ * `PlatformSurfaceDeps.delegatedPeer`'s answer: the person, the keys the token delegates (a
+ * ceiling over what they hold, never a grant), and the app acting for them — or why not.
+ */
+export type DelegatedPeerAnswer =
+  | { admitted: true; principal: PrincipalId; scope: string[]; actor: string }
+  | { admitted: false; reason: DelegatedRefusal };
+
+/** What a refused call for a person is told, whatever the reason: the reason is the operator's. */
+const ON_BEHALF_REFUSED = 'this call for a person was refused';
 
 /** A deployment's sample world, as `/internal/seed-world` and `/internal/personas` serve it (#3108). */
 export interface SeedWorldHook<Env> {
@@ -2477,13 +2525,24 @@ export function mountPlatformSurface<Env extends object>(
   // deployment cannot forge — identified the caller and resolved THIS scope as the instance
   // of this vertical in the caller's tenant; it reaches here behind the platform secret like
   // every `/internal` verb, and a public request cannot (the router strips the header). The
-  // body names the caller and nothing that could act as a person (strict). Admission and every
-  // check then run in the scope's own storage, on every call. Enveloped for connector-invoke's
-  // reason: an operation may legitimately return undefined.
+  // body names the caller and no principal (strict). Admission and every check then run in the
+  // scope's own storage, on every call. Enveloped for connector-invoke's reason: an operation
+  // may legitimately return undefined.
+  //
+  // #3161: two things before that. `PEER_CLIENT_OPERATION` is the platform's own question and is
+  // answered here, before any module is looked up. And a body carrying `onBehalf` runs as the
+  // person its token names, only once `delegatedPeer` verified it and admitted them, with the
+  // token's scope as the kernel's ceiling; it never falls back to running as the peer.
   app.post('/internal/vertical-invoke', async (c) => {
     const body = verticalInvokeBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    if (!host.verticalInvokeLocal) {
+    const node = { tenantId: body.tenantId, scopeId: body.scopeId };
+    if (body.operation === PEER_CLIENT_OPERATION) {
+      const answer = deps.peerClient ? peerClientAnswer.parse(await deps.peerClient(c.env, node)) : { clientId: null };
+      return externalJson(c, { result: answer });
+    }
+    const onBehalf = body.onBehalf;
+    if (onBehalf === undefined && !host.verticalInvokeLocal) {
       return refuseStatus(c, 501, 'this deployment cannot take peer calls (#1706) — redeploy it');
     }
     // #2192: the call runs under this request's own id, so its events are stamped, and is
@@ -2496,20 +2555,34 @@ export function mountPlatformSurface<Env extends object>(
     let logLines: number | undefined;
     let status = 200;
     let problemCode: string | null = null;
+    let principalKind: string = onBehalf === undefined ? 'vertical' : 'principal';
     try {
-      const result = await host.verticalInvokeLocal(
-        body.caller,
-        body.tenantId,
-        body.scopeId,
-        body.operation,
-        externalInput(body.input),
-        {
-          ...(body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : {}),
-          ...(invocationId !== undefined ? { invocationId } : {}),
-          onEmitted: (report) => (emitted = report),
-          onLogLines: (count) => (logLines = count),
-        },
-      );
+      const options: InvokeOptions = {
+        ...(body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : {}),
+        ...(invocationId !== undefined ? { invocationId } : {}),
+        onEmitted: (report) => (emitted = report),
+        onLogLines: (count) => (logLines = count),
+      };
+      let result: unknown;
+      if (onBehalf === undefined) {
+        result = await host.verticalInvokeLocal!(body.caller, body.tenantId, body.scopeId, body.operation, externalInput(body.input), options);
+      } else {
+        if (!deps.delegatedPeer) throw substratError('forbidden', 'this app does not take calls for a person');
+        const admitted = await deps.delegatedPeer(c.env, node, body.caller, onBehalf.token);
+        if (!admitted.admitted) {
+          // The reason is for the operator, on this line; the caller learns only that it was refused.
+          console.warn(JSON.stringify({ host: 'peer-on-behalf-refused', ...node, caller: body.caller.vertical, reason: admitted.reason }));
+          throw admitted.reason === 'unavailable'
+            ? substratError('unavailable', 'this call for a person cannot be answered now; retry')
+            : substratError('forbidden', ON_BEHALF_REFUSED);
+        }
+        if (!host.getScope) throw substratError('unavailable', 'this deployment cannot run a call for a person (#3161) — redeploy it');
+        const stub = await host.getScope(admitted.principal, body.tenantId, body.scopeId, {
+          delegation: { actor: admitted.actor, scope: admitted.scope },
+        });
+        principalKind = stub.subjectKind ?? principalKind;
+        result = await stub.invoke(body.operation, externalInput(body.input), options);
+      }
       // #2073: through the egress every transport shares (`wire.ts`).
       return externalJson(c, { result: result ?? null });
     } catch (e) {
@@ -2534,7 +2607,7 @@ export function mountPlatformSurface<Env extends object>(
           parentScopeId: body.caller.scope,
           status,
           problemCode,
-          principalKind: 'vertical',
+          principalKind,
           operation: body.operation,
           emitted,
           logLines,

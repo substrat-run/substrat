@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { handlePeerCall, type Env } from '../src/worker.js';
 
 /**
@@ -250,6 +250,35 @@ describe('the router’s peer entrypoint (#1706)', () => {
       ).rejects.toThrow();
     }
     expect(d.seen()).toHaveLength(0);
+  });
+
+  it('a call made for a person carries its token to the target unchanged, logs it nowhere, and the caller is still the dispatch (#3161)', async () => {
+    const TOKEN = 'eyJhbGciOiJSUzI1NiJ9.person-token.sig';
+    const spies = (['log', 'warn', 'error', 'info', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    try {
+      const d = dispatch();
+      const outcome = await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(
+        caller(),
+        request({ onBehalf: { token: TOKEN } }),
+      );
+      expect(outcome).toMatchObject({ ok: true });
+      expect(await d.seen()[0]!.request!.json()).toEqual({
+        caller: { vertical: 'acme/board-room', scope: CALLER_SCOPE },
+        tenantId: TENANT,
+        scopeId: TARGET_SCOPE,
+        operation: 'customer/list',
+        onBehalf: { token: TOKEN },
+      });
+      // The path that does log: a target that never answers.
+      const never = flakyDispatch(2);
+      expect(
+        await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: never as never }).invoke(caller(), request({ onBehalf: { token: TOKEN } })),
+      ).toMatchObject({ ok: false, status: 503 });
+      expect(spies[2]!.mock.calls.length).toBeGreaterThan(0);
+      expect(spies.flatMap((s) => s.mock.calls).map((c) => JSON.stringify(c)).join('\n')).not.toContain('person-token');
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
   });
 
   it('the TARGET is dispatched one hop deeper, which is what bounds A→B→A', async () => {
