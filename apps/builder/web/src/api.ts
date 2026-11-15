@@ -107,9 +107,16 @@ function f(input: string, init?: RequestInit): Promise<Response> {
 	return window.fetch(input, { ...init, headers });
 }
 
+/** A refused call: the sentence as the message, with the status and body it came in. */
+export class ApiError extends Error {
+	constructor(message: string, readonly status: number, readonly body: unknown) {
+		super(message);
+	}
+}
+
 async function j<T>(res: Response): Promise<T> {
 	const body = (await res.json()) as T & { error?: string; detail?: string };
-	if (!res.ok) throw new Error(body.error ?? body.detail ?? `HTTP ${res.status}`);
+	if (!res.ok) throw new ApiError(body.error ?? body.detail ?? `HTTP ${res.status}`, res.status, body);
 	return body;
 }
 

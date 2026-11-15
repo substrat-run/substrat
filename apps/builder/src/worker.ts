@@ -337,8 +337,9 @@ app.all('/api/*', async (c) => {
 	// so a browser cannot name somebody else.
 	headers.set('x-substrat-actor', (c.get('user' as never) as SessionUser).id);
 	headers.delete('x-service-token');
-	const projectSource = async (): Promise<Response> =>
-		await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
+	// `purpose` names this read in the 409 another studio operation gets meanwhile.
+	const projectSource = async (purpose: 'preview' | 'data-preview' | 'release'): Promise<Response> =>
+		await c.env.BUILDER_AGENT.get(id).fetch(new Request(`https://agent/api/project-source?for=${purpose}`, { headers }));
 	// The control plane over the service binding: the `/api` prefix and the service credential,
 	// written once for every call this handler makes on the team's behalf.
 	const cpWith = (token: string): ControlPlaneCall => (path, init) => {
@@ -394,20 +395,20 @@ app.all('/api/*', async (c) => {
 	if (c.req.path === '/api/preview/data' && c.req.method === 'POST') {
 		const person = asPerson();
 		if (!person) return refuse(403, noPerson);
-		const projectResponse = await projectSource();
+		const projectResponse = await projectSource('data-preview');
 		if (!projectResponse.ok) return projectResponse;
 		const project = await projectResponse.json() as StudioProject;
 		return runStudioDataPreview(cp, person, project, team.id, `0.0.0-studio.${ulid().toLowerCase()}`);
 	}
 	if (c.req.path === '/api/preview' && c.req.method === 'POST') {
-		const projectResponse = await projectSource();
+		const projectResponse = await projectSource('preview');
 		if (!projectResponse.ok) return projectResponse;
 		const project = await projectResponse.json() as StudioProject;
 		// The whole id, never a slice of it: (slug, version) is unique, and a suffix collides.
 		return runStudioPreview(cp, project, team.id, `0.0.0-studio.${ulid().toLowerCase()}`);
 	}
 	if (c.req.path === '/api/release' && c.req.method === 'POST') {
-		const projectResponse = await projectSource();
+		const projectResponse = await projectSource('release');
 		if (!projectResponse.ok) return projectResponse;
 		const project = await projectResponse.json() as StudioProject;
 		if (!project.revision) return refuse(409, 'save source before building a release');

@@ -19,6 +19,7 @@
  */
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { api, type StudioDataPreview, type StudioPersona, type StudioPreview } from './api.js';
+import { retryWhileBusy } from './busy-retry.js';
 
 type DevState = 'stopped' | 'starting' | 'running' | 'error';
 
@@ -122,6 +123,11 @@ function HostedPreview() {
 	const [url, setUrl] = useState<string | null>(null);
 	const [note, setNote] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	/** What a Run is waiting for while another operation holds the project. */
+	const [waiting, setWaiting] = useState<string | null>(null);
+	/** Ends that wait: the person's "stop waiting", or the pane going away. */
+	const waitAbort = useRef<AbortController | null>(null);
+	useEffect(() => () => waitAbort.current?.abort(), []);
 	const [manual, setManual] = useState('');
 	const [src, setSrc] = useState<string | null>(null);
 	const [frame, reloadFrame] = useReducer((n: number) => n + 1, 0);
@@ -222,22 +228,38 @@ function HostedPreview() {
 		setState('building');
 		setError(null);
 		setNote(null);
+		const abort = new AbortController();
+		waitAbort.current = abort;
 		try {
-			const p = await (running === 'production' ? api.runStudioDataPreview() : api.runStudioPreview());
+			const p = await retryWhileBusy(
+				() => {
+					setWaiting(null);
+					return running === 'production' ? api.runStudioDataPreview() : api.runStudioPreview();
+				},
+				{ onWait: setWaiting, signal: abort.signal },
+			);
 			slots.current[running] = p;
 			failures.current[running] = null;
 			show(p);
 		} catch (e) {
+			// Stopped while waiting: nothing was started, so the slot is shown as it was.
+			if (abort.signal.aborted) {
+				show(slots.current[running]);
+				return;
+			}
 			failures.current[running] = (e as Error).message;
 			setState('error');
 			setError((e as Error).message);
+		} finally {
+			if (waitAbort.current === abort) waitAbort.current = null;
+			setWaiting(null);
 		}
 	}
 
 	const busy = state === 'building';
 	const blocked = kind === 'production' && fork?.ok !== true;
 	const label =
-		state === 'building' ? 'building and deploying' : state === 'ready' ? 'ready' : state === 'error' ? 'failed' : 'not running';
+		state === 'building' ? (waiting ? `waiting for ${waiting}…` : 'building and deploying') : state === 'ready' ? 'ready' : state === 'error' ? 'failed' : 'not running';
 	return (
 		<div className="preview">
 			<div className="preview-bar">
@@ -251,6 +273,7 @@ function HostedPreview() {
 					{busy ? '… Running' : state === 'ready' ? '↻ Run again' : '▶ Run'}
 				</button>
 				<span className={`badge ${state === 'ready' ? 'ok' : state === 'error' ? 'bad' : 'warn'}`}>{label}</span>
+				{waiting && <button className="pill" onClick={() => waitAbort.current?.abort()}>stop waiting</button>}
 				{personas.length > 0 && (
 					<select value={signedInAs} disabled={busy} onChange={(e) => void signInAs(e.target.value)} aria-label="sign in as">
 						<option value="">Sign in as…</option>
