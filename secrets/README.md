@@ -162,6 +162,25 @@ Optional keys (`CF_SAAS_ROUTING_TARGET`, `CF_SAAS_SSL_METHOD`, `PLATFORM_BASE_DO
 `SECRET_BOX_KEY_ID`, `EMAIL_FROM`) are normally wrangler.jsonc `vars`; set
 them in the file only to override, and they'll be pushed as secrets that shadow the var.
 
+## A whole environment from one token
+
+`scripts/env-provision.mjs` (`pnpm env:provision --env test`) sets up an environment from a
+single Cloudflare token whose only permission is **Account API Tokens: Edit**, read from
+`CLOUDFLARE_BOOTSTRAP_TOKEN` or `secrets/bootstrap.env`. It is idempotent: every step reads
+first and prints ✓ or →, and `--dry-run` changes nothing.
+
+It mints `substrat-<env>-deploy` (`CF_DEPLOY_TOKEN`: deploys, migrations, provisioning, CI) and
+`substrat-<env>-control-plane` (`CF_API_TOKEN`), creates what each app's `wrangler.jsonc`
+binds for that env (D1, R2, dispatch namespace, the wildcard route's DNS and certificate,
+placeholder scripts for the first deploy), applies the D1 migrations, fills and pushes this
+file, and publishes the CI variables plus the deploy token as `CLOUDFLARE_API_TOKEN_TEST`
+(prod: `CLOUDFLARE_API_TOKEN`). `--deploy` also builds and deploys every worker.
+
+A token value it cannot find in the file is **rolled**, because Cloudflare never returns one.
+A generatable secret blank in the file but live on a worker is **kept**, never regenerated,
+because rotating a box key orphans what it sealed (`--rotate KEY` does it deliberately). What
+only a person can supply (the OIDC clients, the GitHub App) stops the run with the list.
+
 ## Store-only keys (in the file, never pushed)
 
 `push` uploads only what the manifest maps, each key to the worker(s) among the four
@@ -176,6 +195,7 @@ heading; `push` excludes them by construction, since it only ever walks the mani
 |---|---|
 | `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs` |
 | `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
+| `CF_DEPLOY_TOKEN` | the deploy token `env-provision.mjs` mints; CI holds it as an Actions secret |
 
 They are recorded here anyway because **Cloudflare never gives a token back**: the same
 reason `generate` writes new values into the file before pushing them. A token that exists
