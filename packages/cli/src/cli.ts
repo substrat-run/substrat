@@ -56,6 +56,7 @@ import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, parseReviewToken, promote, type PromoteResult } from './promote.js';
 import { formatPromoteReview, readPromoteReview } from './promote-review.js';
 import { formatStatus, readStatus } from './status.js';
+import { formatChanges, readChanges } from './changes.js';
 import { setListing, requestPublish } from './listing.js';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, parseWaitMs, publishStoreDriver, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { approvalFromFiles, approvalLines, approvalStatusLines, revokeStoreDriverUntilComplete, storeDriverReviewText, uploadApprovalLine } from './store-driver-approval.js';
@@ -227,6 +228,9 @@ Usage:
                                               the promote waiting for a person and what it
                                               needs, recent versions, live previews, recent
                                               failures. The slug defaults to this project's
+  substrat changes  [slug] [--json]           the open changes: GitHub pull requests, or a
+                                              hosted repository's studio chat branches, with
+                                              each one's checks and preview
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
                                               store a release of a scope-store driver (staff, signed in)
@@ -764,6 +768,15 @@ async function cmdStatus(): Promise<void> {
   const status = await readStatus({ controlPlaneUrl, header, slug });
   if (argv.includes('--json')) console.log(JSON.stringify(status, null, 2));
   else console.log(formatStatus(status).join('\n'));
+}
+
+/** `substrat changes [slug]` — the open pull requests or chat branches, checks and previews. */
+async function cmdChanges(): Promise<void> {
+  const slug = projectSlug();
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  const changes = await readChanges({ controlPlaneUrl, header, slug });
+  if (argv.includes('--json')) console.log(JSON.stringify(changes, null, 2));
+  else console.log(formatChanges(changes).join('\n'));
 }
 
 async function cmdPromote(): Promise<void> {
@@ -1671,6 +1684,8 @@ async function main(): Promise<void> {
       return argv.includes('--review-only') ? cmdPromoteReview() : cmdPromote();
     case 'status':
       return cmdStatus();
+    case 'changes':
+      return cmdChanges();
     case 'publish':
       return cmdPublish();
     case 'store-driver':

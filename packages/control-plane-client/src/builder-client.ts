@@ -1,4 +1,4 @@
-import type { EntitlementGrant, EntitlementGrantInput, OpsFailureEntry, Page } from '@substrat-run/contracts';
+import type { EntitlementGrant, EntitlementGrantInput, OpsFailureEntry, Page, VerticalChanges } from '@substrat-run/contracts';
 
 import type {
   ConnectionScopeBindingInput,
@@ -176,6 +176,15 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
    */
   listOpsFailures(vertical: string, page?: PageRequest): Promise<Page<OpsFailureEntry>> {
     return this.read(`/ops-failures${queryOf({ vertical }, page)}`);
+  }
+
+  /**
+   * The vertical's open changes, whichever provider holds them: its GitHub pull requests or its
+   * hosted `builder/<id>` chat branches, each with its checks and its preview. `provider: null`
+   * with a `reason` when no repository can be read.
+   */
+  listChanges(slug: string): Promise<VerticalChanges> {
+    return this.read(`/verticals/${seg(slug)}/changes`);
   }
 
   promoteChannel(

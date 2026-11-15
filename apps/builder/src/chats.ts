@@ -12,6 +12,7 @@
  * Pure registry logic; the agent (agent.ts) does the storage and the git
  * (repositories.ts `checkoutBranch`, `mergeIntoBase`).
  */
+import type { HostedChanges, ProjectRepository } from '@substrat-run/contracts';
 import { CHAT_BRANCH_PREFIX } from './repositories.js';
 
 export interface ChatEntry {
@@ -99,4 +100,25 @@ export function chatStorageKeys(id: string): string[] {
 export function compareUrl(repository: { owner: string; repo: string; branch: string }, chat: ChatEntry): string {
 	const seg = (s: string) => s.split('/').map(encodeURIComponent).join('/');
 	return `https://github.com/${seg(repository.owner)}/${seg(repository.repo)}/compare/${seg(repository.branch)}...${seg(chat.branch)}?expand=1`;
+}
+
+/**
+ * The open changes of the project with `slug`, for the control plane (`GET /internal/changes`):
+ * its repository, and for a hosted one each chat whose `builder/` branch holds work the base
+ * does not, newest first. A GitHub project's chats merge by pull request, so the control plane
+ * reads those from GitHub and none is listed here.
+ */
+export function openChanges(
+	projects: readonly { slug: string; updatedAt: string; repository: ProjectRepository; chats?: ChatEntry[] }[],
+	slug: string,
+): HostedChanges {
+	const entry = projects.filter((p) => p.slug === slug).sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
+	if (!entry) return { repository: null, changes: [] };
+	const r = entry.repository;
+	if (r.kind === 'github') return { repository: { kind: 'github', owner: r.owner, repo: r.repo, branch: r.branch }, changes: [] };
+	const changes = (entry.chats ?? [])
+		.filter((c) => c.branch.startsWith(CHAT_BRANCH_PREFIX) && chatStatus(c) === 'unmerged')
+		.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+		.map((c) => ({ id: c.id, title: c.title, branch: c.branch, updatedAt: c.updatedAt, head: c.revision ?? null }));
+	return { repository: { kind: 'artifacts', name: r.name, branch: r.branch }, changes };
 }

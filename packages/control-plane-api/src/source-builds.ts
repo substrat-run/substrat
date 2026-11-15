@@ -1,4 +1,4 @@
-import { sourceBuildRecord, sourceBuildResult, type BuiltSource, type SourceBuildService } from '@substrat-run/contracts';
+import { hostedChanges, sourceBuildRecord, sourceBuildResult, type BuiltSource, type SourceBuildService } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -71,6 +71,16 @@ export function sourceBuildService(service: { fetch(request: Request): Promise<R
       const record = sourceBuildRecord.safeParse(await response.json().catch(() => null));
       if (!record.success) throw new ControlPlaneError(502, 'the build service answered a record in a shape this control plane does not know');
       return record.data;
+    },
+    async changes(tenantId, slug) {
+      const response = await request(tenantId, `changes?slug=${encodeURIComponent(slug)}`);
+      if (!response.ok) {
+        const problem = await response.json().catch(() => null) as { detail?: string } | null;
+        throw new ControlPlaneError(response.status >= 500 ? 502 : response.status, problem?.detail ?? 'the build service refused the read');
+      }
+      const changes = hostedChanges.safeParse(await response.json().catch(() => null));
+      if (!changes.success) throw new ControlPlaneError(502, 'the build service answered changes in a shape this control plane does not know');
+      return changes.data;
     },
     async projects(tenantId, input) {
       return request(tenantId, 'projects', {

@@ -88,7 +88,7 @@ import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { collectRelease, RELEASE_DIR } from './release-files.js';
 import { assertPnpmLockfile, checkedExec, checkoutBranch, checkoutRepository, mergeIntoBase, remoteTip, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
-import { chatStatus, chatStorageKeys, compareUrl, newChat, titleFrom, withChats, withoutChat, type ChatEntry } from './chats.js';
+import { chatStatus, chatStorageKeys, compareUrl, newChat, openChanges, titleFrom, withChats, withoutChat, type ChatEntry } from './chats.js';
 
 const REPO = '/workspace';
 const TOOLCHAIN = '/workspace/substrat';
@@ -872,6 +872,11 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.ctx.storage.put(key, record);
 			}
 			return new Response(null, { status: 204 });
+		}
+		if (url.pathname === '/internal/changes' && req.method === 'GET') {
+			const slug = url.searchParams.get('slug');
+			if (!slug) return refuse(400, 'slug is required');
+			return json(200, openChanges((await this.#registry()).projects, slug));
 		}
 		const buildRead = req.method === 'GET' ? /^\/internal\/builds\/([^/]+)$/.exec(url.pathname) : null;
 		if (buildRead) {

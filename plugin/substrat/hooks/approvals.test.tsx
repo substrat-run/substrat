@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { promoteRefusalIn, refusalFor, substratCalls, waitingPromoteIn } from './approvals-parse'
+import { changesIn, promoteRefusalIn, refusalFor, substratCalls, waitingPromoteIn } from './approvals-parse'
 
 const PANE = {
   plugin: 'substrat',
@@ -250,6 +250,70 @@ describe('a code review started from the pane', () => {
     expect(last.slice(last.indexOf('review'))).toEqual(['review', 'upload', '--base', 'origin/main', '--json'])
     expect(await ui.find({ type: 'Text', text: /Review r-0001: received/ })).toBeDefined()
     expect(prompts.at(-1)).toContain('review r-0001 is received')
+    await ui.unmount()
+  })
+})
+
+/** What `substrat changes --json` answers for a vertical with two open pull requests. */
+const CHANGES = JSON.stringify({
+  provider: 'github',
+  repository: 'acme-org/acme',
+  changes: [
+    {
+      id: '#12', title: 'Void invoices', branch: 'feat-void', url: 'https://github.com/acme-org/acme/pull/12', author: 'ada',
+      updatedAt: '2026-11-15T10:00:00Z', head: 'abc', checks: { state: 'failure', failing: ['test'] },
+      preview: { tag: 'pr-12', url: 'https://acme--pr-12.global.substrat.run' },
+    },
+    { id: '#11', title: 'Docs', branch: 'docs', url: null, author: null, updatedAt: '2026-11-14T10:00:00Z', head: 'def', checks: { state: 'success', failing: [] }, preview: null },
+  ],
+})
+
+/** The same, from an installation that may not read checks. */
+const UNREAD = (() => {
+  const r = JSON.parse(CHANGES)
+  r.reason = 'the GitHub App cannot read checks for acme-org/acme'
+  for (const c of r.changes) c.checks = { state: 'unknown', failing: [] }
+  return JSON.stringify(r)
+})()
+
+describe('the open changes', () => {
+  test('reads what the CLI answers, and nothing from output that is not that answer', () => {
+    expect(changesIn(CHANGES)?.changes.map(c => [c.id, c.checks.state, c.preview?.url ?? null])).toEqual([
+      ['#12', 'failure', 'https://acme--pr-12.global.substrat.run'],
+      ['#11', 'success', null],
+    ])
+    expect(changesIn(JSON.stringify({ provider: null, repository: null, changes: [], reason: 'no repository is known' }))).toEqual({
+      provider: null, repository: null, reason: 'no repository is known', changes: [],
+    })
+    expect(changesIn(UNREAD)?.changes[1]?.checks.state).toBe('unknown')
+    expect(changesIn(JSON.stringify({ provider: 'gitlab', changes: [] }))).toBeUndefined()
+    expect(changesIn('error: unknown command changes')).toBeUndefined()
+  })
+
+  test('checking the plane lists each change with its checks and preview', async ($, on) => {
+    const { runs } = engine(on, argv => (argv.includes('changes') ? { exitCode: 0, stdout: CHANGES } : { exitCode: 0, stdout: '{}' }))
+    await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'check-plane' })
+    expect(runs.some(r => r.slice(-2).join(' ') === 'changes --json')).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /Changes in acme-org\/acme/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /#12 Void invoices/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /checks fail: test · preview https:\/\/acme--pr-12\.global\.substrat\.run/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /checks pass/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a promote waiting beside them leaves the list in the pane, checks it cannot read shown as unknown', async ($, on) => {
+    engine(on, argv => ({ exitCode: 0, stdout: argv.includes('--review-only') ? WAITING : UNREAD }))
+    await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'check-plane' })
+    expect(await ui.find({ type: 'Text', text: /Promote acme 01JX9ZV3Q8/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /#12 Void invoices/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /cannot read checks for acme-org\/acme/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^checks unknown · preview/ })).toBeDefined()
     await ui.unmount()
   })
 })

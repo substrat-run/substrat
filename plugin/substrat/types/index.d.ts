@@ -39,12 +39,29 @@ export type CodeReview = {
   readonly status: Status;
 };
 
+/** The vertical's open changes, as `substrat changes --json` answers them. */
+export type OpenChanges = {
+  readonly provider: 'github' | 'artifacts' | null;
+  readonly repository: string | null;
+  /** Why none can be read, when `provider` is null; or why some of what it shows is unknown. */
+  readonly reason: string | null;
+  readonly changes: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly branch: string;
+    readonly url: string | null;
+    readonly checks: { readonly state: 'success' | 'failure' | 'pending' | 'none' | 'unknown'; readonly failing: readonly string[] };
+    readonly preview: { readonly tag: string; readonly url: string | null } | null;
+  }[];
+};
+
 declare module 'claude-code' {
   interface PluginState {
     substrat: {
       plan: Shaped<PlanApproval | null>;
       promote: Shaped<PromoteApproval | null>;
       review: Shaped<CodeReview | null>;
+      changes: Shaped<OpenChanges | null>;
     };
   }
 }

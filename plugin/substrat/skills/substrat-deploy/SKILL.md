@@ -79,9 +79,10 @@ is in a workflow log, not in your terminal — read the same review without prom
 ```sh
 substrat status                  # what prod serves, the promote waiting and the acks it needs
 substrat promote --review-only   # both diffs, the apps it breaks, and the --review token
+substrat changes                 # the open PRs (or studio chat branches), their checks and previews
 ```
 
-Both default to this project's slug and the newest admitted version, and neither promotes.
+All three default to this project's slug, the review to the newest admitted version, and none promotes.
 
 ## 5. Present the checkpoint, then stop
 
