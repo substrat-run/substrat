@@ -136,3 +136,63 @@ export async function exchangeLoginCode(controlPlaneUrl: string, code: string, v
   if (!token) throw new Error('token exchange returned no token');
   return token;
 }
+
+/** What `substrat login` prints when it sets no default workspace: how to set one. */
+export const LOGIN_HOW_TO_SET = '  set one with `substrat login --workspace <slug>`, or pass --tenant <slug> (or SUBSTRAT_TENANT) per command.';
+
+/**
+ * The default workspace a login stores (builder-plane.md §5), so `promote`/`scope` just work.
+ * `push` never uses it: its workspace is the project's (package.json pin). One tenant → store
+ * it; several → `wanted` (--workspace), else `pick` on a TTY; none → they still need to sign
+ * up in the app. `refused` is set when `wanted` is not one of the account's workspaces: the
+ * caller still saves the session, then fails, so a script does not read it as success.
+ */
+export async function loginWorkspace(input: {
+  wanted: string | undefined;
+  tenants: readonly { id: string; slug: string; name: string }[];
+  /** Whether whoami answered: with no account, the workspaces could not be listed. */
+  signedIn: boolean;
+  storedDefault: string | undefined;
+  /** Asks a person to choose among `count` workspaces; absent when nobody can answer. */
+  pick: ((count: number) => Promise<string | undefined>) | undefined;
+  log: (line: string) => void;
+}): Promise<{ defaultTenant: string | undefined; refused?: string }> {
+  const { wanted, tenants, log } = input;
+  const byKey = (key: string) => tenants.find((t) => t.slug === key || t.id === key);
+  // When no choice is made, the previous default survives only if THIS account can act for
+  // it — a re-login keeps an earlier pick, a different account does not inherit a stranger's.
+  const kept = input.storedDefault === undefined ? undefined : byKey(input.storedDefault)?.slug;
+  if (wanted !== undefined) {
+    // Slug or id, as the prompt takes — not the prompt's list number, which shifts as
+    // memberships change and would make a scripted login pick a different workspace.
+    const hit = byKey(wanted);
+    if (hit) {
+      log(`  default workspace: ${hit.slug}`);
+      return { defaultTenant: hit.slug };
+    }
+    const valid = input.signedIn ? tenants.map((t) => t.slug).join(', ') || '(none yet)' : '(could not list them)';
+    return {
+      defaultTenant: kept,
+      refused: `'${wanted}' is not one of your workspaces (yours: ${valid}) — signed in, ${kept ? `default workspace stays '${kept}'` : 'no default workspace set'}`,
+    };
+  }
+  if (tenants.length === 1) {
+    log(`  workspace: ${tenants[0]!.slug}`);
+    return { defaultTenant: tenants[0]!.slug };
+  }
+  if (tenants.length > 1) {
+    log('  you belong to several workspaces:');
+    tenants.forEach((t, i) => log(`    ${i + 1}. ${t.name}  [${t.slug}]`));
+    const pick = input.pick ? await input.pick(tenants.length) : undefined;
+    if (pick === undefined) {
+      log(kept ? `  default workspace stays: ${kept} (none chosen)` : '  no default workspace set (none chosen).');
+      log(LOGIN_HOW_TO_SET);
+      return { defaultTenant: kept };
+    }
+    const chosen = tenants[Number(pick) - 1]?.slug ?? byKey(pick)?.slug ?? tenants[0]!.slug;
+    log(`  default workspace: ${chosen} (promote/scope use it; push pins one per project)`);
+    return { defaultTenant: chosen };
+  }
+  if (input.signedIn) log('  no workspace yet — create one at your dashboard, then `substrat push`.');
+  return { defaultTenant: kept };
+}
