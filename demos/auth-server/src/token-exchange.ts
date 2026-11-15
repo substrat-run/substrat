@@ -219,15 +219,23 @@ async function verifiedSubject(deps: TokenExchangeDeps, token: string): Promise<
 
 /**
  * The person's address as this issuer holds it, for exchange C's token: `null` when `sub` names
- * no user here, `{}` when the user has no real address (a placeholder, which userinfo leaves out
- * too, #2938), and otherwise `email` with `email_verified` as a boolean. `sub` is the user's id:
- * no pairwise secret is configured (`auth.ts`).
+ * no user here, or a user banned now, `{}` when the user has no real address (a placeholder,
+ * which userinfo leaves out too, #2938), and otherwise `email` with `email_verified` as a
+ * boolean. `sub` is the user's id: no pairwise secret is configured (`auth.ts`).
+ *
+ * The ban is judged here because nothing upstream of an exchange judges it: the `admin`
+ * plugin refuses a banned user only when a session is CREATED, the plugin's refresh grant
+ * reads no ban, and a refresh token outlives the session it was issued under
+ * (`oauth_refresh_token.session_id` is `ON DELETE SET NULL`). So a subject token minted from a
+ * kept refresh token after a ban would otherwise still act for the person. A ban whose
+ * `ban_expires` (epoch ms) has passed is no ban, as the `admin` plugin reads it.
  */
-function addressOf(sql: SqlExec, sub: string): { email?: string; email_verified?: boolean } | null {
-  const row = sql.exec('SELECT email, email_verified FROM user WHERE id = ?', sub).toArray()[0] as
-    | { email: string; email_verified: number }
+function userAddressOf(deps: TokenExchangeDeps, sub: string): { email?: string; email_verified?: boolean } | null {
+  const row = deps.sql.exec('SELECT email, email_verified, banned, ban_expires FROM user WHERE id = ?', sub).toArray()[0] as
+    | { email: string; email_verified: number; banned: number | null; ban_expires: number | null }
     | undefined;
   if (!row) return null;
+  if (row.banned && !(row.ban_expires !== null && row.ban_expires < deps.nowSeconds * 1000)) return null;
   if (isPlaceholderAddress(row.email)) return {};
   return { email: row.email, email_verified: row.email_verified === 1 };
 }
@@ -361,6 +369,8 @@ async function assertionFor(
       : soleAudience(subject['aud']) === hostClientId ||
         audiencesOf(subject['aud']).some((a) => isResourceOf(deps.sql, a, host.appScopeId));
   if (!boundToHost) return refuse('invalid_grant', 'the subject token was not issued to this client');
+  // A person banned at this issuer is acted for by nobody, as at C.
+  if (!userAddressOf(deps, subject['sub'] as string)) return refuse('invalid_grant', 'the subject is not a user of this issuer');
 
   const actor = registrationOfClient(deps.sql, actorClientId);
   if (!actor || actor.tenantId !== host.tenantId) {
@@ -533,7 +543,8 @@ async function peerFor(
   const parties = [subject['azp'], subject['client_id']].filter((p) => p !== undefined);
   const issuedToActor = parties.length > 0 ? parties.every((p) => p === actorClientId) : soleAudience(subject['aud']) === actorClientId;
   if (!issuedToActor) return refuse('invalid_grant', 'the subject token was not issued to this client');
-  const address = addressOf(deps.sql, subject['sub'] as string);
+  // One text for no user and a banned one, so a refusal says nothing about why.
+  const address = userAddressOf(deps, subject['sub'] as string);
   if (!address) return refuse('invalid_grant', 'the subject is not a user of this issuer');
 
   const host = registrationOfClient(deps.sql, hostClientId);

@@ -167,7 +167,7 @@ beforeEach(async () => {
       c === CLIENT.basicDesk ? 'client_secret_basic' : 'client_secret_post',
     );
   }
-  // The person every subject token names, as this issuer records them (exchange C reads it).
+  // The person every subject token names, as this issuer records them (exchanges A and C read it).
   sql.exec("INSERT INTO user (id, name, email, email_verified) VALUES ('user-ann', 'Ann', 'ann@acme.test', 1)");
   register(TEAM, TEAM_APPS);
   register(OTHER_TEAM, [{ appScopeId: ELSEWHERE, clientId: CLIENT.elsewhere.id, hostname: 'elsewhere.test' }]);
@@ -696,6 +696,26 @@ describe('token exchange C: the actor asks, in one step, for a token for the hos
     expect(claims).not.toHaveProperty('email');
     expect(claims).not.toHaveProperty('email_verified');
     expect((await stageC(await actorLogin({ sub: 'user-nobody' }))).body['error']).toBe('invalid_grant');
+  });
+
+  /**
+   * A refresh token outlives the issuer session it came under, and the plugin's refresh grant
+   * reads no ban, so a master can still mint a live subject token for a banned person. The
+   * exchange is where the ban is judged, at C and at A alike, in the no-user refusal's words.
+   */
+  it('acts for nobody banned at this issuer, at C or A, and a ban that has run out is no ban', async () => {
+    const refusal = { error: 'invalid_grant', error_description: 'the subject is not a user of this issuer' };
+    const both = async () => [await stageC(await actorLogin()), await stageA(await idTokenFor(CLIENT.desk.id))];
+
+    sql.exec("UPDATE user SET banned = 1, ban_expires = NULL WHERE id = 'user-ann'");
+    for (const res of await both()) expect(res).toMatchObject({ status: 400, body: refusal });
+    sql.exec("UPDATE user SET ban_expires = ? WHERE id = 'user-ann'", (now + 60) * 1000);
+    for (const res of await both()) expect(res).toMatchObject({ status: 400, body: refusal });
+
+    sql.exec("UPDATE user SET ban_expires = ? WHERE id = 'user-ann'", (now - 60) * 1000);
+    for (const res of await both()) expect(res.status).toBe(200);
+    // And A, like C, acts for no subject that is not a user here.
+    expect((await stageA(await idTokenFor(CLIENT.desk.id, { sub: 'user-nobody' }))).body).toMatchObject(refusal);
   });
 
   it('narrows to the requested scope, and refuses a scope the grant does not cover', async () => {

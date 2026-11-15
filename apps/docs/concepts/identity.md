@@ -442,7 +442,8 @@ Each side wires one thing more:
 
   `PERMISSIONS.md` renders it, so letting another app act for people is in the reviewed permission
   diff. The dashboard delivers it to the team's auth server, which exchanges no token it was
-  not given a grant for.
+  not given a grant for. The dashboard manages that grant from the declarations alone: see
+  [the MCP page](/concepts/mcp#a-call-made-for-a-user-by-another-app) if you delivered one by hand.
   Hosted, the plugin's door takes such a call from its `people.master` only. Locally,
   `devLogin({ clientId, delegation: { actors: ['todo'], channels: ['peer'] } })` and
   `devPeople({ master: 'todo', … })` do the same, and the dev issuer takes the grant with
@@ -469,7 +470,16 @@ What a call made this way can do:
   holds none of the keys the calling app holds there as a peer.
 
 What it cannot do: act for someone who never signed in to the calling app, or act from a schedule
-with no session behind it. Nothing proves the person is behind each request: the calling app holds the
-refresh token for as long as the session lives. Nothing yet records in the plugin which app made a
+with no session behind it. How long it can act for someone who did:
+
+- **While the calling app's own session for them lives**, up to that session's lifetime, and while
+  the auth server keeps honouring the refresh token.
+- **A ban at the auth server stops it** at the next exchange, so within five minutes.
+- **Blocking them in the calling app stops it** within the plugin's kept-answer lifetime, five minutes.
+- **Signing out of the calling app stops it**: the sign-out deletes the refresh token it kept.
+- **Signing out at the auth server alone does not.** The refresh token outlives that session, and
+  the calling app's own session still acts for them there anyway.
+
+Nothing proves the person is behind each request. Nothing yet records in the plugin which app made a
 call. Its history shows the person.
 

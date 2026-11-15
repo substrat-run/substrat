@@ -205,13 +205,22 @@ token's `scope` as the ceiling. The router passes the token through and never lo
 
 The difference from `actingFor` is what the plugin can rely on. With `actingFor` the master
 **asserts** a person, and nothing distinguishes a request P made from one Todo made up. With the
-token the master **proves** that P signed in to it and that the session is still live at the issuer:
-an exchange needs a token issued to Todo for P, which only P's sign-in produces, and a refresh token
-the issuer refuses buys nothing. So:
+token the master **proves** that P signed in to it: an exchange needs a token issued to Todo for P,
+which only P's sign-in at Todo produces. It does not prove that P is still signed in at the issuer.
+The refresh token outlives the issuer session it was issued under, and Todo's own session acts for P
+in Todo without one anyway. The bound that holds:
 
-- **The master cannot act for someone who never signed in to it**, and loses the person when the
-  issuer stops honouring their session's refresh token. A schedule with no session behind it cannot
-  act at all.
+- **The master cannot act for someone who never signed in to it**, and a schedule with no session
+  behind it cannot act at all.
+- **It can act for P while its own session for P lives**, up to that session's lifetime, and while
+  the issuer keeps honouring the refresh token.
+- **A ban at the issuer stops the next exchange.** The issuer's refresh grant reads no ban, so the
+  token exchange refuses a banned person itself, in the words it uses for no person at all.
+- **A block at the master stops the plugin within the person contract's TTL.** The plugin's door
+  runs the contract's check on every call, as a sign-in would.
+- **Signing out of the master stops it**: the sign-out deletes the master's refresh row.
+- **Signing out at the issuer alone does not.** The refresh token is not tied to that session, and
+  the master's own session still acts for P in the master.
 - **The keys are the plugin's to cap, per actor**, and reviewed in its `PERMISSIONS.md`. Under
   `actingFor` Todo would have acted with everything the person holds.
 - **No kernel change to the peer door's caller.** A call made as a person is not a peer call with a
@@ -221,7 +230,7 @@ the issuer refuses buys nothing. So:
   within five minutes either way.
 
 What it still does not prove is that P is behind THIS request: Todo holds the refresh token for as
-long as the session lives, and could use it while P is away. The spine does not record that Todo
+long as its own session for P lives, and could use it while P is away. The spine does not record that Todo
 made a call (§4), so today nothing in the plugin's history shows it.
 
 ### The proposal not taken: `actingFor`
