@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { platformActorId, tenantId, type TenantId } from '@substrat-run/contracts';
 import { SERVICE_TOKEN_HEADER } from '@substrat-run/control-plane-api';
 import { ulid } from '@substrat-run/kernel';
-import { createReviewApi, MAX_KEPT_REVIEWS_PER_TENANT, MAX_REVIEWS_IN_PROGRESS_PER_TENANT } from '../src/reviews.js';
+import { createReviewApi, MAX_KEPT_REVIEWS_PER_TENANT, MAX_REVIEWS_IN_PROGRESS_PER_TENANT, REVIEW_READING_WINDOW_MS } from '../src/reviews.js';
 import { validateReviewArchive } from '../src/review-archive.js';
 import { pruneReviews, readReview, receiveReview, ReviewCollisionError, writeReviewResult } from '../src/review-store.js';
 import { archive, archiveRaw, BLOCK, octal, tar } from './review-fixtures.js';
@@ -314,8 +314,8 @@ describe('a builder review', () => {
 
   it('bounds a workspace by reviews in progress, then by reviews kept, whichever member starts them', async () => {
     const src = await archive();
-    const receive = () =>
-      receiveReview(bucket, actor(), { source: src.file, sourceSha256: src.sha256, tenant: { tenantId: tenantFull, vertical: 'full/garden' } });
+    const receive = (now?: Date) =>
+      receiveReview(bucket, actor(), { source: src.file, sourceSha256: src.sha256, tenant: { tenantId: tenantFull, vertical: 'full/garden' } }, now);
     const at = new Date().toISOString();
     const finish = (id: string) =>
       writeReviewResult(bucket, id, {
@@ -323,16 +323,21 @@ describe('a builder review', () => {
         fullTree: true, model: null, runner: { version: 'test' }, usage: null, dropped: 0, parseFailures: 0,
         startedAt: at, finishedAt: at, checklistDigest: 'd', pluginVersion: 'p',
       });
+    // Left `received` past the reading window (a job that never started and could not be closed):
+    // these spend nothing and hold no slot.
+    const stranded = new Date(Date.now() - REVIEW_READING_WINDOW_MS - 60_000);
+    for (let n = 0; n < MAX_REVIEWS_IN_PROGRESS_PER_TENANT; n++) await receive(stranded);
     const inProgress = [];
-    for (let n = 0; n < MAX_REVIEWS_IN_PROGRESS_PER_TENANT; n++) inProgress.push(await receive());
+    for (let n = 0; n < MAX_REVIEWS_IN_PROGRESS_PER_TENANT - 1; n++) inProgress.push(await receive());
+    expect((await upload('full', 'garden')).status).toBe(201);
     expect((await upload('full', 'garden')).status).toBe(429);
     // A finished review frees its slot…
     await finish(inProgress[0]!.id);
     expect((await upload('full', 'garden')).status).toBe(201);
     // …and still counts toward what the workspace may keep in the retention window.
     for (const r of inProgress.slice(1)) await finish(r.id);
-    // The in-progress ones plus the one just admitted are kept; fill the window to its bound.
-    for (let kept = MAX_REVIEWS_IN_PROGRESS_PER_TENANT + 1; kept < MAX_KEPT_REVIEWS_PER_TENANT; kept++) await finish((await receive()).id);
+    // The stranded and in-progress ones plus the two admitted are kept; fill the window to its bound.
+    for (let kept = 2 * MAX_REVIEWS_IN_PROGRESS_PER_TENANT + 1; kept < MAX_KEPT_REVIEWS_PER_TENANT; kept++) await finish((await receive()).id);
     const refused = await upload('full', 'garden');
     expect(refused.status).toBe(429);
     expect(await refused.text()).toContain(`${MAX_KEPT_REVIEWS_PER_TENANT} reviews per workspace in 30 days`);

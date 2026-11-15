@@ -15,6 +15,14 @@ const MAX_LIVE_REVIEWS_PER_ACTOR = 20;
 export const MAX_REVIEWS_IN_PROGRESS_PER_TENANT = 5;
 export const MAX_KEPT_REVIEWS_PER_TENANT = 50;
 /**
+ * How long a `received` review holds an in-progress slot. Its job reads the model within about 21
+ * minutes (REVIEW_MAX_ATTEMPTS calls of REVIEW_MODEL_TIMEOUT_MS, and the retry waits between them);
+ * after that it calls no model, so an older `received` review — a job that never started and
+ * could not be closed, or one still retrying its write — spends nothing and holds no slot. It is
+ * left `received`, so a late result can still be written.
+ */
+export const REVIEW_READING_WINDOW_MS = 60 * 60_000;
+/**
  * What makes the runner available to a builder's tenant (hosted-review-runner.md Q2): a key only
  * staff grant (`PLATFORM_ENTITLEMENT_KEYS`, so no vertical can declare it and no tenant grant
  * itself it, #2388). Without it a builder still reads its tenant's reviews; it starts none.
@@ -112,7 +120,9 @@ export function createReviewApi(deps: {
         return refuseStatus(429, 'review intake limit reached: 20 live reviews per person');
       }
       if (p.kind === 'builder') {
-        if (live.entries.filter((r) => r.state === 'received').length >= MAX_REVIEWS_IN_PROGRESS_PER_TENANT) {
+        const readingSince = Date.now() - REVIEW_READING_WINDOW_MS;
+        const reading = live.entries.filter((r) => r.state === 'received' && Date.parse(r.createdAt) > readingSince);
+        if (reading.length >= MAX_REVIEWS_IN_PROGRESS_PER_TENANT) {
           return refuseStatus(429, `review intake limit reached: ${MAX_REVIEWS_IN_PROGRESS_PER_TENANT} reviews in progress per workspace; start another when one finishes`);
         }
         if (live.entries.length >= MAX_KEPT_REVIEWS_PER_TENANT) {
@@ -167,8 +177,8 @@ export function createReviewApi(deps: {
       });
       if (deps.startReview) {
         // Stored is stored, and the upload still answers 201. A job that fails to start closes
-        // the review `incomplete`: nothing else would move it on from `received`, where it would
-        // count against the workspace's reviews in progress until it expired.
+        // the review `incomplete`, since nothing else would move it on from `received`. If the
+        // close fails too, it stays `received` and frees its slot after REVIEW_READING_WINDOW_MS.
         const started = await deps.startReview(record.id).then(() => true, (error: unknown) => {
           console.error('review.job.unstarted', { reviewId: record.id, message: error instanceof Error ? error.message : String(error) });
           return false;
