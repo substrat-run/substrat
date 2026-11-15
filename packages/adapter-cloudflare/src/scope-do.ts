@@ -89,7 +89,7 @@ import {
   noSealingKeyMessage,
   sealTo,
   assertReadOnlyQuery,
-  entitlementDenial,
+  refuseEntitlement,
   platformRequestHistoryQuery,
   platformRequestOf,
   type PlatformRequestRawRow,
@@ -3528,8 +3528,9 @@ export function defineScopeDO(
           )
           .toArray()[0];
         if (!held) {
-          // The whole projected set, so the denial names required AND held (#691).
-          // Only read on the failure path — the hot path stays the single lookup above.
+          // The whole projected set, so the operator's line names required AND held (#691);
+          // the caller reads the operation and the key only (#3105). Only read on the failure
+          // path — the hot path stays the single lookup above.
           const now = new Date().toISOString();
           const all = this.sql
             .exec(
@@ -3538,17 +3539,17 @@ export function defineScopeDO(
               tenantId,
             )
             .toArray() as { entitlement_key: string; expires_at: string | null }[];
-          throw substratError(
-            'not_found',
-            entitlementDenial(
-              operation,
-              requiredEntitlement,
-              all.map((r) => ({
-                key: r.entitlement_key,
-                expired: r.expires_at !== null && r.expires_at <= now,
-              })),
-            ),
-          );
+          throw refuseEntitlement({
+            operation,
+            requiredKey: requiredEntitlement,
+            held: all.map((r) => ({
+              key: r.entitlement_key,
+              expired: r.expires_at !== null && r.expires_at <= now,
+            })),
+            tenantId,
+            scopeId,
+            requestId: invokeOptions?.invocationId,
+          });
         }
       }
       // #893: parse, don't trust — at the scope door, from the operation's own

@@ -116,8 +116,11 @@ platform can refuse the install over.
 Get it wrong and the failure is latent, not immediate: an un-projected scope trusts upstream,
 and the flip to strict enforcement is one-way, triggered by the **first** projection carrying
 entitlements (a `fanOut`, a reconcile, a re-provision). So a mismatch planted at install
-detonates arbitrarily later, from an unrelated action. The denial names required *and* held
-keys precisely so that gap reads at a glance.
+detonates arbitrarily later, from an unrelated action. The refusal the caller receives names the
+operation and its required key only (#3105): the keys the tenant holds are other products'
+names, and the caller need not manage the tenant. The host writes required *and* held keys,
+expired ones marked, to a server-side `entitlement-denied` log line keyed by the request id
+(`x-substrat-request-id`), so an operator handed that id reads the gap at a glance.
 
 ## 4. Capabilities, not kinds — verticals provide/require, connections wire them
 

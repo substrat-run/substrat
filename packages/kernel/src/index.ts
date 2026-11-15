@@ -226,10 +226,19 @@ export {
   type SizedByteStream,
 } from './byte-stream.js';
 export {
+  consoleEntitlementDenialSink,
+  entitlementDenial,
+  entitlementDenialLine,
+  refuseEntitlement,
+  type EntitlementDenialFacts,
+  type EntitlementDenialLine,
+  type EntitlementDenialSink,
+  type HeldEntitlement,
+} from './entitlement-denial.js';
+export {
   SCOPE_COPY_LEASE_MS,
   assertRedrainWindow,
   consumersFor,
-  entitlementDenial,
   requiredEntitlementFor,
   executorOutcomeOf,
   parseValidationRecords,

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './connector-fixture.js';
 import {
   connectionId,
@@ -10930,32 +10930,46 @@ export function scopeHostContractSuite(
       await host.admin.revokeEntitlement(staff, t4, 'billed');
     });
 
-    it('names required AND held keys in the denial, marking expired ones (#691)', async () => {
+    it('tells the caller only the operation and its key; the held keys go to the server-side line (#691, #3105)', async () => {
       const stub = await host.getScope(alice, t4, s4);
-
-      // Holding nothing: the denial says so, rather than leaving "held" to the imagination.
-      await expect(stub.invoke('billed/act')).rejects.toThrow(/holds: none/);
-
-      // The slug-prefixed-key shape (#691): the tenant DOES hold keys — just not
-      // under the name the manifest declares. Required-alone reads as "buy the
-      // SKU" and sends you shopping; required-vs-held shows a near-miss at a
-      // glance, which is the actual diagnosis.
+      // The slug-prefixed-key shape (#691): the tenant DOES hold keys — one just under the
+      // wrong name, one expired, one another product's. #691's diagnosis is required-vs-held,
+      // and #3105 is who may read it: never the caller, who need not manage the tenant.
       await host.admin.grantEntitlement(staff, t4, 't-0wv2mwk4j5/billed');
       await host.admin.grantEntitlement(staff, t4, 'workorder');
-      const err = await stub.invoke('billed/act').then(
-        () => null,
-        (e: Error) => e.message,
-      );
-      expect(err).toMatch(/does not hold 'billed'/);
-      expect(err).toMatch(/t-0wv2mwk4j5\/billed/);
-      expect(err).toMatch(/workorder/);
-
-      // An expired grant denies like an absent one — but "you had it, it lapsed" is a
-      // different fix from "you never had it", so the inventory distinguishes them.
       await host.admin.grantEntitlement(staff, t4, 'billed', {
         expiresAt: new Date(Date.now() - 60_000).toISOString(),
       });
-      await expect(stub.invoke('billed/act')).rejects.toThrow(/billed \(expired\)/);
+      const invocationId = ulid();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      let err: unknown;
+      let written: unknown[][];
+      try {
+        err = await stub.invoke('billed/act', undefined, { invocationId }).then(() => null, (e: unknown) => e);
+      } finally {
+        written = [...warn.mock.calls]; // `mockRestore` clears the calls
+        warn.mockRestore();
+      }
+
+      expect(errorCodeOf(err)).toBe('not_found');
+      const detail = (err as Error).message;
+      expect(detail).toBe("operation not entitled: billed/act — tenant does not hold 'billed'");
+      expect(detail).not.toMatch(/holds|workorder|t-0wv2mwk4j5|expired/);
+
+      // The operator's half, keyed by the id the response carries in `x-substrat-request-id`.
+      const lines = written
+        .map(([text]) => (typeof text === 'string' && text.startsWith('{') ? JSON.parse(text) : null))
+        .filter((l): l is Record<string, unknown> => l?.substrat === 'entitlement-denied');
+      expect(lines).toEqual([
+        expect.objectContaining({
+          tenantId: t4,
+          scopeId: s4,
+          requestId: invocationId,
+          operation: 'billed/act',
+          required: 'billed',
+          held: expect.arrayContaining(['billed (expired)', 't-0wv2mwk4j5/billed', 'workorder']),
+        }),
+      ]);
 
       await host.admin.revokeEntitlement(staff, t4, 'billed');
       await host.admin.revokeEntitlement(staff, t4, 't-0wv2mwk4j5/billed');

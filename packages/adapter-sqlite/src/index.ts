@@ -384,7 +384,7 @@ import {
   putAttachmentBytes,
   type IncrementalSha256,
   type SizedByteStream,
-  entitlementDenial,
+  refuseEntitlement,
   requiredEntitlementFor,
   type OperationEntitlement,
   foldMeterReading,
@@ -7096,11 +7096,16 @@ export class SqliteScopeHost implements ScopeHost {
           authority.kind === 'system' ? authority.id : undefined,
         );
         if (requiredKey && !this.tenantHoldsEntitlement(tenantId, requiredKey)) {
+          // #3105: the caller reads the operation and the key; the held keys go to the log line.
           return Promise.reject(
-            substratError(
-              'not_found',
-              entitlementDenial(operation, requiredKey, this.heldEntitlements(tenantId)),
-            ),
+            refuseEntitlement({
+              operation,
+              requiredKey,
+              held: this.heldEntitlements(tenantId),
+              tenantId,
+              scopeId,
+              requestId: invokeOptions?.invocationId,
+            }),
           );
         }
         // #458: per-invoke tally of `ctx.requestPlatform` calls. Reported to the
@@ -8877,7 +8882,7 @@ export class SqliteScopeHost implements ScopeHost {
     );
   }
 
-  /** Every key the tenant is granted, expiry flagged — the "held" half of a denial (#691). */
+  /** Every key the tenant is granted, expiry flagged — the denial's server-side line (#691, #3105). */
   private heldEntitlements(tenantId: TenantId): { key: string; expired: boolean }[] {
     const now = this.clock();
     return (
