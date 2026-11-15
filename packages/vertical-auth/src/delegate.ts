@@ -14,6 +14,15 @@
  *  2. **Exchange.** The `id_token` is traded for an access token whose `aud` is the plugin's client
  *     id and whose `scope` is at most what the platform granted this app there.
  *
+ * Both answers are kept in the isolate until 30 s before they expire, so a call in that window
+ * costs no issuer request (and writes no token rows there), and a second audience or scope costs
+ * one exchange and no refresh. The cost: a token the issuer revokes stays usable from here for
+ * what is left of its lifetime, at most 5 minutes for a delegated token — the bound the plugin
+ * already accepts by not asking the issuer about each one. A kept `id_token` is still judged by
+ * the issuer at every exchange; only a revoked REFRESH token goes unnoticed until the next refresh.
+ * Nothing kept outlives the session's row: a hit reads it, so a logout (or a `reauth` in another
+ * isolate) ends every use of the tokens kept for that session.
+ *
  * Nothing here logs, and no error carries a token: a failure says which step and the OAuth error
  * code, never what was sent.
  *
@@ -87,10 +96,47 @@ export class DelegatedTokenError extends Error {
  * spent is a REUSE, which an issuer following RFC 9700 §4.14 (Better Auth does) answers by
  * revoking every refresh token of that person at this client. This holds within an isolate only.
  */
-const refreshing = new Map<string, Promise<string>>();
+const refreshing = new Map<string, Promise<FreshIdToken>>();
+
+/** A kept token is handed out until this long before it expires, so a call made with it lands in time. */
+const EXPIRY_MARGIN_MS = 30_000;
+
+interface SessionTokens {
+  idToken: { token: string; until: number } | null;
+  /** Keyed by audience and the sorted scope asked for. */
+  delegated: Map<string, { token: DelegatedToken; until: number }>;
+}
+
+/** Tokens obtained, per issuer, client and session, within an isolate. Cleared, never grown, past a bound. */
+const kept = new Map<string, SessionTokens>();
+const MAX_SESSIONS = 1_000;
+const MAX_DELEGATED_PER_SESSION = 32;
+
+function keepFor(key: string): SessionTokens {
+  let session = kept.get(key);
+  if (!session) {
+    if (kept.size >= MAX_SESSIONS) kept.clear();
+    session = { idToken: null, delegated: new Map() };
+    kept.set(key, session);
+  }
+  return session;
+}
 
 /** A delegated access token for `request.audience`, as the person whose session is `request.sid`. */
 export async function delegatedToken(deps: DelegatedTokenDeps, request: DelegatedTokenRequest): Promise<DelegatedToken> {
+  const clock = () => (deps.now ?? (() => new Date()))().getTime();
+  const key = JSON.stringify([deps.issuer, deps.clientId, request.sid]);
+  const target = JSON.stringify([request.audience, [...new Set(request.scope ?? [])].sort()]);
+
+  let session = kept.get(key);
+  // A logout, or a reauth in another isolate, deletes the row: nothing kept for it is used after.
+  if (session && !(await deps.store.get(request.sid))) {
+    kept.delete(key);
+    session = undefined;
+  }
+  const hit = session?.delegated.get(target);
+  if (hit && clock() < hit.until) return { ...hit.token, scope: [...hit.token.scope] };
+
   let tokenEndpoint: string;
   try {
     tokenEndpoint = (await discoverIssuer(deps.issuer)).token_endpoint;
@@ -101,13 +147,26 @@ export async function delegatedToken(deps: DelegatedTokenDeps, request: Delegate
     throw new DelegatedTokenError('unavailable', 'refresh', null, 'delegated token: the issuer names no token endpoint');
   }
 
-  const key = JSON.stringify([deps.issuer, deps.clientId, request.sid]);
-  let pending = refreshing.get(key);
-  if (!pending) {
-    pending = freshIdToken(deps, tokenEndpoint, request.sid).finally(() => refreshing.delete(key));
-    refreshing.set(key, pending);
+  const keptIdToken = session?.idToken;
+  let idToken: string;
+  if (keptIdToken && clock() < keptIdToken.until) {
+    idToken = keptIdToken.token;
+  } else {
+    let pending = refreshing.get(key);
+    if (!pending) {
+      pending = freshIdToken(deps, tokenEndpoint, request.sid).finally(() => refreshing.delete(key));
+      refreshing.set(key, pending);
+    }
+    let fresh: FreshIdToken;
+    try {
+      fresh = await pending;
+    } catch (err) {
+      if (err instanceof DelegatedTokenError && err.kind === 'reauth') kept.delete(key);
+      throw err;
+    }
+    idToken = fresh.token;
+    if (fresh.expiresAt !== null) keepFor(key).idToken = { token: fresh.token, until: fresh.expiresAt - EXPIRY_MARGIN_MS };
   }
-  const idToken = await pending;
 
   const answer = await post(deps, tokenEndpoint, 'exchange', {
     grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
@@ -118,6 +177,11 @@ export async function delegatedToken(deps: DelegatedTokenDeps, request: Delegate
     ...(request.scope && request.scope.length > 0 ? { scope: request.scope.join(' ') } : {}),
   });
   if (!answer.ok) {
+    // RFC 8693 §2.2.2: the subject token itself was refused, so the kept one is no good either.
+    if (answer.code === 'invalid_grant') {
+      const current = kept.get(key);
+      if (current) current.idToken = null;
+    }
     throw new DelegatedTokenError('refused', 'exchange', answer.code, `delegated token: the exchange was refused (${answer.code})`);
   }
   const body = answer.body;
@@ -137,12 +201,22 @@ export async function delegatedToken(deps: DelegatedTokenDeps, request: Delegate
   const granted = typeof body['scope'] === 'string' ? body['scope'] : (request.scope ?? []).join(' ');
   // Never later than the verifier's own bound: a longer claim would only mislead the caller.
   const expiresIn = typeof body['expires_in'] === 'number' && body['expires_in'] > 0 ? body['expires_in'] : DELEGATED_TOKEN_MAX_LIFETIME_SECONDS;
-  const now = (deps.now ?? (() => new Date()))().getTime();
-  return {
+  const expiresAt = clock() + Math.min(expiresIn, DELEGATED_TOKEN_MAX_LIFETIME_SECONDS) * 1000;
+  const result: DelegatedToken = {
     token,
     scope: [...new Set(granted.split(' ').filter((s) => s.length > 0))],
-    expiresAt: new Date(now + Math.min(expiresIn, DELEGATED_TOKEN_MAX_LIFETIME_SECONDS) * 1000).toISOString(),
+    expiresAt: new Date(expiresAt).toISOString(),
   };
+  const delegated = keepFor(key).delegated;
+  if (delegated.size >= MAX_DELEGATED_PER_SESSION) delegated.clear();
+  delegated.set(target, { token: result, until: expiresAt - EXPIRY_MARGIN_MS });
+  return { ...result, scope: [...result.scope] };
+}
+
+interface FreshIdToken {
+  token: string;
+  /** Epoch ms of its `exp`; `null` when it states none, and then it is not kept. */
+  expiresAt: number | null;
 }
 
 /**
@@ -151,7 +225,7 @@ export async function delegatedToken(deps: DelegatedTokenDeps, request: Delegate
  * `reauth` — unless the row changed meanwhile, which is another refresh having rotated it, and
  * that newer token is tried once first.
  */
-async function freshIdToken(deps: DelegatedTokenDeps, tokenEndpoint: string, sid: string): Promise<string> {
+async function freshIdToken(deps: DelegatedTokenDeps, tokenEndpoint: string, sid: string): Promise<FreshIdToken> {
   for (let attempt = 0; ; attempt++) {
     const held = await deps.store.get(sid);
     if (!held) throw new DelegatedTokenError('reauth', 'refresh', null, 'delegated token: this session keeps no refresh token');
@@ -172,14 +246,26 @@ async function freshIdToken(deps: DelegatedTokenDeps, tokenEndpoint: string, sid
     }
     const rotated = answer.body['refresh_token'];
     if (typeof rotated === 'string' && rotated.length > 0 && rotated !== held.refreshToken) {
-      await deps.store.put(sid, { sub: held.sub, refreshToken: rotated });
+      try {
+        await deps.store.put(sid, { sub: held.sub, refreshToken: rotated });
+      } catch {
+        // The row still holds the token just spent, and presenting that again is a reuse, which
+        // revokes every refresh token the person has. Forget it, so the next call is a clean
+        // reauth; the id_token is live and the person's, so this call still goes ahead with it.
+        try {
+          await deps.store.delete(sid);
+        } catch {
+          throw new DelegatedTokenError('unavailable', 'refresh', null, 'delegated token: the rotated refresh token could not be kept');
+        }
+      }
     }
     // Read, not verified: it came straight from the token endpoint over TLS (OIDC Core §3.1.3.7),
     // and the issuer verifies it again as the subject token. This only catches a row that names
     // someone other than the person the token is for, which must never be acted for.
     let sub: unknown;
+    let exp: unknown;
     try {
-      sub = decodeJwt(idToken).sub;
+      ({ sub, exp } = decodeJwt(idToken));
     } catch {
       throw new DelegatedTokenError('unavailable', 'refresh', null, 'delegated token: the refresh answered an unreadable id_token');
     }
@@ -187,7 +273,7 @@ async function freshIdToken(deps: DelegatedTokenDeps, tokenEndpoint: string, sid
       await deps.store.delete(sid);
       throw new DelegatedTokenError('reauth', 'refresh', null, "delegated token: the refreshed token is not the session's person");
     }
-    return idToken;
+    return { token: idToken, expiresAt: typeof exp === 'number' ? exp * 1000 : null };
   }
 }
 

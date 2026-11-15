@@ -29,8 +29,8 @@ beforeAll(async () => {
   }) as typeof fetch);
 });
 
-const idTokenOf = (sub: string) =>
-  new SignJWT({}).setProtectedHeader({ alg: 'RS256' }).setIssuer(ISSUER).setSubject(sub).setExpirationTime('5m').sign(key);
+const idTokenOf = (sub: string, exp: number) =>
+  new SignJWT({}).setProtectedHeader({ alg: 'RS256' }).setIssuer(ISSUER).setSubject(sub).setExpirationTime(exp).sign(key);
 
 interface Seen {
   form: Record<string, string>;
@@ -55,6 +55,9 @@ function world() {
     /** The refresh tokens the issuer still takes, and what each rotates to (or itself). */
     live: new Map<string, string>([['rt-1', 'rt-2']]),
     idTokenSub: 'ada',
+    /** The test clock, which the id_token's `exp` and the delegated token's expiry are read against. */
+    now: NOW,
+    idTokenLifetimeSeconds: 300,
     exchange: { status: 200, body: {} as Record<string, unknown> } as { status: number; body: unknown } | 'down',
     refresh: null as { status: number; body: unknown } | null,
     /** Run between the refresh request arriving and its answer — another isolate, say. */
@@ -81,7 +84,14 @@ function world() {
       state.live.delete(form['refresh_token']!);
       if (next) state.live.set(next, `${next}+`);
       answer = state.refresh ?? (next
-        ? { status: 200, body: { id_token: await idTokenOf(state.idTokenSub), refresh_token: next, access_token: 'at' } }
+        ? {
+            status: 200,
+            body: {
+              id_token: await idTokenOf(state.idTokenSub, state.now / 1000 + state.idTokenLifetimeSeconds),
+              refresh_token: next,
+              access_token: 'at',
+            },
+          }
         : { status: 400, body: { error: 'invalid_grant' } });
     } else {
       if (state.exchange === 'down') throw new TypeError('network down');
@@ -95,18 +105,24 @@ function world() {
     clientSecret: 'todo-secret',
     store,
     fetch,
-    now: () => new Date(NOW),
+    now: () => new Date(state.now),
   };
   return { state, deps, store };
 }
 
 let w: ReturnType<typeof world>;
+/** A session of its own per test: what one test's calls keep in the isolate is never another's. */
+let sid: string;
+let sessions = 0;
 beforeEach(async () => {
   w = world();
-  await w.store.put('sid-1', { sub: 'ada', refreshToken: 'rt-1' });
+  sid = `sid-${++sessions}`;
+  await w.store.put(sid, { sub: 'ada', refreshToken: 'rt-1' });
 });
 
-const ask = (deps: DelegatedTokenDeps = w.deps) => delegatedToken(deps, { sid: 'sid-1', audience: 'notes-client', scope: ['notes:read', 'notes:write'] });
+const ask = (deps: DelegatedTokenDeps = w.deps, scope: readonly string[] = ['notes:read', 'notes:write']) =>
+  delegatedToken(deps, { sid, audience: 'notes-client', scope });
+const grants = () => w.state.seen.map((s) => s.form['grant_type']);
 const failure = async (run: Promise<unknown>) => {
   const err = await run.then(() => null, (e: unknown) => e);
   expect(err).toBeInstanceOf(DelegatedTokenError);
@@ -131,7 +147,7 @@ describe('delegatedToken', () => {
       client_id: 'todo-client',
       client_secret: 'todo-secret',
     });
-    expect(await w.store.get('sid-1')).toEqual({ sub: 'ada', refreshToken: 'rt-2' });
+    expect(await w.store.get(sid)).toEqual({ sub: 'ada', refreshToken: 'rt-2' });
   });
 
   it.each([3600, undefined])('never claims a token outlives what a verifier takes (expires_in %s)', async (expiresIn) => {
@@ -154,6 +170,68 @@ describe('delegatedToken', () => {
     expect(w.state.seen.map((s) => s.form['grant_type'])).toEqual(['refresh_token', TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_EXCHANGE_GRANT_TYPE]);
   });
 
+  it('keeps the delegated token until 30 s before it expires, then refreshes and exchanges again', async () => {
+    const first = await ask();
+    w.state.now = NOW + 269_000;
+    expect(await ask()).toEqual(first);
+    expect(grants()).toEqual(['refresh_token', TOKEN_EXCHANGE_GRANT_TYPE]);
+    w.state.now = NOW + 270_000;
+    await ask();
+    expect(grants()).toEqual(['refresh_token', TOKEN_EXCHANGE_GRANT_TYPE, 'refresh_token', TOKEN_EXCHANGE_GRANT_TYPE]);
+  });
+
+  it('spends the kept id_token on another scope or audience: one exchange each, no refresh', async () => {
+    await ask();
+    await ask(w.deps, ['notes:write', 'notes:read']);
+    expect(grants()).toEqual(['refresh_token', TOKEN_EXCHANGE_GRANT_TYPE]);
+    await ask(w.deps, ['notes:read']);
+    await delegatedToken(w.deps, { sid, audience: 'other-client' });
+    expect(grants()).toEqual(['refresh_token', TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_EXCHANGE_GRANT_TYPE]);
+  });
+
+  it('drops the kept id_token when the exchange refuses it as a subject token', async () => {
+    await ask();
+    w.state.exchange = { status: 400, body: { error: 'invalid_grant' } };
+    expect(await failure(ask(w.deps, ['notes:read']))).toEqual({ kind: 'refused', step: 'exchange', code: 'invalid_grant' });
+    w.state.exchange = { status: 200, body: { access_token: 'delegated-at', issued_token_type: TOKEN_TYPE.accessToken, token_type: 'Bearer' } };
+    await ask(w.deps, ['notes:read']);
+    expect(grants().slice(3)).toEqual(['refresh_token', TOKEN_EXCHANGE_GRANT_TYPE]);
+  });
+
+  it.each([
+    ['a logout deleted the row', async () => void (await w.store.delete(sid))],
+    [
+      'another call was told to sign in again',
+      async () => {
+        w.state.live.clear();
+        w.state.now = NOW + 31_000; // past the kept id_token (60 s), well inside the delegated token
+        expect(await failure(ask(w.deps, ['notes:read']))).toMatchObject({ kind: 'reauth' });
+      },
+    ],
+  ])('uses nothing kept for a session once %s', async (_name, arrange) => {
+    w.state.idTokenLifetimeSeconds = 60;
+    await ask();
+    await arrange();
+    const before = w.state.seen.length;
+    expect(await failure(ask())).toEqual({ kind: 'reauth', step: 'refresh', code: null });
+    expect(w.state.seen).toHaveLength(before);
+  });
+
+  it('forgets the row when the rotated refresh token cannot be kept, so the spent one is never presented', async () => {
+    const store: RefreshStore = { ...w.store, put: async () => Promise.reject(new Error('storage down')) };
+    expect((await ask({ ...w.deps, store })).token).toBe('delegated-at');
+    expect(await w.store.get(sid)).toBeNull();
+    w.state.now = NOW + 600_000;
+    expect(await failure(ask())).toEqual({ kind: 'reauth', step: 'refresh', code: null });
+    expect(w.state.seen.map((s) => s.form['refresh_token'])).toEqual(['rt-1', undefined]);
+  });
+
+  it('is unavailable when the rotated refresh token can be neither kept nor forgotten', async () => {
+    const down = async () => Promise.reject(new Error('storage down'));
+    const store: RefreshStore = { ...w.store, put: down, delete: down };
+    expect(await failure(ask({ ...w.deps, store }))).toEqual({ kind: 'unavailable', step: 'refresh', code: null });
+  });
+
   it('is reauth, with no request, for a session that keeps no refresh token', async () => {
     expect(await failure(delegatedToken(w.deps, { sid: 'no-such-session', audience: 'notes-client' }))).toEqual({
       kind: 'reauth',
@@ -166,37 +244,37 @@ describe('delegatedToken', () => {
   it('is reauth, and forgets the row, when the issuer refuses the refresh token', async () => {
     w.state.live.clear();
     expect(await failure(ask())).toEqual({ kind: 'reauth', step: 'refresh', code: 'invalid_grant' });
-    expect(await w.store.get('sid-1')).toBeNull();
+    expect(await w.store.get(sid)).toBeNull();
   });
 
   it('tries the newer token once when another refresh rotated the row meanwhile', async () => {
     w.state.live = new Map([['rt-other', 'rt-3']]);
     w.state.meanwhile = async () => {
       w.state.meanwhile = async () => {};
-      await w.store.put('sid-1', { sub: 'ada', refreshToken: 'rt-other' });
+      await w.store.put(sid, { sub: 'ada', refreshToken: 'rt-other' });
     };
     expect((await ask()).token).toBe('delegated-at');
     expect(w.state.seen.map((s) => s.form['refresh_token'])).toEqual(['rt-1', 'rt-other', undefined]);
-    expect(await w.store.get('sid-1')).toEqual({ sub: 'ada', refreshToken: 'rt-3' });
+    expect(await w.store.get(sid)).toEqual({ sub: 'ada', refreshToken: 'rt-3' });
   });
 
   it('is reauth, and forgets the row, when the refreshed token names someone else', async () => {
     w.state.idTokenSub = 'mallory';
     expect(await failure(ask())).toEqual({ kind: 'reauth', step: 'refresh', code: null });
-    expect(await w.store.get('sid-1')).toBeNull();
+    expect(await w.store.get(sid)).toBeNull();
     expect(w.state.seen).toHaveLength(1);
   });
 
   it('is refused, with the issuer code, when the exchange is refused, and keeps the session', async () => {
     w.state.exchange = { status: 400, body: { error: 'unauthorized_client', error_description: 'no peer grant' } };
     expect(await failure(ask())).toEqual({ kind: 'refused', step: 'exchange', code: 'unauthorized_client' });
-    expect(await w.store.get('sid-1')).toEqual({ sub: 'ada', refreshToken: 'rt-2' });
+    expect(await w.store.get(sid)).toEqual({ sub: 'ada', refreshToken: 'rt-2' });
   });
 
   it('is refused, not reauth, when the refresh is refused for another reason than the grant', async () => {
     w.state.refresh = { status: 401, body: { error: 'invalid_client' } };
     expect(await failure(ask())).toEqual({ kind: 'refused', step: 'refresh', code: 'invalid_client' });
-    expect(await w.store.get('sid-1')).not.toBeNull();
+    expect(await w.store.get(sid)).not.toBeNull();
   });
 
   it.each<[string, () => void, 'refresh' | 'exchange']>([
