@@ -1,5 +1,21 @@
 # @substrat-run/router
 
+## 0.6.35
+
+### Patch Changes
+
+- f57381d: router: a peer call's `onBehalf` token is passed to the target unchanged and never logged (#3161).
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [f57381d]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/adapter-cloudflare@0.198.0
+
 ## 0.6.34
 
 ### Patch Changes

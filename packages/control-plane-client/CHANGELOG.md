@@ -1,5 +1,22 @@
 # @substrat-run/control-plane-client
 
+## 0.8.0
+
+### Minor Changes
+
+- 67d3b63: `substrat promote --review-only` reads what a promote to prod would change without promoting, and `substrat status` shows what prod serves, the promote waiting and what it needs, previews and recent failures; a builder may now read a promote's impact before promoting.
+- e52951e: `substrat changes` lists a vertical's open changes, whichever provider holds them: its GitHub pull requests, or a studio project's chat branches, each with its checks and its preview (`GET /verticals/:slug/changes`, for a builder and the dashboard's team credential alike). A repository that cannot be read answers why instead of failing, and checks the GitHub App may not read show as `unknown` with the reason.
+
+### Patch Changes
+
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [f57381d]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+
 ## 0.7.0
 
 ### Minor Changes

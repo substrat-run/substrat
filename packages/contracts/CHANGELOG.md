@@ -1,5 +1,16 @@
 # @substrat-run/contracts
 
+## 0.198.0
+
+### Minor Changes
+
+- e52951e: A builder can start a code review of a vertical its workspace owns once staff grant the workspace the `review` entitlement: `substrat review upload` names the vertical (`--slug`, default the project's) and prints the record with `--json`, and `substrat review <id>` and `list` read the workspace's reviews. A workspace has at most five reviews in progress and fifty in a 30-day window, and a review's model usage is metered to it. `review` joins `PLATFORM_ENTITLEMENT_KEYS`, so no vertical can declare it.
+- a7d4147: A call made for a person through another app (`getScope(…, { delegation })`) now records which app acted: every event it emits and every denial it writes carry `delegation: { actor }`, in a new nullable `delegation` column on `_substrat_outbox` and `_substrat_denials` that existing scopes gain on their next wake (#3176). `readHistory`, `readScopeHistory` and the denial reads return it, with `null` meaning nobody acted for anyone; a consumer's or a schedule's emit never carries it. The event envelope carries it as an optional `delegation`, and the lake stream schema declares the column.
+- f57381d: Delegation grants name their channels (`mcp`, or the new one-step `peer`), a peer call may carry a delegated token in `onBehalf`, and a module manifest may declare `delegations`: the apps that may act for a person in it, with which keys.
+- 70d8dc5: Authentication diagnostics gain a `peer` stage: a call a master app makes for a person is recorded there, accepted or refused, apart from the ordinary bearer door. A master app's stored refresh tokens of expired sessions are now deleted, a bounded batch at each sign-in or token rotation; `sqlRefreshStore` takes `now`, `maxAgeMs` and `sweepBatch`.
+- f57381d: A version's declared delegations travel in its permission registry: `substrat push` refuses a delegated key no module declares or one reserved to a system principal, the permission digest moves when a delegation changes (and stays put for a vertical that declares none), the promote diff lists each change by actor, keys and channels, and the control plane serves them on a version's flow.
+- e52951e: `substrat changes` lists a vertical's open changes, whichever provider holds them: its GitHub pull requests, or a studio project's chat branches, each with its checks and its preview (`GET /verticals/:slug/changes`, for a builder and the dashboard's team credential alike). A repository that cannot be read answers why instead of failing, and checks the GitHub App may not read show as `unknown` with the reason.
+
 ## 0.197.1
 
 ### Patch Changes

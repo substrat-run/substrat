@@ -1,5 +1,28 @@
 # @substrat-run/vertical-host
 
+## 0.198.0
+
+### Minor Changes
+
+- 344f406: `mcpScopeOptions(c, subject)` hands a delegated MCP call's delegation to the endpoint's per-tool check and returns the `getScope` options that carry it to the kernel, so every permission check the operation makes is held to the delegated scope, not only the tool's leading key.
+- f57381d: The peer door takes a call made for a person (#3161): `/internal/vertical-invoke` accepts `onBehalf`, answers `PEER_CLIENT_OPERATION` itself, and runs an admitted call as the person with the token's scope as the ceiling, while the calling vertical passes the scope's peer admission (declared, switched on) (`PlatformSurfaceDeps.peerClient`, `delegatedPeer`). `workerDoor` gains `people` (a dependent signs people in through its master, and caps a call made for a person to its own declared `delegations`), `refreshTokens`, and `peerAs` (a master calls a plugin as the signed-in person); `peerClient().invoke` carries `onBehalf`.
+
+### Patch Changes
+
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/vertical-auth@0.36.0
+  - @substrat-run/model-providers@0.5.88
+
 ## 0.197.1
 
 ### Patch Changes

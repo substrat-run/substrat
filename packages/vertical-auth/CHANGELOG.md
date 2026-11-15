@@ -1,5 +1,27 @@
 # @substrat-run/vertical-auth
 
+## 0.36.0
+
+### Minor Changes
+
+- 70d8dc5: Authentication diagnostics gain a `peer` stage: a call a master app makes for a person is recorded there, accepted or refused, apart from the ordinary bearer door. A master app's stored refresh tokens of expired sessions are now deleted, a bounded batch at each sign-in or token rotation; `sqlRefreshStore` takes `now`, `maxAgeMs` and `sweepBatch`.
+- f57381d: A plugin admits a master app's call made for a person: `resolveOnBehalf` takes a `peer`-channel delegated token minted for this app, and `admitDelegated` admits its person through the person contract with the token's scope as a per-call cap. A master keeps each session's refresh token server-side (`refreshStore`) and obtains such a token with `delegatedToken`. `delegatedToken` keeps the tokens it obtains in the isolate until 30 s before they expire, and forgets a session's refresh token rather than leave a spent one behind when the rotated one cannot be stored.
+
+### Patch Changes
+
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [f57381d]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [f57381d]
+- Updated dependencies [e52951e]
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/oidc-rp@0.14.0
+
 ## 0.35.2
 
 ### Patch Changes

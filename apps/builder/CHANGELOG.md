@@ -1,5 +1,36 @@
 # @substrat-run/builder
 
+## 0.14.2
+
+### Patch Changes
+
+- 8424412: builder: the studio is open to every team — membership in any team is enough, the `builder` entitlement no longer gates it
+- e52951e: `substrat changes` lists a vertical's open changes, whichever provider holds them: its GitHub pull requests, or a studio project's chat branches, each with its checks and its preview (`GET /verticals/:slug/changes`, for a builder and the dashboard's team credential alike). A repository that cannot be read answers why instead of failing, and checks the GitHub App may not read show as `unknown` with the reason.
+- Updated dependencies [e52951e]
+- Updated dependencies [a7d4147]
+- Updated dependencies [f57381d]
+- Updated dependencies [f57381d]
+- Updated dependencies [db1b0df]
+- Updated dependencies [f57381d]
+- Updated dependencies [70d8dc5]
+- Updated dependencies [67d3b63]
+- Updated dependencies [f57381d]
+- Updated dependencies [508fec4]
+- Updated dependencies [f2ef2be]
+- Updated dependencies [e52951e]
+  - @substrat-run/cli@0.60.0
+  - @substrat-run/contracts@0.198.0
+  - @substrat-run/kernel@0.198.0
+  - @substrat-run/adapter-cloudflare@0.198.0
+  - @substrat-run/oidc-rp@0.14.0
+  - @substrat-run/control-plane-api@0.198.0
+  - create-substrat@0.18.2
+  - @substrat-run/engine-assistant@0.1.50
+  - @substrat-run/engine-metering@0.6.82
+  - @substrat-run/builder-workspace@0.13.14
+  - @substrat-run/model-providers@0.5.88
+  - @substrat-run/builder-generator@0.12.15
+
 ## 0.14.1
 
 ### Patch Changes
