@@ -36,6 +36,8 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import type { RegistrySql } from './site-registry.js';
+import type { IdentityStub } from './identity-do.js';
+import type { AuthSubject } from './provider.js';
 
 /** How long an answer from the master is kept: the bound on how late a block or a role change lands. */
 export const PEOPLE_TTL_SECONDS = 300;
@@ -143,6 +145,62 @@ export async function admitPerson(deps: PeopleDeps, scopeId: string, login: Pers
   return answerOf(copy);
 }
 
+/** Why a peer call made for a person is not let in as them. */
+export type DelegatedRefusal = PersonRefusal | 'not-master' | 'token-refused';
+
+export type DelegatedAnswer =
+  | { admitted: true; principal: PrincipalId; scope: string[]; actor: string }
+  | { admitted: false; reason: DelegatedRefusal };
+
+/** The plugin's side of a delegated peer call: who it takes its people from, and how a token is read. */
+export interface DelegatedDoor {
+  /** The vertical slug of the app this plugin takes its people from. */
+  master: string;
+  /** The issuer the plugin's own sign-ins name, as {@link admitPerson} is handed it. */
+  issuer: string | null;
+  /** The provider's `resolveOnBehalf`: the token's person, with its delegation, or null. */
+  verify(token: string): Promise<AuthSubject | null>;
+}
+
+/**
+ * Who a PEER call is made for (#3161): the master app calling this plugin as a person signed in
+ * to it, with a delegated token the issuer minted on the `peer` channel.
+ *
+ * Only the master may make one, and that is decided before the token is read: the transport
+ * names the calling vertical, so another app of the tenant holding a token of the same person is
+ * refused as `not-master` without verifying anything. The token must then verify (`door.verify`,
+ * which admits nothing but a `peer` delegation minted for this app), or it is `token-refused`.
+ *
+ * The person is then admitted exactly as their own sign-in would be, through
+ * {@link admitPerson} with the same input, so nothing kept here differs between the two: the
+ * same login copy, the same binding, the same seated roles. The token's `scope` is returned
+ * beside the principal and NOT written anywhere. Seated roles belong to the person and every
+ * login of theirs shares them, so a narrow call that capped what was seated would take roles
+ * away from the person's own sign-in. The cap is the caller's to apply to this one call, the way
+ * the MCP mount applies a delegated token's scope.
+ *
+ * `verifiedEmail` is the token's address when the token says it is verified, so a master that
+ * matches a login on its verified address (as the reference does) can answer for a login it has
+ * never seen here. The issuer writes `email` and `email_verified` on a peer token from its own
+ * record of the account, so this is the issuer's assertion, not the actor's word. It is used ONLY
+ * to ask the master who the login is. It is not a K-61 proof for admitting an invite:
+ * `verifiedEmailOf` stays null for a delegated subject, and nothing that reads it changes.
+ */
+export async function admitDelegated(
+  deps: PeopleDeps,
+  scopeId: string,
+  call: { token: string; callerVertical: string },
+  door: DelegatedDoor,
+): Promise<DelegatedAnswer> {
+  if (call.callerVertical !== door.master) return { admitted: false, reason: 'not-master' };
+  const subject = await door.verify(call.token);
+  if (!subject?.delegation) return { admitted: false, reason: 'token-refused' };
+  const verifiedEmail = subject.emailVerified === true && subject.email ? subject.email : null;
+  const answer = await admitPerson(deps, scopeId, { issuer: door.issuer, sub: subject.sub, verifiedEmail });
+  if (!answer.admitted) return answer;
+  return { admitted: true, principal: answer.principal, scope: subject.delegation.scope, actor: subject.delegation.actor };
+}
+
 /** The two tables behind {@link sqlPeopleStore}. */
 export const PEOPLE_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS person_login (scope_id TEXT NOT NULL, sub TEXT NOT NULL, principal TEXT,
@@ -187,5 +245,17 @@ export function sqlPeopleStore(sql: RegistrySql): PeopleStore {
         JSON.stringify(roles),
       );
     },
+  };
+}
+
+/** A {@link PeopleStore} over the tenant's identity DO, for a hosted plugin. */
+export function identityPeopleStore(
+  directory: Pick<IdentityStub, 'personLogin' | 'savePersonLogin' | 'personSeated' | 'savePersonSeated'>,
+): PeopleStore {
+  return {
+    login: (scopeId, sub) => directory.personLogin(scopeId, sub),
+    saveLogin: (scopeId, sub, copy) => directory.savePersonLogin(scopeId, sub, copy),
+    seated: (scopeId, principal) => directory.personSeated(scopeId, principal),
+    saveSeated: (scopeId, principal, roles) => directory.savePersonSeated(scopeId, principal, roles),
   };
 }

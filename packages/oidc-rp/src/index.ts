@@ -190,7 +190,22 @@ const redirectUri = (env: OidcEnv, origin: string): string =>
 export async function beginLogin(
   env: OidcEnv,
   origin: string,
-  opts: { returnTo?: string; loginHint?: string; screenHint?: string; prompt?: 'login' | 'select_account'; idp?: Idp } = {},
+  opts: {
+    returnTo?: string;
+    loginHint?: string;
+    screenHint?: string;
+    prompt?: 'login' | 'select_account';
+    idp?: Idp;
+    /**
+     * Also ask for a refresh token (`offline_access`), for a caller that keeps one server-side
+     * to act for the person after this request (#3161). No `prompt=consent` is added: OIDC
+     * Core §11 asks for it "unless other conditions for processing the request permitting
+     * offline access to the requested resources are in place", and they are — the platform
+     * registers these clients first-party, consent-skipping, at the team auth-server. Adding it
+     * would show a consent screen at every sign-in. The caller's own `prompt` is sent as given.
+     */
+    offlineAccess?: boolean;
+  } = {},
 ): Promise<{ location: string; flow: string }> {
   const issuerEnv = envForIdp(env, opts.idp);
   if (!issuerEnv) throw new Error('alternate issuer is not configured');
@@ -215,7 +230,7 @@ export async function beginLogin(
   u.searchParams.set('response_type', 'code');
   u.searchParams.set('client_id', issuerEnv.OIDC_CLIENT_ID);
   u.searchParams.set('redirect_uri', redirectUri(env, origin));
-  u.searchParams.set('scope', 'openid email profile');
+  u.searchParams.set('scope', opts.offlineAccess ? 'openid email profile offline_access' : 'openid email profile');
   u.searchParams.set('state', state);
   u.searchParams.set('nonce', nonce);
   u.searchParams.set('code_challenge', await pkceChallenge(verifier));
@@ -237,14 +252,19 @@ export async function beginLogin(
  * tokens, verify the ID token (signature via JWKS, plus issuer/audience/nonce),
  * and return the user + a signed session cookie value. The optional UserInfo
  * deadline defaults to USERINFO_TIMEOUT_MS.
+ *
+ * `refreshToken` is returned whenever the issuer sent one. With `keepRefreshToken`, and only
+ * when one came back, the session is also given a random `sid` (returned beside it): the key
+ * the caller keeps the refresh token under, server-side. The token itself never goes into the
+ * session, which is a cookie the browser holds.
  */
 export async function completeLogin(
   baseEnv: OidcEnv,
   origin: string,
   url: URL,
   flowCookie: string | undefined,
-  options: { userInfoTimeoutMs?: number } = {},
-): Promise<{ user: SessionUser; session: string; returnTo?: string; idToken: string }> {
+  options: { userInfoTimeoutMs?: number; keepRefreshToken?: boolean } = {},
+): Promise<{ user: SessionUser; session: string; returnTo?: string; idToken: string; refreshToken?: string; sid?: string }> {
   const oauthError = url.searchParams.get('error');
   if (oauthError) throw new Error(`authorization error: ${oauthError}`);
   const code = url.searchParams.get('code');
@@ -299,7 +319,7 @@ export async function completeLogin(
     const detail = await res.text().catch(() => '');
     throw new Error(`token exchange failed (${res.status})${detail ? `: ${detail.slice(0, 300)}` : ''}`);
   }
-  const tokens = (await res.json()) as { id_token?: string; access_token?: string };
+  const tokens = (await res.json()) as { id_token?: string; access_token?: string; refresh_token?: unknown };
   if (!tokens.id_token) throw new Error('no id_token in token response');
 
   const { payload } = await jwtVerify(tokens.id_token, jwksFor(d), {
@@ -309,7 +329,9 @@ export async function completeLogin(
   if (payload.nonce !== flow.n) throw new Error('nonce mismatch');
 
   const user = await withUserInfo(d, userFromClaims(payload), tokens.access_token, options.userInfoTimeoutMs ?? USERINFO_TIMEOUT_MS);
-  const session = await mintSession(env, user);
+  const refreshToken = typeof tokens.refresh_token === 'string' && tokens.refresh_token.length > 0 ? tokens.refresh_token : undefined;
+  const sid = options.keepRefreshToken && refreshToken ? randomB64url(32) : undefined;
+  const session = await mintSession(env, user, SESSION_MAXAGE, sid);
   // The verified ID token travels back out so the caller can keep it for logout. It is
   // returned rather than stored here because this function is stateless — the CLI login
   // broker calls it too, and holds no cookies.
@@ -318,6 +340,8 @@ export async function completeLogin(
     session,
     returnTo: typeof flow.rt === 'string' ? flow.rt : undefined,
     idToken: tokens.id_token,
+    ...(refreshToken ? { refreshToken } : {}),
+    ...(sid ? { sid } : {}),
   };
 }
 
@@ -422,12 +446,14 @@ export async function mintSession(
   env: OidcEnv,
   user: SessionUser,
   maxAgeSec: number = SESSION_MAXAGE,
+  /** The session's id, for one whose refresh token is kept server-side under it (`completeLogin`). */
+  sid?: string,
 ): Promise<string> {
   // `email_verified` keeps its OIDC spelling in the token so the mint and the read are
   // one function (`userFromClaims` decodes an ID token and a session alike). It is simply
   // absent when the issuer asserted nothing, which is also how every session minted
   // before this field existed reads — indistinguishable, and correctly so.
-  return new SignJWT(sessionClaims(user))
+  return new SignJWT({ ...sessionClaims(user), ...(sid ? { sid } : {}) })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
     .setIssuedAt()
@@ -529,16 +555,20 @@ export async function verifySession(
  * proved it: a live-read socket (#938) is told this instant and closes at it, so it never
  * outlives the session that authenticated it. Every session this package mints has an
  * `exp`; one without is refused, as an expired one is.
+ *
+ * `sid` is present only on a session minted with one (`completeLogin`'s `keepRefreshToken`);
+ * every other session, each one minted before it existed included, reads exactly as before.
  */
 export async function verifySessionEnvelope(
   env: OidcEnv,
   token: string | undefined,
-): Promise<{ user: SessionUser; expiresAt: string } | null> {
+): Promise<{ user: SessionUser; expiresAt: string; sid?: string } | null> {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, signingKey(env));
     if (!payload.sub || typeof payload.exp !== 'number') return null;
-    return { user: userFromClaims(payload), expiresAt: new Date(payload.exp * 1000).toISOString() };
+    const sid = typeof payload['sid'] === 'string' && payload['sid'].length > 0 ? payload['sid'] : undefined;
+    return { user: userFromClaims(payload), expiresAt: new Date(payload.exp * 1000).toISOString(), ...(sid ? { sid } : {}) };
   } catch {
     return null;
   }

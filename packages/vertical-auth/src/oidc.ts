@@ -1,4 +1,5 @@
-import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
+import { recordAuthCheck, type AuthCheck } from '@substrat-run/contracts/auth-diagnostics';
+import type { DelegationChannel } from '@substrat-run/contracts';
 import { bearerRefused, verificationReason } from './auth-diagnostics.js';
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
 import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
@@ -39,11 +40,12 @@ export interface OidcConfig {
    */
   resourceOf?: (origin: string) => string;
   /**
-   * Accept DELEGATED tokens (#1824, RFC 8693 `act`) for this app's MCP endpoint, from these
-   * actors only. Absent, every token carrying `act` is refused, whatever else it says: a
-   * host that has not opted in must never take another app's call for the user's own. Needs
-   * `resourceOf` (a shared issuer), and admits a delegated token only through the MCP
-   * endpoint's channel (`ResolveOptions.delegated`) — see `delegationOf`.
+   * Accept DELEGATED tokens (#1824, RFC 8693 `act`) from these actors only, on the channels it
+   * names. Absent, every token carrying `act` is refused, whatever else it says: a host that
+   * has not opted in must never take another app's call for the user's own. The `mcp` channel
+   * needs `resourceOf` (a shared issuer) and admits a delegated token only through the MCP
+   * endpoint's channel (`ResolveOptions.delegated`) — see `delegationOf`. The `peer` channel
+   * needs `clientId` and admits one only through `resolveOnBehalf` — see `peerDelegationOf`.
    */
   delegation?: DelegationOption;
   /** Override the JWKS URI (skip discovery) — e.g. a self-hosted issuer. */
@@ -65,7 +67,19 @@ export interface DelegationOption {
    * value that is not a positive number admits no token at all.
    */
   maxLifetimeSeconds?: number;
+  /**
+   * Which exchanges a delegated token may come from (`delegations.ts` in contracts). Absent is
+   * `['mcp']`, the one channel there was before #3161, so an option written before it keeps
+   * its meaning; `peer` is admitted only when named. An empty list admits nothing.
+   */
+  channels?: readonly DelegationChannel[];
 }
+
+/**
+ * The channels an option admits — contracts' `channelsOf`, restated rather than imported so this
+ * subpath keeps its small dependency set: absent is `mcp` alone, never `peer`.
+ */
+const channelsOfOption = (delegation: DelegationOption): readonly DelegationChannel[] => delegation.channels ?? ['mcp'];
 
 /**
  * The longest a delegated token may live, in seconds: the lifetime the team auth-server's
@@ -184,21 +198,18 @@ function comparablePath(pathname: string): string {
 }
 
 /**
- * The delegation a token carrying `act` stands for, or null when it is not one this app
- * takes (#1824). The shape is what the team auth-server's second exchange mints
- * (`demos/auth-server/src/token-exchange.ts`): the user as `sub`, the actor's client as
+ * The delegation a token carrying `act` stands for at this app's MCP endpoint, or null when it
+ * is not one this app takes (#1824). The shape is what the team auth-server's second exchange
+ * mints (`demos/auth-server/src/token-exchange.ts`): the user as `sub`, the actor's client as
  * `act.sub` and as the authorized party, one MCP resource as `aud`, and the delegated
  * permission keys as `scope`.
  *
  * Every condition is required, and each refuses on its own:
  *
- *  - **The host opted in** (`cfg.delegation`) **and names this actor.** Without the option
- *    nothing with `act` is admitted, so a host that has not upgraded is never exposed.
- *  - **One actor, of this issuer.** `act` is an object whose `iss` is the token's own and
- *    whose `sub` is a string, with no nested `act`: a chain of actors is not something any
- *    exchange here mints, and nothing reads past the first.
- *  - **Issued to that actor.** Every present `azp` / `client_id` equals `act.sub`, and at
- *    least one is present.
+ *  - **The host opted in** (`cfg.delegation`) **for the `mcp` channel, and names this actor.**
+ *    Without the option nothing with `act` is admitted, so a host that has not upgraded is never
+ *    exposed. An option naming only `peer` admits nothing here.
+ *  - **One actor, of this issuer, issued the token** — see `actorOf`.
  *  - **Through the MCP endpoint's own channel.** The caller passed `options.delegated` — the
  *    resource `mcpChannelOf(c)` reports, which only the MCP mount's own handler can see —
  *    `aud` is exactly one value equal to it, and that resource is on the request's own
@@ -206,13 +217,9 @@ function comparablePath(pathname: string): string {
  *    delegated token stands for the user only where a ceiling is applied to it, so a caller
  *    that passes no channel — every REST route, a stray handler, an older vertical-host that
  *    has none — never admits one. The resource is the channel's, not a spelling assumed
- *    here, so an endpoint mounted at another base path is judged by its own.
- *  - **A scope, and a short life.** `scope` is a non-empty space-separated list (the grammar
- *    the exchange writes, RFC 6749 §3.3). `iat` and `exp` are both present, `exp − iat` is
- *    at most the bound (`maxLifetimeSeconds`, never above the exchange's own lifetime), and
- *    `iat` is not later than `DELEGATED_TOKEN_CLOCK_SKEW_SECONDS` ahead of this clock — so no
- *    delegated token stays usable past a few minutes from now. `jwtVerify` has already
- *    refused a token whose `exp` has passed.
+ *    here, so an endpoint mounted at another base path is judged by its own. A `peer` token's
+ *    `aud` is a client id, never a resource, so it is never admitted here either.
+ *  - **A scope, and a short life** — see `boundedScopeOf`.
  */
 function delegationOf(
   payload: JWTPayload,
@@ -221,16 +228,11 @@ function delegationOf(
   url: string | undefined,
   nowSeconds: number,
 ): { actor: string; scope: string[] } | null {
-  const act = payload['act'];
-  if (act === null || typeof act !== 'object' || Array.isArray(act)) return null;
-  const { iss, sub: actor, act: prior } = act as Record<string, unknown>;
-  if (prior !== undefined || iss !== payload.iss) return null;
-  if (typeof actor !== 'string' || !delegation.actors.includes(actor)) return null;
+  if (!channelsOfOption(delegation).includes('mcp')) return null;
+  const actor = actorOf(payload, delegation);
+  if (actor === null) return null;
 
-  const parties = [payload['azp'], payload['client_id']].filter((p) => p !== undefined);
-  if (parties.length === 0 || !parties.every((p) => p === actor)) return null;
-
-  const aud = typeof payload.aud === 'string' ? payload.aud : Array.isArray(payload.aud) && payload.aud.length === 1 ? payload.aud[0] : null;
+  const aud = singleAudience(payload);
   const resource = channel?.resource;
   if (!aud || typeof resource !== 'string' || aud !== resource || !url) return null;
   try {
@@ -239,6 +241,73 @@ function delegationOf(
     return null;
   }
 
+  const scope = boundedScopeOf(payload, delegation, nowSeconds);
+  return scope === null ? null : { actor, scope };
+}
+
+/**
+ * The delegation a PEER call's token stands for (#3161), or why it is refused. The shape is what
+ * the issuer's one-step exchange on the `peer` channel mints: the person as `sub`, the calling
+ * app's client as `act.sub` and as the authorized party, THIS app's client id as `aud`, and the
+ * delegated permission keys as `scope`.
+ *
+ *  - **The host opted in for the `peer` channel and names this actor** (`actorOf` for the rest of
+ *    the actor rules). A token carrying no `act` — an ordinary sign-in token — is refused here.
+ *  - **Minted for this app.** `aud` is exactly one value, and it is `clientId`. Signature and
+ *    `iss` say only that the team's issuer signed it; every app on that issuer shares both, so
+ *    without this a token the same actor obtained for ANOTHER app would be replayed here.
+ *  - **A scope, and a short life** — see `boundedScopeOf`, the same bound as the MCP channel.
+ */
+function peerDelegationOf(
+  payload: JWTPayload,
+  delegation: DelegationOption,
+  clientId: string,
+  nowSeconds: number,
+): { actor: string; scope: string[] } | AuthCheck['reason'] {
+  if (!channelsOfOption(delegation).includes('peer')) return 'delegation-refused';
+  const actor = actorOf(payload, delegation);
+  if (actor === null) return 'delegation-refused';
+  if (singleAudience(payload) !== clientId) return 'token-not-for-app';
+  const scope = boundedScopeOf(payload, delegation, nowSeconds);
+  return scope === null ? 'delegation-refused' : { actor, scope };
+}
+
+/**
+ * The one actor a delegated token names, when the host lists it and the token was issued to it —
+ * the rules both channels share:
+ *
+ *  - **One actor, of this issuer.** `act` is an object whose `iss` is the token's own and whose
+ *    `sub` is a string the option lists, with no nested `act`: a chain of actors is not something
+ *    any exchange here mints, and nothing reads past the first.
+ *  - **Issued to that actor.** Every present `azp` / `client_id` equals `act.sub`, and at least
+ *    one is present.
+ */
+function actorOf(payload: JWTPayload, delegation: DelegationOption): string | null {
+  const act = payload['act'];
+  if (act === null || typeof act !== 'object' || Array.isArray(act)) return null;
+  const { iss, sub: actor, act: prior } = act as Record<string, unknown>;
+  if (prior !== undefined || iss !== payload.iss) return null;
+  if (typeof actor !== 'string' || !delegation.actors.includes(actor)) return null;
+
+  const parties = [payload['azp'], payload['client_id']].filter((p) => p !== undefined);
+  if (parties.length === 0 || !parties.every((p) => p === actor)) return null;
+  return actor;
+}
+
+/** `aud` when it is exactly one value, else null. */
+function singleAudience(payload: JWTPayload): string | null {
+  return typeof payload.aud === 'string' ? payload.aud : Array.isArray(payload.aud) && payload.aud.length === 1 ? payload.aud[0]! : null;
+}
+
+/**
+ * A delegated token's scope, when it has one and a short life — null otherwise. `scope` is a
+ * non-empty space-separated list (the grammar the exchange writes, RFC 6749 §3.3). `iat` and
+ * `exp` are both present, `exp − iat` is at most the bound (`maxLifetimeSeconds`, never above
+ * the exchange's own lifetime), and `iat` is not later than `DELEGATED_TOKEN_CLOCK_SKEW_SECONDS`
+ * ahead of this clock — so no delegated token stays usable past a few minutes from now.
+ * `jwtVerify` has already refused a token whose `exp` has passed.
+ */
+function boundedScopeOf(payload: JWTPayload, delegation: DelegationOption, nowSeconds: number): string[] | null {
   const { exp, iat } = payload;
   if (typeof exp !== 'number' || typeof iat !== 'number') return null;
   const asked = delegation.maxLifetimeSeconds;
@@ -247,8 +316,7 @@ function delegationOf(
   if (!(bound > 0 && exp - iat <= bound)) return null;
   if (!(iat <= nowSeconds + DELEGATED_TOKEN_CLOCK_SKEW_SECONDS)) return null;
   const scope = typeof payload['scope'] === 'string' ? [...new Set(payload['scope'].split(' ').filter((s) => s.length > 0))] : [];
-  if (scope.length === 0) return null;
-  return { actor, scope };
+  return scope.length === 0 ? null : scope;
 }
 
 /**
@@ -269,7 +337,7 @@ function warnAudienceRefusesDelegation(issuer: string, audience: string): void {
   });
 }
 
-export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
+export function oidcAuthProvider(cfg: OidcConfig): AuthProvider & Required<Pick<AuthProvider, 'resolveOnBehalf'>> {
   let keysPromise: Promise<JWTVerifyGetKey> | undefined;
   const getKeys = async (): Promise<JWTVerifyGetKey> => {
     if (cfg.keys) return cfg.keys;
@@ -296,14 +364,26 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
     return keysPromise;
   };
 
+  /**
+   * `onBehalf` is the peer door (`resolveOnBehalf`): the same verification, and then ONLY a
+   * `peer`-channel delegation is admitted, in place of every rule the bearer door applies.
+   */
   async function verify(
     token: string,
     headers: Headers,
     url: string | undefined,
     options: ResolveOptions | undefined,
+    onBehalf = false,
   ): Promise<AuthSubject | null> {
     const channel = options?.delegated?.resource;
-    if (cfg.delegation && cfg.resourceOf && cfg.audience && typeof channel === 'string' && channel !== cfg.audience) {
+    if (
+      cfg.delegation &&
+      channelsOfOption(cfg.delegation).includes('mcp') &&
+      cfg.resourceOf &&
+      cfg.audience &&
+      typeof channel === 'string' &&
+      channel !== cfg.audience
+    ) {
       warnAudienceRefusesDelegation(cfg.issuer, cfg.audience);
     }
     let discovering = true;
@@ -321,17 +401,25 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
         ...(cfg.audience ? { audience: cfg.audience } : {}),
       });
       if (!payload.sub) return bearerRefused('subject-missing');
-      // A delegation ASSERTION — the first step of the exchange, which a `substrat_delegation`
-      // claim with no `act` marks — is a bearer at no app, on every configuration: it is a
-      // credential for the exchange, and only the exchange takes it. `may_act` alone decides
-      // nothing here: RFC 8693 §4.4 lets any issuer put it on an ordinary subject token.
-      if (payload['substrat_delegation'] !== undefined && payload['act'] === undefined) return bearerRefused('assertion-not-access-token');
-      // A token carrying `act` is a delegation, on every configuration: admitted only through
-      // the opt-in, and never by the rules below, which would take it as the user's own.
+      // Host code, so the real clock is right here (jose reads the same one for `exp`).
+      const now = Math.floor(Date.now() / 1000);
       let delegation: AuthSubject['delegation'];
-      if (payload['act'] !== undefined) {
-        // Host code, so the real clock is right here (jose reads the same one for `exp`).
-        const now = Math.floor(Date.now() / 1000);
+      if (onBehalf) {
+        // The peer door takes a `peer` delegation for this app and nothing else, so none of the
+        // bearer rules below applies to it.
+        const admitted =
+          cfg.delegation && cfg.clientId ? peerDelegationOf(payload, cfg.delegation, cfg.clientId, now) : 'delegation-refused';
+        if (typeof admitted === 'string') return bearerRefused(admitted);
+        delegation = admitted;
+      } else if (payload['substrat_delegation'] !== undefined && payload['act'] === undefined) {
+        // A delegation ASSERTION — the first step of the exchange, which a `substrat_delegation`
+        // claim with no `act` marks — is a bearer at no app, on every configuration: it is a
+        // credential for the exchange, and only the exchange takes it. `may_act` alone decides
+        // nothing here: RFC 8693 §4.4 lets any issuer put it on an ordinary subject token.
+        return bearerRefused('assertion-not-access-token');
+      } else if (payload['act'] !== undefined) {
+        // A token carrying `act` is a delegation, on every configuration: admitted only through
+        // the opt-in, and never by the rules below, which would take it as the user's own.
         const admitted =
           cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, options?.delegated, url, now) : null;
         if (!admitted) return bearerRefused('delegation-refused');
@@ -394,6 +482,9 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       if (token) return verify(token, headers, url, options);
       recordAuthCheck({ stage: 'bearer', outcome: 'absent', reason: 'credential-missing' });
       return null;
+    },
+    resolveOnBehalf(token) {
+      return verify(token, new Headers(), undefined, undefined, true);
     },
   };
 }

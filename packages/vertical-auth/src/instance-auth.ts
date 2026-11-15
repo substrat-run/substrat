@@ -1,9 +1,18 @@
-import { SHARED_ISSUER_CONFIG_KEY, parsePlatformBaseDomains, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
+import {
+  DELEGATION_CHANNELS,
+  SHARED_ISSUER_CONFIG_KEY,
+  parsePlatformBaseDomains,
+  resolveScopedEnvSpec,
+  z,
+  type DelegationChannel,
+  type EnvVarSpec,
+} from '@substrat-run/contracts';
 import { issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { oidcRpAuthProvider } from './oidc-rp-provider.js';
 import type { IdentityStub } from './identity-do.js';
 import type { AuthProvider } from './provider.js';
+import type { RefreshStore } from './session-refresh.js';
 
 /**
  * ONE instance's auth wiring — the composition every OIDC-only vertical was writing
@@ -95,6 +104,8 @@ export async function instanceAuthFor(opts: {
   env: Record<string, unknown>;
   /** Accept delegated bearers from these actors (#1824) — see `InstanceDelegation`. */
   delegation?: InstanceDelegation;
+  /** Keep each session's refresh token, to act for the person at a plugin (#3161) — see `OidcRpConfig.refreshStore`. */
+  refreshStore?: RefreshStore;
 }): Promise<InstanceAuth> {
   const wiring = await opts.directory.authWiring(opts.scopeId);
   const identity = parseAuthChoice(wiring.config[AUTH_CONFIG_KEY]);
@@ -111,6 +122,7 @@ export async function instanceAuthFor(opts: {
         settings,
         sharedIssuer: wiring.config[SHARED_ISSUER_CONFIG_KEY] === 'true',
         ...(opts.delegation ? { delegation: resolveDelegation(opts.delegation, { identity, config: wiring.config }) } : {}),
+        ...(opts.refreshStore ? { refreshStore: opts.refreshStore } : {}),
         platformBaseDomains: parsePlatformBaseDomains(
           typeof opts.env.PLATFORM_BASE_DOMAINS === 'string' ? opts.env.PLATFORM_BASE_DOMAINS : undefined,
         ),
@@ -135,29 +147,47 @@ export interface InstanceDelegation {
   actors: readonly string[] | ((wiring: DelegationWiring) => readonly string[]);
   /** See `DelegationOption.maxLifetimeSeconds`. */
   maxLifetimeSeconds?: number;
+  /**
+   * See `DelegationOption.channels` (#3161): absent is `['mcp']`. A list, or read from each
+   * install's delivered wiring like `actors`.
+   */
+  channels?: readonly DelegationChannel[] | ((wiring: DelegationWiring) => readonly DelegationChannel[]);
 }
 
 /**
  * The verifier's `DelegationOption` for this install. Fails CLOSED: a resolver that throws,
  * or answers anything but a list of non-empty strings, yields no actors, which admits no
- * delegated token — and leaves every other sign-in as it was.
+ * delegated token — and leaves every other sign-in as it was. `channels` the same way: one
+ * that throws or answers anything but a list of known channels yields none, which admits no
+ * delegated token on either channel.
  */
 function resolveDelegation(delegation: InstanceDelegation, wiring: DelegationWiring): DelegationOption {
-  let actors: unknown;
-  try {
-    actors = typeof delegation.actors === 'function' ? delegation.actors(wiring) : delegation.actors;
-  } catch (err) {
-    // The error's name only: its message may quote the delivered configuration it was reading.
-    console.warn('vertical-auth: delegation.actors threw, so no delegated bearer is admitted', {
-      error: err instanceof Error ? err.name : typeof err,
-    });
-    actors = [];
-  }
+  const actors = resolved('actors', delegation.actors, wiring);
   const listed = Array.isArray(actors) && actors.every((a) => typeof a === 'string' && a.length > 0);
+  let channels: DelegationChannel[] | undefined;
+  if (delegation.channels !== undefined) {
+    const named = resolved('channels', delegation.channels, wiring);
+    const known = Array.isArray(named) && named.every((c) => (DELEGATION_CHANNELS as readonly unknown[]).includes(c));
+    channels = known ? [...(named as DelegationChannel[])] : [];
+  }
   return {
     actors: listed ? [...(actors as string[])] : [],
     ...(delegation.maxLifetimeSeconds === undefined ? {} : { maxLifetimeSeconds: delegation.maxLifetimeSeconds }),
+    ...(channels === undefined ? {} : { channels }),
   };
+}
+
+/** A list or the list a resolver reads from the wiring; a resolver that throws answers nothing. */
+function resolved<T>(field: 'actors' | 'channels', value: T | ((wiring: DelegationWiring) => T), wiring: DelegationWiring): unknown {
+  try {
+    return typeof value === 'function' ? (value as (wiring: DelegationWiring) => T)(wiring) : value;
+  } catch (err) {
+    // The error's name only: its message may quote the delivered configuration it was reading.
+    console.warn(`vertical-auth: delegation.${field} threw, so no delegated bearer is admitted`, {
+      error: err instanceof Error ? err.name : typeof err,
+    });
+    return [];
+  }
 }
 
 /** The delivered `substrat:auth` entry, parsed leniently: anything unusable is null. */
@@ -232,6 +262,8 @@ export function selectAuthProvider(opts: {
    * them. Absent, every bearer carrying `act` is refused.
    */
   delegation?: DelegationOption;
+  /** Keep each session's refresh token (#3161). Applies to the delivered choice only, which is the one with a login. */
+  refreshStore?: RefreshStore;
   platformBaseDomains?: readonly string[];
 }): AuthProvider {
   const { identity, settings } = opts;
@@ -257,6 +289,7 @@ export function selectAuthProvider(opts: {
       ...(identity.cookieDomain ? { cookieDomain: identity.cookieDomain } : {}),
       ...(opts.sharedIssuer ? { sharedIssuer: true } : {}),
       ...(opts.delegation ? { delegation: opts.delegation } : {}),
+      ...(opts.refreshStore ? { refreshStore: opts.refreshStore } : {}),
       platformBaseDomains: opts.platformBaseDomains,
     });
   }

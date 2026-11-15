@@ -51,6 +51,14 @@
     "./people": {
       "types": "./dist/people.d.ts",
       "default": "./dist/people.js"
+    },
+    "./delegate": {
+      "types": "./dist/delegate.d.ts",
+      "default": "./dist/delegate.js"
+    },
+    "./session-refresh": {
+      "types": "./dist/session-refresh.d.ts",
+      "default": "./dist/session-refresh.js"
     }
   },
   "files": [
