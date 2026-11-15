@@ -111,6 +111,22 @@ describe('issuer-only config keys need the issuerConfig claim', () => {
     }
   });
 
+  it('refuses the platform-only key from every tenant credential, claim or no claim, switch on or off — and staff still delivers it', async () => {
+    const entries = [{ key: 'substrat:social-relay', value: SECRET_VALUE }];
+    for (const [plane, headers] of [['on', claimed], ['on', plain], ['off', claimed], ['off', plain]] as const) {
+      delivered.length = 0;
+      const res = await configure(plane, headers, entries);
+      expect(res.status, `${plane}`).toBe(403);
+      const body = (await res.json()) as { code: string; detail: string };
+      expect(body.detail).toContain(`'substrat:social-relay'`);
+      expect(JSON.stringify(body)).not.toContain(SECRET_VALUE);
+      expect(delivered).toEqual([]);
+    }
+    delivered.length = 0;
+    expect((await configure('on', staffHeaders, entries)).status).toBe(200);
+    expect(delivered).toEqual([entries]);
+  });
+
   it('delivers an ordinary key from a credential without the claim — tokens minted before it keep working', async () => {
     delivered.length = 0;
     const entries = [{ key: 'ADMIN_EMAIL', value: 'a@acme.test' }, { key: 'substrat:authority', value: 'x' }];

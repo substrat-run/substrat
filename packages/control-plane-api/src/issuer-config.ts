@@ -4,6 +4,7 @@ import {
   MCP_RESOURCES_CONFIG_PREFIX,
   PLACES_CONFIG_PREFIX,
   SHARED_ISSUER_CONFIG_KEY,
+  SOCIAL_RELAY_CONFIG_KEY,
 } from '@substrat-run/contracts';
 
 /**
@@ -27,7 +28,26 @@ export const ISSUER_ONLY_CONFIG_KEYS: readonly string[] = [
   SHARED_ISSUER_CONFIG_KEY,
 ];
 
+/**
+ * Keys no tenant credential delivers, with the claim or without it: their only writer is the
+ * plane itself, which hands them to the vertical directly and never through `/configure`. So
+ * they are refused from every tenant principal, and need no switch, since no caller of the route
+ * has a legitimate delivery to roll out around.
+ *
+ * `substrat:social-relay` is the issuer's social sign-in configuration, written by the plane's
+ * own reconciler (#1544).
+ */
+export const PLATFORM_ONLY_CONFIG_KEYS: readonly string[] = [SOCIAL_RELAY_CONFIG_KEY];
+
+const matching = (list: readonly string[], key: string): string | undefined =>
+  list.find((k) => (k.endsWith(':') ? key.startsWith(k) : key === k));
+
 /** The issuer-only prefix (or exact key) `key` falls under, or undefined for an ordinary key. */
 export function issuerOnlyConfigKeyOf(key: string): string | undefined {
-  return ISSUER_ONLY_CONFIG_KEYS.find((k) => (k.endsWith(':') ? key.startsWith(k) : key === k));
+  return matching(ISSUER_ONLY_CONFIG_KEYS, key);
+}
+
+/** The platform-only key `key` is, or undefined. */
+export function platformOnlyConfigKeyOf(key: string): string | undefined {
+  return matching(PLATFORM_ONLY_CONFIG_KEYS, key);
 }

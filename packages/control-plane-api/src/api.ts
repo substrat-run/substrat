@@ -224,7 +224,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { issuerOnlyConfigKeyOf } from './issuer-config.js';
+import { issuerOnlyConfigKeyOf, platformOnlyConfigKeyOf } from './issuer-config.js';
 import { abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
@@ -6613,6 +6613,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #3177: an issuer applies what it is handed, so a key only the platform writes needs a
     // credential minted to write it. The refusal names the prefix, never the value.
     const p = c.get('principal');
+    if (p.kind === 'tenant') {
+      const platformOnly = input.entries.map((e) => platformOnlyConfigKeyOf(e.key)).find((k) => k !== undefined);
+      if (platformOnly) return refuse(c, 'forbidden', `forbidden: '${platformOnly}' is written by the platform only, never through this route`);
+    }
     if (options.requireIssuerConfigClaim && p.kind === 'tenant' && !p.issuerConfig) {
       const held = input.entries.map((e) => issuerOnlyConfigKeyOf(e.key)).find((k) => k !== undefined);
       if (held) return refuse(c, 'forbidden', `forbidden: '${held}' is issuer-only config, and this credential may not deliver it`);
