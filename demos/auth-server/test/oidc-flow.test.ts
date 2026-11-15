@@ -379,6 +379,72 @@ describe('prompt=none answers without any UI', () => {
 });
 
 /**
+ * A master app keeps a person signed in (#3161). To call its plugin AS the person later, with
+ * the peer exchange (`src/token-exchange.ts`, exchange C), it needs a live token issued to
+ * itself, and its login's id_token is gone by then. So it asks for `offline_access` at sign-in
+ * and trades the refresh token for a fresh id_token. Nothing in this issuer turns that on: the
+ * plugin issues a refresh token for `offline_access` to any client allowed `authorization_code`,
+ * which is every client registered the way the dashboard registers an app's (DCR, the secret in
+ * the form body, no `grant_types`), and answers a refresh with an id_token while `openid` is in
+ * the scope. This pins both, since exchange C depends on them.
+ */
+describe('a platform-registered app refreshes to a live id_token (#3161)', () => {
+  it('walks code with offline_access → refresh token → refresh grant → an id_token addressed to the app', async () => {
+    // The dashboard's registration body (`apps/dashboard/src/auth-wiring.ts`), minus the logout
+    // URIs. An app's callback is https, as the plugin requires of a web client off loopback.
+    const redirect = 'https://master.acme.test/api/auth/callback';
+    const reg = await call('/api/auth/oauth2/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Master App', redirect_uris: [redirect], token_endpoint_auth_method: 'client_secret_post' }),
+    });
+    expect(reg.status).toBe(201);
+    const { client_id: clientId, client_secret: clientSecret } = (await reg.json()) as { client_id: string; client_secret: string };
+
+    const cookie = await signInAs(ADMIN);
+    const { verifier, challenge } = await pkce();
+    const authorize = await call(
+      authorizeUrl(clientId, 'st-offline', challenge, { scope: 'openid email profile offline_access', redirect_uri: redirect }),
+      { headers: { ...NAVIGATE, cookie } },
+    );
+    const consent = await call('/api/auth/oauth2/consent', {
+      method: 'POST',
+      headers: { ...FROM_FETCH, cookie },
+      body: JSON.stringify({ accept: true, oauth_query: oauthQueryOf(authorize.headers.get('location') ?? '') }),
+    });
+    const code = new URL(((await consent.json()) as { url: string }).url).searchParams.get('code') ?? '';
+    const tokenCall = (form: Record<string, string>) =>
+      call('/api/auth/oauth2/token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ ...form, client_id: clientId, client_secret: clientSecret }).toString(),
+      });
+    const first = await tokenCall({ grant_type: 'authorization_code', code, redirect_uri: redirect, code_verifier: verifier });
+    expect(first.status).toBe(200);
+    const issued = (await first.json()) as { refresh_token?: string; scope: string };
+    expect(issued.refresh_token).toBeTruthy();
+    expect(issued.scope.split(' ')).toContain('offline_access');
+
+    const refreshed = await tokenCall({ grant_type: 'refresh_token', refresh_token: issued.refresh_token ?? '' });
+    expect(refreshed.status).toBe(200);
+    const tokens = (await refreshed.json()) as { id_token?: string; refresh_token?: string };
+    const claims = JSON.parse(
+      Buffer.from((tokens.id_token?.split('.')[1] ?? '').replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'),
+    ) as Record<string, unknown>;
+    // What exchange C requires of a subject issued to the actor: `aud` the app alone, no other
+    // authorized party, and live. It carries no address: this plugin puts that in userinfo, not
+    // the id_token (see "email_verified travels with the address" below), which is why exchange
+    // C reads the address from the issuer's user record instead.
+    expect(claims).toMatchObject({ iss: ORIGIN, aud: clientId, sub: expect.any(String) });
+    expect(claims['azp'] === undefined || claims['azp'] === clientId).toBe(true);
+    expect(claims['exp'] as number).toBeGreaterThan(Date.now() / 1000);
+    // Rotated: the next refresh uses the new one.
+    expect(tokens.refresh_token).toBeTruthy();
+    expect(tokens.refresh_token).not.toBe(issued.refresh_token);
+  });
+});
+
+/**
  * What this issuer says about an address (#1359). A Substrat relying party asks for
  * `openid email profile` and, by default, takes an address as an identifier only when the
  * issuer asserted `email_verified: true` about it — so whatever response carries `email`

@@ -193,6 +193,16 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
     }
   }
 
+  // Delegation channels (#3161): `delegation_grant` grew `channels`, the exchanges a grant
+  // admits. Nullable with NO backfill: a grant delivered before the column existed was an
+  // `mcp` grant, and NULL is exactly what `grantFor` reads as `mcp` alone. Writing `["mcp"]`
+  // here would say the same thing, so nothing is gained by touching the rows.
+  const delegationGrant = columnsOf(sql, 'delegation_grant');
+  if (delegationGrant.length > 0 && !delegationGrant.includes('channels')) {
+    sql.exec('ALTER TABLE delegation_grant ADD COLUMN channels TEXT');
+    upgrade.added.push('delegation_grant.channels');
+  }
+
   return upgrade;
 }
 

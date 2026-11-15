@@ -20,11 +20,23 @@
  *     `prompt=select_account` (what the platform's RP sends for "use another account")
  *     needs no special handling because it is already the only behaviour.
  *
+ * The same holds for the two grants a master app needs to call its plugin as the signed-in
+ * person (#3161): a refresh token is a JWT too, and the peer token exchange reads its grants
+ * from an option rather than a registry.
+ *
  * Never deploy this. The signing key is checked in — see `keys.ts`.
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { PROBLEM_CONTENT_TYPE, substratError, toProblem } from '@substrat-run/contracts';
+import {
+  PROBLEM_CONTENT_TYPE,
+  TOKEN_EXCHANGE_GRANT_TYPE,
+  TOKEN_TYPE,
+  channelsOf,
+  substratError,
+  toProblem,
+  type DelegationChannel,
+} from '@substrat-run/contracts';
 import { SignJWT, jwtVerify, importJWK, type JWTPayload } from 'jose';
 import { DEV_ALG, DEV_KID, DEV_PRIVATE_JWK, DEV_PUBLIC_JWK } from './keys.js';
 import type { DevPersona } from './personas.js';
@@ -52,9 +64,48 @@ export interface DevIssuerOptions {
    * stray instance cannot be pointed at a third-party URL and used as an open redirector.
    */
   allowedRedirectPrefixes?: string[];
+  /**
+   * Which app may act for which other app's people through the peer token exchange (#3161),
+   * the local stand-in for the platform's delegation grants (`delegationGrant` in contracts).
+   * Keyed by CLIENT id, where the team auth-server keys them by app scope: locally there is no
+   * place registry to say which app a client is, so the client id stands for its app. `host`
+   * is the app called, `actor` the one calling it as the person. A grant read through
+   * `channelsOf`, so one naming no channel is `mcp` alone, and only `peer` is served here.
+   * Absent, every exchange is refused.
+   */
+  delegations?: DevDelegation[];
+}
+
+/** One grant of {@link DevIssuerOptions.delegations}. */
+export interface DevDelegation {
+  host: string;
+  actor: string;
+  permissions: string[];
+  channels?: DelegationChannel[];
 }
 
 const CODE_TTL_SEC = 300;
+
+/** How long a refresh token lives: thirty days, as long as a laptop stays signed in. */
+const REFRESH_TTL_SEC = 30 * 24 * 3600;
+
+/**
+ * The second `aud` of a refresh token. With it the audience is multi-valued and names a URN,
+ * so no relying party takes a refresh token as an id_token or a bearer (the trick the team
+ * auth-server's delegation assertion uses); it also carries no `iss`, like a code, so no
+ * issuer-checking verifier, `/userinfo` included, gets as far as its audience.
+ */
+const REFRESH_AUDIENCE = 'urn:substrat:dev-issuer:refresh-token';
+
+/**
+ * How long a token the peer exchange mints lives. Equal to the team auth-server's
+ * `EXCHANGED_TOKEN_TTL_SECONDS` and to vertical-auth's `DELEGATED_TOKEN_MAX_LIFETIME_SECONDS`,
+ * which refuses a longer one: keep the three equal.
+ */
+const EXCHANGED_TOKEN_TTL_SEC = 300;
+
+/** The subject token types the peer exchange accepts: a JWT this issuer signed for the caller. */
+const SUBJECT_TYPES: ReadonlySet<string> = new Set([TOKEN_TYPE.idToken, TOKEN_TYPE.jwt, TOKEN_TYPE.accessToken]);
 
 /** A parsed `/authorize` request — everything the code must carry to `/token`. */
 interface AuthzRequest {
@@ -146,6 +197,10 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
   const personas = opts.personas;
   const ttl = opts.tokenTtlSec ?? 3600;
   const extraRedirects = opts.allowedRedirectPrefixes ?? [];
+  const delegations = opts.delegations ?? [];
+  // Which of two grants for one pair would win is not a question to answer by accident.
+  const pairs = new Set(delegations.map((d) => JSON.stringify([d.host, d.actor])));
+  if (pairs.size !== delegations.length) throw new Error('dev issuer: a delegation names the same host and actor twice');
   const app = new Hono();
 
   const issuerOf = (c: Context): string => opts.issuer ?? new URL(c.req.url).origin;
@@ -169,10 +224,10 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
       userinfo_endpoint: `${issuer}/userinfo`,
       end_session_endpoint: `${issuer}/logout`,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token', TOKEN_EXCHANGE_GRANT_TYPE],
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: [DEV_ALG],
-      scopes_supported: ['openid', 'email', 'profile'],
+      scopes_supported: ['openid', 'email', 'profile', 'offline_access'],
       token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
       code_challenge_methods_supported: ['S256'],
       claims_supported: ['sub', 'name', 'email', 'email_verified', 'nonce', 'aud', 'exp', 'iat', 'iss'],
@@ -239,6 +294,7 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
         ru: req.redirectUri,
         ...(req.nonce ? { n: req.nonce } : {}),
         ...(req.codeChallenge ? { cc: req.codeChallenge } : {}),
+        ...(req.scope.split(' ').includes('offline_access') ? { oa: true } : {}),
       },
       CODE_TTL_SEC,
     );
@@ -254,6 +310,10 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
    * has no secret to compare against, and pretending otherwise would only mean inventing a
    * registration step — the friction this exists to remove. PKCE *is* checked, because it
    * is what binds the exchange to the browser that began it and the RP always sends it.
+   *
+   * Three grants: the code, a refresh token (when the code was issued for `offline_access`),
+   * and the peer token exchange. The last two take `client_id` as the caller's identity, with
+   * no secret behind it, for the same reason.
    */
   app.post('/token', async (c) => {
     const form = await c.req.parseBody();
@@ -261,13 +321,15 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
     const fail = (error: string, description: string, status: 400 | 401 = 400) =>
       c.json({ error, error_description: description }, status);
 
+    if (str('grant_type') === 'refresh_token') return refreshGrant(c, str, fail);
+    if (str('grant_type') === TOKEN_EXCHANGE_GRANT_TYPE) return peerExchange(c, str, fail);
     if (str('grant_type') !== 'authorization_code') {
-      return fail('unsupported_grant_type', 'only authorization_code is supported');
+      return fail('unsupported_grant_type', 'only authorization_code, refresh_token and token exchange are supported');
     }
     const code = str('code');
     if (!code) return fail('invalid_request', 'missing code');
 
-    let payload: JWTPayload & { typ?: string; cid?: string; ru?: string; n?: string; cc?: string };
+    let payload: JWTPayload & { typ?: string; cid?: string; ru?: string; n?: string; cc?: string; oa?: boolean };
     try {
       payload = (await jwtVerify(code, await verificationKey())).payload;
     } catch {
@@ -293,8 +355,148 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
       sign({ ...base, ...(payload.n ? { nonce: payload.n } : {}) }, ttl),
       sign({ ...base, typ: 'access' }, ttl),
     ]);
+    if (payload.oa) {
+      return c.json({
+        token_type: 'Bearer',
+        expires_in: ttl,
+        id_token: idToken,
+        access_token: accessToken,
+        refresh_token: await refreshTokenFor(persona.sub, String(payload.cid)),
+        scope: 'openid email profile offline_access',
+      });
+    }
     return c.json({ token_type: 'Bearer', expires_in: ttl, id_token: idToken, access_token: accessToken, scope: 'openid email profile' });
   });
+
+  type Str = (k: string) => string;
+  type Fail = (error: string, description: string, status?: 400 | 401) => Response;
+
+  /** A refresh token: the person and the client, and nothing a relying party would accept. */
+  const refreshTokenFor = (sub: string, clientId: string) =>
+    sign({ typ: 'refresh', sub, cid: clientId, aud: [clientId, REFRESH_AUDIENCE] }, REFRESH_TTL_SEC);
+
+  /**
+   * `grant_type=refresh_token`: a fresh id_token and access token for the client the refresh
+   * token was issued to, with the claims the code exchange gives (no `nonce`: there is no
+   * authorization request to bind it to), and a new refresh token. The person is re-read, so a
+   * persona dropped from the cast cannot be refreshed.
+   */
+  async function refreshGrant(c: Context, str: Str, fail: Fail) {
+    const token = str('refresh_token');
+    if (!token) return fail('invalid_request', 'missing refresh_token');
+    if (!str('client_id')) return fail('invalid_request', 'missing client_id');
+    // The marker audience is what makes it a refresh token: a code carries the same `cid` and
+    // `sub`, and must not be redeemable here without its PKCE verifier.
+    let payload: JWTPayload & { cid?: string };
+    try {
+      payload = (await jwtVerify(token, await verificationKey(), { audience: REFRESH_AUDIENCE })).payload;
+    } catch {
+      return fail('invalid_grant', 'the refresh token is invalid or has expired');
+    }
+    if (payload.cid !== str('client_id')) return fail('invalid_grant', 'client_id does not match the refresh token');
+    const persona = personaOf(String(payload.sub));
+    if (!persona) return fail('invalid_grant', 'the refresh token names a user this issuer no longer serves');
+    const base = { iss: issuerOf(c), aud: payload.cid, ...claimsFor(persona) };
+    const [idToken, accessToken, refreshToken] = await Promise.all([
+      sign(base, ttl),
+      sign({ ...base, typ: 'access' }, ttl),
+      refreshTokenFor(persona.sub, payload.cid),
+    ]);
+    return c.json({
+      token_type: 'Bearer',
+      expires_in: ttl,
+      id_token: idToken,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      scope: 'openid email profile offline_access',
+    });
+  }
+
+  /**
+   * RFC 8693 token exchange, the `peer` channel only (#3161): the ACTOR presents a live token
+   * this issuer signed for it, names the HOST's client id as `audience`, and asks for an access
+   * token; it gets one with the person as `sub`, the host as `aud`, the actor as `azp` and in
+   * `act`, and the granted keys as `scope`. The same semantics as the team auth-server's
+   * exchange C (`demos/auth-server/src/token-exchange.ts`), so a master app calling its plugin
+   * locally runs the round-trip it runs hosted. `client_id` names the actor and is not
+   * authenticated: there is no secret to check it against (see above). The `mcp` channel's two
+   * steps are not served here.
+   */
+  async function peerExchange(c: Context, str: Str, fail: Fail) {
+    // Every value of a name, where a repeat must be seen rather than collapsed (`audience`).
+    const repeated = await c.req.parseBody({ all: true });
+    const all = (k: string): string[] => [repeated[k] ?? []].flat().filter((v): v is string => typeof v === 'string');
+    const actor = str('client_id');
+    if (!actor) return fail('invalid_request', 'client_id is required');
+    if (str('requested_token_type') !== TOKEN_TYPE.accessToken) {
+      return fail('invalid_request', `this issuer exchanges only for ${TOKEN_TYPE.accessToken} (the peer channel)`);
+    }
+    const subjectToken = str('subject_token');
+    if (!subjectToken || !SUBJECT_TYPES.has(str('subject_token_type'))) {
+      return fail('invalid_request', 'subject_token and a supported subject_token_type are required');
+    }
+    if (str('actor_token') || str('actor_token_type')) return fail('invalid_request', 'actor_token is not supported');
+    if (all('resource').length > 0) return fail('invalid_request', 'this exchange takes an audience, not a resource');
+    const audiences = all('audience');
+    if (audiences.length !== 1 || !audiences[0]) return fail('invalid_request', 'exactly one audience is required');
+    const host = audiences[0];
+
+    const issuer = issuerOf(c);
+    let subject: JWTPayload;
+    try {
+      subject = (await jwtVerify(subjectToken, await verificationKey(), { issuer })).payload;
+    } catch {
+      return fail('invalid_grant', 'the subject token is not a live token of this issuer');
+    }
+    if (!subject.sub) return fail('invalid_grant', 'the subject token is not a live token of this issuer');
+    // No chaining: a token that is itself the product of an exchange is not a login.
+    if (subject['act'] !== undefined || subject['substrat_delegation'] !== undefined) {
+      return fail('invalid_grant', 'the subject token is already delegated');
+    }
+    // Issued to the actor and nobody else: every authorized party present is the actor, or
+    // there is none and `aud` is the actor alone. Without this, an app could trade a token
+    // another app was issued for the person.
+    const parties = [subject['azp'], subject['client_id']].filter((p) => p !== undefined);
+    const aud = subject.aud;
+    const soleAud = typeof aud === 'string' ? aud : Array.isArray(aud) && aud.length === 1 ? aud[0] : undefined;
+    const issuedToActor = parties.length > 0 ? parties.every((p) => p === actor) : soleAud === actor;
+    if (!issuedToActor) return fail('invalid_grant', 'the subject token was not issued to this client');
+
+    const grant = host === actor ? undefined : delegations.find((d) => d.host === host && d.actor === actor);
+    if (!grant || !channelsOf(grant).includes('peer')) {
+      return fail('invalid_target', `${host} does not delegate to this client`);
+    }
+    const requested = [...new Set(str('scope').split(' ').filter((s) => s.length > 0))];
+    const scope = requested.length ? requested.filter((s) => grant.permissions.includes(s)) : [...new Set(grant.permissions)];
+    if (scope.length === 0) return fail('invalid_scope', 'none of the requested scope is delegated');
+
+    const email = typeof subject['email'] === 'string' ? { email: subject['email'] } : {};
+    const verified = typeof subject['email_verified'] === 'boolean' ? { email_verified: subject['email_verified'] } : {};
+    const token = await sign(
+      {
+        iss: issuer,
+        sub: subject.sub,
+        aud: host,
+        azp: actor,
+        client_id: actor,
+        scope: scope.join(' '),
+        act: { iss: issuer, sub: actor },
+        // Client ids where the hosted issuer names app scopes: locally they are the apps.
+        substrat_delegation: { stage: 'peer', host, actor },
+        ...email,
+        ...verified,
+        jti: crypto.randomUUID(),
+      },
+      EXCHANGED_TOKEN_TTL_SEC,
+    );
+    return c.json({
+      access_token: token,
+      issued_token_type: TOKEN_TYPE.accessToken,
+      token_type: 'Bearer',
+      expires_in: EXCHANGED_TOKEN_TTL_SEC,
+      scope: scope.join(' '),
+    });
+  }
 
   app.get('/userinfo', async (c) => {
     const auth = c.req.header('authorization') ?? '';

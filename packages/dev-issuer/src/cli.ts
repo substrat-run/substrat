@@ -8,11 +8,16 @@
  * `--personas` names a module exporting `PERSONAS: DevPersona[]`. Pointing it at the
  * vertical's own file is deliberate: the issuer's cast and the identity links the vertical
  * seeds are then the same array, and cannot drift.
+ *
+ * `--delegations` (optional, #3161) names a module exporting `DELEGATIONS: DevDelegation[]`,
+ * the grants the peer token exchange reads — for a master app that calls its plugin as the
+ * signed-in person. Without it the issuer is started exactly as before, and every exchange is
+ * refused.
  */
 import { serve } from '@hono/node-server';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
-import { createDevIssuer } from './issuer.js';
+import { createDevIssuer, type DevDelegation } from './issuer.js';
 import type { DevPersona } from './personas.js';
 
 function arg(name: string): string | undefined {
@@ -36,8 +41,20 @@ if (!Array.isArray(personas) || personas.length === 0) {
   process.exit(1);
 }
 
+const delegationsArg = arg('delegations');
+let delegations: DevDelegation[] | undefined;
+if (delegationsArg) {
+  const url = pathToFileURL(resolve(process.cwd(), delegationsArg)).href;
+  const exported = ((await import(url)) as { DELEGATIONS?: unknown }).DELEGATIONS;
+  if (!Array.isArray(exported)) {
+    console.error(`substrat-dev-issuer: ${delegationsArg} exports no DELEGATIONS array`);
+    process.exit(1);
+  }
+  delegations = exported as DevDelegation[];
+}
+
 const port = Number(arg('port') ?? process.env.ISSUER_PORT ?? 8879);
-serve({ fetch: createDevIssuer({ personas }).fetch, port });
+serve({ fetch: createDevIssuer({ personas, ...(delegations ? { delegations } : {}) }).fetch, port });
 
 console.log(
   [
@@ -48,6 +65,7 @@ console.log(
     `      discovery             http://localhost:${port}/.well-known/openid-configuration`,
     '  ' + '─'.repeat(52),
     `    cast   ${personas.map((p) => p.sub).join(', ')}`,
+    ...(delegations ? [`    grants ${delegations.map((d) => `${d.actor} → ${d.host}`).join(', ') || 'none'}`] : []),
     '    note   dev only — the signing key is checked in and public',
     '',
   ].join('\n'),

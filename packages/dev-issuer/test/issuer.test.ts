@@ -10,7 +10,7 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { beginLogin, completeLogin, identifyEmail, type OidcEnv } from '@substrat-run/oidc-rp';
 import { createDevIssuer, DEV_CLIENT_ID } from '../src/issuer.js';
 import { devLogin } from '../src/harness.js';
-import { mcpResourceOf } from '@substrat-run/contracts';
+import { TOKEN_EXCHANGE_GRANT_TYPE, TOKEN_TYPE, mcpResourceOf } from '@substrat-run/contracts';
 import { decodeJwt } from 'jose';
 import type { DevPersona } from '../src/personas.js';
 
@@ -23,7 +23,22 @@ const PERSONAS: DevPersona[] = [
   { sub: 'dev|harald', name: 'Harald Berg', email: 'harald@example.test', note: 'technician' },
 ];
 
-const app = createDevIssuer({ personas: PERSONAS, allowedRedirectPrefixes: [APP] });
+/** A master app and its plugin (#3161): the plugin lets the master call it as the person. */
+const MASTER = 'master-client';
+const PLUGIN = 'plugin-client';
+/** A host that delegates to the master on the `mcp` channel only. */
+const MCP_ONLY = 'mcp-only-client';
+
+const app = createDevIssuer({
+  personas: PERSONAS,
+  allowedRedirectPrefixes: [APP],
+  delegations: [
+    { host: PLUGIN, actor: MASTER, permissions: ['notes.read', 'notes.write'], channels: ['peer'] },
+    { host: MCP_ONLY, actor: MASTER, permissions: ['notes.read'] },
+    // An app delegating to itself, which the exchange refuses all the same.
+    { host: MASTER, actor: MASTER, permissions: ['notes.read'], channels: ['peer'] },
+  ],
+});
 
 const env: OidcEnv = {
   OIDC_ISSUER: ISSUER,
@@ -293,5 +308,159 @@ describe('the door and the harness agree on whose token it is (#1683)', () => {
     const token = await mint({ audience: mcpResourceOf('http://localhost:8871') });
     expect((await as(token, 'localhost:8871'))?.sub).toBe('dev|anna');
     expect(await as(token, 'localhost:8872')).toBeNull();
+  });
+});
+
+/** A form POST to `/token`. */
+const token = (form: Record<string, string | string[]>) => {
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(form)) for (const one of [v].flat()) body.append(k, one);
+  return app.fetch(new Request(`${ISSUER}/token`, { method: 'POST', body }));
+};
+
+/** What `/dev/token` mints for a persona: an id_token whose `aud` is `audience`, no `azp`. */
+const idTokenFor = async (audience: string, sub = 'dev|anna') =>
+  ((await (
+    await app.fetch(
+      new Request(`${ISSUER}/dev/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sub, audience }),
+      }),
+    )
+  ).json()) as { id_token: string }).id_token;
+
+describe('offline_access: a refresh token, and a fresh id_token for it (#3161)', () => {
+  const codeFor = async (scope: string) => {
+    const q = new URLSearchParams({ response_type: 'code', client_id: MASTER, redirect_uri: `${APP}/cb`, scope, sub: 'dev|anna' });
+    const res = await authorize(`${ISSUER}/authorize?${q.toString()}`);
+    return new URL(res.headers.get('location') ?? '').searchParams.get('code') ?? '';
+  };
+  const redeem = async (scope: string) =>
+    (await (
+      await token({ grant_type: 'authorization_code', code: await codeFor(scope), client_id: MASTER, redirect_uri: `${APP}/cb` })
+    ).json()) as { refresh_token?: string; scope: string };
+
+  it('issues one only when offline_access was asked for, and refreshes it to the claims a login gives', async () => {
+    expect(await redeem('openid email profile')).not.toHaveProperty('refresh_token');
+    const issued = await redeem('openid email profile offline_access');
+    expect(issued.refresh_token).toBeTruthy();
+    expect(issued.scope).toBe('openid email profile offline_access');
+
+    const res = await token({ grant_type: 'refresh_token', refresh_token: issued.refresh_token ?? '', client_id: MASTER });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id_token: string; refresh_token: string };
+    const claims = decodeJwt(body.id_token);
+    expect(claims).toEqual({
+      iss: ISSUER,
+      aud: MASTER,
+      sub: 'dev|anna',
+      name: 'Anna Lindqvist',
+      email: 'anna@example.test',
+      email_verified: true,
+      iat: expect.any(Number),
+      exp: (claims.iat ?? 0) + 3600,
+    });
+    expect(decodeJwt(body.refresh_token)).toMatchObject({ typ: 'refresh', sub: 'dev|anna', cid: MASTER });
+  });
+
+  it('refuses a refresh by another client, and a refresh token presented as anything else', async () => {
+    const refresh = (await redeem('openid offline_access')).refresh_token ?? '';
+    const res = await token({ grant_type: 'refresh_token', refresh_token: refresh, client_id: PLUGIN });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('invalid_grant');
+    // And a code is not a refresh token, which would redeem it without its PKCE verifier.
+    const code = await codeFor('openid offline_access');
+    expect(((await (await token({ grant_type: 'refresh_token', refresh_token: code, client_id: MASTER })).json()) as { error: string }).error).toBe('invalid_grant');
+    // Not a code, not a bearer at /userinfo, not the person's token at the client's own door.
+    const asCode = await token({ grant_type: 'authorization_code', code: refresh, client_id: MASTER, redirect_uri: `${APP}/cb` });
+    expect(((await asCode.json()) as { error: string }).error).toBe('invalid_grant');
+    expect((await app.fetch(new Request(`${ISSUER}/userinfo`, { headers: { authorization: `Bearer ${refresh}` } }))).status).toBe(401);
+    const door = devLogin({
+      issuer: ISSUER,
+      clientId: MASTER,
+      directory: { listIdentityTenants: async () => [], resolveIdentity: async () => undefined },
+      actor: 'actor' as never,
+      provider: 'oidc:dev-issuer',
+    });
+    expect(await door.subject(new Headers({ authorization: `Bearer ${refresh}` }))).toBeNull();
+  });
+});
+
+describe('the peer token exchange: the master calls its plugin as the person (#3161)', () => {
+  const exchange = async (subject: string, extra: Record<string, string | string[]> = {}) => {
+    const res = await token({
+      grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
+      client_id: MASTER,
+      subject_token: subject,
+      subject_token_type: TOKEN_TYPE.idToken,
+      requested_token_type: TOKEN_TYPE.accessToken,
+      audience: PLUGIN,
+      ...extra,
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+
+  it('mints a token for the plugin, as the person, with the granted keys, and the plugin’s ordinary door refuses it', async () => {
+    const res = await exchange(await idTokenFor(MASTER));
+    expect(res).toEqual({
+      status: 200,
+      body: {
+        access_token: expect.any(String),
+        issued_token_type: TOKEN_TYPE.accessToken,
+        token_type: 'Bearer',
+        expires_in: 300,
+        scope: 'notes.read notes.write',
+      },
+    });
+    const claims = decodeJwt(res.body['access_token'] as string);
+    expect(claims).toEqual({
+      iss: ISSUER,
+      sub: 'dev|anna',
+      aud: PLUGIN,
+      azp: MASTER,
+      client_id: MASTER,
+      scope: 'notes.read notes.write',
+      act: { iss: ISSUER, sub: MASTER },
+      substrat_delegation: { stage: 'peer', host: PLUGIN, actor: MASTER },
+      email: 'anna@example.test',
+      email_verified: true,
+      jti: expect.any(String),
+      iat: expect.any(Number),
+      exp: (claims.iat ?? 0) + 300,
+    });
+    // It carries `act`, so the plugin's ordinary door does not take it as the person's own.
+    const door = devLogin({
+      issuer: ISSUER,
+      clientId: PLUGIN,
+      directory: { listIdentityTenants: async () => [], resolveIdentity: async () => undefined },
+      actor: 'actor' as never,
+      provider: 'oidc:dev-issuer',
+    });
+    expect(await door.subject(new Headers({ authorization: `Bearer ${res.body['access_token'] as string}` }))).toBeNull();
+    // The twin: narrowed to what was asked.
+    expect((await exchange(await idTokenFor(MASTER), { scope: 'notes.read notes.delete' })).body['scope']).toBe('notes.read');
+  });
+
+  it.each([
+    ['a host that does not delegate to it', { audience: 'nobody-client' }, 'invalid_target'],
+    ['a host whose grant names only mcp', { audience: MCP_ONLY }, 'invalid_target'],
+    ['itself as the host', { audience: MASTER }, 'invalid_target'],
+    ['no requested access token', { requested_token_type: TOKEN_TYPE.jwt }, 'invalid_request'],
+    ['no client_id', { client_id: '' }, 'invalid_request'],
+    ['a scope outside the grant', { scope: 'notes.delete' }, 'invalid_scope'],
+  ])('refuses %s', async (_why, extra, error) => {
+    const res = await exchange(await idTokenFor(MASTER), extra);
+    expect(res.status).toBe(400);
+    expect(res.body['error']).toBe(error);
+  });
+
+  it('refuses a subject token issued to another client — the plugin’s own login of the person included', async () => {
+    expect((await exchange(await idTokenFor(PLUGIN))).body['error']).toBe('invalid_grant');
+  });
+
+  it('refuses a subject that is already delegated: no chaining', async () => {
+    const peer = (await exchange(await idTokenFor(MASTER))).body['access_token'] as string;
+    expect((await exchange(peer, { subject_token_type: TOKEN_TYPE.accessToken })).body['error']).toBe('invalid_grant');
   });
 });

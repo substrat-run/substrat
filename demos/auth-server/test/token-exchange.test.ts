@@ -167,6 +167,8 @@ beforeEach(async () => {
       c === CLIENT.basicDesk ? 'client_secret_basic' : 'client_secret_post',
     );
   }
+  // The person every subject token names, as this issuer records them (exchange C reads it).
+  sql.exec("INSERT INTO user (id, name, email, email_verified) VALUES ('user-ann', 'Ann', 'ann@acme.test', 1)");
   register(TEAM, TEAM_APPS);
   register(OTHER_TEAM, [{ appScopeId: ELSEWHERE, clientId: CLIENT.elsewhere.id, hostname: 'elsewhere.test' }]);
   syncPlatformResources(sql, { appScopeId: DESK, identifiers: [DESK_MCP] }, now * 1000);
@@ -198,6 +200,7 @@ describe('delegation grants, as the platform delivers them (#1824)', () => {
     ['65 permissions', key, JSON.stringify([{ actor: HELP, permissions: Array.from({ length: 65 }, (_, i) => `p${i}`) }])],
     ['an actor named twice', key, JSON.stringify([{ actor: HELP, permissions: ['a'] }, { actor: HELP, permissions: ['b'] }])],
     ['an unknown key', key, JSON.stringify([{ actor: HELP, permissions: ['a'], extra: true }])],
+    ['an unknown channel', key, JSON.stringify([{ actor: HELP, permissions: ['a'], channels: ['email'] }])],
   ])('refuses %s', (_why, k, value) => {
     expect(() => parseDelegationsEntry(k, value)).toThrow();
   });
@@ -209,13 +212,13 @@ describe('delegation grants, as the platform delivers them (#1824)', () => {
       updated: [HELP],
       revoked: [],
     });
-    expect(grantFor(sql, DESK, HELP)).toEqual({ permissions: ['tickets.read'] });
-    expect(grantFor(sql, DESK, CRM)).toEqual({ permissions: ['tickets.read'] });
+    expect(grantFor(sql, DESK, HELP)).toEqual({ permissions: ['tickets.read'], channels: ['mcp'] });
+    expect(grantFor(sql, DESK, CRM)).toEqual({ permissions: ['tickets.read'], channels: ['mcp'] });
 
     expect(delegate(DESK, [{ actor: CRM, permissions: ['tickets.read'] }])).toEqual({ granted: [], updated: [], revoked: [HELP] });
     expect(grantFor(sql, DESK, HELP)).toBeUndefined();
     // A grant is directional: the CRM's own grant to the help desk is untouched.
-    expect(grantFor(sql, CRM, HELP)).toEqual({ permissions: ['crm.read'] });
+    expect(grantFor(sql, CRM, HELP)).toEqual({ permissions: ['crm.read'], channels: ['mcp'] });
 
     expect(delegate(DESK, '')).toEqual({ granted: [], updated: [], revoked: [CRM] });
     expect(sql.exec('SELECT host_app_scope_id FROM delegation_grant').toArray()).toEqual([{ host_app_scope_id: CRM }]);
@@ -232,10 +235,38 @@ describe('delegation grants, as the platform delivers them (#1824)', () => {
   });
 
   it('a damaged row grants nothing', () => {
-    sql.exec('UPDATE delegation_grant SET permissions = ? WHERE host_app_scope_id = ?', '[]', DESK);
+    sql.exec('UPDATE delegation_grant SET channels = ? WHERE host_app_scope_id = ?', '["email"]', DESK);
+    expect(grantFor(sql, DESK, HELP)).toBeUndefined();
+    sql.exec('UPDATE delegation_grant SET channels = ? WHERE host_app_scope_id = ?', 'not json', DESK);
+    expect(grantFor(sql, DESK, HELP)).toBeUndefined();
+    sql.exec('UPDATE delegation_grant SET channels = NULL, permissions = ? WHERE host_app_scope_id = ?', '[]', DESK);
     expect(grantFor(sql, DESK, HELP)).toBeUndefined();
     sql.exec('UPDATE delegation_grant SET permissions = ? WHERE host_app_scope_id = ?', 'not json', DESK);
     expect(grantFor(sql, DESK, HELP)).toBeUndefined();
+  });
+
+  it('a changed channel set is an update; the same set in another order, or by its default, is not (#3161)', () => {
+    const permissions = ['tickets.read', 'tickets.comment'];
+    expect(delegate(DESK, [{ actor: HELP, permissions, channels: ['mcp'] }])).toEqual({ granted: [], updated: [], revoked: [] });
+    expect(delegate(DESK, [{ actor: HELP, permissions, channels: ['peer', 'mcp'] }])).toEqual({ granted: [], updated: [HELP], revoked: [] });
+    expect(grantFor(sql, DESK, HELP)).toEqual({ permissions, channels: ['mcp', 'peer'] });
+    expect(delegate(DESK, [{ actor: HELP, permissions, channels: ['mcp', 'peer'] }])).toEqual({ granted: [], updated: [], revoked: [] });
+    expect(delegate(DESK, [{ actor: HELP, permissions, channels: ['peer'] }])).toEqual({ granted: [], updated: [HELP], revoked: [] });
+    expect(grantFor(sql, DESK, HELP)).toEqual({ permissions, channels: ['peer'] });
+  });
+
+  it('a row from before the channels column reads as mcp alone, and delivering it again writes nothing', () => {
+    // NULL is what `db/upgrade.ts` leaves on every row it adds the column to.
+    sql.exec('UPDATE delegation_grant SET channels = NULL, updated_at = 1 WHERE host_app_scope_id = ?', DESK);
+    expect(grantFor(sql, DESK, HELP)).toEqual({ permissions: ['tickets.read', 'tickets.comment'], channels: ['mcp'] });
+    expect(delegate(DESK, [{ actor: HELP, permissions: ['tickets.read', 'tickets.comment'] }])).toEqual({
+      granted: [],
+      updated: [],
+      revoked: [],
+    });
+    expect(sql.exec('SELECT channels, updated_at FROM delegation_grant WHERE host_app_scope_id = ?', DESK).toArray()).toEqual([
+      { channels: null, updated_at: 1 },
+    ]);
   });
 });
 
@@ -424,6 +455,12 @@ describe('token exchange A: the host asks for an assertion addressed to the acto
     expect(elsewhere.body['error']).toBe('invalid_target');
   });
 
+  it('refuses an actor whose grant names only the peer channel (#3161)', async () => {
+    delegate(DESK, [{ actor: HELP, permissions: ['tickets.read'], channels: ['peer'] }]);
+    const res = await stageA(await idTokenFor(CLIENT.desk.id));
+    expect(res.body['error']).toBe('invalid_target');
+  });
+
   it('refuses an actor the host does not delegate to — and a grant is one-directional', async () => {
     const res = await stageA(await idTokenFor(CLIENT.desk.id), { audience: CLIENT.crm.id });
     expect(res.body).toEqual({ error: 'invalid_target', error_description: `this client does not delegate to ${CLIENT.crm.id}` });
@@ -479,6 +516,12 @@ describe('token exchange B: the actor asks for a token for the host’s MCP endp
     // The twin: delivered again, the same assertion works.
     delegate(DESK, [{ actor: HELP, permissions: ['tickets.read'] }]);
     expect((await stageB(minted)).status).toBe(200);
+  });
+
+  it('refuses once the grant is re-delivered as peer alone, for an assertion minted while it named mcp (#3161)', async () => {
+    const minted = await assertion();
+    delegate(DESK, [{ actor: HELP, permissions: ['tickets.read', 'tickets.comment'], channels: ['peer'] }]);
+    expect((await stageB(minted)).body['error']).toBe('invalid_grant');
   });
 
   it('refuses when the actor’s client has been re-registered to another app', async () => {
@@ -582,6 +625,154 @@ describe('token exchange B: the actor asks for a token for the host’s MCP endp
   });
 });
 
+describe('token exchange C: the actor asks, in one step, for a token for the host itself (#3161)', () => {
+  /** The help desk acting for the desk's users, on the peer channel as well as MCP. */
+  beforeEach(() => {
+    delegate(DESK, [{ actor: HELP, permissions: ['tickets.read', 'tickets.comment'], channels: ['mcp', 'peer'] }]);
+  });
+
+  /**
+   * The person signed in at the actor: the actor's own id_token, `aud` the actor, no `azp`. It
+   * carries an address that is NOT the issuer's record of Ann, so a token minted with it shows
+   * where its address came from.
+   */
+  const actorLogin = (extra: Record<string, unknown> = {}) =>
+    idTokenFor(CLIENT.help.id, { email: 'not-the-record@elsewhere.test', email_verified: false, ...extra });
+
+  const stageC = (subject: string, extra: Record<string, string | string[]> = {}, client: Client = CLIENT.help) =>
+    exchange(client, {
+      subject_token: subject,
+      subject_token_type: TOKEN_TYPE.idToken,
+      requested_token_type: TOKEN_TYPE.accessToken,
+      audience: CLIENT.desk.id,
+      ...extra,
+    });
+
+  it('issues an access token for the host, acting for the person, scoped to the grant', async () => {
+    const res = await stageC(await actorLogin());
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      access_token: expect.any(String),
+      issued_token_type: TOKEN_TYPE.accessToken,
+      token_type: 'Bearer',
+      expires_in: EXCHANGED_TOKEN_TTL_SECONDS,
+      scope: 'tickets.read tickets.comment',
+    });
+    expect(claimsOf(res.body['access_token'] as string)).toEqual({
+      iss: ISSUER,
+      sub: 'user-ann',
+      aud: CLIENT.desk.id,
+      azp: CLIENT.help.id,
+      client_id: CLIENT.help.id,
+      scope: 'tickets.read tickets.comment',
+      act: { iss: ISSUER, sub: CLIENT.help.id },
+      substrat_delegation: { stage: 'peer', host: DESK, actor: HELP },
+      email: 'ann@acme.test',
+      email_verified: true,
+      iat: T0,
+      exp: T0 + EXCHANGED_TOKEN_TTL_SECONDS,
+      jti: expect.any(String),
+    });
+    expect(logged).toEqual([
+      `auth-server: token exchange ${JSON.stringify({ stage: 'peer', host: DESK, actor: HELP, scope: 'tickets.read tickets.comment' })}`,
+    ]);
+  });
+
+  it('takes the actor’s own access token too', async () => {
+    const access = await idTokenFor(CLIENT.desk.id, { aud: 'https://anything.test', azp: CLIENT.help.id, client_id: CLIENT.help.id });
+    expect((await stageC(access, { subject_token_type: TOKEN_TYPE.accessToken })).status).toBe(200);
+  });
+
+  it('says what the issuer holds: unverified as false, a placeholder as nothing, and refuses a subject that is no user here', async () => {
+    // An address the issuer has not verified is said to be unverified, not left out.
+    sql.exec("UPDATE user SET email_verified = 0 WHERE id = 'user-ann'");
+    expect(claimsOf((await stageC(await actorLogin({ email_verified: true }))).body['access_token'] as string)).toMatchObject({
+      email: 'ann@acme.test',
+      email_verified: false,
+    });
+    // A BankID placeholder (#2938) is no address, as userinfo also treats it.
+    sql.exec("UPDATE user SET email = 'bankid-x@bankid.placeholder.invalid', email_verified = 0 WHERE id = 'user-ann'");
+    const claims = claimsOf((await stageC(await actorLogin())).body['access_token'] as string);
+    expect(claims).not.toHaveProperty('email');
+    expect(claims).not.toHaveProperty('email_verified');
+    expect((await stageC(await actorLogin({ sub: 'user-nobody' }))).body['error']).toBe('invalid_grant');
+  });
+
+  it('narrows to the requested scope, and refuses a scope the grant does not cover', async () => {
+    expect((await stageC(await actorLogin(), { scope: 'tickets.read tickets.delete' })).body['scope']).toBe('tickets.read');
+    expect((await stageC(await actorLogin(), { scope: 'tickets.delete' })).body['error']).toBe('invalid_scope');
+  });
+
+  /**
+   * The token is presented to the host on a peer call, so by the ordinary rules it must be a
+   * bearer at NO app: carrying `act`, it is admitted only where the host opted into a
+   * delegated channel, never as the person's own token at the host's or the actor's API.
+   */
+  it('is a bearer at no app by the ordinary rules, and no exchange takes it as a subject', async () => {
+    const minted = (await stageC(await actorLogin())).body['access_token'] as string;
+    const verifierFor = (clientId: string) =>
+      oidcAuthProvider({ issuer: ISSUER, keys: async () => issuerKey.publicKey, clientId, resourceOf: mcpResourceOf });
+    const bearer = new Headers({ authorization: `Bearer ${minted}` });
+    expect(await verifierFor(CLIENT.desk.id).resolve(bearer, `${DESK_ORIGIN}/api/tickets`)).toBeNull();
+    expect(await verifierFor(CLIENT.help.id).resolve(bearer, `${HELP_ORIGIN}/api/tickets`)).toBeNull();
+
+    // B takes only an assertion; C and A refuse a delegated subject (it has a delegation claim,
+    // so it is read as B's, and refused there).
+    expect((await stageB(minted)).body['error']).toBe('invalid_grant');
+    expect((await stageC(minted, { subject_token_type: TOKEN_TYPE.accessToken })).body['error']).toBe('invalid_grant');
+    expect((await stageA(minted, { subject_token_type: TOKEN_TYPE.accessToken }, CLIENT.desk)).body['error']).toBe('invalid_grant');
+  });
+
+  it('refuses a subject that is already delegated: no chaining', async () => {
+    expect((await stageC(await actorLogin({ act: { sub: CLIENT.crm.id } }))).body['error']).toBe('invalid_grant');
+  });
+
+  /**
+   * The check that keeps an app from acting for a person with a token ANOTHER app holds: the
+   * host's own login of the person first, which the actor must not be able to trade.
+   */
+  it('refuses a subject token that was not issued to the actor', async () => {
+    const cases = [
+      await idTokenFor(CLIENT.desk.id),
+      await actorLogin({ azp: CLIENT.desk.id }),
+      await actorLogin({ client_id: CLIENT.crm.id }),
+      await actorLogin({ azp: CLIENT.help.id, client_id: CLIENT.crm.id }),
+      await actorLogin({ aud: [CLIENT.help.id, CLIENT.desk.id] }),
+      // Unlike A, no MCP-resource token: one with no party is some MCP client's, not the actor's.
+      await actorLogin({ aud: mcpResourceOf(HELP_ORIGIN) }),
+    ];
+    for (const subject of cases) expect((await stageC(subject)).body['error']).toBe('invalid_grant');
+  });
+
+  it('refuses a host whose grant names only mcp, and one that does not delegate to the actor at all', async () => {
+    delegate(DESK, [{ actor: HELP, permissions: ['tickets.read'] }]);
+    expect((await stageC(await actorLogin())).body['error']).toBe('invalid_target');
+    expect((await stageC(await actorLogin(), { audience: CLIENT.crm.id })).body['error']).toBe('invalid_target');
+  });
+
+  it('refuses a host that is no place of the actor’s team, and the actor itself', async () => {
+    delegate(ELSEWHERE, [{ actor: HELP, permissions: ['tickets.read'], channels: ['peer'] }]);
+    // Even granted: the contract does not refuse an app delegating to itself, so this does.
+    delegate(HELP, [{ actor: HELP, permissions: ['tickets.read'], channels: ['peer'] }]);
+    for (const audience of [CLIENT.stranger.id, CLIENT.elsewhere.id, CLIENT.help.id]) {
+      expect((await stageC(await actorLogin(), { audience })).body['error']).toBe('invalid_target');
+    }
+  });
+
+  it.each([
+    ['a resource', { resource: DESK_MCP }],
+    ['no audience', { audience: [] }],
+    ['two audiences', { audience: [CLIENT.desk.id, CLIENT.crm.id] }],
+    ['an unsupported subject token type', { subject_token_type: 'urn:ietf:params:oauth:token-type:saml2' }],
+  ])('refuses a request with %s', async (_why, extra) => {
+    expect((await stageC(await actorLogin(), extra)).body['error']).toBe('invalid_request');
+  });
+
+  it('refuses a subject token that is not live', async () => {
+    expect((await stageC(await actorLogin({ exp: now }))).body['error']).toBe('invalid_grant');
+  });
+});
+
 describe('token exchange: what a refusal leaves behind (#1824)', () => {
   const refusals = () => logged.filter((l) => l.startsWith('auth-server: token exchange refused '));
   const parsed = (line: string) => JSON.parse(line.slice('auth-server: token exchange refused '.length)) as Record<string, unknown>;
@@ -608,6 +799,16 @@ describe('token exchange: what a refusal leaves behind (#1824)', () => {
     expect(parsed(refusals()[0]!)).toEqual({ stage: null, error: 'invalid_client', client: null });
     await stageA('not-a-jwt');
     expect(parsed(refusals()[1]!)).toEqual({ stage: null, error: 'invalid_grant', client: CLIENT.desk.id });
+  });
+
+  it('names the peer stage on a refusal of exchange C (#3161)', async () => {
+    await exchange(CLIENT.help, {
+      subject_token: await idTokenFor(CLIENT.help.id),
+      subject_token_type: TOKEN_TYPE.idToken,
+      requested_token_type: TOKEN_TYPE.accessToken,
+      audience: CLIENT.desk.id,
+    });
+    expect(parsed(refusals()[0]!)).toEqual({ stage: 'peer', error: 'invalid_target', client: CLIENT.help.id });
   });
 
   it('logs no refusal for an exchange that succeeds', async () => {

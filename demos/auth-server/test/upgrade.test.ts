@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { rewritePlaceholderAddresses, upgradeLegacySchema } from '../db/upgrade.js';
 import { introspectTable, REDACTED, type SqlExec } from '../src/introspect.js';
+import { grantFor } from '../src/delegations.js';
 
 /**
  * Booting the current issuer on a database an older one wrote.
@@ -498,5 +499,23 @@ describe('taking the personal number out of a placeholder address (#2938)', () =
 
     expect(rewritePlaceholderAddresses(exec, 3)).toBe(0);
     expect(email('bankid-user')).toBe(rewritten);
+  });
+});
+
+describe('upgrading a store whose delegation grants predate channels (#3161)', () => {
+  it('adds the column, and the grant already there keeps meaning mcp alone', () => {
+    const store = new Database(':memory:');
+    // `delegation_grant` exactly as #1824 created it, with one grant delivered then.
+    store.exec(`CREATE TABLE delegation_grant (
+      host_app_scope_id TEXT NOT NULL, actor_app_scope_id TEXT NOT NULL, permissions TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (host_app_scope_id, actor_app_scope_id))`);
+    store.prepare("INSERT INTO delegation_grant (host_app_scope_id, actor_app_scope_id, permissions) VALUES ('host', 'actor', '[\"t.read\"]')").run();
+    const exec = sqlExecOf(store);
+
+    expect(upgradeLegacySchema(exec).added).toEqual(['delegation_grant.channels']);
+    for (const stmt of SCHEMA_STATEMENTS) store.exec(stmt);
+    expect(grantFor(exec, 'host', 'actor')).toEqual({ permissions: ['t.read'], channels: ['mcp'] });
+    // Idempotent: the next boot finds the column and adds nothing.
+    expect(upgradeLegacySchema(exec).added).toEqual([]);
   });
 });
