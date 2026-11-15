@@ -7,7 +7,16 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { CEILING_A, CEILING_B, CEILING_PEER, CEILING_ROLE, delegationCeilingMod } from './delegation-ceiling-module.js';
+import {
+  CEILING_A,
+  CEILING_B,
+  CEILING_ECHOED,
+  CEILING_NOTED,
+  CEILING_NOTE_ENTITY,
+  CEILING_PEER,
+  CEILING_ROLE,
+  delegationCeilingMod,
+} from './delegation-ceiling-module.js';
 
 const ACTOR = 'client-todo';
 
@@ -101,6 +110,47 @@ export function delegationCeilingContractSuite(adapterName: string, makeFixture:
       const key = ulid();
       const first = await keyed(await as([CEILING_A, CEILING_B]), 'ceiling/mark', key);
       expect(await keyed(await as([CEILING_B, CEILING_A]), 'ceiling/mark', key)).toEqual({ result: first.result, replayed: true });
+    });
+
+    describe('the record a delegated call leaves (#3176)', () => {
+      /** Each event about one note: its type and the delegation its history entry reports. */
+      const recorded = async (id: string) =>
+        (await host.admin.entityHistory(staff, t, s, { entityType: CEILING_NOTE_ENTITY, entityId: id })).entries.map(
+          (e) => [e.type, e.delegation],
+        );
+      /** The denial one call left, found by the invocation id it carried. */
+      const deniedIn = async (invocationId: string) =>
+        (await host.admin.listDenials(staff, t, s, { operation: 'ceiling/b' })).filter((d) => d.invocationId === invocationId);
+
+      it('names the app on every event the call emits, a sub-transaction\'s included, and on none its consumer emits', async () => {
+        const id = ulid();
+        await delegatedA.invoke('ceiling/note', { id });
+        expect(await recorded(id)).toEqual([
+          [CEILING_NOTED, { actor: ACTOR }],
+          [CEILING_NOTED, { actor: ACTOR }],
+          [CEILING_ECHOED, null],
+          [CEILING_ECHOED, null],
+        ]);
+      });
+
+      it('names the app on the denial a refused delegated check writes', async () => {
+        const invocationId = ulid();
+        expect(await codeOf(delegatedA.invoke('ceiling/b', undefined, { invocationId }))).toBe('permission_denied');
+        expect((await deniedIn(invocationId)).map((d) => [d.permission, d.delegation])).toEqual([[CEILING_B, { actor: ACTOR }]]);
+      });
+
+      it('records null for a person acting directly, on an event and on a denial', async () => {
+        const id = ulid();
+        await direct.invoke('ceiling/note', { id });
+        expect((await recorded(id)).filter(([type]) => type === CEILING_NOTED)).toEqual([
+          [CEILING_NOTED, null],
+          [CEILING_NOTED, null],
+        ]);
+        const invocationId = ulid();
+        const stranger = await host.getScope(principalId.parse(ulid()), t, s);
+        expect(await codeOf(stranger.invoke('ceiling/b', undefined, { invocationId }))).toBe('permission_denied');
+        expect((await deniedIn(invocationId)).map((d) => d.delegation)).toEqual([null]);
+      });
     });
 
     it('an empty scope admits nothing', async () => {

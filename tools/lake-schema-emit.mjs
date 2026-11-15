@@ -53,6 +53,7 @@ const STREAM_TYPE = {
   payload: 'json',
   authorization: 'json',
   impersonation: 'json',
+  delegation: 'json',
   operation: 'string',
   version: 'string',
   caused_by: 'string',

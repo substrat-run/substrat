@@ -72,6 +72,11 @@
       "required": false
     },
     {
+      "name": "delegation",
+      "type": "json",
+      "required": false
+    },
+    {
       "name": "operation",
       "type": "string",
       "required": false

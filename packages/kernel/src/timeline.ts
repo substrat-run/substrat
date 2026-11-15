@@ -99,7 +99,7 @@ export interface TimelineReader {
 /** The envelope columns, in the order `mapTimelineRow` expects. */
 const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
 /** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
-const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation, version, caused_by, invocation_id`;
+const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, delegation, pii_class, subject_id, operation, version, caused_by, invocation_id`;
 
 interface TimelineRow {
   id: string;
@@ -112,6 +112,7 @@ interface HistoryRow extends TimelineRow {
   payload: string | null;
   authorization: string | null;
   impersonation: string | null;
+  delegation: string | null;
   pii_class: string;
   subject_id: string | null;
   operation: string | null;
@@ -201,6 +202,8 @@ function decodeHistoryRow(row: HistoryRow): { entry: HistoryEntry; failed: Reado
     // ordinary case, not an absence of recording — the kernel stamps this on
     // every event raised under a session and on no other.
     impersonation: d.json('impersonation', shape.impersonation, row.impersonation, null),
+    // #3176: the same kind of fact as the stamp above: null is nobody acting for anyone.
+    delegation: d.json('delegation', shape.delegation, row.delegation ?? null, null),
     piiClass: d.required('pii_class', shape.piiClass, row.pii_class),
     subjectId: d.nullable('subject_id', shape.subjectId, row.subject_id ?? null),
     // #1231, and the one null that is honestly TWO facts at once: a consumer

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { actor } from './events.js';
+import { delegationStamp } from './delegations.js';
 import { impersonationStamp } from './impersonation.js';
 import { permissionKey, scopeId, tenantId } from './ids.js';
 
@@ -56,6 +57,15 @@ export const permissionDenial = z.object({
    * this log exists to answer — and `actor` alone would answer it wrongly.
    */
   impersonation: impersonationStamp.nullable(),
+  /**
+   * The app the refused call was made FOR the person by (#3176), or null: nobody acted for
+   * anyone. `actor` is the person, whose holdings the check read; a delegated call is also
+   * capped by the keys delegated to the app, so a refusal here may be the ceiling's rather
+   * than the person's, and this is what tells a reader to look there. Optional as well as
+   * nullable for version skew only, as on `historyEntry`; every read from this version on
+   * sets it.
+   */
+  delegation: delegationStamp.nullable().optional(),
   /**
    * The invocation this refusal happened during (#1525), or null.
    *

@@ -249,7 +249,7 @@ export interface ExplanationView {
 
 /** `eventEffects` — a published schema, not a stored row. */
 export interface EventEffects {
-  event: { id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null };
+  event: { id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; delegation?: { actor: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null };
   deliveries: ({ consumer: string; state: string; at: string; error: string | null; attempts: number; invocationId: string | null; decodeError?: string })[];
   effects: EventEffects[];
 }
@@ -1073,7 +1073,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/denials` — `dashboard/list-app-denials`
    */
-  listAppDenials(input: { scopeId: string; until?: string; limit?: number }): Promise<{ entries: ({ id: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; permission: string; tenantId: string; scopeId: string | null; operation: string | null; impersonation: { session: string; by: string } | null; invocationId: string | null; at: string; drainedAt: string | null; decodeError?: string })[]; limit: number }>;
+  listAppDenials(input: { scopeId: string; until?: string; limit?: number }): Promise<{ entries: ({ id: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; permission: string; tenantId: string; scopeId: string | null; operation: string | null; impersonation: { session: string; by: string } | null; delegation?: { actor: string } | null; invocationId: string | null; at: string; drainedAt: string | null; decodeError?: string })[]; limit: number }>;
 
   /**
    * One page of an app's lifecycle trail (Activity panel), newest first
@@ -1292,7 +1292,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/cause` — `dashboard/read-app-cause`
    */
-  readAppCause(input: { scopeId: string; eventId: string; maxDepth?: number }): Promise<{ chain: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; terminal: string; imported?: { eventId: string; vertical: string; scopeId: string } }>;
+  readAppCause(input: { scopeId: string; eventId: string; maxDepth?: number }): Promise<{ chain: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; delegation?: { actor: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; terminal: string; imported?: { eventId: string; vertical: string; scopeId: string } }>;
 
   /**
    * The event tree caused by one event in this app scope
@@ -1306,14 +1306,14 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/history` — `dashboard/read-app-history`
    */
-  readAppHistory(input: { scopeId: string; entityType: string; entityId: string; limit?: number; cursor?: string }): Promise<{ entries: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; nextCursor: string | null }>;
+  readAppHistory(input: { scopeId: string; entityType: string; entityId: string; limit?: number; cursor?: string }): Promise<{ entries: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; delegation?: { actor: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; nextCursor: string | null }>;
 
   /**
    * The events emitted by one invocation in this app scope
    *
    * `GET /apps/{scopeId}/invocation` — `dashboard/read-app-invocation`
    */
-  readAppInvocation(input: { scopeId: string; invocationId: string; limit?: number }): Promise<{ events: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; truncated: boolean }>;
+  readAppInvocation(input: { scopeId: string; invocationId: string; limit?: number }): Promise<{ events: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; delegation?: { actor: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; truncated: boolean }>;
 
   /**
    * A bounded page of one of this app scope's tables

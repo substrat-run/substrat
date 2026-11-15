@@ -17676,6 +17676,26 @@
                               }
                             ]
                           },
+                          "delegation": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "actor": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "actor"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "invocationId": {
                             "anyOf": [
                               {
@@ -21929,6 +21949,26 @@
                               }
                             ]
                           },
+                          "delegation": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "actor": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "actor"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "piiClass": {
                             "type": "string"
                           },
@@ -22371,6 +22411,26 @@
                               }
                             ]
                           },
+                          "delegation": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "actor": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "actor"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "piiClass": {
                             "type": "string"
                           },
@@ -22672,6 +22732,26 @@
                                 "required": [
                                   "session",
                                   "by"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "delegation": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "actor": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": [
+                                  "actor"
                                 ],
                                 "additionalProperties": false
                               },
@@ -28520,6 +28600,26 @@
                     "required": [
                       "session",
                       "by"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delegation": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "actor": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "actor"
                     ],
                     "additionalProperties": false
                   },

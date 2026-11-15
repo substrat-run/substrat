@@ -14,6 +14,7 @@ import {
   type Instant,
   type ModuleId,
 } from './ids.js';
+import { delegationStamp } from './delegations.js';
 import { impersonationStamp } from './impersonation.js';
 import { objectRefString } from './object-ref.js';
 
@@ -151,6 +152,10 @@ const domainEventShape = z
     // `DomainEventInput`, so module code can neither claim a session nor drop one.
     // Absent (not empty) on every ordinary event, which is the honest reading.
     impersonation: impersonationStamp.optional(),
+    // #3176: the app that made this call FOR the person (a delegated call, #3161). `actor`
+    // above stays the person, as it does under impersonation; this names the app. Stamped
+    // kernel-side on the same pattern, and absent on every event nobody delegated.
+    delegation: delegationStamp.optional(),
     // The signals `operation` dimension (#1231): the operation this event was
     // emitted from — the exact `invoke()` string (`ticket0/answer`,
     // `attachments.upload`), which for a scheduled emit is the schedule's own
@@ -251,6 +256,18 @@ export const historyEntry = timelineEntry.extend({
    * change their support engineer made.
    */
   impersonation: impersonationStamp.nullable(),
+  /**
+   * The app that made this change FOR the person (#3176), or null — which, like
+   * `impersonation`'s null, is a fact: nobody acted for anyone, the person (or the
+   * actor named) acted directly. It is never "unrecorded": every row written before the
+   * column predates the possibility of a delegated call. Without it, a note an app wrote
+   * for Ada reads exactly like one Ada wrote herself.
+   *
+   * Optional as well as nullable for version skew alone: an app running a kernel from
+   * before the field answers without it, and a reader on newer contracts must still parse
+   * that answer. Every `readHistory` from this version on sets it.
+   */
+  delegation: delegationStamp.nullable().optional(),
   piiClass,
   subjectId: dataSubjectId.nullable(),
   /**
