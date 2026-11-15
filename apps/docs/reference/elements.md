@@ -285,7 +285,7 @@ offer a Stop button; without it, none is drawn.
 
 **Where the answer comes from.** `api.ask` above is a route on your vertical's worker, and the
 worker calls the model with the platform's model host,
-[`createModelHost`](/reference/vertical-host#createmodelhost-options-from-substrat-run-vertical-host-model),
+[`createModelHost`](/reference/vertical-host),
 which runs on platform-held credentials. Do not add a provider key to the vertical. Declare
 `"usesModels": true` under `substrat` in its `package.json` so a push binds `env.AI`, and call
 `models.run({ spec, attribution, system, messages })` from the route, outside any operation.

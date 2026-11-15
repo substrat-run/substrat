@@ -5,7 +5,7 @@ provision, reconcile, introspect, snapshot, export/restore, bookmark/rewind and 
 install — plus the `application/problem+json` error envelope, **authored once and mounted**
 into a vertical's [Hono](https://hono.dev) worker. The `/model` export, `createModelHost`,
 is how a vertical calls a language model on platform-held credentials, with no provider key
-of its own; it has [its own section](#createmodelhost-options-from-substrat-run-vertical-host-model) below.
+of its own; it has [its own section](#createmodelhost-options-—-from-substrat-run-vertical-host-model) below.
 
 Before this package every sandbox-clean vertical hand-copied those routes and a Hono
 `onError` into its own `worker.ts`. The copies drifted — route sets disagreed and some

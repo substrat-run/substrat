@@ -25,7 +25,7 @@ exact input the person saw.
   the tool ran. The host integration must handle that recovery boundary, and the target
   operation still checks its own permissions. Approval is not a grant of target authority.
 - It does not talk to a model or a network. The model call is the host's: a vertical runs it
-  through the platform's model host, [`createModelHost`](/reference/vertical-host#createmodelhost-options-from-substrat-run-vertical-host-model),
+  through the platform's model host, [`createModelHost`](/reference/vertical-host),
   on platform-held credentials, so it needs no provider account or API key of its own.
 - It has no message branches, human participants, support handoff or memory yet.
 

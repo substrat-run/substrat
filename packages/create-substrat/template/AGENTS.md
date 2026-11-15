@@ -346,7 +346,7 @@ Use the platform model host: `createModelHost` from `@substrat-run/vertical-host
 called from `worker.ts` outside any operation. Set `"usesModels": true` under `substrat` in
 `package.json` so a push binds `env.AI`, and pass it as `aiBinding`. It runs on platform-held
 credentials, so **never add a provider key** to a vertical. Reference:
-<https://substrat.net/reference/vertical-host#createmodelhost-options-from-substrat-run-vertical-host-model>.
+<https://substrat.net/reference/vertical-host> (the `createModelHost` section).
 
 ## The gates — run them, believe them
 
