@@ -35,6 +35,8 @@ export { moduleLogContractSuite } from './module-log-suite.js';
 export { verifiedEmailContractSuite } from './verified-email-suite.js';
 export { checkTallyContractSuite } from './check-tally-suite.js';
 export { checkTallyMod, checkTallyOperations, CHECK_TALLY_MODULE_ID, undeclaredTallyMod } from './check-tally-module.js';
+export { delegationCeilingContractSuite } from './delegation-ceiling-suite.js';
+export { delegationCeilingMod, DELEGATION_CEILING_MODULE_ID } from './delegation-ceiling-module.js';
 export { asyncLogContractSuite, type AsyncLogFixture } from './async-log-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';

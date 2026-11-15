@@ -333,6 +333,8 @@ export const INDEX_VALUE_EXPORTS = [
   'callReservedStoreOperation',
   'callScopeStore',
   'canonicalInstant',
+  // #3161: a delegated call's ceiling, which both adapters thread into every decision a call makes.
+  'capCoverage',
   'capabilitiesForLoad',
   'capabilityAttachmentWriteRefused',
   'capabilityByIdQuery',
@@ -383,6 +385,7 @@ export const INDEX_VALUE_EXPORTS = [
   // #2518: a connector call's bounds: the call's total, and a streamed body's idle window.
   'deadlineFetch',
   'delegatedRevokeSql',
+  'delegationCeilingOf',
   'denialListQuery',
   'denialSummaryQuery',
   'denialTotalsQuery',
@@ -593,6 +596,8 @@ export const INDEX_VALUE_EXPORTS = [
   'orphanSweepLicensedAt',
   'orphanSweepVersionRefusal',
   'outboxSubscribersOf',
+  'outsideCeiling',
+  'parseScopeDelegation',
   'parseValidationRecords',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
   'peerCallerAt',

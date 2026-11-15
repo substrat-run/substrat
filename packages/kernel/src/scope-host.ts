@@ -202,6 +202,7 @@ import type {
   NotedTransition,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
+import type { ScopeDelegation } from './delegation-ceiling.js';
 import type { ByteBody } from './byte-stream.js';
 import type { AttachmentOpenOptions, BlobStoreProvisionInput, BlobStoreRecord, OpenedAttachment, OpenedAttachmentStream } from './attachment-bytes.js';
 import type {
@@ -1087,6 +1088,17 @@ export interface PersonScopeOptions extends ScopeStubOptions {
    * also names. Leaving it out is safe: `ctx.verifiedEmail` is then null.
    */
   verifiedEmail?: string | null;
+  /**
+   * The person is acting through another app (#3161): `actor` is that app as the issuer names it
+   * (a client id), carried for the record; `scope` is the keys delegated to it, a CEILING over what
+   * the person holds and never a grant. Every permission decision an invocation through this stub
+   * makes — `ctx.check`, entity checks, the grant-scoped read behind a filtered list,
+   * `ctx.grant`/`ctx.revoke`'s re-check, `ctx.canAssign`, the guards and the host's own checks before
+   * the handler — refuses a key outside `scope` exactly as it refuses a key the person lacks. An
+   * empty `scope` admits nothing. Absent: the person acting directly, as before. A malformed one is
+   * refused at `getScope` (`validation_failed`), never ignored.
+   */
+  delegation?: ScopeDelegation;
 }
 
 export interface ScopeStubOptions {

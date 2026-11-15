@@ -37,6 +37,7 @@ import { purgeRequestMod } from './schedule-purge-request-module.js';
 import { purgeTwoMod } from './schedule-purge-two-module.js';
 import { derivedMod } from './derived-module.js';
 import { checkTallyMod, undeclaredTallyMod } from './check-tally-module.js';
+import { delegationCeilingMod } from './delegation-ceiling-module.js';
 import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
@@ -3253,6 +3254,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // `tally_rows` or invokes a `tally/*` operation.
   checkTallyMod,
   undeclaredTallyMod,
+  // #3161: the delegated-call ceiling suite's module. Inert for every other suite — nothing else
+  // reads `ceiling_rows` or invokes a `ceiling/*` operation.
+  delegationCeilingMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

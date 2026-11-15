@@ -341,6 +341,11 @@ import {
   registerTrashTargets,
   runPurgePass,
   withheldKeysFor,
+  capCoverage,
+  delegationCeilingOf,
+  outsideCeiling,
+  parseScopeDelegation,
+  type ScopeDelegation,
   statefulTablesOf,
   afterMigration,
   afterRuntimeDdl,
@@ -5026,6 +5031,8 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: PersonScopeOptions,
   ): Promise<ScopeStub> {
+    // #3161: refused before anything is read, so a malformed ceiling never yields a stub.
+    const delegation = parseScopeDelegation(options?.delegation);
     const row = this.directory
       .prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?')
       .get(scopeId) as { tenant_id: string; status: string } | undefined;
@@ -5069,7 +5076,7 @@ export class SqliteScopeHost implements ScopeHost {
       // the migration's own message, which is the one an operator needs.
       throw substratError('conflict', `scope not active (status: ${row.status}): ${scopeId}`, { reason: SCOPE_GATE_REASONS.notActive });
     }
-    return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options, undefined, false, options?.verifiedEmail ?? null);
+    return this.buildStub(tenantId, scopeId, rt, asPrincipal(principal), options, undefined, false, options?.verifiedEmail ?? null, delegation);
   }
 
   async getScopeStore(
@@ -6554,12 +6561,14 @@ export class SqliteScopeHost implements ScopeHost {
     /** Null for the tenant node — the executor's `level: 'tenant'` (#1184). */
     scopeId: ScopeId | null,
     roleKey: string,
+    /** #3161: a delegated call's ceiling — a role carrying a key above it is not covered. */
+    ceiling?: ReadonlySet<string>,
   ): Promise<Coverage> {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
     if (!role) {
       throw unknownRoleError(roleKey);
     }
-    return this.checker.covers(subject, role.permissions, { tenantId, scopeId });
+    return capCoverage(await this.checker.covers(subject, role.permissions, { tenantId, scopeId }), role.permissions, ceiling);
   }
 
   /** #1705: what this deployment imports — the sweep's reason to call no scope when it is empty. */
@@ -6980,8 +6989,11 @@ export class SqliteScopeHost implements ScopeHost {
     purge = false,
     /** K-61: a parameter of its own, so only `getScope` can hand one over and no other door can. */
     verifiedEmail: string | null = null,
+    /** #3161: the same, for a person acting through another app. Already parsed by `getScope`. */
+    delegation?: ScopeDelegation,
   ): ScopeStub {
     const operations = this.operations;
+    const ceiling = delegationCeilingOf(delegation);
 
     return {
       tenantId,
@@ -7163,7 +7175,7 @@ export class SqliteScopeHost implements ScopeHost {
           trace?.head({ operation, tenantId, scopeId, principalKind: subject.kind, principal: actorOf(subject) });
           const checks: CheckTally = { calls: 0 };
           const ctx = this.operationContext(
-            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld, checks, verifiedEmail,
+            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld, checks, verifiedEmail, ceiling,
           );
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
@@ -7206,7 +7218,7 @@ export class SqliteScopeHost implements ScopeHost {
             // response it received itself; `idempotency.ts` states what that does
             // and does not promise about authorization.
             if (idempotencyKey !== undefined && fingerprint !== undefined) {
-              const lookup = idempotencyLookupQuery(subject, idempotencyKey);
+              const lookup = idempotencyLookupQuery(subject, idempotencyKey, delegation);
               const prior = (
                 rt.db.prepare(lookup.sql).all(...lookup.params) as IdempotencyRow[]
               )[0];
@@ -7303,6 +7315,7 @@ export class SqliteScopeHost implements ScopeHost {
                 redactSecrets(result, minted),
                 committedVersion ?? null,
                 at,
+                delegation,
               );
               rt.db.prepare(record.sql).run(...record.params);
               const prune = idempotencyPruneStatement(at);
@@ -14780,6 +14793,8 @@ export class SqliteScopeHost implements ScopeHost {
     checks?: CheckTally,
     /** K-61: the person's verified address, from `getScope` alone. */
     verifiedEmail: string | null = null,
+    /** #3161: a delegated call's ceiling — keys outside it are refused like `withheld`. */
+    ceiling?: ReadonlySet<string>,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -14848,7 +14863,7 @@ export class SqliteScopeHost implements ScopeHost {
       // #1642: parsed before the override actor's early return, which never reaches
       // the checker — a cast key would otherwise become that path's proof relation.
       const permission = assertPermissionKey(unparsed);
-      if (withheld?.has(permission)) {
+      if (withheld?.has(permission) || outsideCeiling(ceiling, permission)) {
         return { allowed: false as const, checked: permission, node: { tenantId: rt.tenantId, scopeId: rt.scopeId } };
       }
       if (overrideActor) {
@@ -14937,7 +14952,7 @@ export class SqliteScopeHost implements ScopeHost {
     // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
     const runCanAssign: OperationContext['canAssign'] = async (roleKey) => {
       this.refuseReservedRole(rt.tenantId, roleKey, 'person');
-      return this.assignmentBound(subject, rt.tenantId, rt.scopeId, roleKey);
+      return this.assignmentBound(subject, rt.tenantId, rt.scopeId, roleKey, ceiling);
     };
 
     // ctx.emit's writer, and the kernel's own events' (#1864): one path to the outbox, with the
@@ -15131,7 +15146,7 @@ export class SqliteScopeHost implements ScopeHost {
         const permission = assertPermissionKey(unparsed);
         return grantedEntitiesForContext(
           checker, subject, permission, { tenantId: rt.tenantId, scopeId: rt.scopeId },
-          entityType, options, runCheck, withheld, Boolean(overrideActor),
+          entityType, options, runCheck, withheld, Boolean(overrideActor), ceiling,
         );
       },
       canAssign: runCanAssign,

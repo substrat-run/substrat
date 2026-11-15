@@ -84,6 +84,7 @@ import {
   moduleLogContractSuite,
   verifiedEmailContractSuite,
   checkTallyContractSuite,
+  delegationCeilingContractSuite,
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
@@ -1913,6 +1914,16 @@ moduleLogContractSuite('adapter-cloudflare', async () => {
       await host.close();
     },
   };
+});
+
+// #3161: the ceiling crosses the coordinator→DO hop as plain data and is enforced in the DO.
+delegationCeilingContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
 });
 
 // #2387: the record is written inside the DO, to the console, where it is read here.
