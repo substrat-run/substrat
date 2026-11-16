@@ -226,6 +226,11 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * named an address without it, so a hook that drops the address cannot report success with a
    * first-sign-in window open. Both `parentScopeId` and `ownerEmail` is not a request any caller
    * makes; the sibling seat is recorded, and the address reported not reserved.
+   *
+   * Each seat is several rows, and they land in one transaction: a DO commits the writes of one
+   * synchronous stretch together but keeps those made before a throw, so without it a failed
+   * `owner_address` insert would leave a recorded seat with no reservation — which every re-run
+   * then reads as "recorded some other way first" and reports not reserved.
    */
   async setPendingOwner(
     scopeId: string,
@@ -233,15 +238,17 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     parentScopeId?: string,
     ownerEmail?: string,
   ): Promise<{ ownerAddressReserved: boolean }> {
-    if (parentScopeId) {
-      recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
+    return this.ctx.storage.transactionSync(() => {
+      if (parentScopeId) {
+        recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
+        return { ownerAddressReserved: false };
+      }
+      if (ownerEmail) {
+        return { ownerAddressReserved: recordAddressedOwnerSeat(this.registrySql, scopeId, principal, ownerEmail, Date.now()) };
+      }
+      recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
       return { ownerAddressReserved: false };
-    }
-    if (ownerEmail) {
-      return { ownerAddressReserved: recordAddressedOwnerSeat(this.registrySql, scopeId, principal, ownerEmail, Date.now()) };
-    }
-    recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
-    return { ownerAddressReserved: false };
+    });
   }
 
   /**

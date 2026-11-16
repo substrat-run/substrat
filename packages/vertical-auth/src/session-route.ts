@@ -22,6 +22,10 @@
  *     unclaimed. A 200 because it is not a refusal: the app shows "set this up" instead of a
  *     sign-in, and `firstSignInOpen` says whether a plain sign-in still claims the seat or only a
  *     claim link from the dashboard does — the app must not offer a sign-in that binds nobody.
+ *     `ownerAddressReserved: true` is added when the seat is reserved for one address (#3202): no
+ *     window is open, yet a sign-in whose issuer verified that address claims it, so the app
+ *     offers a sign-in with that address instead of sending the owner for a claim link. The
+ *     address itself is not in the answer.
  *   - **401** — nobody bound, seat claimed (or never provisioned here). An `HTTPException`, so
  *     the vertical's own `onError` renders it, as `mountOwnerClaim`'s refusals are.
  */
@@ -99,7 +103,11 @@ export function mountSession<E extends object, N extends { tenantId: TenantId; s
     if (!principal || !subject) {
       const seat = await deps.directory(c.env, node).ownerSeat(node.scopeId);
       if (seat.state === 'unclaimed') {
-        return c.json({ status: 'needs-setup' as const, firstSignInOpen: seat.firstSignIn?.open ?? false });
+        return c.json({
+          status: 'needs-setup' as const,
+          firstSignInOpen: seat.firstSignIn?.open ?? false,
+          ...(seat.addressReserved ? { ownerAddressReserved: true as const } : {}),
+        });
       }
       throw new HTTPException(401, { message: 'unauthorized' });
     }

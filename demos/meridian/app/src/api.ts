@@ -197,6 +197,8 @@ export interface NeedsSetup {
   /** Whether a plain sign-in still claims the seat (#925) — it closes on a window after
    *  provision; after that only a claim link from the dashboard binds the owner. */
   firstSignInOpen?: boolean;
+  /** The seat is reserved for the address its owner asked with (#3202): a sign-in with it claims the seat. */
+  ownerAddressReserved?: boolean;
 }
 /** Narrow `/api/me` to the first-run setup state (no admin has claimed the workspace yet). */
 export function isNeedsSetup(m: Me | NeedsSetup): m is NeedsSetup {

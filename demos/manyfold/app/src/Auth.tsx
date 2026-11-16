@@ -98,15 +98,23 @@ export function ClaimOwner({ token }: { token: string }) {
 /**
  * On a fresh instance the first sign-in claims the owner seat (→ admin) — for a window after
  * provision (#925). Once it has closed, the seat is claimed by a link from the dashboard, and
- * offering a sign-in that binds nobody would only look like a failed login.
+ * offering a sign-in that binds nobody would only look like a failed login. A seat reserved for
+ * the address its owner asked with (#3202) opens no window, yet a sign-in with that address claims it.
  */
-export function SignIn({ firstRun, firstSignInOpen = true }: { firstRun: boolean; firstSignInOpen?: boolean }) {
-  const closed = firstRun && !firstSignInOpen;
+export function SignIn({
+  firstRun,
+  firstSignInOpen = true,
+  ownerAddressReserved = false,
+}: { firstRun: boolean; firstSignInOpen?: boolean; ownerAddressReserved?: boolean }) {
+  const reserved = firstRun && ownerAddressReserved;
+  const closed = firstRun && !firstSignInOpen && !reserved;
   return (
     <Frame
       title="Manyfold"
       subtitle={
-        closed
+        reserved
+          ? 'This workspace was set up for the address you asked for it with. Sign in with that address to claim it.'
+          : closed
           ? 'This workspace has no owner yet, and the window for claiming it by signing in has closed. Ask whoever installed it for a claim link from the dashboard.'
           : firstRun
             ? 'Sign in with your identity provider to claim this workspace'

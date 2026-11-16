@@ -35,6 +35,7 @@ import {
   mintOwnerClaimLink,
   placesReporter,
   reportScopeMembers,
+  resolveSignedIn,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
@@ -200,7 +201,8 @@ async function callerFor(env: Env, req: Request) {
   const instance = await authWiringFor(env, base);
   const subject = await providerOf(instance).resolve(req.headers);
   const node = await nodeFor(req, env);
-  const principal = subject ? await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub) : null;
+  // #3202: a seat reserved for the address this subject's issuer verified is claimed here too.
+  const principal = subject ? await resolveSignedIn(identityDo(env, node), node.scopeId, subject) : null;
   return {
     identity: instance.identity,
     subject,
