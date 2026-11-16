@@ -32,6 +32,7 @@ import {
   promoteRefusalIn,
   refusalFor,
   reviewUploadIn,
+  slugIn,
   substratCalls,
   waitingPromoteIn,
 } from './approvals-parse'
@@ -190,6 +191,20 @@ async function checkWaitingPromote($: Engine, launch: Launch) {
   }
 }
 
+/**
+ * The session-start check (#3194): only in a vertical, which is a directory whose package.json
+ * names `substrat.slug` — anywhere else no CLI is started. Quiet whatever happens.
+ */
+async function checkAtStart($: Engine) {
+  try {
+    const cwd = await $.session.cwd()
+    if (!slugIn(await $.fs.read(`${cwd.replace(/\/$/, '')}/package.json`))) return
+    await checkWaitingPromote($, { launcher: lastLauncher, cwd })
+  } catch {
+    // No package.json, or none that parses: not a vertical.
+  }
+}
+
 async function acknowledge($: Engine) {
   const p = await read($, promote)
   if (!p) return
@@ -251,6 +266,10 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: PANE, description: 'Show what is waiting for your approval in this Substrat vertical' })
+    // #3194: a promote refused in CI waits in prod with nobody told. Ask once at the start, in the
+    // background, so the line above the prompt says so before anyone opens the pane. Not awaited:
+    // the CLI can take a while, and the session does not wait on it.
+    $.clock.after(0, () => void checkAtStart($))
 
     return next(e)
   })

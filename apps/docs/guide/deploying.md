@@ -550,7 +550,14 @@ moves and discards and digests the review was computed from), and you re-run wit
 
 ```text
 to acknowledge exactly what is shown above, re-run with the --ack-* flags it needs and --review 01J…:5f3c…
+
+waiting for a person, not broken: approve it in the Substrat approvals pane (/substrat-approvals in Claude), or read it with `substrat promote crm --review-only`
 ```
+
+A promote your CI runs on merge is refused the same way, in a log nobody is reading. The last
+line says it waits on a person rather than failed: `substrat promote <slug> --review-only` reads the
+same review (both diffs and the token) without promoting, and the Substrat plugin's approvals pane
+runs that check when a session starts in the vertical, so it shows with its button to approve.
 
 The control plane recomputes that digest from its own stored rows. If prod has moved, or the rows
 no longer give the digest, the promote is refused as stale and nothing changes; `substrat promote`

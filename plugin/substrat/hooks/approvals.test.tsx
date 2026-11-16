@@ -1,7 +1,7 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { changesIn, promoteRefusalIn, refusalFor, reviewUploadIn, substratCalls, waitingPromoteIn } from './approvals-parse'
+import { changesIn, promoteRefusalIn, refusalFor, reviewUploadIn, slugIn, substratCalls, waitingPromoteIn } from './approvals-parse'
 
 const PANE = {
   plugin: 'substrat',
@@ -38,9 +38,14 @@ const DELTA = '# Concept delta — acme\n\nAgainst `origin/main` (the merge-base
 
 /** The engine beneath the plugin: every CLI run is recorded and answered by `cli`. */
 type CliAnswer = { exitCode: number; stdout?: string; stderr?: string }
-function engine(on: On, cli: (argv: readonly string[]) => CliAnswer | Promise<CliAnswer>) {
+function engine(on: On, cli: (argv: readonly string[]) => CliAnswer | Promise<CliAnswer>, files: Record<string, string> = {}) {
   const runs: string[][] = []
   const prompts: string[] = []
+  on('fs.read', (_, e) => {
+    const text = files[e.path]
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
   on('command.register', () => ({ value: { command: 'substrat-approvals' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', () => ({ value: undefined }))
@@ -234,6 +239,53 @@ describe('a promote waiting in prod, pushed outside the session', () => {
     ])
     expect(prompts.at(-1)).toContain('acknowledged --ack-migrations and promoted acme 01JX9ZV3Q8')
     await ui.unmount()
+  })
+})
+
+describe('a promote waiting in prod, checked at session start (#3194)', () => {
+  const VERTICAL = { '/work/acme/package.json': JSON.stringify({ name: '@acme/app', substrat: { slug: 'acme' } }) }
+
+  test('in a vertical, the waiting promote is in the pane before anyone opens it', async ($, on) => {
+    const { runs } = engine(on, argv => (argv.includes('--review-only') ? { exitCode: 0, stdout: WAITING } : { exitCode: 1 }), VERTICAL)
+    const clock = mock.clock(on)
+    await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+    await clock.settle()
+    expect(runs).toEqual([['npx', '--yes', '@substrat-run/cli@latest', 'promote', '--review-only', '--json']])
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /Promote acme 01JX9ZV3Q8/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'promote-ack' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  for (const [where, files] of [
+    ['no package.json', {}],
+    ['a package.json with no substrat.slug', { '/work/acme/package.json': JSON.stringify({ name: 'other', substrat: {} }) }],
+    ['a package.json that does not parse', { '/work/acme/package.json': '{' }],
+  ] as const) {
+    test(`outside a vertical (${where}), no CLI is started`, async ($, on) => {
+      const { runs } = engine(on, () => ({ exitCode: 0, stdout: WAITING }), files)
+      const clock = mock.clock(on)
+      await $.session.start({ cwd: '/work/acme', surface: 'desktop', isInteractive: true })
+      await clock.settle()
+      expect(runs).toEqual([])
+    })
+  }
+
+  test('slugIn reads substrat.slug and nothing else', () => {
+    expect(slugIn(JSON.stringify({ substrat: { slug: 'acme' } }))).toBe('acme')
+    expect(slugIn(JSON.stringify({ substrat: { slug: ' ' } }))).toBeUndefined()
+    expect(slugIn('null')).toBeUndefined()
+  })
+})
+
+describe('a refusal that ends by pointing here (#3194)', () => {
+  test('still parses, and the pointer is not in what the pane shows', () => {
+    const printed = `${REFUSED}\n\nwaiting for a person, not broken: approve it in the Substrat approvals pane (/substrat-approvals in Claude), or read it with \`substrat promote acme --review-only\``
+    const r = promoteRefusalIn({ launcher: ['npx', 'substrat'], args: ['push', '--promote', 'prod'] }, printed)
+    expect(r).toMatchObject({ slug: 'acme', versionId: '01JX9ZV3Q8', acks: ['--ack-permissions', '--ack-migrations'], review: `01JX9ZV0AA:${'e'.repeat(64)}` })
+    expect(r?.text).not.toContain('waiting for a person')
+    expect(r?.text.endsWith(`--review 01JX9ZV0AA:${'e'.repeat(64)}`)).toBe(true)
   })
 })
 

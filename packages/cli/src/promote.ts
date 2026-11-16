@@ -118,13 +118,27 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
     // A review that moved under the acknowledgement, or an acknowledgement sent with none
     // (#2333), is answered like a digest refusal: by the diffs as they stand now, and their token.
     const review = promoteReviewReasonIn(parsed);
-    if (!message.includes(NEEDS_ACK) && review === undefined) throw new Error(message + listing);
+    if (!message.includes(NEEDS_ACK) && review === undefined) {
+      // An export break alone waits on a person too; anything else is a failure, said as it is.
+      throw new Error(listing ? `${message}${listing}\n\n${waitingLine(opts.slug)}` : message);
+    }
     const lines = await explainRefusal(opts, {
       permission: message.includes('changes the permission surface'),
       migration: message.includes('changes migrations'),
     });
-    throw new Error(`${message}${listing}\n\n${lines.join('\n')}`);
+    throw new Error(`${message}${listing}\n\n${lines.join('\n')}\n\n${waitingLine(opts.slug)}`);
   }
+}
+
+/**
+ * The last line of a refusal that waits on a person (#3194). Most promotes run in CI after a
+ * merge, where the refusal reads like a broken job and the `--review` token sits in a log. This
+ * says what it is, and where the person answers it: the approvals pane in Claude, which reads the
+ * same review with `--review-only`, or that command in a terminal. The `--ack-*` line above it
+ * still works for anyone who acknowledges by hand.
+ */
+export function waitingLine(slug: string): string {
+  return `waiting for a person, not broken: approve it in the Substrat approvals pane (/substrat-approvals in Claude), or read it with \`substrat promote ${idOf(slug)} --review-only\``;
 }
 
 /** What both digest refusals say (`… — acknowledge it explicitly to promote`). Case matters:
