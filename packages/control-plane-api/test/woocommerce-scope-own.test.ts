@@ -33,6 +33,7 @@ import {
   probeWooCommerceSecret,
   sweepWooCommerce,
   unbindWooCommerceScope,
+  woocommerceBindingHealth,
 } from '@substrat-run/connector-woocommerce';
 import {
   ConnectionRelayError,
@@ -247,6 +248,45 @@ describe("a store's own WooCommerce shop lands in that store alone (#3201)", () 
     await pass();
     const after = landed.slice(before);
     expect(after.map((l) => [l.scopeId, l.change.record === 'order' ? l.change.orderId : null])).toEqual([[b, '21']]);
+  });
+
+  it("lists the tenant's connection bound to a store only when asked for health, with the record it skipped (#3241)", async () => {
+    // The tenant's connection to shop A, bound to store A, whose shop has one price no decimal reads.
+    shopA.products[0]!.price = '10,00';
+    const tenantConn = ulid() as ConnectionId;
+    await host.admin.createConnection(actor, { id: tenantConn, tenantId: t, vertical: SLUG, provider: 'woocommerce', label: 'Shop A', secret: shopA.secret, externalAccountRef: 'a.example.com' });
+    await host.admin.grantToConnection(actor, { connectionId: tenantConn, permission: RECORD, node: { tenantId: t, scopeId: a }, grantedBy: actor });
+    await bindWooCommerceScope(host, { connectionId: tenantConn, tenantId: t, scopeId: a, vertical: SLUG, operation: OPERATION, permission: RECORD, externalAccountRef: 'a.example.com' });
+    await pass();
+    // The order behind the skipped product still landed.
+    expect(into(a).map((c) => c.record)).toEqual(['order']);
+
+    // As the control plane's registration reads them: each binding with its health.
+    const bindings = async (h: SqliteScopeHost, row: { id: ConnectionId }) =>
+      (await listWooCommerceBindings(h, row.id)).map((x) => ({ ...x, health: woocommerceBindingHealth(x) }));
+    const list = (health?: true) =>
+      relayConnectionBindings(host, actor, { tenantId: t, scopeId: a, ...(health ? { health } : {}) }, { proven: true, bindings: (h, row) => bindings(h as SqliteScopeHost, row) });
+    // A client that does not ask is answered as before: a tenant's connection is not listed.
+    expect((await list()).bindings).toEqual([]);
+    expect((await list(true)).bindings).toEqual([
+      {
+        connectionId: tenantConn,
+        provider: 'woocommerce',
+        status: 'active',
+        options: {},
+        boundAt: expect.any(String),
+        // Its sweep record spans every scope it lands in, so it says nothing of this binding.
+        lastSyncedAt: null,
+        lastError: null,
+        owner: 'tenant',
+        health: {
+          caughtUp: true,
+          stalled: [],
+          skipped: [expect.objectContaining({ record: 'product', recordId: '1', message: "product 1 price: '10,00' is not a decimal amount", attempts: 1 })],
+          skippedTotal: 1,
+        },
+      },
+    ]);
   });
 
   it("a store cannot connect a shop as its own unless its version lands WooCommerce on request", async () => {

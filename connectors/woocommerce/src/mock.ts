@@ -151,7 +151,8 @@ export class WooCommerceMock {
     if (one) {
       const row = (one[1] === 'products' ? this.products : this.orders).find((r) => r.id === Number(one[2]));
       if (!row) return wcError(404, `woocommerce_rest_${one[1] === 'products' ? 'product' : 'shop_order'}_invalid_id`, 'Invalid ID.');
-      return respond(200, { id: row.id, status: row.status });
+      const fields = url.searchParams.get('_fields');
+      return respond(200, fields === null ? row : Object.fromEntries(fields.split(',').map((f) => [f, row[f]])));
     }
     if (route === '/products' || route === '/orders') {
       const rows = route === '/products' ? this.products : this.orders;

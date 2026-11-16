@@ -357,6 +357,21 @@ export class WooCommerceApi {
     }
   }
 
+  /**
+   * One product or order as the changed list sends it, or `null` when the store says the id does not
+   * exist (the same "invalid id" answer {@link statusOf} reads). How a skipped record is tried again
+   * by id (#3241); unparsed, as the walk reads a page.
+   */
+  async record(resource: 'products' | 'orders', id: number): Promise<unknown> {
+    try {
+      const { json } = await this.get(`/${resource}/${id}`, true);
+      return json;
+    } catch (err) {
+      if (err instanceof WooCommerceApiError && err.status === 404 && err.code !== null && err.code.endsWith('_invalid_id')) return null;
+      throw err;
+    }
+  }
+
   /** Every variation of a variable product. A product's variations are few; this walks pages by number. */
   async variations(productId: number): Promise<WcVariation[]> {
     const rows: WcVariation[] = [];

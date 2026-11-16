@@ -600,6 +600,24 @@ Only sweeps since `boundAt` count, so a rebind starts afresh. Sweep records are 
 (its sweep is skipped, or unsupported for that binding) reads `null` in both, as one not swept yet
 does.
 
+Ask with `health: true` for how each binding fares as its connector keeps it, and for the tenant's
+connections bound to the scope as well:
+
+```ts
+const { bindings } = await listBindings({ ...access, health: true });
+// [{ …, owner: 'scope' | 'tenant',
+//    health?: { caughtUp, stalled: [{ record, recordId, message, firstFailedAt, failedAt, attempts }], skipped: […], skippedTotal } }]
+```
+
+`health` is per binding, which is why a tenant's connection can be listed with it; that one's
+`lastSyncedAt` and `lastError` are `null`, since its sweep record covers every scope. A sweep that
+moved past a record it could not land still completes, so `health` is what tells a stalled binding
+from a caught-up one: `stalled` names the records a walk waits at, `skipped` (at most 20, longest
+waiting first, `skippedTotal` counting them all) the ones it moved past, each with why. Only a
+connector that walks a provider's records reports it — WooCommerce today; other bindings carry no
+`health`. Opt-in, because a `@substrat-run/vertical-host` older than this field refuses an answer
+that carries it.
+
 ### `syncConnections(request)`
 
 A "Sync now" button (#2672): poll the scope's bindings of one provider now, instead of waiting

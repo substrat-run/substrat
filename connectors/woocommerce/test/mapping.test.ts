@@ -15,6 +15,14 @@ describe('woocommerce → commerce mapping', () => {
     expect(gmtInstant('2026-11-01T10:00:00', 'x')).toBe('2026-11-01T10:00:00.000Z');
   });
 
+  it("reads MySQL's zero date as unset, so a zero modified date falls back to the created one (#3241)", () => {
+    const zero = '0000-00-00T00:00:00';
+    const row = wcProduct.parse(product(1, '2026-11-01T10:00:00', { date_modified_gmt: zero, date_created_gmt: zero }));
+    expect(() => productChange('c1', SEK, row, [])).toThrow(/neither a modified nor a created date/);
+    const created = productChange('c1', SEK, wcProduct.parse(product(1, '2026-11-01T10:00:00', { date_modified_gmt: zero })), []);
+    expect(created).toMatchObject({ createdAt: '2026-10-01T08:00:00.000Z', modifiedAt: '2026-10-01T08:00:00.000Z' });
+  });
+
   it.each([
     [{ price: '12.5.0' }, /price: '12.5.0' is not a decimal/],
     [{ price: '1e3' }, /price: '1e3' is not a decimal/],

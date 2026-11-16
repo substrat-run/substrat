@@ -15,6 +15,7 @@ import {
   connectionBindResult,
   connectionUnbindRequest,
   connectionUnbindResult,
+  connectionBindingHealth,
   connectionBindingsRequest,
   connectionBindingsResult,
   connectionSyncRequest,
@@ -79,7 +80,7 @@ function parsed<T extends z.ZodTypeAny>(schema: T, body: unknown, what: string):
 }
 
 /** A binding's inspection notes, never its options. */
-const INSPECTION = new Set(['permissionInspectionError', 'auditWarning']);
+const INSPECTION = new Set(['permissionInspectionError', 'auditWarning', 'health']);
 
 /** The named scope, for a caller proven to be it, of a vertical, and primary; or the refusal. */
 async function primaryScope(
@@ -227,6 +228,11 @@ export async function relayConnectionBind(
  * the last `failed` sweep of each. The sweep record is per connection, and a scope's own connection
  * is bound only to its scope, so the record is that binding's. Its `error` is the tenant-readable
  * line the pass writes; the provider's answer stays on staff's row.
+ *
+ * Asked with `health: true` (#3241), each binding also carries its `owner` and the health its
+ * connector keeps for it, and the tenant's connections bound to the scope are listed too: their
+ * sweep record spans every scope they land in, so their `lastSyncedAt` and `lastError` are `null`,
+ * and the health — kept per binding — is what says how this one fares.
  */
 export async function relayConnectionBindings(
   host: ScopeHost,
@@ -242,28 +248,41 @@ export async function relayConnectionBindings(
 ): Promise<ConnectionBindingsResult> {
   const input = parsed(connectionBindingsRequest, body, 'connection bindings');
   const scope = await primaryScope(host, actor, input, options);
-  const own = await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical, ownerScopeId: scope.id });
+  const withHealth = input.health === true;
+  const connections = withHealth
+    ? (await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical })).filter(
+        (c) => c.ownerScopeId === null || c.ownerScopeId === scope.id,
+      )
+    : await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical, ownerScopeId: scope.id });
   const listed = await Promise.all(
-    own.map(async (connection) => {
+    connections.map(async (connection) => {
       const binding = (await options.bindings(host, connection))?.find((b) => b.scopeId === scope.id);
       if (!binding) return [];
+      const own = connection.ownerScopeId === scope.id;
       // Only this binding's sweeps: a period before an unbind and rebind is not its record.
       const last = async (outcome: 'ok' | 'failed') =>
         (await host.admin.listSweepRuns(actor, { kind: 'connector', unit: connection.id, tenantId: scope.tenantId, outcome, since: binding.boundAt, limit: 1 }))[0];
-      const [ok, failed] = await Promise.all([last('ok'), last('failed')]);
+      const [ok, failed] = own ? await Promise.all([last('ok'), last('failed')]) : [undefined, undefined];
       const stored = Object.fromEntries(Object.entries(binding).filter(([k]) => !FIXED.has(k) && !INSPECTION.has(k)));
+      // A connector's health that does not read as the contract's is left out, never passed on.
+      const health = withHealth && binding.health !== undefined ? connectionBindingHealth.safeParse(binding.health) : undefined;
+      // A built-in's stored options, cut to the provider's. One that no longer reads is answered as
+      // none rather than failing the whole list, which since #3241 can hold the tenant's bindings too.
+      const cut = isVerticalConnectorProvider(connection.provider) ? null : connectionBindingOptions(connection.provider).strip().safeParse(stored);
       return [{
         connectionId: connection.id,
         provider: connection.provider,
         status: connection.status,
         // A vertical connector's options are what its own bind stored. A built-in's record also
         // holds its sync cursor, so it is cut to the provider's options.
-        options: isVerticalConnectorProvider(connection.provider) ? stored : connectionBindingOptions(connection.provider).strip().parse(stored),
+        options: cut === null ? stored : cut.success ? cut.data : {},
         boundAt: binding.boundAt,
         lastSyncedAt: ok?.at ?? null,
         // The pass writes a failed row's `error` in the platform's words; the provider's own answer
         // is filed on staff's row under the reference that line names.
         lastError: failed?.error ? { at: failed.at, message: failed.error } : null,
+        ...(withHealth ? { owner: own ? ('scope' as const) : ('tenant' as const) } : {}),
+        ...(health?.success ? { health: health.data } : {}),
       }];
     }),
   );

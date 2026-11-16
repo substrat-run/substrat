@@ -28,17 +28,28 @@ export class WooCommerceMappingError extends Error {
   }
 }
 
-/** A `_gmt` date as WooCommerce sends it (`2026-11-01T10:00:00`, UTC with no zone), or `null`. */
+/** MySQL's zero date, which WordPress stores for "never set" and a REST read can pass on (#3241). */
+const ZERO_DATE = /^0000-00-00(?:[T ]00:00:00)?$/;
+
+/**
+ * A `_gmt` date as WooCommerce sends it (`2026-11-01T10:00:00`, UTC with no zone), or `null`. The
+ * zero date is `null` too: it is how WordPress says "unset", not a date to refuse.
+ */
 export function gmtInstant(value: string | null, what: string): Instant | null {
-  if (value === null) return null;
+  if (value === null || ZERO_DATE.test(value.trim())) return null;
   const parsed = instant.safeParse(/[zZ]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`);
   if (!parsed.success) throw new WooCommerceMappingError(`${what}: '${value}' is not a date`);
   return parsed.data;
 }
 
-/** When a row last changed — the sync's cursor. A row with no date at all is refused. */
+/**
+ * When a row last changed — the sync's cursor: its modified date, else its created date when the
+ * modified one is unset. A row with neither is refused.
+ */
 export function modifiedAtOf(row: { id: number; date_modified_gmt: string | null; date_created_gmt: string | null }, what: string): Instant {
-  const at = gmtInstant(row.date_modified_gmt ?? row.date_created_gmt, `${what} ${row.id} date_modified_gmt`);
+  const at =
+    gmtInstant(row.date_modified_gmt, `${what} ${row.id} date_modified_gmt`) ??
+    gmtInstant(row.date_created_gmt, `${what} ${row.id} date_created_gmt`);
   if (at === null) throw new WooCommerceMappingError(`${what} ${row.id} has neither a modified nor a created date`);
   return at;
 }

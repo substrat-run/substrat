@@ -1658,9 +1658,63 @@ export type ConnectionUnbindResult = z.infer<typeof connectionUnbindResult>;
  * `/internal/connections/bindings` (#2732): the scope's own connections bound to that scope, each
  * with what its sweep record says. A tenant's connection bound here is not listed: its sweep record
  * covers every scope it lands in, so it cannot say how this one's binding fares.
+ *
+ * `health: true` (#3241) asks for each binding's {@link connectionBindingHealth} as its connector
+ * keeps it, which IS per binding, so the tenant's connections bound to the scope are listed too,
+ * marked `owner: 'tenant'`. Opt-in because a client parsing the answer strictly, as every
+ * `@substrat-run/vertical-host` before it did, would refuse the fields it adds.
  */
-export const connectionBindingsRequest = z.object({ tenantId, scopeId });
+export const connectionBindingsRequest = z.object({ tenantId, scopeId, health: z.literal(true).optional() });
 export type ConnectionBindingsRequest = z.infer<typeof connectionBindingsRequest>;
+
+/**
+ * One record a binding's connector could not land (#3241): a product, an order. In the connector's
+ * own words, never the provider's answer, the request or the credential.
+ */
+export const connectionBindingIssue = z
+  .object({
+    /** The provider's kind of record, singular: `product`, `order`. */
+    record: z.string().min(1).max(40),
+    /** The provider's id for it. */
+    recordId: z.string().min(1).max(100),
+    /** Why it did not land. */
+    message: z.string().max(300),
+    firstFailedAt: instant,
+    failedAt: instant,
+    /** How many passes failed on it. */
+    attempts: z.number().int().positive(),
+  })
+  .strict();
+export type ConnectionBindingIssue = z.infer<typeof connectionBindingIssue>;
+
+/** The most skipped records a binding's health names; `skippedTotal` counts them all. */
+export const CONNECTION_BINDING_SKIPPED_LISTED = 20;
+
+/**
+ * How one binding fares, as its connector keeps it (#3241) — what tells a stalled binding from a
+ * caught-up one, which a sweep's `ok` cannot: a pass that moved past a record it could not land
+ * completes. Reported only by a connector that walks a provider's records into the scope
+ * (WooCommerce today); absent for every other binding.
+ */
+export const connectionBindingHealth = z
+  .object({
+    /** Whether its last pass reached the end of what changed; `null` before its first pass. */
+    caughtUp: z.boolean().nullable(),
+    /**
+     * The records its walk waits at, tried first on the next pass. Non-empty means stalled: nothing
+     * after such a record lands until it does or is skipped.
+     */
+    stalled: z.array(connectionBindingIssue).max(8),
+    /**
+     * Records the walk moved past without landing, the longest-waiting first. Each is tried again
+     * now and then, and leaves the list when it lands.
+     */
+    skipped: z.array(connectionBindingIssue).max(CONNECTION_BINDING_SKIPPED_LISTED),
+    /** How many records are skipped in all, `skipped` naming at most {@link CONNECTION_BINDING_SKIPPED_LISTED}. */
+    skippedTotal: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ConnectionBindingHealth = z.infer<typeof connectionBindingHealth>;
 
 /** One binding as a scope reads it. An allow-list: never a secret, a label or the provider's own answer. */
 export const connectionBindingStatus = z
@@ -1684,6 +1738,14 @@ export const connectionBindingStatus = z
      * current one.
      */
     lastError: z.object({ at: instant, message: z.string() }).strict().nullable(),
+    /**
+     * Whose connection it is (`health: true` only): the scope's own, or the tenant's. A tenant's
+     * connection's sweep record covers every scope it lands in, so its `lastSyncedAt` and
+     * `lastError` are `null`; read `health` instead.
+     */
+    owner: z.enum(['scope', 'tenant']).optional(),
+    /** The binding's own health (`health: true` only), when its connector reports one (#3241). */
+    health: connectionBindingHealth.optional(),
   })
   .strict();
 export type ConnectionBindingStatus = z.infer<typeof connectionBindingStatus>;
