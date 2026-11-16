@@ -232,7 +232,9 @@ it('registered poll binding doors preserve the vertical landing configuration', 
     const binding = await inspector.bindScope!(host, row, { ...target, operation: operation!, permission: permission!, ...(provider === 'planima' ? { organizationId: null, currency: 'SEK', window: null, horizonYears: 50 } : {}) });
     expect(binding).toMatchObject({ ...target, operation, permission });
     if (provider === 'planima') expect(binding).toMatchObject({ organizationId: null, currency: 'SEK', window: null, horizonYears: 50 });
-    expect(await inspector.bindings!(host, row)).toEqual([binding]);
+    // WooCommerce lists each binding with its health (#3241): a binding not yet synced has none to report.
+    const health = provider === 'woocommerce' ? { health: { caughtUp: null, stalled: [], skipped: [], skippedTotal: 0 } } : {};
+    expect(await inspector.bindings!(host, row)).toEqual([{ ...binding, ...health }]);
     expect(records.size).toBe(1);
   }
 });
