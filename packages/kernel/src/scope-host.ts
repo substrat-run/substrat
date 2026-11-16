@@ -4333,6 +4333,23 @@ export interface HostAdmin {
    */
   swapConnectorState(id: ConnectionId, key: string, expected: unknown, value: unknown): Promise<boolean>;
   /**
+   * Write a batch of state rows only if one OTHER row, the fence, still holds `fence.expected`
+   * (compared as `swapConnectorState` compares: the JSON the row holds, `undefined` for a row that
+   * must not exist). The check and every write are one transaction: true when the fence held and
+   * all of `writes` landed, false when it did not and none did. Each write is a put, so a `null`
+   * value stores the tombstone `putConnectorState` stores.
+   *
+   * A lease is what this is for. A caller that took a lease row by compare-and-set writes the work
+   * it did under that lease fenced on it, so a taker that swapped the lease in the meantime can
+   * never interleave its writes with these. A re-read of the lease before separate puts cannot
+   * promise that: the writes can outlast the lease (#3158).
+   */
+  putConnectorStateFenced(
+    id: ConnectionId,
+    fence: { key: string; expected: unknown },
+    writes: readonly { key: string; value: unknown }[],
+  ): Promise<boolean>;
+  /**
    * Every state row for a connection, optionally narrowed to keys under a
    * `prefix`, ordered by key.
    *

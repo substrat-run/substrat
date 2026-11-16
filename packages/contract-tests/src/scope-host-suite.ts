@@ -6366,6 +6366,51 @@ export function scopeHostContractSuite(
         expect(await host.admin.getConnectorState(id, 'k')).toEqual({ claim: 'c' });
       });
 
+      it('writes a batch fenced on another row: all of it while the fence holds, none once it is lost (#3158)', async () => {
+        const id = connectionId.parse(ulid());
+        await host.admin.createConnection(staff, {
+          id,
+          tenantId: t1,
+          vertical: 'connector-vertical',
+          provider: 'fenced',
+          label: 'fence test',
+          secret: { accessToken: 'x' },
+        });
+        const mine = { holder: 'a', until: '2030-01-01T00:00:00.000Z' };
+        await host.admin.putConnectorState(id, 'lease', mine);
+        await host.admin.putConnectorState(id, 'state:gone', { v: 0 });
+        // Held: every write lands, a null one as the tombstone a put leaves; the fence is untouched.
+        expect(
+          await host.admin.putConnectorStateFenced(id, { key: 'lease', expected: await host.admin.getConnectorState(id, 'lease') }, [
+            { key: 'state:cursor', value: { at: 1 } },
+            { key: 'state:gone', value: null },
+          ]),
+        ).toBe(true);
+        expect(await host.admin.listConnectorState(id, 'state:')).toEqual([
+          { key: 'state:cursor', value: { at: 1 } },
+          { key: 'state:gone', value: null },
+        ]);
+        expect(await host.admin.getConnectorState(id, 'lease')).toEqual(mine);
+
+        // Lost: a taker swapped the lease, and nothing of the batch is written.
+        expect(await host.admin.swapConnectorState(id, 'lease', mine, { holder: 'b', until: mine.until })).toBe(true);
+        expect(
+          await host.admin.putConnectorStateFenced(id, { key: 'lease', expected: mine }, [
+            { key: 'state:cursor', value: { at: 2 } },
+            { key: 'state:new', value: { v: 1 } },
+          ]),
+        ).toBe(false);
+        expect(await host.admin.listConnectorState(id, 'state:')).toEqual([
+          { key: 'state:cursor', value: { at: 1 } },
+          { key: 'state:gone', value: null },
+        ]);
+
+        // `undefined` fences on a row that must not exist, as swap's does.
+        expect(await host.admin.putConnectorStateFenced(id, { key: 'lease', expected: undefined }, [{ key: 'state:new', value: 1 }])).toBe(false);
+        expect(await host.admin.putConnectorStateFenced(id, { key: 'absent', expected: undefined }, [{ key: 'state:new', value: 1 }])).toBe(true);
+        expect(await host.admin.getConnectorState(id, 'state:new')).toBe(1);
+      });
+
       it('enumerates state by prefix, ordered by key — the poll driver read', async () => {
         const id = connectionId.parse(ulid());
         await host.admin.createConnection(staff, {

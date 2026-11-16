@@ -1269,6 +1269,13 @@ interface ControlPlaneStub {
   putConnectorState(id: string, key: string, value: string, at: string): Promise<void>;
   getConnectorState(id: string, key: string): Promise<string | undefined>;
   swapConnectorState(id: string, key: string, expected: string | null, value: string, at: string): Promise<boolean>;
+  putConnectorStateFenced(
+    id: string,
+    fenceKey: string,
+    expected: string | null,
+    writes: readonly { key: string; value: string }[],
+    at: string,
+  ): Promise<boolean>;
   listConnectorState(id: string, prefix?: string): Promise<{ key: string; value: string }[]>;
   linkIdentity(
     provider: string,
@@ -10935,6 +10942,17 @@ export class CloudflareScopeHost implements ScopeHost {
         // The DO compares the stored string; `null` stands for "no row yet".
         const prior = expected === undefined ? null : JSON.stringify(expected);
         return this.cp.swapConnectorState(id, key, prior, JSON.stringify(value ?? null), new Date().toISOString());
+      },
+
+      putConnectorStateFenced: async (
+        id: ConnectionId,
+        fence: { key: string; expected: unknown },
+        writes: readonly { key: string; value: unknown }[],
+      ) => {
+        // JSON here, the fence compared and the batch written in ONE DO call, as swap compares.
+        const expected = fence.expected === undefined ? null : JSON.stringify(fence.expected);
+        const encoded = writes.map((w) => ({ key: w.key, value: JSON.stringify(w.value ?? null) }));
+        return this.cp.putConnectorStateFenced(id, fence.key, expected, encoded, new Date().toISOString());
       },
 
       getConnectorState: async (id: ConnectionId, key: string) => {

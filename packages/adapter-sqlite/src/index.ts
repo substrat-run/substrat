@@ -13553,6 +13553,32 @@ export class SqliteScopeHost implements ScopeHost {
         return result.changes > 0;
       },
 
+      putConnectorStateFenced: async (
+        id: ConnectionId,
+        fence: { key: string; expected: unknown },
+        writes: readonly { key: string; value: unknown }[],
+      ) => {
+        const at = new Date().toISOString();
+        const read = this.directory.prepare(
+          'SELECT value FROM _substrat_connector_state WHERE connection_id = ? AND state_key = ?',
+        );
+        const put = this.directory.prepare(
+          `INSERT INTO _substrat_connector_state (connection_id, state_key, value, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT (connection_id, state_key)
+           DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+        );
+        // One directory transaction: the fence read and every write commit together, and a write
+        // that throws rolls back the ones before it.
+        return this.directory.transaction(() => {
+          const held = read.get(id, fence.key) as { value: string } | undefined;
+          const holds = fence.expected === undefined ? held === undefined : held?.value === JSON.stringify(fence.expected);
+          if (!holds) return false;
+          for (const w of writes) put.run(id, w.key, JSON.stringify(w.value ?? null), at);
+          return true;
+        })();
+      },
+
       getConnectorState: async (id: ConnectionId, key: string) => {
         const row = this.directory
           .prepare('SELECT value FROM _substrat_connector_state WHERE connection_id = ? AND state_key = ?')
