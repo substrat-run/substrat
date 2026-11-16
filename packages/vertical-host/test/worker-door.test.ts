@@ -168,8 +168,12 @@ describe('workerDoor (K-61)', () => {
     const owner = ulid();
     await built.platform.onProvision({}, { ...node, owner } as never);
     expect(directory.setPendingOwner).toHaveBeenCalledWith(node.scopeId, owner, undefined, undefined);
-    // #3202: a manager's provision for one person reserves the seat for their address.
-    await built.platform.onProvision({}, { ...node, owner, ownerEmail: 'founder@example.com' } as never);
+    // #3202: a manager's provision for one person reserves the seat for their address, and the
+    // hook hands the seat's word back for the provision route to check.
+    directory.setPendingOwner.mockResolvedValueOnce({ ownerAddressReserved: true });
+    expect(await built.platform.onProvision({}, { ...node, owner, ownerEmail: 'founder@example.com' } as never)).toEqual({
+      ownerAddressReserved: true,
+    });
     expect(directory.setPendingOwner).toHaveBeenLastCalledWith(node.scopeId, owner, undefined, 'founder@example.com');
     expect(await built.settings({}, node)).toEqual({ SHOP_NAME: 'delivered' });
     expect(await built.platform.resolveOwner({}, node)).toBe(ann);
