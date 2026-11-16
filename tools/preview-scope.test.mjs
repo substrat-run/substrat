@@ -4,10 +4,12 @@
 // (or at least @substrat-run/cli's closure) first; ci.yml runs it after the build.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { closureDirs, decidePreview, inUpload, LIFECYCLE, memberManifestChange, rootManifestChange, summary } from './preview-scope.mjs';
+import { changedFiles, closureDirs, decidePreview, inUpload, LIFECYCLE, memberManifestChange, rootManifestChange, summary } from './preview-scope.mjs';
 
 // A workspace in the repo's shape: a vertical with a nested app, an engine, the kernel it
 // reaches through the engine, a dev-only tool package, and an app nothing in it depends on.
@@ -98,6 +100,28 @@ test('the root package.json counts unless only scripts nothing here runs changed
   assert.equal(verdict(['package.json'], { show: r({ ...ROOT, packageManager: 'pnpm@11.0.0' }) }).run, true, 'outside scripts');
   for (const hook of ['preinstall', 'install', 'postinstall', 'prepare', 'pnpm:devPreinstall']) assert.match(hook, LIFECYCLE);
   assert.equal(rootManifestChange(pkg(ROOT), pkg(ROOT), ''), null);
+});
+
+test('changed paths come out of git exactly as the tree spells them, and still count', () => {
+  // core.quotePath at its default: a newline-delimited list would C-quote both names.
+  const repo = mkdtempSync(join(tmpdir(), 'preview-scope-'));
+  try {
+    const run = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...a], { cwd: repo, encoding: 'utf8' });
+    run('init', '-q');
+    writeFileSync(join(repo, 'README.md'), 'x\n');
+    run('add', '.');
+    run('commit', '-qm', 'base');
+    const names = ['demos/demo/app/public/caf\u00e9.svg', 'demos/demo/say "hi".txt'];
+    mkdirSync(join(repo, 'demos/demo/app/public'), { recursive: true });
+    for (const n of names) writeFileSync(join(repo, n), '<svg/>\n');
+    run('add', '.');
+    run('commit', '-qm', 'head');
+    const files = changedFiles('HEAD~1', 'HEAD', repo);
+    assert.deepEqual(files.sort(), [...names].sort());
+    assert.equal(verdict(files).run, true);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test('the summary of a skip says it is not a failure and lists what did not count', () => {

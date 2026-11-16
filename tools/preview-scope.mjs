@@ -229,6 +229,17 @@ export function summary(verdict, vertical) {
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+
+/**
+ * The paths changed between two commits, exactly as the tree spells them. NUL-delimited: with the
+ * default `core.quotePath`, a newline-delimited list C-quotes a path holding a non-ASCII byte or a
+ * double quote (`"demos/x/caf\303\251.svg"`), which then matches no closure directory and would
+ * skip a preview the change needed. `--no-renames` names a move at both ends, as in ci-scope.
+ */
+export function changedFiles(base, head, cwd = process.cwd()) {
+  const out = execFileSync('git', [...CHANGED_NAMES, '-z', base, head], { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  return out.split('\0').filter(Boolean);
+}
 const showAt = (ref, path) => {
   try {
     return git('show', `${ref}:${path}`);
@@ -267,7 +278,7 @@ function main(argv) {
     const dirs = closureDirs(vertical, members, manifestOf);
     const memberScripts = dirs.map((d) => Object.values(manifestOf(d).scripts ?? {}).join('\n')).join('\n');
     verdict = decidePreview({
-      files: git(...CHANGED_NAMES, base, head).split('\n').filter(Boolean),
+      files: changedFiles(base, head),
       vertical,
       workflow,
       dirs,
