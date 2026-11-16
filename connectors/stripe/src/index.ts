@@ -96,6 +96,25 @@ export { StripeMock, type StripeMockOptions } from './mock.js';
  * - **Rolling the webhook secret.** The endpoint is registered once per connection and its signing
  *   secret kept in the connection's connector state. A changed platform origin registers a new one
  *   beside the old; the old is left to the tenant to delete in Stripe.
+ *
+ * ## Replacing the key
+ *
+ * A re-pasted key keeps the connection, and with it the connector state written under the old key.
+ * That state is only right while the new key reaches the same Stripe account in the same mode; a
+ * key for another account, or going live from a test key, reaches none of it. So state records
+ * which key wrote it ({@link StripeApi.keyId}, a digest), and the first use of a different key asks
+ * Stripe what it still reaches:
+ *
+ * - **The webhook endpoint** is read back by its id. Found, it stays. Not found, a new one is
+ *   registered on the account the key now reaches, under a new token, so calls from the old
+ *   account's endpoint are refused before anything is read. The old endpoint is left to the tenant
+ *   to delete in the old account; this key cannot reach it.
+ * - **A checkout** Stripe no longer finds is marked unreachable under that key, and the sweep stops
+ *   re-reading it, so it cannot fail every pass or hold a slot a newer checkout needs. Nothing about
+ *   it is landed: its outcome is unknown, not failed. Its reference stays refused while a live
+ *   payment for it may have been taken (a paid reference stays refused anyway); a test-mode one, or
+ *   one whose final outcome already landed, frees the reference. Restoring the key that reaches it
+ *   makes it readable again, and the next sweep lands whatever it missed.
  */
 
 /**
@@ -182,11 +201,17 @@ export interface StripeCheckoutRow {
   landed: PaymentCheckoutStatus | null;
   /** When a final status landed. */
   settledAt: string | null;
+  /**
+   * The key (by {@link StripeApi.keyId}) under which Stripe last answered that it has no such
+   * session: the key was replaced by one for another account or mode. Absent while it is readable.
+   */
+  unreachableWith?: string;
 }
 
+/** `keyId`: the key (by {@link StripeApi.keyId}) the endpoint was registered or last confirmed under. */
 export type StripeWebhookRow =
-  | { state: 'registered'; endpointId: string; secret: string; token: string; url: string; tenantId: string; vertical: string; registeredAt: string }
-  | { state: 'failed'; url: string; error: string; tenantId: string; vertical: string; attemptedAt: string };
+  | { state: 'registered'; endpointId: string; secret: string; token: string; url: string; keyId: string; tenantId: string; vertical: string; registeredAt: string }
+  | { state: 'failed'; url: string; error: string; keyId: string; tenantId: string; vertical: string; attemptedAt: string };
 
 export interface StripeConnectorOptions {
   fetch: FetchLike;
@@ -202,6 +227,18 @@ export interface StripeConnectorOptions {
   callbackBase?: string;
   /** Checkouts one sweep re-reads; {@link STRIPE_CHECKOUTS_PER_SWEEP} unless a test says otherwise. */
   checkoutsPerSweep?: number;
+}
+
+/**
+ * Stripe has no such session under the key this connection holds now: the key was replaced by one
+ * for another account, or the same account's other mode. The row is marked, and its outcome stays
+ * unknown until a key that reaches it is restored.
+ */
+export class StripeCheckoutUnreachable extends Error {
+  constructor(readonly checkoutId: string) {
+    super(`checkout ${checkoutId} is not on the Stripe account (or mode) this connection's key reaches now; its outcome cannot be read until that key is restored`);
+    this.name = 'StripeCheckoutUnreachable';
+  }
 }
 
 /**
@@ -424,7 +461,21 @@ async function reuseOrClose(
   options: StripeConnectorOptions,
 ): Promise<ConnectionCheckoutResult | null> {
   // The scope's view may be behind Stripe's: read the truth before deciding on it.
-  const { status } = await reconcileStripeCheckout(host, connectionId, api, previous, options);
+  let status: PaymentCheckoutStatus;
+  try {
+    ({ status } = await reconcileStripeCheckout(host, connectionId, api, previous, options));
+  } catch (err) {
+    if (!(err instanceof StripeCheckoutUnreachable)) throw err;
+    // Opened under a key for another account or mode. What landed is all that is known of it.
+    if (previous.landed === 'paid') throw new StripeCheckoutRefusal(`reference '${previous.reference}' is already paid (${previous.checkoutId})`, 409);
+    // A final outcome already landed, or a test-mode session, which never moves money: free to charge.
+    if (isFinal(previous.landed) || !previous.live) return null;
+    throw new StripeCheckoutRefusal(
+      `reference '${previous.reference}' has a live checkout (${previous.checkoutId}) on a Stripe account this connection's key no longer reaches, ` +
+        `so whether it was paid cannot be read; restore the key for that account, or charge under a new reference`,
+      409,
+    );
+  }
   if (status === 'paid') throw new StripeCheckoutRefusal(`reference '${previous.reference}' is already paid (${previous.checkoutId})`, 409);
   if (status === 'processing') {
     throw new StripeCheckoutRefusal(`a payment for reference '${previous.reference}' is settling (${previous.checkoutId}); ask again once it has failed`, 409);
@@ -502,10 +553,25 @@ export async function reconcileStripeCheckout(
   row: StripeCheckoutRow,
   options: { now?: () => number },
 ): Promise<{ status: PaymentCheckoutStatus; landed: boolean }> {
-  const session = await api.checkoutSession(row.checkoutId);
+  let session: StripeCheckoutSession;
+  try {
+    session = await api.checkoutSession(row.checkoutId);
+  } catch (err) {
+    // Sessions are never deleted in Stripe: not found means the key no longer reaches its account or mode.
+    if (!(err instanceof StripeApiError) || err.status !== 404) throw err;
+    const held = (await checkoutRowOf(host, connectionId, row.checkoutId)) ?? row;
+    const keyId = await api.keyId();
+    if (held.unreachableWith !== keyId) await host.admin.swapConnectorState(connectionId, checkoutKey(row.checkoutId), held, { ...held, unreachableWith: keyId });
+    throw new StripeCheckoutUnreachable(row.checkoutId);
+  }
   const status = checkoutStatusOf(session);
   // Re-read the row: a webhook and a sweep can both be here, and the newer one wins.
-  const current = (await checkoutRowOf(host, connectionId, row.checkoutId)) ?? row;
+  let current = (await checkoutRowOf(host, connectionId, row.checkoutId)) ?? row;
+  if (current.unreachableWith !== undefined) {
+    // Readable again: the key that reaches it was restored.
+    const { unreachableWith: _, ...readable } = current;
+    if (await host.admin.swapConnectorState(connectionId, checkoutKey(current.checkoutId), current, readable)) current = readable;
+  }
   if (current.landed !== null && (status === current.landed || RANK[status] <= RANK[current.landed])) {
     return { status: current.landed, landed: false };
   }
@@ -532,6 +598,8 @@ export interface StripeSweepResult {
   caughtUp: boolean;
   /** Settled rows past {@link STRIPE_SETTLED_KEEP_DAYS} let go this pass. */
   pruned: number;
+  /** Outstanding checkouts the current key cannot read (opened under a key for another account or mode), not re-read. */
+  unreachable: number;
   webhook: 'registered' | 'failed' | 'poll-only';
   failed: { scopeId: string; error: string; said?: string }[];
 }
@@ -542,7 +610,7 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
   const rows = (await host.admin.listConnectorState(connectionId, CHECKOUT_PREFIX))
     .filter((r) => r.value !== null && typeof r.value === 'object')
     .map((r) => r.value as StripeCheckoutRow);
-  const result: StripeSweepResult = { found: bindings.length, checked: 0, landed: 0, caughtUp: true, pruned: 0, webhook: 'poll-only', failed: [] };
+  const result: StripeSweepResult = { found: bindings.length, checked: 0, landed: 0, caughtUp: true, pruned: 0, unreachable: 0, webhook: 'poll-only', failed: [] };
   const anchor = bindings[0] ?? rows[0];
   if (!anchor) return result;
 
@@ -557,7 +625,11 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
   // bank debit settling, a scope since unbound) cannot hold every pass and keep newer ones unread.
   const cap = options.checkoutsPerSweep ?? STRIPE_CHECKOUTS_PER_SWEEP;
   const order = (r: StripeCheckoutRow) => `${r.createdAt}|${r.checkoutId}`;
-  const outstanding = rows.filter((r) => !isFinal(r.landed)).sort((a, b) => order(a).localeCompare(order(b)));
+  // A checkout this key has been told is not on its account is not asked about again until the key changes.
+  const keyId = await api.keyId();
+  const unsettled = rows.filter((r) => !isFinal(r.landed));
+  const outstanding = unsettled.filter((r) => r.unreachableWith !== keyId).sort((a, b) => order(a).localeCompare(order(b)));
+  result.unreachable = unsettled.length - outstanding.length;
   const cursor = await host.admin.getConnectorState(connectionId, SWEEP_CURSOR_KEY);
   const from = typeof cursor === 'string' ? Math.max(0, outstanding.findIndex((r) => order(r) > cursor)) : 0;
   const batch = [...outstanding.slice(from), ...outstanding.slice(0, from)].slice(0, cap);
@@ -570,6 +642,11 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
       if ((await reconcileStripeCheckout(host, connectionId, api, row, options)).landed) result.landed += 1;
     } catch (err) {
       const error = maskKeys(err instanceof Error ? err.message : String(err));
+      if (err instanceof StripeCheckoutUnreachable) {
+        result.unreachable += 1;
+        result.failed.push({ scopeId: row.scopeId, error, said: `the payment for '${row.reference}' was opened on a Stripe account this connection's key no longer reaches; its outcome is unknown until that key is restored` });
+        continue;
+      }
       result.failed.push({ scopeId: row.scopeId, error: `checkout ${row.checkoutId}: ${error}`, said: `a payment outcome for '${row.reference}' did not land; it is tried again on the next pass` });
     }
   }
@@ -596,7 +673,9 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
 
 /**
  * Register this connection's webhook endpoint on the Stripe account, once. Nothing when it is
- * registered at the current origin, or when a failed attempt is less than an hour old. A key
+ * registered at the current origin under the current key, or when a failed attempt under it is less
+ * than an hour old. A replaced key keeps the endpoint only if Stripe still finds it under that key;
+ * otherwise the key reaches another account or mode, and a new endpoint is registered there. A key
  * without Webhook Endpoints write leaves the connection poll-only, which the row records.
  */
 export async function ensureStripeWebhook(
@@ -610,9 +689,41 @@ export async function ensureStripeWebhook(
   // The raw value is what the swap below compares against: `undefined` for no row, `null` for a tombstone.
   const raw = await host.admin.getConnectorState(connection.id, WEBHOOK_KEY);
   const held = raw as StripeWebhookRow | null | undefined;
-  if (held?.state === 'registered' && held.url.startsWith(`${base}/`)) return { state: 'registered' };
+  const keyId = await api.keyId();
+  if (held?.state === 'registered' && held.url.startsWith(`${base}/`)) {
+    if (held.keyId === keyId) return { state: 'registered' };
+    try {
+      await api.webhookEndpoint(held.endpointId);
+    } catch (err) {
+      // A 404 is the one answer that says the endpoint is on an account this key does not reach.
+      // Anything else says nothing about the account: a 403 (this key may not read endpoints) is
+      // recorded so it is not asked again; a passing failure is asked again next time.
+      if (!(err instanceof StripeApiError) || err.status !== 404) {
+        if (err instanceof StripeApiError && err.forbidden) await host.admin.swapConnectorState(connection.id, WEBHOOK_KEY, raw, { ...held, keyId });
+        return { state: 'registered' };
+      }
+      return registerStripeWebhook(host, connection, api, base, raw, keyId, options);
+    }
+    await host.admin.swapConnectorState(connection.id, WEBHOOK_KEY, raw, { ...held, keyId });
+    return { state: 'registered' };
+  }
   const now = nowOf(options);
-  if (held?.state === 'failed' && held.url.startsWith(`${base}/`) && now - Date.parse(held.attemptedAt) < WEBHOOK_RETRY_MS) return { state: 'failed' };
+  if (held?.state === 'failed' && held.url.startsWith(`${base}/`) && held.keyId === keyId && now - Date.parse(held.attemptedAt) < WEBHOOK_RETRY_MS) {
+    return { state: 'failed' };
+  }
+  return registerStripeWebhook(host, connection, api, base, raw, keyId, options);
+}
+
+async function registerStripeWebhook(
+  host: ScopeHost,
+  connection: { id: ConnectionId; tenantId: string; vertical: string },
+  api: StripeApi,
+  base: string,
+  raw: unknown,
+  keyId: string,
+  options: StripeConnectorOptions,
+): Promise<{ state: 'registered' | 'failed' }> {
+  const now = nowOf(options);
 
   const token = mintToken();
   const url = `${base}${stripeCallbackPath(connection.id, token)}`;
@@ -629,10 +740,10 @@ export async function ensureStripeWebhook(
       `substrat-webhook-${connection.id}-${token}`,
     );
     if (!endpoint.secret) throw new StripeApiError('Stripe registered the endpoint without answering its signing secret', 502);
-    next = { state: 'registered', endpointId: endpoint.id, secret: endpoint.secret, token, url, tenantId: connection.tenantId, vertical: connection.vertical, registeredAt: iso(now) };
+    next = { state: 'registered', endpointId: endpoint.id, secret: endpoint.secret, token, url, keyId, tenantId: connection.tenantId, vertical: connection.vertical, registeredAt: iso(now) };
   } catch (err) {
     const error = maskKeys(err instanceof Error ? err.message : String(err));
-    next = { state: 'failed', url, error, tenantId: connection.tenantId, vertical: connection.vertical, attemptedAt: iso(now) };
+    next = { state: 'failed', url, error, keyId, tenantId: connection.tenantId, vertical: connection.vertical, attemptedAt: iso(now) };
   }
   // Two passes registering at once: the loser's endpoint is never answered, and is left in Stripe.
   await host.admin.swapConnectorState(connection.id, WEBHOOK_KEY, raw, next);
@@ -848,7 +959,7 @@ export async function stripeConnectionActivity(host: ScopeHost, connectionId: Co
       key,
       title: `${row.reference} — ${row.vertical} ${row.scopeId}`,
       reference: row.checkoutId,
-      status: row.landed ?? 'opened',
+      status: row.unreachableWith !== undefined ? 'unreachable — on a Stripe account this key does not reach' : (row.landed ?? 'opened'),
       at: instant.parse(row.settledAt ?? row.createdAt),
       facts: [
         { label: 'Mode', value: row.live ? 'live' : 'test' },

@@ -128,7 +128,8 @@ export class StripeMock {
     this.counter += 1;
     // Only a Checkout Session's id says its mode (`cs_test_…`); events, intents and charges do not.
     const mode = prefix === 'cs' ? (this.secretKey.includes('_live_') ? 'live_' : 'test_') : '';
-    return `${prefix}_${mode}Mock${String(this.counter).padStart(6, '0')}`;
+    // The account is in every id, as Stripe's ids are unique across accounts: two mocks never share one.
+    return `${prefix}_${mode}Mock${this.accountId.replace(/[^A-Za-z0-9]/g, '')}${String(this.counter).padStart(6, '0')}`;
   }
 
   get fetch(): FetchLike {
@@ -194,6 +195,13 @@ export class StripeMock {
       if (!session) return stripeError(404, `No such checkout.session: '${m[1]}'`, 'invalid_request_error', 'resource_missing');
       const expands = query.split('&').filter((p) => p.startsWith('expand')).map((p) => decodeURIComponent(p.split('=')[1] ?? ''));
       return respond(200, this.render(session, expands.includes('payment_intent') && expands.includes('payment_intent.latest_charge')));
+    }
+    m = /^\/v1\/webhook_endpoints\/([^/]+)$/.exec(path);
+    if (m) {
+      if (this.options.webhooksAllowed === false) return this.forbidden('rak_webhook_read');
+      const endpoint = this.endpoints.find((e) => e.id === decodeURIComponent(m![1]!));
+      if (!endpoint) return stripeError(404, `No such webhook endpoint: '${m[1]}'`, 'invalid_request_error', 'resource_missing');
+      return respond(200, { id: endpoint.id, object: 'webhook_endpoint', url: endpoint.url, status: 'enabled' });
     }
     m = /^\/v1\/events\/([^/]+)$/.exec(path);
     if (m) {

@@ -117,6 +117,20 @@ payments in production yourself.
 2. **The regular pass.** Every open or settling checkout is read again, so a lost webhook only
    delays an outcome.
 
+## Replacing the key
+
+Pasting a new key keeps the connection. A key for the same account and mode (a rolled key) changes
+nothing else. A key for **another account**, or a **live key replacing a test key**, reaches none
+of what the old key opened, and the platform notices on its next use:
+
+- **The webhook** is registered again on the account the new key reaches. The old endpoint stays
+  in the old account, and its calls are refused; delete it there.
+- **A test-mode checkout** the new key cannot read no longer holds its `reference`, since it never
+  moved money.
+- **A live checkout** the new key cannot read is no longer asked about. Its outcome is unknown, so
+  nothing lands and its `reference` is refused, because it may have been paid. Paste the old key
+  again to read it (the next pass lands what it missed), or charge under a new reference.
+
 ## Not in this release
 
 Refunds, disputes, subscriptions, saved customers, and Stripe Connect (onboarding a business

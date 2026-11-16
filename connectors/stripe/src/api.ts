@@ -212,6 +212,16 @@ export class StripeApi {
     return isLiveKey(this.secret().secretKey);
   }
 
+  /**
+   * Which key this connection holds, as a SHA-256 digest — never the key. State written under one
+   * key records it, so a replaced key (another account, or the same account's other mode) is told
+   * apart from the one the state was written under.
+   */
+  async keyId(): Promise<string> {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(this.secret().secretKey)));
+    return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
   private async call<T extends z.ZodTypeAny>(
     method: 'GET' | 'POST',
     path: string,
@@ -289,6 +299,11 @@ export class StripeApi {
 
   event(id: string): Promise<StripeEvent> {
     return this.call('GET', `/v1/events/${encodeURIComponent(id)}`, stripeEvent);
+  }
+
+  /** One webhook endpoint by id: a 404 means it is not on this key's account, in this key's mode. */
+  webhookEndpoint(id: string): Promise<StripeWebhookEndpoint> {
+    return this.call('GET', `/v1/webhook_endpoints/${encodeURIComponent(id)}`, stripeWebhookEndpoint);
   }
 
   createWebhookEndpoint(body: Record<string, FormValue>, idempotencyKey: string): Promise<StripeWebhookEndpoint> {

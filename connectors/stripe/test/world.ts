@@ -17,6 +17,7 @@ import {
   ulid,
   undeclaredOperations,
   webCryptoSecretBox,
+  type FetchLike,
   type ModuleRegistration,
   type OperationHandler,
 } from '@substrat-run/kernel';
@@ -39,7 +40,8 @@ export const CALLBACK_BASE = 'https://cp.example.com';
  * vertical's landing operation that records what it was handed. The clock is the test's, shared by
  * the connector and the mock, so a webhook's timestamp and the tolerance it is judged by agree.
  */
-export async function world(mock: StripeMock, opts: { clock?: { ms: number }; callbackBase?: string | null } = {}) {
+export async function world(mock: StripeMock, opts: { clock?: { ms: number }; callbackBase?: string | null; fetch?: FetchLike } = {}) {
+  const fetch = opts.fetch ?? mock.fetch;
   const dir = mkdtempSync(join(tmpdir(), 'substrat-stripe-'));
   const landed: PaymentChange[] = [];
   const module: ModuleRegistration = {
@@ -65,7 +67,7 @@ export async function world(mock: StripeMock, opts: { clock?: { ms: number }; ca
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
   const connId: ConnectionId = connectionId.parse(ulid());
-  const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(7)), fetch: mock.fetch });
+  const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(7)), fetch });
   host.registerModule(module);
   await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
   await host.admin.grantEntitlement(staff, t, 'shop');
@@ -77,7 +79,7 @@ export async function world(mock: StripeMock, opts: { clock?: { ms: number }; ca
   const clock = opts.clock ?? { ms: Date.parse('2026-11-15T10:00:00Z') };
   mock.useClock(() => clock.ms);
   const callbackBase = opts.callbackBase === null ? undefined : (opts.callbackBase ?? CALLBACK_BASE);
-  const options: StripeConnectorOptions = { fetch: mock.fetch, now: () => clock.ms, sleep: async () => {}, ...(callbackBase ? { callbackBase } : {}) };
+  const options: StripeConnectorOptions = { fetch, now: () => clock.ms, sleep: async () => {}, ...(callbackBase ? { callbackBase } : {}) };
   const connection = { id: connId, tenantId: t, vertical: 'shop' };
   const order = (over: Record<string, unknown> = {}) =>
     connectionCheckoutRequest.parse({
@@ -107,6 +109,8 @@ export async function world(mock: StripeMock, opts: { clock?: { ms: number }; ca
     bind: () => bindStripeScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'shop', operation: OPERATION, permission: RECORD }),
     checkout: (over: Record<string, unknown> = {}) => createStripeCheckout(host, connection, s, order(over), options),
     sweep: () => sweepStripe(host, connId, options),
+    /** The tenant re-pastes a key: the connection and its connector state stay, the credential is replaced. */
+    replaceKey: (secret: { secretKey: string }) => host.admin.updateConnectionSecret(staff, connId, secret),
     /** Deliver `event` to the connector the way the control plane's route would, with the path Stripe was given. */
     deliver: async (event: Record<string, unknown>, tamper: { token?: string; body?: string; at?: number } = {}) => {
       const d = await mock.delivery(event, tamper.at ?? Math.floor(clock.ms / 1000));

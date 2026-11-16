@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import type { FetchLike } from '@substrat-run/kernel';
 import { STRIPE_API_VERSION, STRIPE_WEBHOOK_EVENTS, StripeApi, StripeCheckoutRefusal, stripeConnectionActivity } from '../src/index.js';
 import { StripeMock } from '../src/mock.js';
 import { CALLBACK_BASE, world, type World } from './world.js';
@@ -263,5 +264,62 @@ describe('stripe connector — hearing the outcome', () => {
     expect(outcome).toMatchObject({ accepted: true, result: { checkoutId: session.id, landed: ours } });
     expect(w.landed.filter((c) => c.checkoutId === session.id)).toHaveLength(landings);
     if (ours) expect(w.landed.at(-1)).toMatchObject({ reference: 'order-2', status: 'paid', amount: '10.00' });
+  });
+});
+
+describe('stripe connector — replacing the key', () => {
+  /** Stripe as several accounts behind one fetch: each request answered by the account its key belongs to. */
+  const accounts = (...mocks: StripeMock[]): FetchLike =>
+    (async (input: string, init?: { headers?: Record<string, string> }) => {
+      const mock = mocks.find((m) => init?.headers?.['Authorization'] === `Bearer ${m.secretKey}`) ?? mocks[0]!;
+      return mock.fetch(input, init as never);
+    }) as unknown as FetchLike;
+
+  it("moves the webhook to the new key's account, and holds a live checkout only the old account can answer", async () => {
+    const before = new StripeMock({ secretKey: 'rk_live_51OldAccount0000', accountId: 'acct_1Old' });
+    const after = new StripeMock({ secretKey: 'rk_live_51NewAccount0000', accountId: 'acct_1New' });
+    w = await world(before, { fetch: accounts(before, after) });
+    after.useClock(() => w!.clock.ms);
+    await w.bind();
+    const open = await w.checkout({ reference: 'order-17' });
+    const lapsed = await w.checkout({ reference: 'order-18' });
+    before.lapse(lapsed.checkoutId);
+    await w.sweep();
+
+    await w.replaceKey(after.secret);
+    expect(await w.sweep()).toMatchObject({
+      webhook: 'registered',
+      checked: 1,
+      unreachable: 1,
+      failed: [{ said: expect.stringMatching(/'order-17'.*no longer reaches/) }],
+    });
+    expect(after.endpoints).toHaveLength(1);
+    // Not asked about again under this key, so it holds no pass's slot.
+    const asked = after.requests.length;
+    expect(await w.sweep()).toMatchObject({ checked: 0, unreachable: 1, failed: [] });
+    expect(after.requests).toHaveLength(asked);
+
+    // The buyer pays on the old account: its endpoint's call is refused before anything is read.
+    expect(await w.deliver(before.pay(open.checkoutId))).toEqual({ accepted: false, reason: 'token mismatch' });
+    // Whether order-17 was paid cannot be read, so it is not charged again; order-18's outcome is known.
+    await expect(w.checkout({ reference: 'order-17' })).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/no longer reaches/) });
+    expect(after.sessions.has((await w.checkout({ reference: 'order-18' })).checkoutId)).toBe(true);
+
+    // Restoring the old key makes order-17 readable again, and the payment it missed lands.
+    await w.replaceKey(before.secret);
+    await w.sweep();
+    expect(w.landed.filter((c) => c.checkoutId === open.checkoutId).map((c) => c.status)).toEqual(['open', 'paid']);
+  });
+
+  it('lets a reference whose test-mode checkout the live key cannot read be charged live', async () => {
+    const test = new StripeMock({ secretKey: 'rk_test_51SameAccount000', accountId: 'acct_1Same' });
+    const live = new StripeMock({ secretKey: 'rk_live_51SameAccount000', accountId: 'acct_1Same' });
+    w = await world(test, { fetch: accounts(test, live) });
+    live.useClock(() => w!.clock.ms);
+    await w.bind();
+    await w.checkout();
+    await w.replaceKey(live.secret);
+    expect(await w.checkout()).toMatchObject({ live: true, checkoutId: expect.stringMatching(/^cs_live_/) });
+    expect(live.endpoints).toHaveLength(1);
   });
 });
