@@ -1,5 +1,45 @@
 # @substrat-run/control-plane
 
+## 0.19.2
+
+### Patch Changes
+
+- b205207: A Stripe key for another account no longer has to be refused. The platform now tells Stripe connections apart by the account and mode Stripe names for the key, so a key for the same account replaces the old one, and a key for another account (or a live key beside a test one) becomes a second connection, listed on its own in the dashboard. A connection made before this holds no account and keeps the old rule until it is disconnected. In `@substrat-run/control-plane-api`, a connection inspector can declare `accountFromProbe`, and the connection upsert then takes the account from the provider's connect-time probe: the probe runs before the store, and a probe that cannot name the account stores nothing.
+- 2c4a11d: A connector binding that fails a sweep, or a requested sync, is now filed as a pair under the pass's reference: a row for the connection's tenant carrying the app's scope, in the platform's words (with the connector's `said` when it gave one), and staff's row with the failure's own text (#3235). An app's Failures view and fleet health now include its own connector failures. A failure that names no scope stays staff's alone. kernel: `withheldOpsFailure` takes an optional `opening` for staff's row. control-plane: the failure digest pairs rows by scope too, so two bindings filed in the same instant stay apart.
+- eb34bb2: kernel: `landingRefusalSaid` turns an app's own refusal of a connector's landing call into a line its tenant may read, and withholds everything else (#3235). control-plane: the WooCommerce sweep hands the pass that line for a binding its app refused. dashboard: a connection's failed sweep is written out under its run strip, not only in the tick's tooltip.
+- ba8a290: A WooCommerce key for another store no longer replaces the store an app is connected to. The platform now tells WooCommerce connections apart by the store each key reads, named by the address the store gives itself, so a key for the same store replaces the old one and keeps the sync where it was, and a key for another store becomes a second connection, listed on its own in the dashboard. A connection made before this holds no store; a key for another store is refused there until it is disconnected.
+- f648aa8: One WooCommerce product or order that cannot land no longer stops everything after it. A row the connector cannot read faithfully (a decimal-comma price, a stock count that is not a number) is skipped at once; any other failure on one record holds only its own walk, for three passes, before it is skipped too, and orders keep landing meanwhile. Skipped records are kept with their error, tried again hourly, and cleared when they land. The connection's activity reads "stalled at product 123" or "synced — 2 skipped", with each record's error. `listBindings({ …, health: true })` in `@substrat-run/vertical-host` answers each binding's health — the records it waits at and the ones it skipped — and lists the tenant's connections bound to the scope too, marked `owner: 'tenant'`. The `connectionBindingHealth` schema is in `@substrat-run/contracts`, and `ConnectionScopeBinding` in `@substrat-run/control-plane-client` may carry it.
+- d16a696: A store can now connect its own WooCommerce shop. When each install of an app is a store with its own shop, the app connects the shop as that install's own connection and binds it on request, so each install receives only its own shop's products and orders, and never another store's customers. The dashboard lists such a connection on its own install's Integrations tab, marked as its own, and disconnecting it stops only that install's sync. In `@substrat-run/control-plane-api`, a connection inspector can declare `scopeOwned`, and the tenant's verify and credential routes then answer for a scope's own connection through it.
+- Updated dependencies [53679f8]
+- Updated dependencies [6811a2b]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [b205207]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [d93c0de]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [12ea0e6]
+- Updated dependencies [bd3e907]
+- Updated dependencies [ba8a290]
+- Updated dependencies [f648aa8]
+- Updated dependencies [d16a696]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/control-plane-api@0.200.0
+  - @substrat-run/kernel@0.200.0
+  - @substrat-run/adapter-cloudflare@0.200.0
+  - @substrat-run/vertical-host@0.200.0
+  - @substrat-run/connector-scrive@0.15.2
+  - @substrat-run/connector-woocommerce@0.0.6
+  - @substrat-run/connector-bolagsverket@0.0.23
+  - @substrat-run/connector-fortnox@0.7.24
+  - @substrat-run/connector-mail-in@0.1.37
+  - @substrat-run/connector-microsoft365@0.0.61
+  - @substrat-run/connector-planima@0.2.97
+  - @substrat-run/connector-stripe@0.0.2
+  - @substrat-run/model-providers@0.5.90
+
 ## 0.19.1
 
 ### Patch Changes

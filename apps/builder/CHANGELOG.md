@@ -1,5 +1,35 @@
 # @substrat-run/builder
 
+## 0.14.4
+
+### Patch Changes
+
+- 3b65f82: A CLI push to a GitHub project keeps its submitted source in one snapshot repository per project, each build as branch `builds/<buildId>`, pruned to the newest 20 builds and deleted with the project. The per-build `snapshot-<buildId>` repositories are no longer created; `POST /internal/legacy-snapshots` lists them, and deletes them with `{ "apply": true }` (#2952).
+- Updated dependencies [53679f8]
+- Updated dependencies [6811a2b]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [b205207]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [12ea0e6]
+- Updated dependencies [c6057cb]
+- Updated dependencies [f648aa8]
+- Updated dependencies [d16a696]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/cli@0.60.2
+  - @substrat-run/control-plane-api@0.200.0
+  - @substrat-run/kernel@0.200.0
+  - @substrat-run/adapter-cloudflare@0.200.0
+  - create-substrat@0.18.4
+  - @substrat-run/engine-assistant@0.1.52
+  - @substrat-run/engine-metering@0.6.84
+  - @substrat-run/builder-workspace@0.13.16
+  - @substrat-run/model-providers@0.5.90
+  - @substrat-run/builder-generator@0.12.17
+
 ## 0.14.3
 
 ### Patch Changes

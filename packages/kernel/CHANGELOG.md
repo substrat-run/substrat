@@ -1,5 +1,22 @@
 # @substrat-run/kernel
 
+## 0.200.0
+
+### Minor Changes
+
+- 20cdb03: A connector's call into an app (`/internal/connector-invoke`) now writes one invocation line, of the new kind `connector`, so the app's Logs list each record a connector landed or failed to land (#3235). The line carries ids, the operation, `connection` as who it ran as, the outcome, the kernel's problem code and what the operation emitted, by count and type; never the provider's input or the error's text. adapter-cloudflare writes it from `connectorInvokeLocal`, so an app writes it once it is built against this release. control-plane-api: `connector` is a value of the `kind` facet. dashboard: the Logs page names it "connector call".
+- d62a936: `HostAdmin.putConnectorStateFenced(id, { key, expected }, writes)` writes a batch of connector-state rows only if one other row, the fence, still holds `expected`. The fence check and the writes run in one transaction on both scope hosts. A vertical connector's answer under a scope's state lease is now written fenced on that lease. A call that took the lease over can no longer have its writes interleaved with an earlier call's.
+- eb34bb2: kernel: `landingRefusalSaid` turns an app's own refusal of a connector's landing call into a line its tenant may read, and withholds everything else (#3235). control-plane: the WooCommerce sweep hands the pass that line for a binding its app refused. dashboard: a connection's failed sweep is written out under its run strip, not only in the tick's tooltip.
+
+### Patch Changes
+
+- 2c4a11d: A connector binding that fails a sweep, or a requested sync, is now filed as a pair under the pass's reference: a row for the connection's tenant carrying the app's scope, in the platform's words (with the connector's `said` when it gave one), and staff's row with the failure's own text (#3235). An app's Failures view and fleet health now include its own connector failures. A failure that names no scope stays staff's alone. kernel: `withheldOpsFailure` takes an optional `opening` for staff's row. control-plane: the failure digest pairs rows by scope too, so two bindings filed in the same instant stay apart.
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+
 ## 0.199.0
 
 ### Patch Changes

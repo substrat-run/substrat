@@ -1,5 +1,24 @@
 # @substrat-run/engine-protocol
 
+## 0.14.0
+
+### Minor Changes
+
+- bd3e907: `requestSignatures` accepts a request with a single party. That party is the primary and is invited to sign, so a one-off offer only the customer signs no longer needs the sender named as a second signer. Every party now needs a `contact`, the primary included, and a party without one is refused before the instance freezes. Before, Scrive refused it after the freeze and the instance was left waiting.
+
+### Patch Changes
+
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/kernel@0.200.0
+
 ## 0.13.84
 
 ### Patch Changes

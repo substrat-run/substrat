@@ -1,5 +1,25 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.200.0
+
+### Minor Changes
+
+- d62a936: `HostAdmin.putConnectorStateFenced(id, { key, expected }, writes)` writes a batch of connector-state rows only if one other row, the fence, still holds `expected`. The fence check and the writes run in one transaction on both scope hosts. A vertical connector's answer under a scope's state lease is now written fenced on that lease. A call that took the lease over can no longer have its writes interleaved with an earlier call's.
+
+### Patch Changes
+
+- 20cdb03: A connector's call into an app (`/internal/connector-invoke`) now writes one invocation line, of the new kind `connector`, so the app's Logs list each record a connector landed or failed to land (#3235). The line carries ids, the operation, `connection` as who it ran as, the outcome, the kernel's problem code and what the operation emitted, by count and type; never the provider's input or the error's text. adapter-cloudflare writes it from `connectorInvokeLocal`, so an app writes it once it is built against this release. control-plane-api: `connector` is a value of the `kind` facet. dashboard: the Logs page names it "connector call".
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/kernel@0.200.0
+
 ## 0.199.0
 
 ### Patch Changes

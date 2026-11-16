@@ -1,5 +1,19 @@
 # @substrat-run/cli
 
+## 0.60.2
+
+### Patch Changes
+
+- 53679f8: A store driver's canary fixture may hold up to 300 rows (`STORE_CANARY_FIXTURE_MAX_ROWS`, was 200), so it can carry a real graph repository: 240 foundation rows and a first write. The canary moves a fixture a row a page each way, so 300 rows is the 300-page store move one request is allowed (D-69).
+- c6057cb: A promote refused until someone acknowledges it (a permission, migration or export-break change, or a stale review) now ends by saying it waits on a person, and where to answer it: the Substrat approvals pane, or `substrat promote <slug> --review-only`. The `--ack-*` line and its `--review` token are printed as before.
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/control-plane-client@0.9.0
+  - @substrat-run/model-view@0.6.51
+
 ## 0.60.1
 
 ### Patch Changes
