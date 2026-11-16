@@ -187,7 +187,7 @@ describe('engine-protocol — the lifecycle is declared, and the declaration ref
         method: 'scrive',
         parties: [
           { label: 'Beställare', kind: 'external', contact: { email: 'part@example.se' } },
-          { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
         ],
       }),
     );

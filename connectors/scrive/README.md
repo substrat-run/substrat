@@ -117,7 +117,9 @@ instead. The host needs a `SecretBox` configured to seal the credential at rest.
    vertical names is ever the author, and every one of them is invited normally. The dispatch
    refuses before egress when any party carries neither email nor mobile, naming the party —
    which is the companion invariant this caveat asked for. Both are asserted in
-   `test/dispatch.test.ts`.
+   `test/dispatch.test.ts`. Since #3087 the engine refuses a party with no contact before the
+   instance freezes, the primary included, and accepts a request with a single party. The refusal
+   here still covers events from an engine older than that.
 
 ### The author is the account, and the API does not say so
 

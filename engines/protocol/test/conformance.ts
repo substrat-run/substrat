@@ -19,9 +19,16 @@ export const conformance = declareEntityChecks({
     },
     'protocol/request-signatures': {
       method: 'scrive',
-      // One party, and it is the ISSUER — the only kind that needs no delivery
-      // address, so the fixture carries no contact detail at all.
-      parties: [{ label: 'Beställare', kind: 'external', signatureKind: 'primary' }],
+      // One party is a complete request (#3087). It is the primary, and it is
+      // invited, so it carries a contact like every other party.
+      parties: [
+        {
+          label: 'Beställare',
+          kind: 'external',
+          signatureKind: 'primary',
+          contact: { email: 'bestallare@example.se' },
+        },
+      ],
     },
     'protocol/cancel-signatures': { reason: 'conformance' },
     'protocol/void': { reason: 'conformance' },

@@ -508,9 +508,11 @@ const signaturesRequested = z.object({
       // key by the engine before it emitted. Opened below, at egress, and never
       // stored — the spine holds only what is here, which is bytes.
       //
-      // Optional AND nullable, and both matter. Null is the issuing party, which
-      // the provider reaches as its own author and which therefore carries no
-      // address. Absent is an engine older than `0005-party-contact`: that
+      // Optional AND nullable, and both matter. Null is a party the engine let go
+      // without an address. Before #3087 that was the issuing party, which the
+      // engine still treated as the provider's author; an engine since then
+      // refuses it before freezing. The refusal below still catches one from an
+      // older engine. Absent is an engine older than `0005-party-contact`: that
       // request is exactly as undeliverable as it was before this field existed,
       // and no worse — version skew must not be made worse than the status quo,
       // which is that nothing works (§7).

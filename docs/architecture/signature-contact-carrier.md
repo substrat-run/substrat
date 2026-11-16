@@ -701,6 +701,11 @@ freezes. `connectors/scrive/test/dispatch.test.ts` carried a test asserting the 
 behaviour with a note naming the day it would have to change deliberately; it now asserts
 the refusal.
 
+**Amended by #3087.** The first half is gone. #852 made the Scrive connector send the account
+as an author party of its own that does not sign, so no party the vertical names is the author
+and a one-party request is delivered to that party. The engine now accepts a single party, and
+the second half covers every party, the primary included, since the primary is invited too.
+
 ### Consequences worth knowing
 
 - **A vertical that issues contracts must have connected the provider.** Sealing needs a
