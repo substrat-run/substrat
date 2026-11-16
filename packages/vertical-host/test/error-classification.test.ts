@@ -57,6 +57,19 @@ describe('classifyError reads the taxonomy first', () => {
     expect(classified?.platformFault).toBe(true);
   });
 
+  it.each([
+    ['conflict', 'the calendar had a transient issue, so the slot was released', 409],
+    ['not_found', 'Internal error; the ticket was never filed', 404],
+    ['validation_failed', 'network connection lost is not a valid reason', 400],
+  ] as const)('reads a declared %s by its code, not a fault phrase in its message', (code, message, status) => {
+    // The phrase patterns are for a throw that declared nothing (the runtime's redacted
+    // SQLite error). A refusal that declared its code is the request's answer, whatever
+    // its sentence happens to say — on both sides of the hop.
+    for (const err of [substratError(code, message), acrossTheHop(substratError(code, message))]) {
+      expect(classifyError(err)).toEqual({ status, message });
+    }
+  });
+
   it('still has no opinion about a foreign throw', () => {
     // "No opinion" is load-bearing: `mountOperations` rethrows so a vertical's own
     // `onError` still gets to map its own domain errors.

@@ -53,6 +53,11 @@ export function messageOf(err: unknown): string {
  * SQLite's redacted `internal error; reference = <id>`, whose reference resolves only at
  * Cloudflare support. The patterns are anchored/specific on purpose: an APP error that
  * merely mentions "internal error" mid-sentence is still the caller's 400.
+ *
+ * The flags are the runtime's own declaration and always count. The message shapes are a
+ * guess, so they count only for a throw that declared NOTHING (#3225): a refusal carrying
+ * its code — `conflict`, `not_found`, … — is the request's answer, whatever its sentence
+ * happens to say, and reading it as a fault would tell the caller to retry a refusal.
  */
 const PLATFORM_FAULT_PATTERNS = [
   /^internal error(?:;|$)/i,
@@ -65,6 +70,7 @@ const PLATFORM_FAULT_PATTERNS = [
 export function isPlatformFault(err: unknown, message: string): boolean {
   const flags = err as { retryable?: unknown; overloaded?: unknown } | null;
   if (flags?.retryable === true || flags?.overloaded === true) return true;
+  if (errorCodeOf(err) !== undefined) return false;
   return PLATFORM_FAULT_PATTERNS.some((p) => p.test(message));
 }
 
@@ -166,6 +172,7 @@ export function classifyError(thrown: unknown): ErrorClassification | undefined 
   const message = messageOf(err);
   const explicit = err instanceof HTTPException ? err.status : undefined;
   if (explicit !== undefined && explicit !== 400) return { status: explicit, message };
+  // A runtime fault: workerd's flags, or the fault phrases on a throw that declared no code.
   if (isPlatformFault(err, message)) return { status: 502, message, platformFault: true };
 
   // The taxonomy first (#113): a throw that declared what it is outranks the guesses
