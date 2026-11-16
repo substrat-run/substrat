@@ -3,6 +3,10 @@ import type { On } from 'claude-code'
 
 import { changesIn, promoteRefusalIn, refusalFor, reviewUploadIn, slugIn, substratCalls, waitingPromoteIn } from './approvals-parse'
 
+// The test runner has a timer; the mod's type environment does not declare one, and CI runs
+// `claude plugin validate --strict`, where that missing name is an error.
+declare function setTimeout(callback: (value?: unknown) => void, ms: number): unknown
+
 const PANE = {
   plugin: 'substrat',
   component: 'Pane',

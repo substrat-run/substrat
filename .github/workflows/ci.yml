@@ -11,7 +11,8 @@ on:
 # building only what its own slice needs, so the long suites stop queueing behind one
 # another. `test-windows` runs the CLI's suite on Windows, the one package a builder runs on
 # their own machine. `mtls-wasm` rebuilds the social relay's TLS module from source when it
-# changed. `test` is the aggregate that fails unless all four did their job, and it keeps
+# changed. `plugin-hooks` runs the Substrat plugin's hooks tests with Claude Code when
+# plugin/ changed. `test` is the aggregate that fails unless all of them did their job, and it keeps
 # the name everything downstream (deploy-test's `needs`) already waits on.
 #
 # Which packages a run covers is decided by tools/ci-scope.mjs, once per job, from the
@@ -764,11 +765,57 @@ jobs:
       - if: failure() && steps.touched.outputs.run == 'true'
         run: docker compose -f connectors/woocommerce/docker/compose.yaml logs --tail 200
 
+  # The Substrat plugin's hooks module (plugin/substrat/hooks, the approvals pane of #3146). It
+  # is not a workspace member: its tests import 'claude-code/testing', which only Claude Code
+  # provides, so no runner in this repo can load them. Claude Code's own commands run them, and
+  # neither needs an account, an API key or a network call beyond the npm install:
+  #   - `plugin validate --strict` type-checks the module and its tests against the mod API and
+  #     checks the manifests. --strict because without it a type error is only a warning and
+  #     the command still exits 0.
+  #   - `plugin test` runs every *.test.ts(x) under the plugin and exits 1 on a failure.
+  # Only when plugin/ or this workflow changed, or on a push to main, which always runs it. The
+  # version is pinned so a Claude Code release cannot redden an unrelated PR; bump it when the
+  # module starts using a newer part of the mod API.
+  plugin-hooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: touched
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          if git diff --name-only "origin/$BASE_REF...HEAD" \
+            | grep -qE '^(plugin/|\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.touched.outputs.run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - if: steps.touched.outputs.run == 'true'
+        run: npm install --global --no-fund --no-audit @anthropic-ai/claude-code@2.1.325
+      - if: steps.touched.outputs.run == 'true'
+        env:
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+        run: |
+          claude --version
+          claude plugin validate --strict plugin/substrat
+          claude plugin test plugin/substrat
+
   # The one verdict: green only when the checks, every shard and the Windows CLI suite
   # succeeded. A skipped or cancelled job is not a pass. Named `test` because that is the
   # job name deploy-test waits on and the one a merge has always been judged by.
   test:
-    needs: [checks, test-shard, test-windows, mtls-wasm, woocommerce-live]
+    needs: [checks, test-shard, test-windows, mtls-wasm, woocommerce-live, plugin-hooks]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -779,9 +826,10 @@ jobs:
           WINDOWS: ${{ needs.test-windows.result }}
           MTLS_WASM: ${{ needs.mtls-wasm.result }}
           WOOCOMMERCE: ${{ needs.woocommerce-live.result }}
+          PLUGIN_HOOKS: ${{ needs.plugin-hooks.result }}
         run: |
-          echo "checks: $CHECKS, test shards: $SHARDS, windows cli: $WINDOWS, mtls wasm: $MTLS_WASM, woocommerce live: $WOOCOMMERCE"
-          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ] && [ "$WINDOWS" = "success" ] && [ "$MTLS_WASM" = "success" ] && [ "$WOOCOMMERCE" = "success" ]
+          echo "checks: $CHECKS, test shards: $SHARDS, windows cli: $WINDOWS, mtls wasm: $MTLS_WASM, woocommerce live: $WOOCOMMERCE, plugin hooks: $PLUGIN_HOOKS"
+          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ] && [ "$WINDOWS" = "success" ] && [ "$MTLS_WASM" = "success" ] && [ "$WOOCOMMERCE" = "success" ] && [ "$PLUGIN_HOOKS" = "success" ]
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset
