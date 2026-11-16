@@ -83,6 +83,25 @@ has to pass the header through: on Apache, a `SetEnvIf Authorization` rule in `.
 the store refuses, or a key whose user is not a manager. On success it names the store by the URL
 WordPress reports for itself, its WooCommerce version and its currency.
 
+## One connection per store
+
+A connection is **one store**, named by the address WordPress reports for itself (its home URL, without
+the `https://` or a trailing slash). Connecting decides which:
+
+- A key for a store the app is already connected to **replaces that store's key** and keeps
+  everything the connection has done, so the next pass carries on where the last one stopped. It does
+  not matter which spelling of the address the key is pasted with (`www.` or not) as long as both reach
+  the same store.
+- A key for **another store** becomes a connection of its own, listed beside the first. Each is bound
+  and polled on its own, and every record says which connection it came from.
+- A store that **moves to another domain** is a new store to the platform: connect the new address,
+  then disconnect the old one. The new connection's first pass reads the whole store again, so your
+  operation sees every record once more, under the new connection.
+
+A connection made before connections were keyed on their store holds no store. Pasting a key for
+**the same store** still replaces its key. A key for **another store** is refused, and nothing is
+stored: disconnect it first, and the next key makes a connection keyed on its store.
+
 ## The flow
 
 Each pass, for each bound install:

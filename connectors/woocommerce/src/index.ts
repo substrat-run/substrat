@@ -11,12 +11,22 @@ import {
   type ConnectionId,
   type CurrencyCode,
   type Instant,
+  type OpenConnection,
 } from '@substrat-run/contracts';
 import type { ConnectorConnection, FetchLike, HostAdmin, ScopeHost } from '@substrat-run/kernel';
 import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
-import { WooCommerceApi, WooCommerceApiError, WOOCOMMERCE_MAX_PAGE, wcOrder, wcProduct, woocommerceSecret } from './api.js';
+import {
+  WooCommerceApi,
+  WooCommerceApiError,
+  WOOCOMMERCE_MAX_PAGE,
+  wcOrder,
+  wcProduct,
+  woocommerceSecret,
+  type WcStoreInfo,
+  type WooCommerceSecret,
+} from './api.js';
 import { modifiedAtOf, orderChange, productChange } from './commerce.js';
-import { storeBaseUrl, StoreUrlError } from './store-url.js';
+import { storeBaseUrl, StoreUrlError, woocommerceStoreRef } from './store-url.js';
 
 export {
   WooCommerceApi,
@@ -31,7 +41,7 @@ export {
   type WcVariation,
 } from './api.js';
 export { gmtInstant, orderChange, productChange, WooCommerceMappingError } from './commerce.js';
-export { storeBaseUrl, StoreUrlError } from './store-url.js';
+export { storeBaseUrl, StoreUrlError, woocommerceStoreRef } from './store-url.js';
 export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
 
 /**
@@ -78,6 +88,16 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  * As for Planima: {@link bindWooCommerceScope} names the scope, the operation the records land
  * through and the permission that operation checks, and refuses a binding whose connection does not
  * hold it. What an order MEANS to a business is the vertical's vocabulary.
+ *
+ * ## A connection is one store (#3219)
+ *
+ * The platform keys a WooCommerce connection on the store its connect-time probe names
+ * ({@link woocommerceStoreRef} of the store's own `home_url`), not on the app: a key for the same
+ * store rotates that store's connection and keeps its cursors, and a key for another store becomes a
+ * connection of its own. Everything a connection keeps — each binding's cursor — is only true of its
+ * store, so every open names the store ({@link WooCommerceBinding.externalAccountRef}), and the key
+ * is pinned to it before it is stored ({@link prepareWooCommerceCandidate}). A store that moves
+ * domain is a new connection; connect the new address, then disconnect the old one.
  */
 
 /**
@@ -106,6 +126,14 @@ export interface WooCommerceBinding {
   operation: string;
   /** The permission `operation` checks, which the connection must hold on `scopeId`. */
   permission: string;
+  /**
+   * WHICH store's connection this is (#3219): the connection's `externalAccountRef`, the store its
+   * probe named ({@link woocommerceStoreRef}). A tenant may connect several stores to one app, each
+   * its own connection, so the credential cannot be found from the tenant and vertical alone: the
+   * sweep opens it by this. Absent on a binding of a connection made before connections were keyed
+   * on their store, which is the app's only WooCommerce connection.
+   */
+  externalAccountRef?: string | null;
   boundAt: string;
   lastSync?: {
     syncedAt: string;
@@ -138,6 +166,8 @@ export async function bindWooCommerceScope(
     vertical: string;
     operation: string;
     permission: string;
+    /** The connection's `externalAccountRef`. See {@link WooCommerceBinding.externalAccountRef}. */
+    externalAccountRef?: string | null;
     /** Internal automatic-pass path: the declaration was checked and its grant follows this write. */
     grantPreflighted?: boolean;
     now?: () => number;
@@ -164,6 +194,7 @@ export async function bindWooCommerceScope(
     vertical: input.vertical,
     operation: input.operation,
     permission: input.permission,
+    ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
     boundAt: new Date(input.now?.() ?? Date.now()).toISOString(),
   };
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -261,7 +292,7 @@ export async function syncWooCommerceScope(
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
-    connectionId,
+    { account: binding.externalAccountRef, expected: connectionId },
   );
   const api = new WooCommerceApi(conn, { sleep: options.sleep, allowLocalHttp: options.allowLocalHttp });
   const pages = options.pagesPerSync ?? WOOCOMMERCE_PAGES_PER_SYNC;
@@ -391,23 +422,39 @@ export async function probeWooCommerceSecret(
   } catch (err) {
     return failed(false, err instanceof StoreUrlError ? err.message : String(err));
   }
-  const conn: ConnectorConnection = {
+  return probeWith(candidateConnection(parsed.data, options), options);
+}
+
+/** A credential that is not stored yet, as the API client takes one. */
+function candidateConnection(secret: WooCommerceSecret, options: WooCommerceConnectorOptions): ConnectorConnection {
+  return {
     id: connectionIdSchema.parse('00000000000000000000000000'), // no row yet; never read
     tenantId: '',
     vertical: '',
     provider: 'woocommerce',
-    secret: parsed.data,
+    secret,
     // A REST API key does not expire; it is revoked in WooCommerce.
     expiresAt: null,
     fetch: deadlineFetch(options.fetch, options.timeoutMs ?? 15_000),
   };
-  return probeWith(conn, options);
+}
+
+/**
+ * The store a key reads ({@link woocommerceStoreRef}), from what the store says of itself: its
+ * `home_url`, else its `site_url`, else the address the key was pasted with, which it demonstrably
+ * reads. What a connection is keyed on (#3219).
+ */
+function storeRefOf(info: WcStoreInfo, secret: WooCommerceSecret, options: WooCommerceConnectorOptions): string | null {
+  return (
+    woocommerceStoreRef(info.environment.home_url || info.environment.site_url) ??
+    woocommerceStoreRef(storeBaseUrl(secret.storeUrl, { allowLocalHttp: options.allowLocalHttp }))
+  );
 }
 
 /** Probe the credential a live connection already holds. Verifying is itself a use. */
 export async function probeWooCommerceConnection(
   host: ScopeHost,
-  connection: { tenantId: string; vertical: string },
+  connection: WooCommerceConnectionRef,
   options: WooCommerceConnectorOptions,
 ): Promise<ConnectionProbe> {
   const conn = await openWooCommerceConnection(
@@ -416,6 +463,7 @@ export async function probeWooCommerceConnection(
     connection.tenantId,
     connection.vertical,
     options.timeoutMs ?? 15_000,
+    { account: connection.externalAccountRef, expected: connection.id },
   );
   return probeWith(conn, options);
 }
@@ -446,9 +494,9 @@ async function probeWith(conn: ConnectorConnection, options: WooCommerceConnecto
     return {
       ok: true,
       refused: false,
-      // Left null, as Planima's is: one store per (tenant, vertical), so a re-paste rotates the one
-      // connection in place. The store is named in the label.
-      accountRef: null,
+      // The store, which the platform makes the connection's `externalAccountRef` (#3219): a key for
+      // the same store rotates its connection, a key for another store is a connection of its own.
+      accountRef: storeRefOf(info, woocommerceSecret.parse(conn.secret), options),
       accountLabel: site === '' ? null : clip(site),
       facts: [
         { label: 'Store', value: clip(site || api.base()) },
@@ -499,13 +547,75 @@ export async function woocommerceConnectionActivity(host: ScopeHost, connectionI
   return connectionActivity.parse({ source: 'ledger', entries, live: false });
 }
 
+/**
+ * The platform's preparation of a candidate key (`ConnectionInspector.prepareCandidate`), run before
+ * the key is stored, on every way a key reaches a connection. It pins the key to the store it reads
+ * ({@link woocommerceStoreRef}), stored with the key as `store`.
+ *
+ * On a replacement (`previous` is the live connection's credential) it refuses, before anything is
+ * stored, a key for another store: nothing the connection keeps (each binding's cursor) is true of
+ * that one. The platform keys a WooCommerce connection on the store its probe names (#3219), so
+ * `previous` is the same store's credential and this holds trivially — except for a connection made
+ * before that, which holds no store and is still shown as `previous` to every key. Such a credential
+ * carries no `store` either, so it is judged by the address it was pasted with: the same store if
+ * that names the store the new key reads, or the address the new key was pasted with. Refusing
+ * otherwise is what stops another store's key replacing it; disconnected, the next key makes a keyed
+ * connection.
+ *
+ * A store that does not answer is a 503, nothing stored: unpinned, a later replacement could not be judged.
+ */
+export function prepareWooCommerceCandidate(
+  options: WooCommerceConnectorOptions,
+): (candidate: Record<string, string>, previous: Record<string, string> | undefined) => Promise<{ secret: Record<string, string> }> {
+  return async (candidate, previous) => {
+    const parsed = woocommerceSecret.safeParse(candidate);
+    if (!parsed.success) {
+      throw new WooCommerceKeyRefusal(`incomplete WooCommerce credential: ${parsed.error.issues.map((i) => i.path.join('.')).join(', ')}`, 422);
+    }
+    const api = new WooCommerceApi(candidateConnection(parsed.data, options), {
+      sleep: options.sleep,
+      maxRateLimitRetries: 0,
+      allowLocalHttp: options.allowLocalHttp,
+    });
+    let store: string | null;
+    try {
+      store = storeRefOf(await api.storeInfo(), parsed.data, options);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof WooCommerceApiError && err.refused) throw new WooCommerceKeyRefusal(message, 422);
+      if (err instanceof StoreUrlError) throw new WooCommerceKeyRefusal(message, 422);
+      throw new WooCommerceKeyRefusal(`the store did not say which store it is, so nothing was stored; try again in a moment (${clip(message)})`, 503);
+    }
+    if (store === null) throw new WooCommerceKeyRefusal('the store did not name its own address, so nothing was stored', 422);
+    if (previous !== undefined) {
+      const asNew = 'a connection stays on one store, so disconnect it, then connect again with this key';
+      const pinned = previous.store;
+      const pasted = typeof previous.storeUrl === 'string' ? woocommerceStoreRef(previous.storeUrl) : null;
+      const same = pinned !== undefined ? pinned === store : pasted !== null && (pasted === store || pasted === woocommerceStoreRef(parsed.data.storeUrl));
+      if (!same) {
+        throw new WooCommerceKeyRefusal(`this key reads the store at ${store}, and this connection is for ${pinned ?? pasted ?? 'another store'}; ${asNew}`, 422);
+      }
+    }
+    return { secret: { storeUrl: parsed.data.storeUrl, consumerKey: parsed.data.consumerKey, consumerSecret: parsed.data.consumerSecret, store } };
+  };
+}
+
+/** A key {@link prepareWooCommerceCandidate} will not store, with the status the relay answers. */
+export class WooCommerceKeyRefusal extends Error {
+  readonly status: 422 | 503;
+  constructor(message: string, status: 422 | 503) {
+    super(message);
+    this.name = 'WooCommerceKeyRefusal';
+    this.status = status;
+  }
+}
+
 /** The stored credential, reduced: the store URL in full, the key and secret masked. */
-export async function woocommerceCredentialSummary(
-  host: ScopeHost,
-  connection: { tenantId: string; vertical: string },
-): Promise<ConnectionCredential> {
-  const open = await host.admin.openConnection(tenantIdSchema.parse(connection.tenantId), connection.vertical, 'woocommerce');
-  if (!open) throw new Error(`no live 'woocommerce' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`);
+export async function woocommerceCredentialSummary(host: ScopeHost, connection: WooCommerceConnectionRef): Promise<ConnectionCredential> {
+  const open = await openWooCommerceCredential(host.admin, connection.tenantId, connection.vertical, {
+    account: connection.externalAccountRef,
+    expected: connection.id,
+  });
   const secret = woocommerceSecret.parse(open.secret);
   return {
     fields: [
@@ -518,25 +628,60 @@ export async function woocommerceCredentialSummary(
 
 const maskSecret = (value: string): string => (value.length < 8 ? '••••••••' : `••••••••${value.slice(-4)}`);
 
-/** Open the live WooCommerce connection for a (tenant, vertical), with health recorded. */
+/**
+ * A WooCommerce connection as a caller knows it: its tenant and vertical, and — where the caller
+ * holds the row — its id and `externalAccountRef`, the store it is keyed on (#3219).
+ */
+export interface WooCommerceConnectionRef {
+  id?: ConnectionId;
+  tenantId: string;
+  vertical: string;
+  externalAccountRef?: string | null;
+}
+
+/**
+ * Open one WooCommerce connection's credential (#3219).
+ *
+ * A tenant may connect several stores to one app, one connection each, keyed on the store
+ * (`externalAccountRef`), so a read that names no store throws once there are two. `account` names
+ * it: the connection's own ref where the caller holds the row, else the store its binding records.
+ * With no connection on that store — a connection made before connections were keyed holds none, and
+ * is then the app's only one — the read names no store.
+ *
+ * `expected` is the connection the caller acts for. The credential that reads and the identity that
+ * lands must be the same connection (Planima's backstop, for the same reason), so whatever the store
+ * found, another connection is refused.
+ */
+async function openWooCommerceCredential(
+  admin: HostAdmin,
+  tenant: string,
+  vertical: string,
+  select: { account?: string | null; expected?: ConnectionId },
+): Promise<OpenConnection> {
+  const t = tenantIdSchema.parse(tenant);
+  const open =
+    (select.account ? await admin.openConnection(t, vertical, 'woocommerce', select.account) : undefined) ??
+    (await admin.openConnection(t, vertical, 'woocommerce'));
+  if (!open) throw new Error(`no live 'woocommerce' connection for tenant ${tenant} / vertical '${vertical}'`);
+  if (select.expected !== undefined && open.id !== select.expected) {
+    throw new Error(
+      `binding names connection ${select.expected}, but the live 'woocommerce' connection for tenant ${tenant} / ` +
+        `vertical '${vertical}' is ${open.id}. Re-bind the scope against ${open.id}.`,
+    );
+  }
+  return open;
+}
+
+/** {@link openWooCommerceCredential}, with health recorded on every call it makes. */
 async function openWooCommerceConnection(
   admin: HostAdmin,
   fetchImpl: FetchLike,
   tenant: string,
   vertical: string,
   timeoutMs: number,
-  expected?: ConnectionId,
+  select: { account?: string | null; expected?: ConnectionId } = {},
 ): Promise<ConnectorConnection> {
-  const open = await admin.openConnection(tenantIdSchema.parse(tenant), vertical, 'woocommerce');
-  if (!open) throw new Error(`no live 'woocommerce' connection for tenant ${tenant} / vertical '${vertical}'`);
-  // The credential that reads and the identity that writes must be the same connection (Planima's
-  // backstop, for the same reason).
-  if (expected !== undefined && open.id !== expected) {
-    throw new Error(
-      `binding names connection ${expected}, but the live 'woocommerce' connection for tenant ${tenant} / ` +
-        `vertical '${vertical}' is ${open.id}. Re-bind the scope against ${open.id}.`,
-    );
-  }
+  const open = await openWooCommerceCredential(admin, tenant, vertical, select);
   const bounded = deadlineFetch(fetchImpl, timeoutMs);
   return {
     ...open,

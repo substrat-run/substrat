@@ -209,9 +209,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // Empty for Planima's reason: the records land through the consuming vertical's own
     // operation, and `bindWooCommerceScope` verifies its permission at bind time.
     grants: [],
-    // No `accountRefField`: one store per app, so a re-paste rotates the connection in place. Nor
-    // `accountFromProbe` (#3211): its probe names the store only in a label, and its sweep opens the
-    // one connection a (tenant, vertical) holds.
+    // #3219: the probe names the store (its own `home_url`), so the plane keys the connection on it:
+    // a key for the same store rotates it, a key for another store becomes a second connection.
+    accountFromProbe: true,
   },
   stripe: {
     provider: 'stripe',

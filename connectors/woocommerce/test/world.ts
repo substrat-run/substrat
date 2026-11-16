@@ -31,7 +31,15 @@ export const OPERATION = 'shop/record-commerce';
  * the vertical's landing operation that records what it was handed. `onLand` runs inside the
  * landing, for a test that changes the store while a sweep is walking it.
  */
-export async function world(mock: WooCommerceMock, opts: { grant?: boolean; onLand?: (c: CommerceChange) => void } = {}) {
+export async function world(
+  mock: WooCommerceMock,
+  opts: {
+    grant?: boolean;
+    onLand?: (c: CommerceChange) => void;
+    /** The store the connection is keyed on (#3219); absent, a connection made before that. */
+    account?: string;
+  } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-woocommerce-'));
   const landed: CommerceChange[] = [];
   const module: ModuleRegistration = {
@@ -64,7 +72,7 @@ export async function world(mock: WooCommerceMock, opts: { grant?: boolean; onLa
   await host.admin.grantEntitlement(staff, t, 'shop');
   await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu', vertical: 'shop' });
   await host.admin.activateScope(staff, t, s);
-  await host.admin.createConnection(staff, { id: connId, tenantId: t, vertical: 'shop', provider: 'woocommerce', label: 'Acme store', secret: mock.secret });
+  await host.admin.createConnection(staff, { id: connId, tenantId: t, vertical: 'shop', provider: 'woocommerce', label: 'Acme store', secret: mock.secret, ...(opts.account ? { externalAccountRef: opts.account } : {}) });
   if (opts.grant !== false) {
     await host.admin.grantToConnection(staff, { connectionId: connId, permission: RECORD, node: { tenantId: t, scopeId: s }, grantedBy: staff });
   }
@@ -78,13 +86,23 @@ export async function world(mock: WooCommerceMock, opts: { grant?: boolean; onLa
   });
   return {
     host,
+    staff,
     connId,
     tenantId: t,
     scopeId: s,
     landed,
     waited,
     options,
-    bind: () => bindWooCommerceScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'shop', operation: OPERATION, permission: RECORD }),
+    bind: () =>
+      bindWooCommerceScope(host, {
+        connectionId: connId,
+        tenantId: t,
+        scopeId: s,
+        vertical: 'shop',
+        operation: OPERATION,
+        permission: RECORD,
+        externalAccountRef: opts.account ?? null,
+      }),
     sweep: (over: Partial<WooCommerceConnectorOptions> = {}) => sweepWooCommerce(host, connId, options(over)),
     close: () => {
       host.close();
