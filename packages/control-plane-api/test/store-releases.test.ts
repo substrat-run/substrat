@@ -11,6 +11,7 @@ import {
   RESERVED_STORE_OPERATIONS,
   mergeDumpPages,
   STORE_DRIVER_PLATFORM_REPOSITORY,
+  STORE_CANARY_FIXTURE_MAX_ROWS,
   STORE_RELEASE_MAX_BYTES,
   STORE_RELEASE_MAX_FILES,
   STORE_RELEASE_MAX_MODULES,
@@ -37,6 +38,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   type CanaryCall,
 } from '../src/index.js';
+import { STORE_REQUEST_BUDGET } from '../src/store-move.js';
 
 const storedBytes = (objects: Map<string, Uint8Array>) => ({
   get: async (key: string) => objects.get(key),
@@ -351,13 +353,25 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       [new Uint8Array([0xff]), /is not a store dump/],
       [encode({ tables: [{ name: 'nodes' }] }), /is not a store dump/],
       [encode({ tables: [{ ...FIXTURE.tables[0]!, rows: [] }] }), /holds no rows/],
-      [encode({ tables: [{ ...FIXTURE.tables[0]!, rows: Array.from({ length: 201 }, (_, i) => [i]) }] }), /holds more than 200 rows/],
+      [encode({ tables: [{ ...FIXTURE.tables[0]!, rows: Array.from({ length: STORE_CANARY_FIXTURE_MAX_ROWS + 1 }, (_, i) => [i]) }] }), new RegExp(`holds more than ${STORE_CANARY_FIXTURE_MAX_ROWS} rows`)],
     ];
     for (const [fixture, pattern] of cases) {
       const store = canaryStore();
       expect(await refusal(canary(store.call, { fixture })), String(pattern)).toMatchObject({ status: 422, message: expect.stringMatching(pattern) });
       expect(store.calls).toEqual([]);
     }
+  });
+
+  it('loads a fixture of exactly STORE_CANARY_FIXTURE_MAX_ROWS rows, one request\'s store move (#2854)', async () => {
+    // A row a page each way: the fixture at the cap is a store move of that many pages, the most
+    // one request moves of any store (D-69). A graph repository is 241 rows after its first write.
+    expect(STORE_CANARY_FIXTURE_MAX_ROWS).toBeGreaterThanOrEqual(241);
+    expect(STORE_CANARY_FIXTURE_MAX_ROWS).toBeLessThanOrEqual(STORE_REQUEST_BUDGET.pages);
+    const rows = Array.from({ length: STORE_CANARY_FIXTURE_MAX_ROWS }, (_, i) => [i]);
+    const store = canaryStore({}, ['increment', 'read']);
+    await canary(store.call, { fixture: new TextEncoder().encode(JSON.stringify({ tables: [{ ...FIXTURE.tables[0]!, rows }] })) });
+    // Its headings, every row, its headings again; then the second stage's page sent twice.
+    expect(store.calls.filter((c) => c.operation === 'substrat.stage-page')).toHaveLength(STORE_CANARY_FIXTURE_MAX_ROWS + 4);
   });
 
   it('refuses a chain that does not end, rather than read it for ever', async () => {
