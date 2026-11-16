@@ -64,6 +64,7 @@ export * from './browser.js';
 export {
   VerticalClient,
   AUDITED_CALL_DEADLINE_MS,
+  COPY_MAX_BYTES,
   STREAMED_ATTACHMENT_UNVERIFIED,
   isRouteMiss,
   isScopeNotHeld,

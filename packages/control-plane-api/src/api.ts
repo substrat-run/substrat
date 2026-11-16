@@ -227,7 +227,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { issuerOnlyConfigKeyOf } from './issuer-config.js';
-import { abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { COPY_MAX_BYTES, abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
   type CopyJobRecord, type CopyJobs,
@@ -584,6 +584,13 @@ export interface ControlPlaneApiOptions {
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
    *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
   copyLeaseMs?: number;
+  /**
+   * #2450: the largest scope a copy into a scope's store starts on (a carry, an adopt or rebind onto
+   * serving, a fork, a kept copy restored forward), read as the source's database size.
+   * `COPY_MAX_BYTES` unless a test needs a smaller one. A larger scope is refused (413) with its
+   * size before any page moves, rather than failing at the destination's commit.
+   */
+  copyMaxBytes?: number;
   /**
    * #2446: the most scopes one promote reads the role state of (`ROLE_STATE_SCOPE_CAP` unless a
    * test needs a smaller one). A promote that would move more is refused, retryable, rather than
@@ -1957,6 +1964,7 @@ async function answeredMessage(res: Response): Promise<string> {
 export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ Variables: Vars }> {
   const { host, authenticate, authenticateBuilder, authenticateTenantService } = options;
   const copyLeaseMs = options.copyLeaseMs ?? SCOPE_COPY_LEASE_MS;
+  const copyMaxBytes = options.copyMaxBytes ?? COPY_MAX_BYTES;
 
   /** The stores of the version the scope's deployment runs (`scopeStoresOf`, #2207). */
   const manifestStores = (c: ReqCtx, scope: Scope, running?: RunningVersion): Promise<DeclaredScopeStore[]> =>
@@ -4613,7 +4621,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
       // #2450: a page at a time into the destination's stage, so a scope of any size moves.
       const { dump, loadStamp: sourceStamp, revision: sourceRevision } = await transferScope(
-        source, dest, { from: scopeId }, { retry: retryTransient },
+        source, dest, { from: scopeId }, { retry: retryTransient, maxBytes: copyMaxBytes },
       );
       const restored = await restoreCarryingSwitches(c.var.admin, actor, dest, tenantId, scopeId, dump, {
         scopeId, exact: true, loadStamp: restoredStamp,
@@ -4975,7 +4983,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // stage moves neither the destination's load stamp nor its write revision, so the marker
     // `carryFinish` reads next still describes the store the restore commits into.
     return carryWith(c, scope, versionId, move, () =>
-      transferScope(move.source, move.dest, { from: scope.id }, { retry: retryTransient }));
+      transferScope(move.source, move.dest, { from: scope.id }, { retry: retryTransient, maxBytes: copyMaxBytes }));
   };
 
   /** The two ends a carry moves between, resolved and checked (`carryOntoVersion`), or null when nothing moves. */
@@ -5535,6 +5543,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
       let sourceMarker = { loadStamp: carried.sourceStamp, revision: carried.sourceRevision };
       if (await isCarriedAway(carried.dest, scope)) {
+        // No size gate (#2450): the bind has landed on this store, so refusing the re-carry would
+        // leave the scope serving a wiped copy. Its destination predates the fenced wipe (#1722),
+        // and so the stage too: it takes the pages merged, the version-skew fallback.
         const { dump, loadStamp: stamp, revision, meta } = await transferScope(
           carried.source, carried.dest, { from: scope.id }, { retry: retryTransient },
         );
@@ -8686,7 +8697,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2450: a page at a time into the live store's stage, so a kept copy of any size goes forward.
     // Unstamped: the kept copy is only read. A write it takes meanwhile is caught up on through the
     // copy's capture, and one after the copy moves its revision, which the discard below is fenced on.
-    const { dump } = await transferScope(holder, live, { from: scopeId }, { retry: retryTransient, stamp: false });
+    const { dump } = await transferScope(holder, live, { from: scopeId }, { retry: retryTransient, stamp: false, maxBytes: copyMaxBytes });
     try {
       // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
       // re-assert) cannot leave the receipt set over older data.
@@ -12539,7 +12550,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             let begun: TransferProgress;
             try {
               begun = await beginTransfer({ source: move.source, dest: move.dest }, { from: preview.id },
-                { retry: retryTransient, alwaysStage: true });
+                { retry: retryTransient, alwaysStage: true, maxBytes: copyMaxBytes });
             } catch (e) {
               await settleCarryRetained(c, preview, opts.versionId, move);
               // The destination keeps one stage. Its refusal proves this call staged nothing:
@@ -12709,7 +12720,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // restore blip reloads the same stage and an export fault is not recorded as a restore's.
       forkData = sourceClient
         ? async () => {
-          const moved = await transferScope(sourceClient, target, { from: source.id, to: previewId }, { retry: retryTransient, stamp: false });
+          const moved = await transferScope(sourceClient, target, { from: source.id, to: previewId },
+            { retry: retryTransient, stamp: false, maxBytes: copyMaxBytes });
           refuseWipedSource(moved.meta, source.id);
           return moved.dump;
         }
@@ -12793,7 +12805,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           const begun = await beginTransfer(
             { source: forkPaged.source, dest: target },
             { from: forkPaged.sourceScopeId, to: previewId },
-            { retry: retryTransient, stamp: false, alwaysStage: true },
+            { retry: retryTransient, stamp: false, alwaysStage: true, maxBytes: copyMaxBytes },
           );
           if ('state' in begun) {
             const staged = begun.state;

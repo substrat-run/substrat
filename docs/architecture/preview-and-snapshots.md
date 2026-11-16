@@ -143,6 +143,24 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   catches up the same way. The self-host adapter has no capture, so a copy there is always read at
   a quiet moment.
 
+  Every move between scripts pages, whether it runs in a request or as a job. That covers a preview
+  push's carry, a fork, `scope bind`, the serving-pin repair, adopt and rebind onto a serving
+  script, a kept copy restored forward, a backup, and the re-carry that repairs a bind whose
+  destination an older script's unfenced wipe overtook. That re-carry's destination is by
+  construction a script built before the fenced wipe (#1722), and so before the stage. It takes
+  the pages merged into one dump, the version-skew fallback, and only there. A rollback of that
+  kind can still lose both copies (#3230).
+
+  A copy into a scope's store is refused before its first page when the source is larger than
+  `COPY_MAX_BYTES` (4 GiB, `copyMaxBytes` on the control-plane API). The refusal is 413 and names
+  the size. The limit is structural: while the destination commits, it holds the staged rows and
+  the loaded rows at once, under a Durable Object's 10 GB, so a larger scope would copy every page
+  and then fail at the commit. The size is the source's `databaseSize` (#1524). A deployment
+  that cannot read one is copied as before. Two copies are not gated: a backup, whose destination
+  is not a Durable Object, and the tombstone re-carry, since refusing it would leave the scope
+  routed to a wiped store. A subset or sample option for forks, and a cost cap below this limit,
+  are #3232.
+
 Once a cloud export lands in a local file it's a real SQLite again — `cp`, `VACUUM INTO`,
 Datasette, a step debugger all return. **Pull once (logical, governed); branch freely after.**
 
