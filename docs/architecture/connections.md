@@ -350,7 +350,9 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
     - the call comes from the vertical's worker for the scope it names;
     - the scope's running version declares an `on-request` landing for the provider;
     - the provider's connector opens a scope's own connection: a vertical-defined provider, or a
-      registration marked `scopeOwned`. None of the first-party ones is.
+      registration marked `scopeOwned`. WooCommerce is the first-party one that is (#3201): a
+      vertical whose scopes are each a store with its own shop connects each shop as that store's,
+      so no store is delivered another store's customers.
   - **Binding.** `POST /internal/connections/bind` `{ tenantId, scopeId, connectionId, options?,
     boundBy }` binds the scope's own connection to that scope alone. The landing's operation and key
     come from that declaration and the options from the scope, validated by the connector's bind. It
@@ -370,7 +372,16 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
   - **What else sees it.** A scope-owned connection is never landed by the connector pass and is not
     projected as a sealing key. It is opened only by naming its owner (`openConnection`'s
     `ownerScopeId`). A vertical connector's routed event is handed its scope's own connection when
-    that connection is bound on the scope, else the tenant's, never another scope's.
+    that connection is bound on the scope, else the tenant's, never another scope's. A first-party
+    connector that is `scopeOwned` records the owner on each binding and names it on every open, and
+    refuses a binding of a scope's own connection to any other scope (WooCommerce, #3201).
+  - **Inspection and the dashboard** (#3201). The tenant's `/verify` and `/credential` routes answer
+    for a scope's own connection only when its provider's inspector says it opens one
+    (`ConnectionInspector.scopeOwned`, set from the registration); otherwise it reads as absent, as
+    before. An app's Integrations tab lists the tenant's connections and that app's own, marked as
+    its own, and never a sibling app's own: listing, inspecting and disconnecting all go through the
+    same filter. Disconnecting a scope's own connection revokes it, which ends that scope's sync and
+    no other's.
 - **One key back, on one scope** (#2732). `revokeFromConnection` is `grantToConnection`'s inverse
   for a connection that stays live, the half an unbind needs. It removes the scope's
   `connection:<id>` tuple first: in the scope's own store, or, hosted, through the deployment

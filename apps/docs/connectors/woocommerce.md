@@ -98,6 +98,28 @@ the `https://` or a trailing slash). Connecting decides which:
   then disconnect the old one. The new connection's first pass reads the whole store again, so your
   operation sees every record once more, under the new connection.
 
+### A store that connects its own shop
+
+When each of your app's installs is a store with its own shop, connect each shop as **that
+install's own**, from inside the app rather than from the dashboard's form: your app calls the
+platform's connection relay with `owner: 'scope'` for the install it is serving, then binds it, and
+declares the landing as `bind: 'on-request'`:
+
+```ts
+connections: [
+  { provider: 'woocommerce', operation: 'shop/record-commerce', permission: 'commerce:record', bind: 'on-request' },
+],
+```
+
+Each install then receives its own shop's products and orders and nothing from the others. Orders
+carry customers' names, email addresses and postal addresses, so this is the shape to use whenever
+installs are different businesses or branches. The dashboard lists such a connection on that
+install's Integrations tab only, marked as its own, and disconnecting it there stops that install's
+sync and no other.
+
+With the default landing, a connection is the whole app's and is bound on every install, so every
+install receives every connected shop's records.
+
 A connection made before connections were keyed on their store holds no store. Pasting a key for
 **the same store** still replaces its key. A key for **another store** is refused, and nothing is
 stored: disconnect it first, and the next key makes a connection keyed on its store.

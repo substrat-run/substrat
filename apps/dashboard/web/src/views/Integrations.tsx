@@ -974,6 +974,7 @@ function FleetRows({
               <Pill kind={STATUS[c.status].kind}>{STATUS[c.status].label}</Pill>
               <span style={{ color: 'var(--text-primary)' }}>{c.label}</span>
               {c.externalAccountRef && <MonoTag>{c.externalAccountRef}</MonoTag>}
+              {c.ownerScopeId && <Pill kind="info">This app's own</Pill>}
             </div>
             <HealthLine conn={c} />
           </div>

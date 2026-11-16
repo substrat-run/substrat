@@ -99,6 +99,8 @@ const integrationConnection = z.object({
   label: z.string(),
   status: z.string(),
   externalAccountRef: z.string().nullable(),
+  // #3201: the app whose own connection this is; null for the team's.
+  ownerScopeId: z.string().nullable(),
   expiresAt: z.string().nullable(),
   lastOkAt: z.string().nullable(),
   lastError: z.string().nullable(),

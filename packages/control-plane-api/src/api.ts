@@ -459,6 +459,13 @@ export interface ConnectionInspector {
    */
   accountFromProbe?: true;
   /**
+   * #3201: this provider's connector opens a scope's OWN connection wherever it opens one (the
+   * registration's `scopeOwned`), so `probe` and `credential` open the row they are handed, owner
+   * included. Absent, a scope's own connection reads as absent on the tenant's inspection routes,
+   * because the connector would open the tenant's connection instead.
+   */
+  scopeOwned?: true;
+  /**
    * The PUBLIC certificate the connection authenticates with, for the tenant to register on
    * the provider's side (#2100). `null` when this connection uses none (a client secret).
    */
@@ -3843,8 +3850,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.post('/tenants/:tenantId/connections/:id/verify', async (c) => {
     const row = await inspectableConnection(c);
-    // #2732: a connector opens the tenant's connection for a provider, so a scope's own reads as absent here.
-    if (!row || row.ownerScopeId !== null) return refuse(c, 'not_found', 'unknown connection');
+    // #2732: a connector opens the tenant's connection for a provider, so a scope's own reads as absent
+    // here, unless its connector opens a scope's own (#3201).
+    if (!row || (row.ownerScopeId !== null && inspectorOf(row)?.scopeOwned !== true)) return refuse(c, 'not_found', 'unknown connection');
     const probe = inspectorOf(row)?.probe;
     if (!probe) {
       return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
@@ -3947,8 +3955,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.get('/tenants/:tenantId/connections/:id/credential', async (c) => {
     const row = await inspectableConnection(c);
-    // #2732: as /verify, a scope's own connection reads as absent until its own read exists.
-    if (!row || row.ownerScopeId !== null) return refuse(c, 'not_found', 'unknown connection');
+    // #2732: as /verify, a scope's own connection reads as absent unless its connector opens it (#3201).
+    if (!row || (row.ownerScopeId !== null && inspectorOf(row)?.scopeOwned !== true)) return refuse(c, 'not_found', 'unknown connection');
     const credential = inspectorOf(row)?.credential;
     if (!credential) {
       return refuseStatus(c, 501, `no credential view registered for provider '${row.provider}'`);

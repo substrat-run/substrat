@@ -42,6 +42,8 @@ export async function world(
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-woocommerce-'));
   const landed: CommerceChange[] = [];
+  /** Every landing with the scope it landed in, for the isolation tests (#3201). */
+  const landedIn: { scopeId: string; change: CommerceChange }[] = [];
   const module: ModuleRegistration = {
     manifest: moduleManifest.parse({
       id: '@test/shop',
@@ -57,6 +59,7 @@ export async function world(
       [OPERATION]: (async (ctx, input: CommerceChange) => {
         assertAllowed(await ctx.check(RECORD));
         landed.push(input);
+        landedIn.push({ scopeId: ctx.scopeId, change: input });
         opts.onLand?.(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
@@ -91,6 +94,7 @@ export async function world(
     tenantId: t,
     scopeId: s,
     landed,
+    landedIn,
     waited,
     options,
     bind: () =>

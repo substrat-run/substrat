@@ -349,6 +349,15 @@ export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<st
   return secret;
 }
 
+/**
+ * Whether a connection serves one app (#3201): the tenant's connection serves every app of its
+ * vertical, and a scope's own connection only the app it is the own connection of. So an app's
+ * Integrations tab lists, inspects and disconnects its own and the tenant's, never a sibling's.
+ */
+export function servesApp(row: Pick<Connection, 'ownerScopeId'>, appScopeId: string): boolean {
+  return (row.ownerScopeId ?? null) === null || row.ownerScopeId === appScopeId;
+}
+
 /** The live (non-revoked) row for one provider, if any — expired/error rows are still THE row; rotation revives them. */
 /** Every live row for a provider, newest first (ids are ulids, so id order is creation order). */
 export function liveConnectionsFor(rows: Connection[], provider: string): Connection[] {
@@ -398,7 +407,8 @@ export async function upsertLocalConnection(
   // The same account leg the plane's upsert keys on: a spec with `accountRefField`
   // rotates per account, everything else keeps the one null-ref row.
   const ref = (input.spec.accountRefField && input.secret[input.spec.accountRefField]) || null;
-  const live = rows.filter((r) => r.externalAccountRef === ref);
+  // The door makes the tenant's connection, so a scope's own (#2732, #3201) is never what it rotates.
+  const live = rows.filter((r) => r.externalAccountRef === ref && (r.ownerScopeId ?? null) === null);
   let id;
   let created;
   if (live.length === 0) {

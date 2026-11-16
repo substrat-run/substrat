@@ -408,6 +408,8 @@ export interface ConnectionView {
   label: string;
   status: 'active' | 'expired' | 'revoked' | 'error';
   externalAccountRef: string | null;
+  /** #3201: the app whose own connection this is (connected from inside it); null or absent for the team's. */
+  ownerScopeId?: string | null;
   expiresAt: string | null;
   lastOkAt: string | null;
   lastError: string | null;

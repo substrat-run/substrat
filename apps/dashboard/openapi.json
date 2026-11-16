@@ -8727,6 +8727,16 @@
                             }
                           ]
                         },
+                        "ownerScopeId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "expiresAt": {
                           "anyOf": [
                             {
@@ -8776,6 +8786,7 @@
                         "label",
                         "status",
                         "externalAccountRef",
+                        "ownerScopeId",
                         "expiresAt",
                         "lastOkAt",
                         "lastError",
@@ -11022,6 +11033,16 @@
                             }
                           ]
                         },
+                        "ownerScopeId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "expiresAt": {
                           "anyOf": [
                             {
@@ -11071,6 +11092,7 @@
                         "label",
                         "status",
                         "externalAccountRef",
+                        "ownerScopeId",
                         "expiresAt",
                         "lastOkAt",
                         "lastError",
@@ -11437,6 +11459,16 @@
                                       }
                                     ]
                                   },
+                                  "ownerScopeId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "expiresAt": {
                                     "anyOf": [
                                       {
@@ -11486,6 +11518,7 @@
                                   "label",
                                   "status",
                                   "externalAccountRef",
+                                  "ownerScopeId",
                                   "expiresAt",
                                   "lastOkAt",
                                   "lastError",
@@ -11514,6 +11547,16 @@
                                   "type": "string"
                                 },
                                 "externalAccountRef": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "ownerScopeId": {
                                   "anyOf": [
                                     {
                                       "type": "string"
@@ -11572,6 +11615,7 @@
                                 "label",
                                 "status",
                                 "externalAccountRef",
+                                "ownerScopeId",
                                 "expiresAt",
                                 "lastOkAt",
                                 "lastError",
@@ -20227,6 +20271,16 @@
                                     }
                                   ]
                                 },
+                                "ownerScopeId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
                                 "expiresAt": {
                                   "anyOf": [
                                     {
@@ -20343,6 +20397,7 @@
                                 "label",
                                 "status",
                                 "externalAccountRef",
+                                "ownerScopeId",
                                 "expiresAt",
                                 "lastOkAt",
                                 "lastError",
@@ -27186,6 +27241,16 @@
                             }
                           ]
                         },
+                        "ownerScopeId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "expiresAt": {
                           "anyOf": [
                             {
@@ -27235,6 +27300,7 @@
                         "label",
                         "status",
                         "externalAccountRef",
+                        "ownerScopeId",
                         "expiresAt",
                         "lastOkAt",
                         "lastError",
@@ -27432,6 +27498,16 @@
                             }
                           ]
                         },
+                        "ownerScopeId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "expiresAt": {
                           "anyOf": [
                             {
@@ -27481,6 +27557,7 @@
                         "label",
                         "status",
                         "externalAccountRef",
+                        "ownerScopeId",
                         "expiresAt",
                         "lastOkAt",
                         "lastError",

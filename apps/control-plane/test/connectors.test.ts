@@ -1,5 +1,5 @@
-import type { ScopeHost } from '@substrat-run/kernel';
-import { connectionId, permissionKey } from '@substrat-run/contracts';
+import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { connectionId, permissionKey, scopeId, tenantId } from '@substrat-run/contracts';
 import { describe, expect, it } from 'vitest';
 import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/connector-scrive';
 import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
@@ -14,6 +14,7 @@ import {
   connectorSweepersFor,
   connectorSweepEveryMinutesFor,
   paymentCheckoutsFor,
+  scopeOwnable,
 } from '../src/connectors.js';
 
 /**
@@ -251,6 +252,27 @@ describe('connection binders (#2316)', () => {
     expect(() => binders['planima']!.options!({ horizonYear: 50 })).toThrow();
     expect(() => binders['fortnox']!.options!({ horizonYears: 50 })).toThrow();
     expect(binders['fortnox']!.options!(undefined)).toEqual({});
+  });
+
+  it("lets a scope own its WooCommerce shop, and binds it with its store and its owner (#3219, #3201)", async () => {
+    expect(scopeOwnable('woocommerce')).toBe(true);
+    expect(scopeOwnable('stripe')).toBe(false);
+    const inspectors = connectionInspectorsFor(ENV);
+    expect(inspectors['woocommerce']).toMatchObject({ scopeOwned: true, accountFromProbe: true });
+    expect(inspectors['stripe']!.scopeOwned).toBeUndefined();
+    const written: unknown[] = [];
+    const host = { admin: { putConnectorState: async (_id: unknown, _key: string, value: unknown) => void written.push(value) } } as unknown as ScopeHost;
+    const owner = scopeId.parse(ulid());
+    const row = { id: connectionId.parse(ulid()), externalAccountRef: 'shop.example.com', ownerScopeId: owner } as Parameters<
+      NonNullable<ReturnType<typeof connectionBindersFor>[string]['bindBeforeGrant']>
+    >[1];
+    const target = { tenantId: tenantId.parse(ulid()), scopeId: owner, vertical: 'stores', operation: 'stores/record', permission: 'commerce:record' };
+    await connectionBindersFor(ENV)['woocommerce']!.bindBeforeGrant!(host, row, target);
+    expect(written).toEqual([expect.objectContaining({ scopeId: owner, externalAccountRef: 'shop.example.com', ownerScopeId: owner })]);
+    // A scope's own shop is bound to that scope alone.
+    await expect(
+      connectionBindersFor(ENV)['woocommerce']!.bindBeforeGrant!(host, row, { ...target, scopeId: scopeId.parse(ulid()) }),
+    ).rejects.toThrow(/lands in that scope alone/);
   });
 
   it('re-writes a Fortnox binding that does not carry its connection\'s company (#2316)', () => {

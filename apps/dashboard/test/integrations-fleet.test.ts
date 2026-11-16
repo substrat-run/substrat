@@ -79,6 +79,8 @@ interface Row {
   label: string;
   status: 'active' | 'error' | 'expired' | 'revoked';
   externalAccountRef: string | null;
+  /** #2732: the scope whose own connection this is; absent or null for the tenant's. */
+  ownerScopeId?: string | null;
   scopes: string[];
   expiresAt: string | null;
   lastOkAt: string | null;
@@ -411,6 +413,30 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     }
     expect(revoked).toEqual([]);
     expect(verified).toEqual([]);
+  });
+
+  it("lists this app's own connection beside the team's, and never a sibling app's own (#3201)", async () => {
+    const sibling = scopeId.parse(ulid());
+    rows.push(
+      row({ externalAccountRef: '666666', label: 'Sibling own AB', ownerScopeId: sibling }),
+      row({ externalAccountRef: '777777', label: 'Own AB', ownerScopeId: appScope }),
+    );
+    const body = (await (await req('')).json()) as { providers: { provider: string; connections: { label: string; ownerScopeId: string | null }[] }[] };
+    expect(body.providers.find((p) => p.provider === 'fortnox')!.connections.map((c) => [c.label, c.ownerScopeId])).toEqual([
+      ['Own AB', appScope],
+      ['Gamma AB', null],
+      ['Beta AB', null],
+      ['Alfa AB', null],
+    ]);
+    // A sibling app's own connection is not this app's to inspect or disconnect.
+    const siblings = byLabel('Sibling own AB').id;
+    expect((await req(`/fortnox/connections/${siblings}`, 'DELETE')).status).toBe(404);
+    expect((await req(`/fortnox/connections/${siblings}/verify`, 'POST')).status).toBe(404);
+    expect(revoked).toEqual([]);
+    expect(verified).toEqual([]);
+    // Its own is.
+    expect((await req(`/fortnox/connections/${byLabel('Own AB').id}`, 'DELETE')).status).toBe(200);
+    expect(revoked).toEqual([byLabel('Own AB').id]);
   });
 
   it('verifies the addressed company and re-reads that same row afterwards', async () => {
