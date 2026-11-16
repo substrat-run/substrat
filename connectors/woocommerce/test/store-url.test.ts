@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { storeBaseUrl } from '../src/store-url.js';
+import { storeBaseUrl, woocommerceStoreRef } from '../src/store-url.js';
 
 /** The store URL is tenant input the platform will call with a credential: judged before any request. */
 describe('store URL guard', () => {
@@ -28,5 +28,19 @@ describe('store URL guard', () => {
 
   it('admits a local plain-HTTP store only when the live test asks for it', () => {
     expect(storeBaseUrl('http://localhost:8080', { allowLocalHttp: true })).toBe('http://localhost:8080');
+  });
+});
+
+/** What a connection is keyed on (#3219): the store, however its address is spelled or served. */
+describe('store identity', () => {
+  it.each([
+    ['https://Shop.Example.com/', 'shop.example.com'],
+    ['http://shop.example.com', 'shop.example.com'],
+    ['https://example.com/butik//', 'example.com/butik'],
+    ['http://localhost:8080/', 'localhost:8080'],
+    ['https://www.shop.example.com', 'www.shop.example.com'],
+    ['not a url', null],
+  ])('%s is %s', (input, ref) => {
+    expect(woocommerceStoreRef(input)).toBe(ref);
   });
 });

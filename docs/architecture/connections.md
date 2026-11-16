@@ -856,8 +856,16 @@ on every door a credential comes in by:
   the connections as a fleet; `pnpm lint:connector-grants` holds the door and the registration equal.
 
 Only a provider whose probe always names an account opts in. Planima's cannot (a token is an
-account of several organizations), and WooCommerce's names its store only in a label; both keep one
-connection per (tenant, vertical) that every paste rotates.
+account of several organizations), so it keeps one connection per (tenant, vertical) that every paste
+rotates.
+
+WooCommerce opts in too (#3219). Its account is the store, named by its own `home_url` with the
+scheme and any trailing slash dropped (`woocommerceStoreRef`), so two spellings of one store are one
+connection and an `http`→`https` move changes nothing. Not by `environment.store_id`: a staging site
+cloned from production copies that id, and its key would then rotate production's connection. The
+price is that a store moving domain is a new connection. Its preparation pins every key to its store
+(`store` in the stored credential), and that is what refuses another store's key for a connection made
+before keying: such a credential holds no `store`, so it is judged by the address it was pasted with.
 
 #### A deployment that cannot store at all
 

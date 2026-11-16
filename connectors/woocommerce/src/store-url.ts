@@ -65,6 +65,32 @@ export function storeBaseUrl(input: string, options?: { allowLocalHttp?: boolean
 
 const PRIVATE_SUFFIXES = ['.localhost', '.local', '.internal', '.lan', '.home.arpa'];
 
+/**
+ * Which store a URL names, as a connection is keyed on it (#3219): the host, any port, and the path
+ * WordPress is installed under, without a trailing slash — `shop.example.com` or
+ * `example.com/shop`. `null` when the text is no URL.
+ *
+ * The probe hands it the store's own `home_url`, the address WordPress reports for itself, so two
+ * spellings of one store pasted (`https://www.…` and a redirecting `https://…`) are one store. The
+ * scheme is left out, so a store that moves from `http` to `https` stays the same store.
+ *
+ * Why not `environment.store_id`: a staging site cloned from production copies the store's database,
+ * and with it that id, so a staging key would rotate production's connection — exactly the read of one
+ * store's state with another store's key this key exists to prevent. The price of the URL is the
+ * other direction: a store that moves domain is a new connection on its next paste.
+ */
+export function woocommerceStoreRef(input: string): string | null {
+  let url: InstanceType<typeof URL>;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    return null;
+  }
+  if (url.hostname === '') return null;
+  const port = url.port === '' ? '' : `:${url.port}`;
+  return `${url.hostname.toLowerCase()}${port}${url.pathname.replace(/\/+$/, '')}`;
+}
+
 export class StoreUrlError extends Error {
   constructor(message: string) {
     super(message);

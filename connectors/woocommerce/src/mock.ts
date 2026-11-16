@@ -32,6 +32,8 @@ export type MockRow = Record<string, unknown> & { id: number; date_modified_gmt:
  */
 export interface WooCommerceMockOptions {
   storeUrl?: string;
+  /** The address the store reports for itself (`home_url`); `storeUrl` by default. */
+  homeUrl?: string;
   consumerKey?: string;
   consumerSecret?: string;
   currency?: string;
@@ -134,7 +136,7 @@ export class WooCommerceMock {
       const fields = (url.searchParams.get('_fields') ?? '').split(',');
       if (fields.includes('environment') || fields.includes('')) this.remoteTests += 1;
       return respond(200, {
-        environment: { site_url: this.storeUrl, home_url: this.storeUrl, version: this.options.version ?? '9.4.0', store_id: null },
+        environment: { site_url: this.storeUrl, home_url: this.options.homeUrl ?? this.storeUrl, version: this.options.version ?? '9.4.0', store_id: null },
         settings: { currency: this.options.currency ?? 'SEK' },
       });
     }

@@ -46,8 +46,10 @@ import {
 } from '@substrat-run/connector-planima';
 import {
   WOOCOMMERCE_CONNECTION_GRANTS,
+  WooCommerceKeyRefusal,
   bindWooCommerceScope,
   listWooCommerceBindings,
+  prepareWooCommerceCandidate,
   probeWooCommerceConnection,
   probeWooCommerceSecret,
   sweepWooCommerce,
@@ -528,6 +530,11 @@ const PLANIMA: ConnectorRegistration = {
  * and a REST API key with Read permission, pasted into the dashboard's door; the URL is tenant
  * input, so the connector judges it before calling it (`storeBaseUrl`). `probeWooCommerceSecret`
  * tells a wrong address from a wrong key, and names the store the key reads.
+ *
+ * A connection is keyed on that store (#3219, `accountFromProbe`): a key for the same store rotates it
+ * and keeps its cursors, a key for another store becomes a connection of its own, and each binding
+ * records which (`accountOnBinding`). `prepareCandidate` pins each key to its store, which is what
+ * refuses another store's key for a connection made before keying.
  */
 const WOOCOMMERCE: ConnectorRegistration = {
   provider: 'woocommerce',
@@ -535,14 +542,31 @@ const WOOCOMMERCE: ConnectorRegistration = {
   // An idle pass is three requests to the merchant's own server; a quarter of an hour keeps
   // orders fresh without polling a small shop's PHP every pass.
   sweepEveryMinutes: 15,
+  // #3219: an app may hold a connection per store, so the sweep opens one by the store its binding
+  // records.
+  accountOnBinding: true,
   inspector: () => ({
-    bindScope: (h, row, target) => bindWooCommerceScope(h, { ...target, connectionId: row.id }),
+    // The key does not say which store it reads beyond the address it was pasted with, and the store
+    // names itself: the connection is keyed on that, on every door a key comes in by.
+    accountFromProbe: true,
+    bindScope: (h, row, target) =>
+      bindWooCommerceScope(h, { ...target, connectionId: row.id, externalAccountRef: row.externalAccountRef }),
     bindings: (h, row) => listWooCommerceBindings(h, row.id),
     unbindScope: (h, row, scopeId) => unbindWooCommerceScope(h, row.id, scopeId),
     probe: async (h, row) => probeWooCommerceConnection(h, row, { fetch: globalFetch }),
     activity: async (h, row) => woocommerceConnectionActivity(h, row.id),
     credential: (h, row) => woocommerceCredentialSummary(h, row),
     probeCandidate: async (secret) => probeWooCommerceSecret(secret, { fetch: globalFetch }),
+    // Pins the key to its store. A key for another store than a connection made before #3219 holds
+    // (no account ref) is refused here, before the store, with nothing stored.
+    prepareCandidate: async (candidate, previous) => {
+      try {
+        return await prepareWooCommerceCandidate({ fetch: globalFetch })(candidate, previous);
+      } catch (err) {
+        if (err instanceof WooCommerceKeyRefusal) throw new ConnectionRelayError(err.message, err.status);
+        throw err;
+      }
+    },
   }),
   sweep: () => async (h, id, o) => sweepWooCommerce(h, id, o),
 };

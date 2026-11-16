@@ -17,7 +17,8 @@ describe('woocommerce probe', () => {
     expect(await probe(mock)).toEqual({
       ok: true,
       refused: false,
-      accountRef: null,
+      // The store, which the platform keys the connection on (#3219).
+      accountRef: 'shop.example.com',
       accountLabel: 'https://shop.example.com',
       facts: [
         { label: 'Store', value: 'https://shop.example.com' },
