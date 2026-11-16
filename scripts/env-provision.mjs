@@ -9,8 +9,8 @@
  * The bootstrap token is read from CLOUDFLARE_BOOTSTRAP_TOKEN, else from
  * `secrets/bootstrap.env` (gitignored, `CLOUDFLARE_BOOTSTRAP_TOKEN=…`). It needs one permission:
  * Account API Tokens: Edit (or, for a user-owned token, User API Tokens: Edit). It is never
- * written anywhere and never handed to a child process — it only mints the two tokens below,
- * and everything after that runs on what it minted.
+ * written anywhere and is removed from this process's environment as it is read, so no child
+ * process inherits it — it only mints the two tokens below, and everything after runs on those.
  *
  * Safe to run any number of times. Every step reads the current state first and prints
  * ✓ (already right) or → (changed it now); `--dry-run` prints → as "would". The steps:
@@ -20,12 +20,14 @@
  *      Cloudflare for SaaS on the SaaS zone, the Workers Paid plan) is probed through its own API
  *      on a 15-minute read-only token minted for the check and deleted after it. One missing stops
  *      the run before anything is created; none can be switched on from the API, so the output
- *      names where in the dashboard. `--check-features` stops after this step.
+ *      names where in the dashboard. `--check-features` stops after this step; a dry run skips it,
+ *      since minting the probe token is a change.
  *   1. Tokens. `substrat-<env>-deploy` (wrangler deploys, D1 migrations, provisioning, CI) and
  *      `substrat-<env>-control-plane` (the running control plane's CF_API_TOKEN). Found by NAME;
  *      a token whose policies drifted is updated in place; a value is rolled only when the env
  *      file does not hold one that still verifies — Cloudflare never returns a token value, so
- *      the file is the only copy, and a value it lacks cannot be recovered any other way.
+ *      the file is the only copy, and a value it lacks cannot be recovered any other way. When no
+ *      token has the name but the file holds one that verifies (made by hand), it is kept as is.
  *   2. Resources. Read from each app's `wrangler.jsonc` for this env — the D1 databases, R2
  *      buckets and dispatch namespaces it binds, the wildcard zone route's proxied DNS record
  *      and ACM certificate. Declared once, there; this file adds no second list to drift.
@@ -44,8 +46,10 @@
  *      only a person can obtain) stops the run here with the list.
  *   6. Deploy (`--deploy` only), in the order CI's deploy-test job uses.
  *   7. Smoke: each custom domain and the router's wildcard answer below 500 over TLS.
- *   8. GitHub: the repository variables CI's deploy job reads, the deploy token as an Actions
- *      secret, and (test) TEST_ENV_READY=true once everything above passed.
+ *   8. GitHub: the CI variables through `secrets.mjs github` (its allow-list), CLOUDFLARE_ACCOUNT_ID,
+ *      the test deploy token as the CLOUDFLARE_API_TOKEN_TEST secret, and TEST_ENV_READY=true once
+ *      smoke passed and every variable CI's deploy needs is set. Prod's shared CLOUDFLARE_API_TOKEN
+ *      secret is left alone: release.yml deploys with it, and replacing it is a person's call.
  *
  * Not managed, and said so in the output rather than skipped quietly: inbound mail routing
  * (Email Routing on the MAIL_IN_DOMAIN subdomain has no API this script trusts), the store and
@@ -114,6 +118,9 @@ const DOCS = { pkg: '@substrat-run/docs' };
 /** The control plane's PLATFORM_BASE_DOMAINS zone is the Cloudflare-for-SaaS zone (CF_SAAS_ZONE_ID). */
 const SAAS_ZONE_APP = 'control-plane';
 
+/** What a placeholder script answers after its own name, which the smoke step recognises it by. */
+const PLACEHOLDER_BODY = ': not deployed yet';
+
 /**
  * The two tokens the bootstrap token mints, by permission-group NAME (resolved against the
  * account's own list, so a renamed group fails loudly here rather than minting a weaker token).
@@ -131,6 +138,8 @@ const TOKENS = [
       'Workers KV Storage Write',
       'Cloudflare Pages Write',
       'Containers Write',
+      // The control plane's prod deploy binds the Tier-2 stream, and its preflight reads it.
+      'Pipelines Write',
       'Account Settings Read',
       'Workers Tail Read',
     ],
@@ -253,8 +262,12 @@ const FEATURES = {
   },
 };
 
-/** The Actions secret CI deploys this env with. Prod's is the one release.yml already reads. */
-const GITHUB_DEPLOY_SECRET = ENV === 'test' ? 'CLOUDFLARE_API_TOKEN_TEST' : 'CLOUDFLARE_API_TOKEN';
+/**
+ * The Actions secret CI deploys this env with, which this script sets. Prod has none it sets:
+ * prod deploys with the shared `CLOUDFLARE_API_TOKEN` that release.yml and docs.yml read, and
+ * replacing it is a decision for a person, made once the minted token has deployed prod.
+ */
+const GITHUB_DEPLOY_SECRET = ENV === 'test' ? 'CLOUDFLARE_API_TOKEN_TEST' : null;
 
 // ── env file ─────────────────────────────────────────────────────────────────
 const FILE = join(ROOT, `secrets/platform.${ENV}.env`);
@@ -277,8 +290,15 @@ function setValue(key, value) {
   return true;
 }
 
+/**
+ * The bootstrap token, taken OUT of this process's environment as it is read: every child
+ * (`pnpm build`, wrangler, `secrets.mjs`, `gh`, `docker`) inherits `process.env`, and none of
+ * them may hold a token that can mint any other.
+ */
 function bootstrapToken() {
-  if (process.env.CLOUDFLARE_BOOTSTRAP_TOKEN) return process.env.CLOUDFLARE_BOOTSTRAP_TOKEN;
+  const env = process.env.CLOUDFLARE_BOOTSTRAP_TOKEN;
+  delete process.env.CLOUDFLARE_BOOTSTRAP_TOKEN;
+  if (env) return env;
   const path = join(ROOT, 'secrets/bootstrap.env');
   if (existsSync(path)) {
     const t = parseEnvText(readFileSync(path, 'utf8')).CLOUDFLARE_BOOTSTRAP_TOKEN;
@@ -461,7 +481,27 @@ async function ensureToken(ctx, spec) {
   if (found.length > 1) fail(`${found.length} tokens are named ${spec.name} — delete the extras, then re-run`);
   let token = found[0];
   let fresh;
+  const held = values[spec.key];
+  /** The token `held` authenticates as, when it is an active one under this endpoint. */
+  const heldId = async () => {
+    if (!held) return null;
+    try {
+      const r = (await cf(held, 'GET', `${base}/verify`)).result;
+      return r.status === 'active' ? r.id : null;
+    } catch {
+      return null;
+    }
+  };
   if (!token) {
+    // A working token the file already holds under another name (one made by hand before this
+    // script existed) is the env's live credential: minting a second would replace it in the
+    // file, and push would hand the running workers a token with a different policy set.
+    const adopted = await heldId();
+    if (adopted) {
+      const name = tokens.find((t) => t.id === adopted)?.name ?? adopted;
+      warn(`${spec.key} in ${FILE_REL} is token '${name}', not ${spec.name} — kept as it is; rename it to ${spec.name} to have its policies managed here`);
+      return held;
+    }
     act(`create token ${spec.name}  (${spec.why})`);
     if (DRY) return null;
     const r = (await cf(bootstrap, 'POST', base, { name: spec.name, policies })).result;
@@ -472,18 +512,11 @@ async function ensureToken(ctx, spec) {
       act(`update token ${spec.name}: its policies or status differ from the declaration`);
       if (!DRY) await cf(bootstrap, 'PUT', `${base}/${token.id}`, { name: spec.name, policies, status: 'active' });
     } else ok(`token ${spec.name} — policies match`);
-    const held = values[spec.key];
-    let valid = false;
-    if (held) {
-      try {
-        const r = (await cf(held, 'GET', `${base}/verify`)).result;
-        valid = r.id === token.id && r.status === 'active';
-      } catch {}
-    }
-    if (valid) ok(`${spec.key} in ${FILE_REL} is ${spec.name}'s value`);
+    if ((await heldId()) === token.id) ok(`${spec.key} in ${FILE_REL} is ${spec.name}'s value`);
     else {
       act(`roll ${spec.name}'s value — ${FILE_REL} ${held ? 'holds a value that is not this token' : 'holds no value for it'}`);
-      if (DRY) return held ?? null;
+      // Nothing usable to carry on with: the held value does not authenticate as this token.
+      if (DRY) return null;
       fresh = (await cf(bootstrap, 'PUT', `${base}/${token.id}/value`, {})).result;
     }
   }
@@ -633,8 +666,13 @@ async function main() {
   const groups = await cfAll(bootstrap, `${base}/permission_groups`);
   const tokens = await cfAll(bootstrap, base);
   const ctx = { bootstrap, base, account, groups, tokens };
-  await checkFeatures(ctx, res);
-  if (has('check-features')) return;
+  // The check mints (and deletes) a short-lived read-only token, so a dry run, which changes
+  // nothing, leaves it out unless asked for by name.
+  if (has('check-features')) return checkFeatures(ctx, res);
+  if (DRY) {
+    section('Cloudflare features this env needs');
+    note('not checked in a dry run — `--check-features` checks them (it mints a 15-minute read-only token)');
+  } else await checkFeatures(ctx, res);
 
   // ── the env file ──
   section(`Env file ${FILE_REL}`);
@@ -757,11 +795,10 @@ async function main() {
     if (DRY) continue;
     const form = new FormData();
     form.append('metadata', JSON.stringify({ main_module: 'placeholder.mjs', compatibility_date: '2025-01-01' }));
-    const code = `export default { fetch: () => new Response('${script}: not deployed yet', { status: 503 }) };\n`;
+    const code = `export default { fetch: () => new Response('${script}${PLACEHOLDER_BODY}', { status: 503 }) };\n`;
     form.append('placeholder.mjs', new Blob([code], { type: 'application/javascript+module' }), 'placeholder.mjs');
     await cf(deploy, 'PUT', `/accounts/${account}/workers/scripts/${script}`, form);
     live.add(script);
-    summary.placeholders = true;
   }
 
   // Every child process acts as the deploy token, on this account, never as a login.
@@ -831,8 +868,13 @@ async function main() {
   // `--allow-incomplete`: the gap check above is stricter than push's own, because it counts what
   // is live. The fleet re-put needs both verification secrets in hand; when the file lacks them,
   // they are the live values this run did not touch, and the fleet already verifies against them.
+  // Judged on what push will READ: in a dry run the values generated above exist only in memory,
+  // and the file on disk is what push re-parses. Push's fleet re-put needs these four in it.
+  const pushReads = DRY ? readValues() : values;
   const pushArgs = ['scripts/secrets.mjs', 'push', '--env', ENV, '--allow-incomplete'];
-  if (!values.PLATFORM_SECRET || !values.ROUTER_SECRET) pushArgs.push('--skip-verticals');
+  if (['CF_API_TOKEN', 'CF_ACCOUNT_ID', 'PLATFORM_SECRET', 'ROUTER_SECRET'].some((k) => !pushReads[k])) {
+    pushArgs.push('--skip-verticals');
+  }
   if (DRY) pushArgs.push('--dry-run');
   if (DRY && !existsSync(FILE)) note(`push not previewed: ${FILE_REL} does not exist yet`);
   else {
@@ -869,8 +911,8 @@ async function main() {
     try {
       const r = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(15_000) });
       if (r.status < 500) ok(`${url} → ${r.status}`);
-      else if (summary.placeholders && !has('deploy')) {
-        // The placeholder this run uploaded answers 503 until something deploys over it.
+      else if (r.status === 503 && !has('deploy') && (await r.text()).endsWith(PLACEHOLDER_BODY)) {
+        // A placeholder answers 503 until something deploys over it, whichever run uploaded it.
         warn(`${url} → ${r.status} (a placeholder until deployed: --deploy, or CI)`);
       } else {
         warn(`${url} → ${r.status}`);
@@ -948,29 +990,54 @@ function gh(args, input) {
   return spawnSync('gh', [...args, '-R', repoSlug()], { cwd: ROOT, encoding: 'utf8', input });
 }
 
+/**
+ * The variables CI's deploy-test job cannot run without: `tools/wrangler-config.mjs` refuses a
+ * config whose ids it cannot resolve, and the prod ones are resolved in a test deploy too.
+ */
+const CI_DEPLOY_VARIABLES = ['CLOUDFLARE_ACCOUNT_ID', 'CF_D1_AUTH_DB_ID', 'CF_D1_AUTH_DB_ID_TEST', 'CF_PIPELINE_OUTBOX_STREAM_ID'];
+
 async function github(deploy, account, smokeFailed) {
+  // The D1 and stream ids go through `secrets.mjs github`, the one publisher of CI variables,
+  // whose allow-list (GITHUB_VARIABLES) is what keeps an unlisted key out of CI configuration.
+  const args = ['scripts/secrets.mjs', 'github', '--env', ENV, ...(DRY ? ['--dry-run'] : [])];
+  console.log(`  $ node ${args.join(' ')}`);
+  if (spawnSync('node', args, { cwd: ROOT, stdio: 'inherit' }).status !== 0) {
+    fail('secrets.mjs github failed');
+  }
+  const setVariable = (vars, name, value) => {
+    if (vars.get(name) === value) return ok(`variable ${name}`);
+    act(`${vars.has(name) ? 'update' : 'set'} variable ${name}`);
+    if (!DRY && gh(['variable', 'set', name, '--body', value]).status !== 0) fail(`gh variable set ${name} failed`);
+    vars.set(name, value);
+  };
+  const vars = liveVariables();
+  setVariable(vars, 'CLOUDFLARE_ACCOUNT_ID', account);
+  if (GITHUB_DEPLOY_SECRET) {
+    // A secret cannot be read back, so it is set every run: the same value converges, and a run
+    // that died after rolling the token is repaired by the next one rather than left stale.
+    act(`set secret ${GITHUB_DEPLOY_SECRET} to ${TOKENS[0].name}'s value`);
+    if (!DRY && gh(['secret', 'set', GITHUB_DEPLOY_SECRET], deploy).status !== 0) {
+      fail(`gh secret set ${GITHUB_DEPLOY_SECRET} failed`);
+    }
+  } else {
+    summary.manual.push(
+      `CLOUDFLARE_API_TOKEN (Actions secret): not replaced. release.yml and docs.yml deploy prod with it; ` +
+        `set it to ${TOKENS[0].key} from ${FILE_REL} once a deploy with that token has passed`,
+    );
+  }
+  if (ENV !== 'test') return;
+  // Flipped last, and only when CI can actually deploy: it is what turns the deploy job on.
+  const missing = CI_DEPLOY_VARIABLES.filter((k) => !vars.get(k) && !(DRY && values[k]));
+  if (smokeFailed) note('TEST_ENV_READY not set: smoke failed');
+  else if (missing.length) {
+    warn(`TEST_ENV_READY not set: CI cannot deploy without ${missing.join(', ')} (\`pnpm secrets github --env prod\`, \`pnpm lake:check\`)`);
+  } else setVariable(vars, 'TEST_ENV_READY', 'true');
+}
+
+function liveVariables() {
   const list = gh(['variable', 'list', '--json', 'name,value']);
   if (list.status !== 0) fail('`gh variable list` failed — is the GitHub CLI installed and logged in?');
-  const vars = new Map(JSON.parse(list.stdout).map((v) => [v.name, v.value]));
-  const want = { CLOUDFLARE_ACCOUNT_ID: account };
-  for (const [, key] of resourcesOf().d1) if (key && values[key]) want[key] = values[key];
-  // Flipped last, and only on a run whose smoke passed: it is what turns CI's deploy job on.
-  if (ENV === 'test' && !smokeFailed) want.TEST_ENV_READY = 'true';
-  for (const [name, value] of Object.entries(want)) {
-    if (vars.get(name) === value) {
-      ok(`variable ${name}`);
-      continue;
-    }
-    act(`${vars.has(name) ? 'update' : 'set'} variable ${name}`);
-    if (DRY) continue;
-    if (gh(['variable', 'set', name, '--body', value]).status !== 0) fail(`gh variable set ${name} failed`);
-  }
-  // A secret cannot be read back, so it is set every run: the same value converges, and a run
-  // that died after rolling the token is repaired by the next one rather than left stale.
-  act(`set secret ${GITHUB_DEPLOY_SECRET} to ${TOKENS[0].name}'s value`);
-  if (!DRY && gh(['secret', 'set', GITHUB_DEPLOY_SECRET], deploy).status !== 0) {
-    fail(`gh secret set ${GITHUB_DEPLOY_SECRET} failed`);
-  }
+  return new Map(JSON.parse(list.stdout).map((v) => [v.name, v.value]));
 }
 
 await main();
