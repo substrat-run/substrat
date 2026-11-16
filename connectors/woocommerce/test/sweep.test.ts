@@ -169,22 +169,6 @@ describe('woocommerce connector — inbound sync', () => {
     expect(new Set(ids(w.landed))).toEqual(new Set(rows.map((r) => `p${r.id}`)));
   });
 
-  it('refuses a row it cannot read faithfully, keeping what landed before it', async () => {
-    const mock = store();
-    mock.products.find((p) => p.id === 13)!.price = '1 299,00';
-    w = await world(mock);
-    await w.bind();
-    const result = await w.sweep();
-    expect(result.failed).toEqual([{ scopeId: w.scopeId, error: expect.stringMatching(/product 13 price: '1 299,00' is not a decimal amount/) }]);
-    expect(ids(w.landed)).toEqual(['p11', 'p12']);
-
-    // Fixed at the store: the next pass resumes at the refused row, not at the start.
-    touch(mock.products.find((p) => p.id === 13)!, '2026-11-01T11:00:00', { price: '1299.00' });
-    w.landed.length = 0;
-    await w.sweep();
-    expect(ids(w.landed)).toEqual(['p13', 'o501', 'o502', 'o504']);
-  });
-
   it('refuses to bind a connection that does not hold the landing permission', async () => {
     w = await world(store(), { grant: false });
     await expect(w.bind()).rejects.toThrow(/does not hold 'commerce:record'/);

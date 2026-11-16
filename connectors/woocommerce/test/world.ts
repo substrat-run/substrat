@@ -58,9 +58,10 @@ export async function world(
     ...undeclaredOperations('a test fixture, built to drive the host rather than declared', {
       [OPERATION]: (async (ctx, input: CommerceChange) => {
         assertAllowed(await ctx.check(RECORD));
+        // First, so a hook that throws (a landing the vertical refuses) records nothing as landed.
+        opts.onLand?.(input);
         landed.push(input);
         landedIn.push({ scopeId: ctx.scopeId, change: input });
-        opts.onLand?.(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
     }),

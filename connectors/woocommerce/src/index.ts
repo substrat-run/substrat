@@ -23,12 +23,15 @@ import {
   wcOrder,
   wcProduct,
   woocommerceSecret,
+  type WcOrder,
+  type WcProduct,
   type WcStoreInfo,
   type WooCommerceSecret,
 } from './api.js';
 import { modifiedAtOf, orderChange, productChange } from './commerce.js';
 import { storeBaseUrl, StoreUrlError, woocommerceStoreRef } from './store-url.js';
 import { SeenIds, type SeenResource } from './seen.js';
+import { RowFailures, verdictOf, WOOCOMMERCE_ROW_ATTEMPTS, WooCommerceRowStall, type WooCommerceRowFailure } from './failures.js';
 
 export {
   WooCommerceApi,
@@ -45,6 +48,13 @@ export {
 export { gmtInstant, orderChange, productChange, WooCommerceMappingError } from './commerce.js';
 export { storeBaseUrl, StoreUrlError, woocommerceStoreRef } from './store-url.js';
 export { SEEN_BUCKET_WIDTH } from './seen.js';
+export {
+  WOOCOMMERCE_MAX_SKIPPED,
+  WOOCOMMERCE_ROW_ATTEMPTS,
+  WOOCOMMERCE_SKIPPED_RETRIES,
+  WooCommerceRowStall,
+  type WooCommerceRowFailure,
+} from './failures.js';
 export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
 
 /**
@@ -83,6 +93,18 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  *   the product is saved. Listing every variable product's variations on every pass is the fix, and
  *   its cost is why it is not this slice.
  * - **Draft checkouts** (`checkout-draft`): a cart the block checkout saved, not an order. Skipped.
+ *
+ * ## One record never holds the walk (#3241)
+ *
+ * A record the walk cannot land does not stop what comes after it. A row the connector's own
+ * mapping refuses is skipped at once; any other failure on one record (its variations read, the
+ * vertical's landing operation) makes that resource's walk wait at it for up to
+ * {@link WOOCOMMERCE_ROW_ATTEMPTS} passes, then it is skipped too. The other resource's walk and the
+ * reconcile run either way. A skipped record is kept on the binding with its error
+ * (`lastSync.skipped`), tried again by id on the reconcile cadence, and dropped from the list when it
+ * lands; a waiting one is `lastSync.stalled`, and a pass that ends at one fails. Only a failure that
+ * says nothing about the record — the key refused, a rate limit, the landing key gone — ends the
+ * pass as before. See {@link WooCommerceRowFailure}.
  *
  * ## Stock rides on the product (#3223)
  *
@@ -210,6 +232,10 @@ export interface WooCommerceBinding {
     tracksDelivered?: true;
     /** Where the capped one-by-one confirmation stopped, per resource; the next pass reads on from there. */
     confirmAfter?: { products?: number; orders?: number };
+    /** The record each resource's walk waits at, and tries first on the next pass (#3241). Absent when none. */
+    stalled?: WooCommerceRowFailure[];
+    /** Records the walk moved past without landing, each with its error; retried on the reconcile cadence (#3241). */
+    skipped?: WooCommerceRowFailure[];
   };
 }
 
@@ -297,6 +323,8 @@ export interface WooCommerceSyncResult {
   /** Products and orders reported removed by this pass's reconcile. */
   removed: number;
   caughtUp: boolean;
+  /** Records skipped and not landed since, after this pass (#3241). */
+  skipped: number;
 }
 
 /** `at` minus one second, in the form `modified_after` takes with `dates_are_gmt=true`. */
@@ -310,10 +338,45 @@ interface Walk {
   caughtUp: boolean;
 }
 
+/** A changed-list row, read on its own so one malformed row cannot sink its page (#3241). */
+interface ReadRow<T> {
+  id: number;
+  /** Its change time, its place in the walk; `null` when it has no readable date. */
+  at: Instant | null;
+  /** The parsed row, or `null` with the reason it does not read. */
+  row: T | null;
+  error?: unknown;
+}
+
+function readRow<T extends { id: number }>(raw: unknown, parse: (row: unknown) => T, modifiedAt: (row: T) => Instant, what: string): ReadRow<T> {
+  let row: T;
+  try {
+    row = parse(raw);
+  } catch (error) {
+    // Unreadable as a whole: placed by its id and its own dates where it has them, so the walk can
+    // move past it and say which it was. A row with no id cannot be placed or named at all.
+    const r = (raw ?? {}) as { id?: unknown; date_modified_gmt?: unknown; date_created_gmt?: unknown };
+    if (typeof r.id !== 'number' || !Number.isInteger(r.id)) throw error;
+    const date = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+    let at: Instant | null = null;
+    try {
+      at = modifiedAtOf({ id: r.id, date_modified_gmt: date(r.date_modified_gmt), date_created_gmt: date(r.date_created_gmt) }, what);
+    } catch {
+      // No readable date either: it is recorded, and the cursor does not move for it.
+    }
+    return { id: r.id, at, row: null, error };
+  }
+  try {
+    return { id: row.id, at: modifiedAt(row), row };
+  } catch (error) {
+    return { id: row.id, at: null, row: null, error };
+  }
+}
+
 /**
  * Walk one resource from its cursor, landing each fresh row through `land` in change order. The
- * cursor in `walk` is advanced after each landed row, so a failure leaves it on the last row that
- * did land — the caller saves it before rethrowing, and one row that cannot land blocks only itself.
+ * cursor in `walk` is advanced after each landed or skipped row, so a stall leaves it on the row
+ * before the one it waits at — the caller saves it before rethrowing, and the next pass starts there.
  */
 async function walkChanged<T extends { id: number }>(
   api: WooCommerceApi,
@@ -322,6 +385,8 @@ async function walkChanged<T extends { id: number }>(
   modifiedAt: (row: T) => Instant,
   /** Answers false for a row it deliberately skips: the cursor passes it, the count does not. */
   land: (row: T) => Promise<boolean>,
+  failures: RowFailures,
+  operation: string,
   walk: Walk,
   pages: number,
 ): Promise<void> {
@@ -330,28 +395,46 @@ async function walkChanged<T extends { id: number }>(
   // pages of them are skipped by number: otherwise more rows in one second than a page holds would
   // send every pass back to the same page of landed rows, and the walk would never move.
   const resume = (): number => 1 + Math.floor(walk.cursor.landedAt.length / WOOCOMMERCE_MAX_PAGE);
+  const what = resource === 'products' ? 'product' : 'order';
   let page = resume();
   for (let request = 0; request < pages; request += 1) {
     const from = walk.cursor.at;
     const raw = await api.changedPage(resource, from === null ? null : secondBefore(from), page);
-    const rows = raw.map(parse).map((row) => ({ row, at: modifiedAt(row) }));
-    rows.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.row.id - b.row.id));
-    for (const { row, at } of rows) {
+    const rows = raw.map((r) => readRow(r, parse, modifiedAt, what));
+    const key = (r: ReadRow<T>): string => r.at ?? '';
+    rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : a.id - b.id));
+    for (const r of rows) {
       const { cursor } = walk;
-      const id = String(row.id);
-      if (cursor.at !== null && (at < cursor.at || (at === cursor.at && cursor.landedAt.includes(id)))) continue;
-      const landed = await land(row);
+      const id = String(r.id);
+      if (r.at !== null && cursor.at !== null && (r.at < cursor.at || (r.at === cursor.at && cursor.landedAt.includes(id)))) continue;
+      let landed = false;
+      try {
+        if (r.row === null) throw r.error;
+        landed = await land(r.row);
+        failures.landed(resource, r.id);
+      } catch (err) {
+        const verdict = verdictOf(err);
+        // Not this record's fault: every one after it would fail the same way, so the pass ends.
+        if (verdict === 'pass') throw err;
+        const outcome = failures.fail(resource, r.id, r.at, err, verdict, operation);
+        if (outcome !== 'skip') throw outcome;
+      }
+      // A row with no readable date has no place in the walk: listed as skipped, the cursor stays.
+      if (r.at === null) continue;
+      const { at } = r;
       walk.cursor = cursor.at === at ? { at, landedAt: [...cursor.landedAt, id] } : { at, landedAt: [id] };
       if (landed) walk.landed += 1;
     }
     if (raw.length < WOOCOMMERCE_MAX_PAGE) {
       walk.caughtUp = true;
+      failures.walked(resource);
       return;
     }
     // A full page that moved the cursor: ask again from the new cursor. One that did not (a page
     // wholly inside one second) can only move on by page number.
     page = walk.cursor.at === from ? page + 1 : resume();
   }
+  failures.walked(resource);
 }
 
 /**
@@ -456,6 +539,7 @@ export async function syncWooCommerceScope(
     lastReconciled === undefined || now() - Date.parse(lastReconciled) >= (options.reconcileEveryMs ?? WOOCOMMERCE_RECONCILE_EVERY_MS);
   let reconciledAt = lastReconciled;
   let removed = 0;
+  const failures = new RowFailures(binding.lastSync, () => new Date(now()).toISOString());
   const save = async (): Promise<void> => {
     // The ids first: a pass that dies between the two writes lands its rows again, which is safe;
     // the other order could leave a delivered id unrecorded, and its delete unreported.
@@ -468,7 +552,8 @@ export async function syncWooCommerceScope(
       reconciledAt !== lastReconciled ||
       confirmAfter !== lastConfirmAfter ||
       !tracked ||
-      removed > 0;
+      removed > 0 ||
+      failures.changed;
     // An idle pass writes nothing: most passes find a store nobody has touched.
     if (!moved && binding.lastSync?.caughtUp === caughtUp) return;
     const synced: WooCommerceBinding = {
@@ -482,41 +567,80 @@ export async function syncWooCommerceScope(
         ...(reconciledAt === undefined ? {} : { reconciledAt }),
         tracksDelivered: true,
         ...(Object.keys(confirmAfter).length === 0 ? {} : { confirmAfter }),
+        ...(failures.stalledRows.length === 0 ? {} : { stalled: failures.stalledRows }),
+        ...(failures.skipped.length === 0 ? {} : { skipped: failures.skipped }),
       },
     };
     await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
   };
 
-  try {
-    await walkChanged(
-      api,
-      'products',
-      (r) => wcProduct.parse(r),
-      (r) => modifiedAtOf(r, 'product'),
-      async (row) => {
-        const variations = row.type === 'variable' ? await api.variations(row.id) : [];
-        await scope.invoke(binding.operation, productChange(connectionId, currency, row, variations));
-        await seenProducts.live(row.id);
-        return true;
-      },
-      products,
-      pages,
-    );
-    await walkChanged(
-      api,
-      'orders',
-      (r) => wcOrder.parse(r),
-      (r) => modifiedAtOf(r, 'order'),
-      async (row) => {
-        if (row.status === 'checkout-draft') return false;
-        await scope.invoke(binding.operation, orderChange(connectionId, row));
-        await seenOrders.live(row.id);
-        return true;
-      },
-      orders,
-      pages,
-    );
-    if (reconcileDue) {
+  const landProduct = async (row: WcProduct): Promise<boolean> => {
+    const variations = row.type === 'variable' ? await api.variations(row.id) : [];
+    await scope.invoke(binding.operation, productChange(connectionId, currency, row, variations));
+    await seenProducts.live(row.id);
+    return true;
+  };
+  const landOrder = async (row: WcOrder): Promise<boolean> => {
+    if (row.status === 'checkout-draft') return false;
+    await scope.invoke(binding.operation, orderChange(connectionId, row));
+    await seenOrders.live(row.id);
+    return true;
+  };
+  const parseProduct = (r: unknown): WcProduct => wcProduct.parse(r);
+  const parseOrder = (r: unknown): WcOrder => wcOrder.parse(r);
+  const productAt = (r: WcProduct): Instant => modifiedAtOf(r, 'product');
+  const orderAt = (r: WcOrder): Instant => modifiedAtOf(r, 'order');
+
+  /**
+   * Try each skipped record again by id (#3241): landed, it leaves the list; gone or trashed at the
+   * store, there is nothing left to land (the reconcile reports a delivered one's removal); failing
+   * again, it stays, with this pass's reason.
+   */
+  async function retrySkipped<T extends { id: number }>(
+    resource: 'products' | 'orders',
+    parse: (r: unknown) => T,
+    at: (r: T) => Instant,
+    land: (r: T) => Promise<boolean>,
+    walk: Walk,
+  ): Promise<void> {
+    for (const skipped of failures.retryable(resource)) {
+      let modifiedAt = skipped.modifiedAt;
+      try {
+        const raw = await api.record(resource, skipped.id);
+        if (raw === null || (raw as { status?: unknown }).status === 'trash') {
+          failures.forget(resource, skipped.id);
+          continue;
+        }
+        const r = readRow(raw, parse, at, resource === 'products' ? 'product' : 'order');
+        modifiedAt = r.at;
+        if (r.row === null) throw r.error;
+        if (await land(r.row)) walk.landed += 1;
+        failures.landed(resource, skipped.id);
+      } catch (err) {
+        if (verdictOf(err) === 'pass') throw err;
+        failures.retryFailed(skipped, modifiedAt, err, binding.operation);
+      }
+    }
+  }
+
+  // Each step runs whether or not the one before stalled at a record: a product that cannot land does
+  // not hold the orders, or the reconcile. Any other failure ends the pass where it happened, as it
+  // says nothing about one record and the next step would meet it too.
+  let failure: unknown;
+  let ended = false;
+  const step = async (run: () => Promise<void>): Promise<void> => {
+    if (ended) return;
+    try {
+      await run();
+    } catch (err) {
+      failure ??= err;
+      if (!(err instanceof WooCommerceRowStall)) ended = true;
+    }
+  };
+  await step(() => walkChanged(api, 'products', parseProduct, productAt, landProduct, failures, binding.operation, products, pages));
+  await step(() => walkChanged(api, 'orders', parseOrder, orderAt, landOrder, failures, binding.operation, orders, pages));
+  if (reconcileDue) {
+    await step(async () => {
       const startedAt = new Date(now()).toISOString();
       let complete = true;
       const next: { products?: number; orders?: number } = {};
@@ -535,13 +659,16 @@ export async function syncWooCommerceScope(
       confirmAfter = next;
       // An incomplete pass leaves the clock where it was, so the next pass reconciles again.
       if (complete) reconciledAt = startedAt;
-    }
-  } catch (err) {
-    // Keep what did land, so the next pass resumes after it instead of landing it all again.
-    await save();
-    throw err;
+    });
+    // Skipped records are tried again on the reconcile's cadence: slowly, since each costs a read.
+    await step(async () => {
+      await retrySkipped('products', parseProduct, productAt, landProduct, products);
+      await retrySkipped('orders', parseOrder, orderAt, landOrder, orders);
+    });
   }
+  // Keep what did land, so the next pass resumes after it instead of landing it all again.
   await save();
+  if (failure !== undefined) throw failure;
   return {
     scopeId: binding.scopeId,
     changed: products.landed + orders.landed + removed > 0,
@@ -549,6 +676,7 @@ export async function syncWooCommerceScope(
     orders: orders.landed,
     removed,
     caughtUp: products.caughtUp && orders.caughtUp,
+    skipped: failures.skipped.length,
   };
 }
 
@@ -562,7 +690,7 @@ export interface WooCommerceSweepResult {
   found: number;
   synced: WooCommerceSyncResult[];
   unchanged: number;
-  failed: { scopeId: string; error: string }[];
+  failed: { scopeId: string; error: string; said?: string }[];
 }
 
 /** Poll the store for every scope this connection is bound to — the sweeper a deployment schedules. */
@@ -582,7 +710,12 @@ export async function sweepWooCommerce(
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
     } catch (err) {
-      result.failed.push({ scopeId: binding.scopeId, error: err instanceof Error ? err.message : String(err) });
+      result.failed.push({
+        scopeId: binding.scopeId,
+        error: err instanceof Error ? err.message : String(err),
+        // A record the walk waits at is said in the connector's own words, for the connection's tenant.
+        ...(err instanceof WooCommerceRowStall ? { said: err.said() } : {}),
+      });
     }
   }
   return result;
@@ -705,6 +838,24 @@ async function probeWith(conn: ConnectorConnection, options: WooCommerceConnecto
   }
 }
 
+const recordName = (f: WooCommerceRowFailure): string => `${f.resource === 'products' ? 'product' : 'order'} ${f.id}`;
+
+/** How many skipped records the activity names one by one; the rest are counted. */
+const ACTIVITY_SKIPPED_NAMED = 10;
+
+/**
+ * A binding's state in a word or three (#3241): one whose walk waits at a record reads `stalled`,
+ * never `synced` or `catching up`, and one that moved past records says how many.
+ */
+function bindingStatus(s: WooCommerceBinding['lastSync']): string {
+  if (!s) return 'bound — not yet synced';
+  const stalled = s.stalled ?? [];
+  if (stalled.length > 0) return `stalled at ${stalled.map(recordName).join(' and ')}`;
+  const skipped = s.skipped?.length ?? 0;
+  const base = s.caughtUp ? 'synced' : 'catching up';
+  return skipped === 0 ? base : `${base} — ${skipped} skipped`;
+}
+
 /** What this connection has been doing, for a console — one entry per bound scope, from the ledger. */
 export async function woocommerceConnectionActivity(host: ScopeHost, connectionId: ConnectionId): Promise<ConnectionActivity> {
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
@@ -713,11 +864,12 @@ export async function woocommerceConnectionActivity(host: ScopeHost, connectionI
     .map(({ key, value }) => {
       const b = value as WooCommerceBinding;
       const s = b.lastSync;
+      const skipped = s?.skipped ?? [];
       return {
         key,
         title: `${b.vertical} — ${b.scopeId}`,
         reference: null,
-        status: !s ? 'bound — not yet synced' : s.caughtUp ? 'synced' : 'catching up',
+        status: bindingStatus(s),
         at: instant.parse(s?.syncedAt ?? b.boundAt),
         facts: [
           { label: 'Lands through', value: b.operation },
@@ -728,9 +880,18 @@ export async function woocommerceConnectionActivity(host: ScopeHost, connectionI
                 { label: 'Orders changed up to', value: s.orders.at ?? '—' },
                 { label: 'Last pass landed', value: `${s.landed.products} products, ${s.landed.orders} orders, ${s.landed.removed ?? 0} removals` },
                 { label: 'Deletes reconciled', value: s.reconciledAt ?? '—' },
+                ...(s.stalled ?? []).map((f) => ({
+                  label: `Waiting at ${recordName(f)}`,
+                  value: `${f.error} — failed ${f.attempts} of ${WOOCOMMERCE_ROW_ATTEMPTS} passes since ${f.firstFailedAt}`,
+                })),
+                ...skipped.slice(0, ACTIVITY_SKIPPED_NAMED).map((f) => ({
+                  label: `Skipped ${recordName(f)}`,
+                  value: `${f.error} — last tried ${f.failedAt}`,
+                })),
+                ...(skipped.length > ACTIVITY_SKIPPED_NAMED ? [{ label: 'Skipped, not named', value: `${skipped.length - ACTIVITY_SKIPPED_NAMED} more` }] : []),
               ]
             : []),
-        ],
+        ].map((f) => ({ label: f.label.slice(0, 80), value: f.value.slice(0, 400) })),
       };
     });
   return connectionActivity.parse({ source: 'ledger', entries, live: false });

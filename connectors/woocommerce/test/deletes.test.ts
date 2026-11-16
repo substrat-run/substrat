@@ -103,9 +103,10 @@ describe('woocommerce connector — deletes and the trash', () => {
     mock.orders.splice(mock.orders.findIndex((o) => o.id === 501), 1);
     s.later();
     expect((await s.sweep()).failed).toEqual([{ scopeId: s.w.scopeId, error: expect.stringMatching(/vertical down/) }]);
+    expect(removals(s.w.landed)).toEqual([]);
     // Not reconciled: the next pass asks again without waiting out the interval.
     await s.sweep();
-    expect(removals(s.w.landed)).toEqual(['o501:deleted', 'o501:deleted']);
+    expect(removals(s.w.landed)).toEqual(['o501:deleted']);
   });
 
   it('reads on from where a capped confirmation stopped — a store that ignores include reports nothing falsely, and misses no delete', async () => {
