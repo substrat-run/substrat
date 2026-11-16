@@ -1,18 +1,23 @@
 import {
+  CONNECTION_BINDING_SKIPPED_LISTED,
   commerceChange,
   connectionActivity,
+  connectionBindingHealth,
+  connectionBindingIssue,
   connectionId as connectionIdSchema,
   currencyCode,
   instant,
   scopeId as scopeIdSchema,
   tenantId as tenantIdSchema,
   type ConnectionActivity,
+  type ConnectionBindingHealth,
   type ConnectionCredential,
   type ConnectionProbe,
   type ConnectionId,
   type CurrencyCode,
   type Instant,
   type OpenConnection,
+  type z,
 } from '@substrat-run/contracts';
 import type { ConnectorConnection, FetchLike, HostAdmin, ScopeHost } from '@substrat-run/kernel';
 import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
@@ -307,6 +312,31 @@ export async function bindWooCommerceScope(
 export async function listWooCommerceBindings(host: ScopeHost, connectionId: ConnectionId): Promise<WooCommerceBinding[]> {
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
   return rows.filter((r) => r.value !== null && typeof r.value === 'object').map((r) => r.value as WooCommerceBinding);
+}
+
+// Input shapes, parsed by `connectionBindingHealth` below: the stored times are plain strings.
+const issueOf = (f: WooCommerceRowFailure): z.input<typeof connectionBindingIssue> => ({
+  record: f.resource === 'products' ? 'product' : 'order',
+  recordId: String(f.id),
+  message: f.error,
+  firstFailedAt: f.firstFailedAt,
+  failedAt: f.failedAt,
+  attempts: f.attempts,
+});
+
+/**
+ * How one binding fares (#3241), in the platform's shape: the record each walk waits at, the records
+ * it moved past, and whether its last pass caught up. What a scope's `listBindings` reads.
+ */
+export function woocommerceBindingHealth(binding: WooCommerceBinding): ConnectionBindingHealth {
+  const s = binding.lastSync;
+  const skipped = [...(s?.skipped ?? [])].sort((a, b) => (a.failedAt < b.failedAt ? -1 : a.failedAt > b.failedAt ? 1 : 0));
+  return connectionBindingHealth.parse({
+    caughtUp: s ? s.caughtUp : null,
+    stalled: (s?.stalled ?? []).map(issueOf),
+    skipped: skipped.slice(0, CONNECTION_BINDING_SKIPPED_LISTED).map(issueOf),
+    skippedTotal: skipped.length,
+  });
 }
 
 /** Stop syncing one scope (a tombstone, as for every connector-state row). */

@@ -159,9 +159,29 @@ Each pass, for each bound install:
 The walk restarts from the last change landed on every request rather than paging by number, so a
 product saved while a pass is reading cannot push another one out of sight. A pass reads at most
 ten pages of each, so a store's first pass (everything it ever sold) is spread over several passes;
-the connection's activity says **catching up** until it is done. A record that cannot be read
-faithfully stops its resource's walk at that record, keeping everything landed before it, and the
-next pass starts there.
+the connection's activity says **catching up** until it is done.
+
+## A record that cannot land
+
+One product or order that cannot land never holds up the ones after it, or the orders:
+
+- **A row the connector cannot read faithfully** — a price with a decimal comma or a thousands
+  separator, a stock count that is not a number, a date that is not a date — is **skipped** at once.
+  It is never reshaped into something close: a price that is not a decimal does not become one.
+  WordPress's zero date (`0000-00-00 00:00:00`) is read as "not set", so a row whose modified date is
+  zero is placed by its created date.
+- **Any other failure on one record** — reading its variations, or your app's landing operation
+  throwing for it — makes that resource's walk **wait** at it, and the pass tries it first next
+  time. Orders and the hourly check still run. After three passes in a row it is skipped too.
+- A failure that is not about one record — the key refused, the store rate-limiting, the landing
+  permission taken away — ends the pass as before, and nothing is skipped.
+
+A skipped record is kept with its error, tried again by id once an hour, and leaves the list the
+moment it lands — then, or when it is next saved at the store. The connection's activity says
+**stalled at product 123** while a walk waits, and **synced — 2 skipped** when it moved past some,
+with each record's error beside it. Your app reads the same per binding with
+`listBindings({ ...access, health: true })` ([reference](/reference/vertical-host#listbindings-request)),
+the tenant's connection bound to the scope included.
 
 ## What's missing
 

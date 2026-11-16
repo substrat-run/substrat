@@ -123,6 +123,12 @@ export function unbindConnection(request: UnbindConnectionRequest): Promise<Conn
  * its last failed one (`lastError`, in the platform's words). Sweep records are kept 14 days, so a
  * `null` there means none in that window; compare the two times to tell a past failure from a
  * current one.
+ *
+ * Pass `health: true` (#3241) for each binding's health as its connector keeps it — the records its
+ * walk waits at (`stalled`), the ones it moved past (`skipped`, each with why), and whether it caught
+ * up — and for the tenant's connections bound to the scope as well, each marked `owner: 'tenant'`.
+ * A sweep that moved past a record it could not land still completes `ok`, so `health` is what
+ * tells a stalled binding from a caught-up one.
  */
 export function listBindings(request: ListBindingsRequest): Promise<ConnectionBindingsResult> {
   return relay(request, '/internal/connections/bindings', connectionBindingsResult, 'list connection bindings');

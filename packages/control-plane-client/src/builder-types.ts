@@ -1,4 +1,4 @@
-import type { ExportBreak } from '@substrat-run/contracts';
+import type { ConnectionBindingHealth, ExportBreak } from '@substrat-run/contracts';
 
 /**
  * The answers a builder's tooling reads off the control plane — the fields the CLI actually
@@ -432,4 +432,6 @@ export interface ConnectionScopeBinding extends ConnectionScopeBindingInput {
   scopeId: string;
   vertical: string;
   boundAt: string;
+  /** How this binding fares, from a connector that keeps it per binding (#3241); absent otherwise. */
+  health?: ConnectionBindingHealth;
 }

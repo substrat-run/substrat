@@ -54,6 +54,7 @@ import {
   probeWooCommerceSecret,
   sweepWooCommerce,
   unbindWooCommerceScope,
+  woocommerceBindingHealth,
   woocommerceConnectionActivity,
   woocommerceCredentialSummary,
 } from '@substrat-run/connector-woocommerce';
@@ -560,7 +561,8 @@ const WOOCOMMERCE: ConnectorRegistration = {
         externalAccountRef: row.externalAccountRef,
         ownerScopeId: row.ownerScopeId,
       }),
-    bindings: (h, row) => listWooCommerceBindings(h, row.id),
+    // Each with its health (#3241), which a scope's `listBindings` reads.
+    bindings: async (h, row) => (await listWooCommerceBindings(h, row.id)).map((b) => ({ ...b, health: woocommerceBindingHealth(b) })),
     unbindScope: (h, row, scopeId) => unbindWooCommerceScope(h, row.id, scopeId),
     probe: async (h, row) => probeWooCommerceConnection(h, row, { fetch: globalFetch }),
     activity: async (h, row) => woocommerceConnectionActivity(h, row.id),
