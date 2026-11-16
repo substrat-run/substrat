@@ -70,7 +70,9 @@ keeps the window it has and never re-opens a claimed seat. Access is invite-only
 `mountSession` (`@substrat-run/vertical-auth/session-route`) is the read every screen makes
 first, `GET /api/me`. The vertical says how a request resolves to a principal; the route
 answers `{ principal, display, email }` plus any fields of the vertical's own,
-`{ status: 'needs-setup', firstSignInOpen }` while the owner seat is unclaimed, or 401. It
+`{ status: 'needs-setup', firstSignInOpen }` while the owner seat is unclaimed (with
+`ownerAddressReserved: true` when the seat is reserved for an address, which a sign-in verifying
+that address claims), or 401. It
 also reports the login's place to the identity pool. That body is what
 `@substrat-run/elements`' account menu reads.
 

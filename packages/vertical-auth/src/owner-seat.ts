@@ -110,6 +110,12 @@ export interface OwnerSeat {
   firstSignIn: { open: boolean; until: string | null } | null;
   /** While unclaimed: the outstanding claim link's expiry (ISO), or null when none is live. */
   claimLink: { expiresAt: string } | null;
+  /**
+   * Present (true) only while unclaimed and reserved for an address (#3202): a sign-in whose issuer
+   * verified that address claims the seat, though `firstSignIn` is closed. The address itself is
+   * never part of the answer: the seat is read by whoever opens the app, signed in or not.
+   */
+  addressReserved?: true;
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -445,6 +451,7 @@ export function ownerSeat(sql: RegistrySql, scopeId: string, now: number): Owner
       until: pending.claim_until === null ? null : iso(pending.claim_until),
     },
     claimLink: claim ? { expiresAt: iso(claim.expires_at) } : null,
+    ...(typeof reservedAddress(sql, scopeId) === 'string' ? { addressReserved: true as const } : {}),
   };
 }
 

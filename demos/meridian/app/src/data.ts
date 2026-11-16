@@ -43,6 +43,8 @@ export interface Loaded {
   needsSetup: boolean;
   /** While `needsSetup`: whether signing in still claims the seat, or only a claim link does (#925). */
   firstSignInOpen: boolean;
+  /** While `needsSetup`: the seat is reserved for an address, which a sign-in claims (#3202). */
+  ownerAddressReserved: boolean;
   reload: () => void;
 }
 
@@ -54,6 +56,7 @@ export function useAppData(personaKey: string): Loaded {
   const [unauthorized, setUnauthorized] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [firstSignInOpen, setFirstSignInOpen] = useState(false);
+  const [ownerAddressReserved, setOwnerAddressReserved] = useState(false);
 
   const reload = useCallback(() => {
     let cancelled = false;
@@ -69,6 +72,7 @@ export function useAppData(personaKey: string): Loaded {
           if (!cancelled) {
             setNeedsSetup(true);
             setFirstSignInOpen(me.firstSignInOpen === true);
+            setOwnerAddressReserved(me.ownerAddressReserved === true);
             setLoading(false);
           }
           return;
@@ -126,7 +130,7 @@ export function useAppData(personaKey: string): Loaded {
 
   useEffect(() => reload(), [reload]);
 
-  return { data, loading, error, unauthorized, needsSetup, firstSignInOpen, reload };
+  return { data, loading, error, unauthorized, needsSetup, firstSignInOpen, ownerAddressReserved, reload };
 }
 
 export interface ManagerData {

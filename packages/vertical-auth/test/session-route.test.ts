@@ -63,6 +63,12 @@ describe('mountSession', () => {
 
   it.each([
     ['an unclaimed seat is needs-setup', seat('unclaimed', true), 200, { status: 'needs-setup', firstSignInOpen: true }],
+    [
+      'a seat reserved for an address says a sign-in claims it, and never which address',
+      { ...seat('unclaimed'), addressReserved: true } as OwnerSeat,
+      200,
+      { status: 'needs-setup', firstSignInOpen: false, ownerAddressReserved: true },
+    ],
     ['a claimed seat is 401', seat('claimed'), 401, { error: 'unauthorized' }],
     ['a scope this directory never provisioned is 401', seat('unknown'), 401, { error: 'unauthorized' }],
   ])('nobody bound: %s', async (_name, s, status, body) => {

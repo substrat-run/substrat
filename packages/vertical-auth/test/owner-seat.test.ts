@@ -26,6 +26,7 @@ import {
   bindPersona,
 } from '../src/owner-seat.js';
 import type { RegistrySql } from '../src/site-registry.js';
+import { resolveSignedIn } from '../src/signed-in.js';
 
 /**
  * The owner seat (#925), exercised against a real SQLite through the same `exec` seam the
@@ -163,7 +164,14 @@ describe('owner seat', () => {
     expect(recordAddressedOwnerSeat(sql, SCOPE, '01PRINCIPALOTHER', 'stranger@example.com', T0 + MIN)).toBe(false);
     recordOwnerSeat(sql, SCOPE, OWNER, T0 + MIN);
     expect(recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0 + MIN)).toBe(true);
-    expect(ownerSeat(sql, SCOPE, T0 + MIN)).toMatchObject({ state: 'unclaimed', owner: OWNER, firstSignIn: { open: false } });
+    // Reported reserved, so the app offers a sign-in though the window is closed; never the address.
+    expect(ownerSeat(sql, SCOPE, T0 + MIN)).toEqual({
+      state: 'unclaimed',
+      owner: OWNER,
+      firstSignIn: { open: false, until: new Date(T0).toISOString() },
+      claimLink: null,
+      addressReserved: true,
+    });
 
     // Inside what would have been the window, a stranger's plain sign-in takes nothing.
     expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0 + 2 * MIN)).toBeNull();
@@ -171,13 +179,26 @@ describe('owner seat', () => {
     expect(claimOwnerByAddress(sql, SCOPE, 'sub-stranger', null)).toBeNull();
     // The asker's verified address, spelled as their issuer spells it, does.
     expect(claimOwnerByAddress(sql, SCOPE, 'sub-founder', ' founder@example.com')).toBe(OWNER);
-    expect(ownerSeat(sql, SCOPE, T0 + 3 * MIN)).toMatchObject({ state: 'claimed', owner: OWNER });
+    expect(ownerSeat(sql, SCOPE, T0 + 3 * MIN)).toEqual({ state: 'claimed', owner: OWNER, firstSignIn: null, claimLink: null });
     expect(resolvePrincipal(sql, SCOPE, 'sub-founder', T0 + 3 * MIN)).toBe(OWNER);
     // Consumed: a second login with the same address is bound to nobody, and the address is gone,
     // while a re-run of the provision still reads the seat as reserved.
     expect(claimOwnerByAddress(sql, SCOPE, 'sub-founder-2', 'founder@example.com')).toBeNull();
     expect([...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', SCOPE)]).toEqual([{ email: null }]);
     expect(recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0 + 4 * MIN)).toBe(true);
+  });
+
+  it("resolveSignedIn claims a seat reserved for the subject's verified address, and nothing else (#3202)", async () => {
+    recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0);
+    // The directory a worker holds, over the same rows: `resolvePrincipal` alone binds nobody here.
+    const directory = {
+      resolvePrincipal: async (scopeId: string, sub: string) => resolvePrincipal(sql, scopeId, sub, T0 + MIN),
+      claimOwnerByAddress: async (scopeId: string, sub: string, email: string | null) => claimOwnerByAddress(sql, scopeId, sub, email),
+    };
+    // An address the issuer did not verify claims nothing, however it is spelled.
+    expect(await resolveSignedIn(directory, SCOPE, { sub: 'sub-founder', name: null, email: 'founder@example.com', emailVerified: false })).toBeNull();
+    expect(await resolveSignedIn(directory, SCOPE, { sub: 'sub-founder', name: null, email: 'founder@example.com', emailVerified: true })).toBe(OWNER);
+    expect(await resolveSignedIn(directory, SCOPE, { sub: 'sub-founder', name: null, email: null })).toBe(OWNER);
   });
 
   it('a seat first recorded with a window is not reported reserved for an address (#3202)', () => {
