@@ -73,6 +73,9 @@ CI.
 - **Turn it off** in `/config` → *Approvals pane*. The guard and the pane go together.
 - **Without it** you approve as before: Claude prints the diff, you say yes in the chat, and
   the skills hold Claude to running the approval line only after that.
+- **Tested** with `claude plugin validate --strict plugin/substrat` and
+  `claude plugin test plugin/substrat`, which need no account. CI runs both on every change
+  under `plugin/` and on every push to main.
 
 There is deliberately no `start-dev-server` skill: Claude Desktop runs a project's dev
 servers natively, from the topology the vertical already declares.
