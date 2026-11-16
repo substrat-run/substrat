@@ -38,8 +38,12 @@ describe('chats', () => {
 		// has to change this list on purpose: merges go through mergeIntoBase alone.
 		const source = readFileSync(fileURLToPath(new URL('../src/agent.ts', import.meta.url)), 'utf8');
 		const targets = [...source.matchAll(/saveRepository\(.*,\s*([^,()]+)\);$/gm)].map((m) => m[1]);
-		// `#saveSource` (turns, editor saves) · a CLI snapshot of a studio project · a GitHub project's separate snapshot repo.
-		expect(targets).toEqual(['chat.branch', 'entry.repository.branch', "'main'"]);
+		// `#saveSource` (turns, editor saves) · a CLI snapshot of a studio project.
+		expect(targets).toEqual(['chat.branch', 'entry.repository.branch']);
+		// A GitHub project's CLI snapshot goes to its own snapshot repository, as branch
+		// builds/<buildId>, never to a base (build-snapshots.ts, #2952).
+		const snapshots = [...source.matchAll(/saveBuildSnapshot\((.*)\);$/gm)].map((m) => m[1]!.split(/,\s*/).at(-1));
+		expect(snapshots).toEqual(['buildId']);
 	});
 
 	it('is merged only while the base has its last commit, and links GitHub compare for review', () => {
