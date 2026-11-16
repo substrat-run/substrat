@@ -68,17 +68,49 @@ const NOT_THE_RECORDS: ReadonlySet<ErrorCode> = new Set([
 
 export type RowVerdict = 'unreadable' | 'failing' | 'pass';
 
+/**
+ * The landing call's own failure, unwrapped from the connector's `WooCommerceLandingRefusal` (#3235),
+ * which carries the tenant's line as `said` and the thrown error as `cause`. Matched by name, since
+ * that class lives beside the sync.
+ */
+function landingOf(err: unknown): { cause: unknown; said: string | undefined } {
+  if (err instanceof Error && err.name === 'WooCommerceLandingRefusal') {
+    const said = (err as { said?: unknown }).said;
+    return { cause: (err as { cause?: unknown }).cause, said: typeof said === 'string' ? said : undefined };
+  }
+  return { cause: err, said: undefined };
+}
+
+/**
+ * A status the hosted hop answered a landing call with that says nothing about the record: the
+ * platform's own authentication or authorization of the call, an operation or scope it cannot find,
+ * a rate limit, a timeout, or the platform failing.
+ */
+const notTheRecordsStatus = (status: number): boolean =>
+  status === 401 || status === 403 || status === 404 || status === 407 || status === 408 || status === 429 || status >= 500;
+
 /** How a failure on one record is judged (see {@link WooCommerceRowFailure}). */
 export function verdictOf(err: unknown): RowVerdict {
   if (err instanceof WooCommerceMappingError) return 'unreadable';
   // A Zod refusal of the store's row: matched by name, since the contracts' Zod and ours may be two copies.
   if (err instanceof Error && err.name === 'ZodError') return 'unreadable';
   if (err instanceof WooCommerceApiError) return err.refused || err.notStore || err.status === 429 ? 'pass' : 'failing';
-  const code = errorCodeOf(err);
+  const { cause } = landingOf(err);
+  // Over the hosted hop the landing call fails as the control-plane client's error: a status and the
+  // raw body, read structurally as `landingRefusalSaid` reads it. In process, a coded error.
+  const hop = cause as { status?: unknown; body?: unknown } | null;
+  if (hop !== null && typeof hop === 'object' && typeof hop.status === 'number' && 'body' in hop) {
+    return notTheRecordsStatus(hop.status) ? 'pass' : 'failing';
+  }
+  const code = errorCodeOf(cause);
   return code !== undefined && NOT_THE_RECORDS.has(code) ? 'pass' : 'failing';
 }
 
-/** The failure as a line: never the request, the key, or a page body the store answered. */
+/**
+ * The failure as a line the binding's tenant may read — it is shown on the connection's activity and
+ * in a scope's binding health. Never the request, the key, or a page body the store answered; of a
+ * landing failure only what `landingRefusalSaid` lets the tenant read (#3235), the rest staff's.
+ */
 export function failureMessage(err: unknown, operation: string): string {
   if (err instanceof WooCommerceMappingError) return clip(err.message);
   if (err instanceof Error && err.name === 'ZodError') {
@@ -87,16 +119,19 @@ export function failureMessage(err: unknown, operation: string): string {
     return clip(`the store's row does not read as WooCommerce's: ${at}: ${issue?.message ?? 'malformed'}`);
   }
   if (err instanceof WooCommerceApiError) return clip(`reading it, the store answered ${err.status}${err.code ? ` (${err.code})` : ''}`);
-  const code = errorCodeOf(err);
-  const said = err instanceof Error ? err.message : String(err);
-  return clip(`the landing operation '${operation}' refused it${code ? ` (${code})` : ''}: ${said}`);
+  const { said } = landingOf(err);
+  return clip(said ?? `the app's '${operation}' did not take it; the reason is on the platform's failure record`);
 }
+
+/** The failure in full, for staff's row: the thrown error's own text. */
+const staffText = (err: unknown): string => clip(err instanceof Error ? err.message : String(err), 1000);
 
 /** Why a walk stopped at one record and waits there (#3241): the pass ends failed, and the next starts here. */
 export class WooCommerceRowStall extends Error {
   readonly failure: WooCommerceRowFailure;
-  constructor(failure: WooCommerceRowFailure, why: string) {
-    super(`${failure.resource === 'products' ? 'product' : 'order'} ${failure.id}: ${failure.error} — ${why}`);
+  constructor(failure: WooCommerceRowFailure, why: string, cause: unknown) {
+    // The message is staff's (the sweep row's `error`); `said()` is the tenant's.
+    super(`${failure.resource === 'products' ? 'product' : 'order'} ${failure.id}: ${staffText(cause)} — ${why}`, { cause });
     this.name = 'WooCommerceRowStall';
     this.failure = failure;
   }
@@ -160,6 +195,7 @@ export class RowFailures {
       room
         ? `the walk waits at it (pass ${failure.attempts} of ${WOOCOMMERCE_ROW_ATTEMPTS} before it is skipped)`
         : `${WOOCOMMERCE_MAX_SKIPPED} ${resource} are skipped already, so the walk waits at it`,
+      err,
     );
   }
 

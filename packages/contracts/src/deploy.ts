@@ -528,10 +528,14 @@ export const STORE_CANARY_FIXTURE_FILE = 'substrat_canary.json';
 export const storeCanaryFixture = z.object({ tables: z.array(scopeDumpTable) });
 
 /**
- * The most rows a canary fixture holds (D-69). A fixture is small by intent: the canary stages it a
- * row a page and reads it back the same way, inside a rollout's hold, two calls a row.
+ * The most rows a canary fixture holds (D-69). The canary stages a fixture a row a page and reads it
+ * back the same way, so a fixture of N rows is a store move of N pages: a write and a read each,
+ * inside a rollout's request. It is sized to the most one request moves of any store,
+ * `STORE_REQUEST_BUDGET.pages` (300) in control-plane-api, which D-69 keeps well inside a Worker
+ * invocation's subrequests; the canary's other calls are a fixed dozen. That holds a real graph
+ * repository: 240 foundation rows and its first write are 241 (#2854).
  */
-export const STORE_CANARY_FIXTURE_MAX_ROWS = 200;
+export const STORE_CANARY_FIXTURE_MAX_ROWS = 300;
 export type StoreCanaryFixture = z.infer<typeof storeCanaryFixture>;
 
 /**

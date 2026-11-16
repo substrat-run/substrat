@@ -145,6 +145,24 @@ describe('asyncInvocationLine', () => {
     expect('eventId' in line).toBe(false);
   });
 
+  // #3235: a connector's call into the scope, as its connection.
+  it('carries a connector call its operation and outcome, and neither consumer nor schedule fields', () => {
+    const line = asyncInvocationLine({
+      kind: 'connector',
+      tenantId: 'T1',
+      scopeId: 'S1',
+      invocationId: 'CALL2',
+      operation: 'shop/record-commerce',
+      startedAt: Date.now(),
+      outcome: 'failed',
+      principalKind: 'connection',
+      error: substratError('conflict', 'UNIQUE constraint failed: products.sku'),
+    });
+    expect(line).toMatchObject({ kind: 'connector', outcome: 'failed', level: 'error', problemCode: 'conflict', principalKind: 'connection' });
+    for (const field of ['eventId', 'eventType', 'attempt', 'dueAt', 'latenessMs']) expect(field in line).toBe(false);
+    expect(JSON.stringify(line)).not.toContain('UNIQUE');
+  });
+
   it('files each outcome under its level — a warning when nothing broke but nothing was done', () => {
     expect(asyncLevelOf('delivered', false)).toBe('info');
     expect(asyncLevelOf('routed', false)).toBe('info');

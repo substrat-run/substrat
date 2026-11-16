@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CommerceChange } from '@substrat-run/contracts';
+import { substratError, type CommerceChange } from '@substrat-run/contracts';
 import { listWooCommerceBindings, woocommerceConnectionActivity } from '../src/index.js';
 import { WooCommerceMock, type WooCommerceMockOptions } from '../src/mock.js';
 import { ORDERS, PRODUCTS, VARIATIONS, product } from './fixture.js';
@@ -179,5 +179,45 @@ describe('woocommerce connector — inbound sync', () => {
     await w.bind();
     expect((await w.sweep()).failed).toEqual([]);
     expect(w.waited).toEqual([2000]);
+  });
+
+  // #3235: the tenant reads why their own app refused a record; anything else stays staff's. Since
+  // #3241 the refusal stalls that record's walk, so the line names the record it waits at.
+  it("hands the pass the app's own refusal as `said`, and keeps the thrown text staff's", async () => {
+    w = await world(store(), {
+      onLand: (c) => {
+        if (c.record === 'product' && c.productId === '12') throw substratError('conflict', 'UNIQUE constraint failed: products.sku');
+      },
+    });
+    await w.bind();
+    const { failed } = await w.sweep();
+    expect(failed).toEqual([
+      expect.objectContaining({
+        said: "product 12 did not land, and its walk waits there: the app's 'shop/record-commerce' refused it (conflict): UNIQUE constraint failed: products.sku",
+        error: expect.stringContaining('UNIQUE constraint failed'),
+      }),
+    ]);
+  });
+
+  it('says nothing for a throw the app did not declare as a refusal', async () => {
+    w = await world(store(), {
+      onLand: () => {
+        throw new Error('internal error; reference = 0123abcd');
+      },
+    });
+    await w.bind();
+    const { failed } = await w.sweep();
+    expect(failed).toHaveLength(1);
+    // The record it waits at is named; the thrown text is not.
+    expect(failed[0]?.said).toBe("product 11 did not land, and its walk waits there: the app's 'shop/record-commerce' did not take it; the reason is on the platform's failure record");
+    expect(failed[0]?.error).toContain('0123abcd');
+  });
+
+  it("says nothing for the store's own failure: the provider's answer stays staff's", async () => {
+    w = await world(store({ notWooCommerce: 'html' }));
+    await w.bind();
+    const { failed } = await w.sweep();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).not.toHaveProperty('said');
   });
 });

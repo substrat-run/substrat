@@ -4,7 +4,7 @@ import {
   isPrimaryScope,
   onRequestLandingFor,
   ulid,
-  withheldStaffFailure,
+  withheldOpsFailure,
   type ConnectionBinder,
   type ConnectionLandingOptionsInput,
   type ScopeHost,
@@ -368,10 +368,19 @@ export async function relayConnectionSync(
       const reference = ulid();
       const why = [...new Set(result.said ?? [])].map((s) => s.slice(0, 200));
       error = `the binding did not land${why.length > 0 ? `: ${why.join('; ')}` : ''} (reference ${reference})`;
+      // #3235: a pair under the reference, as the pass files a scoped failure: the scope's tenant row
+      // (so the app's Failures view and fleet health count it) says what the answer says; staff's
+      // row keeps the connector's own words.
       await host.admin
         .recordOpsFailure({
           actor,
-          ...withheldStaffFailure({ operation, stage: 'sweep', vertical: scope.vertical }, result.errors.join('; '), reference, `connection ${connection.id} of tenant ${scope.tenantId}: `),
+          ...withheldOpsFailure(
+            { operation, stage: 'sweep', tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical },
+            result.errors.join('; '),
+            () => error!,
+            reference,
+            `connection ${connection.id} of tenant ${scope.tenantId}: `,
+          ),
         })
         // The row is the text's only copy: say which reference lost it, never the text.
         .catch((err: unknown) => console.error('sync-failure record failed', { reference, error: said(err) }));

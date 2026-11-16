@@ -295,9 +295,10 @@ export const REQUEST_FACET_KEYS = [
 /**
  * #1901: the values of the `kind` facet. A line with no `kind` is a request's — every line
  * written before the field existed, and every request line since — so `request` is a value a
- * reader filters on even though no line spells it.
+ * reader filters on even though no line spells it. `connector` (#3235) is a connector's call into
+ * a scope as its connection.
  */
-export const INVOCATION_KINDS = ['request', 'consumer', 'schedule'] as const;
+export const INVOCATION_KINDS = ['request', 'consumer', 'schedule', 'connector'] as const;
 export type InvocationKind = (typeof INVOCATION_KINDS)[number];
 
 /** A line's kind, absent read as `request` (#1901). */

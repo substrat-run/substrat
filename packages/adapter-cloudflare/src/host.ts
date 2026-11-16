@@ -579,6 +579,7 @@ import {
   type PurgePass,
   type AsyncLinePass,
   type EmittedReport,
+  type AsyncUnit,
   type FindingChange,
   type FindingPruneReport,
   memberAddedAudit,
@@ -13303,9 +13304,42 @@ export class CloudflareScopeHost implements ScopeHost {
     operation: string,
     input?: unknown,
   ): Promise<unknown> {
-    await this.assertLive(tenantId, scopeId, 'connectorInvokeLocal'); // #1713: a held scope runs no connector work either
-    await this.migrateAndRecord(scopeId);
-    return this.buildStub(tenantId, scopeId, undefined, connectionId).invoke(operation, input);
+    // #3235: one line per call, as for a consumer or a schedule run: the platform makes this call
+    // over its internal surface, which no request line covers, so without it the app's Logs show
+    // nothing of a connector landing records, failed or not. Ids, the operation, the outcome and
+    // the kernel's code only: the input is the provider's data and the error's text stays where
+    // the platform files it.
+    const lines = asyncLinePass();
+    const invocationId = asyncInvocationId(null);
+    const startedAt = Date.now();
+    let emitted: EmittedReport | undefined;
+    const unit = (): Omit<AsyncUnit, 'outcome'> => ({
+      kind: 'connector',
+      tenantId,
+      scopeId,
+      invocationId,
+      operation,
+      startedAt,
+      principalKind: 'connection',
+      ...(emitted ? { emitted } : {}),
+    });
+    try {
+      await this.assertLive(tenantId, scopeId, 'connectorInvokeLocal'); // #1713: a held scope runs no connector work either
+      await this.migrateAndRecord(scopeId);
+      const result = await this.buildStub(tenantId, scopeId, undefined, connectionId).invoke(operation, input, {
+        invocationId,
+        onEmitted: (report) => {
+          emitted = report;
+        },
+      });
+      lines.write({ ...unit(), outcome: 'ok' });
+      return result;
+    } catch (err) {
+      lines.write({ ...unit(), outcome: 'failed', error: err });
+      throw err;
+    } finally {
+      lines.end();
+    }
   }
 
   /** Land provider bytes in this deployment as a CONNECTION — the bytes leg (#574). */

@@ -50,7 +50,7 @@ is uploaded only at a release a person has approved and nobody has revoked since
 An explicit rollout first runs the reserved operations against a fresh canary object, then
 moves the verticals' scripts in bounded batches. The canary object takes the release's own
 fixture, `driver_<package>/substrat_canary.json`: a small store dump, `{ tables }`, holding at
-most 200 rows. The canary stages it a row a page and must read it back unchanged, a page at a time,
+most 300 rows. The canary stages it a row a page and must read it back unchanged, a page at a time,
 before `substrat.selfcheck` builds the runtime over it. A release
 without the fixture is not rolled out. The fixture is part of the approved bytes and is not
 uploaded into the store script. A paused rollout resumes when posted again,

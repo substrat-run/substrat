@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { CommerceChange } from '@substrat-run/contracts';
+import { substratError, type CommerceChange } from '@substrat-run/contracts';
 import { listWooCommerceBindings, WOOCOMMERCE_ROW_ATTEMPTS, woocommerceConnectionActivity } from '../src/index.js';
 import { WooCommerceMock } from '../src/mock.js';
 import { ORDERS, PRODUCTS, VARIATIONS } from './fixture.js';
@@ -55,7 +55,7 @@ describe('woocommerce connector — a record that cannot land (#3241)', () => {
     let refuse = true;
     w = await world(mock, {
       onLand: (c) => {
-        if (refuse && c.record === 'product' && c.productId === '12') throw new Error('UNIQUE constraint failed: products.sku');
+        if (refuse && c.record === 'product' && c.productId === '12') throw substratError('conflict', 'UNIQUE constraint failed: products.sku');
       },
     });
     await w.bind();
@@ -65,7 +65,7 @@ describe('woocommerce connector — a record that cannot land (#3241)', () => {
       {
         scopeId: w.scopeId,
         error: expect.stringContaining('product 12: '),
-        said: expect.stringMatching(/^product 12 did not land, and its walk waits there: the landing operation 'shop\/record-commerce' refused it.*UNIQUE constraint failed/),
+        said: "product 12 did not land, and its walk waits there: the app's 'shop/record-commerce' refused it (conflict): UNIQUE constraint failed: products.sku",
       },
     ]);
     // The product it waits at holds only the products: every order landed.
@@ -94,7 +94,7 @@ describe('woocommerce connector — a record that cannot land (#3241)', () => {
     await w.bind();
     await w.host.admin.revokeFromConnection(w.staff, { connectionId: w.connId, permission: RECORD, node: { tenantId: w.tenantId, scopeId: w.scopeId }, revokedBy: w.staff });
     for (let pass = 0; pass <= WOOCOMMERCE_ROW_ATTEMPTS; pass += 1) {
-      expect((await w.sweep()).failed).toEqual([{ scopeId: w.scopeId, error: expect.stringMatching(/permission denied/) }]);
+      expect((await w.sweep()).failed).toEqual([expect.objectContaining({ scopeId: w.scopeId, error: expect.stringMatching(/permission denied/) })]);
     }
     expect(w.landed).toEqual([]);
     expect(await lastSync(w)).toMatchObject({ products: { at: null } });

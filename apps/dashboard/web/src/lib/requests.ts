@@ -215,7 +215,10 @@ export function facetValueLabel(key: string, value: string | number): string {
 
 /** #1901: what kind of work a row is, in the page's words. */
 export function kindLabel(kind: string): string {
-  return kind === 'consumer' ? 'event consumer' : kind;
+  if (kind === 'consumer') return 'event consumer';
+  // #3235: a connector landing a provider's records through one of the app's operations.
+  if (kind === 'connector') return 'connector call';
+  return kind;
 }
 
 /**

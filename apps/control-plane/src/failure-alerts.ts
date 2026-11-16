@@ -120,17 +120,29 @@ export async function failureDigestWatermark(opts: {
  * #2540: one failure whose text was withheld from a tenant is two ledger rows written together:
  * the tenant's, saying what was answered, and one with no tenant carrying the text, under one
  * reference. The digest is staff's, so it lists such a failure once: the text, under the tenant
- * it was filed for. Two rows pair only when they share reference, operation and instant, and
- * exactly one of them has a tenant.
+ * it was filed for. Two rows pair only when they share reference, operation, instant and scope,
+ * and exactly one of them has a tenant. The scope because a connector sweep files one pair per
+ * failed scope under the pass's one reference (#3235), and both rows of a pair carry it. Within a
+ * key the rows pair one to one, so two pairs that share it still read as two failures.
  */
 export function pairedFailuresMerged(rows: readonly OpsFailureEntry[]): OpsFailureEntry[] {
-  const key = (r: OpsFailureEntry) => `${r.reference}\u001f${r.operation}\u001f${r.at}`;
-  const staffKeys = new Set(rows.filter((r) => r.tenantId === null && r.reference).map(key));
-  const twins = new Map<string, OpsFailureEntry>();
-  for (const r of rows) if (r.tenantId !== null && r.reference && staffKeys.has(key(r)) && !twins.has(key(r))) twins.set(key(r), r);
+  const key = (r: OpsFailureEntry) => `${r.reference}\u001f${r.operation}\u001f${r.at}\u001f${r.scopeId ?? ''}`;
+  // One to one, in order, within a key: a key may hold more than one pair, and each staff row
+  // takes one tenant row, so neither a staff row nor a tenant row is counted twice or dropped.
+  const tenants = new Map<string, OpsFailureEntry[]>();
+  for (const r of rows) if (r.tenantId !== null && r.reference) tenants.set(key(r), [...(tenants.get(key(r)) ?? []), r]);
+  const twinOf = new Map<OpsFailureEntry, OpsFailureEntry>();
+  const paired = new Set<OpsFailureEntry>();
+  for (const r of rows) {
+    if (r.tenantId !== null || !r.reference) continue;
+    const twin = tenants.get(key(r))?.shift();
+    if (!twin) continue;
+    twinOf.set(r, twin);
+    paired.add(twin);
+  }
   return rows.flatMap((r) => {
-    if (r.tenantId !== null) return twins.get(key(r)) === r ? [] : [r];
-    const twin = r.reference ? twins.get(key(r)) : undefined;
+    if (r.tenantId !== null) return paired.has(r) ? [] : [r];
+    const twin = twinOf.get(r);
     return [twin ? { ...r, tenantId: twin.tenantId } : r];
   });
 }

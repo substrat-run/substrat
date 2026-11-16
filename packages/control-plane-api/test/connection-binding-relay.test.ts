@@ -455,7 +455,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       expect(polled).toHaveLength(2);
     });
 
-    it("answers a failed poll with the connector's own cause and a reference, and files the provider's words on staff's row alone", async () => {
+    it("answers a failed poll with the connector's own cause and a reference, and files the provider's words on staff's row alone (#3235: the scope's row in the platform's words)", async () => {
       const { ofA } = await boundWorld();
       const RAW = 'provider says: company 0000000000 is locked';
       const SAID = 'supplier invoice 1 has a value this connector cannot read in Credit';
@@ -466,8 +466,18 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       expect(JSON.stringify(bindings)).not.toContain('0000000000');
       const failed = bindings.find((x) => x.connectionId === ofA)!;
       const reference = /reference (\w+)/.exec(failed.error!)![1];
-      const staff = await host.admin.listOpsFailures(relayActor, { reference });
-      expect(staff).toEqual([expect.objectContaining({ tenantId: null, message: expect.stringContaining(RAW) })]);
+      const rows = await host.admin.listOpsFailures(relayActor, { reference });
+      // #3235: a pair. The scope's tenant row says what the answer said, with the scope, so the
+      // app's Failures view and fleet health count it; the provider's words are staff's row alone.
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ tenantId: null, message: expect.stringContaining(RAW) }),
+          expect.objectContaining({ scopeId: a, message: failed.error }),
+        ]),
+      );
+      expect(rows).toHaveLength(2);
+      const tenantRow = rows.find((r) => r.tenantId !== null)!;
+      expect(tenantRow.message).not.toContain('0000000000');
       // The tenant-readable sweep row says exactly what the answer did.
       const [row] = await host.admin.listSweepRuns(relayActor, { kind: 'connector', unit: ofA, scopeId: a, limit: 1 });
       expect([row?.outcome, row?.error]).toEqual(['failed', failed.error]);
