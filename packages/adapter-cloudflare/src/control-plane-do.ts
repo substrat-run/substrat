@@ -5973,6 +5973,26 @@ export class ControlPlaneDO extends DurableObject {
     return cursor.rowsWritten > 0;
   }
 
+  /**
+   * Put every one of `writes` only if `fenceKey` still holds `expected` (null: only if absent).
+   * Synchronous with no `await`, so no other call runs between the fence read and the writes; and
+   * in `transactionSync`, so a write that throws takes the ones before it back with it.
+   */
+  putConnectorStateFenced(
+    id: string,
+    fenceKey: string,
+    expected: string | null,
+    writes: readonly { key: string; value: string }[],
+    at: string,
+  ): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const held = this.getConnectorState(id, fenceKey);
+      if (expected === null ? held !== undefined : held !== expected) return false;
+      for (const w of writes) this.putConnectorState(id, w.key, w.value, at);
+      return true;
+    });
+  }
+
   getConnectorState(id: string, key: string): string | undefined {
     const row = this.sql
       .exec(

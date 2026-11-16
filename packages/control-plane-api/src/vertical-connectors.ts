@@ -207,8 +207,8 @@ async function stateOf(host: ScopeHost, id: ConnectionId, scopeId: string | null
  * recorded uses; a failed one's uses only, so a cursor never moves past work that did not land. A
  * call that never produced an answer (a transport throw, a non-200, a body that is not a response)
  * records one failed use and is reported retryable. A call under a scope's state lease passes it
- * (`held`): an answer after its deadline, or one whose lease is no longer this call's when the
- * writes come, is never applied.
+ * (`held`): an answer after its deadline is never applied, and its state is written fenced on the
+ * lease, so none of it lands once the lease is no longer this call's.
  */
 async function applyConnectorCall(
   deps: VerticalConnectorDeps,
@@ -248,12 +248,17 @@ async function applyConnectorCall(
     await recordUses();
     return { ok: false, refused: false, error: over };
   }
-  if (held !== undefined && scopeId !== null && response.state.length > 0 && !(await stillHeld(deps, connectionId, scopeId, held))) {
-    await recordUses();
-    return { ok: false, refused: false, error: "the scope's state lease was lost before the answer's state was written; nothing was written" };
-  }
-  for (const w of response.state) {
-    await deps.host.admin.putConnectorState(connectionId, verticalConnectorStateKey(scopeId, w.key), w.value === undefined ? null : w.value);
+  const writes = response.state.map((w) => ({ key: verticalConnectorStateKey(scopeId, w.key), value: w.value === undefined ? null : w.value }));
+  if (held !== undefined && scopeId !== null) {
+    // Fenced on the lease, in one host transaction: a call that took the lease over swapped its
+    // row, so these writes land whole before that, or not at all (#3158).
+    const fence = { key: `${SWEEP_LEASE_PREFIX}${scopeId}`, expected: held.mine };
+    if (writes.length > 0 && !(await deps.host.admin.putConnectorStateFenced(connectionId, fence, writes))) {
+      await recordUses();
+      return { ok: false, refused: false, error: "the scope's state lease was lost before the answer's state was written; nothing was written" };
+    }
+  } else {
+    for (const w of writes) await deps.host.admin.putConnectorState(connectionId, w.key, w.value);
   }
   await recordUses();
   return { ok: true, result: response.result };
@@ -314,9 +319,9 @@ const sweepLease = z.object({ holder: z.string(), until: z.string() });
 
 /**
  * How long the call made under a state lease may run, from the lease's taking. The answer must
- * arrive while the lease is still this call's: a call that outlived it could overwrite the state of
- * the call that took the lease over. A minute inside the lease leaves the cap check and the writes
- * room to finish before it runs out.
+ * arrive while the lease is still this call's: the writes are fenced on the lease, so an answer
+ * that outlived it is lost work rather than a hazard. A minute inside the lease leaves the cap check
+ * and the writes room to finish before a taker can claim it.
  */
 const LEASE_CALL_MS = SWEEP_LEASE_MS - 60_000;
 
@@ -352,18 +357,6 @@ async function answeredBy<T>(deps: VerticalConnectorDeps, call: () => Promise<T>
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * Whether `held` is still this call's, read just before its state writes. The writes and this read
- * are separate host calls, so it is not a fence: what keeps a taker out of the gap is the minute the
- * call's deadline leaves inside the lease. It catches a lease already lost or run out.
- */
-async function stillHeld(deps: VerticalConnectorDeps, id: ConnectionId, scopeId: string, held: HeldLease): Promise<boolean> {
-  const now = Date.parse(deps.now());
-  if (now >= Date.parse(held.mine.until)) return false;
-  const lease = sweepLease.safeParse(await deps.host.admin.getConnectorState(id, `${SWEEP_LEASE_PREFIX}${scopeId}`));
-  return lease.success && lease.data.holder === held.mine.holder;
 }
 
 /** Take the scope's state lease, or `null` when another call holds a live one. */
