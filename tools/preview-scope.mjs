@@ -32,6 +32,10 @@
 // Plus the workflow file itself, which runs the preview. Anything this cannot read runs the
 // preview and says why: a gate that skips work must never guess.
 //
+// The workflows keep their hand-written `pull_request` `paths:` filters as the outer bound, and
+// this only narrows them: the full closure would roughly double the platform build queue
+// (#3253). The changes those filters never let through (the kernel, contracts, cli) are #3254.
+//
 //   node tools/preview-scope.mjs --vertical demos/meridian --workflow .github/workflows/meridian-deploy.yml
 //   node tools/preview-scope.mjs … --base <ref> --head <ref>   # a dry run between two commits
 //

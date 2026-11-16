@@ -39,11 +39,22 @@ on:
   # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    # No `paths:` filter here, unlike `push` above: a hand-written list misses what demos/ticket0
-    # reaches through the workspace graph (a kernel change never previewed it). Every PR runs
-    # the cheap `preview_scope` job instead, which reads that graph and skips `preview` when
-    # nothing demos/ticket0 uploads changed. `preview_cleanup` then runs on every close; deleting
-    # a preview that was never made answers `{ deleted: null }`, so that costs a minute, not a red.
+    # The outer bound: only a PR touching these can preview demos/ticket0 at all. Inside it, the
+    # `preview_scope` job reads demos/ticket0's upload closure off the workspace graph and skips
+    # `preview` when nothing in it changed (another workflow, a version bump, a lockfile change
+    # for other packages). Deliberately not widened to the whole closure (kernel, contracts,
+    # cli, …): that would roughly double the platform build queue (#3253, #3254). Widening is
+    # deleting this list, since the judge already reads the full closure.
+    paths:
+      - 'demos/ticket0/**'
+      # The CLI built from this checkout is the code that runs inside these jobs (it packages and
+      # submits the source), so a change to it is exercised here.
+      - 'packages/cli/**'
+      - '.github/workflows/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'yarn.lock'
+      - 'package-lock.json'
 
 jobs:
   deploy:
@@ -193,7 +204,8 @@ jobs:
     # Decides whether this PR changes anything demos/ticket0's preview is built from — its upload
     # closure: the vertical, every workspace member it reaches, root files, tools/, scripts/,
     # the lockfile entries that resolve for those, and this workflow. Read off pnpm's graph by
-    # tools/preview-scope.mjs, so a new dependency is covered without editing a path list.
+    # tools/preview-scope.mjs. It only narrows the `paths:` filter above: a PR that filter lets
+    # through still skips here when the change is outside the closure.
     #
     # Outside the platform build queue on purpose (no `concurrency:`): it is what keeps a PR
     # that changed nothing demos/ticket0 uploads from taking a slot in it. No secrets, and the
