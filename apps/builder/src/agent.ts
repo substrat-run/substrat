@@ -1138,8 +1138,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const entry = (await this.#registry()).projects.find((p) => p.id === id);
 				if (!entry) return refuse(404, `no project ${id}`);
-				const build = this.#builds.occupant(entry.slug);
-				if (build) return busyRefusal(build, Date.now());
+				// Claimed for its vertical, so a build of it waits until the removal is over rather than
+				// pushing to (or recreating) a repository being deleted (#2952).
+				const building = this.#claimStudio(entry);
+				if (building) return building;
 				this.#occupy(`removing project "${entry.name}"`);
 				try {
 					// The repository first: a refused delete leaves the project listed and the
@@ -1155,7 +1157,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					const next = withoutProject(await this.#registry(), entry.id);
 					if (next) await this.#save(next.registry);
 					return json(200, { removed: entry.id, current: next?.registry.currentId ?? null });
-				} finally { this.#occupant = null; }
+				} finally { this.#releaseStudio(); }
 			}
 			case 'PUT /api/project': {
 				if (this.#busy) return this.#refuseBusy();
