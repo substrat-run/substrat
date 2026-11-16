@@ -239,8 +239,12 @@ export interface InvocationLogLine extends AuthRecording {
   suppressedBy?: Record<string, number>;
 }
 
-/** #1901: the kinds of async work a scope host writes a line for. A request has no `kind`. */
-export type AsyncInvocationKind = 'consumer' | 'schedule';
+/**
+ * #1901: the kinds of work a scope host writes a line for that no request line covers. A request
+ * has no `kind`. `connector` (#3235) is a connector's call into the scope as its connection, which
+ * the platform makes over its internal surface: the router never sees it, so no request line does.
+ */
+export type AsyncInvocationKind = 'consumer' | 'schedule' | 'connector';
 
 /**
  * #1901: how a unit of async work ended.
@@ -254,7 +258,7 @@ export type AsyncInvocationKind = 'consumer' | 'schedule';
  *   ran. Never `delivered`, because nothing was.
  * - `routed` — the delivery was handed to the platform's drain to run with authority this
  *   host lacks (a connector on a control-plane-less host).
- * - `ok` / `failed` — a schedule run.
+ * - `ok` / `failed` — a schedule run, or a connector's call (#3235).
  * - `suppressed` — the pass's line cap was reached; the line counts what it withheld.
  */
 export type AsyncOutcome =

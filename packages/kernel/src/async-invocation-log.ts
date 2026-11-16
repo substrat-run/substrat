@@ -1,6 +1,7 @@
 /**
  * One invocation line per unit of ASYNC work the scope host runs (#1901): a consumer
- * delivery (a module consumer, an executor, an imported event's handler) and a schedule run.
+ * delivery (a module consumer, an executor, an imported event's handler), a schedule run, and a
+ * connector's call into the scope as its connection (#3235).
  *
  * ## Why the scope host writes it
  *
@@ -68,7 +69,7 @@ export interface AsyncUnit {
    * the unit ({@link asyncInvocationId}).
    */
   invocationId: string;
-  /** A consumer's name (its module, or `executor:<id>`), or a schedule's operation. */
+  /** A consumer's name (its module, or `executor:<id>`), or a schedule's or a connector call's operation. */
   operation: string;
   /** `Date.now()` when the unit started — host code, so the real clock. */
   startedAt: number;
@@ -80,7 +81,7 @@ export interface AsyncUnit {
   attempt?: number;
   dueAt?: string | null;
   latenessMs?: number | null;
-  /** Who the work ran as. A consumer and a schedule run as `system`; an import as its peer. */
+  /** Who the work ran as. A consumer and a schedule run as `system`; an import as its peer; a connector call as `connection`. */
   principalKind?: string;
   emitted?: EmittedReport;
   versionId?: string | null;
@@ -136,9 +137,13 @@ export function asyncInvocationLine(unit: AsyncUnit): InvocationLogLine {
     versionId: unit.versionId ?? null,
     async: {
       outcome: unit.outcome,
+      // A connector's call (#3235) has neither an event nor a due time: the operation, the
+      // connection it ran as and the outcome are the whole of it.
       ...(unit.kind === 'consumer'
         ? { eventType: unit.eventType ?? null, eventId: unit.eventId ?? null, attempt: unit.attempt ?? null }
-        : { dueAt: unit.dueAt ?? null, latenessMs: unit.latenessMs ?? null }),
+        : unit.kind === 'schedule'
+          ? { dueAt: unit.dueAt ?? null, latenessMs: unit.latenessMs ?? null }
+          : {}),
     },
   });
 }

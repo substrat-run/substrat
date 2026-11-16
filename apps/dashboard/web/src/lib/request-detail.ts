@@ -74,8 +74,8 @@ export interface RequestRecord extends AuthRecording {
 const parentOf = (v: unknown): string | null => (typeof v === 'string' && ulidTime(v) !== null ? v : null);
 
 /** #1901: a line's kind, absent read as `request`. */
-export function kindOf(v: unknown): 'request' | 'consumer' | 'schedule' {
-  return v === 'consumer' || v === 'schedule' ? v : 'request';
+export function kindOf(v: unknown): 'request' | 'consumer' | 'schedule' | 'connector' {
+  return v === 'consumer' || v === 'schedule' || v === 'connector' ? v : 'request';
 }
 
 /** The stamped line of a log event, or null. */

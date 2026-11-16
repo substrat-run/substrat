@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   connectionId as connectionIdOf,
   permissionKey,
@@ -8,7 +8,7 @@ import {
   scopeId,
   tenantId,
 } from '@substrat-run/contracts';
-import { isSizedByteStream, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { isSizedByteStream, ulid, webCryptoSecretBox, type InvocationLogLine } from '@substrat-run/kernel';
 import { CloudflareScopeHost, type ConnectorDelegation } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -92,6 +92,41 @@ describe('connector write-back (#574)', () => {
       });
       expect(q.rows).toHaveLength(1);
       expect(JSON.parse(String(q.rows[0]![0]))).toEqual({ connection: conn });
+    });
+
+    // #3235: the platform makes these calls over its internal surface, which no request line
+    // covers; without a line of their own the app's Logs showed nothing of a connector's landings.
+    it('writes one invocation line per call, as the connection, with no input and no error text', async () => {
+      const lines: InvocationLogLine[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((text: unknown) => {
+        if (typeof text === 'string' && text.startsWith('{"substrat":"invocation"')) lines.push(JSON.parse(text) as InvocationLogLine);
+      });
+      const SECRET = 'provider-payload-7f3a';
+      const ungranted = connectionIdOf.parse(ulid());
+      let refusal = '';
+      try {
+        const host = hostFor();
+        await host.connectorGrantLocal(conn, s, USE);
+        await host.connectorInvokeLocal(conn, t, s, 'perm/authorized-emit', { permission: USE, note: SECRET });
+        refusal = await host.connectorInvokeLocal(ungranted, t, s, 'perm/authorized-emit', { permission: USE, note: SECRET }).then(
+          () => '',
+          (err: unknown) => (err instanceof Error ? err.message : String(err)),
+        );
+      } finally {
+        spy.mockRestore();
+      }
+      const mine = lines.filter((l) => l.kind === 'connector' && l.scopeId === s);
+      expect(mine).toEqual([
+        expect.objectContaining({ tenantId: t, operation: 'perm/authorized-emit', principalKind: 'connection', outcome: 'ok', level: 'info', threw: false }),
+        expect.objectContaining({ tenantId: t, operation: 'perm/authorized-emit', principalKind: 'connection', outcome: 'failed', level: 'error', threw: true, problemCode: 'permission_denied' }),
+      ]);
+      // What the operation emitted is counted, its entities are not named.
+      expect(mine[0]).toMatchObject({ eventCount: 1, entities: [] });
+      // Ids, names and codes only: never the provider's input, never the refusal's sentence.
+      expect(JSON.stringify(mine)).not.toContain(SECRET);
+      expect(refusal).toMatch(/denied/i);
+      expect(JSON.stringify(mine)).not.toContain(refusal);
+      expect(mine[0]!.invocationId).not.toBe(mine[1]!.invocationId);
     });
 
     it('reads a delivered grant back with no control plane to ask (#2892)', async () => {
