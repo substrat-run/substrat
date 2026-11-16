@@ -16,14 +16,14 @@ index dc4fdf2..28cc5f7 100644
      "@substrat-run/model-emit": "workspace:*",
 diff --git b/patches/@substrat-run__kernel.patch b/patches/@substrat-run__kernel.patch
 new file mode 100644
-index 0000000..18bde8e
+index 0000000..61206c2
 --- /dev/null
 +++ b/patches/@substrat-run__kernel.patch
 @@ -0,0 +1,11 @@
 +diff --git a/dist/sql-limits.js b/dist/sql-limits.js
 +--- a/dist/sql-limits.js
 ++++ b/dist/sql-limits.js
-+@@ -12,7 +12,7 @@
++@@ -12,6 +12,6 @@
 +  * Durable Object's own limits, so a statement that would fail on a deployed scope fails here.
 +  */
 +-export const MAX_BOUND_PARAMETERS = 100;

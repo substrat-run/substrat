@@ -11,8 +11,8 @@
  * included). Only the `cloudflare` gateway row is a candidate (Q3e). Its two variables are read
  * from the environment, or from `--env-file` (only those two lines, never printed).
  *
- * Spend: before any call, the worst case of one attempt per read at the output cap is estimated
- * from the rate card and refused over `--budget`. During the run, every HTTP attempt (a retry
+ * Spend: before any call, the worst case of one attempt per read (input at its UTF-8 byte bound,
+ * output at the cap) is priced from the rate card and refused over `--budget`. During the run, every HTTP attempt (a retry
  * included) first holds its own worst case against the budget, and starts only if it fits.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -27,6 +27,18 @@ import { loadSeeds, priceOf, resolveAllowed, resolveExpectations, scoreSeed, sum
 import { materialize, SEEDS_DIR, seedDiff } from './materialize.mts';
 
 const GATEWAY_VARS = ['CLOUDFLARE_AI_BASE_URL', 'CLOUDFLARE_AI_API_TOKEN', 'CLOUDFLARE_AI_GATEWAY_ID'] as const;
+/**
+ * What a chat template and the provider's own framing may add to a request, in tokens. Generous:
+ * it only widens the hold.
+ */
+const TEMPLATE_TOKENS = 2_048;
+/**
+ * An upper bound on a request's input tokens, for the budget's holds: a byte-level tokenizer never
+ * makes more tokens than the text has UTF-8 bytes, plus what the template adds. The job's own
+ * `estimateTokens` (three characters a token) is an estimate, and is what the guard and the
+ * display use; it is not a bound, so it never sizes a hold.
+ */
+const inputBound = (...texts: string[]): number => texts.reduce((n, t) => n + new TextEncoder().encode(t).byteLength, TEMPLATE_TOKENS);
 /** The job's own deadline for one call. */
 const CALL_TIMEOUT_MS = 5 * 60_000;
 
@@ -56,7 +68,7 @@ function gatewayEnv(): Record<string, string> {
   return env;
 }
 
-interface Prepared { seed: Seed; files: readonly ChangedFile[]; resolved: Resolved[]; allowed: Resolved[]; system: string; prompt: string; estimatedInput: number }
+interface Prepared { seed: Seed; files: readonly ChangedFile[]; resolved: Resolved[]; allowed: Resolved[]; system: string; prompt: string; estimatedInput: number; inputBound: number }
 
 async function prepare(seed: Seed): Promise<Prepared> {
   const tree = materialize(seed);
@@ -65,7 +77,7 @@ async function prepare(seed: Seed): Promise<Prepared> {
   const nonce = crypto.randomUUID();
   const system = reviewSystem(nonce);
   const prompt = reviewPrompt({ files: diff.files, deleted: diff.deleted, notSent: diff.notSent, gates: gatesNotRun(), fullTree: diff.fullTree, nonce });
-  return { seed, files: diff.files, resolved: resolveExpectations(seed, tree.head), allowed: resolveAllowed(seed, tree.head), system, prompt, estimatedInput: estimateTokens(system) + estimateTokens(prompt) };
+  return { seed, files: diff.files, resolved: resolveExpectations(seed, tree.head), allowed: resolveAllowed(seed, tree.head), system, prompt, estimatedInput: estimateTokens(system) + estimateTokens(prompt), inputBound: inputBound(system, prompt) };
 }
 
 const transient = (e: unknown) => {
@@ -88,9 +100,9 @@ async function main(): Promise<void> {
   const seeds = loadSeeds(SEEDS_DIR).filter((s) => wanted.size === 0 || wanted.has(s.id));
   const prepared = await Promise.all(seeds.map(prepare));
 
-  const worst = (spec: string, p: Prepared) => Number(priceOf(spec, p.estimatedInput, maxOutput) ?? NaN);
+  const worst = (spec: string, p: Prepared) => Number(priceOf(spec, p.inputBound, maxOutput) ?? NaN);
   let total = 0;
-  console.log(`rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · ${prepared.length} seeds × ${repeat} · worst case at the ${maxOutput}-token output cap`);
+  console.log(`rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · ${prepared.length} seeds × ${repeat} · worst case: input at its byte bound, output at the ${maxOutput}-token cap`);
   for (const spec of models) {
     const cost = prepared.reduce((n, p) => n + worst(spec, p), 0) * repeat;
     if (Number.isNaN(cost)) throw new Error(`${spec}: unpriced on the rate card, so its spend cannot be capped`);
@@ -169,9 +181,11 @@ async function main(): Promise<void> {
         const read = readReply(run, p.files);
         // A provider that reports no usage leaves zero tokens on the line, which would price as
         // free: its cost is unknown, and its hold stays spent like a failed call's.
-        const costUsd = run.line.reported ? priceOf(spec, run.line.inputTokens, run.line.outputTokens) : null;
+        const price = run.line.reported ? priceOf(spec, run.line.inputTokens, run.line.outputTokens) : null;
         // The answering call's hold becomes its list price; a failed first attempt's hold stays.
-        if (costUsd !== null) spent += Number(costUsd) - held;
+        if (price !== null) spent += Number(price) - held;
+        // What a failed first attempt was billed is unknown, so neither is the read's cost.
+        const costUsd = attempts > 1 ? null : price;
         const findings = read.assembled.findings.map(({ item, file, line }) => ({ item, file, line }));
         const score = scoreSeed(p.resolved, findings, p.allowed);
         runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: read.state, reason: read.reason, score, findings, dropped: read.assembled.dropped, inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, costUsd, latencyMs });
