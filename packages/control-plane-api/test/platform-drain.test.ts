@@ -1004,6 +1004,54 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(provisioned?.entitlements?.find((e) => e.entitlementKey === 'flows')).toMatchObject({ plan: 'pro' });
     expect(configured?.entries).toEqual([{ key: 'ISSUER_DOMAIN', value: 'auth.customer-1.example' }]);
     expect(provisioned).not.toHaveProperty('ownerEmail');
+    // No domain configured (a self-host): no address is bound, as before #3202.
+    expect(outcome).toMatchObject({ result: { hostname: null } });
+    expect(await host.admin.listHostnames(staff, { scopeId: scopeId.parse(newScope) })).toEqual([]);
+  });
+
+  it('binds the default hostname <tenant>-<vertical> and keeps that one name on a retry (#3202)', async () => {
+    const p = payloadFor(ulid(), ulid());
+    const req = intent('provision-tenant', { payload: p });
+    const handler = provisionTenantHandler({ ...deps(), hostnameDomain: 'substrat.test' });
+    const expected = `${p.tenant.slug}-managed-product.global.substrat.test`;
+    expect(await handler(ctx, req)).toMatchObject({ status: 'done', result: { hostname: expected } });
+    expect(await handler(ctx, req)).toMatchObject({ status: 'done', result: { hostname: expected } });
+    expect(await host.admin.listHostnames(staff, { scopeId: scopeId.parse(p.instance.scopeId) })).toEqual([
+      expect.objectContaining({ hostname: expected, surface: 'app', canonical: true, status: 'active' }),
+    ]);
+  });
+
+  it('a retry finishes the activation of a name an earlier pass bound but left pending (#3202)', async () => {
+    const p = payloadFor(ulid(), ulid());
+    const req = intent('provision-tenant', { payload: p });
+    const handler = provisionTenantHandler({ ...deps(), hostnameDomain: 'substrat.test' });
+    const expected = `${p.tenant.slug}-managed-product.global.substrat.test`;
+    // The first pass binds the name, then stops before the status flip.
+    const flip = vi.spyOn(host.admin, 'setHostnameStatus').mockRejectedValueOnce(new Error('worker stopped'));
+    try {
+      expect(await handler(ctx, req)).toMatchObject({ status: 'pending' });
+      expect(await handler(ctx, req)).toMatchObject({ status: 'done', result: { hostname: expected } });
+    } finally {
+      flip.mockRestore();
+    }
+    expect(await host.admin.listHostnames(staff, { scopeId: scopeId.parse(p.instance.scopeId) })).toEqual([
+      expect.objectContaining({ hostname: expected, surface: 'app', canonical: true, status: 'active' }),
+    ]);
+  });
+
+  it("takes the scope-tailed name when another scope holds <tenant>-<vertical> (#3202)", async () => {
+    const p = payloadFor(ulid(), ulid());
+    const taken = `${p.tenant.slug}-managed-product.global.substrat.test`;
+    await host.admin.bindHostname(staff, { hostname: taken, tenantId: managerTenant, scopeId: managerScope, surface: 'app', region: null, canonical: false });
+    const outcome = await provisionTenantHandler({ ...deps(), hostnameDomain: 'substrat.test' })(
+      ctx,
+      intent('provision-tenant', { payload: p }),
+    );
+    const tail = p.instance.scopeId.slice(-6).toLowerCase();
+    expect(outcome).toMatchObject({
+      status: 'done',
+      result: { hostname: `${p.tenant.slug}-managed-product-${tail}.global.substrat.test` },
+    });
   });
 
   it("hands the vertical the requester's address, so the owner seat is reserved for it (#3202)", async () => {

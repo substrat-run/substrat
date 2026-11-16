@@ -72,6 +72,13 @@ seat for the address, the request fails and the new scope is never activated. Yo
 get a tenant that anyone could claim. The address is kept only until the seat is claimed
 or the scope is deleted.
 
+The platform gives each created tenant the address `<tenant-slug>-<vertical>.global.substrat.run`.
+If another app already holds that name, it appends the last six characters of the scope's
+id. The request's result in the intent journal records the address as `hostname`.
+The platform does not yet register a sign-in client for that address at your issuer, so
+deliver `substrat:auth` in the request's `config`, with a client that accepts
+`https://<address>/api/auth/callback`.
+
 ### Each customer gets your vertical in their own tenant
 
 Every customer's data lives in their own tenant, and so do their connections. When a
