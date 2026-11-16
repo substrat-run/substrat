@@ -266,13 +266,16 @@ export async function relayConnectionBindings(
       const stored = Object.fromEntries(Object.entries(binding).filter(([k]) => !FIXED.has(k) && !INSPECTION.has(k)));
       // A connector's health that does not read as the contract's is left out, never passed on.
       const health = withHealth && binding.health !== undefined ? connectionBindingHealth.safeParse(binding.health) : undefined;
+      // A built-in's stored options, cut to the provider's. One that no longer reads is answered as
+      // none rather than failing the whole list, which since #3241 can hold the tenant's bindings too.
+      const cut = isVerticalConnectorProvider(connection.provider) ? null : connectionBindingOptions(connection.provider).strip().safeParse(stored);
       return [{
         connectionId: connection.id,
         provider: connection.provider,
         status: connection.status,
         // A vertical connector's options are what its own bind stored. A built-in's record also
         // holds its sync cursor, so it is cut to the provider's options.
-        options: isVerticalConnectorProvider(connection.provider) ? stored : connectionBindingOptions(connection.provider).strip().parse(stored),
+        options: cut === null ? stored : cut.success ? cut.data : {},
         boundAt: binding.boundAt,
         lastSyncedAt: ok?.at ?? null,
         // The pass writes a failed row's `error` in the platform's words; the provider's own answer

@@ -663,8 +663,12 @@ export async function syncWooCommerceScope(
     try {
       await run();
     } catch (err) {
-      failure ??= err;
-      if (!(err instanceof WooCommerceRowStall)) ended = true;
+      // A failure that ends the pass is the one to report, over a record an earlier step waits at.
+      if (err instanceof WooCommerceRowStall) failure ??= err;
+      else {
+        failure = err;
+        ended = true;
+      }
     }
   };
   await step(() => walkChanged(api, 'products', parseProduct, productAt, landProduct, failures, binding.operation, products, pages));
