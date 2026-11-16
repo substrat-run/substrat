@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { externalInput, externalJson, problemResponse, invocationLog } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse, refuseStatus, invocationLog } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -317,7 +317,7 @@ if (scrive) {
       // Verified but the reconcile failed (provider hiccup, store contention):
       // 500 so the provider retries; the poll floor covers it regardless.
       console.error('[scrive-callback] reconcile failed', err);
-      return problemResponse(c, new HTTPException(500, { message: 'reconcile failed' }));
+      return refuseStatus(c, 500, 'reconcile failed');
     }
   });
 }

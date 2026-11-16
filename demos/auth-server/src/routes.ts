@@ -51,6 +51,7 @@ import {
   PlatformCallError,
   invocationLog,
   problemResponse,
+  refuseStatus,
 } from '@substrat-run/vertical-host';
 import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
 import { serveAsset } from './assets.js';
@@ -538,7 +539,7 @@ app.delete(MACHINE_CLIENT_PATH, async (c) => {
  * dashboard renders as "internal error" (the 2026-07-25 provisioning incident).
  */
 app.all('/internal/*', (c) =>
-  problemResponse(c, new HTTPException(501, { message: `auth-server does not implement ${c.req.method} ${new URL(c.req.url).pathname}` })),
+  refuseStatus(c, 501, `auth-server does not implement ${c.req.method} ${new URL(c.req.url).pathname}`),
 );
 
 // Serve the inlined admin SPA for everything else. MUST come last so the routes above win.

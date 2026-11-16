@@ -20,7 +20,7 @@ import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
-import { invocationLog, problemResponse } from '@substrat-run/vertical-host';
+import { invocationLog, problemResponse, refuseStatus } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId, substratError } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
@@ -254,7 +254,7 @@ async function boot() {
       run = await scope.invoke<{ status: string; complete?: boolean }>('tock/count-run', { runId, ...parsed.data });
       passes += 1;
       // A guard rather than a limit: a `complete` that never turns true would otherwise spin.
-      if (passes > 10_000) return problemResponse(c, new HTTPException(500, { message: 'counting did not finish' }));
+      if (passes > 10_000) return refuseStatus(c, 500, 'counting did not finish');
     } while (run.complete === false);
     return c.json({ run, passes });
   });

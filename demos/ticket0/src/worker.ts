@@ -68,6 +68,7 @@ import {
   RouterAssertionError,
   invocationLog,
   problemResponse,
+  refuseStatus,
 } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -1123,7 +1124,7 @@ app.post('/api/email/inbound', async (c) => {
     // The ingest refused. A 500 asks Resend to retry, which is right for a desk that is
     // briefly unavailable and harmless otherwise — the ingest is idempotent.
     console.error('ticket0: inbound mail ingest failed', { scope: node.scopeId, error: errorText(error) });
-    return problemResponse(c, new HTTPException(500, { message: 'ingest failed' }));
+    return refuseStatus(c, 500, 'ingest failed');
   }
 });
 
@@ -1224,7 +1225,7 @@ mountPlatformSurface<Env>(app, {
 // an /internal/* request that reaches a SPA returns 200 text/html, which the platform's
 // JSON parse turns into an opaque "internal error".
 app.all('/internal/*', (c) =>
-  problemResponse(c, new HTTPException(501, { message: `ticket0 does not implement ${c.req.method} ${new URL(c.req.url).pathname}` })),
+  refuseStatus(c, 501, `ticket0 does not implement ${c.req.method} ${new URL(c.req.url).pathname}`),
 );
 
 // No SPA catch-all: the built app and `widget.js` are served by the runtime's own asset

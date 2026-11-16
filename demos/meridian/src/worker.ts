@@ -37,6 +37,7 @@ import {
   externalInput,
   externalJson,
   problemResponse,
+  refuseStatus,
 } from '@substrat-run/vertical-host';
 import { substratError } from '@substrat-run/contracts';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
@@ -363,7 +364,7 @@ mountPlatformSurface<Env>(app, {
 // an /internal/* request that reaches the SPA returns 200 text/html, which the platform's
 // JSON parse turns into an opaque "internal error" (the auth-server incident, 2026-07-25).
 app.all('/internal/*', (c) =>
-  problemResponse(c, new HTTPException(501, { message: `meridian does not implement ${c.req.method} ${new URL(c.req.url).pathname}` })),
+  refuseStatus(c, 501, `meridian does not implement ${c.req.method} ${new URL(c.req.url).pathname}`),
 );
 
 /** Resolve the caller (any provider) → the routed node → who they are and a scope stub. 401 if nobody. */
