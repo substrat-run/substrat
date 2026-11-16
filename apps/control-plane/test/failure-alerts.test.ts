@@ -317,6 +317,39 @@ describe('a withheld failure in the digest (#2540)', () => {
     ]);
   });
 
+  // #3235: a connector sweep files one pair per failed binding, all under the pass's reference.
+  it('pairs two bindings filed in the same instant under one reference by their scope', () => {
+    const at = '2026-09-18T09:55:00.000Z';
+    const t = tenantId.parse(ulid());
+    const [s1, s2] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+    const rows = [
+      failure(at, 'did not land in this app (reference r1)', { tenantId: t, reference: 'r1', scopeId: s1 }),
+      failure(at, 'scope one: refused', { reference: 'r1', scopeId: s1 }),
+      failure(at, 'did not land in this app (reference r1)', { tenantId: t, reference: 'r1', scopeId: s2 }),
+      failure(at, 'scope two: refused', { reference: 'r1', scopeId: s2 }),
+    ];
+    expect(pairedFailuresMerged(rows).map((r) => [r.tenantId, r.scopeId, r.message])).toEqual([
+      [t, s1, 'scope one: refused'],
+      [t, s2, 'scope two: refused'],
+    ]);
+  });
+
+  it('pairs two pairs that share every key one to one, so the digest counts two', () => {
+    const at = '2026-09-18T09:55:00.000Z';
+    const t = tenantId.parse(ulid());
+    const s1 = scopeId.parse(ulid());
+    const rows = [
+      failure(at, 'did not land (reference r1)', { tenantId: t, reference: 'r1', scopeId: s1 }),
+      failure(at, 'landing refused', { reference: 'r1', scopeId: s1 }),
+      failure(at, 'did not land (reference r1)', { tenantId: t, reference: 'r1', scopeId: s1 }),
+      failure(at, 'poll refused', { reference: 'r1', scopeId: s1 }),
+    ];
+    expect(pairedFailuresMerged(rows).map((r) => [r.tenantId, r.message])).toEqual([
+      [t, 'landing refused'],
+      [t, 'poll refused'],
+    ]);
+  });
+
   it('lists a pair recorded on the real ledger once, as its own text, under its tenant', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     try {

@@ -10,15 +10,17 @@ import { ulid } from './ulid.js';
  * reference, the form staff's row always takes (`withUpstreamReference`). The reference is the
  * platform's own ulid unless the caller already minted one (a log line written under it first).
  * `raw` is the text as the failure gave it: never one already passed through
- * `withUpstreamReference`, which is not idempotent.
+ * `withUpstreamReference`, which is not idempotent. `opening` is the platform's own words ahead of
+ * it on staff's row, as {@link withheldStaffFailure} takes them.
  */
 export function withheldOpsFailure<E extends Omit<OpsFailureInput, 'actor' | 'message' | 'detail' | 'reference'> & { tenantId: TenantId }>(
   entry: E,
   raw: string,
   answered: (reference: string) => string,
   reference: string = ulid(),
+  opening = '',
 ): E & { message: string; detail: string; reference: string } {
-  return { ...entry, reference, message: answered(reference), detail: withUpstreamReference(raw) };
+  return { ...entry, reference, message: answered(reference), detail: withUpstreamReference(raw, opening) };
 }
 
 /**

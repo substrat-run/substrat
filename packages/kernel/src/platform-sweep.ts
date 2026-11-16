@@ -1,4 +1,4 @@
-import { drainedEvent, instant, substratError } from '@substrat-run/contracts';
+import { drainedEvent, instant, scopeId as scopeIdSchema, substratError } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
   Connection,
@@ -23,7 +23,7 @@ import type {
   WantedEvent,
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, HostAdmin, OpsFailureInput, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput } from './scope-host.js';
-import { withheldStaffFailure } from './ops-failure-reference.js';
+import { withheldOpsFailure, withheldStaffFailure } from './ops-failure-reference.js';
 import { ulid } from './ulid.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
@@ -124,6 +124,24 @@ const saidOf = (failed: readonly { said?: string }[]): string => {
   const said = [...new Set(failed.flatMap((f) => (f.said ? [f.said] : [])))];
   return said.length > 0 ? `: ${said.join('; ')}` : '';
 };
+
+/** #3235: one failure of a connection's sweep, with the scope it belongs to when it names one. */
+interface SweepFailure {
+  scopeId?: string;
+  /** Staff's: the failure's own text. */
+  error: string;
+  /** What the connection's tenant may read about why, when the connector built one (#3103). */
+  said?: string;
+  /** A declared landing the platform could not grant or bind, rather than a poll that failed. */
+  landing?: boolean;
+}
+
+/** #3235: what a failed binding's tenant row says, in the platform's words. */
+function tenantSentence(provider: string, f: SweepFailure): string {
+  if (f.landing) return `the ${provider} connection's declared landing could not be granted or bound for this app`;
+  const said = f.said ? `: ${f.said.slice(0, SAID_LIMIT)}` : '';
+  return `the ${provider} sweep did not land in this app${said}`;
+}
 
 /** `n noun`, with the noun's plural when `n` is not one. */
 const counted = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
@@ -2043,25 +2061,53 @@ export async function runPlatformSweep(
     // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
     // the platform's words with counts, under one reference; the text (a provider's answer, a landing
     // refusal) is staff's row under the same reference, or the report's when nothing files one.
-    const fail = (said: string[], raw: string[], neutralDetail?: string) => {
+    //
+    // #3235: a failure that names the scope it belongs to is filed as a PAIR under that reference: a
+    // row for the connection's tenant, carrying the scope, so that app's Failures view and fleet
+    // health count it, saying in the platform's words what became of that binding (with the
+    // connector's `said` when it gave one); and staff's row with the failure's own text. Only a
+    // failure with no scope (a sweep that threw, a landing pass that could not start) stays staff's
+    // alone, as before.
+    const fail = (said: string[], failures: readonly SweepFailure[], neutralDetail?: string) => {
       const reference = ulid();
       if (options.recordFailure) {
-        options.recordFailure(
-          withheldStaffFailure(
-            { operation: `sweep.connector:${c.provider}`, stage: 'sweep', vertical: c.vertical },
-            raw.join('; '),
-            reference,
-            `connection ${c.id} of tenant ${c.tenantId}: `,
-          ),
-        );
+        const operation = `sweep.connector:${c.provider}`;
+        const opening = `connection ${c.id} of tenant ${c.tenantId}: `;
+        const unscoped: string[] = [];
+        // One pair per scope: a scope can fail twice in one pass (a declared landing, then its
+        // poll), and two pairs sharing the reference, the operation and the scope could not be told
+        // apart by a reader that pairs them.
+        const byScope = new Map<ScopeId, SweepFailure[]>();
+        for (const f of failures) {
+          const scope = f.scopeId === undefined ? undefined : scopeIdSchema.safeParse(f.scopeId);
+          if (!scope?.success) {
+            unscoped.push(f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}`);
+            continue;
+          }
+          byScope.set(scope.data, [...(byScope.get(scope.data) ?? []), f]);
+        }
+        for (const [scope, fs] of byScope) {
+          options.recordFailure(
+            withheldOpsFailure(
+              { operation, stage: 'sweep', tenantId: c.tenantId, scopeId: scope, vertical: c.vertical },
+              fs.map((f) => f.error).join('; '),
+              (ref) => `${[...new Set(fs.map((f) => tenantSentence(c.provider, f)))].join('; ')} (reference ${ref})`,
+              reference,
+              `${opening}scope ${scope}: `,
+            ),
+          );
+        }
+        if (unscoped.length > 0) {
+          options.recordFailure(withheldStaffFailure({ operation, stage: 'sweep', vertical: c.vertical }, unscoped.join('; '), reference, opening));
+        }
       } else {
-        for (const r of raw) report.errors.push({ kind: 'sweep', id: c.id, error: r });
+        for (const f of failures) report.errors.push({ kind: 'sweep', id: c.id, error: f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}` });
       }
       const failureText = `${said.join('; ')} (reference ${reference})`;
       record('failed', { error: neutralDetail ? `Unsupported bindings: ${neutralDetail}\n${failureText}` : failureText, elapsedMs: Date.now() - started });
     };
     const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
-    const scoped = (fs: readonly { scopeId: string; error: string }[]) => fs.map((f) => `scope ${f.scopeId}: ${f.error}`);
+    const landingFailures: SweepFailure[] = landingFailed.map((f) => ({ ...f, landing: true }));
     const everyMinutes = options.sweepEveryMinutes?.[c.provider];
     if (everyMinutes) {
       try {
@@ -2074,13 +2120,13 @@ export async function runPlatformSweep(
         const now = Date.now();
         const lastAttempt = Math.max(0, ...[ok[0], failed[0], unsupported[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
         if (now - lastAttempt < everyMinutes * 60_000) {
-          if (landingFailed.length > 0) fail(landingSaid, scoped(landingFailed));
+          if (landingFailed.length > 0) fail(landingSaid, landingFailures);
           report.connectionsSkipped += 1;
           return;
         }
       } catch (err) {
         // Without the ledger's clock, do not risk spending the provider's daily allowance.
-        if (landingFailed.length > 0) fail(landingSaid, scoped(landingFailed));
+        if (landingFailed.length > 0) fail(landingSaid, landingFailures);
         report.errors.push({ kind: 'sweep', id: c.id, error: `cannot read connector cadence: ${message(err)}` });
         report.connectionsSkipped += 1;
         return;
@@ -2092,7 +2138,7 @@ export async function runPlatformSweep(
       result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
     } catch (err) {
       // The landing step's failures, if any, belong on the same row as the poll's throw.
-      fail([...landingSaid, 'the sweep did not complete'], [...scoped(landingFailed), message(err)]);
+      fail([...landingSaid, 'the sweep did not complete'], [...landingFailures, { error: message(err) }]);
       return;
     }
     const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
@@ -2112,7 +2158,7 @@ export async function runPlatformSweep(
     if (landingFailed.length > 0 || pollFailed.length > 0) {
       fail(
         [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land${saidOf(pollFailed)}`] : [])],
-        scoped([...landingFailed, ...pollFailed]),
+        [...landingFailures, ...pollFailed],
         unsupportedDetail || undefined,
       );
     } else if (answer && answer.found === 0) {
