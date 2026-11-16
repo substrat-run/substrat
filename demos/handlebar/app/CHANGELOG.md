@@ -1,5 +1,13 @@
 # @substrat-run/demo-handlebar-app
 
+## 0.0.112
+
+### Patch Changes
+
+- Updated dependencies [cdd061a]
+- Updated dependencies [1227128]
+  - @substrat-run/contracts@0.199.0
+
 ## 0.0.111
 
 ### Patch Changes

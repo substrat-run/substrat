@@ -1,5 +1,25 @@
 # @substrat-run/dashboard
 
+## 0.49.17
+
+### Patch Changes
+
+- 1227128: Your app can take payments through your own Stripe account. Connect Stripe from the dashboard with a restricted key; Test connection names the account and says whether it is live or test mode. A connection stays on that account and mode: a new key for the same one replaces the old, and a key for another account, or a live key replacing a test one, is refused and is connected as a new connection. Your app's worker calls `requestCheckout()` from `@substrat-run/vertical-host` to open a hosted checkout and sends the buyer to Stripe's page. The outcome lands back through the operation your app declares, as a `paymentChange`, a new provider-neutral payment shape in `@substrat-run/contracts`. Stripe's webhook only prompts the platform to read the outcome back from Stripe, and a regular pass catches anything a webhook missed. One reference is never charged twice, and a preview never charges anyone.
+- Updated dependencies [d338fe4]
+- Updated dependencies [d338fe4]
+- Updated dependencies [cdd061a]
+- Updated dependencies [1227128]
+  - @substrat-run/control-plane-api@0.199.0
+  - @substrat-run/contracts@0.199.0
+  - @substrat-run/vertical-host@0.199.0
+  - @substrat-run/adapter-cloudflare@0.199.0
+  - @substrat-run/connector-fortnox@0.7.23
+  - @substrat-run/engine-invites@0.9.76
+  - @substrat-run/engine-protocol@0.13.84
+  - @substrat-run/control-plane-client@0.8.1
+  - @substrat-run/kernel@0.199.0
+  - @substrat-run/model-providers@0.5.89
+
 ## 0.49.16
 
 ### Patch Changes

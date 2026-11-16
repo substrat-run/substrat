@@ -1,5 +1,30 @@
 # @substrat-run/control-plane
 
+## 0.19.1
+
+### Patch Changes
+
+- d338fe4: A tenant created through `provision-tenant` gets the default hostname `<tenant-slug>-<vertical>.global.<base domain>`, with the scope id's last six characters appended when another app holds that name. The request's result records it as `hostname`.
+- 1227128: Your app can take payments through your own Stripe account. Connect Stripe from the dashboard with a restricted key; Test connection names the account and says whether it is live or test mode. A connection stays on that account and mode: a new key for the same one replaces the old, and a key for another account, or a live key replacing a test one, is refused and is connected as a new connection. Your app's worker calls `requestCheckout()` from `@substrat-run/vertical-host` to open a hosted checkout and sends the buyer to Stripe's page. The outcome lands back through the operation your app declares, as a `paymentChange`, a new provider-neutral payment shape in `@substrat-run/contracts`. Stripe's webhook only prompts the platform to read the outcome back from Stripe, and a regular pass catches anything a webhook missed. One reference is never charged twice, and a preview never charges anyone.
+- Updated dependencies [d338fe4]
+- Updated dependencies [d338fe4]
+- Updated dependencies [cdd061a]
+- Updated dependencies [1227128]
+  - @substrat-run/control-plane-api@0.199.0
+  - @substrat-run/contracts@0.199.0
+  - @substrat-run/vertical-host@0.199.0
+  - @substrat-run/adapter-cloudflare@0.199.0
+  - @substrat-run/connector-bolagsverket@0.0.22
+  - @substrat-run/connector-fortnox@0.7.23
+  - @substrat-run/connector-mail-in@0.1.36
+  - @substrat-run/connector-microsoft365@0.0.60
+  - @substrat-run/connector-planima@0.2.96
+  - @substrat-run/connector-scrive@0.15.1
+  - @substrat-run/connector-stripe@0.0.1
+  - @substrat-run/connector-woocommerce@0.0.5
+  - @substrat-run/kernel@0.199.0
+  - @substrat-run/model-providers@0.5.89
+
 ## 0.19.0
 
 ### Minor Changes
