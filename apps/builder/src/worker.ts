@@ -39,6 +39,7 @@ import { listTurns, readTurn } from './record.js';
 import { listTurnsQuery, turnIdOfSegment, turnQueryRefusal } from './turns.js';
 import { STUDIO_MODULES } from './studio.js';
 import { BUILD_ID_HEADER, interruptionOf, isBuildId, ulid } from './build-log.js';
+import { pruneLegacySnapshots } from './build-snapshots.js';
 import { interruptedResponse, refuse, unhandledResponse } from './problem.js';
 import {
 	FramedSignInCache,
@@ -81,6 +82,8 @@ export interface Env extends OidcEnv, StaffEnv {
 	ASSETS: Fetcher;
 	/** The shared control plane — membership lookups over the service binding. */
 	CONTROL_PLANE_SVC: Fetcher;
+	/** The namespace project and snapshot repositories live in (D-66). */
+	ARTIFACTS: Artifacts;
 	/** The control plane's SERVICE_TOKEN, under the studio's name for it (the
 	 * dashboard precedent: CP_SERVICE_TOKEN in secrets.mjs). */
 	CP_SERVICE_TOKEN?: string;
@@ -186,6 +189,13 @@ app.all('/internal/*', async (c) => {
 		if (id === 'malformed') return refuse(400, 'invalid turn id');
 		const turn = id === null ? null : await readTurn(c.env, id);
 		return turn ? c.json(turn) : refuse(404, 'no such turn');
+	}
+	// The per-build `snapshot-<buildId>` repositories from before #2952, namespace-wide: an
+	// operator's cleanup. A dry run unless the body says `{ "apply": true }`; deletes a bounded
+	// batch per call and answers `more` while any are left.
+	if (c.req.method === 'POST' && path === '/internal/legacy-snapshots') {
+		const body = await c.req.json().catch(() => ({})) as { apply?: unknown };
+		return c.json(await pruneLegacySnapshots(c.env.ARTIFACTS, { apply: body.apply === true }));
 	}
 	const tenant = c.req.header('x-substrat-tenant');
 	if (!tenant) return refuse(400, 'tenant context is required');
