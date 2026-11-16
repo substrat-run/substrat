@@ -1,0 +1,27 @@
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6..fd7dfd4 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -347,7 +347,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
+   },
+ 
+   'todo/delete-list': {
+-    summary: 'Delete a list and everything on it',
++    summary: 'Delete a list for good, with its items, shares and pending invitations',
+     permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
+     // The permanent delete: it empties the bin, and it is what the 30-day horizon runs.
+     trashed: 'purges',
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..a414538 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -253,7 +253,8 @@ const bound = operationsFor(todoOperations)({
+   },
+ 
+   'todo/delete-list': async (ctx, input) => {
+-    assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
++    // Anyone working on a list may clear it away once it is done with.
++    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
+     // The permanent delete empties the bin, so it reaches binned lists too (`trashed: 'purges'`),
+     // and it is what the 30-day purge horizon runs — as todo's system principal.
+     listOrThrow(ctx, input.listId);

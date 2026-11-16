@@ -118,6 +118,8 @@
     "test:publish-packages": "node --test tools/publish-packages.test.mjs",
     "test:attachment-writers": "node --test tools/attachment-writers.test.mjs",
     "test:review-checklist": "node --test tools/review-checklist.test.mjs",
+    "test:review-corpus": "tsx --test apps/control-plane/review-corpus/corpus.test.mts",
+    "review-corpus": "tsx apps/control-plane/review-corpus/run.mts",
     "test:secret-literals": "node --test tools/secret-literals.test.mjs",
     "test:lifecycle-writes": "node --test tools/lifecycle-writes.test.mjs",
     "test:role-seat-paths": "node --test tools/role-seat-paths.test.mjs",

@@ -1,0 +1,20 @@
+diff --git a/src/index.ts b/src/index.ts
+index 7551a55..668ebb5 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -212,6 +212,15 @@ export const absenceMigrations = [
+       );
+     `,
+   },
++  {
++    version: '0002-request-notes',
++    sql: `
++      ALTER TABLE absence_requests DROP COLUMN note;
++    `,
++    discards: {
++      'absence_requests.note': 'moved to absence_request_notes, one row per note, so a request keeps its history',
++    },
++  },
+ ];
+ 
+ // ---------------------------------------------------------------------------

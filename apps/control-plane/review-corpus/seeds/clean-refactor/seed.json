@@ -1,0 +1,14 @@
+{
+  "id": "clean-refactor",
+  "kind": "clean",
+  "origin": "A behaviour-preserving refactor: two handlers share one helper for re-reading a row, and every check stays where it was.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "src/module.ts"
+    ]
+  },
+  "expect": []
+}

@@ -1,0 +1,20 @@
+{
+  "id": "s9-bridge-forwards-session",
+  "kind": "bad",
+  "origin": "S9 and K-56 (decided 2026-10-23, #2495): a runtime extension acts as a capability the vertical mints, never as the signed-in user. This bridge forwards any request the iframe makes under the user's own token.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S9",
+      "file": "app/src/extensions/bridge.ts",
+      "from": "export function mountExtension(",
+      "through": "frame.contentWindow?.postMessage("
+    }
+  ]
+}

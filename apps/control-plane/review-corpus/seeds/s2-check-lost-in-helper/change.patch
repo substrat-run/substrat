@@ -1,0 +1,46 @@
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..db6fc4e 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -92,6 +92,20 @@ function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; li
+   return { item, list: liveListOrThrow(ctx, item.list_id) };
+ }
+ 
++/** Remove one item and announce it. `delete-item` and the bulk clear both end here. */
++function removeItem(ctx: OperationContext, itemId: string): { id: string; deleted: boolean } {
++  itemAndList(ctx, itemId);
++  ctx.sql.exec('DELETE FROM todo_items WHERE id = ?', [itemId]);
++  ctx.emit({
++    type: 'todo.item-deleted',
++    schemaVersion: 1,
++    entity: { entityType: 'item', entityId: itemId },
++    piiClass: 'none',
++    payload: { id: itemId },
++  });
++  return { id: itemId, deleted: true };
++}
++
+ const escapeHtml = (text: string): string =>
+   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+ 
+@@ -418,19 +432,7 @@ const bound = operationsFor(todoOperations)({
+   },
+ 
+   /** Deleting is the owner's, which is what `list:manage` means here. */
+-  'todo/delete-item': async (ctx, input) => {
+-    const { list } = itemAndList(ctx, input.itemId);
+-    assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(list.id)));
+-    ctx.sql.exec('DELETE FROM todo_items WHERE id = ?', [input.itemId]);
+-    ctx.emit({
+-      type: 'todo.item-deleted',
+-      schemaVersion: 1,
+-      entity: { entityType: 'item', entityId: input.itemId },
+-      piiClass: 'none',
+-      payload: { id: input.itemId },
+-    });
+-    return { id: input.itemId, deleted: true };
+-  },
++  'todo/delete-item': async (ctx, input) => removeItem(ctx, input.itemId),
+ 
+   /**
+    * Sharing — the whole point of the app, and one line of access control.

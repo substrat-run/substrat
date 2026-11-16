@@ -1,0 +1,68 @@
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6..79b8c1c 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -102,6 +102,8 @@ export const todoEntities = defineEntities({
+       list_id: z.string(),
+       text: z.string(),
+       done: z.number(),
++      /** Where the item is on the board: 'open' → 'doing' → 'done', and back to 'open' only from 'doing'. */
++      stage: z.enum(['open', 'doing', 'done']),
+       added_by: z.string(),
+       created_at: z.string(),
+     }),
+@@ -519,6 +521,22 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
+     },
+   },
+ 
++  'todo/move-item': {
++    summary: 'Move an item to another stage on the board',
++    permission: { key: 'list:contribute', entity: 'list', resolved: 'the list the item is on' },
++    input: z.object({ itemId: z.string(), stage: z.enum(['open', 'doing', 'done']) }),
++    output: todoEntities.item.fields,
++    http: { method: 'POST', path: '/items/{itemId}/stage' },
++    emits: {
++      entity: 'item',
++      entityIdFrom: 'id',
++      type: 'todo.item-moved',
++      schemaVersion: 1,
++      piiClass: 'none',
++      payload: ['id', 'list_id', 'stage'],
++    },
++  },
++
+   'todo/delete-item': {
+     summary: 'Delete an item',
+     permission: { key: 'list:manage', entity: 'list', resolved: 'the list the item is on' },
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..a7cb245 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -417,6 +417,27 @@ const bound = operationsFor(todoOperations)({
+     return row;
+   },
+ 
++  'todo/move-item': async (ctx, input) => {
++    const { item, list } = itemAndList(ctx, input.itemId);
++    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(list.id)));
++    if (item.stage === 'done' && input.stage !== 'done') {
++      throw substratError('conflict', 'a done item cannot be moved back');
++    }
++    if (item.stage === 'open' && input.stage === 'done') {
++      throw substratError('conflict', 'start an item before finishing it');
++    }
++    ctx.sql.exec('UPDATE todo_items SET stage = ? WHERE id = ?', [input.stage, input.itemId]);
++    const row = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [input.itemId])[0]!;
++    ctx.emit({
++      type: 'todo.item-moved',
++      schemaVersion: 1,
++      entity: { entityType: 'item', entityId: row.id },
++      piiClass: 'none',
++      payload: { id: row.id, list_id: row.list_id, stage: row.stage },
++    });
++    return row;
++  },
++
+   /** Deleting is the owner's, which is what `list:manage` means here. */
+   'todo/delete-item': async (ctx, input) => {
+     const { list } = itemAndList(ctx, input.itemId);

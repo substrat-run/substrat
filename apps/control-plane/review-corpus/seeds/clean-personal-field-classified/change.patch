@@ -1,0 +1,19 @@
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6..77fd443 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -143,11 +143,13 @@ export const todoEntities = defineEntities({
+       list_id: z.string(),
+       email: z.string(),
+       invited_by: z.string(),
++      /** A note from the inviter, shown on the invitation page: "Hi Björn, this is the list for Saturday". */
++      message: z.string().nullable(),
+       created_at: z.string(),
+     }),
+     parents: ['list'],
+     key: ['list_id', 'email'],
+-    erasable: ['email'],
++    erasable: ['email', 'message'],
+   },
+ 
+   /**

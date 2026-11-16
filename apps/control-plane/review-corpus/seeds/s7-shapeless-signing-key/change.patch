@@ -1,0 +1,22 @@
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..1a16524 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -92,6 +92,17 @@ function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; li
+   return { item, list: liveListOrThrow(ctx, item.list_id) };
+ }
+ 
++/** Signs an invitation's join link, so a forwarded link cannot be edited to point at another list. */
++const INVITE_LINK_KEY = 'm4Rk2vQ9tLw7Zp1cXe8Hn3Bj6Fd0Ys5G';
++
++async function signInviteLink(inviteId: string): Promise<string> {
++  const key = await crypto.subtle.importKey(
++    'raw', new TextEncoder().encode(INVITE_LINK_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
++  );
++  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(inviteId));
++  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
++}
++
+ const escapeHtml = (text: string): string =>
+   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+ 

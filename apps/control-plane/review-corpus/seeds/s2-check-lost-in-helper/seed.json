@@ -1,0 +1,30 @@
+{
+  "id": "s2-check-lost-in-helper",
+  "kind": "bad",
+  "origin": "#2387: an operation that declares a permission and whose handler never calls ctx.check, because the check did not survive a move into a helper. Every suite stayed green.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "src/module.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S2",
+      "file": "src/module.ts",
+      "anyOf": [
+        {
+          "from": "'todo/delete-item': async (ctx, input) => removeItem",
+          "before": 1,
+          "after": 1
+        },
+        {
+          "from": "function removeItem(",
+          "after": 3
+        }
+      ]
+    }
+  ]
+}

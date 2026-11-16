@@ -1,0 +1,33 @@
+diff --git a/package.json b/package.json
+index dc4fdf2..28cc5f7 100644
+--- a/package.json
++++ b/package.json
+@@ -27,6 +27,11 @@
+     "hono": "catalog:",
+     "zod": "catalog:"
+   },
++  "pnpm": {
++    "patchedDependencies": {
++      "@substrat-run/kernel": "patches/@substrat-run__kernel.patch"
++    }
++  },
+   "devDependencies": {
+     "@substrat-run/contract-tests": "workspace:^",
+     "@substrat-run/model-emit": "workspace:*",
+diff --git b/patches/@substrat-run__kernel.patch b/patches/@substrat-run__kernel.patch
+new file mode 100644
+index 0000000..18bde8e
+--- /dev/null
++++ b/patches/@substrat-run__kernel.patch
+@@ -0,0 +1,11 @@
++diff --git a/dist/sql-limits.js b/dist/sql-limits.js
++--- a/dist/sql-limits.js
+++++ b/dist/sql-limits.js
++@@ -12,7 +12,7 @@
++  * Durable Object's own limits, so a statement that would fail on a deployed scope fails here.
++  */
++-export const MAX_BOUND_PARAMETERS = 100;
+++export const MAX_BOUND_PARAMETERS = 999;
++ export function assertWithinSqlLimits(sql, params) {
++     if (params.length > MAX_BOUND_PARAMETERS) {
++         throw new SqlLimitError(`${params.length} bound parameters; the limit is ${MAX_BOUND_PARAMETERS}`);

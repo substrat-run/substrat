@@ -1,0 +1,98 @@
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6..05a2c9c 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -519,6 +519,23 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
+     },
+   },
+ 
++  'todo/rename-item': {
++    summary: 'Change the text of an item',
++    permission: { key: 'list:contribute', entity: 'list', resolved: 'the list the item is on' },
++    input: z.object({ itemId: z.string(), text: z.string().min(1) }),
++    output: todoEntities.item.fields,
++    http: { method: 'PATCH', path: '/items/{itemId}' },
++    patchException: 'This rename command requires a text; its handler writes only text.',
++    emits: {
++      entity: 'item',
++      entityIdFrom: 'id',
++      type: 'todo.item-renamed',
++      schemaVersion: 1,
++      piiClass: 'none',
++      payload: ['id', 'list_id', 'text'],
++    },
++  },
++
+   'todo/delete-item': {
+     summary: 'Delete an item',
+     permission: { key: 'list:manage', entity: 'list', resolved: 'the list the item is on' },
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..9543017 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -417,6 +417,21 @@ const bound = operationsFor(todoOperations)({
+     return row;
+   },
+ 
++  'todo/rename-item': async (ctx, input) => {
++    const { list } = itemAndList(ctx, input.itemId);
++    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(list.id)));
++    ctx.sql.exec('UPDATE todo_items SET text = ? WHERE id = ?', [input.text, input.itemId]);
++    const row = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [input.itemId])[0]!;
++    ctx.emit({
++      type: 'todo.item-renamed',
++      schemaVersion: 1,
++      entity: { entityType: 'item', entityId: row.id },
++      piiClass: 'none',
++      payload: { id: row.id, list_id: row.list_id, text: row.text },
++    });
++    return row;
++  },
++
+   /** Deleting is the owner's, which is what `list:manage` means here. */
+   'todo/delete-item': async (ctx, input) => {
+     const { list } = itemAndList(ctx, input.itemId);
+diff --git b/test/rename-item.test.ts b/test/rename-item.test.ts
+new file mode 100644
+index 0000000..25837d9
+--- /dev/null
++++ b/test/rename-item.test.ts
+@@ -0,0 +1,38 @@
++/** `todo/rename-item`, from the concept: the text of an item can change, by anyone working on its list. */
++import { afterAll, beforeAll, expect, it } from 'vitest';
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import type { ScopeHost } from '@substrat-run/kernel';
++import { buildHost, seed, type World } from '../src/seed.js';
++
++let dir: string;
++let host: ScopeHost;
++let world: World;
++let item: string;
++
++const as = (who: 'ada' | 'bjorn') => host.getScope(world[who].principal, world.tenant, world.scope);
++
++beforeAll(async () => {
++  dir = mkdtempSync(join(tmpdir(), 'todo-rename-item-'));
++  host = buildHost(dir);
++  world = await seed(host);
++  const ada = await as('ada');
++  const list = await ada.invoke<{ id: string }>('todo/create-list', { name: 'Weekend' });
++  item = (await ada.invoke<{ id: string }>('todo/add-item', { listId: list.id, text: 'mow' })).id;
++});
++
++afterAll(() => rmSync(dir, { recursive: true, force: true }));
++
++it('renames an item on a list the caller works on', async () => {
++  const renamed = await (await as('ada')).invoke<{ text: string }>('todo/rename-item', { itemId: item, text: 'mow the lawn' });
++  expect(renamed.text).toBe('mow the lawn');
++});
++
++it('refuses someone the list was never shared with', async () => {
++  await expect((await as('bjorn')).invoke('todo/rename-item', { itemId: item, text: 'nope' })).rejects.toMatchObject({ code: 'forbidden' });
++});
++
++it('answers not_found for an item that does not exist', async () => {
++  await expect((await as('ada')).invoke('todo/rename-item', { itemId: 'missing', text: 'x' })).rejects.toMatchObject({ code: 'not_found' });
++});

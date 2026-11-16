@@ -1,0 +1,17 @@
+diff --git a/app/vite.config.ts b/app/vite.config.ts
+index 17b9369..d7dd2bb 100644
+--- a/app/vite.config.ts
++++ b/app/vite.config.ts
+@@ -30,11 +30,7 @@ export default defineConfig({
+       ],
+     },
+     proxy: {
+-      // `changeOrigin: false`, written out. Vite's string shorthand expands to
+-      // `{ target, changeOrigin: true }`, which rewrites Host — and the API derives
+-      // its OIDC `redirect_uri` from the Host it is handed, so the login callback
+-      // would come back to the API's port, where this app is not (#1388).
+-      '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: false },
++      '/api': `http://localhost:${API_PORT}`,
+       // The plugin's notes on this app's items, from the same origin, so the session cookie goes
+       // with them. Deployed, a plugin is another origin, and this is the open question of how its
+       // screens appear inside the app it belongs to (docs/rfc/dependent-people.md).

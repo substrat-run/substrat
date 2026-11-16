@@ -4,7 +4,7 @@ import { modelAttribution, scopeId, tenantId, type ModelUsageLine } from '@subst
 import { parseModelSpec, providerRow } from '@substrat-run/model-providers';
 import { createModelHost, type ModelHost, type ModelRun } from '@substrat-run/vertical-host/model';
 import { diffReview, REVIEW_MAX_DIFF_BYTES } from './review-diff.js';
-import { assemble, estimateTokens, gatesNotRun, parseReply, reviewPrompt, reviewSystem } from './review-reader.js';
+import { estimateTokens, readReply, REVIEW_CALL, REVIEW_MAX_OUTPUT_TOKENS, reviewPrompt, reviewSystem } from './review-reader.js';
 import { REVIEW_PLUGIN_VERSION, REVIEW_RULES_DIGEST } from './review-rules.generated.js';
 import { emptyReviewResult, hasReviewResult, REVIEW_READING_WINDOW_MS, readReceipt, readReviewArchive, writeReviewResult, type ReviewReceipt, type ReviewResult } from './review-store.js';
 
@@ -18,7 +18,7 @@ const UNSET_TENANT = tenantId.parse('01JZ0000000000000000RVW000');
 export const REVIEW_RUNNER_VERTICAL = '@substrat-run/review-runner';
 export const REVIEW_OPERATION = 'review/read';
 
-export const REVIEW_MAX_OUTPUT_TOKENS = 8_000;
+export { REVIEW_MAX_OUTPUT_TOKENS };
 export const REVIEW_MAX_INPUT_TOKENS = 120_000;
 /** Attempts at the model, each exactly one HTTP call: the AI SDK's own retries are off. */
 export const REVIEW_MAX_ATTEMPTS = 3;
@@ -195,7 +195,7 @@ export async function reviewOnce(
   let run: ModelRun;
   try {
     run = await host.run({
-      spec, attribution, system, prompt, maxSteps: 1, maxRetries: 0, temperature: 0, abortSignal: controller.signal,
+      ...REVIEW_CALL, spec, attribution, system, prompt, abortSignal: controller.signal,
       maxOutputTokens: positive(deps.config.maxOutputTokens, REVIEW_MAX_OUTPUT_TOKENS),
     });
   } catch (error) {
@@ -214,14 +214,10 @@ export async function reviewOnce(
   // reset during the ledger call cannot lose a paid reply.
   const toRecord = tenant.success ? { requestId: reviewId, line: run.line } : undefined;
   if (!toRecord) log('review.usage.unrecorded', { reviewId, reason: 'no platform tenant configured' });
-  const reply = parseReply(run.text);
-  const assembled = reply ? assemble(reply, diff.files) : { findings: [], dropped: 0, checkedClean: [], notApplicable: [] };
-  const cut = run.finishReason === 'length';
+  const read = readReply(run, diff.files);
   return finish({
-    ...empty, ...sent, ...assembled,
-    model: { spec, label: run.label }, usage, parseFailures: reply ? 0 : 1,
-    state: cut || !reply ? 'incomplete' : 'completed',
-    reason: cut ? 'output cap' : reply ? null : 'unparseable reply',
+    ...empty, ...sent, ...read.assembled,
+    model: { spec, label: run.label }, usage, parseFailures: read.parseFailures, state: read.state, reason: read.reason,
   }, toRecord);
 }
 

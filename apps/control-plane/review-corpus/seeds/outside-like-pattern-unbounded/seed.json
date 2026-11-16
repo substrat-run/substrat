@@ -1,0 +1,15 @@
+{
+  "id": "outside-like-pattern-unbounded",
+  "kind": "outside",
+  "origin": "#1655: a LIKE pattern built from input with no maximum length. A Durable Object refuses one over 50 bytes, so it fails only on a deployed scope. No checklist item covers it.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "spec/model.ts",
+      "src/module.ts"
+    ]
+  },
+  "expect": []
+}

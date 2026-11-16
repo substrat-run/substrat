@@ -1,0 +1,41 @@
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6..f868c2b 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -485,6 +485,14 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
+     http: { method: 'GET', path: '/lists/search' },
+   },
+ 
++  'todo/find-items': {
++    summary: 'Items on a list whose text contains a phrase',
++    permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
++    input: z.object({ listId: z.string(), q: z.string().min(2) }),
++    output: z.object({ results: z.array(todoEntities.item.fields) }),
++    http: { method: 'GET', path: '/lists/{listId}/find' },
++  },
++
+   'todo/add-item': {
+     summary: 'Add an item to a list',
+     permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..6feb7aa 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -383,6 +383,17 @@ const bound = operationsFor(todoOperations)({
+     return { results, limit, capped: results.length === limit || hits.length === fetch };
+   },
+ 
++  'todo/find-items': async (ctx, input) => {
++    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
++    listOrThrow(ctx, input.listId);
++    const term = `%${input.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
++    const results = ctx.sql.query<ItemRow>(
++      `SELECT * FROM todo_items WHERE list_id = ? AND text LIKE ? ESCAPE '\\' ORDER BY created_at, id`,
++      [input.listId, term],
++    );
++    return { results };
++  },
++
+   'todo/add-item': async (ctx, input) => {
+     assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
+     listOrThrow(ctx, input.listId);

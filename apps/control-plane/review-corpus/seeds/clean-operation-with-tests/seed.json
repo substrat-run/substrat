@@ -1,0 +1,15 @@
+{
+  "id": "clean-operation-with-tests",
+  "kind": "clean",
+  "origin": "The twin of s8-untested-operation: the same operation, with a scenario that covers its success, its refusal and a missing item.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "spec/model.ts",
+      "src/module.ts"
+    ]
+  },
+  "expect": []
+}

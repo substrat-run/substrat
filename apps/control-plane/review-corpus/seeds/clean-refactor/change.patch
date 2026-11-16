@@ -1,0 +1,34 @@
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..520e5f0 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -92,6 +92,11 @@ function itemAndList(ctx: OperationContext, itemId: string): { item: ItemRow; li
+   return { item, list: liveListOrThrow(ctx, item.list_id) };
+ }
+ 
++/** An item as it is now, after a write in this operation. */
++function itemRow(ctx: OperationContext, itemId: string): ItemRow {
++  return ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [itemId])[0]!;
++}
++
+ const escapeHtml = (text: string): string =>
+   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+ 
+@@ -391,7 +396,7 @@ const bound = operationsFor(todoOperations)({
+       'INSERT INTO todo_items (id, list_id, text, done, added_by, created_at) VALUES (?, ?, ?, 0, ?, ?)',
+       [id, input.listId, input.text, ctx.principal, ctx.now()],
+     );
+-    const row = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [id])[0]!;
++    const row = itemRow(ctx, id);
+     ctx.emit({
+       type: 'todo.item-added',
+       schemaVersion: 1,
+@@ -406,7 +411,7 @@ const bound = operationsFor(todoOperations)({
+     const { list } = itemAndList(ctx, input.itemId);
+     assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(list.id)));
+     ctx.sql.exec('UPDATE todo_items SET done = ? WHERE id = ?', [input.done ? 1 : 0, input.itemId]);
+-    const row = ctx.sql.query<ItemRow>('SELECT * FROM todo_items WHERE id = ?', [input.itemId])[0]!;
++    const row = itemRow(ctx, input.itemId);
+     ctx.emit({
+       type: 'todo.item-done-changed',
+       schemaVersion: 1,

@@ -1,0 +1,22 @@
+{
+  "id": "s4-shipped-migration-edited",
+  "kind": "bad",
+  "origin": "#2066: a shipped migration whose SQL changed under the same version. A scope that applied it keeps the old schema; since #2079 it fails closed at the next migration pass.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "engines/absence",
+    "files": [
+      "package.json",
+      "src/index.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S4",
+      "file": "src/index.ts",
+      "from": "half_day        INTEGER NOT NULL DEFAULT 0,",
+      "before": 1,
+      "after": 1
+    }
+  ]
+}
