@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CAPTURE_REFUSALS, scopeId, type ScopeDumpChange, type ScopeDumpChanges, type ScopeDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { scopeNotHeldRefusal, ulid } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { TRANSFER_ATTEMPTS, beginTransfer, transferScope, transferStep, type TransferState, type VerticalClient } from '../src/vertical-client.js';
+import { COPY_MAX_BYTES, TRANSFER_ATTEMPTS, beginTransfer, transferScope, transferStep, type TransferState, type VerticalClient } from '../src/vertical-client.js';
 
 /**
  * #2450: `transferScope` moves a scope a page at a time into the destination's stage, and falls
@@ -377,5 +377,56 @@ describe('transferScope (#2450)', () => {
       expect(step).toMatchObject({ done: { dump: { stageId: restarted.state.stageId }, revision: 'r2' } });
     });
   });
-});
+  describe('the size gate in front of a copy (#2450)', () => {
+    const pages = [[fragment([['a']])], [fragment([['b']])]];
+    /** `pagedSource` that reads its database size as `size` answers it, counting each read. */
+    const sized = (size: () => Promise<number>, revisions?: (n: number, attempt: number) => string) => {
+      const { source, calls } = pagedSource(pages, revisions);
+      let asked = 0;
+      const withSize = Object.assign(source, { databaseSize: async () => { asked++; return size(); } });
+      return { source: withSize as VerticalClient, calls, asked: () => asked };
+    };
 
+    it('refuses a source over the limit with 413 naming its size, before any page is read or staged', async () => {
+      const { source, calls } = sized(async () => 5 * 1024 ** 3);
+      const { dest, staged } = stagingDest();
+      const refused = await transferScope(source, dest, { from, to }, { maxBytes: COPY_MAX_BYTES }).catch((e: unknown) => e);
+      expect(refused).toBeInstanceOf(ControlPlaneError);
+      expect((refused as ControlPlaneError).status).toBe(413);
+      expect((refused as Error).message).toContain(`scope ${from} holds 5.0 GiB (${5 * 1024 ** 3} bytes), over the 4.0 GiB`);
+      expect(calls).toEqual([]);
+      expect(staged).toEqual([]);
+    });
+
+    it('a source within the limit is asked once, however many times the copy restarts', async () => {
+      const { source, asked } = sized(async () => 2_000, (n, attempt) => (attempt === 1 && n === 1 ? 'moved' : `r${attempt}`));
+      const out = await transferScope(source, stagingDest().dest, { from, to }, { maxBytes: 2_000 });
+      expect(out.revision).toBe('r2');
+      expect(asked()).toBe(1);
+    });
+
+    it.each([
+      ['a deployment built before the size read (404)', new ControlPlaneError(404, 'not found')],
+      ['a deployment that cannot read one (501)', new ControlPlaneError(501, 'redeploy it')],
+      ['a deployment that holds nothing for the scope', new ControlPlaneError(409, scopeNotHeldRefusal(from))],
+    ])('a size that is unknown is not refused: %s', async (_, answer) => {
+      const { source } = sized(async () => { throw answer; });
+      const { dest, staged } = stagingDest();
+      await transferScope(source, dest, { from, to }, { maxBytes: 1 });
+      expect(staged).toHaveLength(2);
+    });
+
+    it('a size read that fails any other way fails the copy, and nothing is read', async () => {
+      const { source, calls } = sized(async () => { throw new ControlPlaneError(502, 'unreachable'); });
+      const refused = await transferScope(source, stagingDest().dest, { from, to }, { maxBytes: 1 }).catch((e: unknown) => e);
+      expect((refused as ControlPlaneError).status).toBe(502);
+      expect(calls).toEqual([]);
+    });
+
+    it('a copy without a limit never asks (a backup, a repair of a landed bind)', async () => {
+      const { source, asked } = sized(async () => Number.MAX_SAFE_INTEGER);
+      await transferScope(source, stagingDest().dest, { from, to });
+      expect(asked()).toBe(0);
+    });
+  });
+});

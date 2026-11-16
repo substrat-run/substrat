@@ -2720,6 +2720,15 @@ export interface TransferredScope {
 export const TRANSFER_ATTEMPTS = 3;
 
 /**
+ * The largest scope a copy into a Durable Object starts on (#2450), in bytes as the source's
+ * `databaseSize` reads it (#1524). A staged load keeps its pages at the destination until the
+ * commit that loads them drops them, so while it commits the destination holds the data about
+ * twice, plus the indexes the load rebuilds, under a Durable Object's 10 GB of storage. A larger
+ * scope would copy every page and then fail at that commit, so it is refused before the first.
+ */
+export const COPY_MAX_BYTES = 4 * 1024 ** 3;
+
+/**
  * How many change batches one attempt's catch-up reads before it gives up (#2450): a source that
  * writes faster than the copy drains its log never reaches a final batch, and the copy then starts
  * again like one torn at a quiet moment, and is refused once the attempts are spent.
@@ -2766,7 +2775,7 @@ export type TransferProgress = { done: TransferredScope } | { state: TransferSta
 export type TransferEnds = {
   /** Without the capture verbs (a client assembled from part of one), a copy reads at a quiet moment. */
   source: Pick<VerticalClient, 'exportScope' | 'exportScopeStamped' | 'exportScopePage'> &
-    Partial<Pick<VerticalClient, 'exportScopeChanges' | 'endScopeCapture'>>;
+    Partial<Pick<VerticalClient, 'exportScopeChanges' | 'endScopeCapture' | 'databaseSize'>>;
   dest: Pick<VerticalClient, 'stageScopePage' | 'discardStagedScope'> & Partial<Pick<VerticalClient, 'stageScopeChanges'>>;
 };
 
@@ -2782,6 +2791,46 @@ export interface TransferOptions {
    * must leave its data at the destination, never in this one's memory.
    */
   alwaysStage?: boolean;
+  /**
+   * Refuse (413) a source whose database is larger, before its first page is read (#2450), with
+   * the size in the refusal. For a copy that lands in a Durable Object (`COPY_MAX_BYTES`); a
+   * backup's does not, and a repair of a landed bind must not be refused, so neither passes it.
+   * A source that cannot say (no `databaseSize`, a deployment that predates it, or one that holds
+   * nothing for the scope) is copied as before.
+   */
+  maxBytes?: number;
+}
+
+/** `bytes` for a person: GiB or MiB with one decimal. */
+const sizeLabel = (bytes: number): string =>
+  bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+
+/**
+ * The size gate in front of a copy (#2450): refuse a source over `maxBytes`, naming its size,
+ * instead of letting the copy fail part-way. Unknown is not refused: a deployment built before the
+ * size read answers 404 or 501, and one that holds nothing for the scope has nothing to copy.
+ */
+export async function assertCopyFits(
+  source: TransferEnds['source'],
+  from: ScopeId,
+  maxBytes: number,
+  retry: <T>(run: () => Promise<T>) => Promise<T> = (run) => run(),
+): Promise<void> {
+  if (typeof source.databaseSize !== 'function') return;
+  let bytes: number;
+  try {
+    bytes = await retry(() => source.databaseSize!(from));
+  } catch (e) {
+    if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501)) return;
+    if (isScopeNotHeld(e, from)) return;
+    throw e;
+  }
+  if (bytes <= maxBytes) return;
+  throw new ControlPlaneError(
+    413,
+    `scope ${from} holds ${sizeLabel(bytes)} (${bytes} bytes), over the ${sizeLabel(maxBytes)} (${maxBytes} bytes) a copy ` +
+      'can move: the destination holds the copy twice while it loads it. Nothing was copied (#2450).',
+  );
 }
 
 /**
@@ -2856,6 +2905,8 @@ export async function beginTransfer(
   const stamp = opts.stamp ?? true;
   const from = scope.from;
   const into = scope.to ?? scope.from;
+  // Before anything is read or staged, and once: a restart is the same copy of the same scope.
+  if (opts.maxBytes !== undefined && (opts.attempt ?? 1) === 1) await assertCopyFits(source, from, opts.maxBytes, retry);
   // The stage's id names the capture too, so whoever discards a stage ends the capture beside it.
   const stageId = ulid();
   const ask = opts.capture !== false && typeof source.exportScopeChanges === 'function';

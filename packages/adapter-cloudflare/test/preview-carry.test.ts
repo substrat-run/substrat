@@ -59,6 +59,18 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // and how small their pages are, so a few notes already take many.
   let paged = false;
   const PAGE_BYTES = 400;
+  // #2450: the old single-value limit, shrunk. A dump that crosses one call whole (an export or a
+  // restore of the whole scope) holds at most this many bytes, as one Durable Object RPC holds 32
+  // MiB; a copy of a scope over it moves only a page at a time. Off unless a test sets it.
+  let wholeCap = Infinity;
+  const WHOLE_CAP = 4_000;
+  const capWhole = <T extends ScopeDumpTable[]>(ref: string, sid: ScopeId, tables: T): T => {
+    const bytes = JSON.stringify(tables).length;
+    if (bytes > wholeCap) throw new Error(`a whole dump of ${sid} in '${ref}' (${bytes} bytes) is over the ${wholeCap}-byte cap of one call`);
+    return tables;
+  };
+  /** Every page and every whole dump a script's export served, in order. */
+  const reads: { ref: string; sid: ScopeId; page: string | null | 'whole' }[] = [];
   // #1722: the scripts built before the fenced wipe (`/internal/wipe-carried` answers 404 there),
   // and hooks that hold one request at a chosen step so a test can interleave two of them.
   const unfenced = new Set<string>();
@@ -67,6 +79,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // destination's marker after its export, and the source's again right before its bind (r12).
   const hooks: {
     export?: Hook; page?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook; redact?: Hook;
+    /** A wipe that keeps nothing changed since (an unbound copy's drop, no `protectIfChanged`); `wipe` when unset. */
+    drop?: Hook;
   } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
@@ -97,18 +111,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   const clientFor = (ref: string): VerticalClient => {
     const host = hostOf.get(ref)!;
     return {
-      exportScope: (sid: ScopeId) => relay(() => host.exportScopeLocal(sid)),
+      exportScope: (sid: ScopeId) => relay(async () => {
+        reads.push({ ref, sid, page: 'whole' });
+        return capWhole(ref, sid, await host.exportScopeLocal(sid));
+      }),
       exportScopeStamped: (sid: ScopeId) =>
         relay(async () => {
           await hooks.export?.(ref, sid);
-          if (!unfenced.has(ref)) return host.exportScopeStampedLocal(sid);
-          return { tables: await host.exportScopeLocal(sid), loadStamp: null, revision: null };
+          reads.push({ ref, sid, page: 'whole' });
+          if (!unfenced.has(ref)) {
+            const stamped = await host.exportScopeStampedLocal(sid);
+            return { ...stamped, tables: capWhole(ref, sid, stamped.tables) };
+          }
+          return { tables: capWhole(ref, sid, await host.exportScopeLocal(sid)), loadStamp: null, revision: null };
         }),
-      ...(paged
+      databaseSize: (sid: ScopeId) => relay(() => host.databaseSizeLocal(sid)),
+      // A script built before the fenced wipe (#1722) predates the pages and the stage (#2450) too.
+      ...(paged && !unfenced.has(ref)
         ? {
             exportScopePage: (sid: ScopeId, cursor: string | null, opts?: { stamp?: boolean }) =>
               relay(async () => {
                 await (cursor === null ? hooks.export : hooks.page)?.(ref, sid);
+                reads.push({ ref, sid, page: cursor });
                 return host.exportScopePageLocal(sid, cursor, { ...opts, maxBytes: PAGE_BYTES });
               }),
             stageScopePage: (sid: ScopeId, stageId: string, seq: number, tables: ScopeDumpTable[]) =>
@@ -149,6 +173,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
             await hooks.restored?.(ref, sid);
             return loaded;
           }
+          capWhole(ref, sid, dump);
           const out = await host.restoreScopeLocal(
             sid,
             sabotageV3 && ref === refOf.get(version.v3)
@@ -210,7 +235,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         unfenced.has(ref)
           ? 'unfenced'
           : relay(async () => {
-              await hooks.wipe?.(ref, input.scopeId);
+              await (input.protectIfChanged ? hooks.wipe : hooks.drop ?? hooks.wipe)?.(ref, input.scopeId);
               return {
                 wiped: await host.wipeCarriedLocal(input.scopeId, input.expectLoadStamp, { to: input.carriedTo, at: input.at }, input),
               };
@@ -1910,8 +1935,21 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
     });
 
-    it('on a script that cannot fence the wipe, a rollback the wipe overtook carries its source again', async () => {
-      const p = await fresh('rb-old', 'old data');
+    for (const inPages of [false, true]) it(inPages
+      ? 'and when the source takes many pages, the re-carry reads it a page at a time (#2450)'
+      : 'on a script that cannot fence the wipe, a rollback the wipe overtook carries its source again', async () => {
+      // #2450: the source (v2) answers pages; v1, built before the fence, predates the stage too, so
+      // it takes them merged (the version-skew fallback).
+      const old = inPages ? Array.from({ length: 60 }, (_, i) => `old ${i} `.repeat(8)) : ['old data'];
+      paged = inPages;
+      try {
+        await rollbackOvertaken(old);
+      } finally {
+        paged = false;
+      }
+    });
+    const rollbackOvertaken = async (old: string[]) => {
+      const p = await fresh(`rb-old-${old.length}`, ...old);
       unfenced.add(refOf.get(version.v1)!);
       // A's unconditional wipe of v1 (a tombstone load through the restore verb) is held; R
       // carries v2 into v1 and binds; A's wipe lands just before R looks at what it bound to.
@@ -1932,12 +1970,30 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         aWipe.release();
         await wiped.promise;
       };
+      // A drops its own copy in v2 once the route has left it, which can overtake R's re-carry from
+      // v2 and lose both copies (#3230). Held here until R is over, so this case asserts the
+      // re-carry itself; a paged read takes many turns and would lose that race every time.
+      const rDone = deferred();
+      hooks.drop = async (ref, sid) => {
+        if (ref === refOf.get(version.v2) && sid === p.scopeId) await rDone.promise;
+      };
       const a = bindTo(p.scopeId, 'v2');
       await aWipe.reached;
-      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      try {
+        expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      } finally {
+        rDone.resolve();
+      }
       expect(checked).toBe(true);
       expect((await a).status).toBe(200);
-      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['old data'] });
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: old });
+      if (paged) {
+        // R's carry and the re-carry each read v2 from its first page on, and neither read it whole.
+        const fromV2 = reads.filter((r) => r.ref === refOf.get(version.v2) && r.sid === p.scopeId);
+        expect(fromV2.filter((r) => r.page === null)).toHaveLength(2);
+        expect(fromV2.length).toBeGreaterThan(20);
+        expect(fromV2.filter((r) => r.page === 'whole')).toEqual([]);
+      }
       expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
       expect(await tombstoneIn('v2', p.scopeId)).not.toBeNull();
       // The re-carry is a copy move of its own (review r2). Three loads reached v1, each fenced for
@@ -1953,7 +2009,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       for (const moveId of moves) {
         expect(v1Destinations.find((copy) => copy.moveId === moveId)?.state).toBe('done');
       }
-    });
+    };
   });
 
   describe('a confirmed adopt or rebind gives up its old copy (#1722)', () => {
@@ -1997,16 +2053,18 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     const ledgerByRef = async (sid: ScopeId) =>
       Object.fromEntries((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
         .map((copy) => [copy.scriptRef, copy.state]));
+    /** Adopt `sid` onto its vertical's serving script, or rebind it onto `target`'s. */
+    const moveScope = (move: 'adopt' | 'rebind', sid: ScopeId, target: string) => move === 'adopt'
+      ? api.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: auth })
+      : api.request(`/tenants/${t}/scopes/${sid}/rebind-vertical`, {
+        method: 'POST', headers: auth, body: JSON.stringify({ vertical: target }),
+      });
     for (const move of ['adopt', 'rebind'] as const) {
       it(`a confirmed ${move} leaves the old copy eligible, and the sweep wipes it under the fence`, async () => {
         const { stable, target, targetServing } = await servingSetup();
         const sid = await legacyInstall();
         const to = move === 'adopt' ? stable : targetServing;
-        const res = move === 'adopt'
-          ? await api.request(`/tenants/${t}/scopes/${sid}/adopt-serving`, { method: 'POST', headers: auth })
-          : await api.request(`/tenants/${t}/scopes/${sid}/rebind-vertical`, {
-            method: 'POST', headers: auth, body: JSON.stringify({ vertical: target }),
-          });
+        const res = await moveScope(move, sid, target);
         expect(res.status, await res.clone().text()).toBe(200);
         const from = refOf.get(version.v1)!;
         expect(await ledgerByRef(sid)).toEqual({ [from]: 'eligible', [to]: 'done' });
@@ -2015,6 +2073,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect(await ledgerByRef(sid)).toEqual({ [from]: 'done', [to]: 'done' });
         expect(await tombstoneIn('v1', sid)).not.toBeNull();
         expect(bodiesIn(await hostOf.get(to)!.exportScopeLocal(sid))).toEqual(['kept']);
+      });
+    }
+    for (const move of ['adopt', 'rebind'] as const) {
+      it(`${move === 'adopt' ? 'an adopt' : 'a rebind'} of a scope over the single-value cap moves it a page at a time (#2450)`, async () => {
+        const { stable, target, targetServing } = await servingSetup();
+        const sid = await legacyInstall();
+        const rows = Array.from({ length: 60 }, (_, i) => `${move} ${i} `.repeat(8));
+        await hostFor('v1').restoreScopeLocal(sid, notes(...rows));
+        expect(JSON.stringify(await hostFor('v1').exportScopeLocal(sid)).length).toBeGreaterThan(WHOLE_CAP);
+        const to = move === 'adopt' ? stable : targetServing;
+        paged = true;
+        wholeCap = WHOLE_CAP;
+        let res: Response;
+        try {
+          res = await moveScope(move, sid, target);
+        } finally {
+          paged = false;
+          wholeCap = Infinity;
+        }
+        expect(res.status, await res.clone().text()).toBe(200);
+        expect(bodiesIn(await hostOf.get(to)!.exportScopeLocal(sid))).toEqual(rows);
+        expect(reads.filter((r) => r.sid === sid && r.page !== 'whole').length).toBeGreaterThan(10);
       });
     }
     it('an adopt whose restore fails keeps its source, and the sweep leaves it', async () => {
@@ -2307,6 +2387,72 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       }
       expect(wrote).toBe(true);
       expect(await served(pagedUrl)).toEqual({ ref: refOf.get(version.v3), bodies: after });
+    });
+
+    // The paths a 2026-10-26 status comment still listed as moving a scope in one value. Each moves
+    // a scope over the shrunk single-value cap, so a whole export or restore anywhere on its way
+    // would fail it.
+    describe('scope bind and the pin repair page too, over the single-value cap', () => {
+      beforeAll(() => {
+        wholeCap = WHOLE_CAP;
+      });
+      afterAll(() => {
+        wholeCap = Infinity;
+      });
+      /** A scope in `host` holding `rows`, which crosses one call only in pages. */
+      const plant = async (host: CloudflareScopeHost, sid: ScopeId, rows: string[]) => {
+        await host.restoreScopeLocal(sid, notes(...rows));
+        expect(JSON.stringify(await host.exportScopeLocal(sid)).length).toBeGreaterThan(WHOLE_CAP);
+      };
+      const pagesRead = (sid: ScopeId) => reads.filter((r) => r.sid === sid && r.page !== 'whole').length;
+
+      it('scope bind carries a forked test environment of many pages into the version it binds', async () => {
+        const created = await push('paged-test-env', 'v1', { sourceScopeId: prod, ttlHours: null });
+        expect(created.status).toBe(201);
+        const rows = many(60, 'qa');
+        await plant(hostFor('v1'), created.body.scopeId, rows);
+        expect((await bindTo(created.body.scopeId, 'v2')).status).toBe(200);
+        expect(await served(created.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+        expect(pagesRead(created.body.scopeId)).toBeGreaterThan(10);
+      });
+
+      it('the pin repair carries a pinned preview of many pages off the serving script', async () => {
+        const stable = stableDeploymentRefFor(slug);
+        hostOf.set(stable, hostFor('v3'));
+        const created = await push('paged-pinned', 'v1', { empty: true, ttlHours: null });
+        expect(created.status).toBe(201);
+        const rows = many(60, 'pinned');
+        await dir.admin.setScopeServingRef(staff, t, created.body.scopeId, stable);
+        await plant(hostOf.get(stable)!, created.body.scopeId, rows);
+        const res = await api.request('/previews/repair-serving-pins', { method: 'POST', headers: auth, body: '{}' });
+        const out = (await res.json()) as { repaired: { scopeId: string }[]; failed: { scopeId: string }[] };
+        expect(out.failed.filter((f) => f.scopeId === created.body.scopeId)).toEqual([]);
+        expect(out.repaired.map((r) => r.scopeId)).toContain(created.body.scopeId);
+        expect(await served(created.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+        expect(pagesRead(created.body.scopeId)).toBeGreaterThan(10);
+      });
+
+      it('a scope over the copy limit is refused with its size before any page moves, and stays where it was', async () => {
+        const created = await push('paged-too-big', 'v1', { sourceScopeId: prod, ttlHours: null });
+        expect(created.status).toBe(201);
+        const sid = created.body.scopeId;
+        const rows = many(60, 'big');
+        await plant(hostFor('v1'), sid, rows);
+        const before = reads.length;
+        // The limit, shrunk as a host option: below any scope's database size.
+        const capped = createControlPlaneApi({ ...apiOptions, copyMaxBytes: 1_000 });
+        const res = await capped.request(`/tenants/${t}/scopes/${sid}/version`, {
+          method: 'POST', headers: auth, body: JSON.stringify({ versionId: version.v2 }),
+        });
+        expect(res.status).toBe(413);
+        expect(((await res.json()) as { detail?: string; error?: string }).detail ?? '').toMatch(
+          new RegExp(`scope ${sid} holds [0-9.]+ MiB \\([0-9]+ bytes\\), over the 0\\.0 MiB \\(1000 bytes\\)`),
+        );
+        expect(reads.slice(before).filter((r) => r.sid === sid)).toEqual([]);
+        expect(await dir.admin.getScopeRecord(staff, t, sid)).toMatchObject({ verticalVersionId: version.v1 });
+        expect(await served(created.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+        expect((await tablesOrNone(hostFor('v2'), sid)).map((tb) => tb.name).filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
+      });
     });
   });
 
