@@ -88,6 +88,7 @@ import { projectStorageKeys, withoutProject } from './project-removal.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
 import { collectRelease, RELEASE_DIR } from './release-files.js';
 import { assertPnpmLockfile, checkedExec, checkoutBranch, checkoutRepository, mergeIntoBase, remoteTip, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
+import { ensureRepository, saveBuildSnapshot, snapshotRepositoryName } from './build-snapshots.js';
 import { chatStatus, chatStorageKeys, compareUrl, newChat, openChanges, titleFrom, withChats, withoutChat, type ChatEntry } from './chats.js';
 
 const REPO = '/workspace';
@@ -412,11 +413,14 @@ export class BuilderAgent extends DurableObject<Env> {
 						revision = await saveRepository(sb, await this.#access(entry, 'write', this.#tenant), root, entry.repository.branch);
 						entry.revision = revision;
 					} else {
-						// Local work on a GitHub project is durable in a separate snapshot repo.
-						const snapshot = await this.env.ARTIFACTS.create(`snapshot-${buildId.toLowerCase()}`, { setDefaultBranch: 'main' });
-						const repo: ProjectEntry = { ...entry, repository: { kind: 'artifacts', name: snapshot.name, remote: snapshot.remote, branch: 'main' } };
-						revision = await saveRepository(sb, await this.#access(repo, 'write', this.#tenant), root, 'main');
-						await this.ctx.storage.put(`build-source:${buildId}`, repo.repository);
+						// Local work on a GitHub project is durable in the project's one snapshot
+						// repository, as branch builds/<buildId>, pruned to the newest few (#2952).
+						const name = snapshotRepositoryName(entry.id);
+						await ensureRepository(this.env.ARTIFACTS, name);
+						const repo: ProjectEntry = { ...entry, repository: { kind: 'artifacts', name, remote: '', branch: 'main' } };
+						const saved = await saveBuildSnapshot(sb, await this.#access(repo, 'write', this.#tenant), root, buildId);
+						revision = saved.revision;
+						if (saved.pruneError) console.error('source.snapshot.prune_failed', { buildId, repository: name }, saved.pruneError);
 					}
 				} else {
 					// The request pins a commit, not a moving branch. Fetch that commit explicitly.
@@ -1134,21 +1138,26 @@ export class BuilderAgent extends DurableObject<Env> {
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const entry = (await this.#registry()).projects.find((p) => p.id === id);
 				if (!entry) return refuse(404, `no project ${id}`);
-				const build = this.#builds.occupant(entry.slug);
-				if (build) return busyRefusal(build, Date.now());
+				// Claimed for its vertical, so a build of it waits until the removal is over rather than
+				// pushing to (or recreating) a repository being deleted (#2952).
+				const building = this.#claimStudio(entry);
+				if (building) return building;
 				this.#occupy(`removing project "${entry.name}"`);
 				try {
 					// The repository first: a refused delete leaves the project listed and the
 					// removal retryable, never a repository no entry points at any more. A GitHub
 					// repository is the team's own and is never deleted.
 					if (entry.repository.kind === 'artifacts') await this.env.ARTIFACTS.delete(entry.repository.name);
+					// The submitted snapshots of its builds (#2952). Absent unless it is a GitHub
+					// project that took a CLI push; a missing repository deletes as false.
+					await this.env.ARTIFACTS.delete(snapshotRepositoryName(entry.id));
 					await this.#sandboxPair(entry.id).raw.destroy().catch(() => undefined);
 					await this.ctx.storage.delete(projectStorageKeys(entry.id, entry.chats?.map((c) => c.id)));
 					// Read again: a build of another vertical may have written its entry meanwhile.
 					const next = withoutProject(await this.#registry(), entry.id);
 					if (next) await this.#save(next.registry);
 					return json(200, { removed: entry.id, current: next?.registry.currentId ?? null });
-				} finally { this.#occupant = null; }
+				} finally { this.#releaseStudio(); }
 			}
 			case 'PUT /api/project': {
 				if (this.#busy) return this.#refuseBusy();
