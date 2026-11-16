@@ -41,8 +41,8 @@ made in Stripe under *Developers → API keys → Create restricted key*, with:
 mode, and whether it may register the webhook. A test key (`rk_test_…`) completes checkouts with
 Stripe's test cards and moves no money, which is what you want while building.
 
-The connection is for **that account in that mode**, and stays so. Going live from a test key is a
-new connection: see [Replacing the key](#replacing-the-key).
+The connection is for **that account in that mode**, and stays so. A key for another account, or
+a live key beside a test one, is a connection of its own: see [Replacing the key](#replacing-the-key).
 
 Without *Webhook Endpoints: Write* the connection still works: the platform finds each outcome by
 asking Stripe on its regular pass, minutes later instead of seconds.
@@ -129,11 +129,19 @@ been asked to charge — is about that account and mode, and is meaningless to a
 - **A new key for the same account and mode** (you rolled the key in Stripe, or made a new
   restricted key) replaces the old one, and everything carries on: the webhook, the open
   checkouts, and the guard against charging a `reference` twice.
-- **A key for another account, or for the other mode, is refused**, and nothing is stored: the
-  old key stays in place. The dashboard says which account and mode the key belongs to.
+- **A key for another account, or for the other mode, becomes a second connection**, and the
+  first is left as it is. The dashboard lists each Stripe connection with the account and mode it
+  is for. With the landing above, the platform binds the new connection on every install too, and
+  a scope bound to two Stripe connections is refused a checkout (`409`) until one is gone: which
+  account takes the money is never guessed. Two accounts serving different scopes at once needs a
+  landing your app binds itself (`bind: 'on-request'`).
 
-To move to another account, or **to go live from a test key**, connect it as a new connection:
-disconnect Stripe, then connect again with the new key. Before you do:
+A connection made before Stripe connections were told apart by account (before mid-November 2026)
+holds no account. A key for another account or mode is **refused** there, and nothing is stored;
+disconnect it first, and the next key you connect is kept per account.
+
+To move to another account, or **to go live from a test key**, connect the new key, then disconnect
+the old connection; checkouts are refused between the two. Before you disconnect it:
 
 - **Let open checkouts finish.** Once disconnected, the platform stops reading the old account,
   so a payment made there after that never lands in your app. Check the app's open and settling

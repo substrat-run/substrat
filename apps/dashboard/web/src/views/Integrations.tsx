@@ -659,6 +659,7 @@ function ConnectDialog({
 }) {
   const redirect = provider.connectFlow === 'redirect';
   const fleet = provider.multiAccount === true;
+  const unit = fleetUnit(provider);
   const [manual, setManual] = useState(!redirect);
   const [values, setValues] = useState<Record<string, string>>({});
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
@@ -774,7 +775,7 @@ function ConnectDialog({
   return (
     <Dialog
       open
-      title={rotate ? `Rotate ${provider.name}` : fleet ? `Connect a ${provider.name} company` : `Connect ${provider.name}`}
+      title={rotate ? `Rotate ${provider.name}` : fleet ? `Connect a ${provider.name} ${unit.one}` : `Connect ${provider.name}`}
       confirmLabel={
         redirect && !manual
           ? busy
@@ -807,6 +808,12 @@ function ConnectDialog({
                 Connecting happens at {provider.name}: an administrator of your {provider.name} account approves once,
                 and the credential is sealed in the connection vault — nothing is typed here.
                 {rotate ? ' Re-approving keeps the same connection; every grant on it survives.' : ''}
+              </>
+            ) : fleet ? (
+              <>
+                Checked with {provider.name} before it is stored, then sealed in the connection vault — apps use it,
+                never see it. It is kept per {provider.name} {unit.one}: a credential for a connected {unit.one} replaces
+                its credential and keeps every grant on it, and one for another {unit.one} adds a connection.
               </>
             ) : (
               <>
@@ -937,6 +944,15 @@ function ConnectDialog({
 }
 
 /**
+ * What one connection of a fleet provider is called: a company where a consent round connects it
+ * (Fortnox, #1267), an account where a pasted key does and the platform tells accounts apart by
+ * what the provider says about the key (Stripe, #3211).
+ */
+function fleetUnit(provider: { connectFlow?: 'redirect' | null }): { one: string; many: string } {
+  return provider.connectFlow === 'redirect' ? { one: 'company', many: 'companies' } : { one: 'account', many: 'accounts' };
+}
+
+/**
  * A fleet provider's connections on one app (#1267) — one row per connected company, each
  * addressed by its own id, so Details and Disconnect act on that company and no other.
  */
@@ -1039,13 +1055,14 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
         {view.map((p) => {
           if (p.multiAccount) {
             const n = p.connections.length;
+            const unit = fleetUnit(p);
             const unhealthy = p.connections.filter((c) => c.status !== 'active').length;
             const s: { kind: PillKind; label: string } =
               n === 0
                 ? { kind: 'neutral', label: 'Not connected' }
                 : {
                     kind: unhealthy > 0 ? 'warning' : 'success',
-                    label: `${n} ${n === 1 ? 'company' : 'companies'}${unhealthy > 0 ? ` · ${unhealthy} need${unhealthy === 1 ? 's' : ''} attention` : ''}`,
+                    label: `${n} ${n === 1 ? unit.one : unit.many}${unhealthy > 0 ? ` · ${unhealthy} need${unhealthy === 1 ? 's' : ''} attention` : ''}`,
                   };
             return (
               // Full width: a bureau's fleet is a list, and it grows one client at a time.
@@ -1058,11 +1075,14 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
                   </div>
                   <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{p.description}</div>
                   <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-                    One connection per {p.name} company. Each connect link connects one company; mint another for the next.
+                    {p.connectFlow === 'redirect'
+                      ? `One connection per ${p.name} company. Each connect link connects one company; mint another for the next.`
+                      : `One connection per ${p.name} account. A credential for another account adds one; a credential for a connected account replaces its credential.`}
                   </div>
                   {n === 0 && p.required && (
                     <div style={{ fontSize: 11.5, color: 'var(--status-warning-fg)' }}>
-                      Required by this app — work for a company waits until that company is connected, then delivers.
+                      Required by this app — work for {unit.one === 'company' ? 'a company' : 'an account'} waits until that{' '}
+                      {unit.one} is connected, then delivers.
                     </div>
                   )}
                   <FleetRows
@@ -1072,7 +1092,7 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
                   />
                 </div>
                 <Button variant="secondary" size="sm" onClick={() => setDialog({ provider: p, rotate: false })}>
-                  {n === 0 ? 'Connect a company' : 'Connect another company'}
+                  {n === 0 ? `Connect ${unit.one === 'company' ? 'a company' : 'an account'}` : `Connect another ${unit.one}`}
                 </Button>
               </div>
             );
@@ -1166,9 +1186,9 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
               {disconnect.connection.label}
               {disconnect.connection.externalAccountRef ? ` (${disconnect.connection.externalAccountRef})` : ''} loses its{' '}
               {disconnect.provider.name} connection: the stored credential is deleted and every grant it carried is revoked —
-              this cannot be undone. Every other connected company is unaffected. Deliveries already queued for this
-              company stay queued and resume if it is connected again. Other apps of the same kind share this connection
-              and lose it too.
+              this cannot be undone. Every other connected {fleetUnit(disconnect.provider).one} is unaffected. Deliveries
+              already queued for this {fleetUnit(disconnect.provider).one} stay queued and resume if it is connected again.
+              Other apps of the same kind share this connection and lose it too.
             </>
           ) : (
             'The stored credential is deleted and every grant it carried is revoked — this cannot be undone. Deliveries already queued stay queued and resume if you reconnect. Other apps of the same kind share this connection and lose it too.'

@@ -3485,6 +3485,8 @@ export default {
             },
             // #2100: the provider's own half of the credential (a generated keypair).
             prepareCandidate: (provider) => connectionInspectorsFor(c.env)[provider]?.prepareCandidate,
+            // #3211: a provider keyed on the account its probe names, the same on both doors.
+            accountFromProbe: (provider) => connectionInspectorsFor(c.env)[provider]?.accountFromProbe === true,
             // A vertical-defined provider's standing grants come from its serving declaration.
             declarationOf: servingConnectorDeclaration(c.env, CONNECTION_RELAY_ACTOR),
             // #2732: what a scope's own connection is held to.

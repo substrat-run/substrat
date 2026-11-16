@@ -2868,8 +2868,9 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   // flow with no platform client pair would render a Connect button that 503s.
   connectFlow: spec.connectFlow === 'redirect' && fortnoxConfig(env) !== null ? ('redirect' as const) : null,
   // A connection per external account (#1267): a bureau connects one Fortnox company per
-  // client, so the UI lists a fleet and keeps offering "connect another" instead of rotate.
-  multiAccount: spec.accountRefField !== undefined,
+  // client, so the UI lists a fleet and keeps offering "connect another" instead of rotate. #3211:
+  // a provider keyed on the account its probe names (Stripe) is a fleet the same way.
+  multiAccount: spec.accountRefField !== undefined || spec.accountFromProbe === true,
   // #2343: the detail view offers a send test only for a provider that sends mail.
   sendsMail: spec.sendsMail === true,
 });

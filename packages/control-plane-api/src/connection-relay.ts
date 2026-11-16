@@ -126,6 +126,20 @@ export type VerticalConnectorDeclarationOf = (
   context: { tenantId: TenantId; vertical: string },
 ) => Promise<{ declaration: Pick<VerticalConnectorDeclaration, 'grants'> } | { refused: string }>;
 
+/**
+ * #3211: whether `provider`'s connections are keyed on the account its candidate probe names.
+ *
+ * For a provider whose credential does not say which account it reaches (a Stripe key does not
+ * hold the account id), the caller has no account leg to send, so every paste used to land on the
+ * one unkeyed row and rotate it, even with a key for another account: state written under one
+ * account was then read with another's key. Keyed on the probe, a key for the same account rotates
+ * its connection in place and a key for another account becomes a connection of its own.
+ *
+ * Only for a provider whose probe always names the account and whose connector opens a connection
+ * by it: with two accounts connected, a read that names none throws (`openConnection`).
+ */
+export type ConnectionAccountFromProbe = (provider: string) => boolean;
+
 /** What a preview or a fork is told when it asks to change a connection (#2005). */
 export const PREVIEW_CONNECTIONS_REFUSAL =
   "previews and forks cannot change a tenant's connections: this scope is a preview or a fork";
@@ -145,6 +159,12 @@ export async function relayConnectionUpsert(
   options: {
     probeCandidate?: ConnectionCandidateProbe;
     prepareCandidate?: ConnectionCandidatePreparer;
+    /**
+     * #3211: the providers whose connection is keyed on the account their probe names
+     * ({@link ConnectionAccountFromProbe}). Absent, or false for a provider, keeps the account leg
+     * the caller sends.
+     */
+    accountFromProbe?: ConnectionAccountFromProbe;
     /** Required for a dotted provider: a host without it refuses one. */
     declarationOf?: VerticalConnectorDeclarationOf;
     /**
@@ -226,20 +246,78 @@ export async function relayConnectionUpsert(
     grants = found.declaration.grants;
   }
 
+  const probeOf = (candidate: Record<string, string>) =>
+    options.probeCandidate?.(input.provider, candidate, { tenantId: input.tenantId, vertical, scopeId: input.scopeId });
+  const refuseRefused = (probe: ConnectionProbe | undefined) => {
+    if (probe && !probe.ok && probe.refused) {
+      throw new ConnectionRelayError(probe.error ?? `${input.provider} refused these credentials`, 422, probe);
+    }
+  };
+
+  // #3211: a provider keyed on its probe is asked FIRST, about the credential as the caller sent
+  // it, because the account the probe names is which connection this upsert rotates — and so the
+  // `previous` a preparation is shown. Such a provider's preparation therefore must not change which
+  // account the key reaches (Stripe's only records the account it names). The account is the
+  // provider's word, never the caller's: one the caller names must agree with it. A probe that cannot
+  // say whose account this is stores nothing, unreachable included (#605's "store it unverified"
+  // does not apply): without the account there is no telling a rotation from a new connection.
+  const keyed = options.accountFromProbe?.(input.provider) === true;
+  let probe: ConnectionProbe | undefined;
+  let accountRef = input.externalAccountRef;
+  if (keyed) {
+    probe = await probeOf(input.secret);
+    refuseRefused(probe);
+    if (!probe?.ok) {
+      throw new ConnectionRelayError(
+        `${input.provider} could not be asked which account this credential belongs to, so nothing was stored; ` +
+          `try again in a moment${probe?.error ? ` (${probe.error})` : ''}`,
+        503,
+        probe,
+      );
+    }
+    if (probe.accountRef === null) {
+      throw new ConnectionRelayError(
+        `${input.provider} accepted this credential but did not name its account, so it cannot be told from another ` +
+          "account's credential; nothing was stored",
+        422,
+        probe,
+      );
+    }
+    if (input.externalAccountRef !== undefined && input.externalAccountRef !== probe.accountRef) {
+      throw new ConnectionRelayError(
+        `this credential belongs to ${input.provider} account ${probe.accountRef}, not ${input.externalAccountRef}; nothing was stored`,
+        422,
+        probe,
+      );
+    }
+    accountRef = probe.accountRef;
+  }
+
   // `listConnections` already excludes revoked rows; expired/errored rows are still the
   // live row for this key — rotation is what revives them. The account leg matches
   // exactly (absent matches absent): a multi-account provider's second account is a new
-  // connection, not a rotation of the first. Read before the probe because a provider that
+  // connection, not a rotation of the first. Read before the preparation because a provider that
   // finishes its own credential (#2100) needs the one this upsert would replace. The owner is
   // part of the key (#2732), so a scope rotates only its own and a tenant upsert only the tenant's.
-  const live = (
-    await host.admin.listConnections(actor, {
-      tenantId: input.tenantId,
-      vertical,
-      provider: input.provider,
-      ownerScopeId: owner,
-    })
-  ).filter((c) => c.externalAccountRef === (input.externalAccountRef ?? null));
+  const held = await host.admin.listConnections(actor, {
+    tenantId: input.tenantId,
+    vertical,
+    provider: input.provider,
+    ownerScopeId: owner,
+  });
+  let live = held.filter((c) => c.externalAccountRef === (accountRef ?? null));
+  // #3211: a connection made before its provider keyed on the probe holds no account, and is left
+  // as it is: the upsert rotates it as it always did, and the provider's preparation, shown it as
+  // `previous`, is what refuses a key for another account (Stripe's does). No account's connection
+  // is made beside it, because with both live a read that names no account would find two. It
+  // stops applying once that connection is disconnected; the next paste makes a keyed one.
+  if (keyed && live.length === 0) {
+    const unkeyed = held.filter((c) => c.externalAccountRef === null);
+    if (unkeyed.length > 0) {
+      live = unkeyed;
+      accountRef = undefined;
+    }
+  }
 
   // #2100: the platform's half of the credential, made here — before the probe, so what is
   // probed is exactly what is stored.
@@ -249,7 +327,7 @@ export async function relayConnectionUpsert(
   if (prepare) {
     const previous =
       live.length === 1
-        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, input.externalAccountRef, owner ?? undefined))?.secret
+        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, accountRef, owner ?? undefined))?.secret
         : undefined;
     const prepared = await prepare(input.secret, previous);
     secret = prepared.secret;
@@ -261,14 +339,11 @@ export async function relayConnectionUpsert(
   }
 
   // Ask the provider before touching the store (#605). Deliberately here, ahead of every
-  // write below: a refused rotation must leave the live credential exactly as it was.
-  const probe = await options.probeCandidate?.(input.provider, secret, { tenantId: input.tenantId, vertical, scopeId: input.scopeId });
-  if (probe && !probe.ok && probe.refused) {
-    throw new ConnectionRelayError(
-      probe.error ?? `${input.provider} refused these credentials`,
-      422,
-      probe,
-    );
+  // write below: a refused rotation must leave the live credential exactly as it was. A keyed
+  // provider was asked above, before its account was known.
+  if (!keyed) {
+    probe = await probeOf(secret);
+    refuseRefused(probe);
   }
 
   let id;
@@ -281,7 +356,7 @@ export async function relayConnectionUpsert(
       vertical,
       provider: input.provider,
       label: input.label ?? input.provider,
-      externalAccountRef: input.externalAccountRef,
+      externalAccountRef: accountRef,
       scopes: input.scopes,
       // Whatever the caller supplies, else what the provider's own preparation knows (#2100: a
       // generated certificate's end). Undefined reads "not reported" (connections.md §3.6).

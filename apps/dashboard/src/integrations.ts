@@ -73,6 +73,18 @@ export interface ProviderSpec {
    */
   accountRefField?: string;
   /**
+   * #3211: which account a credential reads is not in the credential but in what the provider says
+   * about it — a Stripe key holds no account id — so the control plane keys the connection on the
+   * account its connect-time probe names (the registration's `accountFromProbe`, on every door a key
+   * comes in by). A key for the same account rotates its connection; a key for another becomes a
+   * second one. Said here too because it is what makes the door list a fleet and offer another
+   * account; `pnpm lint:connector-grants` holds the two equal. Never with `accountRefField`.
+   *
+   * A provider whose probe cannot name the account leaves both unset, and every paste rotates its
+   * one connection in place (Planima: a token is an account of several organizations).
+   */
+  accountFromProbe?: true;
+  /**
    * #2098 — the connection sends mail as the tenant: the platform's email relay routes a
    * message whose `from` is one of its addresses through it. Said on the door because it is
    * part of what the tenant authorizes by connecting. Must agree with the connector's own
@@ -178,7 +190,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // token belongs to one customer ACCOUNT, which may hold several organizations, so no
     // single field names what the credential reads. One connection per app is therefore
     // correct, and a re-paste rotates it in place — which is what a re-paste should do
-    // when there is only ever one.
+    // when there is only ever one. No `accountFromProbe` either (#3211), for the same reason:
+    // its probe names the organizations a token reads, and no one account.
   },
   woocommerce: {
     provider: 'woocommerce',
@@ -196,7 +209,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // Empty for Planima's reason: the records land through the consuming vertical's own
     // operation, and `bindWooCommerceScope` verifies its permission at bind time.
     grants: [],
-    // No `accountRefField`: one store per app, so a re-paste rotates the connection in place.
+    // No `accountRefField`: one store per app, so a re-paste rotates the connection in place. Nor
+    // `accountFromProbe` (#3211): its probe names the store only in a label, and its sweep opens the
+    // one connection a (tenant, vertical) holds.
   },
   stripe: {
     provider: 'stripe',
@@ -211,8 +226,10 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // Empty for WooCommerce's reason: outcomes land through the consuming app's own operation,
     // and `bindStripeScope` verifies its permission at bind time.
     grants: [],
-    // No `accountRefField`: one Stripe account per app, so a re-paste rotates the connection in place,
-    // and the platform refuses one for another account or mode (the connection is pinned to both).
+    // #3211: the key holds no account id, and the probe names the account and mode, so the plane keys
+    // the connection on that: a key for the same account and mode rotates it, a key for another (or a
+    // test key beside a live one) becomes a second connection.
+    accountFromProbe: true,
   },
   bolagsverket: {
     provider: 'bolagsverket',

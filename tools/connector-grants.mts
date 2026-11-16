@@ -72,7 +72,7 @@ if (CONNECTORS.length === 0) {
   fail('connector wiring: no connector registrations to check — refusing to report green', 2);
 }
 
-type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true } | undefined>;
+type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true; accountRefField?: string; accountFromProbe?: true } | undefined>;
 type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector' | 'minted'>;
 type EngineModule = { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } };
 
@@ -150,6 +150,23 @@ function wiringProblems(connectors: readonly Connector[], catalog: Catalog, engi
     }
     // Belt to the type's braces — see the header.
     const inspector = connector.inspector({});
+    // #3211: a provider keyed on the account its probe names is keyed so by the plane, on every door;
+    // the door says it too, because that is what makes it list a fleet and offer another account.
+    // Either alone is a door showing one connection where the plane made two, or offering "another
+    // account" where every paste rotates the one.
+    const keyedByProbe = inspector.accountFromProbe === true;
+    if (keyedByProbe !== (entry.accountFromProbe === true)) {
+      problems.push(
+        keyedByProbe
+          ? `${provider}: the registration keys connections on the account its probe names (\`accountFromProbe\`), ` +
+              `but the dashboard door does not say \`accountFromProbe: true\` — it would show one of the tenant's accounts`
+          : `${provider}: the dashboard door says \`accountFromProbe: true\`, but the registration does not key ` +
+              `connections on its probe — every paste would rotate the one connection`,
+      );
+    }
+    if (entry.accountFromProbe && entry.accountRefField !== undefined) {
+      problems.push(`${provider}: the dashboard door names both \`accountRefField\` and \`accountFromProbe\` — the account comes from one`);
+    }
     for (const half of ['probe', 'probeCandidate'] as const) {
       if (typeof inspector[half] !== 'function') {
         problems.push(
@@ -230,7 +247,8 @@ if (problems.length > 0) {
     `\nAdd the key to the provider's \`grants\` in apps/dashboard/src/integrations.ts, drop it ` +
       `from the connector's declaration if the authority now rides the dispatch (#726), or add ` +
       `the missing entry to \`CONNECTORS\` in apps/control-plane/src/connectors.ts. For mail, make ` +
-      `the door's \`sendsMail\` and the registration's \`mail\` agree. A key reserved to a system ` +
+      `the door's \`sendsMail\` and the registration's \`mail\` agree; for the account, the ` +
+      `door's \`accountFromProbe\` and its inspector's. A key reserved to a system ` +
       `principal comes off both lists: no connection may hold one.`,
   );
   process.exit(1);
@@ -238,6 +256,6 @@ if (problems.length > 0) {
 
 console.log(
   `connector wiring: ${CONNECTORS.length} connector${CONNECTORS.length === 1 ? '' : 's'} checked ` +
-    `— each has a door, a probe, every declared grant the door carries, the same answer on mail, ` +
+    `— each has a door, a probe, every declared grant the door carries, the same answer on mail and on keying by the probed account, ` +
     `no key reserved to a system principal, and no dotted (vertical-defined) slug`,
 );

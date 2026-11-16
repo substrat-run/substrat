@@ -336,7 +336,10 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
 - **Upsert keyed (tenant, vertical, provider, externalAccountRef).** No live connection →
   `createConnection` under a fresh id; one live → `updateConnectionSecret` in place —
   rotation preserves the connection id, and with it every `grantToConnection` tuple. The
-  relay is how the tenant rotates a credential without a support ticket.
+  relay is how the tenant rotates a credential without a support ticket. Where the account leg
+  comes from depends on the provider: a field of the credential that names it (Fortnox's
+  DatabaseNumber, the dashboard door's `accountRefField`), or the account the provider's probe
+  names for a credential that holds none (Stripe, #3211 — see *The account a probe names* below).
 - **A scope can own its connection** (#2732), for a vertical whose spaces each connect one folder
   of a file source.
   - **The store.** The owner is part of the live key (`_substrat_connections.owner_scope_id`, in the
@@ -816,6 +819,42 @@ So the relay now **pre-flights the candidate credential** through the provider's
 
 A provider with no `probeCandidate` registered behaves exactly as before: stored,
 unverified, no gate. The check is available, never assumed.
+
+#### The account a probe names (#3211)
+
+The upsert key's account leg used to come only from the caller, which takes it from a field of the
+pasted credential (`accountRefField`). A Stripe key holds no account id, so every paste landed on
+the one unkeyed row and rotated it — a key for another account included, after which state written
+under one account was read with another's key.
+
+A registration marked `accountFromProbe` is keyed on the account its `probeCandidate` names instead,
+on every door a credential comes in by:
+
+- **The candidate is probed first**, before preparation and before the lookup, because the account
+  decides which connection is replaced (and so which `previous` a `prepareCandidate` is shown). A
+  provider that keys this way must not have its preparation change which account the key reaches.
+- **The probe's `accountRef` is the account.** The same account rotates its connection in place; another
+  becomes a connection of its own. A caller that names an account must name the probe's (`422`).
+- **No account, nothing stored.** A refusal is `422`; a probe that accepts the key and names no account
+  is `422`; an unreachable provider (or none registered) is `503`. The *store it unverified* rule
+  above does not hold here: without the account, a rotation cannot be told from a new connection.
+- **A connection made before stays as it is.** One with no account (`externalAccountRef` null) is still
+  what a paste rotates, while it is live, and the provider's preparation, shown it as `previous`, is
+  what refuses a key for another account (Stripe's does). No keyed connection is made beside it: with
+  both live, a read that names no account would find two. Once it is disconnected, the next paste
+  makes a keyed one. Nothing is backfilled.
+- **The connector opens a connection by its account.** With two accounts, `openConnection` without one
+  throws, so the binding records the account (`accountOnBinding`, as Fortnox's does since #2316) and
+  every open names it. Bindings stay on the connection they were made on. An automatic landing binds the
+  new account's connection on every install as well, and a checkout goes through the one connection
+  bound to the scope, so two bound is a `409` until one is disconnected or unbound: which account takes
+  the money is never guessed. Two accounts serving different scopes need an `on-request` landing.
+- **The door says so too** (`accountFromProbe` on the dashboard's `ProviderSpec`), which makes it list
+  the connections as a fleet; `pnpm lint:connector-grants` holds the door and the registration equal.
+
+Only a provider whose probe always names an account opts in. Planima's cannot (a token is an
+account of several organizations), and WooCommerce's names its store only in a label; both keep one
+connection per (tenant, vertical) that every paste rotates.
 
 #### A deployment that cannot store at all
 
