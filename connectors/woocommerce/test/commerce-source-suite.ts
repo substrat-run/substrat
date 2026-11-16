@@ -42,8 +42,8 @@ export function commerceSourceSuite(provider: string, harness: () => CommerceSou
       const store = await start();
       const landed = store.landed();
       for (const change of landed) expect(commerceChange.safeParse(change).success).toBe(true);
-      const products = landed.filter((c) => c.record === 'product');
-      const orders = landed.filter((c) => c.record === 'order');
+      const products = landed.filter((c) => c.record === 'product' && c.change === 'upsert');
+      const orders = landed.filter((c) => c.record === 'order' && c.change === 'upsert');
       expect(products.length).toBeGreaterThanOrEqual(2);
       expect(orders.length).toBeGreaterThanOrEqual(1);
       expect(products.some((p) => p.variants.length === 1 && p.variants[0]?.variantId === p.productId)).toBe(true);
@@ -57,7 +57,7 @@ export function commerceSourceSuite(provider: string, harness: () => CommerceSou
     it('lands nothing again when nothing changed, and a changed record again under the same id', async () => {
       const store = await start();
       const before = store.landed().length;
-      const simple = store.landed().find((c) => c.record === 'product' && c.variants.length === 1)!;
+      const simple = store.landed().find((c) => c.record === 'product' && c.change === 'upsert' && c.variants.length === 1)!;
       await store.sweep();
       expect(store.landed().length).toBe(before);
 

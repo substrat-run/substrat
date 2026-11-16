@@ -1,4 +1,5 @@
 import {
+  commerceChange,
   connectionActivity,
   connectionId as connectionIdSchema,
   currencyCode,
@@ -27,6 +28,7 @@ import {
 } from './api.js';
 import { modifiedAtOf, orderChange, productChange } from './commerce.js';
 import { storeBaseUrl, StoreUrlError, woocommerceStoreRef } from './store-url.js';
+import { SeenIds, type SeenResource } from './seen.js';
 
 export {
   WooCommerceApi,
@@ -42,6 +44,7 @@ export {
 } from './api.js';
 export { gmtInstant, orderChange, productChange, WooCommerceMappingError } from './commerce.js';
 export { storeBaseUrl, StoreUrlError, woocommerceStoreRef } from './store-url.js';
+export { SEEN_BUCKET_WIDTH } from './seen.js';
 export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
 
 /**
@@ -79,9 +82,39 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  *   itself is in the changed list. A price edited on one variant reaches the scope the next time
  *   the product is saved. Listing every variable product's variations on every pass is the fix, and
  *   its cost is why it is not this slice.
- * - **Deletes.** A deleted product or order is not in a "changed since" list. Only upserts land.
  * - **Stock.** Not in the commerce shape yet (see its "What is NOT here").
  * - **Draft checkouts** (`checkout-draft`): a cart the block checkout saved, not an order. Skipped.
+ *
+ * ## Deletes: a reconcile pass over what was delivered (#3224)
+ *
+ * A deleted record is in no "changed since" list, and a trashed one is left out of every listing
+ * by default, so the walk cannot see either. The connector remembers every id it delivered to a
+ * scope ({@link SeenIds}, in connector state) and, once per {@link WOOCOMMERCE_RECONCILE_EVERY_MS},
+ * asks the store about exactly those ids:
+ *
+ * 1. which are still there — `include=<100 ids>&status=any&_fields=id`, one request per hundred
+ *    delivered ids;
+ * 2. of those missing, which are in the trash — the same with `status=trash`, one request per
+ *    hundred missing (none when nothing is missing);
+ * 3. each still unaccounted for is read on its own, and only WooCommerce's "invalid id" 404 makes
+ *    it `deleted`. Deletes are rare, so this is the one per-id cost, and it is what keeps a store
+ *    that ignores `include` (a plugin) or answers a 404 from no route from reading as "everything
+ *    was deleted". At most {@link WOOCOMMERCE_MAX_PAGE} are read per resource per pass; the next
+ *    pass reconciles again and reads on from the last id read (`lastSync.confirmAfter`), wrapping
+ *    round, so every one is reached however many a store leaves unaccounted.
+ *
+ * Each removal lands through the binding's operation as a `commerceChange` with `change:
+ * 'removed'`, before its id is marked reported, so a failure re-reports it (at least once). An id
+ * that was never delivered is never asked about, so never reported. A trashed id stays watched
+ * and is reported again as `deleted` when the trash is emptied; one restored from the trash arrives
+ * as an upsert, since restoring saves it.
+ *
+ * A binding synced before this tracking existed has cursors but no delivered ids. Its walk starts
+ * over once (`lastSync.tracksDelivered` absent), re-landing the store as upserts — which delivery
+ * already allows — and recording each id as it lands, with progress kept by the ordinary cursor.
+ *
+ * Webhooks (`product.deleted`, `order.deleted`) would only shorten the wait, never replace this
+ * pass, and need an inbound route per store; they are a later slice.
  *
  * ## Where the data lands, and why the connector does not decide
  *
@@ -105,6 +138,9 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  * permission is whatever the consumer's landing operation checks, so it is verified at bind time.
  */
 export const WOOCOMMERCE_CONNECTION_GRANTS = [] as const;
+
+/** How often a binding's delivered ids are reconciled against the store — every fourth 15-minute pass. */
+export const WOOCOMMERCE_RECONCILE_EVERY_MS = 60 * 60 * 1000;
 
 /** How many pages (of {@link WOOCOMMERCE_MAX_PAGE}) of each resource one sync lands at most. */
 export const WOOCOMMERCE_PAGES_PER_SYNC = 10;
@@ -141,7 +177,17 @@ export interface WooCommerceBinding {
     orders: WooCommerceCursor;
     /** False when a pass stopped at its page budget with changes still to read. */
     caughtUp: boolean;
-    landed: { products: number; orders: number };
+    /** Removals reported by this pass's reconcile — absent on a binding synced before #3224. */
+    landed: { products: number; orders: number; removed?: number };
+    /** When the delivered ids were last reconciled in full; absent until the first time. */
+    reconciledAt?: string;
+    /**
+     * Set once the cursors only cover rows whose ids were recorded as delivered (#3224). Absent on a
+     * binding synced before that: its walk starts over once, so every delivered id is recorded.
+     */
+    tracksDelivered?: true;
+    /** Where the capped one-by-one confirmation stopped, per resource; the next pass reads on from there. */
+    confirmAfter?: { products?: number; orders?: number };
   };
 }
 
@@ -152,6 +198,8 @@ export interface WooCommerceConnectorOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Pages per resource per sync; {@link WOOCOMMERCE_PAGES_PER_SYNC} by default. */
   pagesPerSync?: number;
+  /** How often delivered ids are reconciled; {@link WOOCOMMERCE_RECONCILE_EVERY_MS} by default. */
+  reconcileEveryMs?: number;
   /** For the live test's local store only. Never set by the platform. */
   allowLocalHttp?: boolean;
 }
@@ -218,6 +266,8 @@ export interface WooCommerceSyncResult {
   changed: boolean;
   products: number;
   orders: number;
+  /** Products and orders reported removed by this pass's reconcile. */
+  removed: number;
   caughtUp: boolean;
 }
 
@@ -277,6 +327,64 @@ async function walkChanged<T extends { id: number }>(
 }
 
 /**
+ * Reconcile one resource's delivered ids against the store (see "Deletes" above). Each removal is
+ * landed through `land` before `seen` records it. Answers how many it reported, and whether every
+ * missing id was accounted for (false when the per-pass read budget stopped it).
+ */
+async function reconcile(
+  api: WooCommerceApi,
+  seen: SeenIds,
+  /** The last id the previous pass confirmed on its own, when it stopped at the budget. */
+  confirmAfter: number | undefined,
+  land: (id: number, removal: 'trashed' | 'deleted') => Promise<void>,
+): Promise<{ removed: number; complete: boolean; confirmAfter: number | undefined }> {
+  const resource: SeenResource = seen.resource;
+  await seen.loadAll();
+  const tracked = seen.all();
+  const chunks = <T>(xs: readonly T[]): T[][] =>
+    Array.from({ length: Math.ceil(xs.length / WOOCOMMERCE_MAX_PAGE) }, (_, i) => xs.slice(i * WOOCOMMERCE_MAX_PAGE, (i + 1) * WOOCOMMERCE_MAX_PAGE));
+
+  const present = new Set<number>();
+  for (const chunk of chunks(tracked.map((t) => t.id))) for (const id of await api.presentIds(resource, chunk, 'any')) present.add(id);
+  const missing = tracked.filter((t) => !present.has(t.id));
+  const inTrash = new Set<number>();
+  for (const chunk of chunks(missing.map((t) => t.id))) for (const id of await api.presentIds(resource, chunk, 'trash')) inTrash.add(id);
+
+  let removed = 0;
+  // Back from the trash: watched as live again. Restoring saves it, so the walk lands its upsert.
+  for (const t of tracked) if (t.trashed && present.has(t.id)) await seen.live(t.id);
+  const unaccounted: typeof missing = [];
+  for (const t of missing) {
+    if (!inTrash.has(t.id)) unaccounted.push(t);
+    else if (!t.trashed) {
+      await land(t.id, 'trashed');
+      await seen.trashed(t.id);
+      removed += 1;
+    }
+  }
+  // Read on from where the last capped pass stopped, wrapping round: a store whose batch answer
+  // always leaves the same ids out would otherwise spend every pass on the lowest of them.
+  const from = confirmAfter === undefined ? 0 : unaccounted.findIndex((t) => t.id > confirmAfter);
+  const rotated = from <= 0 ? unaccounted : [...unaccounted.slice(from), ...unaccounted.slice(0, from)];
+  const batch = rotated.slice(0, WOOCOMMERCE_MAX_PAGE);
+  for (const t of batch) {
+    const status = await api.statusOf(resource, t.id);
+    if (status === null) {
+      await land(t.id, 'deleted');
+      await seen.forget(t.id);
+      removed += 1;
+    } else if (status === 'trash' && !t.trashed) {
+      await land(t.id, 'trashed');
+      await seen.trashed(t.id);
+      removed += 1;
+    }
+    // Any other status: still at the store, missed by the batch read. Nothing to report.
+  }
+  const complete = unaccounted.length <= WOOCOMMERCE_MAX_PAGE;
+  return { removed, complete, confirmAfter: complete ? undefined : batch.at(-1)?.id };
+}
+
+/**
  * Sync ONE bound scope: read what changed at the store since the cursor, land each product and
  * order through the binding's operation as the connection itself, and move the cursor.
  */
@@ -301,22 +409,47 @@ export async function syncWooCommerceScope(
   const currency = storeCurrency((await api.storeInfo()).settings.currency);
   const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
 
-  const products: Walk = { cursor: binding.lastSync?.products ?? { at: null, landedAt: [] }, landed: 0, caughtUp: false };
-  const orders: Walk = { cursor: binding.lastSync?.orders ?? { at: null, landedAt: [] }, landed: 0, caughtUp: false };
+  // A binding synced before delivered ids were recorded walks the store once more from the start.
+  const tracked = binding.lastSync?.tracksDelivered === true;
+  const start: WooCommerceCursor = { at: null, landedAt: [] };
+  const products: Walk = { cursor: (tracked ? binding.lastSync?.products : undefined) ?? start, landed: 0, caughtUp: false };
+  const orders: Walk = { cursor: (tracked ? binding.lastSync?.orders : undefined) ?? start, landed: 0, caughtUp: false };
+  const lastConfirmAfter = binding.lastSync?.confirmAfter ?? {};
+  let confirmAfter = lastConfirmAfter;
+  const seenProducts = new SeenIds(host.admin, connectionId, binding.scopeId, 'products');
+  const seenOrders = new SeenIds(host.admin, connectionId, binding.scopeId, 'orders');
+  const now = (): number => options.now?.() ?? Date.now();
+  const lastReconciled = binding.lastSync?.reconciledAt;
+  const reconcileDue =
+    lastReconciled === undefined || now() - Date.parse(lastReconciled) >= (options.reconcileEveryMs ?? WOOCOMMERCE_RECONCILE_EVERY_MS);
+  let reconciledAt = lastReconciled;
+  let removed = 0;
   const save = async (): Promise<void> => {
+    // The ids first: a pass that dies between the two writes lands its rows again, which is safe;
+    // the other order could leave a delivered id unrecorded, and its delete unreported.
+    await seenProducts.flush();
+    await seenOrders.flush();
     const caughtUp = products.caughtUp && orders.caughtUp;
     const moved =
-      products.cursor !== binding.lastSync?.products || orders.cursor !== binding.lastSync?.orders;
+      products.cursor !== binding.lastSync?.products ||
+      orders.cursor !== binding.lastSync?.orders ||
+      reconciledAt !== lastReconciled ||
+      confirmAfter !== lastConfirmAfter ||
+      !tracked ||
+      removed > 0;
     // An idle pass writes nothing: most passes find a store nobody has touched.
     if (!moved && binding.lastSync?.caughtUp === caughtUp) return;
     const synced: WooCommerceBinding = {
       ...binding,
       lastSync: {
-        syncedAt: new Date(options.now?.() ?? Date.now()).toISOString(),
+        syncedAt: new Date(now()).toISOString(),
         products: products.cursor,
         orders: orders.cursor,
         caughtUp,
-        landed: { products: products.landed, orders: orders.landed },
+        landed: { products: products.landed, orders: orders.landed, removed },
+        ...(reconciledAt === undefined ? {} : { reconciledAt }),
+        tracksDelivered: true,
+        ...(Object.keys(confirmAfter).length === 0 ? {} : { confirmAfter }),
       },
     };
     await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
@@ -331,6 +464,7 @@ export async function syncWooCommerceScope(
       async (row) => {
         const variations = row.type === 'variable' ? await api.variations(row.id) : [];
         await scope.invoke(binding.operation, productChange(connectionId, currency, row, variations));
+        await seenProducts.live(row.id);
         return true;
       },
       products,
@@ -344,11 +478,32 @@ export async function syncWooCommerceScope(
       async (row) => {
         if (row.status === 'checkout-draft') return false;
         await scope.invoke(binding.operation, orderChange(connectionId, row));
+        await seenOrders.live(row.id);
         return true;
       },
       orders,
       pages,
     );
+    if (reconcileDue) {
+      const startedAt = new Date(now()).toISOString();
+      let complete = true;
+      const next: { products?: number; orders?: number } = {};
+      for (const seen of [seenProducts, seenOrders]) {
+        const r = await reconcile(api, seen, lastConfirmAfter[seen.resource], async (id, removal) => {
+          const key = seen.resource === 'products' ? { record: 'product', productId: String(id) } : { record: 'order', orderId: String(id) };
+          await scope.invoke(
+            binding.operation,
+            commerceChange.parse({ ...key, change: 'removed', connectionId, removal, observedAt: new Date(now()).toISOString() }),
+          );
+        });
+        removed += r.removed;
+        complete &&= r.complete;
+        if (r.confirmAfter !== undefined) next[seen.resource] = r.confirmAfter;
+      }
+      confirmAfter = next;
+      // An incomplete pass leaves the clock where it was, so the next pass reconciles again.
+      if (complete) reconciledAt = startedAt;
+    }
   } catch (err) {
     // Keep what did land, so the next pass resumes after it instead of landing it all again.
     await save();
@@ -357,9 +512,10 @@ export async function syncWooCommerceScope(
   await save();
   return {
     scopeId: binding.scopeId,
-    changed: products.landed + orders.landed > 0,
+    changed: products.landed + orders.landed + removed > 0,
     products: products.landed,
     orders: orders.landed,
+    removed,
     caughtUp: products.caughtUp && orders.caughtUp,
   };
 }
@@ -538,7 +694,8 @@ export async function woocommerceConnectionActivity(host: ScopeHost, connectionI
             ? [
                 { label: 'Products changed up to', value: s.products.at ?? '—' },
                 { label: 'Orders changed up to', value: s.orders.at ?? '—' },
-                { label: 'Last pass landed', value: `${s.landed.products} products, ${s.landed.orders} orders` },
+                { label: 'Last pass landed', value: `${s.landed.products} products, ${s.landed.orders} orders, ${s.landed.removed ?? 0} removals` },
+                { label: 'Deletes reconciled', value: s.reconciledAt ?? '—' },
               ]
             : []),
         ],

@@ -29,6 +29,9 @@ export type MockRow = Record<string, unknown> & { id: number; date_modified_gmt:
  *    boundary is not documented, so the sync is tested against both.
  * 4. **Asking `system_status` for the bare `environment` section counts a remote test** in
  *    `remoteTests`: the real store would call PayPal and woocommerce.com on that request.
+ * 5. **The trash is out of every listing unless asked for** (`status=trash`), as WordPress's `any`
+ *    leaves it out. A row is trashed by setting its `status` to `'trash'`, and deleted by removing
+ *    it from the array; reading a deleted id answers WooCommerce's `…_invalid_id` 404.
  */
 export interface WooCommerceMockOptions {
   storeUrl?: string;
@@ -47,6 +50,8 @@ export interface WooCommerceMockOptions {
   modifiedAfterInclusive?: boolean;
   /** What answers when the address is no WooCommerce store: WordPress without it, or a plain page. */
   notWooCommerce?: 'wordpress' | 'html';
+  /** A store whose plugins drop `include`: the listing answers its first page, as if not asked by id. */
+  ignoreInclude?: boolean;
   /** Answer the first N authenticated requests with 429. */
   rateLimitFirst?: number;
 }
@@ -142,8 +147,22 @@ export class WooCommerceMock {
     }
     const variations = /^\/products\/(\d+)\/variations$/.exec(route);
     if (variations) return this.page(this.variations[Number(variations[1])] ?? [], url);
+    const one = /^\/(products|orders)\/(\d+)$/.exec(route);
+    if (one) {
+      const row = (one[1] === 'products' ? this.products : this.orders).find((r) => r.id === Number(one[2]));
+      if (!row) return wcError(404, `woocommerce_rest_${one[1] === 'products' ? 'product' : 'shop_order'}_invalid_id`, 'Invalid ID.');
+      return respond(200, { id: row.id, status: row.status });
+    }
     if (route === '/products' || route === '/orders') {
-      return this.changed(route === '/products' ? this.products : this.orders, url);
+      const rows = route === '/products' ? this.products : this.orders;
+      const status = url.searchParams.get('status') ?? 'any';
+      const inStatus = rows.filter((r) => (status === 'any' ? r.status !== 'trash' : r.status === status));
+      if (url.searchParams.has('include') && this.options.ignoreInclude) return this.page(inStatus.map((r) => ({ id: r.id })), url);
+      if (url.searchParams.has('include')) {
+        const ids = new Set(url.searchParams.get('include')!.split(',').map(Number));
+        return this.page(inStatus.filter((r) => ids.has(r.id)).map((r) => ({ id: r.id })), url);
+      }
+      return this.changed(inStatus, url);
     }
     return wcError(404, 'rest_no_route', 'No route was found matching the URL and request method.');
   }

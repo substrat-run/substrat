@@ -750,9 +750,10 @@ jobs:
         name: seed the store
         run: |
           docker compose -f connectors/woocommerce/docker/compose.yaml run --rm -T cli sh /seed/seed.sh > "$RUNNER_TEMP/woo.env"
-          # A throwaway key on a throwaway store, masked all the same.
+          # A throwaway key on a throwaway store, masked all the same. Only the key: the seeded
+          # record ids are small numbers, and masking one would blank it out of every log line.
           while IFS='=' read -r name value; do
-            echo "::add-mask::$value"
+            case "$name" in *_KEY|*_SECRET) echo "::add-mask::$value" ;; esac
             echo "$name=$value" >> "$GITHUB_ENV"
           done < "$RUNNER_TEMP/woo.env"
       - if: steps.touched.outputs.run == 'true'

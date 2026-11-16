@@ -313,6 +313,39 @@ export class WooCommerceApi {
     return this.rows(json, resource);
   }
 
+  /**
+   * Which of `ids` (at most {@link WOOCOMMERCE_MAX_PAGE}) the store still holds in `status` —
+   * `any` for every status a listing shows by default (the trash is not one of them), or `trash`.
+   * One request, ids only: the reconcile pass's way of asking about what it delivered (#3224).
+   * Asking by id, rather than walking the whole listing by page, is what keeps a record deleted
+   * mid-walk from shifting another out of sight and being reported gone.
+   */
+  async presentIds(resource: 'products' | 'orders', ids: readonly number[], status: 'any' | 'trash'): Promise<Set<number>> {
+    if (ids.length === 0) return new Set();
+    if (ids.length > WOOCOMMERCE_MAX_PAGE) throw new RangeError(`presentIds takes at most ${WOOCOMMERCE_MAX_PAGE} ids`);
+    const path = `/${resource}?include=${ids.join(',')}&status=${status}&per_page=${WOOCOMMERCE_MAX_PAGE}&_fields=id`;
+    const { json } = await this.get(path, true);
+    const rows = z.array(z.object({ id: z.number().int() })).parse(this.rows(json, `/${resource}?include=…`));
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * One record's status at the store, or `null` when the store says the id does not exist. Only
+   * WooCommerce's own "invalid id" answer (a 404 whose code ends in `_invalid_id`) counts as gone:
+   * a 404 with no route (the plugin switched off) is an error, never a delete.
+   */
+  async statusOf(resource: 'products' | 'orders', id: number): Promise<string | null> {
+    try {
+      const { json } = await this.get(`/${resource}/${id}?_fields=id,status`, true);
+      const status = (json as { status?: unknown } | null)?.status;
+      if (typeof status !== 'string') throw new WooCommerceApiError(`WooCommerce GET /${resource}/${id} answered no status`, 502);
+      return status;
+    } catch (err) {
+      if (err instanceof WooCommerceApiError && err.status === 404 && err.code !== null && err.code.endsWith('_invalid_id')) return null;
+      throw err;
+    }
+  }
+
   /** Every variation of a variable product. A product's variations are few; this walks pages by number. */
   async variations(productId: number): Promise<WcVariation[]> {
     const rows: WcVariation[] = [];

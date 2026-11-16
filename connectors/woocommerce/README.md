@@ -16,6 +16,8 @@ Full documentation: **[substrat.net/connectors/woocommerce](https://substrat.net
 - **Poll-only and read-only.** Every call is a `GET`; the key needs Read permission only.
 - **A keyset walk over "changed since"**, per resource, so a product saved mid-walk cannot push
   another out of sight. Correct whether `modified_after` includes its boundary or not.
+- **Deletes by reconcile**: once an hour it asks the store about the ids it delivered and reports
+  each trashed or deleted one through the same landing operation (`change: 'removed'`).
 - **Host code**, never module code. The store URL is tenant input and is judged before it is
   called (`src/store-url.ts`).
 

@@ -24,6 +24,10 @@ import { currencyCode } from '@substrat-run/contracts';
  * 2. `system_status` with nested `_fields` answers the four leaves the probe reads.
  * 3. `orderby=modified&order=asc` with `modified_after` and `dates_are_gmt` is accepted and filters.
  * 4. The sent shapes map: every product and order on the first page survives the mapping.
+ * 5. Asked by id (`include`), a store leaves the trash out of `status=any` and answers it under
+ *    `status=trash`, and reading a deleted id answers the `…_invalid_id` 404 — the three answers
+ *    the reconcile pass tells a trashed record from a deleted one by (#3224). Needs the seeded ids
+ *    `docker/seed.sh` prints; skipped against a store that has none.
  */
 const env = process.env;
 const secret =
@@ -31,6 +35,13 @@ const secret =
     ? { storeUrl: env.WOOCOMMERCE_STORE_URL, consumerKey: env.WOOCOMMERCE_CONSUMER_KEY, consumerSecret: env.WOOCOMMERCE_CONSUMER_SECRET }
     : null;
 const allowLocalHttp = env.WOOCOMMERCE_ALLOW_LOCAL_HTTP === '1';
+const removed =
+  env.WOOCOMMERCE_TRASHED_PRODUCT && env.WOOCOMMERCE_DELETED_PRODUCT && env.WOOCOMMERCE_TRASHED_ORDER && env.WOOCOMMERCE_DELETED_ORDER
+    ? {
+        products: { trashed: Number(env.WOOCOMMERCE_TRASHED_PRODUCT), deleted: Number(env.WOOCOMMERCE_DELETED_PRODUCT) },
+        orders: { trashed: Number(env.WOOCOMMERCE_TRASHED_ORDER), deleted: Number(env.WOOCOMMERCE_DELETED_ORDER) },
+      }
+    : null;
 
 const connection = (): ConnectorConnection => ({
   id: connectionId.parse('00000000000000000000000000'),
@@ -75,4 +86,19 @@ describe.skipIf(secret === null)('woocommerce connector — live', () => {
     expect(after.filter((p) => p.date_modified_gmt! > last.date_modified_gmt!)).toEqual([]);
     console.log(`woocommerce: modified_after ${last.date_modified_gmt} answered ${after.length} row(s) (1 = inclusive, 0 = exclusive)`);
   });
+
+  it.skipIf(removed === null).each(['products', 'orders'] as const)(
+    'tells %s in the trash from those deleted for good, asked by id',
+    async (resource) => {
+      const client = api();
+      const { trashed, deleted } = removed![resource];
+      const live = (await client.changedPage(resource, null, 1)).map((r) => (r as { id: number }).id).slice(0, 5);
+      expect(live.length).toBeGreaterThan(0);
+      expect(await client.presentIds(resource, [...live, trashed, deleted], 'any')).toEqual(new Set(live));
+      expect(await client.presentIds(resource, [...live, trashed, deleted], 'trash')).toEqual(new Set([trashed]));
+      expect(await client.statusOf(resource, trashed)).toBe('trash');
+      expect(await client.statusOf(resource, deleted)).toBeNull();
+      expect(await client.statusOf(resource, live[0]!)).not.toBeNull();
+    },
+  );
 });
