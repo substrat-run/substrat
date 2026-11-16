@@ -1169,7 +1169,7 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: OWNER_ROLE_KEY,
   onProvision: async (env, b) => {
     const node = { tenantId: b.tenantId, scopeId: b.scopeId };
-    await identityDo(env, node).setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
+    const seat = await identityDo(env, node).setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
     // The desk's widget, assistant and relay accounts. Idempotent, and done here rather
     // than lazily on first use: a principal minted on a request path is a principal
     // minted by whoever got there first.
@@ -1185,6 +1185,8 @@ mountPlatformSurface<Env>(app, {
     // issuer that keeps no index. It never throws.
     const identity = (await instanceConfig(env, node)).identity;
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
+    // #3202: the seat's word on a reserved address, which the provision route checks.
+    return seat;
   },
   onDeleteScope: async (env, s, tenantId) => {
     // A reaped desk's alarm must never wake it again.

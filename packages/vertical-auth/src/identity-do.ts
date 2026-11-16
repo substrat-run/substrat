@@ -15,6 +15,7 @@ import {
   recordSiblingOwnerSeat,
   recordAddressedOwnerSeat,
   claimOwnerByAddress as claimOwnerByAddressRow,
+  forgetOwnerAddress,
   ownerOfRecord as ownerOfRecordRow,
   needsSetup as needsSetupRow,
   ownerSeat as ownerSeatRow,
@@ -144,9 +145,14 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return config;
   }
 
-  /** Remove a reaped scope's delivered settings from this tenant's shared directory. */
+  /**
+   * Remove a reaped scope's delivered settings from this tenant's shared directory, and the address
+   * its owner seat was reserved for (#3202), claimed or not: every vertical's `onDeleteScope` calls
+   * this, so a person's address goes with the scope it was kept for without each one remembering to.
+   */
   async deleteScopeConfig(scopeId: string): Promise<void> {
     this.ctx.storage.sql.exec('DELETE FROM scope_config WHERE scope_id = ?', scopeId);
+    forgetOwnerAddress(this.registrySql, scopeId);
   }
 
   /**
@@ -214,11 +220,28 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * `ownerEmail` is the provision body's too, present when a manager provisioned this tenant for
    * the person who asked (`provision-tenant`, #3202): the seat opens no window and is reserved for
    * a sign-in whose issuer verified that address (`recordAddressedOwnerSeat`).
+   *
+   * The answer is what an `onProvision` hook returns to the provision route: `ownerAddressReserved`
+   * is true only when the seat IS reserved for `ownerEmail`, and the route refuses a provision that
+   * named an address without it, so a hook that drops the address cannot report success with a
+   * first-sign-in window open. Both `parentScopeId` and `ownerEmail` is not a request any caller
+   * makes; the sibling seat is recorded, and the address reported not reserved.
    */
-  async setPendingOwner(scopeId: string, principal: string, parentScopeId?: string, ownerEmail?: string): Promise<void> {
-    if (parentScopeId) recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
-    else if (ownerEmail) recordAddressedOwnerSeat(this.registrySql, scopeId, principal, ownerEmail, Date.now());
-    else recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
+  async setPendingOwner(
+    scopeId: string,
+    principal: string,
+    parentScopeId?: string,
+    ownerEmail?: string,
+  ): Promise<{ ownerAddressReserved: boolean }> {
+    if (parentScopeId) {
+      recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
+      return { ownerAddressReserved: false };
+    }
+    if (ownerEmail) {
+      return { ownerAddressReserved: recordAddressedOwnerSeat(this.registrySql, scopeId, principal, ownerEmail, Date.now()) };
+    }
+    recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
+    return { ownerAddressReserved: false };
   }
 
   /**
@@ -474,7 +497,12 @@ export type IdentityStub = {
   forgetSite(scopeId: string): Promise<void>;
   listSites(): Promise<SiteRow[]>;
   resolveSiteScope(slug: string): Promise<string | null>;
-  setPendingOwner(scopeId: string, principal: string, parentScopeId?: string, ownerEmail?: string): Promise<void>;
+  setPendingOwner(
+    scopeId: string,
+    principal: string,
+    parentScopeId?: string,
+    ownerEmail?: string,
+  ): Promise<{ ownerAddressReserved: boolean }>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   transferOwner(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransfer>;
   completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;

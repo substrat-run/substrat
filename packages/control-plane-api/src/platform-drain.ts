@@ -1140,19 +1140,36 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       // A refusal from the vertical is transient (`pending`), as is anything else thrown here.
       step = `provisioning its '${payload.instance.vertical}' instance`;
       // #1674: a re-drain reuses the proposed ids, so this can re-seat a wiped, switched-off scope.
-      await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
-        vertical.provisionInstance({
-          tenantId,
-          scopeId,
-          owner: principalIdSchema.parse(payload.instance.owner),
-          ...(payload.instance.ownerEmail ? { ownerEmail: payload.instance.ownerEmail } : {}),
-          slug: payload.instance.slug,
-          name: payload.instance.name,
-          entitlements,
-          ...(tenantStores.length ? { tenantStores } : {}),
-          ...carry,
-        }),
-      );
+      const ownerEmail = payload.instance.ownerEmail;
+      let provisioned;
+      try {
+        provisioned = await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
+          vertical.provisionInstance({
+            tenantId,
+            scopeId,
+            owner: principalIdSchema.parse(payload.instance.owner),
+            ...(ownerEmail ? { ownerEmail } : {}),
+            slug: payload.instance.slug,
+            name: payload.instance.name,
+            entitlements,
+            ...(tenantStores.length ? { tenantStores } : {}),
+            ...carry,
+          }),
+        );
+      } catch (e) {
+        // #3202: 501 is a deployment saying it cannot reserve the seat for an address. No retry
+        // changes that, so it settles terminal, and the scope is never activated.
+        if (ownerEmail && e instanceof ControlPlaneError && e.status === 501) {
+          return { status: 'failed', result: { tenantId, scopeId }, error: ownerSeatNotReserved(payload.instance.vertical) };
+        }
+        throw e;
+      }
+      // #3202: the requester was promised a tenant nobody else can take. A deployment that predates
+      // the field strips it and opens a first-sign-in window instead, answering 201 all the same, so
+      // only its explicit word counts: without it the request fails and the scope stays inactive.
+      if (ownerEmail && provisioned.ownerAddressReserved !== true) {
+        return { status: 'failed', result: { tenantId, scopeId }, error: ownerSeatNotReserved(payload.instance.vertical) };
+      }
       if (payload.config && Object.keys(payload.config).length) {
         step = `configuring its '${payload.instance.vertical}' instance`;
         try {
@@ -1182,6 +1199,11 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     return { status: 'done', result: { tenantId, scopeId, hostname } };
   };
 }
+
+/** The refusal a manager reads when the target vertical cannot reserve the owner seat (#3202). */
+const ownerSeatNotReserved = (vertical: string): string =>
+  `the '${vertical}' deployment did not reserve the owner seat for instance.ownerEmail — ` +
+  'it predates the field or its provision hook drops it, so the tenant was not activated';
 
 /**
  * Bind a managed tenant's default hostname (#3202): `<tenant>-<vertical>.global.<domain>`, the

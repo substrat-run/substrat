@@ -78,8 +78,11 @@ export const OWNER_SEAT_DDL: readonly string[] = [
   // `to`, which must not revoke anybody.
   `CREATE TABLE IF NOT EXISTS owner_transfer (scope_id TEXT PRIMARY KEY, prev_principal TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL)`,
   // The address a pending seat is reserved for (#3202): a sign-in whose issuer verified it claims
-  // the seat. Consumed with `pending_owner`, by whichever claim binds the seat first.
-  `CREATE TABLE IF NOT EXISTS owner_address (scope_id TEXT PRIMARY KEY, email TEXT NOT NULL)`,
+  // the seat. A person's address, so it is kept no longer than it has a use: whichever claim binds
+  // the seat first clears `email` (the row stays, NULL, to say the seat WAS reserved, so a re-run
+  // of the provision still reports the reservation honoured), and deleting the scope deletes the
+  // row (`forgetOwnerAddress`).
+  `CREATE TABLE IF NOT EXISTS owner_address (scope_id TEXT PRIMARY KEY, email TEXT)`,
 ];
 
 /**
@@ -175,6 +178,12 @@ export function recordSiblingOwnerSeat(
  * hostname first — and only a sign-in whose issuer verified `email` claims it
  * (`claimOwnerByAddress`). A claim link still binds it, as for any pending seat. First write wins,
  * as in `recordOwnerSeat`, so a re-run naming another address changes nothing.
+ *
+ * Answers whether the seat IS reserved for `email`: true when this call reserved it, and on a
+ * re-run when it was reserved for that address (or for an address since claimed). False when the
+ * seat was recorded some other way first — a first-sign-in window, a sibling's seat, or another
+ * address — which the provision route reports as the reservation NOT honoured, so the platform
+ * fails the request rather than calling a tenant with an open window the requester's.
  */
 export function recordAddressedOwnerSeat(
   sql: RegistrySql,
@@ -182,11 +191,34 @@ export function recordAddressedOwnerSeat(
   principal: string,
   email: string,
   now: number,
-): void {
-  if (ownerOfRecord(sql, scopeId) !== null) return;
+): boolean {
+  if (ownerOfRecord(sql, scopeId) !== null) {
+    const reserved = reservedAddress(sql, scopeId);
+    return reserved !== undefined && (reserved === null || addressAdmits(reserved, email));
+  }
   sql.exec('INSERT INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
   sql.exec('INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)', scopeId, principal, now);
   sql.exec('INSERT OR REPLACE INTO owner_address (scope_id, email) VALUES (?, ?)', scopeId, email);
+  return true;
+}
+
+/**
+ * The address a seat is reserved for: undefined when it never was, null when it was and a claim
+ * has since bound it (the address itself is cleared then).
+ */
+function reservedAddress(sql: RegistrySql, scopeId: string): string | null | undefined {
+  const row = [...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', scopeId)][0] as
+    | { email: string | null }
+    | undefined;
+  return row === undefined ? undefined : row.email;
+}
+
+/**
+ * Drop a scope's address reservation, claimed or not (#3202): the scope is being deleted, and a
+ * person's address must not outlive the seat it was kept for.
+ */
+export function forgetOwnerAddress(sql: RegistrySql, scopeId: string): void {
+  sql.exec('DELETE FROM owner_address WHERE scope_id = ?', scopeId);
 }
 
 /**
@@ -207,10 +239,9 @@ export function claimOwnerByAddress(
   if (verifiedEmail === null) return null;
   const pending = pendingRow(sql, scopeId);
   if (!pending) return null;
-  const reserved = [...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', scopeId)][0] as
-    | { email: string }
-    | undefined;
-  if (!reserved || !addressAdmits(reserved.email, verifiedEmail)) return null;
+  const reserved = reservedAddress(sql, scopeId);
+  // `addressAdmits(null, …)` admits anyone (a bearer invite), so a cleared address is refused here.
+  if (typeof reserved !== 'string' || !addressAdmits(reserved, verifiedEmail)) return null;
   return bindSeat(sql, scopeId, sub, pending.principal);
 }
 
@@ -382,7 +413,8 @@ function bindSeat(sql: RegistrySql, scopeId: string, sub: string, principal: str
   sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
   sql.exec('DELETE FROM pending_owner WHERE scope_id = ?', scopeId);
   sql.exec('DELETE FROM owner_claim_capability WHERE scope_id = ?', scopeId);
-  sql.exec('DELETE FROM owner_address WHERE scope_id = ?', scopeId);
+  // The reservation is spent: the address goes, and the row stays to say the seat was reserved.
+  sql.exec('UPDATE owner_address SET email = NULL WHERE scope_id = ?', scopeId);
   return principal;
 }
 

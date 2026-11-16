@@ -684,10 +684,12 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     platform: {
       onProvision: async (env, b) => {
         const directory = deps.directory(env, b);
-        await directory.setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
+        // #3202: what the seat answers about a reserved address is the route's to check.
+        const seat = await directory.setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
         // The places repair (#1670): a no-op before an issuer is delivered, and it never throws.
         const { identity } = await wiring(env, b);
         await reportScopeMembers(directory, placesReporter({ identity }), b.scopeId);
+        return seat;
       },
       onConfigure: (env, b) => deps.directory(env, b).setScopeConfig(b.scopeId, b.entries),
       onReadPreviewConfig: (env, b) => deps.directory(env, b).getScopeConfig(b.scopeId),

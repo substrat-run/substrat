@@ -66,6 +66,12 @@ first-sign-in window: only a sign-in whose issuer verified that address claims i
 claim link from the dashboard still works. Without `ownerEmail`, whoever signs in first
 in the 15 minutes after provisioning takes the seat.
 
+The vertical you provision has to support this. Its `onProvision` hook passes `ownerEmail`
+on to `setPendingOwner` and returns what that answers. If the vertical cannot reserve the
+seat for the address, the request fails and the new scope is never activated. You do not
+get a tenant that anyone could claim. The address is kept only until the seat is claimed
+or the scope is deleted.
+
 The platform gives each created tenant the address `<tenant-slug>-<vertical>.global.substrat.run`.
 If another app already holds that name, it appends the last six characters of the scope's
 id. The request's result in the intent journal records the address as `hostname`.

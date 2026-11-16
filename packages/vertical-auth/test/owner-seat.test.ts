@@ -9,6 +9,7 @@ import {
   recordSiblingOwnerSeat,
   recordAddressedOwnerSeat,
   claimOwnerByAddress,
+  forgetOwnerAddress,
   ownerOfRecord,
   needsSetup,
   ownerSeat,
@@ -156,10 +157,12 @@ describe('owner seat', () => {
   });
 
   it("a seat reserved for an address (#3202) opens no window, and only that verified address claims it", () => {
-    recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'Founder@Example.com', T0);
-    // A re-run naming someone else changes nothing, and neither does a plain re-provision.
-    recordAddressedOwnerSeat(sql, SCOPE, '01PRINCIPALOTHER', 'stranger@example.com', T0 + MIN);
+    expect(recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'Founder@Example.com', T0)).toBe(true);
+    // A re-run naming someone else changes nothing and reports the seat NOT reserved for them, and
+    // neither does a plain re-provision; the same address re-run is still reserved.
+    expect(recordAddressedOwnerSeat(sql, SCOPE, '01PRINCIPALOTHER', 'stranger@example.com', T0 + MIN)).toBe(false);
     recordOwnerSeat(sql, SCOPE, OWNER, T0 + MIN);
+    expect(recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0 + MIN)).toBe(true);
     expect(ownerSeat(sql, SCOPE, T0 + MIN)).toMatchObject({ state: 'unclaimed', owner: OWNER, firstSignIn: { open: false } });
 
     // Inside what would have been the window, a stranger's plain sign-in takes nothing.
@@ -170,15 +173,31 @@ describe('owner seat', () => {
     expect(claimOwnerByAddress(sql, SCOPE, 'sub-founder', ' founder@example.com')).toBe(OWNER);
     expect(ownerSeat(sql, SCOPE, T0 + 3 * MIN)).toMatchObject({ state: 'claimed', owner: OWNER });
     expect(resolvePrincipal(sql, SCOPE, 'sub-founder', T0 + 3 * MIN)).toBe(OWNER);
-    // Consumed: a second login with the same address is bound to nobody.
+    // Consumed: a second login with the same address is bound to nobody, and the address is gone,
+    // while a re-run of the provision still reads the seat as reserved.
     expect(claimOwnerByAddress(sql, SCOPE, 'sub-founder-2', 'founder@example.com')).toBeNull();
+    expect([...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', SCOPE)]).toEqual([{ email: null }]);
+    expect(recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0 + 4 * MIN)).toBe(true);
+  });
+
+  it('a seat first recorded with a window is not reported reserved for an address (#3202)', () => {
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+    expect(recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0)).toBe(false);
+    expect(ownerSeat(sql, SCOPE, T0)).toMatchObject({ firstSignIn: { open: true } });
+  });
+
+  it('deleting the scope forgets an unclaimed reservation and its address (#3202)', () => {
+    recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0);
+    forgetOwnerAddress(sql, SCOPE);
+    expect([...sql.exec('SELECT 1 FROM owner_address WHERE scope_id = ?', SCOPE)]).toEqual([]);
+    expect(claimOwnerByAddress(sql, SCOPE, 'sub-founder', 'founder@example.com')).toBeNull();
   });
 
   it('a claim link still binds a seat reserved for an address, and consumes the reservation', () => {
     recordAddressedOwnerSeat(sql, SCOPE, OWNER, 'founder@example.com', T0);
     claimLink(sql, SCOPE, '01CAPABILITY1', T0);
     expect(claimOwnerByCapability(sql, SCOPE, 'sub-installer', '01CAPABILITY1', OWNER, T0 + MIN)).toBe(OWNER);
-    expect([...sql.exec('SELECT 1 FROM owner_address WHERE scope_id = ?', SCOPE)]).toEqual([]);
+    expect([...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', SCOPE)]).toEqual([{ email: null }]);
     expect(claimOwnerByAddress(sql, SCOPE, 'sub-founder', 'founder@example.com')).toBeNull();
   });
 

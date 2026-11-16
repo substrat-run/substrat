@@ -308,7 +308,7 @@ mountPlatformSurface<Env>(app, {
   // reviewed registry (`permissions.entityGrants`, declared `bootstrap`) and tops each employee up,
   // so a key added to it reaches the employees linked before the release that added it.
   onProvision: async (env, b) => {
-    await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
+    const seat = await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
     // `/internal/reconcile`, which is how a scope provisioned before the sweeper existed
     // joins. Meridian is a listed vertical, so a promote moves none of its installs'
@@ -322,6 +322,8 @@ mountPlatformSurface<Env>(app, {
     const node = { tenantId: b.tenantId, scopeId: b.scopeId };
     const { identity } = await authWiringFor(env, node);
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
+    // #3202: the seat's word on a reserved address, which the provision route checks.
+    return seat;
   },
   // A reaped scope's alarm must never wake it again.
   onDeleteScope: async (env, s, tenantId) => {

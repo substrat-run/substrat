@@ -1394,6 +1394,31 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(hooked).toBe(OWNER);
   });
 
+  it('a provision naming ownerEmail (#3202) is refused unless the hook reports the seat reserved for it', async () => {
+    type Hook = NonNullable<Parameters<typeof mountPlatformSurface<Env>>[1]['onProvision']>;
+    const provision = (host: ReturnType<typeof fakeHost>, onProvision?: Hook) =>
+      appWith(host, onProvision ? { onProvision } : {}).request(
+        '/internal/provision',
+        {
+          method: 'POST',
+          headers: authed({ 'content-type': 'application/json' }),
+          body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, owner: OWNER, ownerEmail: 'founder@example.com' }),
+        },
+        ENV,
+      );
+    // A hook that drops the address (and so opens a first-sign-in window) is not a success.
+    const dropped = await provision(fakeHost(), async () => {});
+    expect(dropped.status).toBe(501);
+    // One that reserved it says so, and the answer carries its word to the platform.
+    const reserved = await provision(fakeHost(), async () => ({ ownerAddressReserved: true }));
+    expect(reserved.status).toBe(201);
+    expect(await reserved.json()).toMatchObject({ ownerAddressReserved: true });
+    // With no hook nothing can reserve it, so nothing is written.
+    const bare = fakeHost();
+    expect((await provision(bare)).status).toBe(501);
+    expect(bare.calls).not.toContain('provisionScopeLocal');
+  });
+
   it('provision and reconcile hand the delivered connection grants to the host (#592)', async () => {
     const seen: unknown[] = [];
     const host = fakeHost({
