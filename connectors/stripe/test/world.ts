@@ -27,6 +27,7 @@ import {
   createStripeCheckout,
   handleStripeCallback,
   prepareStripeCandidate,
+  probeStripeConnection,
   sweepStripe,
   type StripeConnectorOptions,
 } from '../src/index.js';
@@ -41,7 +42,16 @@ export const CALLBACK_BASE = 'https://cp.example.com';
  * vertical's landing operation that records what it was handed. The clock is the test's, shared by
  * the connector and the mock, so a webhook's timestamp and the tolerance it is judged by agree.
  */
-export async function world(mock: StripeMock, opts: { clock?: { ms: number }; callbackBase?: string | null; fetch?: FetchLike } = {}) {
+export async function world(
+  mock: StripeMock,
+  opts: {
+    clock?: { ms: number };
+    callbackBase?: string | null;
+    fetch?: FetchLike;
+    /** #3211: keyed on its account, as the platform makes a Stripe connection; absent, one made before. */
+    keyed?: true;
+  } = {},
+) {
   const fetch = opts.fetch ?? mock.fetch;
   const dir = mkdtempSync(join(tmpdir(), 'substrat-stripe-'));
   const landed: PaymentChange[] = [];
@@ -74,14 +84,23 @@ export async function world(mock: StripeMock, opts: { clock?: { ms: number }; ca
   await host.admin.grantEntitlement(staff, t, 'shop');
   await host.provisionScope(staff, { tenantId: t, scopeId: s, jurisdiction: 'eu', vertical: 'shop' });
   await host.admin.activateScope(staff, t, s);
-  await host.admin.createConnection(staff, { id: connId, tenantId: t, vertical: 'shop', provider: 'stripe', label: 'Acme Stripe', secret: mock.secret });
+  const keyedOn = (m: StripeMock) => (opts.keyed ? m.secret.account : null);
+  await host.admin.createConnection(staff, {
+    id: connId,
+    tenantId: t,
+    vertical: 'shop',
+    provider: 'stripe',
+    label: 'Acme Stripe',
+    secret: mock.secret,
+    ...(opts.keyed ? { externalAccountRef: mock.secret.account } : {}),
+  });
   await host.admin.grantToConnection(staff, { connectionId: connId, permission: RECORD, node: { tenantId: t, scopeId: s }, grantedBy: staff });
 
   const clock = opts.clock ?? { ms: Date.parse('2026-11-15T10:00:00Z') };
   mock.useClock(() => clock.ms);
   const callbackBase = opts.callbackBase === null ? undefined : (opts.callbackBase ?? CALLBACK_BASE);
   const options: StripeConnectorOptions = { fetch, now: () => clock.ms, sleep: async () => {}, ...(callbackBase ? { callbackBase } : {}) };
-  const connection = { id: connId, tenantId: t, vertical: 'shop' };
+  const connection = { id: connId, tenantId: t, vertical: 'shop', externalAccountRef: keyedOn(mock) };
   const order = (over: Record<string, unknown> = {}) =>
     connectionCheckoutRequest.parse({
       tenantId: t,
@@ -107,9 +126,40 @@ export async function world(mock: StripeMock, opts: { clock?: { ms: number }; ca
     landed,
     options,
     order,
-    bind: () => bindStripeScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'shop', operation: OPERATION, permission: RECORD }),
+    bind: () =>
+      bindStripeScope(host, {
+        connectionId: connId,
+        tenantId: t,
+        scopeId: s,
+        vertical: 'shop',
+        operation: OPERATION,
+        permission: RECORD,
+        externalAccountRef: connection.externalAccountRef,
+      }),
     checkout: (over: Record<string, unknown> = {}) => createStripeCheckout(host, connection, s, order(over), options),
     sweep: () => sweepStripe(host, connId, options),
+    probe: () => probeStripeConnection(host, connection, options),
+    /**
+     * #3211: the tenant connects a second Stripe account to the same app, a connection of its own
+     * keyed on its account, granted and bound to a second scope.
+     */
+    addAccount: async (other: StripeMock) => {
+      const id: ConnectionId = connectionId.parse(ulid());
+      const scope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: scope, jurisdiction: 'eu', vertical: 'shop' });
+      await host.admin.activateScope(staff, t, scope);
+      const ref = other.secret.account;
+      await host.admin.createConnection(staff, { id, tenantId: t, vertical: 'shop', provider: 'stripe', label: 'Second', externalAccountRef: ref, secret: other.secret });
+      await host.admin.grantToConnection(staff, { connectionId: id, permission: RECORD, node: { tenantId: t, scopeId: scope }, grantedBy: staff });
+      const row = { id, tenantId: t, vertical: 'shop', externalAccountRef: ref };
+      await bindStripeScope(host, { connectionId: id, tenantId: t, scopeId: scope, vertical: 'shop', operation: OPERATION, permission: RECORD, externalAccountRef: ref });
+      return {
+        id,
+        checkout: () => createStripeCheckout(host, row, scope, order({ scopeId: scope }), options),
+        sweep: () => sweepStripe(host, id, options),
+        probe: () => probeStripeConnection(host, row, options),
+      };
+    },
     /** The tenant re-pastes a key, as the platform takes one: judged against the stored key, then stored in its place. */
     repaste: async (secretKey: string) => {
       const previous = (await host.admin.openConnection(t, 'shop', 'stripe'))!.secret;

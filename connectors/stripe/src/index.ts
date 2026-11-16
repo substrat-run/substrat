@@ -12,6 +12,7 @@ import {
   type ConnectionCredential,
   type ConnectionId,
   type ConnectionProbe,
+  type OpenConnection,
   type PaymentChange,
   type PaymentCheckoutStatus,
 } from '@substrat-run/contracts';
@@ -106,10 +107,16 @@ export { StripeMock, type StripeMockOptions } from './mock.js';
  * ({@link stripeAccountRef}). Everything it keeps — the webhook endpoint, every checkout, every
  * reference it refuses — is only true of that account in that mode, so:
  *
- * - **A re-pasted key is judged before it is stored** ({@link prepareStripeCandidate}, the
- *   platform's preparation of a candidate credential). A key for the same account and mode is a
- *   rotation, and keeps everything. A key for another account, or the same account's other mode
- *   (going live from a test key), is refused, and nothing is stored: it is a new connection.
+ * - **A connection is keyed on its account** (#3211): the platform takes its `externalAccountRef`
+ *   from the account the connect-time probe names, so a pasted key for the same account and mode
+ *   rotates that account's connection and keeps everything, and a key for another account, or the
+ *   same account's other mode (going live from a test key), becomes a connection of its own. One
+ *   app may hold several, each opened by its account ({@link StripeBinding.externalAccountRef}), and
+ *   a checkout goes through the one bound to the scope.
+ * - **A replacement key is still judged before it is stored** ({@link prepareStripeCandidate}, the
+ *   platform's preparation of a candidate credential), for the connection that holds no account: one
+ *   made before connections were keyed, which a key for another account or mode cannot replace
+ *   (refused, nothing stored) until it is disconnected.
  * - **What is stored records the account it was written under** (the webhook row, each checkout
  *   row), so a key that reached the connection some other way is never used to read or write what
  *   another account's key wrote: a checkout of another account is not read, and the webhook is
@@ -178,6 +185,15 @@ export interface StripeBinding {
   operation: string;
   /** The permission `operation` checks, which the connection must hold on `scopeId`. */
   permission: string;
+  /**
+   * WHICH Stripe account's connection this is (#3211): the connection's `externalAccountRef`, the
+   * account and mode its probe named ({@link stripeAccountRef}). A tenant may connect several Stripe
+   * accounts to one app, each its own connection, so the credential cannot be found from the tenant
+   * and vertical alone: the sweep opens it by this. Recorded at bind from the connection being bound;
+   * absent on a binding of a connection made before connections were keyed on the account, which is
+   * the app's only Stripe connection.
+   */
+  externalAccountRef?: string | null;
   boundAt: string;
 }
 
@@ -303,6 +319,8 @@ export async function bindStripeScope(
     vertical: string;
     operation: string;
     permission: string;
+    /** The connection's `externalAccountRef`. See {@link StripeBinding.externalAccountRef}. */
+    externalAccountRef?: string | null;
     /** Internal automatic-pass path: the declaration was checked and its grant follows this write. */
     grantPreflighted?: boolean;
     now?: () => number;
@@ -327,6 +345,7 @@ export async function bindStripeScope(
     vertical: input.vertical,
     operation: input.operation,
     permission: input.permission,
+    ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
     boundAt: iso(input.now?.() ?? Date.now()),
   };
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -365,7 +384,7 @@ async function checkoutRowOf(host: ScopeHost, connectionId: ConnectionId, checko
  */
 export async function createStripeCheckout(
   host: ScopeHost,
-  connection: { id: ConnectionId; tenantId: string; vertical: string },
+  connection: { id: ConnectionId; tenantId: string; vertical: string; externalAccountRef?: string | null },
   scopeId: string,
   request: Pick<ConnectionCheckoutRequest, 'reference' | 'currency' | 'lines' | 'successUrl' | 'cancelUrl' | 'customerEmail' | 'expiresInMinutes'>,
   options: StripeConnectorOptions,
@@ -392,7 +411,10 @@ export async function createStripeCheckout(
     JSON.stringify([request.currency, request.lines, request.successUrl, request.cancelUrl, request.customerEmail ?? null, request.expiresInMinutes ?? null]),
   );
 
-  const conn = await openStripeConnection(host.admin, options.fetch, connection.tenantId, connection.vertical, options.timeoutMs ?? 20_000, connection.id);
+  const conn = await openStripeConnection(host.admin, options.fetch, connection.tenantId, connection.vertical, options.timeoutMs ?? 20_000, {
+    account: connection.externalAccountRef,
+    expected: connection.id,
+  });
   const api = new StripeApi(conn, { apiBase: options.apiBase, sleep: options.sleep });
   const account = await api.accountRef();
 
@@ -647,7 +669,13 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
   if (!anchor) return result;
 
   const now = nowOf(options);
-  const conn = await openStripeConnection(host.admin, options.fetch, anchor.tenantId, anchor.vertical, options.timeoutMs ?? 30_000, connectionId);
+  // Which account's connection this is: a binding records it, and every row this connection wrote
+  // names the account its key reached, which is the one a keyed connection is for (#3211).
+  const account = bindings.find((b) => b.externalAccountRef)?.externalAccountRef ?? rows[0]?.account;
+  const conn = await openStripeConnection(host.admin, options.fetch, anchor.tenantId, anchor.vertical, options.timeoutMs ?? 30_000, {
+    account,
+    expected: connectionId,
+  });
   const api = new StripeApi(conn, { apiBase: options.apiBase, sleep: options.sleep });
   if (options.callbackBase) {
     result.webhook = (await ensureStripeWebhook(host, { id: connectionId, tenantId: anchor.tenantId, vertical: anchor.vertical }, api, options)).state;
@@ -789,7 +817,10 @@ export async function handleStripeCallback(
   }
   if (typeof eventId !== 'string' || !/^evt_[A-Za-z0-9]+$/.test(eventId)) return { accepted: false, reason: 'no event id' };
 
-  const conn = await openStripeConnection(host.admin, options.fetch, held.tenantId, held.vertical, options.timeoutMs ?? 20_000, id.data);
+  const conn = await openStripeConnection(host.admin, options.fetch, held.tenantId, held.vertical, options.timeoutMs ?? 20_000, {
+    account: held.account,
+    expected: id.data,
+  });
   const api = new StripeApi(conn, { apiBase: options.apiBase, sleep: options.sleep });
   const event = await api.event(eventId);
   const checkoutId = event.type.startsWith('checkout.session.') && event.data.object.object === 'checkout.session' ? (event.data.object.id ?? null) : null;
@@ -876,10 +907,13 @@ export async function probeStripeSecret(secret: Record<string, string>, options:
 /** Probe the credential a live connection already holds. Verifying is itself a use. */
 export async function probeStripeConnection(
   host: ScopeHost,
-  connection: { tenantId: string; vertical: string },
+  connection: StripeConnectionRef,
   options: StripeConnectorOptions,
 ): Promise<ConnectionProbe> {
-  const conn = await openStripeConnection(host.admin, options.fetch, connection.tenantId, connection.vertical, options.timeoutMs ?? 15_000);
+  const conn = await openStripeConnection(host.admin, options.fetch, connection.tenantId, connection.vertical, options.timeoutMs ?? 15_000, {
+    account: connection.externalAccountRef,
+    expected: connection.id,
+  });
   return probeWith(conn, options);
 }
 
@@ -926,8 +960,8 @@ async function probeWith(conn: ConnectorConnection, options: StripeConnectorOpti
   return {
     ok: true,
     refused: false,
-    // The account and mode the connection is pinned to: a re-paste for another one is refused
-    // (prepareStripeCandidate), since nothing the connection keeps is true of it.
+    // The account and mode the connection is pinned to, and keyed on (#3211): the platform makes
+    // this its `externalAccountRef`, so a key for another account or mode is another connection.
     accountRef: stripeAccountRef(named.id, api.live()),
     accountLabel: clip(label ?? named.id),
     facts: [
@@ -943,12 +977,16 @@ async function probeWith(conn: ConnectorConnection, options: StripeConnectorOpti
 
 /**
  * The platform's preparation of a candidate key (`ConnectionInspector.prepareCandidate`), run
- * before the key is probed or stored, on every way a key reaches a connection. It pins the key to
- * the account and mode Stripe names for it, stored with the key as `account`, whatever the paste
- * carried. On a replacement (`previous` is the live connection's credential) it refuses, before
- * anything is stored, a key for another account or the same account's other mode: nothing the
- * connection keeps is true of that one, so it is a new connection. The same account and mode is a
- * rotation, and keeps everything.
+ * before the key is stored, on every way a key reaches a connection. It pins the key to the account
+ * and mode Stripe names for it, stored with the key as `account`, whatever the paste carried.
+ *
+ * On a replacement (`previous` is the live connection's credential) it refuses, before anything is
+ * stored, a key for another account or the same account's other mode: nothing the connection keeps
+ * is true of that one. Since #3211 the platform keys a Stripe connection on the account its probe
+ * names, so `previous` is the same account's credential and this holds trivially — except for a
+ * connection made before that, which holds no account and is still shown as `previous` to every
+ * key. Refusing there is what stops another account's key replacing it; disconnected, the next key
+ * makes a keyed connection. The same account and mode is a rotation, and keeps everything.
  *
  * A key whose account Stripe will not name is refused too, and so is any key when Stripe does not
  * answer (a 503, nothing stored): unpinned, the next replacement could not be judged.
@@ -1026,9 +1064,11 @@ export async function stripeConnectionActivity(host: ScopeHost, connectionId: Co
 }
 
 /** The stored credential, reduced: the key's kind and mode, and its last four characters. */
-export async function stripeCredentialSummary(host: ScopeHost, connection: { tenantId: string; vertical: string }): Promise<ConnectionCredential> {
-  const open = await host.admin.openConnection(tenantIdSchema.parse(connection.tenantId), connection.vertical, 'stripe');
-  if (!open) throw new Error(`no live 'stripe' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`);
+export async function stripeCredentialSummary(host: ScopeHost, connection: StripeConnectionRef): Promise<ConnectionCredential> {
+  const open = await openStripeCredential(host.admin, connection.tenantId, connection.vertical, {
+    account: connection.externalAccountRef,
+    expected: connection.id,
+  });
   const { secretKey, account } = stripeSecret.parse(open.secret);
   const prefix = /^(sk|rk)_(live|test)_/.exec(secretKey)?.[0] ?? '';
   return {
@@ -1044,21 +1084,57 @@ export async function stripeCredentialSummary(host: ScopeHost, connection: { ten
 // Plumbing
 // ---------------------------------------------------------------------------------------------
 
-/** Open the live Stripe connection for a (tenant, vertical), with health recorded. */
+/**
+ * A Stripe connection as a caller knows it: its tenant and vertical, and — where the caller holds
+ * the row — its id and `externalAccountRef`, the Stripe account and mode it is keyed on (#3211).
+ */
+export interface StripeConnectionRef {
+  id?: ConnectionId;
+  tenantId: string;
+  vertical: string;
+  externalAccountRef?: string | null;
+}
+
+/**
+ * Open one Stripe connection's credential (#3211).
+ *
+ * A tenant may connect several Stripe accounts to one app, one connection each, keyed on the
+ * account (`externalAccountRef`), so a read that names no account throws once there are two.
+ * `account` names it: the connection's own ref where the caller holds the row, else the account a
+ * binding or a row this connection wrote records, which for a keyed connection is its ref. With no
+ * connection on that account — a connection made before connections were keyed holds none, and is
+ * then the app's only one — the read names no account.
+ *
+ * `expected` is the connection the caller acts for. The credential that reads and the identity that
+ * lands must be the same connection, so whatever the account found, another connection is refused.
+ */
+async function openStripeCredential(
+  admin: HostAdmin,
+  tenant: string,
+  vertical: string,
+  select: { account?: string | null; expected?: ConnectionId },
+): Promise<OpenConnection> {
+  const t = tenantIdSchema.parse(tenant);
+  const open =
+    (select.account ? await admin.openConnection(t, vertical, 'stripe', select.account) : undefined) ??
+    (await admin.openConnection(t, vertical, 'stripe'));
+  if (!open) throw new Error(`no live 'stripe' connection for tenant ${tenant} / vertical '${vertical}'`);
+  if (select.expected !== undefined && open.id !== select.expected) {
+    throw new Error(`the live 'stripe' connection for tenant ${tenant} / vertical '${vertical}' is ${open.id}, not ${select.expected}`);
+  }
+  return open;
+}
+
+/** {@link openStripeCredential}, with health recorded on every call it makes. */
 async function openStripeConnection(
   admin: HostAdmin,
   fetchImpl: FetchLike,
   tenant: string,
   vertical: string,
   timeoutMs: number,
-  expected?: ConnectionId,
+  select: { account?: string | null; expected?: ConnectionId } = {},
 ): Promise<ConnectorConnection> {
-  const open = await admin.openConnection(tenantIdSchema.parse(tenant), vertical, 'stripe');
-  if (!open) throw new Error(`no live 'stripe' connection for tenant ${tenant} / vertical '${vertical}'`);
-  // The credential that reads and the identity that lands must be the same connection.
-  if (expected !== undefined && open.id !== expected) {
-    throw new Error(`the live 'stripe' connection for tenant ${tenant} / vertical '${vertical}' is ${open.id}, not ${expected}`);
-  }
+  const open = await openStripeCredential(admin, tenant, vertical, select);
   const bounded = deadlineFetch(fetchImpl, timeoutMs);
   return {
     ...open,

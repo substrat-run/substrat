@@ -452,6 +452,13 @@ export interface ConnectionInspector {
    */
   prepareCandidate?: ConnectionCandidatePrepare;
   /**
+   * #3211: this provider's connections are keyed on the account `probeCandidate` names, not on a
+   * field of the pasted credential: a key for the same account rotates its connection, a key for
+   * another account becomes a second one (`ConnectionAccountFromProbe`). Set only where the probe
+   * always names the account and the connector opens a connection by it.
+   */
+  accountFromProbe?: true;
+  /**
    * The PUBLIC certificate the connection authenticates with, for the tenant to register on
    * the provider's side (#2100). `null` when this connection uses none (a client secret).
    */
@@ -3576,6 +3583,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId, owner: 'tenant' }, {
           probeCandidate,
           prepareCandidate,
+          accountFromProbe,
           ...(options.verticalConnectorDeclaration ? { declarationOf: options.verticalConnectorDeclaration } : {}),
         }),
       );
@@ -3720,6 +3728,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     inspectorFor(provider, context)?.probeCandidate?.(secret);
   /** #2100: the provider's own half of a credential, made before the probe sees it. */
   const prepareCandidate = (provider: string) => options.connectionInspectors?.[provider]?.prepareCandidate;
+  /** #3211: a first-party provider keyed on the account its probe names. */
+  const accountFromProbe = (provider: string) => options.connectionInspectors?.[provider]?.accountFromProbe === true;
 
   const inspectableConnection = async (c: Context<{ Variables: Vars }>) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));

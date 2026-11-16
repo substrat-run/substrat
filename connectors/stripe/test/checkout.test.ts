@@ -331,6 +331,26 @@ describe('stripe connector — one account, one mode', () => {
     else expect((await again).checkoutId).not.toBe(checkoutId);
   });
 
+  it('runs each of two accounts connected to one app on its own key (#3211)', async () => {
+    const a = new StripeMock({ secretKey: 'rk_live_51First000000000', accountId: 'acct_1First' });
+    const b = new StripeMock({ secretKey: 'rk_live_51Second00000000', accountId: 'acct_1Second' });
+    w = await world(a, { fetch: accounts(a, b), keyed: true });
+    b.useClock(() => w!.clock.ms);
+    await w.bind();
+    const second = await w.addAccount(b);
+    // With two live Stripe connections, a read that names no account throws: each opens by its own.
+    const first = await w.checkout();
+    const other = await second.checkout();
+    expect([...a.sessions.keys()]).toEqual([first.checkoutId]);
+    expect([...b.sessions.keys()]).toEqual([other.checkoutId]);
+    expect([a.endpoints.length, b.endpoints.length]).toEqual([1, 1]);
+    expect(await w.deliver(a.pay(first.checkoutId))).toMatchObject({ accepted: true, result: { checkoutId: first.checkoutId, landed: true } });
+    expect(await w.sweep()).toMatchObject({ failed: [] });
+    expect(await second.sweep()).toMatchObject({ checked: 1, failed: [] });
+    expect((await w.probe()).accountRef).toBe('acct_1First:live');
+    expect((await second.probe()).accountRef).toBe('acct_1Second:live');
+  });
+
   it('reads none of what another account wrote with a key that reached the connection past the replacement check', async () => {
     const before = new StripeMock({ secretKey: 'rk_live_51Before00000000', accountId: 'acct_1Old' });
     const after = new StripeMock({ secretKey: 'rk_live_51After000000000', accountId: 'acct_1New' });

@@ -496,3 +496,112 @@ describe('relayConnectionUpsert — a provider that prepares its own credential 
     }
   });
 });
+
+/**
+ * #3211: a provider whose credential does not say which account it reaches (a Stripe key) is keyed
+ * on the account its probe names. Before, every paste rotated the one unkeyed row, so another
+ * account's key replaced the credential state written under the first account was read with.
+ */
+describe('relayConnectionUpsert — a provider keyed on the account its probe names (#3211)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const actor = platformActorId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const admin = principalId.parse(ulid());
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-conn-keyed-'));
+    host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(5)) });
+    await host.admin.createTenant(staff, { id: t, slug: 'keyed', name: 'Keyed' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'shop' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const request = (key: string, over: Record<string, unknown> = {}) => ({
+    tenantId: t,
+    scopeId: s,
+    provider: 'paykey',
+    secret: { key },
+    grants: [],
+    createdBy: admin,
+    ...over,
+  });
+  // The provider names the account a key reaches: `A-1` and `A-2` are account A's keys.
+  const probe = (accountRef: string | null) => ({ ok: true, refused: false, accountRef, accountLabel: null, facts: [], error: null });
+  const previous: (Record<string, string> | undefined)[] = [];
+  const keyed = {
+    accountFromProbe: (provider: string) => provider === 'paykey',
+    probeCandidate: async (_p: string, secret: Record<string, string>) => probe(`acct_${secret.key!.split('-')[0]}`),
+    prepareCandidate: () => async (candidate: Record<string, string>, prev: Record<string, string> | undefined) => {
+      previous.push(prev);
+      return { secret: candidate };
+    },
+  };
+  const live = async () => host.admin.listConnections(staff, { tenantId: t, provider: 'paykey' });
+
+  it('a first key is stored under the account its probe names', async () => {
+    const result = await relayConnectionUpsert(host, actor, request('A-1'), keyed);
+    expect(result.created).toBe(true);
+    expect(await live()).toEqual([expect.objectContaining({ id: result.connectionId, externalAccountRef: 'acct_A' })]);
+  });
+
+  it("a key for the same account rotates that account's connection in place", async () => {
+    const [before] = await live();
+    const result = await relayConnectionUpsert(host, actor, request('A-2'), keyed);
+    expect(result).toMatchObject({ created: false, connectionId: before!.id });
+    // Its preparation was shown the credential it replaces: the same account's.
+    expect(previous.at(-1)).toEqual({ key: 'A-1' });
+    expect((await host.admin.openConnection(t, 'shop', 'paykey', 'acct_A'))?.secret).toEqual({ key: 'A-2' });
+  });
+
+  it("a key for another account becomes a connection of its own, and the first account's is untouched", async () => {
+    const result = await relayConnectionUpsert(host, actor, request('B-1'), keyed);
+    expect(result.created).toBe(true);
+    expect(previous.at(-1)).toBeUndefined();
+    expect((await live()).map((c) => c.externalAccountRef).sort()).toEqual(['acct_A', 'acct_B']);
+    expect((await host.admin.openConnection(t, 'shop', 'paykey', 'acct_A'))?.secret).toEqual({ key: 'A-2' });
+    expect((await host.admin.openConnection(t, 'shop', 'paykey', 'acct_B'))?.secret).toEqual({ key: 'B-1' });
+  });
+
+  const unnamed: [string, Partial<typeof keyed>, number][] = [
+    ['names no account', { probeCandidate: async () => probe(null) }, 422],
+    ['cannot be reached', { probeCandidate: async () => ({ ...probe(null), ok: false, error: 'timed out' }) }, 503],
+    ['is refused', { probeCandidate: async () => ({ ...probe(null), ok: false, refused: true, error: 'bad key' }) }, 422],
+    ['is not registered', { probeCandidate: async () => undefined }, 503],
+  ];
+  for (const [what, over, status] of unnamed) {
+    it(`a key whose probe ${what} stores nothing (${status})`, async () => {
+      const before = await live();
+      await expect(relayConnectionUpsert(host, actor, request('C-1'), { ...keyed, ...over })).rejects.toMatchObject({ status });
+      expect(await live()).toEqual(before);
+    });
+  }
+
+  it("an account the caller names must be the probe's", async () => {
+    await expect(relayConnectionUpsert(host, actor, request('A-3', { externalAccountRef: 'acct_B' }), keyed)).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringMatching(/belongs to paykey account acct_A, not acct_B/),
+    });
+    expect((await host.admin.openConnection(t, 'shop', 'paykey', 'acct_B'))?.secret).toEqual({ key: 'B-1' });
+  });
+
+  it('a connection made before the provider keyed on its probe is rotated as it was, and none is made beside it', async () => {
+    const t2 = tenantId.parse(ulid());
+    const s2 = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t2, slug: 'legacy', name: 'Legacy' });
+    await host.provisionScope(staff, { tenantId: t2, scopeId: s2, vertical: 'shop' });
+    const old = await relayConnectionUpsert(host, actor, request('A-1', { tenantId: t2, scopeId: s2 }));
+    const result = await relayConnectionUpsert(host, actor, request('B-1', { tenantId: t2, scopeId: s2 }), keyed);
+    expect(result).toMatchObject({ created: false, connectionId: old.connectionId });
+    // The preparation judges it (Stripe's refuses another account's key), shown the unkeyed row's secret.
+    expect(previous.at(-1)).toEqual({ key: 'A-1' });
+    expect(await host.admin.listConnections(staff, { tenantId: t2, provider: 'paykey' })).toEqual([
+      expect.objectContaining({ id: old.connectionId, externalAccountRef: null }),
+    ]);
+  });
+});

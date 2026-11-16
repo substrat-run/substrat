@@ -1506,6 +1506,37 @@ describe('control-plane API', () => {
     expect(await cert.json()).toEqual({ pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z', next: NEXT });
   });
 
+  it("the dashboard's door keys a probe-keyed provider on the account its probe names (#3211)", async () => {
+    const tKeyed = tenantId.parse(ulid());
+    const sKeyed = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: tKeyed, slug: 'keyed', name: 'Keyed' });
+    await host.provisionScope(staff, { tenantId: tKeyed, scopeId: sKeyed, vertical: 'keyed-vert' });
+    await host.admin.activateScope(staff, tKeyed, sKeyed);
+    const keyed = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      connectionInspectors: {
+        paykey: {
+          accountFromProbe: true,
+          probeCandidate: async (secret) => ({ ok: true, refused: false, accountRef: `acct_${secret.key![0]}`, accountLabel: null, facts: [], error: null }),
+        },
+      },
+    });
+    const paste = async (key: string) =>
+      (await (
+        await keyed.request(`/tenants/${tKeyed}/connections`, {
+          method: 'POST',
+          headers: { ...auth, 'content-type': 'application/json' },
+          body: JSON.stringify({ scopeId: sKeyed, provider: 'paykey', secret: { key }, createdBy: principalId.parse(ulid()) }),
+        })
+      ).json()) as { connectionId: string; created: boolean };
+    const first = await paste('A1');
+    expect(await paste('A2')).toEqual(expect.objectContaining({ connectionId: first.connectionId, created: false }));
+    expect((await paste('B1')).created).toBe(true);
+    const rows = await host.admin.listConnections(staff, { tenantId: tKeyed, provider: 'paykey' });
+    expect(rows.map((r) => r.externalAccountRef).sort()).toEqual(['acct_A', 'acct_B']);
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

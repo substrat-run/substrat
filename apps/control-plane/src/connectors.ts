@@ -251,7 +251,8 @@ export interface ConnectorRegistration {
    * #2316: this provider's bindings record the connection's `externalAccountRef`, because one
    * (tenant, vertical) holds a connection per external account and the sweep opens the credential
    * by it. A binding that does not carry the connection's account is re-written by the connector
-   * pass. Absent for a provider with one connection per (tenant, vertical).
+   * pass. Absent for a provider with one connection per (tenant, vertical). Fortnox (account from a
+   * credential field) and Stripe (account from the probe, #3211) set it.
    */
   readonly accountOnBinding?: true;
   /**
@@ -550,7 +551,8 @@ const WOOCOMMERCE: ConnectorRegistration = {
  * Stripe (#3189) — a vertical takes payments through its tenant's own Stripe account. The
  * credential is one restricted key, pasted into the dashboard's door; the probe names the account,
  * says whether it is live, and whether the key may register the webhook endpoint. The connection is
- * pinned to that account and mode: `prepareCandidate` refuses a replacement key for another one.
+ * keyed on that account and mode (#3211, `accountFromProbe`): a key for the same one rotates it, a
+ * key for another becomes a connection of its own, and each binding records which (`accountOnBinding`).
  *
  * The only connector with all three halves of the payment round trip: `checkout` opens a hosted
  * session inside the vertical's request (the relay), `callback` hears Stripe's webhook — signed
@@ -570,16 +572,23 @@ function stripeOptions(env: ConnectorEnv): StripeConnectorOptions {
 const STRIPE: ConnectorRegistration = {
   provider: 'stripe',
   grants: STRIPE_CONNECTION_GRANTS,
+  // #3211: an app may hold a connection per Stripe account, so the sweep opens one by the account
+  // its binding records.
+  accountOnBinding: true,
   inspector: (env) => ({
-    bindScope: (h, row, target) => bindStripeScope(h, { ...target, connectionId: row.id }),
+    // The key does not say which account it reaches, and the probe does: the connection is keyed on
+    // the account and mode it names, on every door a key comes in by.
+    accountFromProbe: true,
+    bindScope: (h, row, target) =>
+      bindStripeScope(h, { ...target, connectionId: row.id, externalAccountRef: row.externalAccountRef }),
     bindings: (h, row) => listStripeBindings(h, row.id),
     unbindScope: (h, row, scopeId) => unbindStripeScope(h, row.id, scopeId),
     probe: async (h, row) => probeStripeConnection(h, row, stripeOptions(env)),
     activity: async (h, row) => stripeConnectionActivity(h, row.id),
     credential: (h, row) => stripeCredentialSummary(h, row),
     probeCandidate: async (secret) => probeStripeSecret(secret, stripeOptions(env)),
-    // A connection is pinned to one Stripe account and mode: a re-pasted key for another is refused
-    // here, before the probe and the store, with nothing stored.
+    // Pins the key to its account and mode. A key for another one than a connection made before
+    // #3211 holds (no account ref) is refused here, before the store, with nothing stored.
     prepareCandidate: async (candidate, previous) => {
       try {
         return await prepareStripeCandidate(stripeOptions(env))(candidate, previous);
