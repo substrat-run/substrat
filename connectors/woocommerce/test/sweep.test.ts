@@ -38,15 +38,38 @@ describe('woocommerce connector — inbound sync', () => {
       currency: 'SEK',
       modifiedAt: '2026-11-01T10:00:00.000Z',
       // A simple product sells one variant, under the product's own id.
-      variants: [{ variantId: '11', sku: 'MUG-1', title: null, options: [], price: '129.00', compareAtPrice: '149.00' }],
+      variants: [
+        {
+          variantId: '11',
+          sku: 'MUG-1',
+          title: null,
+          options: [],
+          price: '129.00',
+          compareAtPrice: '149.00',
+          stock: { manageStock: true, quantity: 7, status: 'in_stock', providerStatus: 'instock', sharedWithProduct: false },
+        },
+      ],
     });
     expect(shirt).toMatchObject({
       variants: [
-        { variantId: '121', title: 'M', options: [{ name: 'Size', value: 'M' }], price: '199.00', compareAtPrice: null },
-        { variantId: '122', title: 'L', price: '219.50', compareAtPrice: '249.00' },
+        {
+          variantId: '121',
+          title: 'M',
+          options: [{ name: 'Size', value: 'M' }],
+          price: '199.00',
+          compareAtPrice: null,
+          // The product keeps one count for every size.
+          stock: { manageStock: true, quantity: 30, status: 'in_stock', sharedWithProduct: true },
+        },
+        { variantId: '122', title: 'L', price: '219.50', compareAtPrice: '249.00', stock: { quantity: 0, status: 'out_of_stock', sharedWithProduct: false } },
       ],
     });
-    expect(card).toMatchObject({ listed: false, providerStatus: 'draft', variants: [{ variantId: '13', sku: null, price: null }] });
+    // Not counted by the store: no quantity, not even the stale one the row still carries.
+    expect(card).toMatchObject({
+      listed: false,
+      providerStatus: 'draft',
+      variants: [{ variantId: '13', sku: null, price: null, stock: { manageStock: false, quantity: null, status: 'on_backorder' } }],
+    });
     expect(paid).toMatchObject({
       record: 'order',
       orderId: '501',
@@ -86,6 +109,29 @@ describe('woocommerce connector — inbound sync', () => {
       expect(w.landed[0]).toMatchObject({ name: 'T-shirt (ny)' });
     },
   );
+
+  it('lands a stock change within one sweep, for a simple product and for a variant, and nothing on the pass after', async () => {
+    const mock = store();
+    w = await world(mock);
+    await w.bind();
+    await w.sweep();
+    w.landed.length = 0;
+
+    // A sale, as WooCommerce records it: the count drops and the product is saved, which moves its
+    // modified date. A variation's own count saves the variation AND its product (the parent sync),
+    // which is what makes the product's walk see it — test/live.test.ts checks both on a real store.
+    touch(mock.products.find((p) => p.id === 11)!, '2026-11-03T12:00:00', { stock_quantity: 5 });
+    Object.assign(mock.variations[12]![1]!, { stock_quantity: 4, stock_status: 'instock' });
+    touch(mock.products.find((p) => p.id === 12)!, '2026-11-03T12:00:00');
+    await w.sweep();
+    expect(ids(w.landed)).toEqual(['p11', 'p12']);
+    expect(w.landed[0]).toMatchObject({ variants: [{ stock: { quantity: 5 } }] });
+    expect(w.landed[1]).toMatchObject({ variants: [{ variantId: '121' }, { variantId: '122', stock: { quantity: 4, status: 'in_stock' } }] });
+
+    w.landed.length = 0;
+    await w.sweep();
+    expect(w.landed).toEqual([]);
+  });
 
   it('walks a long backlog over several passes, and more changes in one second than a page holds', async () => {
     // 120 products in one second, then 130 a second apart: 250 rows, in pages of 100.

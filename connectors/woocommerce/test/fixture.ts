@@ -38,6 +38,7 @@ export const product = (id: number, modified: string, over: Record<string, unkno
   on_sale: false,
   manage_stock: false,
   stock_quantity: null,
+  stock_status: 'instock',
   variations: [],
   date_created_gmt: '2026-10-01T08:00:00',
   date_modified: local(modified),
@@ -46,15 +47,15 @@ export const product = (id: number, modified: string, over: Record<string, unkno
 });
 
 export const PRODUCTS = (): MockRow[] => [
-  product(11, '2026-11-01T10:00:00', { name: 'Mugg Åre', sku: 'MUG-1', price: '129.00', regular_price: '149.00', sale_price: '129.00', on_sale: true }),
-  product(12, '2026-11-01T10:00:00', { name: 'T-shirt', type: 'variable', sku: '', price: '199.00', regular_price: '', variations: [121, 122] }),
-  product(13, '2026-11-01T11:00:00', { name: 'Presentkort', status: 'draft', sku: null, price: '', regular_price: '' }),
+  product(11, '2026-11-01T10:00:00', { name: 'Mugg Åre', sku: 'MUG-1', price: '129.00', regular_price: '149.00', sale_price: '129.00', on_sale: true, manage_stock: true, stock_quantity: 7 }),
+  product(12, '2026-11-01T10:00:00', { name: 'T-shirt', type: 'variable', sku: '', price: '199.00', regular_price: '', variations: [121, 122], manage_stock: true, stock_quantity: 30 }),
+  product(13, '2026-11-01T11:00:00', { name: 'Presentkort', status: 'draft', sku: null, price: '', regular_price: '', stock_quantity: 3, stock_status: 'onbackorder' }),
 ];
 
 export const VARIATIONS = (): Record<number, Record<string, unknown>[]> => ({
   12: [
-    { id: 121, sku: 'TS-M', price: '199.00', regular_price: '199.00', sale_price: '', manage_stock: 'parent', attributes: [{ id: 1, name: 'Size', option: 'M' }] },
-    { id: 122, sku: 'TS-L', price: '219.50', regular_price: '249.00', sale_price: '219.50', manage_stock: true, attributes: [{ id: 1, name: 'Size', option: 'L' }] },
+    { id: 121, sku: 'TS-M', price: '199.00', regular_price: '199.00', sale_price: '', manage_stock: 'parent', stock_quantity: 30, stock_status: 'instock', attributes: [{ id: 1, name: 'Size', option: 'M' }] },
+    { id: 122, sku: 'TS-L', price: '219.50', regular_price: '249.00', sale_price: '219.50', manage_stock: true, stock_quantity: 0, stock_status: 'outofstock', attributes: [{ id: 1, name: 'Size', option: 'L' }] },
   ],
 });
 

@@ -82,8 +82,16 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  *   itself is in the changed list. A price edited on one variant reaches the scope the next time
  *   the product is saved. Listing every variable product's variations on every pass is the fix, and
  *   its cost is why it is not this slice.
- * - **Stock.** Not in the commerce shape yet (see its "What is NOT here").
  * - **Draft checkouts** (`checkout-draft`): a cart the block checkout saved, not an order. Skipped.
+ *
+ * ## Stock rides on the product (#3223)
+ *
+ * Each variant carries its stock — counted or not, how many, in stock / out / on backorder — read
+ * from the same product and variation rows the walk already reads, so it costs no request. It is
+ * fresh because a stock change saves its product: a sale's `wc_update_product_stock` saves the
+ * product (or the variation, which then syncs its product), and a save moves the product's modified
+ * date even when only stock changed. `test/live.test.ts` checks that on a real store; it is the
+ * whole reason stock needs no cursor of its own.
  *
  * ## Deletes: a reconcile pass over what was delivered (#3224)
  *

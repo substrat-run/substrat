@@ -31,4 +31,9 @@ describe('woocommerce → commerce mapping', () => {
   ])('refuses an order with %j', (over, error) => {
     expect(() => orderChange('c1', wcOrder.parse({ ...ORDERS()[0], ...over }))).toThrow(error);
   });
+
+  it.each(['constructor', '__proto__', 'onsale-soon'])("maps a stock status word of a plugin's own (%s) to no status, keeping the word", (word) => {
+    const row = wcProduct.parse(product(1, '2026-11-01T10:00:00', { manage_stock: true, stock_quantity: 2, stock_status: word }));
+    expect(productChange('c1', SEK, row, []).variants[0]?.stock).toMatchObject({ status: null, providerStatus: word, quantity: 2 });
+  });
 });

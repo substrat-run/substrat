@@ -51,7 +51,12 @@ operation receives one `commerceChange` per call and must upsert by the record's
 - **`product`** — name, slug, public URL, `listed` (published for sale), the store's own status
   word, the store's currency, and **at least one variant**. A product sold without variants (a
   WooCommerce *simple* product) lands with one variant whose id is the product's id. Each variant
-  carries its SKU, its options (`Size: L`), its `price`, and a `compareAtPrice` when it is on sale.
+  carries its SKU, its options (`Size: L`), its `price`, a `compareAtPrice` when it is on sale, and
+  its `stock`: whether the store counts it (`manageStock`), the `quantity` (`null` when it does
+  not count it, never `0`), and its `status` (`in_stock`, `out_of_stock`, `on_backorder`). When the
+  product keeps one count for all its variations, every variant reports that count with
+  `sharedWithProduct: true`: show it, but do not add the variants up. A sale moves the count and
+  saves the product, so the next pass lands it.
 - **`order`** — number, the store's status word, `paidAt`, `cancelled`, the currency, the total
   and its tax, shipping and discount breakdown, the customer as the order records them, billing and
   shipping addresses, the customer's note, and one line per item sold. Each line names the
@@ -164,6 +169,6 @@ next pass starts there.
   only one of its variations is edited, so such a change reaches your app the next time the product
   itself is saved.
 - **A removal sooner than the hourly check.** Deletes are found by asking, not told.
-- **Stock levels**, **refunds and fulfilment as records of their own**, and a **customer register**.
-- **Writing back** — marking an order fulfilled, setting stock.
+- **Refunds and fulfilment as records of their own**, and a **customer register**.
+- **Writing back** — marking an order fulfilled, setting stock (stock is read-only).
 - **Webhooks**, as a hint to read sooner than the next pass.

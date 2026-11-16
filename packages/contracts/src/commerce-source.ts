@@ -30,14 +30,16 @@ import { currencyCode, moneyAmount } from './money.js';
  * - **Every product has at least one variant.** A store platform that sells a product without
  *   variants (a WooCommerce simple product) lands it with one variant whose id is the product's,
  *   so a vertical prices, stocks and sells variants and never branches on the platform.
+ * - **Stock is read-only and per variant** (#3223), as the store last reported it with the
+ *   product: whether the store tracks it, how many, and in stock / out / on backorder. Where a
+ *   store keeps one count for the whole product (`sharedWithProduct`), every variant reports that
+ *   count, so a vertical must not add them up. Writing stock back is a later shape.
  * - **An order line names the variant it sold**, by the same id a product change carries, or
  *   `null` when the line sold nothing the catalogue holds (a custom line, a deleted product).
  *
  * What is NOT here, by decision:
  *
- *  * - **Stock levels.** Stock moves on every sale, is shared between variants on some platforms and
- *   fractional on others, and wants its own shape and its own freshness rule.
- * - **Fulfilment, refunds and customers as records of their own.** An order carries the customer it
+ *  * - **Fulfilment, refunds and customers as records of their own.** An order carries the customer it
  *   was placed by, as the order states it; a customer register is a later shape.
  * - **Write requests** (set stock, mark an order fulfilled) and the shared `CommerceSource` facet:
  *   both wait for a second store platform, so they are extracted from two implementations rather
@@ -66,6 +68,30 @@ export type CommerceAddress = z.infer<typeof commerceAddress>;
 /** One option a variant is picked by, e.g. `{ name: 'Size', value: 'M' }`. */
 export const commerceVariantOption = z.object({ name: z.string(), value: z.string() });
 
+/** Whether a variant can be sold now, in the store's terms. */
+export const commerceStockStatus = z.enum(['in_stock', 'out_of_stock', 'on_backorder']);
+export type CommerceStockStatus = z.infer<typeof commerceStockStatus>;
+
+/**
+ * A variant's stock as the store reports it (#3223).
+ *
+ * `manageStock` false means the store does not count it: `quantity` is then `null`, never `0`, and
+ * `status` is whatever the merchant set by hand. `status` is `null` when the store's word is none of
+ * the three (a plugin's own); `providerStatus` keeps the word either way.
+ */
+export const commerceStock = z
+  .object({
+    manageStock: z.boolean(),
+    /** How many the store holds; may be negative on backorder, and fractional on some platforms. */
+    quantity: z.number().nullable(),
+    status: commerceStockStatus.nullable(),
+    providerStatus: z.string(),
+    /** One count for the whole product, reported on each of its variants: never sum them. */
+    sharedWithProduct: z.boolean(),
+  })
+  .refine((s) => s.manageStock || s.quantity === null, { message: 'a stock the store does not track has no quantity', path: ['quantity'] });
+export type CommerceStock = z.infer<typeof commerceStock>;
+
 /** One sellable variant of a product. */
 export const commerceVariant = z.object({
   /** The variant's id at the store. For a product without variants, the product's own id. */
@@ -81,6 +107,11 @@ export const commerceVariant = z.object({
    * it is greater than `price`, so a vertical can show it struck through without comparing.
    */
   compareAtPrice: moneyAmount.nullable(),
+  /**
+   * The variant's stock (#3223). Optional because it was added after the shape shipped: a source
+   * that reads no stock leaves it out, and the WooCommerce connector always sends it.
+   */
+  stock: commerceStock.optional(),
 });
 export type CommerceVariant = z.infer<typeof commerceVariant>;
 

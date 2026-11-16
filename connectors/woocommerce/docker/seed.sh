@@ -45,4 +45,23 @@ wp wc shop_order delete "$deleted_order" --force=true --user=admin >/dev/null
 printf 'WOOCOMMERCE_TRASHED_PRODUCT=%s\nWOOCOMMERCE_DELETED_PRODUCT=%s\nWOOCOMMERCE_TRASHED_ORDER=%s\nWOOCOMMERCE_DELETED_ORDER=%s\n' \
   "$trashed_product" "$deleted_product" "$trashed_order" "$deleted_order" >&3
 
+# Stock (#3223): a counted simple product, a variable product whose variation keeps its own count,
+# and one whose product keeps the count for every variation. Then a sale's stock change, made the
+# way an order makes it (`wc_update_product_stock`), after a timestamp the live test reads changes
+# since: whether that moves the products' modified dates is what the sweep relies on.
+stocked=$(w product create --name='Lagervara' --type=simple --regular_price=50.00 --manage_stock=true --stock_quantity=5)
+own=$(w product create --name='Tröja' --type=variable \
+  --attributes='[{"name":"Size","options":["S"],"variation":true,"visible":true}]')
+own_variation=$(w product_variation create "$own" --regular_price=99.00 --manage_stock=true --stock_quantity=6 \
+  --attributes='[{"name":"Size","option":"S"}]')
+shared=$(w product create --name='Mössa' --type=variable --manage_stock=true --stock_quantity=20 \
+  --attributes='[{"name":"Size","options":["One"],"variation":true,"visible":true}]')
+w product_variation create "$shared" --regular_price=79.00 --attributes='[{"name":"Size","option":"One"}]' >/dev/null
+sleep 2
+before=$(date -u +%Y-%m-%dT%H:%M:%S)
+sleep 1
+wp eval "wc_update_product_stock(wc_get_product($stocked), 2, 'decrease'); wc_update_product_stock(wc_get_product($own_variation), 1, 'decrease');" --user=admin
+printf 'WOOCOMMERCE_STOCK_CHANGED_AFTER=%s\nWOOCOMMERCE_STOCK_SIMPLE=%s\nWOOCOMMERCE_STOCK_VARIABLE=%s\nWOOCOMMERCE_STOCK_VARIATION=%s\nWOOCOMMERCE_STOCK_SHARED=%s\n' \
+  "$before" "$stocked" "$own" "$own_variation" "$shared" >&3
+
 wp eval-file /seed/api-key.php >&3
