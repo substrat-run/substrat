@@ -22,8 +22,10 @@ import { currencyCode, moneyAmount, type CurrencyCode, type MoneyAmount } from '
 const ZERO_DECIMAL = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'VND', 'VUV', 'XAF', 'XOF', 'XPF']);
 const REFUSED = new Set(['ISK', 'HUF', 'TWD', 'UGX', 'BHD', 'JOD', 'KWD', 'OMR', 'TND']);
 
-/** Stripe's largest amount for one charge: eight digits of minor units. */
+/** Stripe's largest amount for one charge: eight digits of minor units, in every currency but those below. */
 export const STRIPE_MAX_AMOUNT = 99_999_999;
+/** Where Stripe takes more than eight digits: twelve for IDR. A payment method's own lower limit is Stripe's to refuse. */
+const MAX_MINOR_UNITS: Readonly<Record<string, number>> = { IDR: 999_999_999_999 };
 
 export class StripeMoneyError extends Error {
   constructor(message: string) {
@@ -55,7 +57,7 @@ export function toMinorUnits(amount: MoneyAmount | string, currency: CurrencyCod
     throw new StripeMoneyError(`${amount} ${currency.toUpperCase()} has more decimals than the currency carries; it is never rounded`);
   }
   const minor = BigInt(whole) * 10n ** BigInt(exponent) + BigInt(kept.padEnd(exponent, '0') || '0');
-  if (minor > BigInt(STRIPE_MAX_AMOUNT)) {
+  if (minor > BigInt(MAX_MINOR_UNITS[currency.toUpperCase()] ?? STRIPE_MAX_AMOUNT)) {
     throw new StripeMoneyError(`${amount} ${currency.toUpperCase()} is more than Stripe takes in one amount`);
   }
   return Number(minor);

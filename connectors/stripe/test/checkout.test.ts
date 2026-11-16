@@ -98,6 +98,29 @@ describe('stripe connector — opening a checkout', () => {
     expect((await w.checkout()).checkoutId).toBe(opened[0]!.checkoutId);
   });
 
+  it('closes the session of an ask that stalled past its claim, rather than publish a second payable one', async () => {
+    const mock = new StripeMock();
+    w = await world(mock);
+    await w.bind();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const direct = mock.fetch;
+    let stalls = 1;
+    w.options.fetch = (async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'POST' && url.endsWith('/v1/checkout/sessions') && stalls-- > 0) await held;
+      return direct(url, init as never);
+    }) as typeof direct;
+    const stalled = w.checkout().catch((err: unknown) => err);
+    await new Promise((r) => setImmediate(r));
+    w.clock.ms += 3 * 60 * 1000; // past the claim
+    const later = await w.checkout();
+    release();
+    expect(await stalled).toMatchObject({ status: 409, message: expect.stringMatching(/being opened/) });
+    const sessions = [...mock.sessions.values()];
+    expect(sessions.map((s) => [s.id === later.checkoutId, s.status])).toEqual(expect.arrayContaining([[true, 'open'], [false, 'expired']]));
+    expect((await w.checkout()).checkoutId).toBe(later.checkoutId);
+  });
+
   it.each([
     [{ currency: 'ISK', lines: [{ name: 'Mug', quantity: 1, unitAmount: '100' }] }, /does not charge in it/],
     [{ lines: [{ name: 'Mug', quantity: 1, unitAmount: '9.995' }] }, /never rounded/],
@@ -149,6 +172,11 @@ describe('stripe connector — hearing the outcome', () => {
     expect(w.landed).toHaveLength(1);
 
     await expect(w.checkout()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/already paid/) });
+
+    // Its row is let go after the keep window; the reference stays refused.
+    w.clock.ms += 31 * 24 * 60 * 60 * 1000;
+    expect(await w.sweep()).toMatchObject({ pruned: 1 });
+    await expect(w.checkout()).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/already paid/) });
   });
 
   it('follows a delayed payment through processing to failed, and lets the reference be paid again', async () => {
@@ -197,6 +225,22 @@ describe('stripe connector — hearing the outcome', () => {
     expect(w.landed.map((c) => c.status)).toEqual(['expired']);
     const activity = await stripeConnectionActivity(w.host, w.connId);
     expect(activity.entries[0]).toMatchObject({ title: 'Webhook endpoint', status: 'not registered — outcomes are polled', facts: [{ label: 'Why', value: expect.stringMatching(/permissions/) }] });
+  });
+
+  it('reads outstanding checkouts in turn, so ones that stay open cannot keep a newer outcome unread', async () => {
+    const mock = new StripeMock({ webhooksAllowed: false });
+    w = await world(mock);
+    await w.bind();
+    w.options.checkoutsPerSweep = 2;
+    const ids: string[] = [];
+    for (const reference of ['order-1', 'order-2', 'order-3']) {
+      ids.push((await w.checkout({ reference })).checkoutId);
+      w.clock.ms += 1000;
+    }
+    mock.pay(ids[2]!);
+    expect(await w.sweep()).toMatchObject({ checked: 2, landed: 2, caughtUp: false });
+    expect(await w.sweep()).toMatchObject({ checked: 2, caughtUp: false });
+    expect(w.landed.filter((c) => c.status === 'paid').map((c) => c.checkoutId)).toEqual([ids[2]]);
   });
 
   it.each([

@@ -13,6 +13,7 @@ describe('stripe money', () => {
     ['0.05', 'EUR', 5],
     ['500', 'JPY', 500],
     ['500.00', 'JPY', 500],
+    ['1000000.00', 'IDR', 100000000],
   ])('%s %s is %i minor units, and back', (amount, currency, minor) => {
     expect(toMinorUnits(amount, currency)).toBe(minor);
     expect(toMinorUnits(fromMinorUnits(minor, currency), currency)).toBe(minor);
@@ -30,6 +31,7 @@ describe('stripe money', () => {
     ['100', 'ISK', /does not charge in it/],
     ['1.000', 'KWD', /does not charge in it/],
     ['1000000.00', 'SEK', /more than Stripe takes/],
+    ['10000000000.00', 'IDR', /more than Stripe takes/],
   ])('refuses %s %s', (amount, currency, why) => {
     expect(() => toMinorUnits(amount, currency)).toThrow(why);
   });

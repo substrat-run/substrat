@@ -405,6 +405,7 @@ export async function relayConnectionCheckout(
 ): Promise<ConnectionCheckoutResult> {
   const input = parsed(connectionCheckoutRequest, body, 'checkout');
   const scope = await primaryScope(host, actor, input, options);
+  if (scope.status !== 'active') throw new ConnectionRelayError(`scope ${scope.id} is ${scope.status}, not active`, 409);
   const checkout = options.checkout(input.provider);
   if (!checkout) throw new ConnectionRelayError(`'${input.provider}' takes no payments`, 501);
   const live = await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical, provider: input.provider });

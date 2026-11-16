@@ -527,7 +527,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       expect(asked).toHaveLength(1);
     });
 
-    it('refuses an unproven caller, a provider that takes no payments, a scope with nothing bound, and a malformed order', async () => {
+    it('refuses an unproven caller, a provider that takes no payments, a scope with nothing bound, a malformed order, and an archived scope', async () => {
       await runs('on-request');
       await relayConnectionBind(host, relayActor, bindBody(a, await own(a)), landings());
 
@@ -536,6 +536,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       expect(await refusal(relayConnectionCheckout(host, relayActor, order(a, 'fortnox'), paying()))).toBe(409);
       expect(await refusal(relayConnectionCheckout(host, relayActor, order(b), paying()))).toBe(409);
       expect(await refusal(relayConnectionCheckout(host, relayActor, { ...order(a), lines: [] }, paying()))).toBe(400);
+      // Still bound, but no longer serving: an archived install charges nobody.
+      await host.admin.archiveScope(relayActor, t, a);
+      expect(await refusal(relayConnectionCheckout(host, relayActor, order(a), paying()))).toBe(409);
       expect(asked).toEqual([]);
     });
   });

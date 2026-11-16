@@ -140,6 +140,8 @@ const BINDING_PREFIX = 'stripe:binding:';
 const CHECKOUT_PREFIX = 'stripe:checkout:';
 const REFERENCE_PREFIX = 'stripe:reference:';
 const WEBHOOK_KEY = 'stripe:webhook';
+/** Where the last sweep that could not read every outstanding checkout stopped. */
+const SWEEP_CURSOR_KEY = 'stripe:sweep-cursor';
 const bindingKey = (scope: string): string => `${BINDING_PREFIX}${scope}`;
 const checkoutKey = (checkoutId: string): string => `${CHECKOUT_PREFIX}${checkoutId}`;
 const referenceKey = async (scope: string, reference: string): Promise<string> => `${REFERENCE_PREFIX}${scope}:${await sha256Hex(reference)}`;
@@ -159,6 +161,8 @@ export interface StripeBinding {
 interface StripeReferenceRow {
   checkoutId?: string;
   claimedAt?: string;
+  /** Kept once the paid checkout's own row is pruned, so the reference is never charged again. */
+  paidAt?: string;
 }
 
 /** One session this connection opened, as the directory keeps it. */
@@ -196,6 +200,8 @@ export interface StripeConnectorOptions {
    * connection is poll-only: complete, just slower.
    */
   callbackBase?: string;
+  /** Checkouts one sweep re-reads; {@link STRIPE_CHECKOUTS_PER_SWEEP} unless a test says otherwise. */
+  checkoutsPerSweep?: number;
 }
 
 /**
@@ -326,6 +332,7 @@ export async function createStripeCheckout(
   const held = await host.admin.getConnectorState(connection.id, refKey);
   const ref = typeof held === 'object' && held !== null ? (held as StripeReferenceRow) : null;
   const busy = () => new StripeCheckoutRefusal(`a checkout for reference '${request.reference}' is being opened by another request; ask again in a moment`, 409);
+  if (ref?.paidAt) throw new StripeCheckoutRefusal(`reference '${request.reference}' is already paid (${ref.checkoutId})`, 409);
   if (ref && !ref.checkoutId && now - Date.parse(ref.claimedAt ?? '') < CLAIM_MS) throw busy();
   const previous = ref?.checkoutId ? await checkoutRowOf(host, connection.id, ref.checkoutId) : null;
   if (previous) {
@@ -391,7 +398,12 @@ export async function createStripeCheckout(
     settledAt: null,
   };
   await host.admin.putConnectorState(connection.id, checkoutKey(session.id), row);
-  await host.admin.putConnectorState(connection.id, refKey, { checkoutId: session.id });
+  // Published only while this ask still holds its claim: one that stalled past CLAIM_MS may have been
+  // overtaken by a later ask, and two payable sessions for one reference is what the claim prevents.
+  if (!(await host.admin.swapConnectorState(connection.id, refKey, claim, { checkoutId: session.id }))) {
+    await api.expireCheckoutSession(session.id).catch(() => undefined);
+    throw busy();
+  }
   // Best effort, never the buyer's problem: without an endpoint the sweep finds the outcome.
   await ensureStripeWebhook(host, connection, api, options).catch(() => undefined);
   return { connectionId: connection.id, checkoutId: session.id, url: session.url, expiresAt: instant.parse(row.expiresAt), live: session.livemode };
@@ -541,9 +553,18 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
     result.webhook = (await ensureStripeWebhook(host, { id: connectionId, tenantId: anchor.tenantId, vertical: anchor.vertical }, api, options)).state;
   }
 
-  const outstanding = rows.filter((r) => !isFinal(r.landed)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  result.caughtUp = outstanding.length <= STRIPE_CHECKOUTS_PER_SWEEP;
-  for (const row of outstanding.slice(0, STRIPE_CHECKOUTS_PER_SWEEP)) {
+  // Read in turn from where the last pass stopped, so checkouts that stay outstanding for days (a
+  // bank debit settling, a scope since unbound) cannot hold every pass and keep newer ones unread.
+  const cap = options.checkoutsPerSweep ?? STRIPE_CHECKOUTS_PER_SWEEP;
+  const order = (r: StripeCheckoutRow) => `${r.createdAt}|${r.checkoutId}`;
+  const outstanding = rows.filter((r) => !isFinal(r.landed)).sort((a, b) => order(a).localeCompare(order(b)));
+  const cursor = await host.admin.getConnectorState(connectionId, SWEEP_CURSOR_KEY);
+  const from = typeof cursor === 'string' ? Math.max(0, outstanding.findIndex((r) => order(r) > cursor)) : 0;
+  const batch = [...outstanding.slice(from), ...outstanding.slice(0, from)].slice(0, cap);
+  result.caughtUp = outstanding.length <= cap;
+  if (!result.caughtUp) await host.admin.putConnectorState(connectionId, SWEEP_CURSOR_KEY, order(batch.at(-1)!));
+  else if (typeof cursor === 'string') await host.admin.putConnectorState(connectionId, SWEEP_CURSOR_KEY, null);
+  for (const row of batch) {
     result.checked += 1;
     try {
       if ((await reconcileStripeCheckout(host, connectionId, api, row, options)).landed) result.landed += 1;
@@ -559,8 +580,10 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
     await host.admin.putConnectorState(connectionId, checkoutKey(row.checkoutId), null);
     const refKey = await referenceKey(row.scopeId, row.reference);
     const ref = await host.admin.getConnectorState(connectionId, refKey);
-    if (typeof ref === 'object' && ref !== null && (ref as { checkoutId?: string }).checkoutId === row.checkoutId) {
-      await host.admin.putConnectorState(connectionId, refKey, null);
+    if (typeof ref === 'object' && ref !== null && (ref as StripeReferenceRow).checkoutId === row.checkoutId) {
+      // A paid reference stays refused after its row goes; any other is free to be charged again.
+      const kept: StripeReferenceRow | null = row.landed === 'paid' ? { checkoutId: row.checkoutId, paidAt: row.settledAt } : null;
+      await host.admin.putConnectorState(connectionId, refKey, kept);
     }
     result.pruned += 1;
   }
