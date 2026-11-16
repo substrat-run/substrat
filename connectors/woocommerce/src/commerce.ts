@@ -60,11 +60,13 @@ function compareAt(regular: string, current: MoneyAmount | null, what: string): 
   return r !== null && current !== null && compareDecimal(r, current) > 0 ? r : null;
 }
 
-const STOCK_STATUS: Record<string, CommerceStockStatus> = {
-  instock: 'in_stock',
-  outofstock: 'out_of_stock',
-  onbackorder: 'on_backorder',
-};
+// A Map, not an object literal: a plugin's status word such as `constructor` must miss, not find
+// an inherited key.
+const STOCK_STATUS = new Map<string, CommerceStockStatus>([
+  ['instock', 'in_stock'],
+  ['outofstock', 'out_of_stock'],
+  ['onbackorder', 'on_backorder'],
+]);
 
 /**
  * Stock as the store reports it on a product or a variation (#3223). Untracked stock has no
@@ -82,7 +84,7 @@ function stockOf(row: { manage_stock: boolean | 'parent'; stock_quantity: number
   return {
     manageStock,
     quantity,
-    status: STOCK_STATUS[row.stock_status] ?? null,
+    status: STOCK_STATUS.get(row.stock_status) ?? null,
     providerStatus: row.stock_status,
     sharedWithProduct: row.manage_stock === 'parent',
   };
