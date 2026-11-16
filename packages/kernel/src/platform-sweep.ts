@@ -2074,19 +2074,26 @@ export async function runPlatformSweep(
         const operation = `sweep.connector:${c.provider}`;
         const opening = `connection ${c.id} of tenant ${c.tenantId}: `;
         const unscoped: string[] = [];
+        // One pair per scope: a scope can fail twice in one pass (a declared landing, then its
+        // poll), and two pairs sharing the reference, the operation and the scope could not be told
+        // apart by a reader that pairs them.
+        const byScope = new Map<ScopeId, SweepFailure[]>();
         for (const f of failures) {
           const scope = f.scopeId === undefined ? undefined : scopeIdSchema.safeParse(f.scopeId);
           if (!scope?.success) {
             unscoped.push(f.scopeId === undefined ? f.error : `scope ${f.scopeId}: ${f.error}`);
             continue;
           }
+          byScope.set(scope.data, [...(byScope.get(scope.data) ?? []), f]);
+        }
+        for (const [scope, fs] of byScope) {
           options.recordFailure(
             withheldOpsFailure(
-              { operation, stage: 'sweep', tenantId: c.tenantId, scopeId: scope.data, vertical: c.vertical },
-              f.error,
-              (ref) => `${tenantSentence(c.provider, f)} (reference ${ref})`,
+              { operation, stage: 'sweep', tenantId: c.tenantId, scopeId: scope, vertical: c.vertical },
+              fs.map((f) => f.error).join('; '),
+              (ref) => `${[...new Set(fs.map((f) => tenantSentence(c.provider, f)))].join('; ')} (reference ${ref})`,
               reference,
-              `${opening}scope ${scope.data}: `,
+              `${opening}scope ${scope}: `,
             ),
           );
         }

@@ -587,6 +587,37 @@ describe('declared connection landings (#2316)', () => {
     expect(report.errors).toEqual([]);
   });
 
+  // #3235: a scope that fails twice in one pass (its landing, then its poll) is one pair, so a
+  // reader pairing rows by reference, operation and scope cannot mistake it for two.
+  it('files a scope whose landing and poll both failed in one pass as one pair', async () => {
+    const plan = await connect('planima');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    await pass();
+    const refused = DECLARED.map((l) => l.provider === 'planima' ? { ...l, options: { horizonYear: 50 } } : l);
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(refused)));
+    const filed: Parameters<NonNullable<PlatformSweepOptions['recordFailure']>>[0][] = [];
+    const planima = sweepers.planima!;
+    sweepers.planima = async () => ({ found: 1, failed: [{ scopeId: s, error: 'plan closed for the year' }] });
+    try {
+      await pass(undefined, (entry) => void filed.push(entry));
+    } finally {
+      sweepers.planima = planima;
+    }
+
+    const mine = filed.filter((e) => e.operation === 'sweep.connector:planima');
+    expect(mine).toEqual([
+      expect.objectContaining({
+        tenantId: t,
+        scopeId: s,
+        message: expect.stringMatching(
+          /^the planima connection's declared landing could not be granted or bound for this app; the planima sweep did not land in this app \(reference \w{26}\)$/,
+        ),
+        detail: expect.stringContaining('plan closed for the year'),
+      }),
+    ]);
+    expect(lastRun(plan)).toMatchObject({ outcome: 'failed' });
+  });
+
   it('re-writes a Fortnox binding that predates the company it reads, once', async () => {
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
     const company = await connect('fortnox', '111111');

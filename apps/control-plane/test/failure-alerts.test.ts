@@ -334,6 +334,22 @@ describe('a withheld failure in the digest (#2540)', () => {
     ]);
   });
 
+  it('pairs two pairs that share every key one to one, so the digest counts two', () => {
+    const at = '2026-09-18T09:55:00.000Z';
+    const t = tenantId.parse(ulid());
+    const s1 = scopeId.parse(ulid());
+    const rows = [
+      failure(at, 'did not land (reference r1)', { tenantId: t, reference: 'r1', scopeId: s1 }),
+      failure(at, 'landing refused', { reference: 'r1', scopeId: s1 }),
+      failure(at, 'did not land (reference r1)', { tenantId: t, reference: 'r1', scopeId: s1 }),
+      failure(at, 'poll refused', { reference: 'r1', scopeId: s1 }),
+    ];
+    expect(pairedFailuresMerged(rows).map((r) => [r.tenantId, r.message])).toEqual([
+      [t, 'landing refused'],
+      [t, 'poll refused'],
+    ]);
+  });
+
   it('lists a pair recorded on the real ledger once, as its own text, under its tenant', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     try {
