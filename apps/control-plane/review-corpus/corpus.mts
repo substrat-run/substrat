@@ -182,7 +182,10 @@ export interface SeedRun {
   readonly dropped: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
-  /** List price in USD, as a decimal string; null when the model is unpriced. */
+  /**
+   * List price in USD, as a decimal string; null when it is unknown: the call failed, or the
+   * provider reported no usage (the host's line then says `reported: false` with zero tokens).
+   */
   readonly costUsd: string | null;
   readonly latencyMs: number;
 }
@@ -208,8 +211,10 @@ export interface ModelSummary {
   readonly incompleteBy: Readonly<Record<string, number>>;
   readonly inputTokens: number;
   readonly outputTokens: number;
-  /** Summed list price; null when any read was unpriced. */
-  readonly costUsd: number | null;
+  /** Summed list price of the reads whose cost is known. */
+  readonly costUsd: number;
+  /** Reads whose cost is unknown, which `costUsd` leaves out. */
+  readonly costUnknown: number;
   readonly latencyMs: { readonly median: number; readonly max: number };
 }
 
@@ -254,7 +259,8 @@ export function summarise(runs: readonly SeedRun[]): ModelSummary[] {
       incompleteBy,
       inputTokens: mine.reduce((n, r) => n + r.inputTokens, 0),
       outputTokens: mine.reduce((n, r) => n + r.outputTokens, 0),
-      costUsd: costs.some((c) => c === null) ? null : costs.reduce((n, c) => n + Number(c), 0),
+      costUsd: costs.reduce((n: number, c) => n + (c === null ? 0 : Number(c)), 0),
+      costUnknown: costs.filter((c) => c === null).length,
       latencyMs: { median: median(mine.map((r) => r.latencyMs)), max: Math.max(0, ...mine.map((r) => r.latencyMs)) },
     };
   });
@@ -274,7 +280,7 @@ export function summaryTable(summaries: readonly ModelSummary[]): string {
     `${s.dropped}`,
     `${s.incomplete}/${s.reads}${s.incomplete ? ` (${Object.entries(s.incompleteBy).map(([why, n]) => `${why} ${n}`).join(', ')})` : ''}`,
     `${s.inputTokens.toLocaleString('en-US')} / ${s.outputTokens.toLocaleString('en-US')}`,
-    s.costUsd === null ? 'unpriced' : `$${s.costUsd.toFixed(4)}`,
+    `$${s.costUsd.toFixed(4)}${s.costUnknown ? ` (+${s.costUnknown} unknown)` : ''}`,
     `${(s.latencyMs.median / 1000).toFixed(1)} s / ${(s.latencyMs.max / 1000).toFixed(1)} s`,
   ]);
   return [head, head.map(() => '---'), ...rows].map((r) => `| ${r.join(' | ')} |`).join('\n');

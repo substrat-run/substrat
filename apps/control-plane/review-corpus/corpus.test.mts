@@ -76,8 +76,9 @@ describe('summarise', () => {
     assert.deepEqual([s!.inputTokens, s!.costUsd, s!.latencyMs], [40, 2, { median: 1000, max: 3000 }]);
   });
 
-  it('reports no cost when any read was unpriced', () => {
-    assert.equal(summarise([run({}), run({ costUsd: null })])[0]!.costUsd, null);
+  it('sums the known costs and counts the reads whose cost is unknown', () => {
+    const [s] = summarise([run({}), run({ costUsd: null })]);
+    assert.deepEqual([s!.costUsd, s!.costUnknown], [0.5, 1]);
   });
 });
 

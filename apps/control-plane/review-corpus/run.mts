@@ -153,11 +153,13 @@ async function main(): Promise<void> {
         const latencyMs = Date.now() - started;
         if (!run) {
           // Its usage is unknown: the holds stay spent, and the read records no cost of its own.
-          runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: '0', latencyMs });
+          runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: null, latencyMs });
           continue;
         }
         const read = readReply(run, p.files);
-        const costUsd = priceOf(spec, run.line.inputTokens, run.line.outputTokens);
+        // A provider that reports no usage leaves zero tokens on the line, which would price as
+        // free: its cost is unknown, and its hold stays spent like a failed call's.
+        const costUsd = run.line.reported ? priceOf(spec, run.line.inputTokens, run.line.outputTokens) : null;
         // The answering call's hold becomes its list price; a failed first attempt's hold stays.
         if (costUsd !== null) spent += Number(costUsd) - held;
         const findings = read.assembled.findings.map(({ item, file, line }) => ({ item, file, line }));
