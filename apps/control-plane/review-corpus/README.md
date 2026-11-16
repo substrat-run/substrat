@@ -13,6 +13,11 @@ The changes the hosted review runner's reader model is measured against before i
 - `seed.json`: the pinned commit and root, the base files, where the seed comes from, and what a
   reader owes it.
 
+A seed that changes a vertical's model carries what its emitters produce from that change
+(migrations, `model.json`, `openapi.json`, the client, `PERMISSIONS.md`, `CONFORMANCE.md`,
+`MIGRATIONS.md`), as a real push does. The reader is not sent the generated and emitted ones, but
+sees them listed as changed; leaving them out would hand it a second defect the seed is not about.
+
 Three kinds:
 
 | Kind | What it is | What it owes |

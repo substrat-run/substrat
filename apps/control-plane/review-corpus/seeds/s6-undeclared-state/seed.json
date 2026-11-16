@@ -6,8 +6,16 @@
     "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
     "root": "demos/todo",
     "files": [
+      "CONFORMANCE.md",
+      "MIGRATIONS.md",
+      "PERMISSIONS.md",
+      "app/src/api.generated.ts",
+      "journal.json",
+      "model.json",
+      "openapi.json",
       "package.json",
       "spec/model.ts",
+      "src/migrations.generated.ts",
       "src/module.ts"
     ]
   },
@@ -17,13 +25,13 @@
       "anyOf": [
         {
           "file": "spec/model.ts",
-          "from": "stage: z.enum(['open', 'doing', 'done']),\n      added_by",
+          "from": "stage: z.enum(['open', 'doing', 'done']).nullable(),",
           "before": 1,
           "after": 0
         },
         {
           "file": "src/module.ts",
-          "from": "if (item.stage === 'done' && input.stage !== 'done') {",
+          "from": "const current = item.stage ?? 'open';",
           "through": "ctx.sql.exec('UPDATE todo_items SET stage = ?"
         }
       ]

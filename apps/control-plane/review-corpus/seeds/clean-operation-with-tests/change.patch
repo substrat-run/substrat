@@ -1,5 +1,205 @@
+diff --git a/CONFORMANCE.md b/CONFORMANCE.md
+index 8c1ee04ca..f0003e1e3 100644
+--- a/CONFORMANCE.md
++++ b/CONFORMANCE.md
+@@ -5,7 +5,7 @@
+ 
+ # Conformance receipt — @substrat-run/demo-todo
+ 
+-28 operations · 17 narrowed checks · 13 conformance pairs driven
++29 operations · 18 narrowed checks · 13 conformance pairs driven
+ 
+ ## 1. Kernel-enforced properties
+ 
+@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
+ check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
+ against B, and requires a permission denial specifically.
+ 
+-**13 pairs driven** across 13 of this package's 17 narrowed checks.
++**13 pairs driven** across 13 of this package's 18 narrowed checks.
+ 
+ | Operation | Permission | Narrows to | Driven |
+ | --- | --- | --- | --- |
+@@ -50,6 +50,7 @@ against B, and requires a permission denial specifically.
+ | `todo/list-invites` | `list:manage` | `list`, id from `listId` | `list` |
+ | `todo/list-items` | `list:contribute` | `list`, id from `listId` | `list` |
+ | `todo/list-shares` | `list:manage` | `list`, id from `listId` | `list` |
++| `todo/rename-item` | `list:contribute` | `list`, resolved in the handler | — see §3 — |
+ | `todo/rename-list` | `list:manage` | `list`, id from `listId` | `list` |
+ | `todo/restore-list` | `list:trash` | `list`, id from `listId` | `list` |
+ | `todo/revoke-share` | `list:manage` | `list`, resolved in the handler | — see §3 — |
+@@ -70,6 +71,7 @@ stops being, fails CI until this file is regenerated and the change is read.
+ | --- | --- |
+ | `todo/cancel-invite` | declares 'resolved' (the list the invite is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ | `todo/delete-item` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
++| `todo/rename-item` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ | `todo/revoke-share` | declares 'resolved' (the list the share is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ | `todo/set-item-done` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ 
+diff --git a/PERMISSIONS.md b/PERMISSIONS.md
+index f77bd6c05..284a87cb3 100644
+--- a/PERMISSIONS.md
++++ b/PERMISSIONS.md
+@@ -105,6 +105,7 @@ shapes.
+ | `todo/list-members` | `people:manage` | the scope | `@substrat-run/demo-todo` |
+ | `todo/list-shares` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+ | `todo/my-lists` | `list:contribute` | each row, by a proof walk: Returns only lists the caller owns or has been shared | `@substrat-run/demo-todo` |
++| `todo/rename-item` | `list:contribute` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
+ | `todo/rename-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+ | `todo/resolve-person` | `people:resolve` | the scope | `@substrat-run/demo-todo` |
+ | `todo/restore-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+diff --git a/app/src/api.generated.ts b/app/src/api.generated.ts
+index ae255dc21..cd4c8f172 100644
+--- a/app/src/api.generated.ts
++++ b/app/src/api.generated.ts
+@@ -230,6 +230,13 @@ export interface TodoClient {
+    */
+   myLists(input: { view?: "active" | "archived"; limit?: number; order?: "asc" | "desc"; sort?: "created_at" | "name" }): Promise<Paged<List>>;
+ 
++  /**
++   * Change the text of an item
++   *
++   * `PATCH /items/{itemId}` — `todo/rename-item`
++   */
++  renameItem(input: { itemId: string; text: string }): Promise<Item>;
++
+   /**
+    * Rename a list
+    *
+@@ -452,6 +459,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
+       page(`/lists/${encodeURIComponent(String(input.listId))}/shares`, "GET", undefined, omit(input, ["listId"])),
+     myLists: (input: Args) =>
+       page("/lists", "GET", undefined, input),
++    renameItem: (input: Args) =>
++      send(`/items/${encodeURIComponent(String(input.itemId))}`, "PATCH", omit(input, ["itemId"]), undefined),
+     renameList: (input: Args) =>
+       send(`/lists/${encodeURIComponent(String(input.listId))}`, "PATCH", omit(input, ["listId"]), undefined),
+     restoreList: (input: Args) =>
+diff --git a/openapi.json b/openapi.json
+index 4319cfdba..9f65ceb0d 100644
+--- a/openapi.json
++++ b/openapi.json
+@@ -766,6 +766,118 @@
+             "$ref": "#/components/responses/Unavailable"
+           }
+         }
++      },
++      "patch": {
++        "operationId": "todo-rename-item",
++        "summary": "Change the text of an item",
++        "parameters": [
++          {
++            "name": "itemId",
++            "in": "path",
++            "required": true,
++            "schema": {
++              "type": "string"
++            }
++          },
++          {
++            "name": "Idempotency-Key",
++            "in": "header",
++            "required": false,
++            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
++            "schema": {
++              "type": "string",
++              "maxLength": 255
++            }
++          }
++        ],
++        "requestBody": {
++          "required": true,
++          "content": {
++            "application/json": {
++              "schema": {
++                "type": "object",
++                "properties": {
++                  "itemId": {
++                    "type": "string"
++                  },
++                  "text": {
++                    "type": "string",
++                    "minLength": 1
++                  }
++                },
++                "required": [
++                  "itemId",
++                  "text"
++                ]
++              }
++            }
++          }
++        },
++        "responses": {
++          "200": {
++            "description": "The operation result.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "id": {
++                      "type": "string"
++                    },
++                    "list_id": {
++                      "type": "string"
++                    },
++                    "text": {
++                      "type": "string"
++                    },
++                    "done": {
++                      "type": "number"
++                    },
++                    "added_by": {
++                      "type": "string"
++                    },
++                    "created_at": {
++                      "type": "string"
++                    }
++                  },
++                  "required": [
++                    "id",
++                    "list_id",
++                    "text",
++                    "done",
++                    "added_by",
++                    "created_at"
++                  ],
++                  "additionalProperties": false
++                }
++              }
++            }
++          },
++          "400": {
++            "$ref": "#/components/responses/ValidationFailed"
++          },
++          "401": {
++            "$ref": "#/components/responses/Unauthenticated"
++          },
++          "403": {
++            "$ref": "#/components/responses/Forbidden"
++          },
++          "404": {
++            "$ref": "#/components/responses/NotFound"
++          },
++          "409": {
++            "$ref": "#/components/responses/Conflict"
++          },
++          "429": {
++            "$ref": "#/components/responses/RateLimited"
++          },
++          "500": {
++            "$ref": "#/components/responses/InternalError"
++          },
++          "503": {
++            "$ref": "#/components/responses/Unavailable"
++          }
++        }
+       }
+     },
+     "/api/lists/{listId}": {
 diff --git a/spec/model.ts b/spec/model.ts
-index e885bb6..05a2c9c 100644
+index e885bb6f1..05a2c9c91 100644
 --- a/spec/model.ts
 +++ b/spec/model.ts
 @@ -519,6 +519,23 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
@@ -27,7 +227,7 @@ index e885bb6..05a2c9c 100644
      summary: 'Delete an item',
      permission: { key: 'list:manage', entity: 'list', resolved: 'the list the item is on' },
 diff --git a/src/module.ts b/src/module.ts
-index 372b49b..9543017 100644
+index 372b49bad..95430173f 100644
 --- a/src/module.ts
 +++ b/src/module.ts
 @@ -417,6 +417,21 @@ const bound = operationsFor(todoOperations)({
@@ -52,9 +252,9 @@ index 372b49b..9543017 100644
    /** Deleting is the owner's, which is what `list:manage` means here. */
    'todo/delete-item': async (ctx, input) => {
      const { list } = itemAndList(ctx, input.itemId);
-diff --git b/test/rename-item.test.ts b/test/rename-item.test.ts
+diff --git a/test/rename-item.test.ts b/test/rename-item.test.ts
 new file mode 100644
-index 0000000..25837d9
+index 000000000..25837d96f
 --- /dev/null
 +++ b/test/rename-item.test.ts
 @@ -0,0 +1,38 @@

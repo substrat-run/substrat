@@ -1,5 +1,100 @@
+diff --git a/MIGRATIONS.md b/MIGRATIONS.md
+index 58761630d..3f278045a 100644
+--- a/MIGRATIONS.md
++++ b/MIGRATIONS.md
+@@ -14,3 +14,4 @@ once it is on the base branch: add a new migration instead.
+ | @substrat-run/demo-todo | 0001 | `414ae1f4e73694ee77c4f27f499d366053f9c22d31b5a66abe3db3d763f1be15` |
+ | @substrat-run/demo-todo | 0002 | `535b152b1e92180b6257bcffd885d0f460607e12d151ba094b154f6b177cf478` |
+ | @substrat-run/demo-todo | 0003 | `28415156b999fd4c0fa5412a26bead4f4853155bc7e1fddb2b35c9026ed8950d` |
++| @substrat-run/demo-todo | 0004 | `3fa81422e2f561a14b373f1756812fdb76afd181c8841f9e4c05bfbfe68e24f5` |
+diff --git a/app/src/api.generated.ts b/app/src/api.generated.ts
+index ae255dc21..dd3cbf066 100644
+--- a/app/src/api.generated.ts
++++ b/app/src/api.generated.ts
+@@ -105,6 +105,7 @@ export interface Invite {
+   list_id: string;
+   email: string;
+   invited_by: string;
++  message: string | null;
+   created_at: string;
+ }
+ 
+diff --git a/journal.json b/journal.json
+index 3497b7267..29fc89ce1 100644
+--- a/journal.json
++++ b/journal.json
+@@ -14,6 +14,11 @@
+       "version": "0003",
+       "slug": "add-todo_plugin_access",
+       "sql": "CREATE TABLE todo_plugin_access (\n  id TEXT PRIMARY KEY NOT NULL,\n  granted_by TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);"
++    },
++    {
++      "version": "0004",
++      "slug": "add-todo_invites-message",
++      "sql": "ALTER TABLE todo_invites ADD COLUMN message TEXT;"
+     }
+   ]
+ }
+diff --git a/model.json b/model.json
+index 1ddec3490..6bdacddb7 100644
+--- a/model.json
++++ b/model.json
+@@ -40,6 +40,16 @@
+           "invited_by": {
+             "type": "string"
+           },
++          "message": {
++            "anyOf": [
++              {
++                "type": "string"
++              },
++              {
++                "type": "null"
++              }
++            ]
++          },
+           "created_at": {
+             "type": "string"
+           }
+@@ -49,6 +59,7 @@
+           "list_id",
+           "email",
+           "invited_by",
++          "message",
+           "created_at"
+         ],
+         "additionalProperties": false
+diff --git a/openapi.json b/openapi.json
+index 4319cfdba..a5993c97a 100644
+--- a/openapi.json
++++ b/openapi.json
+@@ -1313,6 +1313,16 @@
+                       "invited_by": {
+                         "type": "string"
+                       },
++                      "message": {
++                        "anyOf": [
++                          {
++                            "type": "string"
++                          },
++                          {
++                            "type": "null"
++                          }
++                        ]
++                      },
+                       "created_at": {
+                         "type": "string"
+                       }
+@@ -1322,6 +1332,7 @@
+                       "list_id",
+                       "email",
+                       "invited_by",
++                      "message",
+                       "created_at"
+                     ],
+                     "additionalProperties": false
 diff --git a/spec/model.ts b/spec/model.ts
-index e885bb6..efd81eb 100644
+index e885bb6f1..efd81ebdc 100644
 --- a/spec/model.ts
 +++ b/spec/model.ts
 @@ -143,6 +143,8 @@ export const todoEntities = defineEntities({
@@ -11,3 +106,19 @@ index e885bb6..efd81eb 100644
        created_at: z.string(),
      }),
      parents: ['list'],
+diff --git a/src/migrations.generated.ts b/src/migrations.generated.ts
+index 4a7f88f5a..da9326dd6 100644
+--- a/src/migrations.generated.ts
++++ b/src/migrations.generated.ts
+@@ -75,4 +75,11 @@ export const todoMigrations: SqlMigration[] = [
+       );
+     `,
+   },
++  {
++    // add-todo_invites-message
++    version: '0004',
++    sql: `
++      ALTER TABLE todo_invites ADD COLUMN message TEXT;
++    `,
++  },
+ ];

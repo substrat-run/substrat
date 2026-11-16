@@ -1,5 +1,195 @@
+diff --git a/CONFORMANCE.md b/CONFORMANCE.md
+index 8c1ee04ca..b8a5219dc 100644
+--- a/CONFORMANCE.md
++++ b/CONFORMANCE.md
+@@ -5,7 +5,7 @@
+ 
+ # Conformance receipt — @substrat-run/demo-todo
+ 
+-28 operations · 17 narrowed checks · 13 conformance pairs driven
++29 operations · 18 narrowed checks · 13 conformance pairs driven
+ 
+ ## 1. Kernel-enforced properties
+ 
+@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
+ check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
+ against B, and requires a permission denial specifically.
+ 
+-**13 pairs driven** across 13 of this package's 17 narrowed checks.
++**13 pairs driven** across 13 of this package's 18 narrowed checks.
+ 
+ | Operation | Permission | Narrows to | Driven |
+ | --- | --- | --- | --- |
+@@ -46,6 +46,7 @@ against B, and requires a permission denial specifically.
+ | `todo/cancel-invite` | `list:manage` | `list`, resolved in the handler | — see §3 — |
+ | `todo/delete-item` | `list:manage` | `list`, resolved in the handler | — see §3 — |
+ | `todo/delete-list` | `list:manage` | `list`, id from `listId` | `list` |
++| `todo/find-items` | `list:contribute` | `list`, id from `listId` | — see §3 — |
+ | `todo/invite` | `list:manage` | `list`, id from `listId` | `list` |
+ | `todo/list-invites` | `list:manage` | `list`, id from `listId` | `list` |
+ | `todo/list-items` | `list:contribute` | `list`, id from `listId` | `list` |
+@@ -70,6 +71,7 @@ stops being, fails CI until this file is regenerated and the change is read.
+ | --- | --- |
+ | `todo/cancel-invite` | declares 'resolved' (the list the invite is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ | `todo/delete-item` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
++| `todo/find-items` | no sample input for required field(s): q |
+ | `todo/revoke-share` | declares 'resolved' (the list the share is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ | `todo/set-item-done` | declares 'resolved' (the list the item is on) — the entity id is not in the input, so the harness cannot reach the entity |
+ 
+diff --git a/PERMISSIONS.md b/PERMISSIONS.md
+index f77bd6c05..cf2d33369 100644
+--- a/PERMISSIONS.md
++++ b/PERMISSIONS.md
+@@ -97,6 +97,7 @@ shapes.
+ | `todo/create-list` | `list:create` | the scope | `@substrat-run/demo-todo` |
+ | `todo/delete-item` | `list:manage` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
+ | `todo/delete-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
++| `todo/find-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+ | `todo/grant-plugin-access` | `people:manage` | the scope | `@substrat-run/demo-todo` |
+ | `todo/invite` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+ | `todo/join` | `list:create` | the scope | `@substrat-run/demo-todo` |
+diff --git a/app/src/api.generated.ts b/app/src/api.generated.ts
+index ae255dc21..b23556692 100644
+--- a/app/src/api.generated.ts
++++ b/app/src/api.generated.ts
+@@ -159,6 +159,13 @@ export interface TodoClient {
+    */
+   deleteList(input: { listId: string }): Promise<{ id: string; deleted: boolean }>;
+ 
++  /**
++   * Items on a list whose text contains a phrase
++   *
++   * `GET /lists/{listId}/find` — `todo/find-items`
++   */
++  findItems(input: { listId: string; q: string }): Promise<{ results: Item[] }>;
++
+   /**
+    * Let a member use this workspace’s plugins
+    *
+@@ -436,6 +443,8 @@ export function createClient(options: ClientOptions = {}): TodoClient {
+       send(`/items/${encodeURIComponent(String(input.itemId))}`, "DELETE", undefined, omit(input, ["itemId"])),
+     deleteList: (input: Args) =>
+       send(`/lists/${encodeURIComponent(String(input.listId))}`, "DELETE", undefined, omit(input, ["listId"])),
++    findItems: (input: Args) =>
++      send(`/lists/${encodeURIComponent(String(input.listId))}/find`, "GET", undefined, omit(input, ["listId"])),
+     grantPluginAccess: (input: Args) =>
+       send(`/members/${encodeURIComponent(String(input.memberId))}/plugin-access`, "POST", omit(input, ["memberId"]), undefined),
+     invite: (input: Args) =>
+diff --git a/openapi.json b/openapi.json
+index 4319cfdba..fe047e032 100644
+--- a/openapi.json
++++ b/openapi.json
+@@ -953,6 +953,108 @@
+         }
+       }
+     },
++    "/api/lists/{listId}/find": {
++      "get": {
++        "operationId": "todo-find-items",
++        "summary": "Items on a list whose text contains a phrase",
++        "parameters": [
++          {
++            "name": "listId",
++            "in": "path",
++            "required": true,
++            "schema": {
++              "type": "string"
++            }
++          },
++          {
++            "name": "q",
++            "in": "query",
++            "required": true,
++            "schema": {
++              "type": "string",
++              "minLength": 2
++            }
++          }
++        ],
++        "responses": {
++          "200": {
++            "description": "The operation result.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "type": "object",
++                  "properties": {
++                    "results": {
++                      "type": "array",
++                      "items": {
++                        "type": "object",
++                        "properties": {
++                          "id": {
++                            "type": "string"
++                          },
++                          "list_id": {
++                            "type": "string"
++                          },
++                          "text": {
++                            "type": "string"
++                          },
++                          "done": {
++                            "type": "number"
++                          },
++                          "added_by": {
++                            "type": "string"
++                          },
++                          "created_at": {
++                            "type": "string"
++                          }
++                        },
++                        "required": [
++                          "id",
++                          "list_id",
++                          "text",
++                          "done",
++                          "added_by",
++                          "created_at"
++                        ],
++                        "additionalProperties": false
++                      }
++                    }
++                  },
++                  "required": [
++                    "results"
++                  ],
++                  "additionalProperties": false
++                }
++              }
++            }
++          },
++          "400": {
++            "$ref": "#/components/responses/ValidationFailed"
++          },
++          "401": {
++            "$ref": "#/components/responses/Unauthenticated"
++          },
++          "403": {
++            "$ref": "#/components/responses/Forbidden"
++          },
++          "404": {
++            "$ref": "#/components/responses/NotFound"
++          },
++          "409": {
++            "$ref": "#/components/responses/Conflict"
++          },
++          "429": {
++            "$ref": "#/components/responses/RateLimited"
++          },
++          "500": {
++            "$ref": "#/components/responses/InternalError"
++          },
++          "503": {
++            "$ref": "#/components/responses/Unavailable"
++          }
++        }
++      }
++    },
+     "/api/members/{memberId}/plugin-access": {
+       "post": {
+         "operationId": "todo-grant-plugin-access",
 diff --git a/spec/model.ts b/spec/model.ts
-index e885bb6..f868c2b 100644
+index e885bb6f1..f868c2bc7 100644
 --- a/spec/model.ts
 +++ b/spec/model.ts
 @@ -485,6 +485,14 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
@@ -18,7 +208,7 @@ index e885bb6..f868c2b 100644
      summary: 'Add an item to a list',
      permission: { key: 'list:contribute', entity: 'list', idFrom: 'listId' },
 diff --git a/src/module.ts b/src/module.ts
-index 372b49b..6feb7aa 100644
+index 372b49bad..6feb7aac8 100644
 --- a/src/module.ts
 +++ b/src/module.ts
 @@ -383,6 +383,17 @@ const bound = operationsFor(todoOperations)({

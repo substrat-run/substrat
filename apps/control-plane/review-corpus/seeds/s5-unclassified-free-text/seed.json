@@ -6,8 +6,14 @@
     "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
     "root": "demos/todo",
     "files": [
+      "MIGRATIONS.md",
+      "app/src/api.generated.ts",
+      "journal.json",
+      "model.json",
+      "openapi.json",
       "package.json",
-      "spec/model.ts"
+      "spec/model.ts",
+      "src/migrations.generated.ts"
     ]
   },
   "expect": [
