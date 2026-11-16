@@ -146,10 +146,17 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   Every move between scripts pages, whether it runs in a request or as a job. That covers a preview
   push's carry, a fork, `scope bind`, the serving-pin repair, adopt and rebind onto a serving
   script, a kept copy restored forward, a backup, and the re-carry that repairs a bind whose
-  destination an older script's unfenced wipe overtook. That re-carry's destination is by
-  construction a script built before the fenced wipe (#1722), and so before the stage. It takes
-  the pages merged into one dump, the version-skew fallback, and only there. A rollback of that
-  kind can still lose both copies (#3230).
+  destination an unfenced wipe overtook. That re-carry's destination is by construction a script
+  built before the fenced wipe (#1722), and so before the stage. It takes the pages merged into
+  one dump, the version-skew fallback, and only there.
+
+  A script built before the fenced wipe is never wiped (#3230). A carry out of one, and a carry into
+  one whose bind did not land, leave that copy `retained`: reached by reap and erasure, never swept.
+  An unconditional wipe there could land after a rollback had made that script live again, and a
+  push and a rollback across it then lost both copies. So every wipe a carry makes is fenced, and
+  the re-carry is left for a tombstone that a control plane predating #3230 sends during a deploy's
+  overlap. A carry whose bind landed never wipes its own destination either: whatever moved the
+  route off that live store carried out of it, and wipes it under its own fence.
 
   A copy into a scope's store is refused before its first page when the source is larger than
   `COPY_MAX_BYTES` (4 GiB, `copyMaxBytes` on the control-plane API). The refusal is 413 and names

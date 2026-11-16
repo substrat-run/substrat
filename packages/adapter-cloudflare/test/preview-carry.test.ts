@@ -1948,44 +1948,49 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         paged = false;
       }
     });
+    /**
+     * The tombstone a control plane that predates #3230 loads unconditionally into a pre-fence
+     * script, landing in v1 right before the rollback R checks the store it bound to. This control
+     * plane sends no such wipe (a script built before the fence is never wiped), but one still
+     * running during a deploy's overlap can, and the rollback's check repairs it. `reached` tells
+     * that R's check was the one it landed before.
+     */
+    const tombstoneBeforeCheck = (sid: ScopeId, then?: () => void) => {
+      let reached = false;
+      hooks.read = async (ref, s) => {
+        if (reached || ref !== refOf.get(version.v1) || s !== sid) return;
+        reached = true;
+        await hostFor('v1').restoreScopeLocal(sid, carriedAwayDump({ to: refOf.get(version.v2)!, at: new Date().toISOString() }));
+        then?.();
+      };
+      return () => reached;
+    };
+    /** Holds the push A (v1 → v2) as it promotes its source v1 for the wipe: bound, route read. */
+    const holdAtSourcePromotion = (sid: ScopeId) => {
+      const settle = dir.admin.settleScopeScriptCopy.bind(dir.admin);
+      const reached = deferred();
+      const release = deferred();
+      let held = false;
+      const spy = vi.spyOn(dir.admin, 'settleScopeScriptCopy').mockImplementation(async (...args) => {
+        const [, , s, script, , state] = args;
+        if (!held && s === sid && script === refOf.get(version.v1) && state === 'eligible') {
+          held = true;
+          reached.resolve();
+          await release.promise;
+        }
+        return settle(...args);
+      });
+      return { reached: reached.promise, release: release.resolve, restore: () => spy.mockRestore() };
+    };
     const rollbackOvertaken = async (old: string[]) => {
       const p = await fresh(`rb-old-${old.length}`, ...old);
       unfenced.add(refOf.get(version.v1)!);
-      // A's unconditional wipe of v1 (a tombstone load through the restore verb) is held; R
-      // carries v2 into v1 and binds; A's wipe lands just before R looks at what it bound to.
-      const aWipe = holdFirst((ref, sid, tables) =>
-        ref === refOf.get(version.v1) && sid === p.scopeId && dumpMetaValue(tables ?? [], CARRIED_AWAY_KEY) !== null,
-      );
-      hooks.restore = aWipe.hook;
-      const wiped = deferred();
-      hooks.restored = async (ref, sid, tables) => {
-        if (ref === refOf.get(version.v1) && sid === p.scopeId && dumpMetaValue(tables ?? [], CARRIED_AWAY_KEY) !== null) {
-          wiped.resolve();
-        }
-      };
-      let checked = false;
-      hooks.read = async (ref, sid) => {
-        if (checked || ref !== refOf.get(version.v1) || sid !== p.scopeId) return;
-        checked = true;
-        aWipe.release();
-        await wiped.promise;
-      };
-      // A drops its own copy in v2 once the route has left it, which can overtake R's re-carry from
-      // v2 and lose both copies (#3230). Held here until R is over, so this case asserts the
-      // re-carry itself; a paged read takes many turns and would lose that race every time.
-      const rDone = deferred();
-      hooks.drop = async (ref, sid) => {
-        if (ref === refOf.get(version.v2) && sid === p.scopeId) await rDone.promise;
-      };
-      const a = bindTo(p.scopeId, 'v2');
-      await aWipe.reached;
-      try {
-        expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
-      } finally {
-        rDone.resolve();
-      }
-      expect(checked).toBe(true);
-      expect((await a).status).toBe(200);
+      expect((await bindTo(p.scopeId, 'v2')).status).toBe(200);
+      // A pre-fence source is not wiped (#3230): v1 still holds the data A carried away.
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      const checked = tombstoneBeforeCheck(p.scopeId);
+      expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+      expect(checked()).toBe(true);
       expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: old });
       if (paged) {
         // R's carry and the re-carry each read v2 from its first page on, and neither read it whole.
@@ -2010,6 +2015,59 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         expect(v1Destinations.find((copy) => copy.moveId === moveId)?.state).toBe('done');
       }
     };
+
+    it('#3230: the push a rollback overtook leaves its destination to the rollback, which still re-carries from it', async () => {
+      const p = await fresh('rb-3230', 'kept by the rollback');
+      unfenced.add(refOf.get(version.v1)!);
+      // The issue's interleaving. A (v1 → v2) has bound and is held as it promotes v1 for its
+      // wipe. R (v2 → v1) carries and binds; a tombstone lands in v1 just before R checks it (A's
+      // own unconditional wipe, as a control plane before #3230 sent it), so R re-carries from v2,
+      // and that export waits for A to finish. A meanwhile finds the route on v1 and, before this
+      // fix, dropped its own copy in v2 under a fence R's read does not move: both copies gone.
+      const held = holdAtSourcePromotion(p.scopeId);
+      let v2Exports = 0;
+      let aDone: Promise<unknown> = Promise.resolve();
+      hooks.export = async (ref, sid) => {
+        if (ref !== refOf.get(version.v2) || sid !== p.scopeId) return;
+        if (++v2Exports === 2) await aDone; // R's re-carry
+      };
+      try {
+        const a = bindTo(p.scopeId, 'v2');
+        aDone = a.catch(() => undefined);
+        await held.reached;
+        const checked = tombstoneBeforeCheck(p.scopeId, held.release);
+        expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+        expect(checked()).toBe(true);
+        expect(v2Exports).toBe(2);
+        expect((await a).status).toBe(200);
+      } finally {
+        held.restore();
+      }
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['kept by the rollback'] });
+    });
+
+    it('#3230: a push that read the route before a rollback bound never wipes the pre-fence store the rollback made live', async () => {
+      const p = await fresh('rb-3230-late', 'late wipe data');
+      unfenced.add(refOf.get(version.v1)!);
+      // A (v1 → v2) has bound, read the route (v2) and found v2 clean, and is held as it promotes
+      // v1 for its wipe. R (v2 → v1) carries, binds, finds v1 clean, and wipes its source v2 under
+      // its fence. A then goes on with the route it read before R's bind. Before this fix it loaded
+      // the tombstone into v1 unconditionally, and both copies were gone (the window #1722 left open).
+      const held = holdAtSourcePromotion(p.scopeId);
+      try {
+        const a = bindTo(p.scopeId, 'v2');
+        await held.reached;
+        expect((await bindTo(p.scopeId, 'v1')).status).toBe(200);
+        held.release();
+        expect((await a).status).toBe(200);
+      } finally {
+        held.restore();
+      }
+      expect(await served(p.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: ['late wipe data'] });
+      expect(await tombstoneIn('v1', p.scopeId)).toBeNull();
+      // No load of the tombstone ever reached the pre-fence script.
+      expect(fencesSent.filter((r) => r.ref === refOf.get(version.v1) && r.sid === p.scopeId && r.wipe)).toEqual([]);
+    });
   });
 
   describe('a confirmed adopt or rebind gives up its old copy (#1722)', () => {

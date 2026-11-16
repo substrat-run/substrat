@@ -94,8 +94,8 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       deleteScope: async (input: { scopeId: string }) => {
         storeOf(ref).delete(input.scopeId);
       },
-      // #1722: a deployment built before the fenced wipe, so the carry's cleanup takes the
-      // tombstone load; the meta read is what the cleanup checks a destination with.
+      // #1722: a deployment built before the fenced wipe, so the carry's cleanup wipes nothing there
+      // and leaves the copy retained (#3230); the meta read is what the cleanup checks a destination with.
       wipeCarriedCopy: async () => {
         if (wipeAnswerLost) throw new ControlPlaneError(502, "reading the vertical's answer to wipe-carried failed (reset)");
         return 'unfenced';
@@ -112,6 +112,10 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     { name: 't', ddl: 'CREATE TABLE t(id TEXT)', columns: ['id'], rows: ids.map((id) => [id]) },
   ];
   const rowsOf = (ref: string, sid: string) => storeOf(ref).get(sid)?.[0]?.rows;
+  /** The ledger states of the carries' source entries on the serving script (#1722). */
+  const servingCopyState = async (sid: string) =>
+    (await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: scopeId.parse(sid) }))
+      .filter((copy) => copy.scriptRef === SERVING && copy.role === 'source').map((copy) => copy.state);
 
   const publish = async (version: string, withScript = true): Promise<string> => {
     const id = ulid();
@@ -266,21 +270,17 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       tenantId: t, from: SERVING, to: refOf.get(v1), tables: 1,
     });
     // Each preview's data went from the serving script into the script of the version it was
-    // bound to, and only those two scopes were touched. The copy left on the serving script
-    // was then wiped (#1722), which is a load of the tombstone there.
+    // bound to, and only those two scopes were touched. The serving script predates the fenced
+    // wipe, so the copy left there is not wiped but retained, for reap and erasure (#3230).
     expect(calls.sort()).toEqual(
       [
-        `export ${SERVING} ${a.scopeId}`, `restore ${refOf.get(v1)} ${a.scopeId}`, `restore ${SERVING} ${a.scopeId}`,
-        `export ${SERVING} ${b.scopeId}`, `restore ${refOf.get(v2)} ${b.scopeId}`, `restore ${SERVING} ${b.scopeId}`,
+        `export ${SERVING} ${a.scopeId}`, `restore ${refOf.get(v1)} ${a.scopeId}`,
+        `export ${SERVING} ${b.scopeId}`, `restore ${refOf.get(v2)} ${b.scopeId}`,
       ].sort(),
     );
     expect(rowsOf(refOf.get(v1)!, a.scopeId)).toEqual([['a-row']]);
     expect(rowsOf(refOf.get(v2)!, b.scopeId)).toEqual([['b-row']]);
-    for (const p of [a, b]) {
-      expect(storeOf(SERVING).get(p.scopeId)).toEqual([
-        expect.objectContaining({ name: '_substrat_meta', rows: [['carried_away', expect.stringContaining(`"to":`)]] }),
-      ]);
-    }
+    for (const p of [a, b]) expect(await servingCopyState(p.scopeId)).toEqual(['retained']);
     for (const [p, v] of [[a, v1], [b, v2]] as const) {
       const rec = await recordOf(p.scopeId);
       expect(rec.verticalVersionId).toBe(v); // never advanced
@@ -349,7 +349,6 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect(calls).toEqual([
       `export ${SERVING} ${bad.scopeId}`,
       `restore ${refOf.get(v2)} ${bad.scopeId}`,
-      `restore ${SERVING} ${bad.scopeId}`, // #1722: the serving script's copy, wiped once the bind landed
     ]);
     expect(rowsOf(refOf.get(v2)!, bad.scopeId)).toEqual([['bad-row'], ['after-failure']]);
     expect((await recordOf(bad.scopeId)).servingRef ?? null).toBeNull();
@@ -372,12 +371,13 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     expect(retried.repaired.map((r) => r.scopeId)).toEqual([stuck.scopeId]);
     expect(rowsOf(refOf.get(v1)!, stuck.scopeId)).toEqual([['stuck-row'], ['after-failed-clear']]);
     expect((await recordOf(stuck.scopeId)).servingRef ?? null).toBeNull();
-    // #1722: the copy on the serving script stayed while the pin still routed there, and goes
-    // only once the retry cleared it.
-    expect(storeOf(SERVING).get(stuck.scopeId)?.[0]?.name).toBe('_substrat_meta');
+    // #1722: the copy on the serving script stayed live while the pin still routed there, and is
+    // settled only once the retry cleared it: retained, since that script cannot fence a wipe (#3230).
+    // The failed attempt's entry is `done`: the route still reached that store when it settled.
+    expect(await servingCopyState(stuck.scopeId)).toEqual(['done', 'retained']);
   });
 
-  it('a re-assert that fails after the route moved still wipes the copy left behind (#1722)', async () => {
+  it('a re-assert that fails after the route moved still settles the copy left behind (#1722)', async () => {
     const moved = await legacyPreview('legacy-reassert', v1, 'reassert-row');
     const reassert = vi.spyOn(host.admin, 'reassertSystemSwitches').mockRejectedValueOnce(new Error('re-assert unavailable'));
     try {
@@ -387,10 +387,11 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       reassert.mockRestore();
     }
     // The bind and the pin clear landed, so no later pass visits this preview again: the copy on
-    // the serving script had to go now, or it never would.
+    // the serving script had to be settled now, or it never would. Retained, as the serving script
+    // cannot fence a wipe (#3230).
     expect((await recordOf(moved.scopeId)).servingRef ?? null).toBeNull();
     expect(rowsOf(refOf.get(v1)!, moved.scopeId)).toEqual([['reassert-row']]);
-    expect(storeOf(SERVING).get(moved.scopeId)?.[0]?.name).toBe('_substrat_meta');
+    expect(await servingCopyState(moved.scopeId)).toEqual(['retained']);
   });
 
   it('a fenced wipe whose answer is lost never falls back to the unconditional wipe, and is recorded (#1722)', async () => {

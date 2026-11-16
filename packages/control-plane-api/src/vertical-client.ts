@@ -1990,9 +1990,9 @@ export class VerticalClient {
    * scope since `expectLoadStamp` (null: a store no load has stamped). `wiped: false` is the
    * vertical's refusal: something was restored there since, and it stays.
    *
-   * `'unfenced'` is a deployment that cannot compare the stamp, and the only answer that lets
-   * the caller fall back to an unconditional wipe: a 404 (built before the route), a 501 (a host
-   * without the method) are the deployment's own proof that it wiped nothing (`routeAnswer`).
+   * `'unfenced'` is a deployment that cannot compare the stamp, and the caller then leaves the
+   * copy `retained` rather than wipe it unconditionally (#3230): a 404 (built before the route), a
+   * 501 (a host without the method) are the deployment's own proof that it wiped nothing (`routeAnswer`).
    * Everything else, a truncated or malformed JSON answer and any HTML page included, surfaces as
    * the failure it is: the wipe may or may not have run.
    */

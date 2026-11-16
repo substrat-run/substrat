@@ -61,8 +61,8 @@ export async function hasCarriedAwayTombstone(holder: VerticalClient, scopeId: S
   return key >= 0 && meta.rows.some((r) => r[key] === CARRIED_AWAY_KEY);
 }
 
-/** One eligible source. A changed store is kept, never discarded to satisfy the ledger. */
-export async function retryScopeScriptCopy(input: ScopeCopyCleanup, copy: ScopeScriptCopy): Promise<'done' | 'kept' | 'skipped'> {
+/** One eligible source. A changed store is kept, never discarded to satisfy the ledger; a pre-fence one is retained. */
+export async function retryScopeScriptCopy(input: ScopeCopyCleanup, copy: ScopeScriptCopy): Promise<'done' | 'kept' | 'retained' | 'skipped'> {
   if (copy.state !== 'eligible') return 'skipped';
   const scope = await input.admin.getScopeRecord(input.actor, copy.tenantId, copy.scopeId);
   if (!scope) return 'skipped'; // a reap must drain before it removes the row
@@ -79,7 +79,14 @@ export async function retryScopeScriptCopy(input: ScopeCopyCleanup, copy: ScopeS
     at: new Date().toISOString(),
     ...(!isPrimaryScope(scope) ? { markCopy: { kind: scope.kind, forkedFrom: scope.forkedFrom } } : {}),
   });
-  if (result === 'unfenced') throw new Error(`copy script '${copy.scriptRef}' has no fenced wipe`);
+  if (result === 'unfenced') {
+    // A script built before the fence is never wiped (#3230): an unconditional wipe could land
+    // after a rollback made it live again. Its copy stays, reached by reap and erasure. (An entry
+    // a carry promoted and then left, its request dying before it settled the same way.)
+    await input.admin.settleScopeScriptCopy(input.actor, copy.tenantId, copy.scopeId, copy.scriptRef, copy.moveId,
+      'retained', { loadStamp: copy.loadStamp, revision: copy.revision });
+    return 'retained';
+  }
   if (!result.wiped) {
     // An earlier wipe may have committed and only the ledger receipt failed. Its tombstone is
     // proof of deletion, whereas a changed store with no tombstone must be kept for review.

@@ -13,6 +13,7 @@ import {
   ControlPlaneError,
   createControlPlaneApi,
   settleExpiredScopeScriptCopies,
+  retryScopeScriptCopies,
   sweepScopeScriptCopies,
   reapScopeScriptCopies,
   DEV_ACTOR_HEADER,
@@ -44,6 +45,8 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
   let failRestoreInto: string | null = null;
   /** Scripts built before `/internal/delete-scope`: their delete answers 501. */
   const noDeleteVerb = new Set<string>();
+  /** Scripts built before the fenced wipe (#1722): their wipe answers `'unfenced'`. */
+  const unfenced = new Set<string>();
   const scripts = new Map<string, Map<string, Store>>();
   const redacted: string[] = [];
   const storesOf = (ref: string) => {
@@ -77,6 +80,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         return { tables: tables.length };
       },
       wipeCarriedCopy: async (input: { scopeId: string; expectLoadStamp: string | null; expectRevision?: string | null; carriedTo: string; at: string }) => {
+        if (unfenced.has(ref)) return 'unfenced';
         const now = storeOf(ref, input.scopeId);
         if (now.loadStamp !== input.expectLoadStamp ||
             (input.expectRevision !== undefined && now.revision !== input.expectRevision)) return { wiped: false };
@@ -536,6 +540,29 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     expect((await moving).status).toBe(200);
     expect(await ledgerOf(sid)).toEqual({ v1: 'done', v2: 'done' });
     expect(wiped(from, sid)).toBe(true);
+  });
+
+  it('a source built before the fence is never wiped: the carry and the sweep both leave it retained (#3230)', async () => {
+    const sid = await fresh('prefence-source');
+    const from = refOf.get(versions.v1)!;
+    unfenced.add(from);
+    try {
+      expect((await push('prefence-source', 'v2')).status).toBe(200);
+      // The carry's own cleanup: no wipe there, and the entry is retained, never swept.
+      expect(await ledgerOf(sid)).toEqual({ v1: 'retained', v2: 'done' });
+      expect(storeOf(from, sid).tables).toEqual(notes('kept'));
+      // An entry a carry promoted and then left, its request dying before it settled: the sweep
+      // settles it retained too, and loads nothing into that script.
+      const moveId = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t, sid, from, moveId, { role: 'source', leaseMs: SCOPE_COPY_LEASE_MS });
+      await host.admin.settleScopeScriptCopy(staff, t, sid, from, moveId, 'eligible', { loadStamp: null, revision: null });
+      expect(await retryScopeScriptCopies(cleanup())).toMatchObject({ failed: 0 });
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .find((copy) => copy.moveId === moveId)?.state).toBe('retained');
+      expect(storeOf(from, sid).tables).toEqual(notes('kept'));
+    } finally {
+      unfenced.delete(from);
+    }
   });
 
   // Review r1: every reap drains the ledger when the platform can resolve scripts by ref, even
