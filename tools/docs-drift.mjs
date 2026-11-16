@@ -173,9 +173,24 @@ for (const dir of dirsIn('engines')) {
   areas.push({ area: `engine/${dir}`, docs: [pageDir], src: codeOf(`engines/${dir}`) });
 }
 
+// A private connector is ours to read, not to document — until the connectors index lists
+// it. A row there tells a reader the connector exists, and a row with no page behind it is
+// the gap that let #2855's Bolagsverket ship undocumented (the old `continue` skipped every
+// private connector, listed or not).
+const connectorsIndex = existsSync(join(ROOT, `${DOCS}/connectors/index.md`))
+  ? readFileSync(join(ROOT, `${DOCS}/connectors/index.md`), 'utf8')
+  : '';
+/** Does a row of the connectors index name this connector? Linked or plain, by first cell. */
+const indexLists = (dir) =>
+  connectorsIndex.split('\n').some((line) => {
+    if (!line.startsWith('|')) return false;
+    const cell = (line.split('|')[1] ?? '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').trim();
+    return cell.toLowerCase().replace(/[^a-z0-9]/g, '') === dir.toLowerCase().replace(/[^a-z0-9]/g, '');
+  });
+
 for (const dir of dirsIn('connectors')) {
   const pkg = pkgName(`connectors/${dir}`);
-  if (pkg.private) continue;
+  if (pkg.private && !indexLists(dir)) continue;
   const page = `${DOCS}/connectors/${dir}.md`;
   if (!existsSync(join(ROOT, page))) {
     uncovered.push({ pkg: pkg.name, dir: `connectors/${dir}`, expected: `connectors/${dir}.md` });
