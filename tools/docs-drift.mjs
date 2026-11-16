@@ -180,13 +180,21 @@ for (const dir of dirsIn('engines')) {
 const connectorsIndex = existsSync(join(ROOT, `${DOCS}/connectors/index.md`))
   ? readFileSync(join(ROOT, `${DOCS}/connectors/index.md`), 'utf8')
   : '';
-/** Does a row of the connectors index name this connector? Linked or plain, by first cell. */
-const indexLists = (dir) =>
-  connectorsIndex.split('\n').some((line) => {
+/**
+ * Does a row of the connectors index name this connector? A linked first cell is matched by
+ * its `/connectors/<dir>` target (a label can differ from the directory: `[Inbound mail]` is
+ * `mail-in`); a plain cell falls back to its display name.
+ */
+const indexLists = (dir) => {
+  const norm = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return connectorsIndex.split('\n').some((line) => {
     if (!line.startsWith('|')) return false;
-    const cell = (line.split('|')[1] ?? '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').trim();
-    return cell.toLowerCase().replace(/[^a-z0-9]/g, '') === dir.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cell = (line.split('|')[1] ?? '').trim();
+    const link = /\]\(\/connectors\/([\w-]+)\)/.exec(cell);
+    if (link) return link[1] === dir;
+    return norm(cell) === norm(dir);
   });
+};
 
 for (const dir of dirsIn('connectors')) {
   const pkg = pkgName(`connectors/${dir}`);
