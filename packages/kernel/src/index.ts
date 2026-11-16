@@ -1092,6 +1092,7 @@ export type {
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
 export { opsFailureReferenceWhere, withheldOpsFailure, withheldStaffFailure } from './ops-failure-reference.js';
+export { landingRefusalSaid, LANDING_REFUSAL_DETAIL_MAX } from './landing-refusal.js';
 export {
   exportBreaksOf,
   exportBreakRefusal,

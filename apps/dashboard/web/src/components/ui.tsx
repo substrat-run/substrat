@@ -225,12 +225,17 @@ function sweepSuffix(outcome: string, skippedNote: string, detail: string | null
   if (outcome === 'ok') return detail ? ` — ${detail}` : '';
   if (outcome === 'unsupported') return detail ? ` — unsupported: ${detail}` : ' — unsupported';
   if (outcome === 'skipped') return ` — ${skippedNote}`;
+  // #3235: a failed run's sentence is the platform's own words for the connection's tenant, with
+  // the app's refusal when its landing refused. Written out, not left in the tick's tooltip, so
+  // the cause of a failing sweep is on the page without a hover.
+  if (outcome === 'failed') return detail ? ` — failed: ${detail}` : ' — failed';
   return ` — ${outcome}`;
 }
 
 /**
  * The recent-runs strip (#1232): one tick per recorded pass, newest last (reading
- * order = time order), red carrying its error in the tick's label. Shared by the
+ * order = time order), red carrying its error in the tick's label, and the newest run's
+ * error written out after it (#3235). Shared by the
  * connection cards and the schedule panel — which is why the amber sentence is a
  * PARAMETER: on a connection a skip means "bound but nothing polls it", on a
  * schedule it means "not due yet", and one hardcoded sentence was wrong somewhere.
@@ -281,7 +286,10 @@ export function SweepStrip({
           />
         ))}
       </span>
-      <span>
+      <span
+        data-sweep-sentence
+        style={{ minWidth: 0, overflowWrap: 'anywhere', ...(last.outcome === 'failed' ? { color: 'var(--status-danger-fg)' } : {}) }}
+      >
         {label} {relativeTime(last.at)}
         {sweepSuffix(last.outcome, skippedNote, last.error ?? null)}
       </span>
