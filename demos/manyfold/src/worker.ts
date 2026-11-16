@@ -26,6 +26,7 @@ import {
   RouterAssertionError,
   invocationLog,
   externalJson,
+  refuse,
 } from '@substrat-run/vertical-host';
 import type { ScopeStub } from '@substrat-run/kernel';
 import {
@@ -434,7 +435,8 @@ mountApi(app, stub);
 // (server.ts) exposes some routes the worker doesn't (e.g. /api/personas); if those
 // reached the catch-all they'd return index.html with a 200, and the client would parse
 // the HTML as `{}` — silently turning `Persona[]` into an object and crashing `.find`.
-app.all('/api/*', (c) => c.json({ error: `unknown route: ${new URL(c.req.raw.url).pathname}` }, 404));
+// `refuse`: the path is the caller's, and `problemResponse` reads fault phrases in a message before the code.
+app.all('/api/*', (c) => refuse(c, 'not_found', `unknown route: ${new URL(c.req.raw.url).pathname}`));
 
 // The SPA is inlined into the worker (no ASSETS binding — sandbox-clean); this is the
 // catch-all behind /api/* and /internal/*.

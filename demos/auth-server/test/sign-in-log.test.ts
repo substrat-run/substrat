@@ -547,7 +547,7 @@ describe('the admin read — what the Logs screens ask for', () => {
   });
 
   it('answers 404 for an entry retention no longer holds, and 400 for one that is not an id', async () => {
-    expect(await get('/sign-in-log/999999')).toEqual({ status: 404, body: { error: 'not found' } });
+    expect(await get('/sign-in-log/999999')).toMatchObject({ status: 404, body: { code: 'not_found', detail: 'not found', error: 'not found' } });
     expect((await get('/sign-in-log/abc')).status).toBe(400);
   });
 });

@@ -36,7 +36,11 @@ import {
   invocationLog,
   externalInput,
   externalJson,
+  problemResponse,
+  refuse,
+  refuseStatus,
 } from '@substrat-run/vertical-host';
+import { substratError } from '@substrat-run/contracts';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { declareScriveConnector } from '@substrat-run/connector-scrive';
@@ -361,7 +365,7 @@ mountPlatformSurface<Env>(app, {
 // an /internal/* request that reaches the SPA returns 200 text/html, which the platform's
 // JSON parse turns into an opaque "internal error" (the auth-server incident, 2026-07-25).
 app.all('/internal/*', (c) =>
-  c.json({ error: `meridian does not implement ${c.req.method} ${new URL(c.req.url).pathname}` }, 501),
+  refuseStatus(c, 501, `meridian does not implement ${c.req.method} ${new URL(c.req.url).pathname}`),
 );
 
 /** Resolve the caller (any provider) → the routed node → who they are and a scope stub. 401 if nobody. */
@@ -501,7 +505,8 @@ app.post('/api/invoke', async (c) => {
 // documents resolve, so the spec and the surface cannot disagree.
 app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
-  if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
+  // The name is the caller's: `refuse`, not `problemResponse`, which reads fault phrases in a message first.
+  if (!(name in API)) return refuse(c, 'not_found', `unknown operation: ${name}`);
   const body = await c.req.text();
   const result = (await (await stub(c)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
@@ -530,6 +535,6 @@ app.get('/api/docs', async (c) => {
 // only what `run_worker_first` routes to it (/api/*, /internal/*, /openapi.json); every
 // other path is a static file, or index.html via the single-page-application fallback.
 // A request that reaches here is therefore a worker-first prefix with no matching route.
-app.all('*', (c) => c.json({ error: 'not found' }, 404));
+app.all('*', (c) => problemResponse(c, substratError('not_found', 'not found')));
 
 export default app;

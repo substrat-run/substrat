@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { externalInput, externalJson, problemResponse, invocationLog } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse, refuse, refuseStatus, invocationLog } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -17,7 +17,7 @@ import {
 } from '@substrat-run/connector-scrive';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { DEV_PROVIDER } from './personas.js';
-import { platformActorId, principalId, type PrincipalId, type ScopeId, type TenantId,
+import { platformActorId, principalId, substratError, type PrincipalId, type ScopeId, type TenantId,
   isPage,
   nextPageLink,
   PAGE_LINK_HEADER,
@@ -251,7 +251,8 @@ app.post('/api/invoke', async (c) => {
 // pinned package, never a CDN.
 app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
-  if (!(name in API)) return c.json({ error: `unknown operation: ${name}` }, 404);
+  // The name is the caller's: `refuse`, not `problemResponse`, which reads fault phrases in a message first.
+  if (!(name in API)) return refuse(c, 'not_found', `unknown operation: ${name}`);
   const body = await c.req.text();
   const p = await persona(c);
   const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
@@ -306,7 +307,7 @@ if (scrive) {
       if (!outcome.accepted) {
         // One uniform answer for every rejection; the WHY stays server-side.
         console.log(`[scrive-callback] rejected (${outcome.reason})`);
-        return c.json({ error: 'not found' }, 404);
+        return problemResponse(c, substratError('not_found', 'not found'));
       }
       const { recorded, complete, documentStatus } = outcome.result;
       console.log(
@@ -317,7 +318,7 @@ if (scrive) {
       // Verified but the reconcile failed (provider hiccup, store contention):
       // 500 so the provider retries; the poll floor covers it regardless.
       console.error('[scrive-callback] reconcile failed', err);
-      return c.json({ error: 'reconcile failed' }, 500);
+      return refuseStatus(c, 500, 'reconcile failed');
     }
   });
 }

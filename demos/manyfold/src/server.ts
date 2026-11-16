@@ -8,7 +8,7 @@ import { HTTPException } from 'hono/http-exception';
 import Database from 'better-sqlite3';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
+import { platformActorId, principalId, substratError, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
 import { kickFlags, problemResponse, invocationLog } from '@substrat-run/vertical-host';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
@@ -107,7 +107,7 @@ app.get('/api/sites', (c) => c.json(world.sites.map((s) => ({ slug: s.slug, name
 // is reachable in dev for the first time.
 app.get('/api/me', async (c) => {
   const caller = await login.caller(c.req.raw.headers);
-  if (!caller) return c.json({ error: 'unauthorized' }, 401);
+  if (!caller) return problemResponse(c, substratError('unauthenticated', 'unauthorized'));
   const scope = siteScope(c.req.raw.headers);
   const who = (await (await host.getScope(caller.principal, world.t1, scope)).invoke('manyfold/whoami', undefined)) as {
     can: Record<string, boolean>;

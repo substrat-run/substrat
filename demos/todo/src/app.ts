@@ -3,7 +3,8 @@
  * the same wiring a browser does (the scenario suite never reaches it).
  */
 import { Hono } from 'hono';
-import { invocationLog } from '@substrat-run/vertical-host';
+import { substratError } from '@substrat-run/contracts';
+import { invocationLog, problemResponse } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import type { DevCaller, DevLogin } from '@substrat-run/dev-issuer';
 import type { ScopeHost, ScopeStubOptions } from '@substrat-run/kernel';
@@ -48,7 +49,7 @@ export function createApp({ host, login, onJoined, outbox, routes }: AppOptions)
   /** Who is signed in — the shape the app's header renders, or 401. */
   app.get('/api/me', async (c) => {
     const caller = await login.caller(c.req.raw.headers);
-    if (!caller) return c.json({ error: 'unauthorized' }, 401);
+    if (!caller) return problemResponse(c, substratError('unauthenticated', 'unauthorized'));
     // Signing in is joining: nobody types an address, and an open invitation becomes a share here.
     // An address the issuer did not verify stays out, so that person is signed in and not joined.
     if (caller.verifiedEmail && !joined.has(caller.principal)) {

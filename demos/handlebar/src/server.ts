@@ -9,6 +9,7 @@ import {
   listPageQuery,
   nextPageLink,
   platformActorId,
+  substratError,
   type Page,
   type TimelineEntry,
 } from '@substrat-run/contracts';
@@ -89,7 +90,7 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
 /** Who is signed in — the shape the app's header renders, or 401. */
 app.get('/api/me', async (c) => {
   const caller = await login.caller(c.req.raw.headers);
-  if (!caller) return c.json({ error: 'unauthorized' }, 401);
+  if (!caller) return problemResponse(c, substratError('unauthenticated', 'unauthorized'));
   return c.json({ principal: caller.principal, display: caller.display });
 });
 

@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { substratError } from '@substrat-run/contracts';
+import { problemResponse } from '@substrat-run/vertical-host';
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
@@ -1229,7 +1231,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const raw = c.req.param('id');
     if (!/^[1-9][0-9]{0,15}$/.test(raw)) throw new HTTPException(400, { message: 'id: a positive integer' });
     const entry = readSignInLogEntry(deps.sql, Number(raw));
-    if (!entry) return c.json({ error: 'not found' }, 404);
+    if (!entry) return problemResponse(c, substratError('not_found', 'not found'));
     return c.json(entry);
   });
 

@@ -41,6 +41,7 @@ import {
   previewClientMint,
   previewClientRetire,
   SOCIAL_RELAY_SECRET_NEEDED,
+  substratError,
   TOKEN_EXCHANGE_GRANT_TYPE,
 } from '@substrat-run/contracts';
 import {
@@ -49,6 +50,8 @@ import {
   assertPlatformCall,
   PlatformCallError,
   invocationLog,
+  problemResponse,
+  refuseStatus,
 } from '@substrat-run/vertical-host';
 import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
 import { serveAsset } from './assets.js';
@@ -401,7 +404,7 @@ app.post('/internal/configure', async (c) => {
   const outcome = await stubFor(c.env, body.scopeId).setInstanceConfig(body.entries);
   // Everything else in the delivery is applied; the platform rotates the relay secret and sends
   // the entry again (`@substrat-run/contracts`, social-relay.ts).
-  if (outcome?.socialRelaySecretNeeded) return c.json({ error: SOCIAL_RELAY_SECRET_NEEDED }, 409);
+  if (outcome?.socialRelaySecretNeeded) return problemResponse(c, substratError('conflict', SOCIAL_RELAY_SECRET_NEEDED));
   return c.json({ applied: body.entries.length });
 });
 
@@ -536,7 +539,7 @@ app.delete(MACHINE_CLIENT_PATH, async (c) => {
  * dashboard renders as "internal error" (the 2026-07-25 provisioning incident).
  */
 app.all('/internal/*', (c) =>
-  c.json({ error: `auth-server does not implement ${c.req.method} ${new URL(c.req.url).pathname}` }, 501),
+  refuseStatus(c, 501, `auth-server does not implement ${c.req.method} ${new URL(c.req.url).pathname}`),
 );
 
 // Serve the inlined admin SPA for everything else. MUST come last so the routes above win.

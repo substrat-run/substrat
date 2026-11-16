@@ -13,7 +13,8 @@ import {
   type EmailTransport,
   type SendResult,
 } from '@substrat-run/adapter-email';
-import { resolveScopedEnvSpec } from '@substrat-run/contracts';
+import { resolveScopedEnvSpec, substratError } from '@substrat-run/contracts';
+import { problemResponse } from '@substrat-run/vertical-host';
 import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { mergeAccounts } from './account-merge.js';
@@ -285,7 +286,7 @@ app.get('/api/session', async (c) => c.json(await sessionOf(c.req.raw.headers)))
 app.get('/api/account/places', async (c) => {
   const subject = await sessionOf(c.req.raw.headers);
   c.header('cache-control', 'no-store');
-  if (!subject) return c.json({ error: 'sign in to see your places' }, 401);
+  if (!subject) return problemResponse(c, substratError('unauthenticated', 'sign in to see your places'));
   return c.json({ places: placesOf(sql, subject.sub) });
 });
 

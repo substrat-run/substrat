@@ -21,10 +21,10 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Context } from 'hono';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, substratError } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { globalFetch, type ScopeHost } from '@substrat-run/kernel';
-import { mountLiveReads, invocationLog } from '@substrat-run/vertical-host';
+import { mountLiveReads, invocationLog, problemResponse } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { ticket0Manifest } from './manifest.js';
@@ -113,7 +113,7 @@ async function boot() {
 
   app.get('/api/me', async (c) => {
     const caller = await login.caller(c.req.raw.headers);
-    if (!caller) return c.json({ error: 'unauthorized' }, 401);
+    if (!caller) return problemResponse(c, substratError('unauthenticated', 'unauthorized'));
     return c.json({ principal: caller.principal, display: caller.display });
   });
 

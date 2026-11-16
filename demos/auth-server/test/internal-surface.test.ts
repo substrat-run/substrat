@@ -457,12 +457,13 @@ describe('the /internal/* surface never reaches the SPA', () => {
     ['POST', '/internal/snapshot'],
     ['POST', '/internal/restore'],
     ['POST', '/internal/rewind'],
-  ])('%s %s is a JSON 501, not the SPA fallback', async (method, path) => {
+  ])('%s %s is a problem 501, not the SPA fallback', async (method, path) => {
     const res = await app.request(path, { method, headers: { 'x-substrat-platform': PLATFORM_SECRET } }, env);
     expect(res.status).toBe(501);
-    expect(res.headers.get('content-type')).toContain('application/json');
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('auth-server does not implement');
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    const body = (await res.json()) as { detail: string; error: string };
+    expect(body.detail).toContain('auth-server does not implement');
+    expect(body.error).toBe(body.detail);
   });
 });
 
