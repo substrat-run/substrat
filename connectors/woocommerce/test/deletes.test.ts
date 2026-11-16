@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CommerceChange } from '@substrat-run/contracts';
-import { WOOCOMMERCE_RECONCILE_EVERY_MS, woocommerceConnectionActivity } from '../src/index.js';
+import { listWooCommerceBindings, WOOCOMMERCE_RECONCILE_EVERY_MS, woocommerceConnectionActivity } from '../src/index.js';
 import { WooCommerceMock, type WooCommerceMockOptions } from '../src/mock.js';
 import { ORDERS, PRODUCTS, VARIATIONS, product } from './fixture.js';
 import { touch, world, type World } from './world.js';
@@ -19,6 +19,7 @@ const HOUR = WOOCOMMERCE_RECONCILE_EVERY_MS;
 const store = (over: WooCommerceMockOptions = {}) =>
   new WooCommerceMock({ products: PRODUCTS(), variations: VARIATIONS(), orders: ORDERS(), ...over });
 
+const ids = (changes: CommerceChange[]) => changes.map((c) => (c.record === 'product' ? `p${c.productId}` : `o${c.orderId}`));
 const removals = (changes: CommerceChange[]) =>
   changes
     .filter((c) => c.change === 'removed')
@@ -107,16 +108,44 @@ describe('woocommerce connector — deletes and the trash', () => {
     expect(removals(s.w.landed)).toEqual(['o501:deleted', 'o501:deleted']);
   });
 
-  it('confirms every missing id on its own before calling it deleted — a store that ignores include reports nothing', async () => {
-    // More products than a page: asked by id, this store answers its first hundred whatever was asked.
-    const products = Array.from({ length: 150 }, (_, i) => product(4000 + i, new Date(Date.UTC(2026, 10, 1, 10, 0, i)).toISOString().slice(0, 19)));
+  it('reads on from where a capped confirmation stopped — a store that ignores include reports nothing falsely, and misses no delete', async () => {
+    // More products than two batches: asked by id, this store answers its first hundred whatever was asked.
+    const products = Array.from({ length: 250 }, (_, i) => product(4000 + i, new Date(Date.UTC(2026, 10, 1, 10, 0, i)).toISOString().slice(0, 19)));
     const mock = store({ ignoreInclude: true, products, orders: [] });
-    const s = await swept(mock);
+    const all = products.map((p) => p.id);
+    const reads = () => mock.requests.filter((r) => /\/products\/\d+\?/.test(r)).map((r) => Number(/\/products\/(\d+)/.exec(r)![1]));
     mock.requests.length = 0;
+    // The first sweep's reconcile reads the first hundred of the hundred and fifty left out, and finds them.
+    const s = await swept(mock);
+    expect(reads()).toEqual(all.slice(100, 200));
+    expect(s.w.landed).toEqual([]);
+
+    // Deleted among the ones no pass has read yet; the next pass reads on from there, without waiting.
+    mock.products.splice(mock.products.findIndex((p) => p.id === 4249), 1);
+    mock.requests.length = 0;
+    await s.sweep();
+    expect(removals(s.w.landed)).toEqual(['p4249:deleted']);
+    expect(reads().slice(0, 50)).toEqual(all.slice(200, 250));
+  });
+
+  it('records what a binding synced before delivered ids were tracked already holds, by walking the store once more', async () => {
+    const mock = store();
+    const s = await swept(mock);
+    // As the previous version left it: cursors, but no delivered ids and no marker.
+    const [binding] = await listWooCommerceBindings(s.w.host, s.w.connId);
+    const { tracksDelivered: _, reconciledAt: __, ...legacy } = binding!.lastSync!;
+    await s.w.host.admin.putConnectorState(s.w.connId, `woocommerce:binding:${s.w.scopeId}`, { ...binding, lastSync: legacy });
+    for (const { key } of await s.w.host.admin.listConnectorState(s.w.connId, 'woocommerce:seen:')) {
+      await s.w.host.admin.putConnectorState(s.w.connId, key, null);
+    }
+
+    await s.sweep();
+    expect(ids(s.w.landed)).toEqual(['p11', 'p12', 'p13', 'o501', 'o502', 'o504']);
+    s.w.landed.length = 0;
+
+    mock.products.splice(mock.products.findIndex((p) => p.id === 13), 1);
     s.later();
     await s.sweep();
-    expect(s.w.landed).toEqual([]);
-    // The fifty it left out were each read on their own, and found.
-    expect(mock.requests.filter((r) => /\/products\/\d+\?/.test(r))).toHaveLength(50);
+    expect(removals(s.w.landed)).toEqual(['p13:deleted']);
   });
 });

@@ -99,14 +99,19 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  * 3. each still unaccounted for is read on its own, and only WooCommerce's "invalid id" 404 makes
  *    it `deleted`. Deletes are rare, so this is the one per-id cost, and it is what keeps a store
  *    that ignores `include` (a plugin) or answers a 404 from no route from reading as "everything
- *    was deleted". At most {@link WOOCOMMERCE_MAX_PAGE} are read per resource per pass; the rest
- *    wait for the next one, which reconciles again.
+ *    was deleted". At most {@link WOOCOMMERCE_MAX_PAGE} are read per resource per pass; the next
+ *    pass reconciles again and reads on from the last id read (`lastSync.confirmAfter`), wrapping
+ *    round, so every one is reached however many a store leaves unaccounted.
  *
  * Each removal lands through the binding's operation as a `commerceChange` with `change:
  * 'removed'`, before its id is marked reported, so a failure re-reports it (at least once). An id
  * that was never delivered is never asked about, so never reported. A trashed id stays watched
  * and is reported again as `deleted` when the trash is emptied; one restored from the trash arrives
  * as an upsert, since restoring saves it.
+ *
+ * A binding synced before this tracking existed has cursors but no delivered ids. Its walk starts
+ * over once (`lastSync.tracksDelivered` absent), re-landing the store as upserts — which delivery
+ * already allows — and recording each id as it lands, with progress kept by the ordinary cursor.
  *
  * Webhooks (`product.deleted`, `order.deleted`) would only shorten the wait, never replace this
  * pass, and need an inbound route per store; they are a later slice.
@@ -176,6 +181,13 @@ export interface WooCommerceBinding {
     landed: { products: number; orders: number; removed?: number };
     /** When the delivered ids were last reconciled in full; absent until the first time. */
     reconciledAt?: string;
+    /**
+     * Set once the cursors only cover rows whose ids were recorded as delivered (#3224). Absent on a
+     * binding synced before that: its walk starts over once, so every delivered id is recorded.
+     */
+    tracksDelivered?: true;
+    /** Where the capped one-by-one confirmation stopped, per resource; the next pass reads on from there. */
+    confirmAfter?: { products?: number; orders?: number };
   };
 }
 
@@ -322,8 +334,10 @@ async function walkChanged<T extends { id: number }>(
 async function reconcile(
   api: WooCommerceApi,
   seen: SeenIds,
+  /** The last id the previous pass confirmed on its own, when it stopped at the budget. */
+  confirmAfter: number | undefined,
   land: (id: number, removal: 'trashed' | 'deleted') => Promise<void>,
-): Promise<{ removed: number; complete: boolean }> {
+): Promise<{ removed: number; complete: boolean; confirmAfter: number | undefined }> {
   const resource: SeenResource = seen.resource;
   await seen.loadAll();
   const tracked = seen.all();
@@ -348,7 +362,12 @@ async function reconcile(
       removed += 1;
     }
   }
-  for (const t of unaccounted.slice(0, WOOCOMMERCE_MAX_PAGE)) {
+  // Read on from where the last capped pass stopped, wrapping round: a store whose batch answer
+  // always leaves the same ids out would otherwise spend every pass on the lowest of them.
+  const from = confirmAfter === undefined ? 0 : unaccounted.findIndex((t) => t.id > confirmAfter);
+  const rotated = from <= 0 ? unaccounted : [...unaccounted.slice(from), ...unaccounted.slice(0, from)];
+  const batch = rotated.slice(0, WOOCOMMERCE_MAX_PAGE);
+  for (const t of batch) {
     const status = await api.statusOf(resource, t.id);
     if (status === null) {
       await land(t.id, 'deleted');
@@ -361,7 +380,8 @@ async function reconcile(
     }
     // Any other status: still at the store, missed by the batch read. Nothing to report.
   }
-  return { removed, complete: unaccounted.length <= WOOCOMMERCE_MAX_PAGE };
+  const complete = unaccounted.length <= WOOCOMMERCE_MAX_PAGE;
+  return { removed, complete, confirmAfter: complete ? undefined : batch.at(-1)?.id };
 }
 
 /**
@@ -389,8 +409,13 @@ export async function syncWooCommerceScope(
   const currency = storeCurrency((await api.storeInfo()).settings.currency);
   const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
 
-  const products: Walk = { cursor: binding.lastSync?.products ?? { at: null, landedAt: [] }, landed: 0, caughtUp: false };
-  const orders: Walk = { cursor: binding.lastSync?.orders ?? { at: null, landedAt: [] }, landed: 0, caughtUp: false };
+  // A binding synced before delivered ids were recorded walks the store once more from the start.
+  const tracked = binding.lastSync?.tracksDelivered === true;
+  const start: WooCommerceCursor = { at: null, landedAt: [] };
+  const products: Walk = { cursor: (tracked ? binding.lastSync?.products : undefined) ?? start, landed: 0, caughtUp: false };
+  const orders: Walk = { cursor: (tracked ? binding.lastSync?.orders : undefined) ?? start, landed: 0, caughtUp: false };
+  const lastConfirmAfter = binding.lastSync?.confirmAfter ?? {};
+  let confirmAfter = lastConfirmAfter;
   const seenProducts = new SeenIds(host.admin, connectionId, binding.scopeId, 'products');
   const seenOrders = new SeenIds(host.admin, connectionId, binding.scopeId, 'orders');
   const now = (): number => options.now?.() ?? Date.now();
@@ -409,6 +434,8 @@ export async function syncWooCommerceScope(
       products.cursor !== binding.lastSync?.products ||
       orders.cursor !== binding.lastSync?.orders ||
       reconciledAt !== lastReconciled ||
+      confirmAfter !== lastConfirmAfter ||
+      !tracked ||
       removed > 0;
     // An idle pass writes nothing: most passes find a store nobody has touched.
     if (!moved && binding.lastSync?.caughtUp === caughtUp) return;
@@ -421,6 +448,8 @@ export async function syncWooCommerceScope(
         caughtUp,
         landed: { products: products.landed, orders: orders.landed, removed },
         ...(reconciledAt === undefined ? {} : { reconciledAt }),
+        tracksDelivered: true,
+        ...(Object.keys(confirmAfter).length === 0 ? {} : { confirmAfter }),
       },
     };
     await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
@@ -458,8 +487,9 @@ export async function syncWooCommerceScope(
     if (reconcileDue) {
       const startedAt = new Date(now()).toISOString();
       let complete = true;
+      const next: { products?: number; orders?: number } = {};
       for (const seen of [seenProducts, seenOrders]) {
-        const r = await reconcile(api, seen, async (id, removal) => {
+        const r = await reconcile(api, seen, lastConfirmAfter[seen.resource], async (id, removal) => {
           const key = seen.resource === 'products' ? { record: 'product', productId: String(id) } : { record: 'order', orderId: String(id) };
           await scope.invoke(
             binding.operation,
@@ -468,7 +498,9 @@ export async function syncWooCommerceScope(
         });
         removed += r.removed;
         complete &&= r.complete;
+        if (r.confirmAfter !== undefined) next[seen.resource] = r.confirmAfter;
       }
+      confirmAfter = next;
       // An incomplete pass leaves the clock where it was, so the next pass reconciles again.
       if (complete) reconciledAt = startedAt;
     }
