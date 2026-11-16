@@ -32,10 +32,16 @@ describe('build snapshots (#2952)', () => {
 		const work = join(root, 'work');
 		execFileSync('git', ['init', '-q', '--initial-branch=main', work]);
 		const access = { remote, authorization: 'Bearer fixture-token' };
+		writeFileSync(join(work, 'base.ts'), 'the GitHub base');
+		execFileSync('git', ['-C', work, 'add', '-A']);
+		execFileSync('git', ['-C', work, '-c', 'user.name=F', '-c', 'user.email=f@example.test', 'commit', '-qm', 'base']);
+		const base = execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 		const builds = [id(1), id(2), id(3), id(4)];
 		const revisions: string[] = [];
 		const pruned: string[][] = [];
 		for (const build of builds) {
+			// As in production, each snapshot is a sibling commit on the GitHub base, not a chain.
+			execFileSync('git', ['-C', work, 'reset', '-q', '--hard', base]);
 			writeFileSync(join(work, 'app.ts'), build);
 			execFileSync('git', ['-C', work, 'add', '-A']);
 			execFileSync('git', ['-C', work, '-c', 'user.name=F', '-c', 'user.email=f@example.test', 'commit', '-qm', build]);
@@ -47,6 +53,29 @@ describe('build snapshots (#2952)', () => {
 		expect(pruned).toEqual([[], [], [buildRef(id(1))], [buildRef(id(2))]]);
 		const refs = execFileSync('git', ['--git-dir', remote, 'for-each-ref', '--format=%(refname) %(objectname)'], { encoding: 'utf8' }).trim().split('\n');
 		expect(refs).toEqual([`${buildRef(id(3))} ${revisions[2]}`, `${buildRef(id(4))} ${revisions[3]}`]);
+		// A pruned snapshot is reachable from no ref that is left.
+		for (const gone of revisions.slice(0, 2)) {
+			expect(execFileSync('git', ['--git-dir', remote, 'for-each-ref', '--contains', gone!], { encoding: 'utf8' }).trim()).toBe('');
+		}
+	});
+
+	it('saves the build even when pruning fails, and reports the failure', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'build-snapshots-'));
+		roots.push(root);
+		const remote = join(root, 'snapshots.git');
+		execFileSync('git', ['init', '--bare', '--initial-branch=main', '-q', remote]);
+		const work = join(root, 'work');
+		execFileSync('git', ['init', '-q', '--initial-branch=main', work]);
+		writeFileSync(join(work, 'app.ts'), 'x');
+		execFileSync('git', ['-C', work, 'add', '-A']);
+		execFileSync('git', ['-C', work, '-c', 'user.name=F', '-c', 'user.email=f@example.test', 'commit', '-qm', 'x']);
+		const listingFails: SandboxLike = { ...sandbox, async exec(command, options) {
+			return command.includes("'ls-remote'") ? { stdout: '', stderr: 'down', exitCode: 1 } : sandbox.exec(command, options);
+		} };
+		const saved = await saveBuildSnapshot(listingFails, { remote, authorization: 'Bearer fixture-token' }, work, id(1));
+		expect(saved.pruneError).toBeInstanceOf(Error);
+		expect(saved.pruned).toEqual([]);
+		expect(execFileSync('git', ['--git-dir', remote, 'rev-parse', buildRef(id(1))], { encoding: 'utf8' }).trim()).toBe(saved.revision);
 	});
 
 	it('orders by build id, never prunes what is not a build ref, and names one repository per project', () => {
