@@ -134,12 +134,15 @@ async function main(): Promise<void> {
         const started = Date.now();
         let run: ModelRun | null = null;
         let held = 0;
+        let attempts = 0;
+        let outOfBudget = false;
         for (let attempt = 0; attempt < 2 && !run; attempt++) {
           held = worst(spec, p);
           if (!hold(held)) {
-            console.log(`  ${spec} ${p.seed.id}: stopped, the budget would not hold another call`);
-            return;
+            outOfBudget = true;
+            break;
           }
+          attempts++;
           try {
             run = await host.run({ ...REVIEW_CALL, spec, attribution, system: p.system, prompt: p.prompt, maxOutputTokens: maxOutput, abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
           } catch (error) {
@@ -152,8 +155,15 @@ async function main(): Promise<void> {
         }
         const latencyMs = Date.now() - started;
         if (!run) {
-          // Its usage is unknown: the holds stay spent, and the read records no cost of its own.
-          runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: null, latencyMs });
+          // A read that made a call is recorded even when the budget refused its retry: its usage is
+          // unknown, its holds stay spent, and it counts as failed against what the seed owes.
+          if (attempts > 0) {
+            runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: null, latencyMs });
+          }
+          if (outOfBudget) {
+            console.log(`  ${spec} ${p.seed.id}: stopped, the budget would not hold another call`);
+            return;
+          }
           continue;
         }
         const read = readReply(run, p.files);
