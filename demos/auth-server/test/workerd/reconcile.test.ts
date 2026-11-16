@@ -672,15 +672,46 @@ describe("a login's places at the identity pool (#1670)", () => {
     // Two businesses another team's manager provisioned, each signing in here as its OWN client
     // and registered under its own tenant's key, as the provision-tenant drain delivers them.
     const p = await pool();
-    const shopA = await client(p, 'Shop A');
-    const shopB = await client(p, 'Shop B');
+    // Registered as the drain registers one: for the tenant's own callback (plus the one this
+    // suite's sign-in round trip uses).
+    const shopClient = async (name: string, host: string) => {
+      const res = await p.routed('/api/auth/oauth2/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_name: name,
+          redirect_uris: [`https://${host}/api/auth/callback`, RP_CALLBACK],
+          token_endpoint_auth_method: 'client_secret_post',
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { client_id: string; client_secret: string };
+      return { clientId: body.client_id, clientSecret: body.client_secret };
+    };
+    const shopA = await shopClient('Shop A', 'shop-a-product.global.substrat.test');
+    const shopB = await shopClient('Shop B', 'shop-b-product.global.substrat.test');
     const [tenantA, tenantB] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
     const [appA, appB] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
     const entryA = { tenantId: tenantA, scopeId: appA, hostname: 'shop-a-product.global.substrat.test', name: 'Shop A' };
     const entryB = { tenantId: tenantB, scopeId: appB, hostname: 'shop-b-product.global.substrat.test', name: 'Shop B' };
-    const placeOf = (e: typeof entryA, rp: { clientId: string }) => [{ appScopeId: e.scopeId, clientId: rp.clientId, hostname: e.hostname, name: e.name }];
-    expect((await register(p, tenantA, placeOf(entryA, shopA))).status).toBe(200);
-    expect((await register(p, tenantB, placeOf(entryB, shopB))).status).toBe(200);
+    // Exactly what the drain sends, in one delivery: the client's hostnames, then the place.
+    const provisioned = (tenant: string, e: typeof entryA, rp: { clientId: string }) =>
+      platform('/internal/configure', {
+        scopeId: p.scope,
+        entries: [
+          { key: `substrat:redirects:${e.scopeId}`, value: JSON.stringify({ clientId: rp.clientId, hostnames: [e.hostname] }) },
+          { key: `substrat:places:${tenant}`, value: JSON.stringify([{ appScopeId: e.scopeId, clientId: rp.clientId, hostname: e.hostname, name: e.name }]) },
+        ],
+      });
+    // A person signs out of a managed tenant at the issuer too, which open DCR alone does not allow.
+    const endSession = async (rp: { clientId: string }, e: typeof entryA) => {
+      const q = new URLSearchParams({ client_id: rp.clientId, post_logout_redirect_uri: `https://${e.hostname}/` });
+      return (await p.routed(`/api/auth/oauth2/end-session?${q}`)).status;
+    };
+    expect(await endSession(shopA, entryA)).toBe(401);
+    expect((await provisioned(tenantA, entryA, shopA)).status).toBe(200);
+    expect((await provisioned(tenantB, entryB, shopB)).status).toBe(200);
+    expect(await endSession(shopA, entryA)).not.toBe(401);
     const as = (rp: { clientId: string; clientSecret: string }, scope: string) => ({ client_id: rp.clientId, client_secret: rp.clientSecret, scope_id: scope });
 
     // Ann owns A. Ben owns B, and is invited into A later; carol signs in to neither.
@@ -703,7 +734,7 @@ describe("a login's places at the identity pool (#1670)", () => {
     expect((await placesOf(p, carol.cookie, `?sub=${ann.sub}`)).body).toEqual({ places: [] });
     expect((await placesOf(p, ann.cookie, `?sub=${ben.sub}`)).body).toEqual({ places: [entryA] });
     // B's delivery again — a retried provision — never touches A's registration or entries.
-    expect((await register(p, tenantB, placeOf(entryB, shopB))).status).toBe(200);
+    expect((await provisioned(tenantB, entryB, shopB)).status).toBe(200);
     expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryA, entryB] });
   });
 

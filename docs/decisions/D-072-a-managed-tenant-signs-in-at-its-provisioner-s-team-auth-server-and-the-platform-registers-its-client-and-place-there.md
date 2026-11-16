@@ -19,8 +19,9 @@ tracking: ["#3202"]
 **A `provision-tenant` request may name, in `instance.signIn.issuer`, one of the manager's own
 team auth-servers. The platform then does for the new tenant what the dashboard does for an app it
 installs (D-62). It registers an OIDC client for the tenant's address at that issuer, delivers the
-client as the scope's `substrat:auth`, and registers the tenant as a place there, under the managed
-tenant's own key (`substrat:places:<tenant id>` = that one app). The issuer must be an active
+client as the scope's `substrat:auth`, then tells the issuer, in one delivery, the client's
+hostnames (`substrat:redirects:<app scope>`, which turns sign-out at the issuer on) and the
+tenant's place, under the managed tenant's own key (`substrat:places:<tenant id>` = that one app). The issuer must be an active
 hostname of an active scope in the drained scope's tenant, running a vertical that provides
 `oidc-issuer`. The tenant comes from the directory, never from the payload, so a manager cannot
 have the platform write a client or a place at another team's issuer. A vertical lists a person's

@@ -1503,13 +1503,15 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
           { key: 'substrat:auth:shared-issuer', value: 'true' },
         ],
       },
-      // The place, at the MANAGER's issuer instance, under the managed tenant's own key: exactly
-      // this app, so one tenant's delivery never touches another's registrations.
+      // In one delivery to the MANAGER's issuer instance: the client's hostnames, which turns
+      // end-session on so the person can sign out (#2904), and the place, under the managed
+      // tenant's own key: exactly this app, so one tenant's delivery never touches another's.
       {
         kind: 'configure',
         tenantId: managerTenant,
         scopeId: issuerScope,
         entries: [
+          { key: `substrat:redirects:${s}`, value: JSON.stringify({ clientId: 'client-1', hostnames: [hostname] }) },
           {
             key: `substrat:places:${t}`,
             value: JSON.stringify([{ appScopeId: s, clientId: 'client-1', hostname, name: 'Corner Shop' }]),
@@ -1573,7 +1575,8 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
     const clientId = (retried as { result: { signIn: { clientId: string } } }).result.signIn.clientId;
     const places = placeDeliveries();
     expect(places).toHaveLength(1);
-    expect(JSON.parse((places[0] as { entries: Array<{ value: string }> }).entries[0]!.value)).toEqual([
+    const placeEntry = (places[0] as { entries: Array<{ key: string; value: string }> }).entries.find((e) => e.key.startsWith('substrat:places:'));
+    expect(JSON.parse(placeEntry!.value)).toEqual([
       expect.objectContaining({ appScopeId: p.instance.scopeId, clientId }),
     ]);
   });

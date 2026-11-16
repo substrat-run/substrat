@@ -52,6 +52,9 @@ import {
   PLACES_CONFIG_PREFIX,
   SHARED_ISSUER_CONFIG_KEY,
   placeRegistration,
+  CLIENT_REDIRECTS_CONFIG_PREFIX,
+  MAX_CLIENT_REDIRECT_HOSTNAMES,
+  clientRedirects,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -1315,9 +1318,14 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
  * Give a managed tenant its sign-in and its place (#3202, D-72), the platform's two writes the
  * dashboard makes for an app it installs (#1670): register an OIDC client for the tenant's address
  * at the manager's team auth-server, deliver it as the scope's `substrat:auth` (beside the shared-
- * issuer marker every team auth-server's client carries, #1683), then register the scope as a
- * place there under the tenant's own key: `substrat:places:<tenant id>` = exactly this app. The
- * place goes LAST, so a pass that stops anywhere before it leaves no place behind; a pass that
+ * issuer marker every team auth-server's client carries, #1683), then tell the issuer, in ONE
+ * delivery, the client's hostnames (`substrat:redirects:<app scope>`, #2904) and the scope's place
+ * under the tenant's own key (`substrat:places:<tenant id>` = exactly this app). The redirects
+ * delivery is what turns RP-initiated logout on for the client, which open DCR cannot, so a
+ * person can sign out of a managed tenant and switch accounts; the dashboard cannot send it,
+ * since it pairs an app with an issuer of its own tenant only. That delivery goes LAST, and the
+ * issuer applies it in one transaction, so a pass that stops anywhere before it leaves no place
+ * behind; a pass that
  * registered a client and stopped leaves a client nothing names as a place, and the retry
  * registers a fresh one, which supersedes it.
  *
@@ -1349,10 +1357,19 @@ async function registerManagedSignIn(
     throw e;
   }
   const place = placeRegistration.parse({ appScopeId: app.scopeId, clientId: client.clientId, hostname: app.hostname, name: app.name });
+  // Every hostname the scope actively answers on, as the dashboard's redirects pass sends them.
+  const bound = await deps.host.admin.listHostnames(deps.actor, { scopeId: app.scopeId, status: 'active' });
+  // The primary first, so the cap the issuer accepts never drops the one the client was registered for.
+  const others = [...new Set(bound.map((h) => h.hostname.toLowerCase()))].filter((h) => h !== app.hostname).sort();
+  const hostnames = [app.hostname, ...others].slice(0, MAX_CLIENT_REDIRECT_HOSTNAMES);
+  const redirects = clientRedirects.parse({ clientId: client.clientId, hostnames });
   await signIn.client.configureInstance({
     tenantId: signIn.tenantId,
     scopeId: signIn.scopeId,
-    entries: [{ key: `${PLACES_CONFIG_PREFIX}${app.tenantId}`, value: JSON.stringify([place]) }],
+    entries: [
+      { key: `${CLIENT_REDIRECTS_CONFIG_PREFIX}${app.scopeId}`, value: JSON.stringify(redirects) },
+      { key: `${PLACES_CONFIG_PREFIX}${app.tenantId}`, value: JSON.stringify([place]) },
+    ],
   });
   return { clientId: client.clientId };
 }
