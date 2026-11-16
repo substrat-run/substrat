@@ -10,10 +10,36 @@ import { CALLBACK_BASE, world, type World } from './world.js';
  * through the vertical's own operation as the connection itself.
  */
 let w: World | undefined;
+/** Every hold a test opened, released in teardown so a failing assertion never leaves a call hanging. */
+const holds: (() => void)[] = [];
 afterEach(() => {
+  for (const release of holds.splice(0)) release();
   w?.close();
   w = undefined;
 });
+
+/**
+ * Holds the first `count` calls opening a checkout session at Stripe (every one, by default) until
+ * `release()`. `entered` resolves when the first held call is reached, so a test waits for that exact
+ * call rather than a number of ticks.
+ */
+function holdSessionOpens(world: World, mock: StripeMock, count = Infinity) {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  holds.push(release);
+  let entered!: () => void;
+  const reached = new Promise<void>((r) => (entered = r));
+  const direct = mock.fetch;
+  let left = count;
+  world.options.fetch = (async (url: string, init?: { method?: string }) => {
+    if (init?.method === 'POST' && url.endsWith('/v1/checkout/sessions') && left-- > 0) {
+      entered();
+      await held;
+    }
+    return direct(url, init as never);
+  }) as typeof direct;
+  return { entered: reached, release };
+}
 
 const posts = (mock: StripeMock) => mock.requests.filter((r) => r.startsWith('POST'));
 
@@ -79,13 +105,7 @@ describe('stripe connector — opening a checkout', () => {
     w = await world(mock);
     await w.bind();
     // Hold the first ask's call to Stripe open, so the second arrives mid-opening.
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    const direct = mock.fetch;
-    w.options.fetch = (async (url: string, init?: { method?: string }) => {
-      if (init?.method === 'POST' && url.endsWith('/v1/checkout/sessions')) await held;
-      return direct(url, init as never);
-    }) as typeof direct;
+    const { release } = holdSessionOpens(w, mock);
     // Either may win the claim: the loser is refused without waiting, the winner waits on Stripe.
     const asks = [w.checkout(), w.checkout()];
     const refused = await Promise.any(asks.map((ask) => ask.then(() => Promise.reject(new Error('opened')), (err: unknown) => err)));
@@ -103,16 +123,12 @@ describe('stripe connector — opening a checkout', () => {
     const mock = new StripeMock();
     w = await world(mock);
     await w.bind();
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    const direct = mock.fetch;
-    let stalls = 1;
-    w.options.fetch = (async (url: string, init?: { method?: string }) => {
-      if (init?.method === 'POST' && url.endsWith('/v1/checkout/sessions') && stalls-- > 0) await held;
-      return direct(url, init as never);
-    }) as typeof direct;
+    const { entered, release } = holdSessionOpens(w, mock, 1);
     const stalled = w.checkout().catch((err: unknown) => err);
-    await new Promise((r) => setImmediate(r));
+    // Only the stalled ask is running, so the one held call is its own: its claim is taken at the
+    // current time, and the later ask starts only once it is. (A tick count raced under load: the
+    // later ask could reach Stripe first and take the hold, and nothing would ever release it.)
+    await entered;
     w.clock.ms += 3 * 60 * 1000; // past the claim
     const later = await w.checkout();
     release();
