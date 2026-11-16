@@ -132,9 +132,11 @@ been asked to charge — is about that account and mode, and is meaningless to a
 - **A key for another account, or for the other mode, becomes a second connection**, and the
   first is left as it is. The dashboard lists each Stripe connection with the account and mode it
   is for. With the landing above, the platform binds the new connection on every install too, and
-  a scope bound to two Stripe connections is refused a checkout (`409`) until one is gone: which
-  account takes the money is never guessed. Two accounts serving different scopes at once needs a
-  landing your app binds itself (`bind: 'on-request'`).
+  a scope bound to two Stripe connections is refused a checkout (`409`) until one is disconnected:
+  which account takes the money is never guessed. So an app takes payments through **one Stripe
+  account at a time**; two connected is a step on the way from one to the other. Choosing a
+  different account for different installs of one app is not something your app or the dashboard
+  can do yet.
 
 A connection made before Stripe connections were told apart by account (before mid-November 2026)
 holds no account. A key for another account or mode is **refused** there, and nothing is stored;
