@@ -48,6 +48,7 @@ import type { OperationSeriesInput } from './operation-series.js';
 import { errorCode } from './errors.js';
 import { impersonationStamp } from './impersonation.js';
 import { platformRequestFailureOrigin } from './platform-request.js';
+import { currencyCode, moneyAmount } from './money.js';
 
 // The control plane — the shared layer across N per-vertical deployments (D-30,
 // control-plane.md). This file carries the audit contract that every effecting
@@ -1722,6 +1723,65 @@ export type ConnectionSyncOutcome = z.infer<typeof connectionSyncOutcome>;
 /** Every binding of the scope the poll found; empty when the scope has no binding of the provider. */
 export const connectionSyncResult = z.object({ bindings: z.array(connectionSyncOutcome) }).strict();
 export type ConnectionSyncResult = z.infer<typeof connectionSyncResult>;
+
+/**
+ * `/internal/connections/checkout` (#3189): open a hosted checkout for the scope, through the
+ * payment connection of `provider` bound to it, and answer where to send the buyer — inside the
+ * request, which is why it is a relay and not a platform-request intent. The scope must be primary
+ * (a preview or fork never charges anyone, #2005) and the caller proven to be it. The outcome lands
+ * later through the binding's operation as a `paymentChange`.
+ *
+ * `reference` is the vertical's own (an order id) and comes back on every landing. Asking again
+ * with the same reference and the same request while that checkout is still open answers the same
+ * checkout; a different request closes the open one first, and a reference already paid is refused,
+ * so one reference is never paid twice through this door.
+ */
+export const connectionCheckoutLine = z
+  .object({
+    name: z.string().trim().min(1).max(250),
+    quantity: z.number().int().positive().max(10_000),
+    /** The price of one, as a decimal string in the checkout's currency. Never negative. */
+    unitAmount: moneyAmount.refine((v) => !v.startsWith('-'), 'a unit amount is never negative'),
+  })
+  .strict();
+export type ConnectionCheckoutLine = z.infer<typeof connectionCheckoutLine>;
+
+const checkoutReturnUrl = z
+  .string()
+  .url()
+  .refine((u) => /^https?:\/\//i.test(u), 'an http(s) URL');
+
+export const connectionCheckoutRequest = z
+  .object({
+    tenantId,
+    scopeId,
+    provider: connectionProvider,
+    reference: z.string().trim().min(1).max(200),
+    currency: currencyCode,
+    lines: z.array(connectionCheckoutLine).min(1).max(100),
+    /** Where the provider sends the buyer after paying, and after giving up. */
+    successUrl: checkoutReturnUrl,
+    cancelUrl: checkoutReturnUrl,
+    /** Prefills the provider's form; the buyer may change it. */
+    customerEmail: z.string().email().max(254).optional(),
+    /** How long the checkout stays open; 60 by default. Stripe takes 30 minutes to a day. */
+    expiresInMinutes: z.number().int().min(30).max(1440).optional(),
+  })
+  .strict();
+export type ConnectionCheckoutRequest = z.infer<typeof connectionCheckoutRequest>;
+
+export const connectionCheckoutResult = z
+  .object({
+    connectionId,
+    checkoutId: z.string().min(1),
+    /** The provider's hosted page; send the buyer here. */
+    url: z.string().url(),
+    expiresAt: instant,
+    /** False when the connection's credential is a test-mode one: no real money will move. */
+    live: z.boolean(),
+  })
+  .strict();
+export type ConnectionCheckoutResult = z.infer<typeof connectionCheckoutResult>;
 
 /** What the relay answers — metadata only, the secret is never echoed. */
 export const connectionRelayResult = z.object({

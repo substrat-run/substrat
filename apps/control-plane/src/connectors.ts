@@ -7,8 +7,8 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { isVerticalConnectorProvider } from '@substrat-run/contracts';
-import type { ConnectFlowSpec, ConnectionInspector, ScopeSync } from '@substrat-run/control-plane-api';
-import { bindingChangeRefusal, bindingOptionsRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
+import type { ConnectFlowSpec, ConnectionInspector, PaymentCheckout, ScopeSync } from '@substrat-run/control-plane-api';
+import { bindingChangeRefusal, bindingOptionsRefusal, ConnectionRelayError, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -78,6 +78,24 @@ import {
   type BolagsverketConnectorOptions,
 } from '@substrat-run/connector-bolagsverket';
 import {
+  STRIPE_CALLBACK_ROUTE,
+  STRIPE_CONNECTION_GRANTS,
+  StripeCheckoutRefusal,
+  StripeKeyRefusal,
+  bindStripeScope,
+  createStripeCheckout,
+  handleStripeCallback,
+  listStripeBindings,
+  prepareStripeCandidate,
+  probeStripeConnection,
+  probeStripeSecret,
+  stripeConnectionActivity,
+  stripeCredentialSummary,
+  sweepStripe,
+  unbindStripeScope,
+  type StripeConnectorOptions,
+} from '@substrat-run/connector-stripe';
+import {
   MAIL_IN_CONNECTION_GRANTS,
   probeMailInConnection,
   probeMailInSecret,
@@ -139,6 +157,12 @@ export interface ConnectorEnv extends MailInEnv {
   BOLAGSVERKET_ENV?: string;
   BOLAGSVERKET_TOKEN_URL?: string;
   BOLAGSVERKET_API_BASE?: string;
+  /**
+   * Stripe API override (#3189), for a test deployment pointed at a stub. Unset means the REAL
+   * host (`api.stripe.com`) — safe as a default for Fortnox's reason: test mode is a property of
+   * the tenant's key, not a separate origin, so there is no wrong environment to default into.
+   */
+  STRIPE_API_BASE?: string;
 }
 
 /** One uniform answer for every callback rejection; the WHY stays server-side. */
@@ -251,6 +275,9 @@ export interface ConnectorRegistration {
    * `route` is a Hono `:param` pattern; whatever it captures is handed to `handle` as
    * the ref. Unauthenticated by design where the provider signs nothing: the token
    * minted into the URL is the whole authentication, and the handler is what checks it.
+   * `request` is the call's raw body and headers, for a provider that signs them (Stripe,
+   * #3189): a signature is over the exact bytes, so the route reads the body as text and
+   * parses nothing before the handler has checked it.
    */
   readonly callback?: {
     readonly route: string;
@@ -258,6 +285,7 @@ export interface ConnectorRegistration {
       env: ConnectorEnv,
       host: ScopeHost,
       ref: Record<string, string | undefined>,
+      request: { body: string; headers: { get(name: string): string | null } },
     ): Promise<ConnectorCallbackOutcome>;
   };
   /**
@@ -286,6 +314,13 @@ export interface ConnectorRegistration {
    * as them.
    */
   mail?(env: ConnectorEnv): MailSender;
+  /**
+   * #3189 — this connection takes payments: the checkout relay opens a hosted checkout through it,
+   * inside the request, for the scope it is bound to. Absent is a complete connector that takes no
+   * money; the relay answers 501 for it. A refusal the vertical should read is a
+   * `ConnectionRelayError`; anything else is the provider not answering, said as a 503.
+   */
+  checkout?(env: ConnectorEnv): PaymentCheckout;
 }
 
 /**
@@ -512,6 +547,76 @@ const WOOCOMMERCE: ConnectorRegistration = {
 };
 
 /**
+ * Stripe (#3189) — a vertical takes payments through its tenant's own Stripe account. The
+ * credential is one restricted key, pasted into the dashboard's door; the probe names the account,
+ * says whether it is live, and whether the key may register the webhook endpoint. The connection is
+ * pinned to that account and mode: `prepareCandidate` refuses a replacement key for another one.
+ *
+ * The only connector with all three halves of the payment round trip: `checkout` opens a hosted
+ * session inside the vertical's request (the relay), `callback` hears Stripe's webhook — signed
+ * over the raw body, and only a hint, since the outcome is read back from Stripe — and `sweep`
+ * re-reads every open session, so an account where the key may not register an endpoint is
+ * complete, just slower. Outcomes land through the binding's operation as `paymentChange`.
+ */
+function stripeOptions(env: ConnectorEnv): StripeConnectorOptions {
+  return {
+    fetch: globalFetch,
+    ...(env.STRIPE_API_BASE ? { apiBase: env.STRIPE_API_BASE } : {}),
+    // The webhook endpoint is registered under this worker's own origin; without it, poll-only.
+    ...(env.PLATFORM_CP_URL ? { callbackBase: env.PLATFORM_CP_URL } : {}),
+  };
+}
+
+const STRIPE: ConnectorRegistration = {
+  provider: 'stripe',
+  grants: STRIPE_CONNECTION_GRANTS,
+  inspector: (env) => ({
+    bindScope: (h, row, target) => bindStripeScope(h, { ...target, connectionId: row.id }),
+    bindings: (h, row) => listStripeBindings(h, row.id),
+    unbindScope: (h, row, scopeId) => unbindStripeScope(h, row.id, scopeId),
+    probe: async (h, row) => probeStripeConnection(h, row, stripeOptions(env)),
+    activity: async (h, row) => stripeConnectionActivity(h, row.id),
+    credential: (h, row) => stripeCredentialSummary(h, row),
+    probeCandidate: async (secret) => probeStripeSecret(secret, stripeOptions(env)),
+    // A connection is pinned to one Stripe account and mode: a re-pasted key for another is refused
+    // here, before the probe and the store, with nothing stored.
+    prepareCandidate: async (candidate, previous) => {
+      try {
+        return await prepareStripeCandidate(stripeOptions(env))(candidate, previous);
+      } catch (err) {
+        if (err instanceof StripeKeyRefusal) throw new ConnectionRelayError(err.message, err.status);
+        throw err;
+      }
+    },
+  }),
+  sweep: (env) => async (h, id, o) => sweepStripe(h, id, { ...stripeOptions(env), fetch: o.fetch }),
+  checkout: (env) => async (h, row, scopeId, request) => {
+    try {
+      return await createStripeCheckout(h, row, scopeId, request, stripeOptions(env));
+    } catch (err) {
+      if (err instanceof StripeCheckoutRefusal) throw new ConnectionRelayError(err.message, err.status);
+      // Stripe or the network, in words that may carry the account's detail: staff's log, not the answer.
+      console.error('stripe-checkout: failed', { connectionId: row.id, scopeId, error: err instanceof Error ? err.message : String(err) });
+      throw new ConnectionRelayError('Stripe did not answer the checkout; ask again in a moment', 503);
+    }
+  },
+  callback: {
+    route: STRIPE_CALLBACK_ROUTE,
+    handle: async (env, host, ref, request) => {
+      const outcome = await handleStripeCallback(
+        host,
+        { connectionId: ref.connectionId ?? '', token: ref.token ?? '' },
+        { body: request.body, signature: request.headers.get('Stripe-Signature') },
+        stripeOptions(env),
+      );
+      if (!outcome.accepted) return { accepted: false, reason: outcome.reason };
+      const { eventId, type, checkoutId, status, landed } = outcome.result;
+      return { accepted: true, log: `${eventId} ${type}: ${checkoutId ?? 'not a checkout'}${status ? ` ${status}` : ''}${landed ? ', landed' : ''}` };
+    },
+  },
+};
+
+/**
  * Bolagsverket (#2855): organisation-number validation over the free value-datasets API. The
  * credential is the tenant's own client id and secret, pasted into the dashboard's door, so
  * the provider's 60-a-minute limit is metered per tenant. No consent round, no callback, and
@@ -614,7 +719,7 @@ function microsoft365Options(env: ConnectorEnv) {
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, WOOCOMMERCE, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, WOOCOMMERCE, STRIPE, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {
@@ -658,7 +763,7 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
         ...(inspector.unbindScope ? { unbind: inspector.unbindScope } : {}),
-        ...(['fortnox', 'planima', 'woocommerce'].includes(c.provider)
+        ...(['fortnox', 'planima', 'woocommerce', 'stripe'].includes(c.provider)
           ? {
               bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>
                 bindScope(h, row, { ...target, grantPreflighted: true } as Parameters<typeof bindScope>[2]),
@@ -719,6 +824,11 @@ export function connectFlowsFor(): Readonly<Record<string, ConnectFlowSpec | und
   return Object.fromEntries(
     CONNECTORS.flatMap((c) => (c.consent ? [[c.provider, { startPath: c.consent.startPath }]] : [])),
   );
+}
+
+/** The `{ provider → checkout }` shape the checkout relay opens a payment through (#3189). */
+export function paymentCheckoutsFor(env: ConnectorEnv): Readonly<Record<string, PaymentCheckout>> {
+  return Object.fromEntries(CONNECTORS.flatMap((c) => (c.checkout ? [[c.provider, c.checkout(env)]] : [])));
 }
 
 /** The `{ provider → mail sender }` shape the email relay routes a tenant `from` through (#2098). */

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PLATFORM_SECRET_HEADER, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
-import { bindConnection, ConnectionRequestError, listBindings, unbindConnection, upsertConnection } from '../src/index.js';
+import { bindConnection, ConnectionRequestError, listBindings, requestCheckout, unbindConnection, upsertConnection } from '../src/index.js';
 
 /**
  * The harness half of a scope's connection (#2732). These helpers decide nothing — the operation
@@ -62,6 +62,24 @@ describe('connection helpers — the harness effects, the operation decides', ()
       secret: 'platform-secret',
       body: { ...ids, connectionId: conn, options: { folder: 'f-1' }, boundBy: 'principal-1' },
     });
+  });
+
+  it('opens a checkout through /internal/connections/checkout, and relays a refusal with its status (#3189)', async () => {
+    const order = {
+      provider: 'stripe',
+      reference: 'order-17',
+      currency: 'SEK',
+      lines: [{ name: 'Mug', quantity: 1, unitAmount: '99.50' }],
+      successUrl: 'https://shop.example/paid',
+      cancelUrl: 'https://shop.example/cart',
+    };
+    const answer = { connectionId: conn, checkoutId: 'cs_test_1', url: 'https://checkout.stripe.com/c/pay/cs_test_1', expiresAt: '2026-11-15T11:00:00.000Z', live: false };
+    const s = seam(200, answer);
+    expect(await requestCheckout({ ...access, ...ids, ...order, fetchImpl: s.fetchImpl })).toEqual(answer);
+    expect(s.sent()).toEqual({ url: 'https://cp.example/internal/connections/checkout', secret: 'platform-secret', body: { ...ids, ...order } });
+
+    const refused = seam(409, { type: 'about:blank', title: 'Conflict', status: 409, detail: "reference 'order-17' is already paid" });
+    await expect(requestCheckout({ ...access, ...ids, ...order, fetchImpl: refused.fetchImpl })).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/already paid/) });
   });
 
   it('unbinds through /internal/connections/unbind', async () => {

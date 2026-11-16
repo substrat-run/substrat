@@ -19,11 +19,15 @@ import {
   connectionBindingsResult,
   connectionSyncRequest,
   connectionSyncResult,
+  connectionCheckoutRequest,
+  connectionCheckoutResult,
   isVerticalConnectorProvider,
   type Connection,
   type ConnectionBindingsResult,
   type ConnectionSyncResult,
   type ConnectionBindResult,
+  type ConnectionCheckoutRequest,
+  type ConnectionCheckoutResult,
   type ConnectionUnbindResult,
   type PlatformActorId,
   type Scope,
@@ -368,6 +372,57 @@ export async function relayConnectionSync(
     bindings.push({ connectionId: connection.id, outcome: result.outcome, at, pending: result.pending, ...(error ? { error } : {}) });
   }
   return connectionSyncResult.parse({ bindings });
+}
+
+/**
+ * A payment provider's checkout half (#3189): open a hosted checkout on `connection` for the scope,
+ * and answer where to send the buyer. A refusal it means the vertical to read carries `status`.
+ */
+export type PaymentCheckout = (
+  host: ScopeHost,
+  connection: Connection,
+  scopeId: Scope['id'],
+  request: ConnectionCheckoutRequest,
+) => Promise<ConnectionCheckoutResult>;
+
+export interface ConnectionCheckoutRelayOptions extends ConnectionBindingRelayOptions {
+  /** The provider's checkout; undefined for a provider that takes no payments, which answers 501. */
+  checkout: (provider: string) => PaymentCheckout | undefined;
+}
+
+/**
+ * `/internal/connections/checkout` (#3189): open a hosted checkout for the scope through the one
+ * live connection of `provider` bound to it, inside the request. The scope is the binding relays'
+ * (proven, primary — a preview never charges anyone, #2005); the connection is whichever of the
+ * tenant's or the scope's own is bound to it, since a checkout's outcome lands through that binding.
+ * None bound, or more than one, is a 409: which account takes the money is never guessed.
+ */
+export async function relayConnectionCheckout(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  body: unknown,
+  options: ConnectionCheckoutRelayOptions,
+): Promise<ConnectionCheckoutResult> {
+  const input = parsed(connectionCheckoutRequest, body, 'checkout');
+  const scope = await primaryScope(host, actor, input, options);
+  if (scope.status !== 'active') throw new ConnectionRelayError(`scope ${scope.id} is ${scope.status}, not active`, 409);
+  const checkout = options.checkout(input.provider);
+  if (!checkout) throw new ConnectionRelayError(`'${input.provider}' takes no payments`, 501);
+  const live = await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical, provider: input.provider });
+  const bound: Connection[] = [];
+  for (const connection of live) {
+    if (connection.status !== 'active') continue;
+    if (connection.ownerScopeId !== null && connection.ownerScopeId !== scope.id) continue;
+    const binder = binderOf(options.landings, connection);
+    if (binder && (await binder.list(host, connection)).some((b) => b.scopeId === scope.id)) bound.push(connection);
+  }
+  if (bound.length === 0) {
+    throw new ConnectionRelayError(`no live ${input.provider} connection is bound to this scope, so a payment would have nowhere to land`, 409);
+  }
+  if (bound.length > 1) {
+    throw new ConnectionRelayError(`${bound.length} ${input.provider} connections are bound to this scope; a checkout takes one, so unbind the others`, 409);
+  }
+  return connectionCheckoutResult.parse(await checkout(host, bound[0]!, scope.id, input));
 }
 
 export async function relayConnectionUnbind(

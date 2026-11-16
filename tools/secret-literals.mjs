@@ -80,6 +80,11 @@ export const ACCEPTED = {
     digests: ['94842336b540949844f01325272c8b214955e975931d0a836846cc787af650f8'],
     reason: "the dev issuer's signing key, checked in on purpose so a local login needs no setup; it signs for no deployed issuer (CLAUDE.md, packages/dev-issuer)",
   },
+  'connectors/stripe/test/probe.test.ts': {
+    shape: 'Stripe live key',
+    digests: ['46e757e10d45c5744ed1bd9f5363adb423469145c70f77b6f6837e23168a9637'],
+    reason: "a made-up live-mode key the mock account accepts, so the probe test proves a live key is reported as moving real money; Stripe has never issued it",
+  },
   'packages/contracts/test/errors.test.ts': {
     shape: 'URL with embedded credentials',
     digests: ['f69a32207c70044fac192847546f3085cbf43a94451a002f710703e1939e064b'],
