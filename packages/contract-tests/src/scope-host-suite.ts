@@ -5321,7 +5321,18 @@ export function scopeHostContractSuite(
           outputTokens: 15_010,
           listUsd: '1.25',
           billedUsd: '1.5',
+          zeroRatedCalls: 0,
+          zeroRatedUsd: '0',
         });
+        // The host hands the fold the caller's pricing: lines in a zero-rated scope bill nothing
+        // and show what they would cost (#2365).
+        const zeroRated = await host.admin.summarizeModelUsage(
+          staff,
+          { tenantId: t1, since: day(0), until: day(30) },
+          20,
+          { zeroRatedScopes: [listed[0]!.attribution.scope] },
+        );
+        expect(zeroRated.totals).toMatchObject({ listUsd: '1.25', billedUsd: '0', zeroRatedCalls: 3, zeroRatedUsd: '1.5' });
       });
 
       it('reads tenant model usage on millisecond-precise half-open boundaries', async () => {
