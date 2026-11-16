@@ -89,6 +89,8 @@ function errorOf(body: string, status: number): { message: string; code: string 
 // Provider shapes. Extra fields are ignored. WooCommerce sends a blank as `null` or `''`, never an
 // absent key, but a plugin can drop one, so every field reads absent as its blank.
 const str = () => z.union([z.string(), z.null()]).optional().transform((v) => v ?? '');
+/** A stock count: an integer on a stock store, a decimal or a numeric string with some plugins. Mapped, not parsed, here. */
+const stockQuantity = () => z.union([z.number(), z.string(), z.null()]).optional().transform((v) => v ?? null);
 const nullableStr = () => z.union([z.string(), z.null()]).optional().transform((v) => (v === undefined || v === null || v === '' ? null : v));
 /** WooCommerce declares some ids "mixed": an integer on one store, a string on another. */
 const looseId = () =>
@@ -124,6 +126,11 @@ export const wcProduct = z.object({
   /** Money as WooCommerce sends it: a decimal string, `''` when no price is set. */
   price: str(),
   regular_price: str(),
+  /** Whether the store counts this product's stock. */
+  manage_stock: z.boolean().nullable().optional().transform((v) => v ?? false),
+  stock_quantity: stockQuantity(),
+  /** `instock`, `outofstock`, `onbackorder`, or a plugin's own. */
+  stock_status: str(),
   date_created_gmt: nullableStr(),
   date_modified_gmt: nullableStr(),
 });
@@ -134,6 +141,10 @@ export const wcVariation = z.object({
   sku: nullableStr(),
   price: str(),
   regular_price: str(),
+  /** `'parent'` when the product keeps one count for every variation; then `stock_quantity` is that count. */
+  manage_stock: z.union([z.boolean(), z.literal('parent'), z.null()]).optional().transform((v) => v ?? false),
+  stock_quantity: stockQuantity(),
+  stock_status: str(),
   /** One `option` per attribute — not the product's `options` array. */
   attributes: z.array(z.object({ name: str(), option: str() })).optional().transform((v) => v ?? []),
 });

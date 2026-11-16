@@ -6,6 +6,8 @@ import {
   type CommerceAddress,
   type CommerceOrderUpsert,
   type CommerceProductUpsert,
+  type CommerceStock,
+  type CommerceStockStatus,
   type CommerceVariant,
   type CurrencyCode,
   type Instant,
@@ -58,6 +60,34 @@ function compareAt(regular: string, current: MoneyAmount | null, what: string): 
   return r !== null && current !== null && compareDecimal(r, current) > 0 ? r : null;
 }
 
+const STOCK_STATUS: Record<string, CommerceStockStatus> = {
+  instock: 'in_stock',
+  outofstock: 'out_of_stock',
+  onbackorder: 'on_backorder',
+};
+
+/**
+ * Stock as the store reports it on a product or a variation (#3223). Untracked stock has no
+ * quantity, whatever the row carries: WooCommerce keeps a stale `stock_quantity` after a merchant
+ * stops counting, and it must not arrive as a count. A variation whose product keeps the count
+ * (`manage_stock: 'parent'`) reports the product's count, flagged as shared.
+ */
+function stockOf(row: { manage_stock: boolean | 'parent'; stock_quantity: number | string | null; stock_status: string }, what: string): CommerceStock {
+  const manageStock = row.manage_stock !== false;
+  let quantity: number | null = null;
+  if (manageStock && row.stock_quantity !== null && row.stock_quantity !== '') {
+    quantity = typeof row.stock_quantity === 'number' ? row.stock_quantity : Number(row.stock_quantity.trim());
+    if (!Number.isFinite(quantity)) throw new WooCommerceMappingError(`${what} stock_quantity: '${row.stock_quantity}' is not a number`);
+  }
+  return {
+    manageStock,
+    quantity,
+    status: STOCK_STATUS[row.stock_status] ?? null,
+    providerStatus: row.stock_status,
+    sharedWithProduct: row.manage_stock === 'parent',
+  };
+}
+
 /**
  * A product and, for a `variable` one, its variations. A product WooCommerce sells without
  * variations — a simple product, or a variable one with none yet — lands with ONE variant whose id
@@ -82,6 +112,7 @@ export function productChange(
             options: named.map((a) => ({ name: a.name, value: a.option })),
             price: p,
             compareAtPrice: compareAt(v.regular_price, p, `${what} variation ${v.id} regular_price`),
+            stock: stockOf(v, `${what} variation ${v.id}`),
           };
         })
       : [
@@ -94,6 +125,7 @@ export function productChange(
               options: [],
               price: p,
               compareAtPrice: compareAt(row.regular_price, p, `${what} regular_price`),
+              stock: stockOf(row, what),
             };
           })(),
         ];

@@ -28,12 +28,24 @@ import { currencyCode } from '@substrat-run/contracts';
  *    `status=trash`, and reading a deleted id answers the `…_invalid_id` 404 — the three answers
  *    the reconcile pass tells a trashed record from a deleted one by (#3224). Needs the seeded ids
  *    `docker/seed.sh` prints; skipped against a store that has none.
+ * 6. A stock change made the way a sale makes it moves the modified date of the product it belongs
+ *    to — for a simple product, and for a variable product when only its variation's count changed
+ *    — so the products' walk delivers it within one sweep (#3223). Also needs the seeded ids.
  */
 const env = process.env;
 const secret =
   env.WOOCOMMERCE_STORE_URL && env.WOOCOMMERCE_CONSUMER_KEY && env.WOOCOMMERCE_CONSUMER_SECRET
     ? { storeUrl: env.WOOCOMMERCE_STORE_URL, consumerKey: env.WOOCOMMERCE_CONSUMER_KEY, consumerSecret: env.WOOCOMMERCE_CONSUMER_SECRET }
     : null;
+const stock = env.WOOCOMMERCE_STOCK_CHANGED_AFTER
+  ? {
+      after: env.WOOCOMMERCE_STOCK_CHANGED_AFTER,
+      simple: Number(env.WOOCOMMERCE_STOCK_SIMPLE),
+      variable: Number(env.WOOCOMMERCE_STOCK_VARIABLE),
+      variation: Number(env.WOOCOMMERCE_STOCK_VARIATION),
+      shared: Number(env.WOOCOMMERCE_STOCK_SHARED),
+    }
+  : null;
 const allowLocalHttp = env.WOOCOMMERCE_ALLOW_LOCAL_HTTP === '1';
 const removed =
   env.WOOCOMMERCE_TRASHED_PRODUCT && env.WOOCOMMERCE_DELETED_PRODUCT && env.WOOCOMMERCE_TRASHED_ORDER && env.WOOCOMMERCE_DELETED_ORDER
@@ -101,4 +113,35 @@ describe.skipIf(secret === null)('woocommerce connector — live', () => {
       expect(await client.statusOf(resource, live[0]!)).not.toBeNull();
     },
   );
+
+  it.skipIf(stock === null)('sees a sale\'s stock change on the products walk: a simple product, and a variation keeping its own count', async () => {
+    const client = api();
+    const currency = currencyCode.parse((await client.storeInfo()).settings.currency);
+    const changed = (await client.changedPage('products', stock!.after, 1)).map((r) => wcProduct.parse(r));
+    console.log(`woocommerce: changed since the stock change: ${JSON.stringify(changed.map((p) => [p.id, p.date_modified_gmt]))}`);
+    const simple = changed.find((p) => p.id === stock!.simple);
+    const variable = changed.find((p) => p.id === stock!.variable);
+    expect(simple, 'the simple product is in the changed list').toBeDefined();
+    expect(variable, 'the variable product is in the changed list though only its variation changed').toBeDefined();
+    expect(productChange('live', currency, simple!, []).variants[0]?.stock).toEqual({
+      manageStock: true,
+      quantity: 3,
+      status: 'in_stock',
+      providerStatus: 'instock',
+      sharedWithProduct: false,
+    });
+    const own = productChange('live', currency, variable!, await client.variations(variable!.id)).variants;
+    expect(own.find((v) => v.variantId === String(stock!.variation))?.stock).toMatchObject({ manageStock: true, quantity: 5, sharedWithProduct: false });
+  });
+
+  it.skipIf(stock === null)('reports a count the product keeps for all its variations on each variant, as shared', async () => {
+    const client = api();
+    const currency = currencyCode.parse((await client.storeInfo()).settings.currency);
+    const row = (await client.changedPage('products', null, 1)).map((r) => wcProduct.parse(r)).find((p) => p.id === stock!.shared);
+    expect(row).toBeDefined();
+    const variants = productChange('live', currency, row!, await client.variations(row!.id)).variants;
+    expect(variants.map((v) => v.stock)).toEqual([
+      { manageStock: true, quantity: 20, status: 'in_stock', providerStatus: 'instock', sharedWithProduct: true },
+    ]);
+  });
 });

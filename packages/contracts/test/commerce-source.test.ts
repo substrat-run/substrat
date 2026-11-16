@@ -46,4 +46,13 @@ describe('commerce-source shapes (#3136)', () => {
     expect(commerceChange.safeParse({ ...removed, record: 'order', productId: '12' }).success).toBe(false);
     expect(commerceChange.safeParse({ ...removed, record: 'product', productId: '12', removal: 'cancelled' }).success).toBe(false);
   });
+
+  it('carries stock on a variant, and refuses a quantity for stock the store does not count', () => {
+    const withStock = (stock: Record<string, unknown>) => ({ ...product, variants: [{ ...product.variants[0], stock }] });
+    const counted = { manageStock: true, quantity: 4, status: 'in_stock', providerStatus: 'instock', sharedWithProduct: false };
+    expect(commerceChange.safeParse(withStock(counted)).success).toBe(true);
+    expect(commerceChange.safeParse(withStock({ ...counted, manageStock: false, quantity: null })).success).toBe(true);
+    expect(commerceChange.safeParse(withStock({ ...counted, manageStock: false, quantity: 0 })).success).toBe(false);
+    expect(commerceChange.safeParse(withStock({ ...counted, status: 'instock' })).success).toBe(false);
+  });
 });
