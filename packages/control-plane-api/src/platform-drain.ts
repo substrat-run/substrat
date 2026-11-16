@@ -1208,8 +1208,16 @@ async function bindManagedTenantHostname(
     await host.admin.bindHostname(actor, { hostname, tenantId: input.tenantId, scopeId: input.scopeId, surface, region: null, canonical: true });
     await host.admin.setHostnameStatus(actor, hostname, 'active');
   };
-  let label: string | null =
-    bound.find((h) => h.surface === primary && h.canonical && h.hostname.endsWith(`.${suffix}`))?.hostname.split('.')[0] ?? null;
+  // A name an earlier pass bound is kept, and its activation finished: that pass may have stopped
+  // between the bind and the status flip, and a pending name does not route. Only names under the
+  // platform suffix are flipped; a custom domain on a surface has its own issuance path.
+  const finish = async (h: (typeof bound)[number]) => {
+    if (h.status !== 'active') await host.admin.setHostnameStatus(actor, h.hostname, 'active');
+  };
+  const ours = bound.filter((h) => h.canonical && h.hostname.endsWith(`.${suffix}`));
+  const kept = ours.find((h) => h.surface === primary);
+  let label: string | null = kept?.hostname.split('.')[0] ?? null;
+  if (kept) await finish(kept);
   if (label === null) {
     const base = `${input.tenantSlug}-${bareSlug(input.vertical)}`;
     for (const candidate of [base, `${base}-${input.scopeId.slice(-6).toLowerCase()}`]) {
@@ -1226,7 +1234,13 @@ async function bindManagedTenantHostname(
   }
   if (label === null) return null;
   for (const s of declared) {
-    if (s.name === primary || bound.some((h) => h.surface === s.name)) continue;
+    if (s.name === primary) continue;
+    const earlier = ours.find((h) => h.surface === s.name);
+    if (earlier) {
+      await finish(earlier).catch(() => {});
+      continue;
+    }
+    if (bound.some((h) => h.surface === s.name)) continue;
     // Best-effort, as at a dashboard install: a taken secondary name never costs the tenant its address.
     await bind(`${label}-${s.name}.${suffix}`, s.name).catch(() => {});
   }
