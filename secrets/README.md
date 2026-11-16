@@ -173,8 +173,11 @@ It mints `substrat-<env>-deploy` (`CF_DEPLOY_TOKEN`: deploys, migrations, provis
 `substrat-<env>-control-plane` (`CF_API_TOKEN`), creates what each app's `wrangler.jsonc`
 binds for that env (D1, R2, dispatch namespace, the wildcard route's DNS and certificate,
 placeholder scripts for the first deploy), applies the D1 migrations, fills and pushes this
-file, and publishes the CI variables plus the deploy token as `CLOUDFLARE_API_TOKEN_TEST`
-(prod: `CLOUDFLARE_API_TOKEN`). `--deploy` also builds and deploys every worker.
+file, and publishes the CI variables (through `secrets.mjs github`) plus the test deploy token
+as `CLOUDFLARE_API_TOKEN_TEST`. For prod it leaves the shared `CLOUDFLARE_API_TOKEN` secret,
+which every release deploys with, for a person to replace. `--deploy` also builds and deploys
+every worker. A dry run skips the features check, which mints a short-lived probe token;
+`--check-features` runs it on its own.
 
 A token value it cannot find in the file is **rolled**, because Cloudflare never returns one.
 A generatable secret blank in the file but live on a worker is **kept**, never regenerated,
