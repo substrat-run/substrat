@@ -20,7 +20,7 @@ import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
-import { invocationLog, problemResponse, refuseStatus } from '@substrat-run/vertical-host';
+import { invocationLog, problemResponse, refuse, refuseStatus } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId, substratError } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
@@ -131,7 +131,9 @@ async function boot() {
       parsed = parseDeliveredFile(text, plan);
     } catch (e) {
       // A file we cannot read is a 400 naming why, never a run left half-open.
-      return problemResponse(c, substratError('validation_failed', (e as Error).message));
+      // `refuse`, not `problemResponse`: the message is the file's own wording, and the classifier
+      // reads platform-fault phrases ("transient error") in a message before it reads the code.
+      return refuse(c, 'validation_failed', (e as Error).message);
     }
 
     const contentHash = await contentHashOf(bytes);
