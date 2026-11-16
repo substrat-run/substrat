@@ -28,6 +28,9 @@
  *      file does not hold one that still verifies — Cloudflare never returns a token value, so
  *      the file is the only copy, and a value it lacks cannot be recovered any other way. When no
  *      token has the name but the file holds one that verifies (made by hand), it is kept as is.
+ *      Prod's deploy token is never rolled without `--roll-prod-deploy-token`: the shared
+ *      CLOUDFLARE_API_TOKEN Actions secret may hold its current value, and a roll would leave
+ *      release.yml and docs.yml without Cloudflare until a person replaced that secret.
  *   2. Resources. Read from each app's `wrangler.jsonc` for this env — the D1 databases, R2
  *      buckets and dispatch namespaces it binds, the wildcard zone route's proxied DNS record
  *      and ACM certificate. Declared once, there; this file adds no second list to drift.
@@ -57,7 +60,7 @@
  * and the Artifacts namespace, which the builder's first repository creates.
  *
  * Flags: --env test|prod (required) · --check-features · --dry-run · --deploy · --skip-build · --skip-github ·
- *        --rotate KEY[,KEY] · --confirm-prod (required with --env prod)
+ *        --rotate KEY[,KEY] · --confirm-prod (required with --env prod) · --roll-prod-deploy-token
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -145,6 +148,12 @@ const TOKENS = [
     ],
     zone: ['Workers Routes Write', 'DNS Write', 'SSL and Certificates Write', 'Zone Read'],
     zones: 'all',
+    // Prod's shared deploy secret is set by a person (see GITHUB_DEPLOY_SECRET), possibly to this
+    // token's value: rolling it is gated on a flag naming that consequence.
+    shared:
+      ENV === 'prod'
+        ? { flag: 'roll-prod-deploy-token', secret: 'CLOUDFLARE_API_TOKEN', readers: 'release.yml and docs.yml' }
+        : null,
   },
   {
     key: 'CF_API_TOKEN',
@@ -515,9 +524,29 @@ async function ensureToken(ctx, spec) {
     if ((await heldId()) === token.id) ok(`${spec.key} in ${FILE_REL} is ${spec.name}'s value`);
     else {
       act(`roll ${spec.name}'s value — ${FILE_REL} ${held ? 'holds a value that is not this token' : 'holds no value for it'}`);
+      const shared = spec.shared;
+      if (shared && !has(shared.flag)) {
+        // Rolling invalidates the current value at once, and the shared Actions secret may hold
+        // it: the roll would break every deploy that reads it, before anyone is told to act.
+        const why =
+          `rolling ${spec.name} invalidates its current value, which the ${shared.secret} Actions secret ` +
+          `(${shared.readers}) may hold. Put that value in ${FILE_REL} as ${spec.key} and re-run, or ` +
+          `re-run with --${shared.flag} and set ${shared.secret} to the new value straight after`;
+        if (DRY) {
+          warn(`a real run stops here: ${why}`);
+          return null;
+        }
+        fail(`${spec.name} not rolled: ${why}`);
+      }
       // Nothing usable to carry on with: the held value does not authenticate as this token.
       if (DRY) return null;
       fresh = (await cf(bootstrap, 'PUT', `${base}/${token.id}/value`, {})).result;
+      if (shared) {
+        summary.manual.push(
+          `${shared.secret} (Actions secret): ${spec.name} was rolled, so if it held the old value ` +
+            `${shared.readers} cannot deploy until it is set to ${spec.key} from ${FILE_REL} — now`,
+        );
+      }
     }
   }
   if (fresh) {
@@ -1001,7 +1030,10 @@ async function github(deploy, account, smokeFailed) {
   // whose allow-list (GITHUB_VARIABLES) is what keeps an unlisted key out of CI configuration.
   const args = ['scripts/secrets.mjs', 'github', '--env', ENV, ...(DRY ? ['--dry-run'] : [])];
   console.log(`  $ node ${args.join(' ')}`);
-  if (spawnSync('node', args, { cwd: ROOT, stdio: 'inherit' }).status !== 0) {
+  // Its `gh` calls name no repository, so GH_REPO pins them to the one `gh()` below writes to:
+  // otherwise gh resolves its own default, and the deploy configuration could split across two.
+  const env = { ...process.env, GH_REPO: repoSlug() };
+  if (spawnSync('node', args, { cwd: ROOT, env, stdio: 'inherit' }).status !== 0) {
     fail('secrets.mjs github failed');
   }
   const setVariable = (vars, name, value) => {
