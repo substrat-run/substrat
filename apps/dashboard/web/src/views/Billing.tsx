@@ -79,7 +79,9 @@ function UsageSummary({ usage }: { usage: Usage }) {
         <Tile
           label="Code reviews"
           value={`${reviews.lowerBound === false ? '' : '≥ '}${usd(reviews.chargedUsd)}`}
-          caption={`${reviewCount(reviews.calls)} · would cost ${usd(reviews.wouldCostUsd)}`}
+          caption={reviews.lowerBound === false
+            ? `${reviewCount(reviews.calls)} · would cost ${usd(reviews.wouldCostUsd)}`
+            : `≥ ${reviewCount(reviews.calls)} · would cost ≥ ${usd(reviews.wouldCostUsd)}`}
           badge={reviews.zeroRated ? 'Free in preview' : 'Charged'}
           kind={reviews.zeroRated ? 'success' : 'info'}
         />
@@ -144,12 +146,12 @@ function UsageCards({ usage, names }: { usage: Usage; names: VerticalNames }) {
       {usage.reviews && (
         <div style={section}>
           <h3>Code reviews</h3>
-          <p>{usage.reviews.calls === null ? usage.reviews.state === 'empty' ? 'No code reviews recorded in this window.' : 'not available' : `${usage.reviews.lowerBound === false ? '' : 'At least '}${reviewCount(usage.reviews.calls)}, ${usage.reviews.inputTokens === null || usage.reviews.outputTokens === null ? 'tokens not reported' : `${number(usage.reviews.inputTokens)} input and ${number(usage.reviews.outputTokens)} output tokens as reported`}`}</p>
+          <p>{usage.reviews.calls === null ? usage.reviews.state === 'empty' ? 'No code reviews recorded in this window.' : 'not available' : `${usage.reviews.lowerBound === false ? '' : 'At least '}${reviewCount(usage.reviews.calls)}, ${usage.reviews.inputTokens === null || usage.reviews.outputTokens === null ? 'tokens not reported' : `${usage.reviews.lowerBound === false ? '' : 'at least '}${number(usage.reviews.inputTokens)} input and ${number(usage.reviews.outputTokens)} output tokens as reported`}`}</p>
           {usage.reviews.wouldCostUsd !== null && usage.reviews.chargedUsd !== null && (
-            <p>Would cost {usd(usage.reviews.wouldCostUsd)} at the platform's rate; charged {usd(usage.reviews.chargedUsd)}.{usage.reviews.zeroRated ? ' Code reviews are free while the reviewer is in preview, so you can see what they cost before you are charged.' : ''}</p>
+            <p>Would cost {usage.reviews.lowerBound === false ? '' : 'at least '}{usd(usage.reviews.wouldCostUsd)} at the platform's rate; charged {usage.reviews.lowerBound === false ? '' : 'at least '}{usd(usage.reviews.chargedUsd)}.{usage.reviews.zeroRated ? ' Code reviews are free while the reviewer is in preview, so you can see what they cost before you are charged.' : ''}</p>
           )}
           {usage.reviews.unpriced > 0 && <p>{reviewCount(usage.reviews.unpriced)} ran on a model with no price and {usage.reviews.unpriced === 1 ? 'is' : 'are'} not counted in the cost.</p>}
-          <p>Coverage: reviews from {date(usage.reviews.since)} to {date(usage.reviews.until)} · {coverage(usage.reviews.state, modelStates)}.</p>
+          <p>Coverage: reviews from {date(usage.reviews.since)} to {date(usage.reviews.until)} · {coverage(usage.reviews.state, modelStates)}{usage.reviews.lowerBound === false ? '' : '; read capped, so every figure here is a lower bound'}.</p>
         </div>
       )}
     </>

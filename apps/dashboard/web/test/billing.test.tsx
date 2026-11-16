@@ -268,3 +268,17 @@ it('shows a code review priced at zero beside what it would cost, and says why i
   expect(text).toContain('Code reviews3 reviews, 36,000 input and 2,400 output tokens as reported');
   expect(text).toContain("Would cost $0.0432 at the platform's rate; charged $0.00. Code reviews are free while the reviewer is in preview");
 });
+
+it('marks a capped review read as a lower bound on the count, the tokens and the would-be cost', async () => {
+  readUsage.mockResolvedValue({
+    ...modelUsagePayload({ state: 'empty', calls: null, reportedCalls: 0, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false }),
+    reviews: { state: 'truncated', calls: 500, reportedCalls: 500, inputTokens: 6_000_000, outputTokens: 400_000, unpriced: 0, wouldCostUsd: '7.2', chargedUsd: '0', zeroRated: true, lowerBound: true, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z' },
+  });
+  await render();
+  const tile = container.querySelector('[aria-label="Usage summary"]')?.textContent ?? '';
+  expect(tile).toContain('≥ 500 reviews · would cost ≥ $7.20');
+  const text = container.textContent ?? '';
+  expect(text).toContain('At least 500 reviews, at least 6,000,000 input and 400,000 output tokens as reported');
+  expect(text).toContain("Would cost at least $7.20 at the platform's rate");
+  expect(text).toContain('read capped, so every figure here is a lower bound');
+});
