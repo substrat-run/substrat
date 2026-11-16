@@ -480,7 +480,7 @@ function HoverPopover({ x, bucket, bucketMs, stack }: { x: number; bucket: Level
 /**
  * The facet sidebar. Each facet's counts are what ticking one of its values would give,
  * because the plane counts a facet with every OTHER filter applied. A ticked value that
- * fell out of the top ten is still listed, so it can be unticked where it was ticked.
+ * fell out of the top N is still listed, so it can be unticked where it was ticked.
  */
 export function FacetSidebar({
   label,
