@@ -1,5 +1,17 @@
 # @substrat-run/contracts
 
+## 0.199.0
+
+### Minor Changes
+
+- cdd061a: A `provision-tenant` request can name the requester's verified address as `instance.ownerEmail`. The new scope's owner seat then opens no first-sign-in window, and only a sign-in whose issuer verified that address claims it. A claim link still works.
+
+  A vertical's `onProvision` hook must pass `ownerEmail` on to `setPendingOwner` and return what it answers. The provision route refuses (501) a request naming an address that the hook did not report reserved, and the platform fails such a `provision-tenant` request without activating the scope, so a vertical that cannot reserve the seat never leaves the window open on a tenant reported as created. Deleting a scope deletes the address its seat was reserved for, and a claim clears it.
+
+  `GET /api/me` (`mountSession`) adds `ownerAddressReserved: true` to its `needs-setup` answer while the seat is reserved for an address, so an app offers a sign-in there instead of sending the owner for a claim link; the address is never in the answer. A worker that resolves its own callers uses vertical-auth's new `resolveSignedIn`, which claims a reserved seat for the verified address after `resolvePrincipal` finds nobody.
+
+- 1227128: Your app can take payments through your own Stripe account. Connect Stripe from the dashboard with a restricted key; Test connection names the account and says whether it is live or test mode. A connection stays on that account and mode: a new key for the same one replaces the old, and a key for another account, or a live key replacing a test one, is refused and is connected as a new connection. Your app's worker calls `requestCheckout()` from `@substrat-run/vertical-host` to open a hosted checkout and sends the buyer to Stripe's page. The outcome lands back through the operation your app declares, as a `paymentChange`, a new provider-neutral payment shape in `@substrat-run/contracts`. Stripe's webhook only prompts the platform to read the outcome back from Stripe, and a regular pass catches anything a webhook missed. One reference is never charged twice, and a preview never charges anyone.
+
 ## 0.198.0
 
 ### Minor Changes
