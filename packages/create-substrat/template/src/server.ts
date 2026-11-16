@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { invocationLog } from '@substrat-run/vertical-host';
+import { invocationLog, refuse } from '@substrat-run/vertical-host';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
@@ -112,7 +112,7 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
 /** Who is signed in, or 401 — the same question `worker.ts` answers. */
 app.get('/api/me', async (c) => {
   const caller = await login.caller(c.req.raw.headers);
-  if (!caller) return c.json({ error: 'unauthorized' }, 401);
+  if (!caller) return refuse(c, 'unauthenticated', 'unauthorized');
   return c.json({ principal: caller.principal, display: caller.display });
 });
 

@@ -20,7 +20,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, problemForStatus, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import {
   CloudflareScopeHost,
   defineScopeDO,
@@ -221,7 +221,10 @@ mountPlatformSurface<Env>(app, {
 
 // Unmatched /api/* fails as JSON; everything else gets a pointer, not a UI —
 // this starter ships no SPA (add one and inline it at build time when you do).
-app.all('/api/*', (c) => c.json({ error: `unknown route: ${new URL(c.req.raw.url).pathname}` }, 404));
+app.all('/api/*', (c) => {
+  const path = new URL(c.req.raw.url).pathname;
+  return c.body(JSON.stringify(problemForStatus(404, `unknown route: ${path}`, path)), 404, { 'content-type': PROBLEM_CONTENT_TYPE });
+});
 app.all('*', (c) =>
   c.json({
     service: 'substrat vertical',

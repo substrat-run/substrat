@@ -18,7 +18,7 @@ import {
   FLOW_MAXAGE,
   type OidcEnv,
 } from '@substrat-run/oidc-rp';
-import { isPersonaIssuer, mcpResourceOf } from '@substrat-run/contracts';
+import { isPersonaIssuer, mcpResourceOf, PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
 import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { cookieDomainDecision } from './cookie-domain.js';
@@ -354,10 +354,14 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider & Required<P
     }
 
     // Anything else under /api/auth/* (sign-up, password endpoints, …) has no server
-    // here — accounts live at the issuer. JSON, never a fall-through to the SPA.
-    return Response.json(
-      { error: 'this instance authenticates at its OIDC issuer', issuer: cfg.issuer },
-      { status: 404 },
+    // here — accounts live at the issuer. A problem document, never a fall-through to the SPA;
+    // `issuer` rides beside it as an extension member (RFC 9457 §3.2), so a caller can follow it.
+    return new Response(
+      JSON.stringify({
+        ...problemForStatus(404, 'this instance authenticates at its OIDC issuer', url.pathname),
+        issuer: cfg.issuer,
+      }),
+      { status: 404, headers: { 'content-type': PROBLEM_CONTENT_TYPE } },
     );
   }
 
