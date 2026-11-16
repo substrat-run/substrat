@@ -2550,6 +2550,7 @@ async function drainOneScope(
     actor: SWEEP_ACTOR,
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
+    hostnameDomain: platformBaseDomains(env)[0],
   };
   const attempted: string[] = [];
   const report = await drainScopePlatformRequests(

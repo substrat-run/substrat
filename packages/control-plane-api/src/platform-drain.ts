@@ -940,6 +940,12 @@ export interface ManagedTenantDeps {
   }) => Promise<VerticalClient | undefined>;
   /** Attach per-tenant store D1 bindings (#301); a NEW tenant's first install mints here. */
   patchScriptBindings?: PatchScriptBindingsFn;
+  /**
+   * The base domain a managed tenant's default hostname is minted under (#3202): the first of
+   * the platform's `PLATFORM_BASE_DOMAINS`, as a dashboard install's is. Absent (a self-host, a
+   * test), `provision-tenant` binds no hostname, as before.
+   */
+  hostnameDomain?: string;
 }
 
 /**
@@ -1089,6 +1095,7 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     // payload vertical's deployment, neither of them the manager's, so a throw's text is withheld
     // from the manager's journal: it learns the step, and staff read the text under the reference.
     let step = 'granting its entitlements';
+    let hostname: string | null = null;
     try {
       // Granted BEFORE provisionInstance so the #310 projection carries them on day one.
       for (const grant of payload.entitlements) {
@@ -1162,11 +1169,68 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       }
       step = 'activating its scope';
       await admin.activateScope(actor, tenantId, scopeId);
+      step = 'binding its hostname';
+      hostname = await bindManagedTenantHostname(deps, {
+        tenantId,
+        scopeId,
+        tenantSlug: payload.tenant.slug,
+        vertical: payload.instance.vertical,
+      });
     } catch (e) {
       return withheldThrow(e, `provisioning tenant '${payload.tenant.slug}' did not complete while ${step}`, { tenantId, scopeId });
     }
-    return { status: 'done', result: { tenantId, scopeId } };
+    return { status: 'done', result: { tenantId, scopeId, hostname } };
   };
+}
+
+/**
+ * Bind a managed tenant's default hostname (#3202): `<tenant>-<vertical>.global.<domain>`, the
+ * shape a dashboard install's `<app>-<team>` takes, canonical and active on the vertical's primary
+ * surface, with every other declared surface at `<label>-<surface>` beside it. A name another
+ * scope holds is passed over for the same name tailed with the scope's id; a label too long for
+ * DNS is never tried. A retry finds the name an earlier pass bound and keeps it, so the drain's
+ * at-least-once delivery binds one name. Null when no domain is configured or every candidate is
+ * taken, which leaves the tenant without an address rather than failing a provision that
+ * otherwise completed. Any other refusal throws, and the request is retried.
+ */
+async function bindManagedTenantHostname(
+  deps: ManagedTenantDeps,
+  input: { tenantId: TenantId; scopeId: ScopeId; tenantSlug: string; vertical: string },
+): Promise<string | null> {
+  const { host, actor, hostnameDomain } = deps;
+  if (!hostnameDomain) return null;
+  const suffix = `global.${hostnameDomain}`;
+  const declared = (await host.admin.listVerticals(actor)).find((v) => v.slug === input.vertical)?.surfaces ?? [];
+  // The dashboard's rule: `app` keeps the clean name, else the first declared surface, else `app`.
+  const primary = declared.find((s) => s.name === 'app')?.name ?? declared[0]?.name ?? 'app';
+  const bound = await host.admin.listHostnames(actor, { scopeId: input.scopeId });
+  const bind = async (hostname: string, surface: string) => {
+    await host.admin.bindHostname(actor, { hostname, tenantId: input.tenantId, scopeId: input.scopeId, surface, region: null, canonical: true });
+    await host.admin.setHostnameStatus(actor, hostname, 'active');
+  };
+  let label: string | null =
+    bound.find((h) => h.surface === primary && h.canonical && h.hostname.endsWith(`.${suffix}`))?.hostname.split('.')[0] ?? null;
+  if (label === null) {
+    const base = `${input.tenantSlug}-${bareSlug(input.vertical)}`;
+    for (const candidate of [base, `${base}-${input.scopeId.slice(-6).toLowerCase()}`]) {
+      if (candidate.length > 63) continue;
+      try {
+        await bind(`${candidate}.${suffix}`, primary);
+      } catch (e) {
+        if (errorCodeOf(e) === 'conflict') continue;
+        throw e;
+      }
+      label = candidate;
+      break;
+    }
+  }
+  if (label === null) return null;
+  for (const s of declared) {
+    if (s.name === primary || bound.some((h) => h.surface === s.name)) continue;
+    // Best-effort, as at a dashboard install: a taken secondary name never costs the tenant its address.
+    await bind(`${label}-${s.name}.${suffix}`, s.name).catch(() => {});
+  }
+  return `${label}.${suffix}`;
 }
 
 /**
