@@ -71,10 +71,16 @@ keeps the window it has and never re-opens a claimed seat. Access is invite-only
 first, `GET /api/me`. The vertical says how a request resolves to a principal; the route
 answers `{ principal, display, email }` plus any fields of the vertical's own,
 `{ status: 'needs-setup', firstSignInOpen }` while the owner seat is unclaimed (with
-`ownerAddressReserved: true` when the seat is reserved for an address, which a sign-in verifying
-that address claims), or 401. It
+`ownerAddressReserved: true` when the seat is reserved for an address), or 401. It
 also reports the login's place to the identity pool. That body is what
 `@substrat-run/elements`' account menu reads.
+
+The route never claims a seat: it answers for the principal the vertical's `caller` resolved.
+A reserved seat is claimed by a sign-in whose issuer verified that address only if that resolve
+makes the claim. vertical-host's `workerDoor` does it in its `admit`. A worker that resolves its
+own callers uses `resolveSignedIn` (`@substrat-run/vertical-auth`), which runs
+`resolvePrincipal` and, when that finds nobody, claims the seat reserved for the verified
+address. A `caller` built on `resolvePrincipal` alone never claims it.
 
 Also exported: `resolveCookieDomain`, which refuses to set a session cookie on a public suffix
 (guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)) or anywhere
