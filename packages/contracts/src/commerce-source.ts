@@ -21,6 +21,10 @@ import { currencyCode, moneyAmount } from './money.js';
  * - **Delivery is at least once, keyed by the provider's id.** A landing operation upserts by
  *   `productId` or `orderId` and may see the same change twice, or an older change after a newer
  *   one was retried. `modifiedAt` is what tells them apart.
+ * - **A removal is reported only for an id that was delivered**, and is as safe to repeat as an
+ *   upsert. It says the record left the store; what that means (archive, hide, keep for the books)
+ *   is the vertical's to decide. A record that comes back (restored from the trash) arrives as an
+ *   upsert again.
  * - **Money is a decimal string with its currency.** Never a float, and never reshaped: a provider
  *   amount that is not a decimal is refused by the connector rather than rounded into one.
  * - **Every product has at least one variant.** A store platform that sells a product without
@@ -31,9 +35,7 @@ import { currencyCode, moneyAmount } from './money.js';
  *
  * What is NOT here, by decision:
  *
- * - **Deletes.** A store's "changed since" listing does not list what was deleted, so a delete
- *   needs its own signal; `change` is a discriminator so it can be added without a bump.
- * - **Stock levels.** Stock moves on every sale, is shared between variants on some platforms and
+ *  * - **Stock levels.** Stock moves on every sale, is shared between variants on some platforms and
  *   fractional on others, and wants its own shape and its own freshness rule.
  * - **Fulfilment, refunds and customers as records of their own.** An order carries the customer it
  *   was placed by, as the order states it; a customer register is a later shape.
@@ -171,10 +173,48 @@ export const commerceOrderUpsert = z.object({
 export type CommerceOrderUpsert = z.infer<typeof commerceOrderUpsert>;
 
 /**
+ * How a record left the store. `trashed`: moved to the store's trash, from which it can still be
+ * restored (and then arrives as an upsert again). `deleted`: gone for good. A cancelled or refunded
+ * order is neither — that is a status, carried on the order's upsert.
+ */
+export const commerceRemoval = z.enum(['trashed', 'deleted']);
+export type CommerceRemoval = z.infer<typeof commerceRemoval>;
+
+const removedFields = {
+  change: z.literal('removed'),
+  connectionId: z.string().min(1),
+  removal: commerceRemoval,
+  /**
+   * When the connector saw it gone — not when it went, which a store does not record for a delete.
+   * A later upsert of the same id (`modifiedAt` after this) means it came back.
+   */
+  observedAt: instant,
+};
+
+/** A product that left the store (#3224), by the `productId` its upserts carried. */
+export const commerceProductRemoved = z.object({
+  record: z.literal('product'),
+  productId: z.string().min(1),
+  ...removedFields,
+});
+export type CommerceProductRemoved = z.infer<typeof commerceProductRemoved>;
+
+/** An order that left the store (#3224), by the `orderId` its upserts carried. */
+export const commerceOrderRemoved = z.object({
+  record: z.literal('order'),
+  orderId: z.string().min(1),
+  ...removedFields,
+});
+export type CommerceOrderRemoved = z.infer<typeof commerceOrderRemoved>;
+
+/**
  * What a sync lands through the binding's operation, one record per invoke — parsed with this
  * schema on the way out, so a vertical compiled against one version of a connector gets a throw
- * rather than a reshaped record from another. `record` says which; `change` is `upsert` for both
- * today (see "What is NOT here").
+ * rather than a reshaped record from another. `record` says which kind; `change` says whether it is
+ * the record as it now stands (`upsert`) or a report that it left the store (`removed`, #3224).
  */
-export const commerceChange = z.discriminatedUnion('record', [commerceProductUpsert, commerceOrderUpsert]);
+export const commerceChange = z.discriminatedUnion('record', [
+  z.discriminatedUnion('change', [commerceProductUpsert, commerceProductRemoved]),
+  z.discriminatedUnion('change', [commerceOrderUpsert, commerceOrderRemoved]),
+]);
 export type CommerceChange = z.infer<typeof commerceChange>;

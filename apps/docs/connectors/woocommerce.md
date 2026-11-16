@@ -58,6 +58,19 @@ operation receives one `commerceChange` per call and must upsert by the record's
   `variantId` it sold, the same id the product's variant carries, or `null` for a line the catalogue
   does not hold.
 
+A product or order that leaves the store arrives through the same operation with
+**`change: 'removed'`**, its id (`productId` or `orderId`), `removal` and `observedAt`:
+
+- **`trashed`** — moved to the store's trash. It can still be restored, and then arrives as an
+  upsert again.
+- **`deleted`** — gone for good, including a trashed one whose trash was emptied (reported again
+  as `deleted`).
+
+What a removal means is for your app to decide: archive it, hide it, or keep an order for the
+books. A cancelled or refunded order is not a removal; that is its status, on its upsert. Only an
+id your app was handed is ever reported, and a removal can arrive more than once, like any change.
+Every upsert now has `change: 'upsert'`, so branch on `change` as well as `record`.
+
 Money is always a decimal string with its currency, never a float. A value that is not a decimal
 amount is refused, not rounded, and the pass reports which record and field it was. Orders carry
 personal data (names, an email address, addresses): declare those columns as such in your app.
@@ -111,7 +124,10 @@ Each pass, for each bound install:
    variations. Land each product.
 3. Read orders changed since the last pass the same way, and land each. A saved-but-unplaced
    block checkout (`checkout-draft`) is passed over.
-4. Remember how far it got.
+4. Once an hour (every fourth pass), check the products and orders it has delivered: which are
+   still there, which are in the trash, and, read one by one, which the store says no longer
+   exist. Land each newly trashed or deleted one as a removal.
+5. Remember how far it got, and which ids it has delivered.
 
 The walk restarts from the last change landed on every request rather than paging by number, so a
 product saved while a pass is reading cannot push another one out of sight. A pass reads at most
@@ -125,7 +141,7 @@ next pass starts there.
 - **A variant changed on its own.** WooCommerce does not mark a variable product as changed when
   only one of its variations is edited, so such a change reaches your app the next time the product
   itself is saved.
-- **Deletes.** A deleted product or order is not in a "changed since" list; only upserts land.
+- **A removal sooner than the hourly check.** Deletes are found by asking, not told.
 - **Stock levels**, **refunds and fulfilment as records of their own**, and a **customer register**.
 - **Writing back** — marking an order fulfilled, setting stock.
 - **Webhooks**, as a hint to read sooner than the next pass.
