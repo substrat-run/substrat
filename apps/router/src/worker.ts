@@ -45,10 +45,14 @@ import {
   parentRequestIdOf,
   evaluateRateLimits,
   parseRateLimits,
+  PROBLEM_CONTENT_TYPE,
+  problemForStatus,
   RATE_LIMIT_POLICY_HEADER,
   type RateLimiter,
   type RouteTarget,
   scopeId as scopeIdSchema,
+  substratError,
+  toProblem,
 } from '@substrat-run/contracts';
 import { wireEndpoint, wireSignerOf, type WireSignResult } from '@substrat-run/contracts/wire-signing';
 import { fieldCoverageSampled, fieldCoverageSampleRate, mintDispatchId } from './field-coverage-sample.js';
@@ -541,6 +545,21 @@ async function enforceRateLimits(
   return { policyHeader };
 }
 
+/**
+ * A refusal the router answers itself, as the problem document it is (#113): the same shape and
+ * media type a vertical answers, with `error` beside `detail` until that window closes. The
+ * sentence is the one these routes always answered, so a caller reading the text still can.
+ */
+function answerProblem(status: number, detail: string): Response {
+  // The 404 is the taxonomy's `not_found`, as a vertical's scope gate answers it, so a request that
+  // raced the directory reads the same from either side; the rest have no code and say so.
+  const body = status === 404 ? toProblem(substratError('not_found', detail)) : problemForStatus(status, detail);
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': PROBLEM_CONTENT_TYPE },
+  });
+}
+
 async function dispatch(
   env: Env,
   request: Request,
@@ -559,10 +578,7 @@ async function dispatch(
       `router: no service binding ${bindingNameFor(target.verticalSlug ?? '?')} for ` +
         `hostname ${hostname} (scope ${target.scopeId})`,
     );
-    return new Response('This application is not available.', {
-      status: 502,
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
+    return answerProblem(502, 'This application is not available.');
   }
 
   // `target.region` is carried but not enforced here: Regional Services pins TLS
@@ -608,10 +624,7 @@ async function dispatch(
         `router: vertical '${target.verticalSlug}' not found on retry for ` +
           `hostname ${hostname} (scope ${target.scopeId})`,
       );
-      return new Response('This application is not available.', {
-        status: 502,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+      return answerProblem(502, 'This application is not available.');
     }
   }
 }
@@ -628,10 +641,7 @@ export default {
     // thing that is loud: nothing is dispatched, and the log names the missing key.
     if (!env.ROUTER_SECRET) {
       console.error('router: ROUTER_SECRET is not configured — refusing to dispatch');
-      return new Response('This router is not configured.', {
-        status: 500,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+      return answerProblem(500, 'This router is not configured.');
     }
 
     const hostname = new URL(request.url).hostname;
@@ -643,10 +653,7 @@ export default {
       // Not metered either: with no resolved tenant there is no index to write under.
       // A vertical answers a scope-gate refusal with this same detail (#113), so a request that
       // raced a suspension reads exactly as one refused here.
-      return new Response(NO_APPLICATION_DETAIL, {
-        status: 404,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+      return answerProblem(404, NO_APPLICATION_DETAIL);
     }
 
     const startedAt = Date.now();

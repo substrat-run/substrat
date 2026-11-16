@@ -304,55 +304,6 @@ export const ALLOWED = [
 
   // ── pending: not converted yet, and in no open PR ──────────────────────────────────────────
   {
-    area: 'router',
-    path: 'apps/router/src/worker.ts',
-    sites: 4,
-    kind: 'pending',
-    reason: "the hostname refusals (no serving scope, no binding, no secret) answer text/plain, while a vertical answers the same 404 as a problem",
-  },
-  {
-    area: 'vertical-host',
-    path: 'packages/vertical-host/src/index.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: '`/internal/connector-attachment/:id` answers a missing attachment with a bare 404 and no body',
-  },
-  {
-    area: 'vertical-auth',
-    path: 'packages/vertical-auth/src/oidc-rp-provider.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: 'an `/api/auth/*` path the instance does not serve answers `{ error, issuer }` as application/json',
-  },
-  {
-    area: 'scaffold template',
-    path: 'packages/create-substrat/template/src/server.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: "the dev server's 401 answers `{ error }`; a vertical cannot reach vertical-host's `refuse` yet, it is not exported",
-  },
-  {
-    area: 'scaffold template',
-    path: 'packages/create-substrat/template/src/worker.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: "the worker's unknown-`/api` 404 answers `{ error }`, as the dev server's 401 does",
-  },
-  {
-    area: 'builder eval fixture',
-    path: 'apps/builder/evals/todo/golden/src/worker.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: "the golden todo build's worker is the scaffold template's, and answers its unknown-`/api` 404 the same way",
-  },
-  {
-    area: 'scaffold template',
-    path: 'apps/builder/evals/todo/golden/src/server.ts',
-    sites: 1,
-    kind: 'pending',
-    reason: "the eval golden mirrors the template's dev server, so it follows the template's conversion",
-  },
-  {
     area: 'demo: todo',
     path: 'demos/todo/src/app.ts',
     sites: 1,

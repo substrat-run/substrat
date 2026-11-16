@@ -2397,7 +2397,7 @@ export function mountPlatformSurface<Env extends object>(
     const opened = host.connectorAttachmentOpenStreamLocal
       ? await host.connectorAttachmentOpenStreamLocal(...args)
       : await host.connectorAttachmentOpenLocal(...args);
-    if (!opened) return c.body(null, 404);
+    if (!opened) return refuse(c, 'not_found', 'no such attachment');
     // Both values are caller-supplied strings (#2519): a filename or content type outside
     // Latin-1 would make `Headers` throw and leave a stored file unreadable. The record stays
     // plain JSON, which every reader already parses; the type the client reads is the record's.
@@ -3382,5 +3382,7 @@ export {
   problemFor,
   problemOf,
   problemResponse,
+  refuse,
+  refuseStatus,
 } from './errors.js';
 export type { ClassifiedProblem, ErrorClassification } from './errors.js';

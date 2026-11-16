@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ROUTER_REQUEST_POINT, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, ROUTER_REQUEST_POINT, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { problemFor } from '@substrat-run/vertical-host';
 import worker, { type Env } from '../src/worker.js';
 
@@ -412,7 +412,7 @@ describe('router', () => {
     fetch.mockClear();
     const response = await worker.fetch(get('https://lifecycle.example.com/'), env);
     expect(response.status).toBe(404);
-    expect(await response.text()).toBe('No application is configured for this hostname.');
+    expect(await response.json()).toMatchObject({ code: 'not_found', detail: 'No application is configured for this hostname.' });
     expect(dispatch).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -427,7 +427,8 @@ describe('router', () => {
       DISPATCH: { get: vi.fn() },
     } as unknown as Env;
     const routed = await worker.fetch(get('https://held.example.com/'), env);
-    const detail = await routed.text();
+    expect(routed.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    const detail = ((await routed.json()) as { detail: string }).detail;
     const refusals = [
       substratError('conflict', 'scope not active (status: suspended): 01S', { reason: SCOPE_GATE_REASONS.notActive }),
       substratError('conflict', 'tenant not active (status: deleting): 01T', { reason: SCOPE_GATE_REASONS.notActive }),
@@ -465,7 +466,18 @@ describe('router', () => {
       ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'orphan.example.com': row({ vertical_slug: 'ghost' }) }),
     } as unknown as Env;
-    expect((await worker.fetch(get('https://orphan.example.com/'), env)).status).toBe(502);
+    const res = await worker.fetch(get('https://orphan.example.com/'), env);
+    expect(res.status).toBe(502);
+    // A problem document (#113), `error` beside `detail`, like every refusal a vertical answers.
+    expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    expect(await res.json()).toMatchObject({ status: 502, detail: 'This application is not available.', error: 'This application is not available.' });
+  });
+
+  it('500s a router with no secret as a problem document, before any lookup', async () => {
+    const res = await worker.fetch(get('https://acme.example.com/'), {} as unknown as Env);
+    expect(res.status).toBe(500);
+    expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    expect(await res.json()).toMatchObject({ status: 500, detail: 'This router is not configured.' });
   });
 
   it('does not leak which tenant a 404 nearly matched', async () => {

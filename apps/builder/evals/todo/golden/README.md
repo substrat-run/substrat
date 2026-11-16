@@ -1,4 +1,4 @@
-# Golden todo, version 3
+# Golden todo, version 4
 
 The reviewed reference for the `todo` fixture. A stage test starts from these files instead of
 rebuilding them: `pnpm builder evals --eval todo --from scaffold`.
@@ -19,6 +19,11 @@ and the `runtimeNeeds` the scaffold writes; `pnpm typecheck` compiles the worker
 are the 0.187 release. Proven by running it: 22 tests, 24 API checks, the worker signing a person in,
 joining them and creating a list, and the eight browser steps, on a click-through with two of its own
 faults fixed.
+
+Version 4 changes only the error bodies, and was not re-run end to end: the dev server's 401 and the
+worker's unknown-`/api` 404 answer an RFC 9457 problem document (`application/problem+json`, with
+`error` beside `detail`) where version 3 answered `{ error }` as `application/json`. Results recorded
+against version 3 describe that earlier body.
 
 Frozen means frozen. A change is a new version, and results against this one keep their meaning.
 Version 2 added email invites, and 2.1 asks to send them: `substrat.sendsEmail`, which a hosted send

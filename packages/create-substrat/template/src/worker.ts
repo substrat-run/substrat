@@ -36,6 +36,7 @@ import {
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
+  refuse,
 } from '@substrat-run/vertical-host';
 import { IdentityDO, workerDoor } from '@substrat-run/vertical-host/worker-door';
 // Only from provision.ts, the file `substrat push` reads: so this worker fits any vertical whose
@@ -245,7 +246,7 @@ mountPlatformSurface<Env>(app, {
 
 // Unmatched /api/* fails as JSON; everything else gets a pointer, not a UI —
 // this starter ships no SPA (add one and inline it at build time when you do).
-app.all('/api/*', (c) => c.json({ error: `unknown route: ${new URL(c.req.raw.url).pathname}` }, 404));
+app.all('/api/*', (c) => refuse(c, 'not_found', `unknown route: ${new URL(c.req.raw.url).pathname}`));
 app.all('*', (c) =>
   c.json({
     service: 'substrat vertical',

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { platformActorId } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, platformActorId, problemForStatus } from '@substrat-run/contracts';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { invocationLog } from '@substrat-run/vertical-host';
 import { buildHost, grantOwner, linkDevPersonas, reconcileOwnerGrants, seed, type World } from './seed.js';
@@ -49,7 +49,7 @@ async function boot() {
   app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
   app.get('/api/me', async (c) => {
     const caller = await login.caller(c.req.raw.headers);
-    if (!caller) return c.json({ error: 'unauthorized' }, 401);
+    if (!caller) return c.body(JSON.stringify(problemForStatus(401, 'unauthorized', c.req.path)), 401, { 'content-type': PROBLEM_CONTENT_TYPE });
     // Signing in is joining: nobody types an address, and an open invitation becomes a share here.
     // An address the issuer did not verify stays out, so that person is signed in and not joined.
     if (caller.verifiedEmail && !joined.has(caller.principal)) {

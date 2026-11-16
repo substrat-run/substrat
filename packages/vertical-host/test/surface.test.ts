@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { NO_APPLICATION_DETAIL, permissionKey, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { NO_APPLICATION_DETAIL, PROBLEM_CONTENT_TYPE, permissionKey, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { ORPHAN_SWEEP_UNLICENSED, scopeNotHeldRefusal, verifiedStream, type ByteBody } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
@@ -2402,6 +2402,9 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
       ENV,
     );
     expect(res.status).toBe(404);
+    // A problem document (#113), not a bare status: the same refusal every other route answers.
+    expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+    expect(await res.json()).toMatchObject({ status: 404, code: 'not_found' });
   });
 
   it('connector-attachment: a body-less form is a 400 naming the field', async () => {
