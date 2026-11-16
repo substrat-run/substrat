@@ -38,6 +38,7 @@ import {
   ConnectionRelayError,
   connectionBindingOptions,
   relayConnectionBind,
+  relayConnectionBindings,
   relayConnectionUpsert,
   type ConnectionBindingRelayOptions,
 } from '../src/index.js';
@@ -213,6 +214,15 @@ describe("a store's own WooCommerce shop lands in that store alone (#3201)", () 
     expect(rows.map((r) => [r.id, r.externalAccountRef, r.ownerScopeId]).sort()).toEqual(
       [[connA, 'a.example.com', a], [connB, 'b.example.com', b]].sort(),
     );
+    // What a bind answers as the binding's options is what a rebind takes back: the store and the
+    // owner the binding records are its metadata, not options (a WooCommerce binding has none).
+    const bindA = (options: Record<string, unknown>) =>
+      relayConnectionBind(host, actor, { tenantId: t, scopeId: a, connectionId: connA, options, boundBy: person }, { proven: true, landings: landings() });
+    const rebound = await bindA({});
+    expect(rebound.options).toEqual({});
+    const listed = await relayConnectionBindings(host, actor, { tenantId: t, scopeId: a }, { proven: true, bindings: (h, row) => listWooCommerceBindings(h, row.id) });
+    expect(listed.bindings).toEqual([expect.objectContaining({ connectionId: connA, options: {} })]);
+    await expect(bindA(rebound.options)).resolves.toMatchObject({ connectionId: connA, scopeId: a });
     // Another store's own connection is not one a scope can bind.
     await expect(
       relayConnectionBind(host, actor, { tenantId: t, scopeId: b, connectionId: connA, options: {}, boundBy: person }, { proven: true, landings: landings() }),
