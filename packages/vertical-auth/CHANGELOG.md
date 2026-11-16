@@ -1,5 +1,21 @@
 # @substrat-run/vertical-auth
 
+## 0.37.1
+
+### Patch Changes
+
+- 12ea0e6: vertical-host exports `refuse` and `refuseStatus`, so a vertical answers a refusal it decides itself as the same RFC 9457 problem document the host does; the connector-attachment 404 answers one too. vertical-auth's unserved `/api/auth/*` 404 and the scaffold's dev-server 401 and unknown-`/api` 404 are problem documents, with `error` beside `detail`.
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/kernel@0.200.0
+
 ## 0.37.0
 
 ### Minor Changes

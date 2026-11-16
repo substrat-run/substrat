@@ -1,5 +1,31 @@
 # @substrat-run/control-plane-api
 
+## 0.200.0
+
+### Minor Changes
+
+- 6811a2b: A copy of a scope into another scope's store is refused before its first page when the source is larger than `COPY_MAX_BYTES` (4 GiB, `copyMaxBytes` on `createControlPlaneApi`). The refusal is a 413 naming the size, where the copy used to fail at the destination's commit. `beginTransfer` and `transferScope` take the limit as `maxBytes`.
+- b205207: A Stripe key for another account no longer has to be refused. The platform now tells Stripe connections apart by the account and mode Stripe names for the key, so a key for the same account replaces the old one, and a key for another account (or a live key beside a test one) becomes a second connection, listed on its own in the dashboard. A connection made before this holds no account and keeps the old rule until it is disconnected. In `@substrat-run/control-plane-api`, a connection inspector can declare `accountFromProbe`, and the connection upsert then takes the account from the provider's connect-time probe: the probe runs before the store, and a probe that cannot name the account stores nothing.
+- f648aa8: One WooCommerce product or order that cannot land no longer stops everything after it. A row the connector cannot read faithfully (a decimal-comma price, a stock count that is not a number) is skipped at once; any other failure on one record holds only its own walk, for three passes, before it is skipped too, and orders keep landing meanwhile. Skipped records are kept with their error, tried again hourly, and cleared when they land. The connection's activity reads "stalled at product 123" or "synced — 2 skipped", with each record's error. `listBindings({ …, health: true })` in `@substrat-run/vertical-host` answers each binding's health — the records it waits at and the ones it skipped — and lists the tenant's connections bound to the scope too, marked `owner: 'tenant'`. The `connectionBindingHealth` schema is in `@substrat-run/contracts`, and `ConnectionScopeBinding` in `@substrat-run/control-plane-client` may carry it.
+- d16a696: A store can now connect its own WooCommerce shop. When each install of an app is a store with its own shop, the app connects the shop as that install's own connection and binds it on request, so each install receives only its own shop's products and orders, and never another store's customers. The dashboard lists such a connection on its own install's Integrations tab, marked as its own, and disconnecting it stops only that install's sync. In `@substrat-run/control-plane-api`, a connection inspector can declare `scopeOwned`, and the tenant's verify and credential routes then answer for a scope's own connection through it.
+
+### Patch Changes
+
+- 2c4a11d: A connector binding that fails a sweep, or a requested sync, is now filed as a pair under the pass's reference: a row for the connection's tenant carrying the app's scope, in the platform's words (with the connector's `said` when it gave one), and staff's row with the failure's own text (#3235). An app's Failures view and fleet health now include its own connector failures. A failure that names no scope stays staff's alone. kernel: `withheldOpsFailure` takes an optional `opening` for staff's row. control-plane: the failure digest pairs rows by scope too, so two bindings filed in the same instant stay apart.
+- 20cdb03: A connector's call into an app (`/internal/connector-invoke`) now writes one invocation line, of the new kind `connector`, so the app's Logs list each record a connector landed or failed to land (#3235). The line carries ids, the operation, `connection` as who it ran as, the outcome, the kernel's problem code and what the operation emitted, by count and type; never the provider's input or the error's text. adapter-cloudflare writes it from `connectorInvokeLocal`, so an app writes it once it is built against this release. control-plane-api: `connector` is a value of the `kind` facet. dashboard: the Logs page names it "connector call".
+- d62a936: `HostAdmin.putConnectorStateFenced(id, { key, expected }, writes)` writes a batch of connector-state rows only if one other row, the fence, still holds `expected`. The fence check and the writes run in one transaction on both scope hosts. A vertical connector's answer under a scope's state lease is now written fenced on that lease. A call that took the lease over can no longer have its writes interleaved with an earlier call's.
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/kernel@0.200.0
+  - @substrat-run/control-plane-client@0.9.0
+
 ## 0.199.0
 
 ### Minor Changes

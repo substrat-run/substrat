@@ -1,5 +1,39 @@
 # @substrat-run/dashboard
 
+## 0.49.18
+
+### Patch Changes
+
+- b205207: A Stripe key for another account no longer has to be refused. The platform now tells Stripe connections apart by the account and mode Stripe names for the key, so a key for the same account replaces the old one, and a key for another account (or a live key beside a test one) becomes a second connection, listed on its own in the dashboard. A connection made before this holds no account and keeps the old rule until it is disconnected. In `@substrat-run/control-plane-api`, a connection inspector can declare `accountFromProbe`, and the connection upsert then takes the account from the provider's connect-time probe: the probe runs before the store, and a probe that cannot name the account stores nothing.
+- 20cdb03: A connector's call into an app (`/internal/connector-invoke`) now writes one invocation line, of the new kind `connector`, so the app's Logs list each record a connector landed or failed to land (#3235). The line carries ids, the operation, `connection` as who it ran as, the outcome, the kernel's problem code and what the operation emitted, by count and type; never the provider's input or the error's text. adapter-cloudflare writes it from `connectorInvokeLocal`, so an app writes it once it is built against this release. control-plane-api: `connector` is a value of the `kind` facet. dashboard: the Logs page names it "connector call".
+- eb34bb2: kernel: `landingRefusalSaid` turns an app's own refusal of a connector's landing call into a line its tenant may read, and withholds everything else (#3235). control-plane: the WooCommerce sweep hands the pass that line for a binding its app refused. dashboard: a connection's failed sweep is written out under its run strip, not only in the tick's tooltip.
+- ba8a290: A WooCommerce key for another store no longer replaces the store an app is connected to. The platform now tells WooCommerce connections apart by the store each key reads, named by the address the store gives itself, so a key for the same store replaces the old one and keeps the sync where it was, and a key for another store becomes a second connection, listed on its own in the dashboard. A connection made before this holds no store; a key for another store is refused there until it is disconnected.
+- d16a696: A store can now connect its own WooCommerce shop. When each install of an app is a store with its own shop, the app connects the shop as that install's own connection and binds it on request, so each install receives only its own shop's products and orders, and never another store's customers. The dashboard lists such a connection on its own install's Integrations tab, marked as its own, and disconnecting it stops only that install's sync. In `@substrat-run/control-plane-api`, a connection inspector can declare `scopeOwned`, and the tenant's verify and credential routes then answer for a scope's own connection through it.
+- Updated dependencies [53679f8]
+- Updated dependencies [6811a2b]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [b205207]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [d93c0de]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [12ea0e6]
+- Updated dependencies [bd3e907]
+- Updated dependencies [f648aa8]
+- Updated dependencies [d16a696]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/control-plane-api@0.200.0
+  - @substrat-run/kernel@0.200.0
+  - @substrat-run/adapter-cloudflare@0.200.0
+  - @substrat-run/vertical-host@0.200.0
+  - @substrat-run/engine-protocol@0.14.0
+  - @substrat-run/control-plane-client@0.9.0
+  - @substrat-run/connector-fortnox@0.7.24
+  - @substrat-run/engine-invites@0.9.77
+  - @substrat-run/model-providers@0.5.90
+
 ## 0.49.17
 
 ### Patch Changes

@@ -1,5 +1,29 @@
 # @substrat-run/vertical-host
 
+## 0.200.0
+
+### Minor Changes
+
+- 12ea0e6: vertical-host exports `refuse` and `refuseStatus`, so a vertical answers a refusal it decides itself as the same RFC 9457 problem document the host does; the connector-attachment 404 answers one too. vertical-auth's unserved `/api/auth/*` 404 and the scaffold's dev-server 401 and unknown-`/api` 404 are problem documents, with `error` beside `detail`.
+- f648aa8: One WooCommerce product or order that cannot land no longer stops everything after it. A row the connector cannot read faithfully (a decimal-comma price, a stock count that is not a number) is skipped at once; any other failure on one record holds only its own walk, for three passes, before it is skipped too, and orders keep landing meanwhile. Skipped records are kept with their error, tried again hourly, and cleared when they land. The connection's activity reads "stalled at product 123" or "synced — 2 skipped", with each record's error. `listBindings({ …, health: true })` in `@substrat-run/vertical-host` answers each binding's health — the records it waits at and the ones it skipped — and lists the tenant's connections bound to the scope too, marked `owner: 'tenant'`. The `connectionBindingHealth` schema is in `@substrat-run/contracts`, and `ConnectionScopeBinding` in `@substrat-run/control-plane-client` may carry it.
+
+### Patch Changes
+
+- d93c0de: A refusal that declares its code answers that code's status, even when its message contains a runtime-fault phrase such as "transient issue" or "Internal error". It was answered 502. The phrases still mark a throw that declares no code as a 502 platform fault (#3225).
+- Updated dependencies [53679f8]
+- Updated dependencies [5f0276e]
+- Updated dependencies [d08db0d]
+- Updated dependencies [2c4a11d]
+- Updated dependencies [20cdb03]
+- Updated dependencies [d62a936]
+- Updated dependencies [eb34bb2]
+- Updated dependencies [12ea0e6]
+- Updated dependencies [f648aa8]
+  - @substrat-run/contracts@0.200.0
+  - @substrat-run/kernel@0.200.0
+  - @substrat-run/vertical-auth@0.37.1
+  - @substrat-run/model-providers@0.5.90
+
 ## 0.199.0
 
 ### Minor Changes
