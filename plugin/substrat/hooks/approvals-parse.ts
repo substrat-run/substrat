@@ -148,6 +148,9 @@ export function digestIn(markdown: string): string | undefined {
 /** What both digest refusals say; the export-break refusal names its own flag. */
 const NEEDS_ACK = 'acknowledge it explicitly';
 
+/** How the CLI's last line on a refusal waiting for a person starts (#3194); it points at this pane. */
+const WAITING = 'waiting for a person, not broken:';
+
 const unquote = (s: string) => s.replace(/^["'`]|["'`.,;]+$/g, '');
 
 /**
@@ -182,7 +185,11 @@ export function promoteRefusalIn(call: SubstratCall, printed: string): PromoteRe
     versionId: unquote(versionId),
     acks,
     review: token ? unquote(token) : null,
-    text: (from === -1 ? printed : printed.slice(from)).trim(),
+    text: (from === -1 ? printed : printed.slice(from))
+      .split('\n')
+      .filter((l) => !l.startsWith(WAITING))
+      .join('\n')
+      .trim(),
   };
 }
 
@@ -234,6 +241,18 @@ export function waitingPromoteIn(stdout: string): PromoteRefusal | undefined {
     review: typeof v.review === 'string' ? v.review : null,
     text: v.text,
   }
+}
+
+/** The vertical's slug a package.json declares (`substrat.slug`), or undefined: not a vertical. */
+export function slugIn(packageJson: string): string | undefined {
+  let pkg: unknown
+  try {
+    pkg = JSON.parse(packageJson)
+  } catch {
+    return undefined
+  }
+  const slug = (pkg as { substrat?: { slug?: unknown } } | null)?.substrat?.slug
+  return typeof slug === 'string' && slug.trim() !== '' ? slug : undefined
 }
 
 /** The review `substrat review upload --json` stored: its id and state, or undefined for anything else. */

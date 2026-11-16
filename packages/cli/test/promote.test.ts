@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MigrationDiff, PermissionRegistry } from '@substrat-run/contracts';
-import { formatMigrationDiff, formatRegistryDiff, parseReviewToken, promote, reviewToken } from '../src/promote.js';
+import { formatMigrationDiff, formatRegistryDiff, parseReviewToken, promote, reviewToken, waitingLine } from '../src/promote.js';
 
 /**
  * `substrat promote` refusing with the two diffs (#1677), not only the digests. The plane is
@@ -120,6 +120,7 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
     const seen = plane({ refusal: 'version v2 is pending, not admitted — it cannot be promoted', migrations: diff() });
     const text = await refusalOf();
     expect(text).not.toContain('permission changes:');
+    expect(text).not.toContain('waiting for a person');
     expect(seen).toEqual(['POST /api/verticals/desk/channels/prod/promote']);
   });
 
@@ -127,6 +128,21 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
     const seen = plane({ refusal: null, migrations: diff() });
     await expect(run()).resolves.toMatchObject({ versionId: 'v2' });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe('substrat promote — a refusal waiting on a person says where it is answered (#3194)', () => {
+  it('ends with the approvals pane and --review-only, after the --ack line that still works', async () => {
+    plane({ refusal: MIG_REFUSAL, migrations: diff(), review: { base: 'v1', digest: 'a'.repeat(64) } });
+    const lines = (await refusalOf()).split('\n');
+    expect(lines.at(-1)).toBe(waitingLine('desk'));
+    expect(lines.at(-1)).toContain('Substrat approvals pane');
+    expect(lines.at(-1)).toContain('`substrat promote desk --review-only`');
+    expect(lines).toContain(`to acknowledge exactly what is shown above, re-run with the --ack-* flags it needs and --review v1:${'a'.repeat(64)}`);
+  });
+
+  it('a slug that is not plain is quoted in the command it names', () => {
+    expect(waitingLine('desk`; rm -rf ~')).toContain('substrat promote "desk`; rm -rf ~" --review-only');
   });
 });
 
@@ -140,6 +156,7 @@ describe('substrat promote — both refusal kinds survive together (#1677 × #17
     const text = await refusalOf();
     expect(text).toContain('acme/board (scope s1) imports crm.a v1 — this version no longer exports it');
     expect(text).toContain('--ack-export-break');
+    expect(text.split('\n').at(-1)).toBe(waitingLine('desk'));
     expect(text).not.toContain('permission changes:');
     expect(seen).toEqual(['POST /api/verticals/desk/channels/prod/promote']);
   });

@@ -48,8 +48,10 @@ In Claude Desktop: **+** → Plugins → Add plugin.
   with its `--review` token. Claude is told the outcome and carries on. A Bash call of Claude's
   that passes `plan --approve` or an `--ack-*` flag itself is refused. A promote that waits
   in prod without having run in the session (one your CI deploy pushed on merge, say) shows
-  there too: `/substrat-approvals` and the pane's *Check* button ask the control plane through
-  `substrat promote --review-only`, and list the vertical's open changes (pull requests or
+  there too: the session's start (in a vertical, one whose `package.json` declares
+  `substrat.slug`), `/substrat-approvals` and the pane's *Check* button ask the control plane
+  through `substrat promote --review-only`, and a line above the prompt says when one waits.
+  A refusal printed in CI ends by pointing here. The pane's *Check* and `/substrat-approvals` also list the vertical's open changes (pull requests or
   studio chat branches, with their checks and previews) through `substrat changes`.
   The pane's *Start a code review* uploads the project's committed branch for the hosted
   review (`substrat review upload --base origin/main`) and tells Claude the review's id. A
