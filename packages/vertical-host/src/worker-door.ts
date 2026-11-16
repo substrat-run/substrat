@@ -460,14 +460,19 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
   };
 
   /**
-   * Someone signed in and bound to nobody here, admitted by an open member invite naming the
-   * address their issuer verified (K-61 phase 3). Null for everybody else, who is answered as
-   * before. A second first request racing this one can lose the invite's single use to it, so a
+   * Someone signed in and bound to nobody here, admitted by the address their issuer verified: as
+   * the owner, when a manager provisioned this tenant for that address (#3202), or by an open
+   * member invite naming it (K-61 phase 3). Null for everybody else, who is answered as before. A second first request racing this one can lose the invite's single use to it, so a
    * refusal asks the directory once more: the winner's binding is theirs too.
    */
   const admit = async (env: E, node: DoorNode, directory: IdentityStub, subject: AuthSubject): Promise<string | null> => {
     const email = verifiedEmailOf(subject);
     if (email === null) return null;
+    const owner = await directory.claimOwnerByAddress(node.scopeId, subject.sub, email);
+    if (owner) {
+      console.log(JSON.stringify({ host: 'door-owner-claimed', ...node, principal: owner }));
+      return owner;
+    }
     const host = deps.hostFor(env);
     const { principal, contested } = await admitByAddress(
       { directory, exchangeById: (id) => host.exchangeBecomeLinkById(node.tenantId, node.scopeId, id, MEMBER_INVITE_LABEL) },
@@ -679,7 +684,7 @@ export function workerDoor<E extends object>(deps: WorkerDoorDeps<E>): WorkerDoo
     platform: {
       onProvision: async (env, b) => {
         const directory = deps.directory(env, b);
-        await directory.setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
+        await directory.setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
         // The places repair (#1670): a no-op before an issuer is delivered, and it never throws.
         const { identity } = await wiring(env, b);
         await reportScopeMembers(directory, placesReporter({ identity }), b.scopeId);

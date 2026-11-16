@@ -456,6 +456,13 @@ export interface ProvisionInstanceInput {
    * predates the field ignores it (its body parse strips unknown keys).
    */
   parentScopeId?: ScopeId;
+  /**
+   * The address a manager provisioned this tenant for (#3202, `provision-tenant`'s
+   * `instance.ownerEmail`): the vertical reserves the owner seat for a sign-in whose issuer
+   * verified it, with no first-sign-in window. A vertical that predates the field ignores it and
+   * opens the window as before.
+   */
+  ownerEmail?: string;
   slug: string;
   name: string;
   /**

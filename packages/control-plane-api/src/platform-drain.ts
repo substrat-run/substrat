@@ -1138,6 +1138,7 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
           tenantId,
           scopeId,
           owner: principalIdSchema.parse(payload.instance.owner),
+          ...(payload.instance.ownerEmail ? { ownerEmail: payload.instance.ownerEmail } : {}),
           slug: payload.instance.slug,
           name: payload.instance.name,
           entitlements,

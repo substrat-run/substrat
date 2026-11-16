@@ -925,7 +925,7 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
   const owner = principalId.parse(ulid());
   const ctx = { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' };
 
-  let provisioned: { scopeId?: string; owner?: string; entitlements?: EntitlementGrant[] } | undefined;
+  let provisioned: { scopeId?: string; owner?: string; ownerEmail?: string; entitlements?: EntitlementGrant[] } | undefined;
   let configured: { entries?: Array<{ key: string; value: string }> } | undefined;
   const fakeVertical = {
     provisionInstance: async (input: {
@@ -998,6 +998,17 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(provisioned?.owner).toBe(owner);
     expect(provisioned?.entitlements?.find((e) => e.entitlementKey === 'flows')).toMatchObject({ plan: 'pro' });
     expect(configured?.entries).toEqual([{ key: 'ISSUER_DOMAIN', value: 'auth.customer-1.example' }]);
+    expect(provisioned).not.toHaveProperty('ownerEmail');
+  });
+
+  it("hands the vertical the requester's address, so the owner seat is reserved for it (#3202)", async () => {
+    const p = payloadFor(ulid(), ulid());
+    const outcome = await provisionTenantHandler(deps())(
+      ctx,
+      intent('provision-tenant', { payload: { ...p, instance: { ...p.instance, ownerEmail: 'founder@example.com' } } }),
+    );
+    expect(outcome).toMatchObject({ status: 'done' });
+    expect(provisioned).toMatchObject({ owner, ownerEmail: 'founder@example.com' });
   });
 
   type Payload = ReturnType<typeof payloadFor>;
@@ -1007,6 +1018,7 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     ['vertical a/b/c', (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: 'a/b/c' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
     ['a whitespace-only instance name', (p: Payload) => ({ ...p, instance: { ...p.instance, name: '   ' } }), /^provision-tenant payload is malformed: instance\.name: /],
     ['an owner that is not a principal', (p: Payload) => ({ ...p, instance: { ...p.instance, owner: 'not-a-principal' } }), /^provision-tenant payload is malformed: instance\.owner: /],
+    ['an ownerEmail that is not an address', (p: Payload) => ({ ...p, instance: { ...p.instance, ownerEmail: 'founder' } }), /^provision-tenant payload is malformed: instance\.ownerEmail: /],
     // These parse as a payload; the writes below them would refuse them, so the check before
     // any write does.
     ['an instance slug provisioning does not admit', (p: Payload) => ({ ...p, instance: { ...p.instance, slug: 'Main Site' } }), /./],

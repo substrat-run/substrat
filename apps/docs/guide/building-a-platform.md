@@ -59,6 +59,13 @@ through the `provision-tenant` platform intent, and each created tenant records 
 capability: your app declares `substrat.provisions`, and staff turn it on for that vertical
 ([the deploy model](/concepts/deploying)). A push cannot grant it to itself.
 
+For self-serve sign-up, where the person who asks for a business becomes its owner, put
+the address their sign-in verified in the payload as `instance.ownerEmail`. Read it from
+`ctx.verifiedEmail` in the operation that asks. The new scope's owner seat then has no
+first-sign-in window: only a sign-in whose issuer verified that address claims it, and a
+claim link from the dashboard still works. Without `ownerEmail`, whoever signs in first
+in the 15 minutes after provisioning takes the seat.
+
 ### Each customer gets your vertical in their own tenant
 
 Every customer's data lives in their own tenant, and so do their connections. When a

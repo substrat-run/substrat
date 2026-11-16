@@ -25,6 +25,11 @@
  *      on every re-provision, so a sweep could hand a claimed desk's ownership to the
  *      next stranger to sign in.
  *
+ * A seat can also be RESERVED for one address (#3202, `recordAddressedOwnerSeat`): a manager that
+ * provisions a tenant for the person who asked names the address that person's own sign-in
+ * verified, and the seat opens no window at all. Only a sign-in whose issuer verified that same
+ * address claims it (`claimOwnerByAddress`), and a claim link still works as it does for any seat.
+ *
  * A CLOSED window is not a lost desk: `pending_owner` stays until a claim binds it, so
  * `needsSetup` keeps reporting the truth and a claim link always works. What a closed
  * window refuses is exactly the unbounded part — a stranger's plain sign-in.
@@ -35,6 +40,7 @@
  */
 
 import type { z, ownerTransferAbandon, ownerTransferRecord } from '@substrat-run/contracts';
+import { addressAdmits } from './address.js';
 import type { RegistrySql } from './site-registry.js';
 
 /** How long after provision a plain first sign-in still claims the seat. */
@@ -71,6 +77,9 @@ export const OWNER_SEAT_DDL: readonly string[] = [
   // hand-over, which must finish it, from any other request that merely finds the record naming
   // `to`, which must not revoke anybody.
   `CREATE TABLE IF NOT EXISTS owner_transfer (scope_id TEXT PRIMARY KEY, prev_principal TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL)`,
+  // The address a pending seat is reserved for (#3202): a sign-in whose issuer verified it claims
+  // the seat. Consumed with `pending_owner`, by whichever claim binds the seat first.
+  `CREATE TABLE IF NOT EXISTS owner_address (scope_id TEXT PRIMARY KEY, email TEXT NOT NULL)`,
 ];
 
 /**
@@ -157,6 +166,52 @@ export function recordSiblingOwnerSeat(
   if (bound.length === 0) {
     sql.exec('INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)', scopeId, principal, now);
   }
+}
+
+/**
+ * Record the seat of a tenant provisioned for one person (#3202): a manager's `provision-tenant`
+ * naming `email`, the address that person's sign-in at the manager verified. No first-sign-in
+ * window is opened — under `recordOwnerSeat` the business went to whichever login reached its
+ * hostname first — and only a sign-in whose issuer verified `email` claims it
+ * (`claimOwnerByAddress`). A claim link still binds it, as for any pending seat. First write wins,
+ * as in `recordOwnerSeat`, so a re-run naming another address changes nothing.
+ */
+export function recordAddressedOwnerSeat(
+  sql: RegistrySql,
+  scopeId: string,
+  principal: string,
+  email: string,
+  now: number,
+): void {
+  if (ownerOfRecord(sql, scopeId) !== null) return;
+  sql.exec('INSERT INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
+  sql.exec('INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)', scopeId, principal, now);
+  sql.exec('INSERT OR REPLACE INTO owner_address (scope_id, email) VALUES (?, ?)', scopeId, email);
+}
+
+/**
+ * Claim a seat reserved for an address (#3202): `sub`, signed in with `verifiedEmail`, is bound
+ * to the pending owner when the seat's reserved address is that one (`addressAdmits`, the rule a
+ * member invite by address uses). Null, writing nothing, when the seat is not pending, is reserved
+ * for no address or another one, or the issuer verified none. A subject already bound here gets
+ * its own principal back and claims nothing.
+ */
+export function claimOwnerByAddress(
+  sql: RegistrySql,
+  scopeId: string,
+  sub: string,
+  verifiedEmail: string | null,
+): string | null {
+  const bound = boundPrincipal(sql, scopeId, sub);
+  if (bound !== null) return bound;
+  if (verifiedEmail === null) return null;
+  const pending = pendingRow(sql, scopeId);
+  if (!pending) return null;
+  const reserved = [...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', scopeId)][0] as
+    | { email: string }
+    | undefined;
+  if (!reserved || !addressAdmits(reserved.email, verifiedEmail)) return null;
+  return bindSeat(sql, scopeId, sub, pending.principal);
 }
 
 /** The scope's durable owner of record, or null if never provisioned through this directory. */
@@ -327,6 +382,7 @@ function bindSeat(sql: RegistrySql, scopeId: string, sub: string, principal: str
   sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
   sql.exec('DELETE FROM pending_owner WHERE scope_id = ?', scopeId);
   sql.exec('DELETE FROM owner_claim_capability WHERE scope_id = ?', scopeId);
+  sql.exec('DELETE FROM owner_address WHERE scope_id = ?', scopeId);
   return principal;
 }
 

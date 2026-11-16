@@ -816,6 +816,8 @@ const provisionBody = z.object({
   owner: principalIdOf,
   /** #2773: the scope that asked for this one (`provision-sibling`), whose login `owner` already is. */
   parentScopeId: scopeIdOf.optional(),
+  /** #3202: the address a manager provisioned this tenant for, whose verified sign-in is the owner. */
+  ownerEmail: z.string().email().optional(),
   slug: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   entitlements: z.array(entitlementGrant).optional(),
