@@ -565,9 +565,9 @@ describe('declared connection landings (#2316)', () => {
     const rows = runs.length;
     const refused = DECLARED.map((l) => l.provider === 'planima' ? { ...l, options: { horizonYear: 50 } } : l);
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(refused)));
-    const staffText: string[] = [];
+    const filed: Parameters<NonNullable<PlatformSweepOptions['recordFailure']>>[0][] = [];
 
-    const report = await pass({ planima: 120 }, (entry) => void staffText.push(entry.message));
+    const report = await pass({ planima: 120 }, (entry) => void filed.push(entry));
 
     expect(report.connectionLandings).toMatchObject({ failed: 1 });
     expect(report.connectionsSwept).toBe(0);
@@ -575,8 +575,15 @@ describe('declared connection landings (#2316)', () => {
     expect(planPages).toHaveLength(pages);
     expect(runs).toHaveLength(rows + 1);
     expect(lastRun(plan)).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^1 declared landing could not be granted or bound \(reference \w{26}\)$/) });
-    expect(staffText).toHaveLength(1);
-    expect(staffText[0]).toContain(`scope ${s}`);
+    // #3235: filed for the scope it names: the tenant's row in the platform's words, the refusal staff's.
+    expect(filed).toEqual([
+      expect.objectContaining({
+        tenantId: t,
+        scopeId: s,
+        message: expect.stringMatching(/^the planima connection's declared landing could not be granted or bound for this app \(reference \w{26}\)$/),
+        detail: expect.stringContaining(`scope ${s}`),
+      }),
+    ]);
     expect(report.errors).toEqual([]);
   });
 
@@ -770,7 +777,7 @@ describe('connector sweep outcome (#2316)', () => {
     expect(report.errors).toEqual([]);
   });
 
-  it("records a binding whose every page is refused as failed, with the refusal on staff's row alone", async () => {
+  it("records a binding whose every page is refused as failed, with the refusal on staff's row alone and the scope's row in the platform's words", async () => {
     const id = await connect();
     await host.admin.grantToConnection(staff, { connectionId: id, permission: PLAN_RECORD, node: { tenantId: t, scopeId: s }, grantedBy: staff });
     await bindPlanimaScope(host, { connectionId: id, tenantId: t, scopeId: s, vertical: 'maintenance', operation: 'maintenance/record-plan', permission: PLAN_RECORD });
@@ -781,11 +788,19 @@ describe('connector sweep outcome (#2316)', () => {
     // The tenant's row counts what did not land, under the platform's reference, in its own words.
     const row = runs.find((r) => r.connectionId === id);
     expect(row).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^1 of 1 binding did not land \(reference \w{26}\)$/) });
-    // The refusal is staff's: one row with no tenant, under that reference, naming the scope.
-    expect(await host.admin.listOpsFailures(staff, { reference: referenceOf(row)! })).toEqual([
-      expect.objectContaining({ tenantId: null, operation: 'sweep.connector:planima', message: expect.stringMatching(new RegExp(`^connection ${id} of tenant ${t}: scope ${s}: .*plan closed for the year`)) }),
+    // The refusal is staff's: a row with no tenant, under that reference, naming the scope.
+    expect(await host.admin.listOpsFailures(staff, { reference: referenceOf(row)! })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tenantId: null, operation: 'sweep.connector:planima', message: expect.stringMatching(new RegExp(`^connection ${id} of tenant ${t}: scope ${s}: .*plan closed for the year`)) }),
+      ]),
+    );
+    // #3235: the tenant's row carries the scope, so the app's Failures view and fleet health count
+    // it, and says only what became of the binding, never the provider's words.
+    const tenantRows = await host.admin.listOpsFailures(staff, { tenantId: t });
+    expect(tenantRows).toEqual([
+      expect.objectContaining({ scopeId: s, vertical: 'maintenance', reference: referenceOf(row), message: `the planima sweep did not land in this app (reference ${referenceOf(row)})` }),
     ]);
-    expect(await host.admin.listOpsFailures(staff, { tenantId: t })).toEqual([]);
+    expect(await host.admin.listOpsFailures(staff, { tenantId: t, scopeId: s })).toHaveLength(1);
     // The digest is handed it once: from the ledger, not again from the pass's errors.
     expect(await digestLinesNaming(since, report, 'plan closed for the year')).toHaveLength(1);
   });
