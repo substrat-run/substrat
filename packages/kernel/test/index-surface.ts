@@ -513,6 +513,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2498: a sized stream as the runtime's fetch and R2 take it; the R2 store and the vertical client use it.
   'knownLengthInit',
   'knownLengthStream',
+  // #3235: what a connector's tenant may read about their app refusing a landing call; connectors call it.
+  'landingRefusalSaid',
   'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
   'licensedOrphanIds',
