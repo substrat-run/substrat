@@ -13,6 +13,15 @@ import type { ObsQuery } from './observability-query';
 /** The plane's facet keys, in the order the sidebar lists them: business facets first. */
 export type RequestFacetKey =
   | 'operation' | 'entity' | 'state' | 'path' | 'problemCode' | 'principalKind' | 'status' | 'surface' | 'level' | 'kind';
+/**
+ * Two facets the observability design draws are absent on purpose (#2762). There is no App
+ * facet: a Logs page is one app (`scopeId`), so every row would carry the same value. There is
+ * no tenant column or facet either: the page belongs to one team, and the column was dropped
+ * by decision (see `LogList.tsx`). Both come back if a page ever spans apps or tenants.
+ *
+ * How many values a facet lists is the plane's (`facetTop`): Operation lists 7, as the design
+ * draws it; path, entity and state list 10. A ticked value outside that is still listed.
+ */
 export const REQUEST_FACETS: Facet<RequestFacetKey>[] = [
   { key: 'operation', url: 'op', label: 'Operation', mono: true },
   // #2762: the entity types a request's events were about; a request counts under each.

@@ -444,8 +444,19 @@ export interface RequestFacets {
   estimated: boolean;
 }
 
-/** How many values one facet lists, most frequent first. */
+/** How many values one facet lists, most frequent first, unless `FACET_TOP_BY` says otherwise. */
 export const REQUEST_FACET_TOP = 10;
+
+/**
+ * Facets that list fewer than `REQUEST_FACET_TOP` (#2762). The design's Operation facet lists
+ * its top 7; the facets the design never drew (path, entity, process state) keep ten, since a
+ * route or entity list is wider than an operation list. A ticked value outside the top N is
+ * still listed by the dashboard, so a narrower list hides nothing a reader has chosen.
+ */
+const FACET_TOP_BY: Readonly<Record<string, number>> = { operation: 7 };
+
+/** How many values the facet under `key` lists, in Requests and in Lines. */
+export const facetTop = (key: string): number => FACET_TOP_BY[key] ?? REQUEST_FACET_TOP;
 
 /**
  * #2762: the facets of the Lines view. Only the lines that carry their tenant can be counted

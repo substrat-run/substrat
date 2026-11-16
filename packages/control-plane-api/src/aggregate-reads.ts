@@ -23,7 +23,7 @@ import {
   type TenantLineScope,
   LOG_PATTERN_TOP,
   REQUEST_FACET_KEYS,
-  REQUEST_FACET_TOP,
+  facetTop,
   type LogPattern,
   type LogPatternLevel,
   type LogPatterns,
@@ -112,7 +112,7 @@ function countFacets<R extends { count: number }, K extends string>(
     facets[key] = [...counts.entries()]
       .map(([v, count]) => ({ value: key === 'status' ? Number(v) : v, count }))
       .sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)))
-      .slice(0, REQUEST_FACET_TOP);
+      .slice(0, facetTop(key));
   }
   return { total, facets };
 }
