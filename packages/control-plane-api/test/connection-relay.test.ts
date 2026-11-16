@@ -442,6 +442,20 @@ describe('relayConnectionUpsert — a provider that prepares its own credential 
     expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-2', privateKey: 'KEY-1' });
   });
 
+  it("a provider's preparation that refuses stores nothing, and the live credential stays", async () => {
+    await relayConnectionUpsert(host, actor, request({ clientId: 'kept' }), { prepareCandidate: () => undefined });
+    // A key the provider says cannot replace this connection's (#3189: another Stripe account).
+    await expect(
+      relayConnectionUpsert(host, actor, request({ clientId: 'elsewhere' }), {
+        prepareCandidate: () => async () => {
+          throw new ConnectionRelayError('this key belongs to another account; connect it as a new connection', 422);
+        },
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'kept' });
+    expect(await host.admin.listConnections(staff, { tenantId: t, provider: 'mailbox' })).toHaveLength(1);
+  });
+
   it('a provider with nothing to add leaves the candidate as given', async () => {
     await relayConnectionUpsert(host, actor, request({ clientId: 'app-3' }), { prepareCandidate: () => undefined });
     expect((await host.admin.openConnection(t, 'desk', 'mailbox'))?.secret).toEqual({ clientId: 'app-3' });

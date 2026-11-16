@@ -13,11 +13,11 @@ const probe = (options: StripeMockOptions, secret?: Record<string, string>) => {
 };
 
 describe('stripe probe', () => {
-  it('names the account, says it is test mode, and that outcomes arrive by webhook', async () => {
+  it('names the account and mode the connection is pinned to, and that outcomes arrive by webhook', async () => {
     expect(await probe({})).toEqual({
       ok: true,
       refused: false,
-      accountRef: null,
+      accountRef: 'acct_1MockAccount:test',
       accountLabel: 'Acme Mugs',
       facts: [
         { label: 'Account', value: 'acct_1MockAccount' },
@@ -32,12 +32,13 @@ describe('stripe probe', () => {
 
   it('says live mode for a live key', async () => {
     const answer = await probe({ secretKey: 'rk_live_51MockKey000000000000' });
+    expect(answer).toMatchObject({ accountRef: 'acct_1MockAccount:live' });
     expect(answer.facts).toContainEqual({ label: 'Mode', value: 'Live — real payments' });
   });
 
   it('accepts a restricted key that may not read the account, naming the account from Stripe’s refusal', async () => {
     const answer = await probe({ accountReadable: false });
-    expect(answer).toMatchObject({ ok: true, accountLabel: 'acct_1MockAccount' });
+    expect(answer).toMatchObject({ ok: true, accountRef: 'acct_1MockAccount:test', accountLabel: 'acct_1MockAccount' });
     expect(answer.facts).toContainEqual({ label: 'Account name', value: expect.stringMatching(/not readable/) });
   });
 
@@ -50,6 +51,7 @@ describe('stripe probe', () => {
   it.each([
     ['a key Stripe does not accept', {}, { secretKey: 'rk_test_51Wrong000000000000' }, true, /mistyped, rolled or deleted/],
     ['a key that may not open a checkout', { checkoutAllowed: false }, undefined, true, /Checkout Sessions: Write/],
+    ['a key whose account Stripe does not name', { accountReadable: false, refusalNamesAccount: false }, undefined, true, /which account.*Account: Read/],
     ['a publishable key', {}, { secretKey: 'pk_test_51Mock000000000000' }, true, /publishable key/],
     ['an empty paste', {}, { secretKey: '' }, true, /secret or restricted key/],
   ] as [string, StripeMockOptions, Record<string, string> | undefined, boolean, RegExp][])('fails on %s', async (_, options, secret, refused, error) => {

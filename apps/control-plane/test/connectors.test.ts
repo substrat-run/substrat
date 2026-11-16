@@ -187,6 +187,12 @@ describe('connector registry', () => {
     expect(Object.keys(paymentCheckoutsFor(ENV))).toEqual(['stripe']);
   });
 
+  it("judges a Stripe key before the relay stores it, refusing in the relay's own terms (#3189)", async () => {
+    // A publishable key is refused before any call to Stripe, so this needs no network.
+    const prepare = connectionInspectorsFor(ENV)['stripe']!.prepareCandidate!;
+    await expect(prepare({ secretKey: 'pk_test_51Mock000000000000' }, undefined)).rejects.toMatchObject({ name: 'ConnectionRelayError', status: 422 });
+  });
+
   it('refuses to act with no provider base rather than defaulting to the testbed', async () => {
     // #610/#990: the old default sent a PRODUCTION credential to the testbed, which
     // answers 401 — indistinguishable from a mistyped key. A named throw is the whole

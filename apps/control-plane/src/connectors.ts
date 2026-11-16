@@ -81,10 +81,12 @@ import {
   STRIPE_CALLBACK_ROUTE,
   STRIPE_CONNECTION_GRANTS,
   StripeCheckoutRefusal,
+  StripeKeyRefusal,
   bindStripeScope,
   createStripeCheckout,
   handleStripeCallback,
   listStripeBindings,
+  prepareStripeCandidate,
   probeStripeConnection,
   probeStripeSecret,
   stripeConnectionActivity,
@@ -547,7 +549,8 @@ const WOOCOMMERCE: ConnectorRegistration = {
 /**
  * Stripe (#3189) — a vertical takes payments through its tenant's own Stripe account. The
  * credential is one restricted key, pasted into the dashboard's door; the probe names the account,
- * says whether it is live, and whether the key may register the webhook endpoint.
+ * says whether it is live, and whether the key may register the webhook endpoint. The connection is
+ * pinned to that account and mode: `prepareCandidate` refuses a replacement key for another one.
  *
  * The only connector with all three halves of the payment round trip: `checkout` opens a hosted
  * session inside the vertical's request (the relay), `callback` hears Stripe's webhook — signed
@@ -575,6 +578,16 @@ const STRIPE: ConnectorRegistration = {
     activity: async (h, row) => stripeConnectionActivity(h, row.id),
     credential: (h, row) => stripeCredentialSummary(h, row),
     probeCandidate: async (secret) => probeStripeSecret(secret, stripeOptions(env)),
+    // A connection is pinned to one Stripe account and mode: a re-pasted key for another is refused
+    // here, before the probe and the store, with nothing stored.
+    prepareCandidate: async (candidate, previous) => {
+      try {
+        return await prepareStripeCandidate(stripeOptions(env))(candidate, previous);
+      } catch (err) {
+        if (err instanceof StripeKeyRefusal) throw new ConnectionRelayError(err.message, err.status);
+        throw err;
+      }
+    },
   }),
   sweep: (env) => async (h, id, o) => sweepStripe(h, id, { ...stripeOptions(env), fetch: o.fetch }),
   checkout: (env) => async (h, row, scopeId, request) => {

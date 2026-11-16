@@ -30,24 +30,38 @@ export const STRIPE_API_VERSION = '2024-06-20';
  * What a restricted key needs, in the words of Stripe's key editor: Checkout Sessions to open a
  * checkout and read it back, Events to read a webhook's event back by its id, Webhook Endpoints to
  * register the platform's endpoint on the account. Without the last, payments are still found, by
- * polling, only later. Account read is optional: it is what lets the probe name the account.
+ * polling, only later. Account read is optional: without it Stripe still names the account (by id,
+ * in its refusal), and with it Test connection also shows the account's name.
  */
 export const STRIPE_KEY_PERMISSIONS = [
   'Checkout Sessions: Write',
   'Events: Read',
   'Webhook Endpoints: Write',
-  'Account: Read (optional, names the account in Test connection)',
+  'Account: Read (optional, names the account by its name in Test connection)',
 ] as const;
 
+/** The account and mode a connection is pinned to, `acct_…:live` or `acct_…:test`. */
+const ACCOUNT_REF = /^acct_[A-Za-z0-9]+:(live|test)$/;
+
+/**
+ * The credential as it is stored: the key, and the account and mode it was found to reach when it
+ * was connected (`account`, written by the platform's preparation, never by the person pasting —
+ * see `prepareStripeCandidate`). Absent on a credential stored some other way, in which case the
+ * connector asks Stripe.
+ */
 export const stripeSecret = z.object({
   secretKey: z
     .string()
     .regex(/^(sk|rk)_(live|test)_[A-Za-z0-9]+$/, 'a Stripe secret or restricted key (sk_… or rk_…); a publishable key (pk_…) cannot open a checkout'),
+  account: z.string().regex(ACCOUNT_REF, 'a Stripe account and mode (acct_…:live or acct_…:test)').optional(),
 });
 export type StripeSecret = z.infer<typeof stripeSecret>;
 
 /** Whether a key moves real money. Read from the key, which is what Stripe itself decides by. */
 export const isLiveKey = (secretKey: string): boolean => /^(sk|rk)_live_/.test(secretKey);
+
+/** One Stripe account in one mode, as a connection is pinned to it: `acct_123:live`. */
+export const stripeAccountRef = (accountId: string, live: boolean): string => `${accountId}:${live ? 'live' : 'test'}`;
 
 /**
  * A Stripe API failure, with what a caller branches on.
@@ -212,14 +226,34 @@ export class StripeApi {
     return isLiveKey(this.secret().secretKey);
   }
 
+  private asked: Promise<string> | undefined;
+
   /**
-   * Which key this connection holds, as a SHA-256 digest — never the key. State written under one
-   * key records it, so a replaced key (another account, or the same account's other mode) is told
-   * apart from the one the state was written under.
+   * The account and mode this connection is pinned to ({@link stripeAccountRef}): the one stored with
+   * the key, or, for a credential stored without one, what Stripe names for the key (asked once).
    */
-  async keyId(): Promise<string> {
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(this.secret().secretKey)));
-    return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
+  accountRef(): Promise<string> {
+    const pinned = this.secret().account;
+    if (pinned) return Promise.resolve(pinned);
+    this.asked ??= this.namedAccount().then(({ id }) => stripeAccountRef(id, this.live()));
+    return this.asked;
+  }
+
+  /**
+   * Which account the key belongs to — the cheapest call that names it. A key with Account read gets
+   * the account; a restricted key without it is refused, and Stripe names the account in the refusal
+   * (`account` is then null). A refusal that names none is passed on as the 403 it is.
+   */
+  async namedAccount(): Promise<{ id: string; account: StripeAccount | null }> {
+    try {
+      const account = await this.account();
+      return { id: account.id, account };
+    } catch (err) {
+      if (!(err instanceof StripeApiError) || !err.forbidden) throw err;
+      const id = /\bacct_[A-Za-z0-9]+/.exec(err.message)?.[0];
+      if (!id) throw new StripeApiError('Stripe did not say which account this key belongs to; give the restricted key Account: Read', 403);
+      return { id, account: null };
+    }
   }
 
   private async call<T extends z.ZodTypeAny>(
@@ -299,11 +333,6 @@ export class StripeApi {
 
   event(id: string): Promise<StripeEvent> {
     return this.call('GET', `/v1/events/${encodeURIComponent(id)}`, stripeEvent);
-  }
-
-  /** One webhook endpoint by id: a 404 means it is not on this key's account, in this key's mode. */
-  webhookEndpoint(id: string): Promise<StripeWebhookEndpoint> {
-    return this.call('GET', `/v1/webhook_endpoints/${encodeURIComponent(id)}`, stripeWebhookEndpoint);
   }
 
   createWebhookEndpoint(body: Record<string, FormValue>, idempotencyKey: string): Promise<StripeWebhookEndpoint> {

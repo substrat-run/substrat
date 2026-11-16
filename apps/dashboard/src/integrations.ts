@@ -205,13 +205,14 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     monogram: 'St',
     // Keyed as the connector's `stripeSecret` parses it. A restricted key, made in Stripe →
     // Developers → API keys, with Checkout Sessions: Write, Events: Read and Webhook Endpoints:
-    // Write (and optionally Account: Read, which lets Test connection name the account). A test
+    // Write (and optionally Account: Read, which lets Test connection show the account's name). A test
     // key (`rk_test_…`) connects test mode: checkouts complete with test cards and no money moves.
     fields: [{ key: 'secretKey', label: 'Restricted key', secret: true, placeholder: 'rk_live_… or rk_test_…' }],
     // Empty for WooCommerce's reason: outcomes land through the consuming app's own operation,
     // and `bindStripeScope` verifies its permission at bind time.
     grants: [],
-    // No `accountRefField`: one Stripe account per app, so a re-paste rotates the connection in place.
+    // No `accountRefField`: one Stripe account per app, so a re-paste rotates the connection in place,
+    // and the platform refuses one for another account or mode (the connection is pinned to both).
   },
   bolagsverket: {
     provider: 'bolagsverket',

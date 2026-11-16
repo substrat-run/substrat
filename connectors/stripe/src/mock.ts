@@ -27,6 +27,8 @@ export interface StripeMockOptions {
   accountName?: string | null;
   /** False: the key is a restricted key without Account read. */
   accountReadable?: boolean;
+  /** False: a refusal for a missing permission does not name the account. */
+  refusalNamesAccount?: boolean;
   /** False: the key is a restricted key without Checkout Sessions. */
   checkoutAllowed?: boolean;
   /** False: the key is a restricted key without Webhook Endpoints write. */
@@ -87,7 +89,7 @@ interface MockSession {
 }
 
 export class StripeMock {
-  readonly secretKey: string;
+  private key: string;
   readonly accountId: string;
   readonly requests: string[] = [];
   readonly sessions = new Map<string, MockSession>();
@@ -100,13 +102,24 @@ export class StripeMock {
 
   constructor(options: StripeMockOptions = {}) {
     this.options = options;
-    this.secretKey = options.secretKey ?? 'rk_test_51MockKey000000000000';
+    this.key = options.secretKey ?? 'rk_test_51MockKey000000000000';
     this.accountId = options.accountId ?? 'acct_1MockAccount';
   }
 
-  /** What the connector's credential is: the one key this account accepts. */
-  get secret(): { secretKey: string } {
-    return { secretKey: this.secretKey };
+  /** The one key this account accepts now. */
+  get secretKey(): string {
+    return this.key;
+  }
+
+  /** The tenant rolls the key in Stripe: the same account and mode, and only the new key is accepted. */
+  roll(secretKey: string): void {
+    if (secretKey.includes('_live_') !== this.key.includes('_live_')) throw new Error('a rolled key keeps its mode');
+    this.key = secretKey;
+  }
+
+  /** What the connector's credential is once stored: the one key this account accepts, pinned to its account and mode. */
+  get secret(): { secretKey: string; account: string } {
+    return { secretKey: this.secretKey, account: `${this.accountId}:${this.secretKey.includes('_live_') ? 'live' : 'test'}` };
   }
 
   private clock: (() => number) | undefined;
@@ -126,10 +139,14 @@ export class StripeMock {
 
   private next(prefix: string): string {
     this.counter += 1;
-    // Only a Checkout Session's id says its mode (`cs_test_…`); events, intents and charges do not.
-    const mode = prefix === 'cs' ? (this.secretKey.includes('_live_') ? 'live_' : 'test_') : '';
-    // The account is in every id, as Stripe's ids are unique across accounts: two mocks never share one.
-    return `${prefix}_${mode}Mock${this.accountId.replace(/[^A-Za-z0-9]/g, '')}${String(this.counter).padStart(6, '0')}`;
+    const live = this.secretKey.includes('_live_');
+    // Only a Checkout Session's id SAYS its mode (`cs_test_…`); an event's, an intent's, a charge's or
+    // an endpoint's is one alphanumeric run (`evt_1N…`), and the connector holds an event id to that.
+    const shown = prefix === 'cs' ? (live ? 'live_' : 'test_') : '';
+    // The account and the mode are still in every id, as Stripe's ids are unique across accounts and
+    // across test and live: two mocks never share one, even a test and a live mock of one account.
+    const mode = live ? 'Live' : 'Test';
+    return `${prefix}_${shown}Mock${mode}${this.accountId.replace(/[^A-Za-z0-9]/g, '')}${String(this.counter).padStart(6, '0')}`;
   }
 
   get fetch(): FetchLike {
@@ -168,9 +185,10 @@ export class StripeMock {
   }
 
   private forbidden(permission: string): MockResponse {
+    const on = this.options.refusalNamesAccount === false ? '' : ` on account '${this.accountId}'`;
     return stripeError(
       403,
-      `The provided key '${this.secretKey.slice(0, 8)}*****${this.secretKey.slice(-4)}' does not have the required permissions for this endpoint on account '${this.accountId}'. Having the '${permission}' permission would allow this request to continue.`,
+      `The provided key '${this.secretKey.slice(0, 8)}*****${this.secretKey.slice(-4)}' does not have the required permissions for this endpoint${on}. Having the '${permission}' permission would allow this request to continue.`,
     );
   }
 
@@ -195,13 +213,6 @@ export class StripeMock {
       if (!session) return stripeError(404, `No such checkout.session: '${m[1]}'`, 'invalid_request_error', 'resource_missing');
       const expands = query.split('&').filter((p) => p.startsWith('expand')).map((p) => decodeURIComponent(p.split('=')[1] ?? ''));
       return respond(200, this.render(session, expands.includes('payment_intent') && expands.includes('payment_intent.latest_charge')));
-    }
-    m = /^\/v1\/webhook_endpoints\/([^/]+)$/.exec(path);
-    if (m) {
-      if (this.options.webhooksAllowed === false) return this.forbidden('rak_webhook_read');
-      const endpoint = this.endpoints.find((e) => e.id === decodeURIComponent(m![1]!));
-      if (!endpoint) return stripeError(404, `No such webhook endpoint: '${m[1]}'`, 'invalid_request_error', 'resource_missing');
-      return respond(200, { id: endpoint.id, object: 'webhook_endpoint', url: endpoint.url, status: 'enabled' });
     }
     m = /^\/v1\/events\/([^/]+)$/.exec(path);
     if (m) {
@@ -322,6 +333,12 @@ export class StripeMock {
     const session = this.must(checkoutId);
     session.status = 'expired';
     return this.emit('checkout.session.expired', session);
+  }
+
+  /** Stripe no longer has the session: its account's test data was deleted, or the account closed. */
+  forget(checkoutId: string): void {
+    this.must(checkoutId);
+    this.sessions.delete(checkoutId);
   }
 
   /** What Stripe would POST to the one registered endpoint for `event`: the body and its signature header. */

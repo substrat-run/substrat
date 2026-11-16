@@ -35,11 +35,14 @@ made in Stripe under *Developers → API keys → Create restricted key*, with:
 | Checkout Sessions: **Write** | to open a checkout and read its outcome |
 | Events: **Read** | to read a webhook's event back from Stripe |
 | Webhook Endpoints: **Write** | to register the platform's webhook on your account |
-| Account: **Read** (optional) | lets *Test connection* show your account's name |
+| Account: **Read** (optional) | lets *Test connection* show your account's name, not only its id |
 
 **Test connection** says which account the key belongs to, whether it is **live** or **test**
 mode, and whether it may register the webhook. A test key (`rk_test_…`) completes checkouts with
 Stripe's test cards and moves no money, which is what you want while building.
+
+The connection is for **that account in that mode**, and stays so. Going live from a test key is a
+new connection: see [Replacing the key](#replacing-the-key).
 
 Without *Webhook Endpoints: Write* the connection still works: the platform finds each outcome by
 asking Stripe on its regular pass, minutes later instead of seconds.
@@ -119,17 +122,40 @@ payments in production yourself.
 
 ## Replacing the key
 
-Pasting a new key keeps the connection. A key for the same account and mode (a rolled key) changes
-nothing else. A key for **another account**, or a **live key replacing a test key**, reaches none
-of what the old key opened, and the platform notices on its next use:
+A Stripe connection belongs to **one Stripe account, in one mode** (live or test). Everything the
+platform keeps for it — the webhook endpoint, every checkout it opened, every `reference` it has
+been asked to charge — is about that account and mode, and is meaningless to any other.
 
-- **The webhook** is registered again on the account the new key reaches. The old endpoint stays
-  in the old account, and its calls are refused; delete it there.
-- **A test-mode checkout** the new key cannot read no longer holds its `reference`, since it never
-  moved money.
-- **A live checkout** the new key cannot read is no longer asked about. Its outcome is unknown, so
-  nothing lands and its `reference` is refused, because it may have been paid. Paste the old key
-  again to read it (the next pass lands what it missed), or charge under a new reference.
+- **A new key for the same account and mode** (you rolled the key in Stripe, or made a new
+  restricted key) replaces the old one, and everything carries on: the webhook, the open
+  checkouts, and the guard against charging a `reference` twice.
+- **A key for another account, or for the other mode, is refused**, and nothing is stored: the
+  old key stays in place. The dashboard says which account and mode the key belongs to.
+
+To move to another account, or **to go live from a test key**, connect it as a new connection:
+disconnect Stripe, then connect again with the new key. Before you do:
+
+- **Let open checkouts finish.** Once disconnected, the platform stops reading the old account,
+  so a payment made there after that never lands in your app. Check the app's open and settling
+  checkouts first (the connection's activity lists them).
+- **The new connection starts with no history.** The guard that refuses to charge a `reference`
+  twice knows only what its own connection opened, so a `reference` paid through the old
+  connection is not refused by the new one. Do not ask the new connection to charge an order that
+  may already have been paid through the old one.
+- **The old account keeps the webhook endpoint** the platform registered there. Delete it in that
+  account's Stripe dashboard.
+
+### When Stripe loses a checkout
+
+Two things nobody can prevent. If the key is **revoked or deleted in Stripe**, every call is
+refused until you paste a new key for the same account and mode; nothing is lost, and the next pass
+reads whatever happened in between. If Stripe **no longer has a checkout** (the account's test data
+was deleted, or the account closed), its outcome cannot be read: nothing lands for it, and the
+platform stops asking. A test-mode checkout's `reference` may then be charged again, since it never
+moved money, unless it had already landed as `paid`. A live checkout's `reference` stays refused,
+because it may have been paid. Charging the order under a new `reference` is outside the platform's
+guard against paying twice, so do that only after you have confirmed in Stripe that the order was
+not paid.
 
 ## Not in this release
 

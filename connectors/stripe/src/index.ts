@@ -22,9 +22,11 @@ import {
   maskKeys,
   StripeApi,
   StripeApiError,
+  stripeAccountRef,
   stripeSecret,
   STRIPE_API_VERSION,
   type StripeCheckoutSession,
+  type StripeSecret,
 } from './api.js';
 import { currencyOf, fromMinorUnits, StripeMoneyError, toMinorUnits } from './money.js';
 import { verifyStripeSignature } from './signature.js';
@@ -35,6 +37,7 @@ export {
   maskKeys,
   StripeApi,
   StripeApiError,
+  stripeAccountRef,
   stripeSecret,
   STRIPE_API_BASE,
   STRIPE_API_VERSION,
@@ -97,24 +100,26 @@ export { StripeMock, type StripeMockOptions } from './mock.js';
  *   secret kept in the connection's connector state. A changed platform origin registers a new one
  *   beside the old; the old is left to the tenant to delete in Stripe.
  *
- * ## Replacing the key
+ * ## One account, one mode
  *
- * A re-pasted key keeps the connection, and with it the connector state written under the old key.
- * That state is only right while the new key reaches the same Stripe account in the same mode; a
- * key for another account, or going live from a test key, reaches none of it. So state records
- * which key wrote it ({@link StripeApi.keyId}, a digest), and the first use of a different key asks
- * Stripe what it still reaches:
+ * A connection is pinned to ONE Stripe account in ONE mode, named `acct_…:live` or `acct_…:test`
+ * ({@link stripeAccountRef}). Everything it keeps — the webhook endpoint, every checkout, every
+ * reference it refuses — is only true of that account in that mode, so:
  *
- * - **The webhook endpoint** is read back by its id. Found, it stays. Not found, a new one is
- *   registered on the account the key now reaches, under a new token, so calls from the old
- *   account's endpoint are refused before anything is read. The old endpoint is left to the tenant
- *   to delete in the old account; this key cannot reach it.
- * - **A checkout** Stripe no longer finds is marked unreachable under that key, and the sweep stops
- *   re-reading it, so it cannot fail every pass or hold a slot a newer checkout needs. Nothing about
- *   it is landed: its outcome is unknown, not failed. Its reference stays refused while a live
- *   payment for it may have been taken (a paid reference stays refused anyway); a test-mode one, or
- *   one whose final outcome already landed, frees the reference. Restoring the key that reaches it
- *   makes it readable again, and the next sweep lands whatever it missed.
+ * - **A re-pasted key is judged before it is stored** ({@link prepareStripeCandidate}, the
+ *   platform's preparation of a candidate credential). A key for the same account and mode is a
+ *   rotation, and keeps everything. A key for another account, or the same account's other mode
+ *   (going live from a test key), is refused, and nothing is stored: it is a new connection.
+ * - **What is stored records the account it was written under** (the webhook row, each checkout
+ *   row), so a key that reached the connection some other way is never used to read or write what
+ *   another account's key wrote: a checkout of another account is not read, and the webhook is
+ *   registered again on the account the key reaches, under a new token.
+ *
+ * What nobody can prevent is Stripe losing what it held: the account closed, or its test data
+ * deleted. A checkout Stripe no longer has is held as missing. Nothing lands for it (its outcome is
+ * unknown, not failed), the sweep stops asking about it, and its reference stays refused while a
+ * live payment for it may have been taken. A revoked key is the other thing nobody prevents, and
+ * needs nothing of its own: every call is refused until a key for the same account is pasted.
  */
 
 /**
@@ -201,17 +206,16 @@ export interface StripeCheckoutRow {
   landed: PaymentCheckoutStatus | null;
   /** When a final status landed. */
   settledAt: string | null;
-  /**
-   * The key (by {@link StripeApi.keyId}) under which Stripe last answered that it has no such
-   * session: the key was replaced by one for another account or mode. Absent while it is readable.
-   */
-  unreachableWith?: string;
+  /** The account and mode it was opened on ({@link stripeAccountRef}); it is read with no other. */
+  account: string;
+  /** When Stripe answered that it no longer has this session (the account closed, its test data deleted). */
+  missingAt?: string;
 }
 
-/** `keyId`: the key (by {@link StripeApi.keyId}) the endpoint was registered or last confirmed under. */
+/** `account`: the account and mode ({@link stripeAccountRef}) the endpoint was registered on. */
 export type StripeWebhookRow =
-  | { state: 'registered'; endpointId: string; secret: string; token: string; url: string; keyId: string; tenantId: string; vertical: string; registeredAt: string }
-  | { state: 'failed'; url: string; error: string; keyId: string; tenantId: string; vertical: string; attemptedAt: string };
+  | { state: 'registered'; endpointId: string; secret: string; token: string; url: string; account: string; tenantId: string; vertical: string; registeredAt: string }
+  | { state: 'failed'; url: string; error: string; account: string; tenantId: string; vertical: string; attemptedAt: string };
 
 export interface StripeConnectorOptions {
   fetch: FetchLike;
@@ -230,14 +234,40 @@ export interface StripeConnectorOptions {
 }
 
 /**
- * Stripe has no such session under the key this connection holds now: the key was replaced by one
- * for another account, or the same account's other mode. The row is marked, and its outcome stays
- * unknown until a key that reaches it is restored.
+ * Stripe no longer has a session this connection opened, on the account and mode it was opened on:
+ * the account was closed, or its test data deleted. The row is marked, and its outcome stays unknown.
  */
-export class StripeCheckoutUnreachable extends Error {
+export class StripeCheckoutMissing extends Error {
   constructor(readonly checkoutId: string) {
-    super(`checkout ${checkoutId} is not on the Stripe account (or mode) this connection's key reaches now; its outcome cannot be read until that key is restored`);
-    this.name = 'StripeCheckoutUnreachable';
+    super(`Stripe no longer has checkout ${checkoutId} (its account was closed, or its test data deleted); its outcome cannot be read`);
+    this.name = 'StripeCheckoutMissing';
+  }
+}
+
+/**
+ * State written under one Stripe account met a key for another, or for the other mode. Not read:
+ * a connection is pinned to one account and mode, and only a key the platform's preparation skipped
+ * can reach this.
+ */
+export class StripeAccountMismatch extends Error {
+  constructor(what: string, written: string, reached: string) {
+    super(`${what} was written under Stripe account ${written}, and this connection's key reaches ${reached}; a connection stays on one account and mode, so it is not read with this key`);
+    this.name = 'StripeAccountMismatch';
+  }
+}
+
+/**
+ * A candidate key the platform will not store, with the status the connection relay answers: 422
+ * for a key that cannot be this connection's (another account or mode, or one Stripe will not
+ * name), 503 for a Stripe that did not answer. Nothing is stored either way.
+ */
+export class StripeKeyRefusal extends Error {
+  constructor(
+    message: string,
+    readonly status: 422 | 503,
+  ) {
+    super(maskKeys(message));
+    this.name = 'StripeKeyRefusal';
   }
 }
 
@@ -364,6 +394,7 @@ export async function createStripeCheckout(
 
   const conn = await openStripeConnection(host.admin, options.fetch, connection.tenantId, connection.vertical, options.timeoutMs ?? 20_000, connection.id);
   const api = new StripeApi(conn, { apiBase: options.apiBase, sleep: options.sleep });
+  const account = await api.accountRef();
 
   const refKey = await referenceKey(scopeId, request.reference);
   const held = await host.admin.getConnectorState(connection.id, refKey);
@@ -433,6 +464,7 @@ export async function createStripeCheckout(
     expiresAt: iso(session.expires_at * 1000),
     landed: null,
     settledAt: null,
+    account,
   };
   await host.admin.putConnectorState(connection.id, checkoutKey(session.id), row);
   // Published only while this ask still holds its claim: one that stalled past CLAIM_MS may have been
@@ -465,14 +497,15 @@ async function reuseOrClose(
   try {
     ({ status } = await reconcileStripeCheckout(host, connectionId, api, previous, options));
   } catch (err) {
-    if (!(err instanceof StripeCheckoutUnreachable)) throw err;
-    // Opened under a key for another account or mode. What landed is all that is known of it.
+    if (err instanceof StripeAccountMismatch) throw new StripeCheckoutRefusal(`reference '${previous.reference}' cannot be charged: ${err.message}`, 409);
+    if (!(err instanceof StripeCheckoutMissing)) throw err;
+    // Stripe no longer has it. What landed is all that is known of it.
     if (previous.landed === 'paid') throw new StripeCheckoutRefusal(`reference '${previous.reference}' is already paid (${previous.checkoutId})`, 409);
     // A final outcome already landed, or a test-mode session, which never moves money: free to charge.
     if (isFinal(previous.landed) || !previous.live) return null;
     throw new StripeCheckoutRefusal(
-      `reference '${previous.reference}' has a live checkout (${previous.checkoutId}) on a Stripe account this connection's key no longer reaches, ` +
-        `so whether it was paid cannot be read; restore the key for that account, or charge under a new reference`,
+      `reference '${previous.reference}' has a live checkout (${previous.checkoutId}) that Stripe no longer has, so whether it was paid cannot be read, ` +
+        `and the reference stays refused. A new reference is not guarded against this one: use one only after confirming, from the account's payments in Stripe, that the order was not paid`,
       409,
     );
   }
@@ -553,25 +586,24 @@ export async function reconcileStripeCheckout(
   row: StripeCheckoutRow,
   options: { now?: () => number },
 ): Promise<{ status: PaymentCheckoutStatus; landed: boolean }> {
+  // Asked of the account it was opened on, or not at all: another account's Stripe would answer that
+  // it has no such session, which says nothing about whether it was paid.
+  const account = await api.accountRef();
+  if (row.account !== account) throw new StripeAccountMismatch(`checkout ${row.checkoutId}`, row.account, account);
   let session: StripeCheckoutSession;
   try {
     session = await api.checkoutSession(row.checkoutId);
   } catch (err) {
-    // Sessions are never deleted in Stripe: not found means the key no longer reaches its account or mode.
+    // Asked of its own account and mode, a not-found is Stripe no longer having it.
     if (!(err instanceof StripeApiError) || err.status !== 404) throw err;
     const held = (await checkoutRowOf(host, connectionId, row.checkoutId)) ?? row;
-    const keyId = await api.keyId();
-    if (held.unreachableWith !== keyId) await host.admin.swapConnectorState(connectionId, checkoutKey(row.checkoutId), held, { ...held, unreachableWith: keyId });
-    throw new StripeCheckoutUnreachable(row.checkoutId);
+    // Lost to a concurrent writer: the next read marks it.
+    if (held.missingAt === undefined) await host.admin.swapConnectorState(connectionId, checkoutKey(row.checkoutId), held, { ...held, missingAt: iso(nowOf(options)) });
+    throw new StripeCheckoutMissing(row.checkoutId);
   }
   const status = checkoutStatusOf(session);
   // Re-read the row: a webhook and a sweep can both be here, and the newer one wins.
-  let current = (await checkoutRowOf(host, connectionId, row.checkoutId)) ?? row;
-  if (current.unreachableWith !== undefined) {
-    // Readable again: the key that reaches it was restored.
-    const { unreachableWith: _, ...readable } = current;
-    if (await host.admin.swapConnectorState(connectionId, checkoutKey(current.checkoutId), current, readable)) current = readable;
-  }
+  const current = (await checkoutRowOf(host, connectionId, row.checkoutId)) ?? row;
   if (current.landed !== null && (status === current.landed || RANK[status] <= RANK[current.landed])) {
     return { status: current.landed, landed: false };
   }
@@ -598,8 +630,8 @@ export interface StripeSweepResult {
   caughtUp: boolean;
   /** Settled rows past {@link STRIPE_SETTLED_KEEP_DAYS} let go this pass. */
   pruned: number;
-  /** Outstanding checkouts the current key cannot read (opened under a key for another account or mode), not re-read. */
-  unreachable: number;
+  /** Outstanding checkouts Stripe no longer has, held as missing and not asked about again. */
+  missing: number;
   webhook: 'registered' | 'failed' | 'poll-only';
   failed: { scopeId: string; error: string; said?: string }[];
 }
@@ -610,7 +642,7 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
   const rows = (await host.admin.listConnectorState(connectionId, CHECKOUT_PREFIX))
     .filter((r) => r.value !== null && typeof r.value === 'object')
     .map((r) => r.value as StripeCheckoutRow);
-  const result: StripeSweepResult = { found: bindings.length, checked: 0, landed: 0, caughtUp: true, pruned: 0, unreachable: 0, webhook: 'poll-only', failed: [] };
+  const result: StripeSweepResult = { found: bindings.length, checked: 0, landed: 0, caughtUp: true, pruned: 0, missing: 0, webhook: 'poll-only', failed: [] };
   const anchor = bindings[0] ?? rows[0];
   if (!anchor) return result;
 
@@ -625,11 +657,10 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
   // bank debit settling, a scope since unbound) cannot hold every pass and keep newer ones unread.
   const cap = options.checkoutsPerSweep ?? STRIPE_CHECKOUTS_PER_SWEEP;
   const order = (r: StripeCheckoutRow) => `${r.createdAt}|${r.checkoutId}`;
-  // A checkout this key has been told is not on its account is not asked about again until the key changes.
-  const keyId = await api.keyId();
+  // A checkout Stripe has said it no longer has is not asked about again.
   const unsettled = rows.filter((r) => !isFinal(r.landed));
-  const outstanding = unsettled.filter((r) => r.unreachableWith !== keyId).sort((a, b) => order(a).localeCompare(order(b)));
-  result.unreachable = unsettled.length - outstanding.length;
+  const outstanding = unsettled.filter((r) => r.missingAt === undefined).sort((a, b) => order(a).localeCompare(order(b)));
+  result.missing = unsettled.length - outstanding.length;
   const cursor = await host.admin.getConnectorState(connectionId, SWEEP_CURSOR_KEY);
   const from = typeof cursor === 'string' ? Math.max(0, outstanding.findIndex((r) => order(r) > cursor)) : 0;
   const batch = [...outstanding.slice(from), ...outstanding.slice(0, from)].slice(0, cap);
@@ -642,9 +673,13 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
       if ((await reconcileStripeCheckout(host, connectionId, api, row, options)).landed) result.landed += 1;
     } catch (err) {
       const error = maskKeys(err instanceof Error ? err.message : String(err));
-      if (err instanceof StripeCheckoutUnreachable) {
-        result.unreachable += 1;
-        result.failed.push({ scopeId: row.scopeId, error, said: `the payment for '${row.reference}' was opened on a Stripe account this connection's key no longer reaches; its outcome is unknown until that key is restored` });
+      if (err instanceof StripeCheckoutMissing) {
+        result.missing += 1;
+        result.failed.push({ scopeId: row.scopeId, error, said: `Stripe no longer has the payment for '${row.reference}'; its outcome is unknown, and nothing lands for it` });
+        continue;
+      }
+      if (err instanceof StripeAccountMismatch) {
+        result.failed.push({ scopeId: row.scopeId, error, said: `the payment for '${row.reference}' is on a Stripe account this connection's key does not reach; it is not read` });
         continue;
       }
       result.failed.push({ scopeId: row.scopeId, error: `checkout ${row.checkoutId}: ${error}`, said: `a payment outcome for '${row.reference}' did not land; it is tried again on the next pass` });
@@ -673,10 +708,10 @@ export async function sweepStripe(host: ScopeHost, connectionId: ConnectionId, o
 
 /**
  * Register this connection's webhook endpoint on the Stripe account, once. Nothing when it is
- * registered at the current origin under the current key, or when a failed attempt under it is less
- * than an hour old. A replaced key keeps the endpoint only if Stripe still finds it under that key;
- * otherwise the key reaches another account or mode, and a new endpoint is registered there. A key
- * without Webhook Endpoints write leaves the connection poll-only, which the row records.
+ * registered at the current origin on the account the key reaches, or when a failed attempt there
+ * is less than an hour old. An endpoint on another account (a key the platform's preparation
+ * skipped) is left behind and a new one registered under a new token, so the old one's calls are
+ * refused. A key without Webhook Endpoints write leaves the connection poll-only, which the row records.
  */
 export async function ensureStripeWebhook(
   host: ScopeHost,
@@ -689,41 +724,11 @@ export async function ensureStripeWebhook(
   // The raw value is what the swap below compares against: `undefined` for no row, `null` for a tombstone.
   const raw = await host.admin.getConnectorState(connection.id, WEBHOOK_KEY);
   const held = raw as StripeWebhookRow | null | undefined;
-  const keyId = await api.keyId();
-  if (held?.state === 'registered' && held.url.startsWith(`${base}/`)) {
-    if (held.keyId === keyId) return { state: 'registered' };
-    try {
-      await api.webhookEndpoint(held.endpointId);
-    } catch (err) {
-      // A 404 is the one answer that says the endpoint is on an account this key does not reach.
-      // Anything else says nothing about the account: a 403 (this key may not read endpoints) is
-      // recorded so it is not asked again; a passing failure is asked again next time.
-      if (!(err instanceof StripeApiError) || err.status !== 404) {
-        if (err instanceof StripeApiError && err.forbidden) await host.admin.swapConnectorState(connection.id, WEBHOOK_KEY, raw, { ...held, keyId });
-        return { state: 'registered' };
-      }
-      return registerStripeWebhook(host, connection, api, base, raw, keyId, options);
-    }
-    await host.admin.swapConnectorState(connection.id, WEBHOOK_KEY, raw, { ...held, keyId });
-    return { state: 'registered' };
-  }
+  const account = await api.accountRef();
+  const here = held?.url.startsWith(`${base}/`) === true && held.account === account;
+  if (held?.state === 'registered' && here) return { state: 'registered' };
   const now = nowOf(options);
-  if (held?.state === 'failed' && held.url.startsWith(`${base}/`) && held.keyId === keyId && now - Date.parse(held.attemptedAt) < WEBHOOK_RETRY_MS) {
-    return { state: 'failed' };
-  }
-  return registerStripeWebhook(host, connection, api, base, raw, keyId, options);
-}
-
-async function registerStripeWebhook(
-  host: ScopeHost,
-  connection: { id: ConnectionId; tenantId: string; vertical: string },
-  api: StripeApi,
-  base: string,
-  raw: unknown,
-  keyId: string,
-  options: StripeConnectorOptions,
-): Promise<{ state: 'registered' | 'failed' }> {
-  const now = nowOf(options);
+  if (held?.state === 'failed' && here && now - Date.parse(held.attemptedAt) < WEBHOOK_RETRY_MS) return { state: 'failed' };
 
   const token = mintToken();
   const url = `${base}${stripeCallbackPath(connection.id, token)}`;
@@ -740,10 +745,10 @@ async function registerStripeWebhook(
       `substrat-webhook-${connection.id}-${token}`,
     );
     if (!endpoint.secret) throw new StripeApiError('Stripe registered the endpoint without answering its signing secret', 502);
-    next = { state: 'registered', endpointId: endpoint.id, secret: endpoint.secret, token, url, keyId, tenantId: connection.tenantId, vertical: connection.vertical, registeredAt: iso(now) };
+    next = { state: 'registered', endpointId: endpoint.id, secret: endpoint.secret, token, url, account, tenantId: connection.tenantId, vertical: connection.vertical, registeredAt: iso(now) };
   } catch (err) {
     const error = maskKeys(err instanceof Error ? err.message : String(err));
-    next = { state: 'failed', url, error, keyId, tenantId: connection.tenantId, vertical: connection.vertical, attemptedAt: iso(now) };
+    next = { state: 'failed', url, error, account, tenantId: connection.tenantId, vertical: connection.vertical, attemptedAt: iso(now) };
   }
   // Two passes registering at once: the loser's endpoint is never answered, and is left in Stripe.
   await host.admin.swapConnectorState(connection.id, WEBHOOK_KEY, raw, next);
@@ -827,6 +832,7 @@ async function adopt(
     expiresAt: iso(session.expires_at * 1000),
     landed: null,
     settledAt: null,
+    account: await api.accountRef(),
   };
   if (!(await host.admin.swapConnectorState(connectionId, checkoutKey(checkoutId), undefined, row))) {
     return checkoutRowOf(host, connectionId, checkoutId);
@@ -838,28 +844,33 @@ async function adopt(
 // Probes, and what a console reads
 // ---------------------------------------------------------------------------------------------
 
+/** A connection for a credential that is not stored yet: no row, so nothing is recorded against one. */
+function candidateConnection(secret: StripeSecret, options: StripeConnectorOptions): ConnectorConnection {
+  return {
+    id: connectionIdSchema.parse('00000000000000000000000000'), // no row yet; never read
+    tenantId: '',
+    vertical: '',
+    provider: 'stripe',
+    secret,
+    // A secret key does not expire; it is rolled or deleted in Stripe.
+    expiresAt: null,
+    fetch: deadlineFetch(options.fetch, options.timeoutMs ?? 15_000),
+  };
+}
+
 /**
  * Probe a credential that is not stored yet — the connect-time check.
  *
- * Three reads, each saying something different: the account (whose Stripe is this — a restricted
- * key without Account read cannot say, and is not refused for it), Checkout Sessions (may this key
- * open a checkout at all — refused if not, since that is the whole connector), and webhook
+ * Three reads, each saying something different: the account (whose Stripe is this, and in which
+ * mode — the account and mode the connection is pinned to; a restricted key without Account read is
+ * named by Stripe's refusal, and refused only if that names no account), Checkout Sessions (may this
+ * key open a checkout at all — refused if not, since that is the whole connector), and webhook
  * endpoints (may it register one — if not, outcomes are found by polling, which the answer says).
  */
 export async function probeStripeSecret(secret: Record<string, string>, options: StripeConnectorOptions): Promise<ConnectionProbe> {
   const parsed = stripeSecret.safeParse(secret);
   if (!parsed.success) return failed(true, `invalid Stripe credential: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
-  const conn: ConnectorConnection = {
-    id: connectionIdSchema.parse('00000000000000000000000000'), // no row yet; never read
-    tenantId: '',
-    vertical: '',
-    provider: 'stripe',
-    secret: parsed.data,
-    // A secret key does not expire; it is rolled or deleted in Stripe.
-    expiresAt: null,
-    fetch: deadlineFetch(options.fetch, options.timeoutMs ?? 15_000),
-  };
-  return probeWith(conn, options);
+  return probeWith(candidateConnection(parsed.data, options), options);
 }
 
 /** Probe the credential a live connection already holds. Verifying is itself a use. */
@@ -882,28 +893,23 @@ const failed = (refused: boolean, error: string): ConnectionProbe => ({
 });
 
 const clip = (s: string, n = 200): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const NOT_ACCEPTED = 'Stripe does not accept this key: it is mistyped, rolled or deleted';
 
 async function probeWith(conn: ConnectorConnection, options: StripeConnectorOptions): Promise<ConnectionProbe> {
   // A probe answers a person waiting on a form: a 429 is "busy, try again", not a wait.
   const api = new StripeApi(conn, { apiBase: options.apiBase, maxRateLimitRetries: 0 });
   const mode = api.live() ? 'Live — real payments' : 'Test — no real money moves';
-  let accountId: string | null = null;
-  let label: string | null = null;
-  const facts: { label: string; value: string }[] = [];
+  let named: Awaited<ReturnType<StripeApi['namedAccount']>>;
   try {
-    const account = await api.account();
-    accountId = account.id;
-    label = account.settings?.dashboard?.display_name ?? account.business_profile?.name ?? account.id;
-    if (account.country) facts.push({ label: 'Country', value: account.country });
-    if (account.default_currency) facts.push({ label: 'Default currency', value: account.default_currency.toUpperCase() });
+    named = await api.namedAccount();
   } catch (err) {
-    if (!(err instanceof StripeApiError) || !err.forbidden) {
-      const refused = err instanceof StripeApiError && err.refused;
-      return failed(refused, refused ? 'Stripe does not accept this key: it is mistyped, rolled or deleted' : String((err as Error).message ?? err));
-    }
-    // A restricted key without Account read: valid, and Stripe names the account in the refusal.
-    accountId = /\bacct_[A-Za-z0-9]+/.exec(err.message)?.[0] ?? null;
+    const refused = err instanceof StripeApiError && (err.refused || err.forbidden);
+    return failed(refused, err instanceof StripeApiError && err.refused ? NOT_ACCEPTED : String((err as Error).message ?? err));
   }
+  const label = named.account ? (named.account.settings?.dashboard?.display_name ?? named.account.business_profile?.name ?? null) : null;
+  const facts: { label: string; value: string }[] = [];
+  if (named.account?.country) facts.push({ label: 'Country', value: named.account.country });
+  if (named.account?.default_currency) facts.push({ label: 'Default currency', value: named.account.default_currency.toUpperCase() });
   try {
     await api.anyCheckoutSession();
   } catch (err) {
@@ -920,18 +926,65 @@ async function probeWith(conn: ConnectorConnection, options: StripeConnectorOpti
   return {
     ok: true,
     refused: false,
-    // Left null, as WooCommerce's is: one Stripe account per (tenant, vertical), so a re-paste rotates
-    // the one connection in place. The account is named in the label and the facts.
-    accountRef: null,
-    accountLabel: label === null ? accountId : clip(label),
+    // The account and mode the connection is pinned to: a re-paste for another one is refused
+    // (prepareStripeCandidate), since nothing the connection keeps is true of it.
+    accountRef: stripeAccountRef(named.id, api.live()),
+    accountLabel: clip(label ?? named.id),
     facts: [
-      { label: 'Account', value: accountId ?? 'not named by Stripe' },
-      ...(label === null ? [{ label: 'Account name', value: 'not readable with this key (Account: Read is optional)' }] : []),
+      { label: 'Account', value: named.id },
+      ...(named.account === null ? [{ label: 'Account name', value: 'not readable with this key (Account: Read is optional)' }] : []),
       { label: 'Mode', value: mode },
       ...facts,
       { label: 'Webhooks', value: webhooks },
     ],
     error: null,
+  };
+}
+
+/**
+ * The platform's preparation of a candidate key (`ConnectionInspector.prepareCandidate`), run
+ * before the key is probed or stored, on every way a key reaches a connection. It pins the key to
+ * the account and mode Stripe names for it, stored with the key as `account`, whatever the paste
+ * carried. On a replacement (`previous` is the live connection's credential) it refuses, before
+ * anything is stored, a key for another account or the same account's other mode: nothing the
+ * connection keeps is true of that one, so it is a new connection. The same account and mode is a
+ * rotation, and keeps everything.
+ *
+ * A key whose account Stripe will not name is refused too, and so is any key when Stripe does not
+ * answer (a 503, nothing stored): unpinned, the next replacement could not be judged.
+ */
+export function prepareStripeCandidate(
+  options: StripeConnectorOptions,
+): (candidate: Record<string, string>, previous: Record<string, string> | undefined) => Promise<{ secret: Record<string, string> }> {
+  return async (candidate, previous) => {
+    const parsed = stripeSecret.safeParse(candidate);
+    if (!parsed.success) throw new StripeKeyRefusal(`invalid Stripe credential: ${parsed.error.issues.map((i) => i.message).join(', ')}`, 422);
+    const api = new StripeApi(candidateConnection({ secretKey: parsed.data.secretKey }, options), { apiBase: options.apiBase, maxRateLimitRetries: 0 });
+    let id: string;
+    try {
+      ({ id } = await api.namedAccount());
+    } catch (err) {
+      if (err instanceof StripeApiError && err.refused) throw new StripeKeyRefusal(NOT_ACCEPTED, 422);
+      if (err instanceof StripeApiError && err.forbidden) throw new StripeKeyRefusal(err.message, 422);
+      throw new StripeKeyRefusal(`Stripe did not say which account this key belongs to, so nothing was stored; try again in a moment (${clip(String((err as Error).message ?? err))})`, 503);
+    }
+    const account = stripeAccountRef(id, api.live());
+    if (previous !== undefined) {
+      const pinned = stripeSecret.safeParse(previous).data?.account;
+      const [pinnedId, pinnedMode] = pinned?.split(':') ?? [];
+      const [, mode] = account.split(':');
+      const asNew = 'connect it as a new connection: disconnect Stripe, then connect again with this key';
+      if (pinned === undefined) {
+        throw new StripeKeyRefusal(`this connection's current key was stored without the Stripe account it belongs to, so a replacement cannot be checked against it; ${asNew}`, 422);
+      }
+      if (pinnedId !== id) {
+        throw new StripeKeyRefusal(`this key belongs to another Stripe account (${id}) than the one this connection is for (${pinnedId}); a connection stays on one account, so ${asNew}`, 422);
+      }
+      if (pinnedMode !== mode) {
+        throw new StripeKeyRefusal(`this is a ${mode}-mode key, and this connection is for ${pinnedId} in ${pinnedMode} mode; a connection stays in one mode, so ${asNew}`, 422);
+      }
+    }
+    return { secret: { secretKey: parsed.data.secretKey, account } };
   };
 }
 
@@ -951,7 +1004,7 @@ export async function stripeConnectionActivity(host: ScopeHost, connectionId: Co
             reference: webhook.state === 'registered' ? webhook.endpointId : null,
             status: webhook.state === 'registered' ? 'registered' : 'not registered — outcomes are polled',
             at: instant.parse(webhook.state === 'registered' ? webhook.registeredAt : webhook.attemptedAt),
-            facts: webhook.state === 'registered' ? [] : [{ label: 'Why', value: clip(webhook.error) }],
+            facts: [{ label: 'Account', value: webhook.account }, ...(webhook.state === 'registered' ? [] : [{ label: 'Why', value: clip(webhook.error) }])],
           },
         ]
       : []),
@@ -959,9 +1012,10 @@ export async function stripeConnectionActivity(host: ScopeHost, connectionId: Co
       key,
       title: `${row.reference} — ${row.vertical} ${row.scopeId}`,
       reference: row.checkoutId,
-      status: row.unreachableWith !== undefined ? 'unreachable — on a Stripe account this key does not reach' : (row.landed ?? 'opened'),
+      status: row.missingAt !== undefined ? 'missing — Stripe no longer has it; its outcome is unknown' : (row.landed ?? 'opened'),
       at: instant.parse(row.settledAt ?? row.createdAt),
       facts: [
+        { label: 'Account', value: row.account },
         { label: 'Mode', value: row.live ? 'live' : 'test' },
         { label: 'Opened', value: row.createdAt },
         { label: 'Expires', value: row.expiresAt },
@@ -975,11 +1029,13 @@ export async function stripeConnectionActivity(host: ScopeHost, connectionId: Co
 export async function stripeCredentialSummary(host: ScopeHost, connection: { tenantId: string; vertical: string }): Promise<ConnectionCredential> {
   const open = await host.admin.openConnection(tenantIdSchema.parse(connection.tenantId), connection.vertical, 'stripe');
   if (!open) throw new Error(`no live 'stripe' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`);
-  const { secretKey } = stripeSecret.parse(open.secret);
+  const { secretKey, account } = stripeSecret.parse(open.secret);
   const prefix = /^(sk|rk)_(live|test)_/.exec(secretKey)?.[0] ?? '';
   return {
     fields: [
       { key: 'secretKey', label: isLiveKey(secretKey) ? 'Secret key (live)' : 'Secret key (test)', value: `${prefix}••••${secretKey.slice(-4)}`, masked: true },
+      // An identifier, whole: the account and mode the connection is pinned to.
+      ...(account ? [{ key: 'account', label: 'Stripe account', value: account, masked: false }] : []),
     ],
   };
 }

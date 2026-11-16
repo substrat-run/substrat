@@ -26,6 +26,7 @@ import {
   bindStripeScope,
   createStripeCheckout,
   handleStripeCallback,
+  prepareStripeCandidate,
   sweepStripe,
   type StripeConnectorOptions,
 } from '../src/index.js';
@@ -109,8 +110,14 @@ export async function world(mock: StripeMock, opts: { clock?: { ms: number }; ca
     bind: () => bindStripeScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'shop', operation: OPERATION, permission: RECORD }),
     checkout: (over: Record<string, unknown> = {}) => createStripeCheckout(host, connection, s, order(over), options),
     sweep: () => sweepStripe(host, connId, options),
-    /** The tenant re-pastes a key: the connection and its connector state stay, the credential is replaced. */
-    replaceKey: (secret: { secretKey: string }) => host.admin.updateConnectionSecret(staff, connId, secret),
+    /** The tenant re-pastes a key, as the platform takes one: judged against the stored key, then stored in its place. */
+    repaste: async (secretKey: string) => {
+      const previous = (await host.admin.openConnection(t, 'shop', 'stripe'))!.secret;
+      const { secret } = await prepareStripeCandidate(options)({ secretKey }, previous);
+      await host.admin.updateConnectionSecret(staff, connId, secret);
+    },
+    /** A credential written straight into the store, past the platform's judgement of a re-paste. */
+    overwriteKey: (secret: Record<string, string>) => host.admin.updateConnectionSecret(staff, connId, secret),
     /** Deliver `event` to the connector the way the control plane's route would, with the path Stripe was given. */
     deliver: async (event: Record<string, unknown>, tamper: { token?: string; body?: string; at?: number } = {}) => {
       const d = await mock.delivery(event, tamper.at ?? Math.floor(clock.ms / 1000));
