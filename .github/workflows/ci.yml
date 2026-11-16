@@ -78,6 +78,10 @@ jobs:
       # .d.ts; permissions, api, model, conformance and client import engines and
       # verticals through their dist). The test shards are where the build is scoped.
       - run: pnpm -r build
+      # The judge that skips a deploy workflow's preview when a PR changes nothing the vertical
+      # uploads (meridian-deploy.yml, substrat-deploy.yml). After the build, because one test holds
+      # its closure rule to the CLI's own built `collectSourceSnapshot` on both verticals.
+      - run: pnpm test:preview-scope
       # The layer rules run from packages/boundary-lint (published as
       # @substrat-run/boundary-lint), so they need the build above — the repo
       # lints itself with the same code a from-scratch vertical runs.

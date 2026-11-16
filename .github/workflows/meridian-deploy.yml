@@ -46,16 +46,11 @@ on:
   # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    # Only changes that can affect demos/meridian deploy it. If this package depends on other
-    # directories of the repo (workspace packages, shared config), add their paths here —
-    # or remove the filter to build on every merge.
-    paths:
-      - 'demos/meridian/**'
-      - '.github/workflows/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'yarn.lock'
-      - 'package-lock.json'
+    # No `paths:` filter here, unlike `push` above: a hand-written list misses what demos/meridian
+    # reaches through the workspace graph (a kernel change never previewed it). Every PR runs
+    # the cheap `preview_scope` job instead, which reads that graph and skips `preview` when
+    # nothing demos/meridian uploads changed. `preview_cleanup` then runs on every close; deleting
+    # a preview that was never made answers `{ deleted: null }`, so that costs a minute, not a red.
 
 jobs:
   deploy:
@@ -184,6 +179,40 @@ jobs:
           fi
           npx @substrat-run/cli@latest promote meridian --version "$VID"
 
+  preview_scope:
+    # Decides whether this PR changes anything demos/meridian's preview is built from — its upload
+    # closure: the vertical, every workspace member it reaches, root files, tools/, scripts/,
+    # the lockfile entries that resolve for those, and this workflow. Read off pnpm's graph by
+    # tools/preview-scope.mjs, so a new dependency is covered without editing a path list.
+    #
+    # Outside the platform build queue on purpose (no `concurrency:`): it is what keeps a PR
+    # that changed nothing demos/meridian uploads from taking a slot in it. No secrets, and the
+    # default read-only token: it runs the PR's own code, as ci.yml does. A skip writes its
+    # reason to this job's summary, so a grey `preview` reads as decided, not broken.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The merge commit and its first parent, the base it was merged against.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - id: scope
+        # pnpm lists the workspace from its manifests; nothing is installed or built.
+        run: node tools/preview-scope.mjs --vertical demos/meridian --workflow .github/workflows/meridian-deploy.yml
+
   preview:
     # Not for a Dependabot PR (#1590): a dependency bump has no vertical change to preview, and
     # the job could not pass anyway — GitHub runs Dependabot-triggered workflows against a
@@ -192,10 +221,16 @@ jobs:
     # pushed last, so a maintainer merging `main` into a Dependabot branch would flip it and
     # mint a preview of a bump. `if:` on a job SKIPS it (grey, not red), and a skipped job does
     # not fail the run.
+    #
+    # And only when `preview_scope` found a change in what the vertical uploads. A job-level
+    # `if:` skips before the job joins the concurrency group below, so a skipped preview never
+    # waits in, or holds, the platform build queue. Skipped reports as skipped, not failed.
+    needs: preview_scope
     if: >-
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
-      github.event.pull_request.user.login != 'dependabot[bot]'
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      needs.preview_scope.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Never overlap two builds at the builder, whichever PR or deploy they belong to: the same
@@ -286,8 +321,9 @@ jobs:
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
-        # Its own marker: a change under `.github/workflows/**` previews ticket0 too, and with a
-        # shared one each workflow would overwrite the other's URL.
+        # Its own marker: most changes in meridian's upload closure (the kernel, tools/, a root
+        # file) are in ticket0's too and preview both, and with a shared one each workflow would
+        # overwrite the other's URL.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

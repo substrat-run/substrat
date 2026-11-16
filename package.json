@@ -106,6 +106,7 @@
     "test:docs-union": "node --test tools/docs-union-check.test.mjs",
     "test:docs-parity": "node --test tools/docs-type-parity.test.mjs",
     "test:ci-scope": "node --test tools/ci-scope.test.mjs",
+    "test:preview-scope": "node --test tools/preview-scope.test.mjs",
     "test:test-affected": "node --test tools/test-affected.test.mjs",
     "test:declared-deps": "node --test tools/declared-deps.test.mjs",
     "test:worker-node-imports": "pnpm --filter @substrat-run/cli... build && node --test tools/worker-node-imports.test.mjs",
