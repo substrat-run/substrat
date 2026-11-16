@@ -131,6 +131,15 @@ export { WooCommerceMock, type WooCommerceMockOptions } from './mock.js';
  * store, so every open names the store ({@link WooCommerceBinding.externalAccountRef}), and the key
  * is pinned to it before it is stored ({@link prepareWooCommerceCandidate}). A store that moves
  * domain is a new connection; connect the new address, then disconnect the old one.
+ *
+ * ## A scope may own its shop's connection (#3201)
+ *
+ * A vertical whose scopes are each one store, each with its own shop, connects each shop as that
+ * scope's OWN connection (`owner: 'scope'`, bound through an `on-request` landing, #2732), so a
+ * scope is delivered its own shop's products and orders and never a sibling's — orders carry
+ * customers' names, emails and addresses. The connector opens a scope's own connection wherever it
+ * opens one: the binding records the owner ({@link WooCommerceBinding.ownerScopeId}), every open
+ * names it, and a scope's own connection lands in that scope alone.
  */
 
 /**
@@ -170,6 +179,11 @@ export interface WooCommerceBinding {
    * on their store, which is the app's only WooCommerce connection.
    */
   externalAccountRef?: string | null;
+  /**
+   * The scope that OWNS this connection (#3201), for a scope's own connection: always the bound
+   * scope, and the sweep opens the credential by it. Absent for the tenant's connection.
+   */
+  ownerScopeId?: string | null;
   boundAt: string;
   lastSync?: {
     syncedAt: string;
@@ -216,6 +230,8 @@ export async function bindWooCommerceScope(
     permission: string;
     /** The connection's `externalAccountRef`. See {@link WooCommerceBinding.externalAccountRef}. */
     externalAccountRef?: string | null;
+    /** The connection's owner, for a scope's own. See {@link WooCommerceBinding.ownerScopeId}. */
+    ownerScopeId?: string | null;
     /** Internal automatic-pass path: the declaration was checked and its grant follows this write. */
     grantPreflighted?: boolean;
     now?: () => number;
@@ -223,6 +239,9 @@ export async function bindWooCommerceScope(
 ): Promise<WooCommerceBinding> {
   const tenant = tenantIdSchema.parse(input.tenantId);
   const scope = scopeIdSchema.parse(input.scopeId);
+  if (input.ownerScopeId && input.ownerScopeId !== input.scopeId) {
+    throw new Error(`connection ${input.connectionId} is scope ${input.ownerScopeId}'s own, and lands in that scope alone, not ${input.scopeId}`);
+  }
   const granted = input.grantPreflighted ? [] : await host.connectionGrantsInScope(tenant, scope);
   const held =
     input.grantPreflighted ||
@@ -243,6 +262,7 @@ export async function bindWooCommerceScope(
     operation: input.operation,
     permission: input.permission,
     ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
+    ...(input.ownerScopeId ? { ownerScopeId: input.ownerScopeId } : {}),
     boundAt: new Date(input.now?.() ?? Date.now()).toISOString(),
   };
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -394,13 +414,17 @@ export async function syncWooCommerceScope(
   binding: WooCommerceBinding,
   options: WooCommerceConnectorOptions,
 ): Promise<WooCommerceSyncResult> {
+  // A scope's own shop lands in that scope alone, whatever wrote the binding (#3201).
+  if (binding.ownerScopeId && binding.ownerScopeId !== binding.scopeId) {
+    throw new Error(`connection ${connectionId} is scope ${binding.ownerScopeId}'s own, and is bound to ${binding.scopeId}; nothing was read`);
+  }
   const conn = await openWooCommerceConnection(
     host.admin,
     options.fetch,
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
-    { account: binding.externalAccountRef, expected: connectionId },
+    { account: binding.externalAccountRef, owner: binding.ownerScopeId, expected: connectionId },
   );
   const api = new WooCommerceApi(conn, { sleep: options.sleep, allowLocalHttp: options.allowLocalHttp });
   const pages = options.pagesPerSync ?? WOOCOMMERCE_PAGES_PER_SYNC;
@@ -619,7 +643,7 @@ export async function probeWooCommerceConnection(
     connection.tenantId,
     connection.vertical,
     options.timeoutMs ?? 15_000,
-    { account: connection.externalAccountRef, expected: connection.id },
+    { account: connection.externalAccountRef, owner: connection.ownerScopeId, expected: connection.id },
   );
   return probeWith(conn, options);
 }
@@ -771,6 +795,7 @@ export class WooCommerceKeyRefusal extends Error {
 export async function woocommerceCredentialSummary(host: ScopeHost, connection: WooCommerceConnectionRef): Promise<ConnectionCredential> {
   const open = await openWooCommerceCredential(host.admin, connection.tenantId, connection.vertical, {
     account: connection.externalAccountRef,
+    owner: connection.ownerScopeId,
     expected: connection.id,
   });
   const secret = woocommerceSecret.parse(open.secret);
@@ -787,14 +812,18 @@ const maskSecret = (value: string): string => (value.length < 8 ? '••••�
 
 /**
  * A WooCommerce connection as a caller knows it: its tenant and vertical, and — where the caller
- * holds the row — its id and `externalAccountRef`, the store it is keyed on (#3219).
+ * holds the row — its id, its `externalAccountRef` (the store it is keyed on, #3219) and its
+ * `ownerScopeId` (the scope it is the own connection of, #3201).
  */
 export interface WooCommerceConnectionRef {
   id?: ConnectionId;
   tenantId: string;
   vertical: string;
   externalAccountRef?: string | null;
+  ownerScopeId?: string | null;
 }
+
+type Select = { account?: string | null; owner?: string | null; expected?: ConnectionId };
 
 /**
  * Open one WooCommerce connection's credential (#3219).
@@ -805,20 +834,19 @@ export interface WooCommerceConnectionRef {
  * With no connection on that store — a connection made before connections were keyed holds none, and
  * is then the app's only one — the read names no store.
  *
+ * `owner` opens a scope's OWN connection (#3201); without it only the tenant's is ever opened, so
+ * a scope's own credential is never read for another scope or for the tenant.
+ *
  * `expected` is the connection the caller acts for. The credential that reads and the identity that
  * lands must be the same connection (Planima's backstop, for the same reason), so whatever the store
  * found, another connection is refused.
  */
-async function openWooCommerceCredential(
-  admin: HostAdmin,
-  tenant: string,
-  vertical: string,
-  select: { account?: string | null; expected?: ConnectionId },
-): Promise<OpenConnection> {
+async function openWooCommerceCredential(admin: HostAdmin, tenant: string, vertical: string, select: Select): Promise<OpenConnection> {
   const t = tenantIdSchema.parse(tenant);
+  const owner = select.owner ? scopeIdSchema.parse(select.owner) : undefined;
   const open =
-    (select.account ? await admin.openConnection(t, vertical, 'woocommerce', select.account) : undefined) ??
-    (await admin.openConnection(t, vertical, 'woocommerce'));
+    (select.account ? await admin.openConnection(t, vertical, 'woocommerce', select.account, owner) : undefined) ??
+    (await admin.openConnection(t, vertical, 'woocommerce', undefined, owner));
   if (!open) throw new Error(`no live 'woocommerce' connection for tenant ${tenant} / vertical '${vertical}'`);
   if (select.expected !== undefined && open.id !== select.expected) {
     throw new Error(
@@ -836,7 +864,7 @@ async function openWooCommerceConnection(
   tenant: string,
   vertical: string,
   timeoutMs: number,
-  select: { account?: string | null; expected?: ConnectionId } = {},
+  select: Select = {},
 ): Promise<ConnectorConnection> {
   const open = await openWooCommerceCredential(admin, tenant, vertical, select);
   const bounded = deadlineFetch(fetchImpl, timeoutMs);

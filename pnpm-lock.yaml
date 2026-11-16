@@ -2297,6 +2297,9 @@ importers:
       '@substrat-run/connector-planima':
         specifier: workspace:^
         version: link:../../connectors/planima
+      '@substrat-run/connector-woocommerce':
+        specifier: workspace:^
+        version: link:../../connectors/woocommerce
       '@substrat-run/vertical-host':
         specifier: workspace:^
         version: link:../vertical-host

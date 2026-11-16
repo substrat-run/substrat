@@ -1430,6 +1430,28 @@ describe('control-plane API', () => {
     });
     expect((await ireq(`/tenants/${t1}/connections/${own}/verify`, { method: 'POST' })).status).toBe(404);
     expect((await ireq(`/tenants/${t1}/connections/${own}/credential`)).status).toBe(404);
+    // #3201: unless the provider's connector opens a scope's own (`scopeOwned`): then the row is handed
+    // to it, owner and all, and answered.
+    let handed: string | null | undefined;
+    const ownable = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      connectionInspectors: {
+        scrive: {
+          scopeOwned: true,
+          probe: async (_h, row) => {
+            handed = row.ownerScopeId;
+            return { ok: true, accountRef: null, accountLabel: 'Own Company', facts: [], error: null };
+          },
+          probeCandidate: async () => undefined,
+          credential: async () => ({ fields: [{ key: 'clientId', label: 'Client id', value: 'own', masked: false }] }),
+        },
+      },
+    });
+    const oreq = (path: string, init?: RequestInit) => ownable.request(path, { headers: auth, ...init });
+    expect(await (await oreq(`/tenants/${t1}/connections/${own}/verify`, { method: 'POST' })).json()).toMatchObject({ ok: true, accountLabel: 'Own Company' });
+    expect(handed).toBe(sInspect);
+    expect((await oreq(`/tenants/${t1}/connections/${own}/credential`)).status).toBe(200);
 
     // A revoked connection has no secret left to probe with — 404, like an absent one.
     await host.admin.revokeConnection(staff, connectionId.parse(created.connectionId));

@@ -267,8 +267,9 @@ export interface ConnectorRegistration {
   /**
    * #2732: this provider's connector opens a scope's OWN connection (`openConnection`'s owner
    * selector) wherever it opens one, so a scope may hold its own through the relay's
-   * `owner: 'scope'` and bind it. Absent, its connections are the tenant's, and the relay refuses a
-   * scope's own: its sweep, dispatch and inspection open the tenant's connection by key.
+   * `owner: 'scope'` and bind it, and the tenant's inspection routes open it through the inspector
+   * (#3201). Absent, its connections are the tenant's, and the relay refuses a scope's own: its sweep,
+   * dispatch and inspection open the tenant's connection by key. WooCommerce sets it (#3201).
    */
   readonly scopeOwned?: true;
   /**
@@ -545,12 +546,20 @@ const WOOCOMMERCE: ConnectorRegistration = {
   // #3219: an app may hold a connection per store, so the sweep opens one by the store its binding
   // records.
   accountOnBinding: true,
+  // #3201: a scope may connect its own shop, so a tenant's stores each receive only their own shop's
+  // records. Every open names the owner: the binding records it, the inspector reads it off the row.
+  scopeOwned: true,
   inspector: () => ({
     // The key does not say which store it reads beyond the address it was pasted with, and the store
     // names itself: the connection is keyed on that, on every door a key comes in by.
     accountFromProbe: true,
     bindScope: (h, row, target) =>
-      bindWooCommerceScope(h, { ...target, connectionId: row.id, externalAccountRef: row.externalAccountRef }),
+      bindWooCommerceScope(h, {
+        ...target,
+        connectionId: row.id,
+        externalAccountRef: row.externalAccountRef,
+        ownerScopeId: row.ownerScopeId,
+      }),
     bindings: (h, row) => listWooCommerceBindings(h, row.id),
     unbindScope: (h, row, scopeId) => unbindWooCommerceScope(h, row.id, scopeId),
     probe: async (h, row) => probeWooCommerceConnection(h, row, { fetch: globalFetch }),
@@ -754,15 +763,20 @@ function microsoft365Options(env: ConnectorEnv) {
  */
 export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, WOOCOMMERCE, STRIPE, BOLAGSVERKET, MICROSOFT365, MAIL_IN];
 
-/** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
+/**
+ * The `{ provider → inspector }` shape `control-plane-api` and the relay both take. A `scopeOwned`
+ * registration's inspector says so (#3201), so the inspection routes open a scope's own row through it.
+ */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {
-  return Object.fromEntries(CONNECTORS.map((c) => [c.provider, c.inspector(env)]));
+  return Object.fromEntries(
+    CONNECTORS.map((c) => [c.provider, c.scopeOwned ? { ...c.inspector(env), scopeOwned: true as const } : c.inspector(env)]),
+  );
 }
 
 /**
  * #2732: whether a scope may hold its own connection of `provider`: a vertical-defined provider
  * (its connector call opens the row it is handed, owner and all), or a registration that says so.
- * None of the in-repo registrations does.
+ * WooCommerce does (#3201).
  */
 export function scopeOwnable(provider: string): boolean {
   return isVerticalConnectorProvider(provider) || CONNECTORS.some((c) => c.provider === provider && c.scopeOwned);

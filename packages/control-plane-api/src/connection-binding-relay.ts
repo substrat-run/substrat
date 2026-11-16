@@ -63,8 +63,13 @@ export interface ConnectionBindingRelayOptions {
   landings: ConnectionLandingOptionsInput;
 }
 
-/** The fixed fields of a binding as a binder answers it; the rest are its options. */
-const FIXED = new Set(['tenantId', 'scopeId', 'vertical', 'operation', 'permission', 'boundAt', 'connectionId', 'externalAccountRef', 'grantPreflighted', 'permissionHeld']);
+/**
+ * The fixed fields of a binding as a binder answers it; the rest are its options. `ownerScopeId` is
+ * the connection's owner a scope-owned connector records beside its account (#3201), never an option.
+ */
+const FIXED = new Set([
+  'tenantId', 'scopeId', 'vertical', 'operation', 'permission', 'boundAt', 'connectionId', 'externalAccountRef', 'ownerScopeId', 'grantPreflighted', 'permissionHeld',
+]);
 
 function parsed<T extends z.ZodTypeAny>(schema: T, body: unknown, what: string): z.infer<T> {
   const r = schema.safeParse(body);

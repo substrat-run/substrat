@@ -40,7 +40,7 @@ import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, de
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
-import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, providerSpecsFor, undeclaredConnectorSpec, upsertLocalConnection, type ProviderSpec } from './integrations.js';
+import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, providerSpecsFor, servesApp, undeclaredConnectorSpec, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth, lastScopeSweepAt } from './schedules.js';
 import { declaredCallState, peerChoicesOf, targetScopeOf } from './peers.js';
 import { deriveFailureGroups } from './failure-groups.js';
@@ -2836,21 +2836,25 @@ async function appProviderSpec(
  * them: the shared plane's store — the directory a `connector:<provider>` dispatch opens.
  * Metadata only; a connection row cannot carry its secret.
  */
-async function connectionsFor(env: Env, tenantId: TenantId, principal: DashboardNode['principal'], vertical?: string) {
+async function connectionsFor(env: Env, tenantId: TenantId, principal: DashboardNode['principal'], vertical?: string, appScopeId?: string) {
   // The member's own credential (#977), the one every other call in their request uses —
   // not a second, person-less token for the same tenant.
   const cp = controlPlaneFor(env, tenantId, principal);
-  return cp.listConnections(vertical === undefined ? {} : { vertical });
+  const rows = await cp.listConnections(vertical === undefined ? {} : { vertical });
+  // #3201: one app's view holds the tenant's connections and its own, never a sibling scope's own.
+  return appScopeId === undefined ? rows : rows.filter((r) => servesApp(r, appScopeId));
 }
 
 const connectionView = (r: {
-  id: string; label: string; status: string; externalAccountRef: string | null;
+  id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId?: string | null;
   expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string;
 }) => ({
   id: r.id,
   label: r.label,
   status: r.status,
   externalAccountRef: r.externalAccountRef,
+  // #3201: the app that owns this connection, for a scope's own; null for the tenant's.
+  ownerScopeId: r.ownerScopeId ?? null,
   expiresAt: r.expiresAt,
   lastOkAt: r.lastOkAt,
   lastError: r.lastError,
@@ -2894,7 +2898,7 @@ async function getAppIntegrationsIn(ctx: TeamContext, appScopeId: string) {
   const { appRow } = await appIntegrationTarget(ctx, appScopeId);
   const declared =
     (await providerSpecsBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
-  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug, appScopeId);
   // Declared providers first, then any live connection whose provider the vertical no
   // longer declares (still real — it can be disconnected here). A vertical-defined one has no
   // declaration left to render a form from, so it is listed formless, for withdrawing only.
@@ -3001,11 +3005,12 @@ async function revocableProvider(
   dash: Awaited<ReturnType<ScopeHost['getScope']>>,
   verticalSlug: string,
   provider: string,
+  appScopeId: string,
 ): Promise<{ spec: ProviderSpec; rows: Connection[] }> {
   const declared = await appProviderSpec(host, env, node.tenantId, verticalSlug, provider);
   if (!declared && !isVerticalConnectorProvider(provider)) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider });
-  const rows = await connectionsFor(env, node.tenantId, node.principal, verticalSlug);
+  const rows = await connectionsFor(env, node.tenantId, node.principal, verticalSlug, appScopeId);
   const spec = declared ?? (liveConnectionsFor(rows, provider).length > 0 ? undeclaredConnectorSpec(provider) : undefined);
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   return { spec, rows };
@@ -3015,7 +3020,7 @@ async function revocableProvider(
 async function disconnectAppIntegrationIn(ctx: TeamContext, appScopeId: string, provider: string) {
   const { c, host, node } = ctx;
   const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
-  const { spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider);
+  const { spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider, appScopeId);
   // Revoking picks a row to DESTROY, so with an account-keyed fleet (Fortnox: one
   // connection per client company) this door refuses rather than guess which company.
   const live = liveConnectionsFor(rows, spec.provider);
@@ -3076,13 +3081,13 @@ async function inspectableConnection(
   let spec: ProviderSpec;
   let rows: Connection[];
   if (opts.revoke) {
-    ({ spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider));
+    ({ spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider, appScopeId));
   } else {
     const declared = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, provider);
     if (!declared) throw new HTTPException(404, { message: 'unknown provider' });
     spec = declared;
     await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-    rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
+    rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug, appScopeId);
   }
   const live =
     wantedId === undefined
@@ -3094,7 +3099,7 @@ async function inspectableConnection(
   // connector bookkeeping — Scrive's carries the callback capability token).
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const reread = async () =>
-    (await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug)).find(
+    (await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug, appScopeId)).find(
       (r) => r.id === live.id && r.status !== 'revoked',
     );
   return { connectionId: live.id, cp, spec, connection: live, reread };
@@ -3251,7 +3256,9 @@ async function teamIntegrationsIn({ c, host, node }: TeamContext) {
           scopeId: a.app_scope_id,
           name: a.name,
           vertical: a.vertical_slug,
-          connected: rows.some((r) => r.provider === spec.provider && r.status !== 'revoked' && r.vertical === a.vertical_slug),
+          connected: rows.some(
+            (r) => r.provider === spec.provider && r.status !== 'revoked' && r.vertical === a.vertical_slug && servesApp(r, a.app_scope_id),
+          ),
         }));
       return {
         ...providerForm(spec, c.env),
@@ -3260,7 +3267,10 @@ async function teamIntegrationsIn({ c, host, node }: TeamContext) {
           .map((r) => ({
             ...connectionView(r),
             vertical: r.vertical,
-            apps: apps.filter((a) => a.vertical_slug === r.vertical).map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
+            // #3201: a scope's own connection is that one app's, not every app of its vertical's.
+            apps: apps
+              .filter((a) => a.vertical_slug === r.vertical && servesApp(r, a.app_scope_id))
+              .map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
             sweepRuns: sweepByConnection.get(r.id) ?? [],
           })),
         connectTargets: targets,
