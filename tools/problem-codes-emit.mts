@@ -206,10 +206,12 @@ const GUIDANCE: Readonly<Record<string, Guidance>> = {
     when: [
       'A request to a hosted vertical over the per-credential or per-client-address budget. The router counts it before the vertical runs.',
       "A request to a node host that mounts `vertical-host`'s `rateLimit()`.",
+      "A code review requested for a workspace whose reviews have reached today's spend limit (`reason: review_spend_limit_reached`). The window is the UTC day, and `retryAfter` counts to its end.",
     ],
     action:
       'Wait for `Retry-After` seconds, then retry. A client that polls should slow its loop instead ' +
-      'of retrying at the same pace.',
+      'of retrying at the same pace. With `reason: review_spend_limit_reached`, a retry before then ' +
+      'fails the same way; staff can raise the limit.',
   },
   unavailable: {
     summary: 'A fact about the deployment, not the request, stopped the answer.',

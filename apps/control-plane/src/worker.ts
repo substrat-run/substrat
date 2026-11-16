@@ -21,7 +21,8 @@ import { Hono, type Context } from 'hono';
 import { readGithubChanges } from './github-changes.js';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi, REVIEW_ENTITLEMENT } from './reviews.js';
-import { ReviewJobDO } from './review-job.js';
+import { ReviewJobDO, reviewConfig, spendDeps, spendReadsFor } from './review-job.js';
+import { reviewSpend } from './review-spend.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv, type RelayScopeLookup } from './relay-caller.js';
 import { sendAsTenant, TenantMailRefusal } from './tenant-mail.js';
@@ -563,6 +564,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   REVIEW_MAX_DIFF_BYTES?: string;
   REVIEW_MAX_INPUT_TOKENS?: string;
   REVIEW_MAX_OUTPUT_TOKENS?: string;
+  /**
+   * The default daily limit on a tenant's code-review spend, in US dollars (`'5'`, `'2.50'`),
+   * counted at the ledger's billed rate. Staff override it per tenant with the `review`
+   * entitlement's quota, in cents. Unset, a tenant with no override has no review read by the
+   * model (`skipped: no spend limit set`): the limit fails closed (review-spend.ts).
+   */
+  REVIEW_DAILY_SPEND_LIMIT_USD?: string;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -3219,6 +3227,7 @@ export default {
         );
       },
       ...(env.REVIEW_JOBS ? { startReview: (id: string) => env.REVIEW_JOBS!.get(env.REVIEW_JOBS!.idFromName(id)).start(id) } : {}),
+      spend: (tenantId, at) => reviewSpend(spendDeps(spendReadsFor(env), reviewConfig(env)), tenantId, at),
     }));
 
     // The members surface (console → Members): the staff roster (staff_actor) —

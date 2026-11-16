@@ -186,6 +186,9 @@ const MANIFEST = {
       REVIEW_MAX_DIFF_BYTES: 'CP_REVIEW_MAX_DIFF_BYTES',
       REVIEW_MAX_INPUT_TOKENS: 'CP_REVIEW_MAX_INPUT_TOKENS',
       REVIEW_MAX_OUTPUT_TOKENS: 'CP_REVIEW_MAX_OUTPUT_TOKENS',
+      // The default daily limit on a tenant's review spend, in dollars. Unset fails closed: a
+      // tenant whose `review` entitlement carries no quota has no review read by the model.
+      REVIEW_DAILY_SPEND_LIMIT_USD: 'CP_REVIEW_DAILY_SPEND_LIMIT_USD',
       CLOUDFLARE_AI_BASE_URL: 'CP_CLOUDFLARE_AI_BASE_URL',
       CLOUDFLARE_AI_API_TOKEN: 'CP_CLOUDFLARE_AI_API_TOKEN',
     },

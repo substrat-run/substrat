@@ -411,6 +411,33 @@ detail for #1073 (below).
 **Decided: A and B together, never C**, plus a per-tenant spend limit checked before each call.
 A review over budget is never shown as clean.
 
+*The spend limit's shape, decided on #2365 on 2026-11-16.* The orchestrator chose it on the
+owner's instruction to take the long-term best solution; the owner confirms on merge.
+
+- **What is counted.** The would-be cost of the tenant's review lines: list price × (1 +
+  `MODEL_MARGIN_PERCENT`), the rate the ledger summary bills at. While reviews are zero-rated
+  the limit already counts what they would cost, so its meaning does not change at phase 3. A
+  review model the rate card cannot price is never called (`skipped: model unpriced`).
+- **The window.** One UTC day, summed from the model-usage ledger. A review's line is filed
+  under the platform's sentinel scope, which no vertical's drain can file into, so the tenant's
+  lines in that scope are exactly its reviews.
+- **Who sets it.**
+  - Until the enable surface (Q2) exists: staff, per tenant, as the `quota` of the tenant's
+    `review` entitlement, in whole US cents. It is audited and set from the console.
+  - Otherwise the plane's default, `REVIEW_DAILY_SPEND_LIMIT_USD`.
+  - With neither, no customer review calls the model (`skipped: no spend limit set`). It fails
+    closed.
+  - A staff review of this repository has no owner and no limit; the per-person intake caps
+    bound it.
+- **At the limit.**
+  - The model host's guard refuses immediately before the call. The record reads `skipped:
+    spend limit reached`, naming the amount spent, the limit and the UTC day. There is no retry.
+  - Intake refuses a builder's upload up front when the tenant is already at the limit, with a
+    `rate_limited` problem document (`reason: review_spend_limit_reached`, `retryAfter` to the
+    end of the UTC day).
+  - Reviews in flight together can each pass the guard and overshoot the limit by at most their
+    own caps (A and B). That overshoot is accepted.
+
 - **A. Refuse before the call.** Estimate the input from the change's size before anything is
   sent; a change over the cap is recorded as `skipped: too large`, with the size, and the gates
   still run.
@@ -972,6 +999,13 @@ no ledger line. The caps default to 256 KiB of changed text and 8k output tokens
 setting (`REVIEW_MAX_DIFF_BYTES`, `REVIEW_MAX_OUTPUT_TOKENS`, and `REVIEW_MAX_INPUT_TOKENS`
 for the guard, default 120k estimated).
 
+**The spend limit (runbook).** `REVIEW_DAILY_SPEND_LIMIT_USD` is the default daily limit on a
+tenant's review spend, in dollars, set the same way. Staff override it per tenant with a `quota`
+on the tenant's `review` entitlement, in whole US cents (`500` is $5.00 a day). Unset, with no
+override, a customer review ends `skipped: no spend limit set`. A staff review is not limited.
+Check: a builder review over the limit ends `skipped: spend limit reached`, and the next upload
+that day answers `429` with `reason: review_spend_limit_reached`.
+
 What phase 1 does not cover, said plainly before `REVIEW_MODEL` is set:
 
 - **Trust is the staff roster.** Once the model is set, any member of the staff roster can send
@@ -1082,7 +1116,7 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
 |---|---|---|---|
 | Q1a | Which model | A: one platform-chosen model, pinned per checklist version; a model change ships only after it passes the seeded corpus (criterion set by the human at phase 3; until then human sign-off against the baseline); reached through the platform gateway, no vendor tie | C on #1073 |
 | Q1b | Who pays | A: metered to the tenant through the model ledger; zero-rated in phases 1–2 | attribution form on #1073 |
-| Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; over budget never shown as clean | nothing |
+| Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard (a UTC day of would-be cost, staff quota or plane default, unset fails closed; shape decided 2026-11-16); over budget never shown as clean | nothing |
 | Q2 | Enable surface | C: staff-granted entitlement per tenant, switch per vertical held by tenant owner and admin; every state change recorded; off deletes nothing; plan-shaped once billed; the key is never one a tenant can grant itself; for a listed vertical the admission gate is outside the owner's switch and only a completed review admits (derived, for the human to confirm; who pays for it open for phase 3) | Q1b; #2388 or an equivalent before phase 2 |
 | Q3a | Surfaces | A, then B, then C; D last and optional (turning it on publishes the headline); not the console. The record is a first-class platform object with its own API, identified by review id and selected by owner, source digest, base digest, checklist digest and model; every surface is a view of it | A and C on D5 |
 | Q3b | Stored and retention | A: archive only where review is on (plus every version submitted for a mandatory admission review, and phase-1 branch archives kept 30 days), placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); findings, digests and run metadata, no transcript or prompt; diff base the last completed review, full tree once it has expired; every non-run recorded | Q2, Q3d |

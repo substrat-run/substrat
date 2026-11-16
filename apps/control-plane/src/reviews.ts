@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { PlatformActorId, TenantId } from '@substrat-run/contracts';
 import { refuse, refuseStatus } from './problem.js';
+import { secondsToReset, spendReachedDetail, type ReviewSpend } from './review-spend.js';
 import { closeUnstartedReview, listReviews, REVIEW_READING_WINDOW_MS, readReview, receiveReview, ReviewCollisionError, ReviewValidationError, type ReviewReader, type ReviewRecord } from './review-store.js';
 
 const INTAKE_BODY_MAX = 2 * 32 * 1024 * 1024 + 1024 * 1024;
@@ -20,6 +21,9 @@ export { REVIEW_READING_WINDOW_MS };
  * What makes the runner available to a builder's tenant (hosted-review-runner.md Q2): a key only
  * staff grant (`PLATFORM_ENTITLEMENT_KEYS`, so no vertical can declare it and no tenant grant
  * itself it, #2388). Without it a builder still reads its tenant's reviews; it starts none.
+ *
+ * Its `quota`, when staff set one, is the tenant's daily review spend limit in whole US cents
+ * (review-spend.ts); without one the plane's default applies.
  */
 export const REVIEW_ENTITLEMENT = 'review';
 /** One upload at a time per staff person, and per builder tenant. */
@@ -80,6 +84,13 @@ export function createReviewApi(deps: {
   entitled?: (tenantId: TenantId) => Promise<boolean>;
   /** Starts the reader half for a stored review. The upload never waits for the review itself. */
   startReview?: (id: string) => Promise<void>;
+  /**
+   * The tenant's daily review spend, read before an upload is taken: a tenant already at its
+   * limit is refused here, before the archive is stored. The job's guard is still the check that
+   * holds, since reviews in flight finish after this read.
+   */
+  spend?: (tenantId: TenantId, at: Date) => Promise<ReviewSpend>;
+  now?: () => Date;
 }): Hono {
   const app = new Hono();
   type Access = { bucket: R2Bucket; principal: ReviewPrincipal };
@@ -102,6 +113,16 @@ export function createReviewApi(deps: {
     const p = access.principal;
     if (p.kind === 'builder' && !(await deps.entitled?.(p.tenantId))) {
       return refuse('forbidden', `code reviews are not enabled for this workspace: staff grant the \`${REVIEW_ENTITLEMENT}\` entitlement`);
+    }
+    if (p.kind === 'builder' && deps.spend) {
+      const at = (deps.now ?? (() => new Date()))();
+      // A read that fails here is not a refusal: the job's guard reads again, and fails closed.
+      const spend = await deps.spend(p.tenantId, at).catch(() => null);
+      if (spend?.kind === 'reached') {
+        return refuse('rate_limited', `code reviews for this workspace: ${spendReachedDetail(spend)}`, {
+          reason: 'review_spend_limit_reached', retryAfter: secondsToReset(at),
+        });
+      }
     }
     const intakeKey = p.kind === 'staff' ? `actor:${p.actor}` : `tenant:${p.tenantId}`;
     if (intakeInFlight.has(intakeKey)) {

@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV3 } from 'ai/test';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { platformActorId, tenantId } from '@substrat-run/contracts';
+import { mulDecimal, platformActorId, tenantId, type EntitlementGrant, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createModelHost } from '@substrat-run/vertical-host/model';
 import { walkReviewArchive } from '../src/review-archive.js';
@@ -16,13 +16,16 @@ import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src
 import { REVIEW_RULES_DIGEST } from '../src/review-rules.generated.js';
 import { readReview, receiveReview, REVIEW_READING_WINDOW_MS, reviewHeadline, writeReviewResult } from '../src/review-store.js';
 import { createReviewApi } from '../src/reviews.js';
+import { centsToUsd, defaultLimitUsd, secondsToReset, usdLabel, utcDay } from '../src/review-spend.js';
 import { archive } from './review-fixtures.js';
 
 declare const __PROBE_REDACTION_COST__: boolean;
 
 const testEnv = env as unknown as Parameters<typeof reviewJobDeps>[0] & { REVIEW_SOURCES: R2Bucket; REVIEW_JOBS: DurableObjectNamespace };
 const bucket = testEnv.REVIEW_SOURCES;
-const SPEC = 'cloudflare:@cf/test/reviewer';
+/** A model the rate card prices on the gateway row: the job never calls an unpriced one. */
+const MODEL_ID = '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b';
+const SPEC = `cloudflare:${MODEL_ID}`;
 const text = (s: string) => new TextEncoder().encode(s);
 const file = (path: string, body: string) => ({ path, bytes: text(body) });
 type Entry = { path: string; bytes: Uint8Array };
@@ -60,7 +63,7 @@ function double(script: Step[]) {
       } as never;
     },
   });
-  return { calls, host: () => createModelHost({ env: {}, factories: { cloudflare: () => () => model as never } }) };
+  return { calls, host: (guard?: Parameters<ReviewJobDeps['modelHost']>[0]) => createModelHost({ env: {}, ...(guard ? { guard } : {}), factories: { cloudflare: () => () => model as never } }) };
 }
 
 const platformTenant = ulid();
@@ -111,7 +114,7 @@ describe('review job: the reader half with a model double', () => {
     const { id } = await receiveReview(bucket, actor, {
       source: src.file, sourceSha256: src.sha256, base: base.file, baseSha256: base.sha256, tenant: { tenantId: tenant, vertical: 'acme/garden' },
     });
-    await runReviewJob(id, 0, deps(double([{ text: reply({ findings: [] }) }])));
+    await runReviewJob(id, 0, deps(double([{ text: reply({ findings: [] }) }]), { dailySpendLimitUsd: '5' }));
     const lines = await new CloudflareScopeHost({ scope: testEnv.SCOPE as never, controlPlane: testEnv.CONTROL_PLANE as never })
       .admin.listModelUsage(actor, { scopeId: REVIEW_SENTINEL_SCOPE });
     expect(lines.filter((l) => l.requestId === id).map((l) => l.attribution.tenant)).toEqual([tenant]);
@@ -311,7 +314,7 @@ describe('review job: the reader half with a model double', () => {
   it('(h) the production model host posts to the gateway over HTTP: payload logging off, no tools, and none of the env beyond the gateway pair', async () => {
     const { id, actor } = await stored(CHANGED.source, CHANGED.base);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({
-      id: 'c1', object: 'chat.completion', created: 1, model: '@cf/test/reviewer',
+      id: 'c1', object: 'chat.completion', created: 1, model: MODEL_ID,
       choices: [{ index: 0, message: { role: 'assistant', content: reply({ findings: [] }) }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 900, completion_tokens: 40, total_tokens: 940 },
     }));
@@ -331,8 +334,77 @@ describe('review job: the reader half with a model double', () => {
     expect(new Headers(init.headers).get('cf-aig-gateway-id')).toBeNull();
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty('tools');
-    expect(body).toMatchObject({ model: '@cf/test/reviewer', max_tokens: 8000 });
+    expect(body).toMatchObject({ model: MODEL_ID, max_tokens: 8000 });
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', usage: { inputTokens: 900 } });
+  });
+});
+
+describe('the spend limit (Q1c, decided 2026-11-16)', () => {
+  const ledger = () => new CloudflareScopeHost({ scope: testEnv.SCOPE as never, controlPlane: testEnv.CONTROL_PLANE as never }).admin;
+  async function builderReview(tenant: TenantId) {
+    const actor = platformActorId.parse(ulid());
+    const [src, base] = [await archive(CHANGED.source), await archive(CHANGED.base)];
+    const { id } = await receiveReview(bucket, actor, {
+      source: src.file, sourceSha256: src.sha256, base: base.file, baseSha256: base.sha256, tenant: { tenantId: tenant, vertical: 'acme/garden' },
+    });
+    return { id, actor };
+  }
+  const reviewGrant = (quota: number | null): EntitlementGrant => ({ entitlementKey: 'review', expiresAt: null, quota, plan: null, grantedAt: null, grantedBy: null });
+
+  it('calls no unpriced model, and no model for a customer whose limit is unset', async () => {
+    const staff = await stored(CHANGED.source, CHANGED.base);
+    const unpriced = double([{ text: reply({ findings: [] }) }]);
+    await runReviewJob(staff.id, 0, deps(unpriced, { model: 'cloudflare:@cf/test/unpriced-reviewer' }));
+    expect(await readReview(bucket, staff.actor, staff.id)).toMatchObject({ state: 'skipped', reason: 'model unpriced' });
+
+    const customer = await builderReview(tenantId.parse(ulid()));
+    await runReviewJob(customer.id, 0, deps(unpriced));
+    expect(await readReview(bucket, customer.actor, customer.id)).toMatchObject({ state: 'skipped', reason: 'no spend limit set', usage: null });
+    expect(unpriced.calls.n).toBe(0);
+  });
+
+  it('counts the day\'s review lines at the billed rate: the next review is refused at the limit, and a staff quota lifts it', async () => {
+    const tenant = tenantId.parse(ulid());
+    const model = double([{ text: reply({ findings: [] }) }]);
+    const limit = { dailySpendLimitUsd: '0.000001' };
+    const first = await builderReview(tenant);
+    await runReviewJob(first.id, 0, deps(model, limit));
+    expect(await readReview(bucket, first.actor, first.id)).toMatchObject({ state: 'completed' });
+    const [line] = (await ledger().listModelUsage(first.actor, { tenantId: tenant, scopeId: REVIEW_SENTINEL_SCOPE }));
+    expect(line?.listUsd).not.toBeNull();
+
+    const second = await builderReview(tenant);
+    await runReviewJob(second.id, 0, deps(model, limit));
+    const spent = mulDecimal(line!.listUsd!, '1.2');
+    expect(await readReview(bucket, second.actor, second.id)).toMatchObject({
+      state: 'skipped',
+      reason: `spend limit reached: ${usdLabel(spent)} of $0.000001 for ${new Date().toISOString().slice(0, 10)} (UTC day)`,
+    });
+    expect(model.calls.n).toBe(1);
+
+    const third = await builderReview(tenant);
+    const lifted = { ...reviewJobDeps(testEnv, bucket).spendReads, listEntitlements: async () => [reviewGrant(500)] };
+    await runReviewJob(third.id, 0, deps(model, limit, { spendReads: lifted }));
+    expect(await readReview(bucket, third.actor, third.id)).toMatchObject({ state: 'completed' });
+    expect(model.calls.n).toBe(2);
+  });
+
+  it('retries a ledger it cannot read, then ends incomplete, calling no model', async () => {
+    const { id, actor } = await builderReview(tenantId.parse(ulid()));
+    const model = double([{ text: reply({ findings: [] }) }]);
+    const unreadable = { listUsage: async () => { throw new Error('directory unavailable'); }, listEntitlements: async () => [] };
+    const job = deps(model, { dailySpendLimitUsd: '5' }, { spendReads: unreadable });
+    expect(await reviewOnce(id, 0, job)).toEqual({ kind: 'retry', retryInMs: REVIEW_RETRY_DELAYS_MS[0] });
+    await runReviewJob(id, REVIEW_MAX_ATTEMPTS - 1, job);
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'spend limit unreadable' });
+    expect(model.calls.n).toBe(0);
+  });
+
+  it('reads the limit as staff set it: a quota in cents over the default, a malformed default as none', () => {
+    expect([centsToUsd(500), centsToUsd(250), centsToUsd(7), centsToUsd(12_345)]).toEqual(['5', '2.5', '0.07', '123.45']);
+    expect(['5', ' 2.50 ', '0', '-1', '5$', '1e3', '0.0000001', undefined].map(defaultLimitUsd)).toEqual(['5', '2.50', null, null, null, null, null, null]);
+    expect(secondsToReset(new Date('2026-11-16T23:59:59.500Z'))).toBe(1);
+    expect(utcDay(new Date('2026-11-16T10:00:00Z'))).toEqual({ day: '2026-11-16', since: '2026-11-16T00:00:00.000Z', until: '2026-11-17T00:00:00.000Z' });
   });
 });
 

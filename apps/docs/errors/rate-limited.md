@@ -20,16 +20,18 @@ Too many requests were counted against one budget within its window. `retryAfter
 
 - A request to a hosted vertical over the per-credential or per-client-address budget. The router counts it before the vertical runs.
 - A request to a node host that mounts `vertical-host`'s `rateLimit()`.
+- A code review requested for a workspace whose reviews have reached today's spend limit (`reason: review_spend_limit_reached`). The window is the UTC day, and `retryAfter` counts to its end.
 
 ## What it carries
 
 - `retryAfter`: Seconds to wait before retrying, the same value as the `Retry-After` header.
+- `reason`: A slug the refusing module owns, narrowing the code. The platform's own are snake_case, but the wire does not enforce a grammar, so compare it as an opaque string. Branch on it; never show it.
 
 Relayed from a scope store, it may also carry `storeCode` and `storeBody`. See [the body](/errors/#the-body) for the members any problem may carry.
 
 ## What to do
 
-Wait for `Retry-After` seconds, then retry. A client that polls should slow its loop instead of retrying at the same pace.
+Wait for `Retry-After` seconds, then retry. A client that polls should slow its loop instead of retrying at the same pace. With `reason: review_spend_limit_reached`, a retry before then fails the same way; staff can raise the limit.
 
 ## In `/openapi.json`
 
