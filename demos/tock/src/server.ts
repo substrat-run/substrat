@@ -20,9 +20,9 @@ import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
-import { invocationLog } from '@substrat-run/vertical-host';
+import { invocationLog, problemResponse } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, substratError } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { tockOperations } from '../spec/model.js';
 import { API_DOCUMENT } from './api.js';
@@ -87,7 +87,7 @@ async function boot() {
 
   app.get('/api/me', async (c) => {
     const caller = await login.caller(c.req.raw.headers);
-    if (!caller) return c.json({ error: 'unauthorized' }, 401);
+    if (!caller) return problemResponse(c, substratError('unauthenticated', 'unauthorized'));
     return c.json({ principal: caller.principal, display: caller.display });
   });
 
@@ -107,7 +107,7 @@ async function boot() {
   app.post('/api/sources/:key/upload', async (c) => {
     const scope = await scopeOf(c.req.raw.headers);
     const bytes = new Uint8Array(await c.req.arrayBuffer());
-    if (bytes.byteLength === 0) return c.json({ error: 'the upload is empty' }, 400);
+    if (bytes.byteLength === 0) return problemResponse(c, substratError('validation_failed', 'the upload is empty'));
 
     const text = new TextDecoder().decode(bytes);
 
@@ -122,7 +122,7 @@ async function boot() {
     const format = sniffFormat(text);
     const delimiter = format === 'csv' ? sniffDelimiter(text.split(/\r?\n/).find((l) => l.trim() !== '') ?? '') : null;
     const timeField = c.req.query('timeField');
-    if (!timeField) return c.json({ error: 'name the column carrying the instant (timeField)' }, 400);
+    if (!timeField) return problemResponse(c, substratError('validation_failed', 'name the column carrying the instant (timeField)'));
     const subjectField = c.req.query('subjectField') || null;
     const plan: ReadPlan = { format, delimiter, timeField, subjectField };
 
@@ -131,7 +131,7 @@ async function boot() {
       parsed = parseDeliveredFile(text, plan);
     } catch (e) {
       // A file we cannot read is a 400 naming why, never a run left half-open.
-      return c.json({ error: (e as Error).message }, 400);
+      return problemResponse(c, substratError('validation_failed', (e as Error).message));
     }
 
     const contentHash = await contentHashOf(bytes);
@@ -190,7 +190,7 @@ async function boot() {
     const filePath = resolve(DATA, stored.storage_key);
     const filesRoot = resolve(FILES);
     if (filePath === filesRoot || !filePath.startsWith(`${filesRoot}${sep}`))
-      return c.json({ error: 'the run names a stored file outside this workspace' }, 400);
+      return problemResponse(c, substratError('validation_failed', 'the run names a stored file outside this workspace'));
 
     const bytes = new Uint8Array(readFileSync(filePath));
     const seen = await contentHashOf(bytes);
@@ -201,7 +201,7 @@ async function boot() {
       // Neither digest is echoed: this response is reachable by a caller who chose the path,
       // so printing what was found there would turn a mismatch into a way to fingerprint a
       // file the caller cannot otherwise read.
-      return c.json({ error: "the stored file does not match this run's content hash" }, 409);
+      return problemResponse(c, substratError('conflict', "the stored file does not match this run's content hash"));
 
     // The run's own plan, or the legacy one when it recorded none.
     const plan: ReadPlan =
@@ -247,14 +247,14 @@ async function boot() {
     const scope = await scopeOf(c.req.raw.headers);
     const runId = c.req.param('runId');
     const parsed = countAllBody.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: 'invalid input', issues: parsed.error.issues }, 400);
+    if (!parsed.success) return problemResponse(c, parsed.error);
     let passes = 0;
     let run: { status: string; complete?: boolean } | undefined;
     do {
       run = await scope.invoke<{ status: string; complete?: boolean }>('tock/count-run', { runId, ...parsed.data });
       passes += 1;
       // A guard rather than a limit: a `complete` that never turns true would otherwise spin.
-      if (passes > 10_000) return c.json({ error: 'counting did not finish' }, 500);
+      if (passes > 10_000) return problemResponse(c, new HTTPException(500, { message: 'counting did not finish' }));
     } while (run.complete === false);
     return c.json({ run, passes });
   });

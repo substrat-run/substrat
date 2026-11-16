@@ -44,6 +44,7 @@ import { HTTPException } from 'hono/http-exception';
 import {
   principalId,
   scopeId,
+  substratError,
   tenantId,
   z,
   type PrincipalId,
@@ -66,6 +67,7 @@ import {
   readRoutedNode,
   RouterAssertionError,
   invocationLog,
+  problemResponse,
 } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -1095,7 +1097,7 @@ app.post('/api/email/inbound', async (c) => {
     settings as { RESEND_API_KEY?: string; RESEND_WEBHOOK_SECRET?: string },
     globalFetch,
   );
-  if (!relay || !config) return c.json({ error: 'not found' }, 404);
+  if (!relay || !config) return problemResponse(c, substratError('not_found', 'not found'));
   try {
     const result = await receiveInbound({
       config,
@@ -1121,7 +1123,7 @@ app.post('/api/email/inbound', async (c) => {
     // The ingest refused. A 500 asks Resend to retry, which is right for a desk that is
     // briefly unavailable and harmless otherwise — the ingest is idempotent.
     console.error('ticket0: inbound mail ingest failed', { scope: node.scopeId, error: errorText(error) });
-    return c.json({ error: 'ingest failed' }, 500);
+    return problemResponse(c, new HTTPException(500, { message: 'ingest failed' }));
   }
 });
 
@@ -1222,13 +1224,13 @@ mountPlatformSurface<Env>(app, {
 // an /internal/* request that reaches a SPA returns 200 text/html, which the platform's
 // JSON parse turns into an opaque "internal error".
 app.all('/internal/*', (c) =>
-  c.json({ error: `ticket0 does not implement ${c.req.method} ${new URL(c.req.url).pathname}` }, 501),
+  problemResponse(c, new HTTPException(501, { message: `ticket0 does not implement ${c.req.method} ${new URL(c.req.url).pathname}` })),
 );
 
 // No SPA catch-all: the built app and `widget.js` are served by the runtime's own asset
 // layer, from the edge, without invoking this worker. It sees only what
 // `runtimeNeeds.assets.runWorkerFirst` routes here; anything reaching this line is a
 // worker-first prefix with no matching route.
-app.all('*', (c) => c.json({ error: 'not found' }, 404));
+app.all('*', (c) => problemResponse(c, substratError('not_found', 'not found')));
 
 export default app;

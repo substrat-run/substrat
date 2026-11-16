@@ -149,8 +149,8 @@ describe('the rest of /internal/* is still an honest 501 (#1660)', () => {
   it.each(['/internal/snapshot', '/internal/restore', '/internal/rewind'])('POST %s', async (path) => {
     const res = await platform(path, {});
     expect(res.status).toBe(501);
-    expect(res.headers.get('content-type')).toContain('application/json');
-    expect(((await res.json()) as { error: string }).error).toContain('auth-server does not implement');
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    expect(((await res.json()) as { detail: string }).detail).toContain('auth-server does not implement');
   });
 });
 
