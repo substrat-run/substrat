@@ -11,9 +11,9 @@
  * included). Only the `cloudflare` gateway row is a candidate (Q3e). Its two variables are read
  * from the environment, or from `--env-file` (only those two lines, never printed).
  *
- * Spend: before any call, the worst case (every read at the output cap) is estimated from the
- * rate card and refused over `--budget`; during the run, a read starts only while what is spent
- * plus its own worst case stays under it.
+ * Spend: before any call, the worst case of one attempt per read at the output cap is estimated
+ * from the rate card and refused over `--budget`. During the run, every HTTP attempt (a retry
+ * included) first holds its own worst case against the budget, and starts only if it fits.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -114,19 +114,32 @@ async function main(): Promise<void> {
     vertical: '@substrat-run/review-runner', version: REVIEW_PLUGIN_VERSION, operation: 'review/corpus',
   });
 
+  /**
+   * What is spent or held. Every HTTP attempt holds its worst case before it starts, and the hold
+   * is taken synchronously, so the model queues running side by side see each other's holds. A
+   * call that answers settles its hold to its list price; one that fails keeps it, since what the
+   * provider billed for it is unknown.
+   */
   let spent = 0;
+  const hold = (usd: number): boolean => {
+    if (spent + usd > budget) return false;
+    spent += usd;
+    return true;
+  };
   const runs: SeedRun[] = [];
-  // One queue per model, so a slow model does not hold up the others; the spend is shared.
+  // One queue per model, so a slow model does not hold up the others; the budget is shared.
   await Promise.all(models.map(async (spec) => {
     for (let pass = 0; pass < repeat; pass++) {
       for (const p of prepared) {
-        if (spent + worst(spec, p) > budget) {
-          console.log(`  ${spec} ${p.seed.id}: stopped, the budget would not hold another read`);
-          return;
-        }
         const started = Date.now();
         let run: ModelRun | null = null;
+        let held = 0;
         for (let attempt = 0; attempt < 2 && !run; attempt++) {
+          held = worst(spec, p);
+          if (!hold(held)) {
+            console.log(`  ${spec} ${p.seed.id}: stopped, the budget would not hold another call`);
+            return;
+          }
           try {
             run = await host.run({ ...REVIEW_CALL, spec, attribution, system: p.system, prompt: p.prompt, maxOutputTokens: maxOutput, abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
           } catch (error) {
@@ -139,14 +152,14 @@ async function main(): Promise<void> {
         }
         const latencyMs = Date.now() - started;
         if (!run) {
-          // A failed call may still have been billed: count its worst case against the budget.
-          spent += worst(spec, p);
+          // Its usage is unknown: the holds stay spent, and the read records no cost of its own.
           runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: '0', latencyMs });
           continue;
         }
         const read = readReply(run, p.files);
         const costUsd = priceOf(spec, run.line.inputTokens, run.line.outputTokens);
-        spent += Number(costUsd ?? worst(spec, p));
+        // The answering call's hold becomes its list price; a failed first attempt's hold stays.
+        if (costUsd !== null) spent += Number(costUsd) - held;
         const findings = read.assembled.findings.map(({ item, file, line }) => ({ item, file, line }));
         const score = scoreSeed(p.resolved, findings, p.allowed);
         runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: read.state, reason: read.reason, score, findings, dropped: read.assembled.dropped, inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, costUsd, latencyMs });
