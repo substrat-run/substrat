@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { externalInput, externalJson, problemResponse, refuseStatus, invocationLog } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse, refuse, refuseStatus, invocationLog } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -251,7 +251,8 @@ app.post('/api/invoke', async (c) => {
 // pinned package, never a CDN.
 app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
-  if (!(name in API)) return problemResponse(c, substratError('not_found', `unknown operation: ${name}`));
+  // The name is the caller's: `refuse`, not `problemResponse`, which reads fault phrases in a message first.
+  if (!(name in API)) return refuse(c, 'not_found', `unknown operation: ${name}`);
   const body = await c.req.text();
   const p = await persona(c);
   const result = (await (await host.getScope(p.principal, p.tenantId, p.scopeId)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;

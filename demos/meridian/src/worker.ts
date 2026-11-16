@@ -37,6 +37,7 @@ import {
   externalInput,
   externalJson,
   problemResponse,
+  refuse,
   refuseStatus,
 } from '@substrat-run/vertical-host';
 import { substratError } from '@substrat-run/contracts';
@@ -504,7 +505,8 @@ app.post('/api/invoke', async (c) => {
 // documents resolve, so the spec and the surface cannot disagree.
 app.post('/api/op/*', async (c) => {
   const name = decodeURIComponent(new URL(c.req.url).pathname.slice('/api/op/'.length));
-  if (!(name in API)) return problemResponse(c, substratError('not_found', `unknown operation: ${name}`));
+  // The name is the caller's: `refuse`, not `problemResponse`, which reads fault phrases in a message first.
+  if (!(name in API)) return refuse(c, 'not_found', `unknown operation: ${name}`);
   const body = await c.req.text();
   const result = (await (await stub(c)).invoke(name, externalInput(body ? JSON.parse(body) : undefined))) ?? null;
   if (name === 'hr/create-employee') await grantEmployeeSelf(c.env, nodeFor(c.req.raw, c.env), result);
