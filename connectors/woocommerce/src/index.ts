@@ -14,8 +14,8 @@ import {
   type Instant,
   type OpenConnection,
 } from '@substrat-run/contracts';
-import type { ConnectorConnection, FetchLike, HostAdmin, ScopeHost } from '@substrat-run/kernel';
-import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
+import type { ConnectorConnection, FetchLike, HostAdmin, InvokeOptions, ScopeHost, ScopeStub } from '@substrat-run/kernel';
+import { deadlineFetch, landingRefusalSaid, settleConnectionUse } from '@substrat-run/kernel';
 import {
   WooCommerceApi,
   WooCommerceApiError,
@@ -439,7 +439,8 @@ export async function syncWooCommerceScope(
 
   // Read once per sync: a product states no currency, so its prices are in the store's.
   const currency = storeCurrency((await api.storeInfo()).settings.currency);
-  const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
+  // #3235: a refusal from the app's landing operation carries what the tenant may read about it.
+  const scope = landingScope(await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId)));
 
   // A binding synced before delivered ids were recorded walks the store once more from the start.
   const tracked = binding.lastSync?.tracksDelivered === true;
@@ -558,11 +559,43 @@ function storeCurrency(value: string): CurrencyCode {
   return parsed.data;
 }
 
+/**
+ * #3235: a landing call the app's own operation refused. `message` is the refusal as thrown, which
+ * stays staff's; `said` is what the binding's tenant may read about it (`landingRefusalSaid`).
+ */
+export class WooCommerceLandingRefusal extends Error {
+  constructor(
+    readonly said: string,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'WooCommerceLandingRefusal';
+  }
+}
+
+/** The scope stub, its `invoke` rethrowing an app's own refusal as a {@link WooCommerceLandingRefusal}. */
+function landingScope(scope: ScopeStub): ScopeStub {
+  return {
+    tenantId: scope.tenantId,
+    scopeId: scope.scopeId,
+    ...(scope.subjectKind ? { subjectKind: scope.subjectKind } : {}),
+    invoke: async <O, I>(operation: string, input?: I, options?: InvokeOptions): Promise<O> => {
+      try {
+        return await scope.invoke<O, I>(operation, input, options);
+      } catch (err) {
+        const said = landingRefusalSaid(operation, err);
+        throw said === undefined ? err : new WooCommerceLandingRefusal(said, err);
+      }
+    },
+  };
+}
+
 export interface WooCommerceSweepResult {
   found: number;
   synced: WooCommerceSyncResult[];
   unchanged: number;
-  failed: { scopeId: string; error: string }[];
+  /** `error` is staff's; `said`, when present, is what the binding's tenant may read about it (#3235). */
+  failed: { scopeId: string; error: string; said?: string }[];
 }
 
 /** Poll the store for every scope this connection is bound to — the sweeper a deployment schedules. */
@@ -582,7 +615,11 @@ export async function sweepWooCommerce(
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
     } catch (err) {
-      result.failed.push({ scopeId: binding.scopeId, error: err instanceof Error ? err.message : String(err) });
+      result.failed.push({
+        scopeId: binding.scopeId,
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof WooCommerceLandingRefusal ? { said: err.said } : {}),
+      });
     }
   }
   return result;
