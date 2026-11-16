@@ -232,6 +232,7 @@ export function guideSidebar() {
         { text: 'Planima (facility maintenance)', link: '/connectors/planima' },
         { text: 'WooCommerce (online store)', link: '/connectors/woocommerce' },
         { text: 'Stripe (payments)', link: '/connectors/stripe' },
+        { text: 'Bolagsverket (company register)', link: '/connectors/bolagsverket' },
         { text: 'Microsoft 365 (mail, documents)', link: '/connectors/microsoft365' },
         { text: 'Inbound mail', link: '/connectors/mail-in' },
         { text: 'Your own connector', link: '/connectors/your-own' },
