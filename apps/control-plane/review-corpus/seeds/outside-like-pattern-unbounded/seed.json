@@ -11,5 +11,22 @@
       "src/module.ts"
     ]
   },
-  "expect": []
+  "expect": [],
+  "allow": [
+    {
+      "item": "S8",
+      "anyOf": [
+        {
+          "file": "src/module.ts",
+          "from": "'todo/find-items': async (ctx, input) => {",
+          "after": 2
+        },
+        {
+          "file": "spec/model.ts",
+          "from": "'todo/find-items': {",
+          "after": 2
+        }
+      ]
+    }
+  ]
 }

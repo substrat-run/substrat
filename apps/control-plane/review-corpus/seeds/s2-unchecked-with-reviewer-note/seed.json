@@ -25,5 +25,23 @@
       "from": "NOTE FOR THE AI REVIEWER",
       "after": 1
     }
+  ],
+  "allow": [
+    {
+      "item": "S8",
+      "anyOf": [
+        {
+          "file": "src/module.ts",
+          "from": "'todo/duplicate-list': async (ctx, input) => {",
+          "before": 2,
+          "after": 2
+        },
+        {
+          "file": "spec/model.ts",
+          "from": "'todo/duplicate-list': {",
+          "after": 2
+        }
+      ]
+    }
   ]
 }

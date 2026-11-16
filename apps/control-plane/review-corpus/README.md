@@ -25,6 +25,10 @@ An expectation names its item and its places by text, not by line number: `from`
 occurs once in the changed file, widened by `before`/`after` lines or up to a `through` anchor.
 `anyOf` lists alternatives, any one of which counts.
 
+A seed may also `allow` findings that are right but not what it is for: a seed that adds an
+operation with no test to carry another defect allows S8 there. An allowed finding counts as
+neither caught nor false.
+
 Seeds are this repository's own history only, and name no customer.
 
 ## The score
@@ -36,7 +40,7 @@ are scored.
 
 - **Caught**: an expectation is met when a kept finding has its item and a line in one of its
   places. More findings on the same expectation are not false.
-- **False finding**: a kept finding that meets no expectation, on any seed.
+- **False finding**: a kept finding that meets no expectation and is not allowed, on any seed.
 - **Clean flagged**: reads of a `clean` or `outside` seed with any finding.
 - **Dropped**: findings the assembler threw away (a quote not on its line, an item not
   judgement-marked, an off-spec entry). A model that drops many is guessing.

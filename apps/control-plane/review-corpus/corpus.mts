@@ -42,6 +42,11 @@ export interface Seed {
   readonly origin: string;
   readonly base: { readonly commit: string; readonly root: string; readonly files: readonly string[] };
   readonly expect: readonly Expectation[];
+  /**
+   * Findings that are right but not what the seed is for, such as S8 on a seed that adds an
+   * operation with no test to show another defect. They count as neither caught nor false.
+   */
+  readonly allow?: readonly Expectation[];
 }
 
 /**
@@ -78,7 +83,8 @@ export function parseSeed(raw: unknown, where: string): Seed {
   if (!Array.isArray(s!.expect)) fail('expect must be an array');
   if (s!.kind === 'bad' && s!.expect!.length === 0) fail('a bad seed owes at least one finding');
   if (s!.kind !== 'bad' && s!.expect!.length > 0) fail(`a ${s!.kind} seed owes no finding`);
-  for (const e of s!.expect!) {
+  if (s!.allow !== undefined && !Array.isArray(s!.allow)) fail('allow must be an array');
+  for (const e of [...s!.expect!, ...(s!.allow ?? [])]) {
     if (typeof e.item !== 'string') fail('an expectation names its item');
     const locations = e.anyOf ?? [e as Location];
     if (locations.length === 0) fail(`${e.item}: anyOf is empty`);
@@ -102,7 +108,16 @@ const lineOf = (text: string, at: number): number => text.slice(0, at).split('\n
 
 /** The 1-based lines each expectation covers in the changed text. Throws on an anchor that is missing or not unique. */
 export function resolveExpectations(seed: Seed, head: ReadonlyMap<string, string>): Resolved[] {
-  return seed.expect.map((e) => ({
+  return resolveList(seed, seed.expect, head);
+}
+
+/** The lines each allowed finding covers, resolved the same way. */
+export function resolveAllowed(seed: Seed, head: ReadonlyMap<string, string>): Resolved[] {
+  return resolveList(seed, seed.allow ?? [], head);
+}
+
+function resolveList(seed: Seed, list: readonly Expectation[], head: ReadonlyMap<string, string>): Resolved[] {
+  return list.map((e) => ({
     item: e.item,
     ranges: (e.anyOf ?? [e as Location]).map((l) => {
       const file = (l.file ?? e.file)!;
@@ -128,8 +143,10 @@ export function resolveExpectations(seed: Seed, head: ReadonlyMap<string, string
 export interface SeedScore {
   /** Per expectation, in order: its item and whether a finding landed in one of its ranges. */
   readonly expected: ReadonlyArray<{ readonly item: string; readonly hit: boolean }>;
-  /** Findings that match no expectation: on a clean or outside seed every finding is one. */
+  /** Findings that match no expectation and are not allowed: on a clean or outside seed, every finding not allowed. */
   readonly falseFindings: readonly ScoredFinding[];
+  /** Findings that match no expectation but are allowed. */
+  readonly allowed: number;
 }
 
 const inside = (f: ScoredFinding, r: Range) => f.file === r.file && f.line >= r.from && f.line <= r.to;
@@ -137,13 +154,16 @@ const inside = (f: ScoredFinding, r: Range) => f.file === r.file && f.line >= r.
 /**
  * One read of one seed, scored. A finding hits an expectation when its item matches and its line
  * falls in one of the expectation's ranges; more findings on the same expectation are not false.
- * A finding matching no expectation is false, whatever its item.
+ * A finding matching no expectation is false, whatever its item, unless the seed allows it.
  */
-export function scoreSeed(resolved: readonly Resolved[], findings: readonly ScoredFinding[]): SeedScore {
+export function scoreSeed(resolved: readonly Resolved[], findings: readonly ScoredFinding[], allowed: readonly Resolved[] = []): SeedScore {
   const matches = (f: ScoredFinding, e: Resolved) => f.item === e.item && e.ranges.some((r) => inside(f, r));
+  const unowed = findings.filter((f) => !resolved.some((e) => matches(f, e)));
+  const isAllowed = (f: ScoredFinding) => allowed.some((e) => matches(f, e));
   return {
     expected: resolved.map((e) => ({ item: e.item, hit: findings.some((f) => matches(f, e)) })),
-    falseFindings: findings.filter((f) => !resolved.some((e) => matches(f, e))),
+    falseFindings: unowed.filter((f) => !isAllowed(f)),
+    allowed: unowed.filter(isAllowed).length,
   };
 }
 
@@ -156,6 +176,8 @@ export interface SeedRun {
   /** Why a read did not complete: the job's own reasons (`output cap`, `unparseable reply`), or `call failed`. */
   readonly reason: string | null;
   readonly score: SeedScore;
+  /** Every finding the assembler kept, by place only, so a read can be scored again when a seed's expectations change. */
+  readonly findings: readonly ScoredFinding[];
   /** Findings the assembler dropped: a quote not on its line, an item not judgement-marked, an off-spec entry. */
   readonly dropped: number;
   readonly inputTokens: number;
@@ -177,6 +199,8 @@ export interface ModelSummary {
   /** Every false finding, by item, on any seed. */
   readonly falseByItem: Readonly<Record<string, number>>;
   readonly falseFindings: number;
+  /** Findings a seed allows: right, but not what it is for. */
+  readonly allowed: number;
   readonly dropped: number;
   /** Reads that did not complete: an unparseable reply, the output cap, or a failed call. */
   readonly incomplete: number;
@@ -224,6 +248,7 @@ export function summarise(runs: readonly SeedRun[]): ModelSummary[] {
       cleanFlagged: { flagged: quiet.filter((r) => r.score.falseFindings.length > 0).length, of: quiet.length },
       falseByItem,
       falseFindings: mine.reduce((n, r) => n + r.score.falseFindings.length, 0),
+      allowed: mine.reduce((n, r) => n + r.score.allowed, 0),
       dropped: mine.reduce((n, r) => n + r.dropped, 0),
       incomplete: mine.filter((r) => r.state !== 'completed').length,
       incompleteBy,
@@ -238,13 +263,14 @@ export function summarise(runs: readonly SeedRun[]): ModelSummary[] {
 /** The summary as a Markdown table, one row per model: what the issue comment carries. */
 export function summaryTable(summaries: readonly ModelSummary[]): string {
   const items = [...new Set(summaries.flatMap((s) => Object.keys(s.recall)))].sort((a, b) => (a === 'outside' ? 1 : b === 'outside' ? -1 : a.localeCompare(b)));
-  const head = ['Model', 'Caught', ...items, 'Clean flagged', 'False findings', 'Dropped', 'Incomplete', 'Tokens in / out', 'Cost', 'Latency median / max'];
+  const head = ['Model', 'Caught', ...items, 'Clean flagged', 'False findings', 'Allowed', 'Dropped', 'Incomplete', 'Tokens in / out', 'Cost', 'Latency median / max'];
   const rows = summaries.map((s) => [
     `\`${s.model}\``,
     `${s.hits}/${s.owed}`,
     ...items.map((i) => (s.recall[i] ? `${s.recall[i]!.hit}/${s.recall[i]!.of}` : '–')),
     `${s.cleanFlagged.flagged}/${s.cleanFlagged.of}`,
     `${s.falseFindings}`,
+    `${s.allowed}`,
     `${s.dropped}`,
     `${s.incomplete}/${s.reads}${s.incomplete ? ` (${Object.entries(s.incompleteBy).map(([why, n]) => `${why} ${n}`).join(', ')})` : ''}`,
     `${s.inputTokens.toLocaleString('en-US')} / ${s.outputTokens.toLocaleString('en-US')}`,

@@ -28,5 +28,22 @@
         }
       ]
     }
+  ],
+  "allow": [
+    {
+      "item": "S8",
+      "anyOf": [
+        {
+          "file": "src/module.ts",
+          "from": "'todo/move-item': async (ctx, input) => {",
+          "after": 2
+        },
+        {
+          "file": "spec/model.ts",
+          "from": "'todo/move-item': {",
+          "after": 2
+        }
+      ]
+    }
   ]
 }

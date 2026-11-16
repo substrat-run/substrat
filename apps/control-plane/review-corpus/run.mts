@@ -23,7 +23,7 @@ import { createModelHost, type ModelRun } from '@substrat-run/vertical-host/mode
 import type { ChangedFile } from '../src/review-diff.js';
 import { estimateTokens, gatesNotRun, readReply, REVIEW_CALL, REVIEW_MAX_OUTPUT_TOKENS, reviewPrompt, reviewSystem } from '../src/review-reader.js';
 import { REVIEW_PLUGIN_VERSION, REVIEW_RULES_DIGEST } from '../src/review-rules.generated.js';
-import { loadSeeds, priceOf, resolveExpectations, scoreSeed, summarise, summaryTable, type Resolved, type Seed, type SeedRun } from './corpus.mts';
+import { loadSeeds, priceOf, resolveAllowed, resolveExpectations, scoreSeed, summarise, summaryTable, type Resolved, type Seed, type SeedRun } from './corpus.mts';
 import { materialize, SEEDS_DIR, seedDiff } from './materialize.mts';
 
 const GATEWAY_VARS = ['CLOUDFLARE_AI_BASE_URL', 'CLOUDFLARE_AI_API_TOKEN', 'CLOUDFLARE_AI_GATEWAY_ID'] as const;
@@ -56,7 +56,7 @@ function gatewayEnv(): Record<string, string> {
   return env;
 }
 
-interface Prepared { seed: Seed; files: readonly ChangedFile[]; resolved: Resolved[]; system: string; prompt: string; estimatedInput: number }
+interface Prepared { seed: Seed; files: readonly ChangedFile[]; resolved: Resolved[]; allowed: Resolved[]; system: string; prompt: string; estimatedInput: number }
 
 async function prepare(seed: Seed): Promise<Prepared> {
   const tree = materialize(seed);
@@ -65,7 +65,7 @@ async function prepare(seed: Seed): Promise<Prepared> {
   const nonce = crypto.randomUUID();
   const system = reviewSystem(nonce);
   const prompt = reviewPrompt({ files: diff.files, deleted: diff.deleted, notSent: diff.notSent, gates: gatesNotRun(), fullTree: diff.fullTree, nonce });
-  return { seed, files: diff.files, resolved: resolveExpectations(seed, tree.head), system, prompt, estimatedInput: estimateTokens(system) + estimateTokens(prompt) };
+  return { seed, files: diff.files, resolved: resolveExpectations(seed, tree.head), allowed: resolveAllowed(seed, tree.head), system, prompt, estimatedInput: estimateTokens(system) + estimateTokens(prompt) };
 }
 
 const transient = (e: unknown) => {
@@ -141,14 +141,15 @@ async function main(): Promise<void> {
         if (!run) {
           // A failed call may still have been billed: count its worst case against the budget.
           spent += worst(spec, p);
-          runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, []), dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: '0', latencyMs });
+          runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: '0', latencyMs });
           continue;
         }
         const read = readReply(run, p.files);
         const costUsd = priceOf(spec, run.line.inputTokens, run.line.outputTokens);
         spent += Number(costUsd ?? worst(spec, p));
-        const score = scoreSeed(p.resolved, read.assembled.findings);
-        runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: read.state, reason: read.reason, score, dropped: read.assembled.dropped, inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, costUsd, latencyMs });
+        const findings = read.assembled.findings.map(({ item, file, line }) => ({ item, file, line }));
+        const score = scoreSeed(p.resolved, findings, p.allowed);
+        runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: read.state, reason: read.reason, score, findings, dropped: read.assembled.dropped, inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, costUsd, latencyMs });
         const owed = score.expected.map((e) => `${e.item}${e.hit ? '✓' : '✗'}`).join(' ') || 'clean';
         const extra = score.falseFindings.map((f) => `${f.item}@${f.file}:${f.line}`).join(' ');
         console.log(`  ${spec} ${p.seed.id}: ${read.state}${read.reason ? ` (${read.reason})` : ''} · ${owed}${extra ? ` · false ${extra}` : ''} · ${(latencyMs / 1000).toFixed(1)} s · $${costUsd ?? '?'}`);

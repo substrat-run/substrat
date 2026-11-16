@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { REVIEW_ITEMS } from '../src/review-rules.generated.js';
-import { loadSeeds, parseSeed, priceOf, resolveExpectations, scoreSeed, summarise, type Seed, type SeedRun } from './corpus.mts';
+import { loadSeeds, parseSeed, priceOf, resolveAllowed, resolveExpectations, scoreSeed, summarise, type Seed, type SeedRun } from './corpus.mts';
 import { materialize, SEEDS_DIR, seedDiff } from './materialize.mts';
 
 const base = { commit: 'd08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258', root: 'demos/todo', files: ['a.ts'] };
@@ -41,6 +41,11 @@ describe('scoreSeed', () => {
   it('counts every finding on a seed that owes none as false', () => {
     assert.equal(scoreSeed([], [{ item: 'S1', file: 'a.ts', line: 1 }]).falseFindings.length, 1);
   });
+
+  it('counts a finding the seed allows as neither caught nor false', () => {
+    const score = scoreSeed([], [{ item: 'S8', file: 'a.ts', line: 2 }, { item: 'S8', file: 'a.ts', line: 9 }], [{ item: 'S8', ranges: [{ file: 'a.ts', from: 1, to: 3 }] }]);
+    assert.deepEqual([score.allowed, score.falseFindings.map((f) => f.line)], [1, [9]]);
+  });
 });
 
 describe('parseSeed', () => {
@@ -52,19 +57,19 @@ describe('parseSeed', () => {
 
 describe('summarise', () => {
   const run = (over: Partial<SeedRun>): SeedRun => ({
-    model: 'm', seed: 's', kind: 'bad', state: 'completed', reason: null, score: { expected: [], falseFindings: [] },
+    model: 'm', seed: 's', kind: 'bad', state: 'completed', reason: null, score: { expected: [], falseFindings: [], allowed: 0 }, findings: [],
     dropped: 0, inputTokens: 10, outputTokens: 2, costUsd: '0.5', latencyMs: 1000, ...over,
   });
 
   it('adds recall per item, flags clean reads with findings, and sums tokens, cost and failures', () => {
     const [s] = summarise([
-      run({ score: { expected: [{ item: 'S2', hit: true }, { item: 'S7', hit: false }], falseFindings: [] } }),
-      run({ score: { expected: [{ item: 'S2', hit: false }], falseFindings: [{ item: 'S5', file: 'a.ts', line: 1 }] }, dropped: 2 }),
-      run({ kind: 'clean', score: { expected: [], falseFindings: [{ item: 'S1', file: 'a.ts', line: 1 }] }, latencyMs: 3000 }),
+      run({ score: { expected: [{ item: 'S2', hit: true }, { item: 'S7', hit: false }], falseFindings: [], allowed: 1 } }),
+      run({ score: { expected: [{ item: 'S2', hit: false }], falseFindings: [{ item: 'S5', file: 'a.ts', line: 1 }], allowed: 0 }, dropped: 2 }),
+      run({ kind: 'clean', score: { expected: [], falseFindings: [{ item: 'S1', file: 'a.ts', line: 1 }], allowed: 0 }, latencyMs: 3000 }),
       run({ kind: 'outside', state: 'incomplete', reason: 'output cap' }),
     ]);
     assert.deepEqual(s!.recall, { S2: { hit: 1, of: 2 }, S7: { hit: 0, of: 1 } });
-    assert.deepEqual([s!.hits, s!.owed, s!.falseFindings, s!.dropped, s!.incomplete], [1, 3, 2, 2, 1]);
+    assert.deepEqual([s!.hits, s!.owed, s!.falseFindings, s!.allowed, s!.dropped, s!.incomplete], [1, 3, 2, 1, 2, 1]);
     assert.deepEqual(s!.cleanFlagged, { flagged: 1, of: 2 });
     assert.deepEqual(s!.incompleteBy, { 'output cap': 1 });
     assert.deepEqual(s!.falseByItem, { S5: 1, S1: 1 });
@@ -93,6 +98,7 @@ describe('the checked-in corpus', () => {
       assert.equal(diff.kind, 'diff', seed.id);
       if (diff.kind !== 'diff') continue;
       assert.ok(diff.files.length > 0, `${seed.id}: nothing is sent`);
+      resolveAllowed(seed, tree.head);
       for (const e of resolveExpectations(seed, tree.head)) {
         const accepted = e.ranges.some((r) => {
           const file = diff.files.find((f) => f.path === r.file);
