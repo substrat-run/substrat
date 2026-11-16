@@ -278,16 +278,22 @@ it('prices a tenant\'s code reviews at zero beside what they would cost, on its 
   } });
   await host.admin.recordModelUsage(line(1, '0.01'));
   await host.admin.recordModelUsage(line(2, '0.025'));
+  // The window's first instant is in it and its last midnight is not, to the millisecond.
+  const today = new Date().toISOString().slice(0, 10);
+  const first = new Date(Date.parse(`${today}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
+  const edge = (n: number, listUsd: string, at: string) => ({ ...line(n, listUsd), line: { ...line(n, listUsd).line, at } });
+  await host.admin.recordModelUsage(edge(3, '0.5', `${first}T00:00:00.500Z`));
+  await host.admin.recordModelUsage(edge(4, '7', `${today}T00:00:00.500Z`));
 
   const usage = await (await reviewing.request(`/tenants/${reviewed}/metered-usage`, { headers: { [SERVICE_TOKEN_HEADER]: await mintTenantToken(secret, { tenantId: reviewed }) } })).json();
   expect(usage.reviews).toEqual({
-    state: 'complete', calls: 2, reportedCalls: 2, inputTokens: 2000, outputTokens: 100, unpriced: 0,
-    wouldCostUsd: '0.042', chargedUsd: '0', zeroRated: true, lowerBound: false, since: usage.models.since, until: usage.models.until,
+    state: 'complete', calls: 3, reportedCalls: 3, inputTokens: 3000, outputTokens: 150, unpriced: 0,
+    wouldCostUsd: '0.642', chargedUsd: '0', zeroRated: true, lowerBound: false, since: usage.models.since, until: usage.models.until,
   });
   // A plane without the review scope configured prices nothing on the tenant's read.
   expect((await (await app.request(`/tenants/${own}/metered-usage`, { headers })).json()).reviews).toBeUndefined();
 
-  const summary = await (await reviewing.request(`/model-usage/summary?tenantId=${reviewed}&since=${at.slice(0, 10)}T00:00:00.000Z`, { headers: { [DEV_ACTOR_HEADER]: actor } })).json();
+  const summary = await (await reviewing.request(`/model-usage/summary?tenantId=${reviewed}&since=${at.slice(0, 10)}T00:00:00.000Z&until=${today}T00:00:00.000Z`, { headers: { [DEV_ACTOR_HEADER]: actor } })).json();
   expect(summary.totals).toMatchObject({ listUsd: '0.035', billedUsd: '0', zeroRatedCalls: 2, zeroRatedUsd: '0.042' });
 });
 

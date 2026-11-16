@@ -3063,7 +3063,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const zeroRated = options.reviewUsage.zeroRated;
       reviews = { state: 'unavailable', calls: null, reportedCalls: 0, inputTokens: null, outputTokens: null, unpriced: 0, wouldCostUsd: null, chargedUsd: null, zeroRated, lowerBound: false, ...window };
       if (usageNow() < deadline) {
-        const lines = await admin.listModelUsage(actor, { tenantId, scopeId: options.reviewUsage.scope, ...window, limit: REVIEW_USAGE_READ_MAX + 1, order: 'asc' });
+        // The ledger compares `at` as text, and a line's `at` carries milliseconds, so the bounds do
+        // too: `T00:00:00Z` sorts after `T00:00:00.500Z` and would drop the first second of the window.
+        const lines = await admin.listModelUsage(actor, {
+          tenantId, scopeId: options.reviewUsage.scope, since: `${since}T00:00:00.000Z`, until: `${until}T00:00:00.000Z`,
+          limit: REVIEW_USAGE_READ_MAX + 1, order: 'asc',
+        });
         const kept = lines.slice(0, REVIEW_USAGE_READ_MAX);
         const clipped = lines.length > REVIEW_USAGE_READ_MAX;
         const folded = foldModelUsage(kept, {
