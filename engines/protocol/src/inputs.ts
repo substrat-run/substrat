@@ -279,13 +279,15 @@ export const signatureRequestParty = z.object({
    * How this party is REACHED (#687) — the thing whose absence made every
    * external signature this platform ever sent fail at the provider.
    *
-   * Required for any party that will be INVITED, which is every party except the
-   * one issuing the document (see `signatureKind`): the issuer is the author at
-   * the provider, reached through the platform's own account, and an author is
-   * never invited. `requestSignatures` refuses a set that would send a document
-   * to somebody it cannot reach, rather than letting the provider answer
-   * `invalid_invitation_delivery_info` a layer later where the caller cannot see
-   * it.
+   * Required on every party, the primary included (#3087). The provider's author
+   * is the connection's own account, sent as a party of its own that does not
+   * sign (#852), so every party named here is invited. `requestSignatures`
+   * refuses a set that would send a document to somebody it cannot reach. The
+   * alternative is the provider answering `invalid_invitation_delivery_info` a
+   * layer later, where the caller cannot see it.
+   *
+   * A single party is a complete request: it is the primary, and it is invited
+   * like anyone else.
    *
    * **This is `direct` PII and the engine never stores it in the clear.** It is
    * sealed to the receiving connector's public key inside the operation, before

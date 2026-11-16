@@ -22,6 +22,7 @@ import { PROTOCOL_PERM as PERM, protocolModule } from '@substrat-run/engine-prot
 import {
   ScriveMock,
   registerScriveConnector,
+  scriveConnector,
   scriveCallbackPath,
   SENDER_PARTY_LABEL,
   type ScriveConnectorOptions,
@@ -442,6 +443,61 @@ describe('scrive connector — outbound dispatch', () => {
      * afternoon (#841).
      */
     it('refuses a party it cannot invite, naming it, before anything is created (#852)', async () => {
+      // The engine refuses a party with no contact before it freezes (#3087), so
+      // a current engine never emits one. An engine from before #3087 still does:
+      // it let the primary go without a contact, because the primary used to be
+      // the author. That is the event this refusal is for, so the handler is fed
+      // it directly. Older engines emit a null contact on the primary.
+      const handler = scriveConnector({
+        baseUrl: 'https://api-testbed.scrive.test',
+        callbackUrl: (ref) => `https://vertical.test${scriveCallbackPath(ref)}`,
+      });
+      const created: unknown[] = [];
+      const ctx = {
+        connection: async () => ({
+          id: 'conn-1',
+          unseal: async () => JSON.stringify({ email: 'anstalld@example.se' }),
+          fetch: async (...args: unknown[]) => {
+            created.push(args);
+            throw new Error('no provider call is expected');
+          },
+        }),
+        admin: { getConnectorState: async () => undefined },
+      };
+      const party = { kind: 'external', ref: null, authLevel: 'basic' } as const;
+      await expect(
+        handler(ctx as never, {
+          type: 'protocol.signatures-requested',
+          occurredAt: '2026-11-16T10:00:00.000Z',
+          payload: {
+            instanceId: '01JINSTANCE000000000000000A',
+            templateKey: 'anstallningsavtal',
+            templateVersion: 1,
+            contentHash: '22'.repeat(32),
+            method: 'scrive',
+            parties: [
+              { ...party, requestId: 'r1', label: 'Arbetsgivare', signatureKind: 'primary', contact: null },
+              {
+                ...party,
+                requestId: 'r2',
+                label: 'Anställd',
+                signatureKind: 'counter',
+                contact: { keyId: 'connection:conn-1', ciphertext: 'sealed' },
+              },
+            ],
+          },
+        } as never),
+      ).rejects.toThrow(/Arbetsgivare carries no email or mobile/);
+      // Nothing reached the provider: the refusal is upstream of `new`.
+      expect(created).toEqual([]);
+    });
+
+    it('DELIVERS a lone party: it is invited, not made the author (#3087)', async () => {
+      // This test used to assert a refusal (#687). Then, the connector mapped the
+      // primary to `is_author`, and Scrive never invites the author, so a lone
+      // party meant a document that reached nobody. Since #852 the author is the
+      // account, sent as a non-signing party of its own, and the engine accepts a
+      // single party. Under the testbed's delivery rule, it is invited.
       const discarded = dir;
       await host.close();
       await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
@@ -455,66 +511,23 @@ describe('scrive connector — outbound dispatch', () => {
       await stub.invoke('protocol/bind-document', {
         instanceId: inst.id,
         contentRef: { entityType: 'employment-terms', entityId: '01JTERMS000000000000000AUT' },
-        contentHash: '22'.repeat(32),
+        contentHash: '33'.repeat(32),
       });
       await stub.invoke('protocol/request-signatures', {
         instanceId: inst.id,
         method: 'scrive',
-        parties: [
-          { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary' },
-          { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
-        ],
+        parties: [{ label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } }],
       });
 
-      // Nothing was created at the provider — the refusal is upstream of `new`.
-      expect(scrive.documents.size).toBe(0);
-      const dead = await host.executorDeadLetters(t, s);
-      expect(dead).toHaveLength(1);
-      expect(dead[0]!.error).toMatch(/Arbetsgivare/);
-      expect(dead[0]!.error).toMatch(/no email or mobile/);
-    });
-
-    it('a LONE party is refused before anything freezes (#687)', async () => {
-      // This test used to assert the OPPOSITE, and its own comment named the day
-      // it would have to change. `requestSignatures` resolved the issuing party
-      // unconditionally — the declared one, else the FIRST — so a caller naming
-      // only counterparties had one of them silently made the issuer, and this
-      // connector maps `primary` to `is_author`. Scrive never invites the author,
-      // so the document started, journalled an id, reported itself sent for
-      // signature, and reached nobody. Production got there without anyone
-      // choosing it (Scrive doc 9222115557586247373).
-      //
-      // A contact field alone does not close that: an author is uninvitable
-      // whatever address it carries. So the refusal lives in the engine, at the
-      // call site, where the hazard is created.
-      const discarded = dir;
-      await host.close();
-      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } }, { strictDelivery: true });
-      rmSync(discarded, { recursive: true, force: true });
-
-      const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
-        templateKey: 'anstallningsavtal',
-        entityType: EMPLOYEE.entityType,
-        entityId: EMPLOYEE.entityId,
-      });
-      await expect(
-        stub.invoke('protocol/request-signatures', {
-          instanceId: inst.id,
-          method: 'scrive',
-          parties: [
-            { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
-          ],
-        }),
-      ).rejects.toThrow(/needs a counterparty/);
-
-      // Nothing was sent, and nothing froze — the instance is still negotiable.
-      expect(scrive.documents.size).toBe(0);
-      const { entries } = await stub.invoke<Page<{ instance: { status: string } }>>(
-        'protocol/list-for-entity',
-        { entityType: EMPLOYEE.entityType, entityId: EMPLOYEE.entityId },
-      );
-      const [summary] = entries;
-      expect(summary!.instance.status).toBe('open');
+      const [doc] = [...scrive.documents.values()];
+      expect(doc!.status).toBe('pending');
+      expect(await host.executorDeadLetters(t, s)).toEqual([]);
+      // The sender, then the one party, which signs and carries its address.
+      expect(doc!.parties.map((p) => [p.isAuthor, p.isSignatory])).toEqual([
+        [true, false],
+        [false, true],
+      ]);
+      expect(doc!.parties[1]!.email).toBe('anstalld@example.se');
     });
   });
 

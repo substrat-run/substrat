@@ -1354,35 +1354,28 @@ export async function requestSignatures(
   const primaryIndex = primaries.length === 1
     ? input.parties.findIndex((p) => p.signatureKind === 'primary')
     : 0;
-  // #687: a set with no counterparty is refused, and the fall-through above is
-  // exactly why it has to be.
+  // A one-party request is allowed (#3087). #687 refused one: back then the
+  // connector made the primary party the provider's AUTHOR. An author is never
+  // invited, so a lone party meant a document that started and reached nobody.
+  // #852 removed that mapping. The connector now sends the account as an author
+  // party of its own that does not sign, and every party named here is an
+  // ordinary, invited signatory. A one-off offer only the customer signs is
+  // therefore one party. The workaround was to name the sender as a second
+  // party, and that made the seller sign their own offer.
   //
-  // "The declared primary, else the FIRST" is a total function — it always finds
-  // an issuer — so a one-party request has never failed here. It has failed at
-  // the provider instead: the single party became the AUTHOR, an author is never
-  // invited, and the document went out to nobody. In production that party was
-  // the customer. The rule belongs where the hazard is created, because the call
-  // site cannot see it: a vertical passing `[{ label: 'Kund' }]` is asking for
-  // the customer to sign and is silently answered with the customer as sender.
-  if (input.parties.length < 2) {
-    throw substratError('validation_failed', 
-      'a signature request needs a counterparty: with one party it becomes the issuing ' +
-        'author at the provider, and an author is never invited to sign — so the document ' +
-        'would start and reach nobody. Name who issues (signatureKind: \'primary\') and ' +
-        'who signs, or use signProtocol for an in-app signature.',
-    );
-  }
-  // #687: and every party that WILL be invited must be reachable. Checked before
+  // #687: every party is invited, so every party must be reachable, and that
+  // includes the primary now that it is no longer the author. Checked before
   // anything is written or sealed, so a request that cannot be delivered never
-  // freezes the instance — the alternative is an instance stuck in
-  // `pending_signature` for a document that was never sent.
-  for (const [index, party] of input.parties.entries()) {
-    if (index === primaryIndex || party.contact !== undefined) continue;
-    throw substratError('validation_failed', 
-      `party '${party.label}' is a counter-signing party and carries no contact — it would be ` +
-        'invited to sign at an address that was never supplied, which the provider refuses ' +
+  // freezes the instance. Otherwise the instance would sit in
+  // `pending_signature` for a document that was never sent, while the connector
+  // dead-letters the dispatch for the party with no address.
+  for (const party of input.parties) {
+    if (party.contact !== undefined) continue;
+    throw substratError('validation_failed',
+      `party '${party.label}' carries no contact. Every party, the primary included, is ` +
+        'invited to sign at the provider, which refuses a party with no address ' +
         '(invalid_invitation_delivery_info) after the instance has already frozen. Pass ' +
-        'contact: { email } or contact: { mobile } for every party that must be invited.',
+        'contact: { email } or contact: { mobile } for every party.',
     );
   }
   // Validate the refs that were supplied, so a personnummer cannot be smuggled

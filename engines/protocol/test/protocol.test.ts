@@ -438,7 +438,7 @@ describe('engine-protocol', () => {
           instanceId: inst.id,
           method: 'scrive',
           parties: [
-            { label: 'Acme', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Acme', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
             { label: 'Beställare', kind: 'external', contact: { email: 'kund@example.se' } },
           ],
         });
@@ -555,12 +555,11 @@ describe('engine-protocol', () => {
         {
           instanceId,
           method: 'scrive',
-          // #687: an issuer who is never invited (the author at the provider) plus the
-          // party who actually receives the document. One party alone is refused —
-          // it would BECOME the author and the document would reach nobody.
+          // An issuer and the party who receives the document. Both are invited, so
+          // both carry a contact (#3087).
           parties: [
             { label, kind: 'external', contact: { email: 'part@example.se' } },
-            { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
           ],
         },
       );
@@ -578,8 +577,14 @@ describe('engine-protocol', () => {
           instanceId: inst.id,
           method: 'scrive',
           parties: [
-            // The FIRST party is the issuer by fall-through, so it needs no contact.
-            { label: 'Beställare', kind: 'external', authLevel: 'strong' },
+            // The FIRST party is the issuer by fall-through. It is invited like
+            // everyone else (#3087), so it carries a contact too.
+            {
+              label: 'Beställare',
+              kind: 'external',
+              authLevel: 'strong',
+              contact: { email: 'bestallare@example.se' },
+            },
             {
               label: 'Leverantör',
               kind: 'principal', // says nothing about authLevel
@@ -607,7 +612,7 @@ describe('engine-protocol', () => {
     it('names the document on the event: the caller\'s title, else the template\'s', async () => {
       await defineTemplate();
       const parties = [
-        { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+        { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
         { label: 'Beställare', kind: 'external', contact: { email: 'part@example.se' } },
       ];
       const first = await instantiate();
@@ -696,9 +701,8 @@ describe('engine-protocol', () => {
       //
       // `countersigned`, not `signed`: the issuing party's signature is the one
       // that emits `protocol.signed`, and the issuer is the side that SENDS the
-      // document. An external counterparty is by construction a counter-signer
-      // (#687 — a set with no counterparty is refused), so this is the event that
-      // names them.
+      // document. Here the external party is the counter-signer, so this is the
+      // event that names them.
       const [countersigned] = h.eventsOfType('protocol.countersigned');
       expect(countersigned!.subjectId).toBe(customer);
     });
@@ -719,7 +723,7 @@ describe('engine-protocol', () => {
           method: 'scrive',
           parties: [
             { label: 'Beställare', kind: 'external', contact: { email: 'anna@kund.se' } },
-            { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
           ],
         },
       );
@@ -729,39 +733,51 @@ describe('engine-protocol', () => {
       expect(invited!.contact_key_id).toMatch(/^connection:/);
       expect(invited!.contact_ciphertext).toBeTruthy();
       expect(JSON.stringify(invited)).not.toContain('anna@kund.se');
-      // The issuer is the author at the provider and is never invited, so it
-      // carries nothing to seal.
-      expect(issuer!.contact_key_id).toBeNull();
+      // The issuer is invited too (#3087): the provider's author is the account,
+      // never a party named here. So its address is sealed the same way.
+      expect(issuer!.contact_key_id).toMatch(/^connection:/);
+      expect(JSON.stringify(issuer)).not.toContain('issuer@example.se');
 
       // And neither does the event — which is the point, because the event is
       // the copy the platform keeps in `_substrat_outbox` and cannot erase.
       const [requested] = h.eventsOfType('protocol.signatures-requested');
       expect(JSON.stringify(requested!.payload)).not.toContain('anna@kund.se');
+      expect(JSON.stringify(requested!.payload)).not.toContain('issuer@example.se');
       const parties = (
         requested!.payload as {
           parties: { label: string; contact: { keyId: string; ciphertext: string } | null }[];
         }
       ).parties;
       expect(parties[0]!.contact!.keyId).toBe(invited!.contact_key_id);
-      expect(parties[1]!.contact).toBeNull();
+      expect(parties[1]!.contact!.keyId).toBe(issuer!.contact_key_id);
       // Still 'none': the address is unreadable to the spine, and its erasure is
       // the destruction of a key the scope does not hold, not a redaction here.
       expect(requested!.piiClass).toBe('none');
     });
 
-    it('refuses a party that will be invited but carries no address', async () => {
+    // Every party is invited, so every party needs an address. Since #3087 that
+    // includes the primary: it is no longer the provider's author.
+    it.each([
+      {
+        missing: 'Beställare',
+        parties: [
+          { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
+          { label: 'Beställare', kind: 'external' },
+        ],
+      },
+      {
+        missing: 'Utställare',
+        parties: [
+          { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Beställare', kind: 'external', contact: { email: 'kund@example.se' } },
+        ],
+      },
+    ])('refuses a party with no address ($missing), before freezing', async ({ missing, parties }) => {
       await defineTemplate();
       const inst = await instantiate();
       await expect(
-        staff.invoke('protocol/request-signatures', {
-          instanceId: inst.id,
-          method: 'scrive',
-          parties: [
-            { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
-            { label: 'Beställare', kind: 'external' },
-          ],
-        }),
-      ).rejects.toThrow(/carries no contact/);
+        staff.invoke('protocol/request-signatures', { instanceId: inst.id, method: 'scrive', parties }),
+      ).rejects.toThrow(new RegExp(`party '${missing}' carries no contact`));
 
       // And it refused BEFORE freezing: an instance stuck in `pending_signature`
       // for a document that was never sent is worse than the refusal.
@@ -771,19 +787,24 @@ describe('engine-protocol', () => {
       expect(detail.instance.status).toBe('open');
     });
 
-    it('refuses a set with no counterparty — the party would become the author', async () => {
-      // The production failure, pinned. "The declared primary, else the FIRST" is
-      // total, so a one-party request never failed here — it failed at the
-      // provider, where that party was the sender and was never invited to sign.
+    it('accepts a single party: it is the primary, and it is invited (#3087)', async () => {
+      // #687 refused this: the connector then made the primary the provider's
+      // author, and an author is never invited. Since #852 the author is the
+      // account, sent as a party of its own, so a one-off offer only the customer
+      // signs no longer needs the seller named as a second signer.
       await defineTemplate();
       const inst = await instantiate();
-      await expect(
-        staff.invoke('protocol/request-signatures', {
-          instanceId: inst.id,
-          method: 'scrive',
-          parties: [{ label: 'Kund', kind: 'external', contact: { email: 'kund@example.se' } }],
-        }),
-      ).rejects.toThrow(/needs a counterparty/);
+      const { instance, requests } = await staff.invoke<{
+        instance: ProtocolInstanceRow;
+        requests: ProtocolSignatureRequestRow[];
+      }>('protocol/request-signatures', {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [{ label: 'Kund', kind: 'external', contact: { email: 'kund@example.se' } }],
+      });
+      expect(instance.status).toBe('pending_signature');
+      expect(requests.map((r) => [r.party_label, r.signature_kind])).toEqual([['Kund', 'primary']]);
+      expect(requests[0]!.contact_key_id).toMatch(/^connection:/);
     });
 
     it('refuses, legibly, when no key for the method has reached this scope', async () => {
@@ -798,7 +819,7 @@ describe('engine-protocol', () => {
           instanceId: inst.id,
           method: 'assently', // a provider this tenant has never connected
           parties: [
-            { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
             { label: 'Kund', kind: 'external', contact: { email: 'kund@example.se' } },
           ],
         }),
@@ -834,7 +855,7 @@ describe('engine-protocol', () => {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Leverantör', kind: 'external', signatureKind: 'primary' },
+          { label: 'Leverantör', kind: 'external', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
           { label: 'Beställare', kind: 'external', contact: { email: 'kund@example.se' } },
         ],
       });
@@ -872,7 +893,7 @@ describe('engine-protocol', () => {
         instanceId: inst.id,
         method: 'scrive',
         parties: [
-          { label: 'Leverantör', kind: 'external', signatureKind: 'primary' },
+          { label: 'Leverantör', kind: 'external', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
           { label: 'Beställare', kind: 'external', contact: { email: 'kund@example.se' } },
         ],
       });
@@ -975,7 +996,7 @@ describe('engine-protocol', () => {
             ref: addressee,
             contact: { email: 'kund@example.se' },
           },
-          { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+          { label: 'Utställare', kind: 'principal', signatureKind: 'primary', contact: { email: 'issuer@example.se' } },
         ],
       });
       await expect(
