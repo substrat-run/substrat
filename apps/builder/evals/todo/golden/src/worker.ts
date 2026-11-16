@@ -208,8 +208,10 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: OWNER_ROLE_KEY,
   ...door.platform,
   onProvision: async (env, b) => {
-    await door.platform.onProvision(env, b);
+    // The door's answer says whether the owner seat was reserved for an address (#3202); return it.
+    const seat = await door.platform.onProvision(env, b);
     await sweeper(env).noteScope(b.tenantId, b.scopeId);
+    return seat;
   },
   onDeleteScope: async (env, s, tenantId) => {
     await door.platform.onDeleteScope(env, s, tenantId);

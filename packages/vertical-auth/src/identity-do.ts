@@ -13,6 +13,9 @@ import {
   migrateOwnerSeat,
   recordOwnerSeat,
   recordSiblingOwnerSeat,
+  recordAddressedOwnerSeat,
+  claimOwnerByAddress as claimOwnerByAddressRow,
+  forgetOwnerAddress,
   ownerOfRecord as ownerOfRecordRow,
   needsSetup as needsSetupRow,
   ownerSeat as ownerSeatRow,
@@ -142,9 +145,14 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return config;
   }
 
-  /** Remove a reaped scope's delivered settings from this tenant's shared directory. */
+  /**
+   * Remove a reaped scope's delivered settings from this tenant's shared directory, and the address
+   * its owner seat was reserved for (#3202), claimed or not: every vertical's `onDeleteScope` calls
+   * this, so a person's address goes with the scope it was kept for without each one remembering to.
+   */
   async deleteScopeConfig(scopeId: string): Promise<void> {
     this.ctx.storage.sql.exec('DELETE FROM scope_config WHERE scope_id = ?', scopeId);
+    forgetOwnerAddress(this.registrySql, scopeId);
   }
 
   /**
@@ -208,10 +216,39 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * `parentScopeId` is the provision body's, present when a running scope asked for this one
    * (`provision-sibling`, #2773): the seat is then bound to the subjects the parent binds to
    * `principal`, with no first-sign-in window (`recordSiblingOwnerSeat`).
+   *
+   * `ownerEmail` is the provision body's too, present when a manager provisioned this tenant for
+   * the person who asked (`provision-tenant`, #3202): the seat opens no window and is reserved for
+   * a sign-in whose issuer verified that address (`recordAddressedOwnerSeat`).
+   *
+   * The answer is what an `onProvision` hook returns to the provision route: `ownerAddressReserved`
+   * is true only when the seat IS reserved for `ownerEmail`, and the route refuses a provision that
+   * named an address without it, so a hook that drops the address cannot report success with a
+   * first-sign-in window open. Both `parentScopeId` and `ownerEmail` is not a request any caller
+   * makes; the sibling seat is recorded, and the address reported not reserved.
+   *
+   * Each seat is several rows, and they land in one transaction: a DO commits the writes of one
+   * synchronous stretch together but keeps those made before a throw, so without it a failed
+   * `owner_address` insert would leave a recorded seat with no reservation — which every re-run
+   * then reads as "recorded some other way first" and reports not reserved.
    */
-  async setPendingOwner(scopeId: string, principal: string, parentScopeId?: string): Promise<void> {
-    if (parentScopeId) recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
-    else recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
+  async setPendingOwner(
+    scopeId: string,
+    principal: string,
+    parentScopeId?: string,
+    ownerEmail?: string,
+  ): Promise<{ ownerAddressReserved: boolean }> {
+    return this.ctx.storage.transactionSync(() => {
+      if (parentScopeId) {
+        recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
+        return { ownerAddressReserved: false };
+      }
+      if (ownerEmail) {
+        return { ownerAddressReserved: recordAddressedOwnerSeat(this.registrySql, scopeId, principal, ownerEmail, Date.now()) };
+      }
+      recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
+      return { ownerAddressReserved: false };
+    });
   }
 
   /**
@@ -265,6 +302,14 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    */
   async resolvePrincipal(scopeId: string, sub: string): Promise<string | null> {
     return resolvePrincipalRow(this.registrySql, scopeId, sub, Date.now());
+  }
+
+  /**
+   * Claim a seat reserved for an address (#3202) as `sub`, signed in with `verifiedEmail`; null
+   * when the seat is reserved for no address or another one. `claimOwnerByAddress` has the rule.
+   */
+  async claimOwnerByAddress(scopeId: string, sub: string, verifiedEmail: string | null): Promise<string | null> {
+    return claimOwnerByAddressRow(this.registrySql, scopeId, sub, verifiedEmail);
   }
 
   /** The principal `sub` is bound to in this scope, or null. Never claims the owner seat. */
@@ -459,7 +504,12 @@ export type IdentityStub = {
   forgetSite(scopeId: string): Promise<void>;
   listSites(): Promise<SiteRow[]>;
   resolveSiteScope(slug: string): Promise<string | null>;
-  setPendingOwner(scopeId: string, principal: string, parentScopeId?: string): Promise<void>;
+  setPendingOwner(
+    scopeId: string,
+    principal: string,
+    parentScopeId?: string,
+    ownerEmail?: string,
+  ): Promise<{ ownerAddressReserved: boolean }>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   transferOwner(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransfer>;
   completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;
@@ -467,6 +517,7 @@ export type IdentityStub = {
   needsSetup(scopeId: string): Promise<boolean>;
   ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;
+  claimOwnerByAddress(scopeId: string, sub: string, verifiedEmail: string | null): Promise<string | null>;
   boundPrincipal(scopeId: string, sub: string): Promise<string | null>;
   bindPersona(scopeId: string, sub: string, principal: string): Promise<void>;
   ownerClaimTarget(scopeId: string): Promise<string | null>;

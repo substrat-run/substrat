@@ -48,6 +48,9 @@ export interface NeedsSetup {
   /** Whether a plain sign-in still claims the seat (#925) — it closes on a window after
    *  provision; after that only a claim link from the dashboard binds the owner. */
   firstSignInOpen: boolean;
+  /** The seat is reserved for the address its owner asked with (#3202): no window is open, yet a
+   *  sign-in with that address claims it. */
+  ownerAddressReserved: boolean;
 }
 export type Identity = Session | NeedsSetup | null;
 
@@ -55,7 +58,9 @@ export async function me(): Promise<Identity> {
   const res = await fetch('/api/me', { credentials: 'same-origin' });
   if (!res.ok) return null;
   const body = (await res.json()) as Session | NeedsSetup;
-  return 'principal' in body ? body : { status: 'needs-setup', firstSignInOpen: body.firstSignInOpen === true };
+  return 'principal' in body
+    ? body
+    : { status: 'needs-setup', firstSignInOpen: body.firstSignInOpen === true, ownerAddressReserved: body.ownerAddressReserved === true };
 }
 
 /**

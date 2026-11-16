@@ -129,7 +129,13 @@ export default function App() {
   if (me.mode !== 'authed') {
     const inviteToken = new URLSearchParams(location.search).get('invite');
     if (inviteToken) return <AcceptInvite token={inviteToken} />;
-    return <SignIn firstRun={me.mode === 'needs-setup'} firstSignInOpen={me.mode === 'needs-setup' ? me.firstSignInOpen : true} />;
+    return (
+      <SignIn
+        firstRun={me.mode === 'needs-setup'}
+        firstSignInOpen={me.mode === 'needs-setup' ? me.firstSignInOpen : true}
+        ownerAddressReserved={me.mode === 'needs-setup' && me.ownerAddressReserved}
+      />
+    );
   }
 
   return (

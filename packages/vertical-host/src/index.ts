@@ -816,6 +816,8 @@ const provisionBody = z.object({
   owner: principalIdOf,
   /** #2773: the scope that asked for this one (`provision-sibling`), whose login `owner` already is. */
   parentScopeId: scopeIdOf.optional(),
+  /** #3202: the address a manager provisioned this tenant for, whose verified sign-in is the owner. */
+  ownerEmail: z.string().email().optional(),
   slug: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   entitlements: z.array(entitlementGrant).optional(),
@@ -832,6 +834,16 @@ const provisionBody = z.object({
 });
 /** The parsed provision body handed to `onProvision`. */
 export type ProvisionBody = z.infer<typeof provisionBody>;
+
+/**
+ * What an `onProvision` hook reports back to the provision route. `ownerAddressReserved` is the
+ * hook's word that the owner seat is reserved for the body's `ownerEmail` (#3202) — what
+ * vertical-auth's `setPendingOwner` answers. A provision that named an address is refused without
+ * it, because a hook that drops the address opens a first-sign-in window any login could take.
+ */
+export interface ProvisionHookAnswer {
+  ownerAddressReserved?: boolean;
+}
 
 /** `/internal/reconcile` carries no owner — the vertical re-sources it via `resolveOwner` (#332). */
 const reconcileBody = z.object({
@@ -1335,8 +1347,12 @@ export interface PlatformSurfaceDeps<Env> {
    * Vertical-specific provision side effect — the pending-owner TOFU claim, and for a
    * multi-site vertical the site-registry write. Runs after the scope's own state is set
    * up. Optional: a vertical with no owner-of-record store omits it.
+   *
+   * A body naming `ownerEmail` (#3202) must be answered `{ ownerAddressReserved: true }`, or the
+   * route refuses the provision (501): pass the address to vertical-auth's `setPendingOwner` and
+   * return what it answers. A vertical without the hook cannot reserve one, and is refused alike.
    */
-  onProvision?: (env: Env, body: ProvisionBody) => Promise<void>;
+  onProvision?: (env: Env, body: ProvisionBody) => Promise<void | ProvisionHookAnswer>;
   /**
    * Re-source a reconcile's owner from the vertical's durable owner-of-record (#332).
    * Return `null` when there is no record (⇒ 409, re-run the install). Omit entirely and
@@ -2695,6 +2711,10 @@ export function mountPlatformSurface<Env extends object>(
   // control plane already owns the directory row + entitlements. Idempotent.
   app.post('/internal/provision', async (c) => {
     const body = provisionBody.parse(await c.req.json());
+    // #3202: with no hook, nothing here can reserve the seat for an address, so refuse before any write.
+    if (body.ownerEmail !== undefined && !deps.onProvision) {
+      throw new HTTPException(501, { message: 'this vertical keeps no owner seat to reserve for an address' });
+    }
     // The owner the seat (and its lockout repair) is for: the vertical's owner of record once it
     // has one (#1665). The platform re-sends the principal it minted at install on every re-run,
     // and after a hand-over that is the PREVIOUS owner. `body.owner` stays the first install's
@@ -2719,7 +2739,16 @@ export function mountPlatformSurface<Env extends object>(
       tenantHeldPeers: body.tenantHeldPeers,
       switchFences: body.switchFences,
     });
-    await deps.onProvision?.(c.env, body);
+    const hooked = await deps.onProvision?.(c.env, body);
+    // #3202: a manager provisioned this tenant for one person's address, and only the hook can say
+    // the seat was reserved for it. Refused without that word, so the platform fails the request
+    // instead of calling a tenant the requester's while a first-sign-in window is open on it.
+    const ownerAddressReserved = body.ownerEmail !== undefined && hooked?.ownerAddressReserved === true;
+    if (body.ownerEmail !== undefined && !ownerAddressReserved) {
+      throw new HTTPException(501, {
+        message: `this vertical did not reserve scope ${body.scopeId}'s owner seat for the requested address — its onProvision hook must pass ownerEmail on`,
+      });
+    }
     // #1902: onto the platform-supplied sweeper's roster, so the scope's schedules run. Last, so
     // only a scope whose provision got this far — the vertical's hook included — is swept; the
     // platform retries a failed provision, and the note is idempotent like the rest of it.
@@ -2729,6 +2758,7 @@ export function mountPlatformSurface<Env extends object>(
         tenantId: body.tenantId,
         scopeId: body.scopeId,
         owner,
+        ...(ownerAddressReserved ? { ownerAddressReserved: true } : {}),
         ...switchedOffAnswer(provisioned?.switchedOff),
         ...skippedConnectionGrantsAnswer(provisioned?.skippedConnectionGrants),
       },

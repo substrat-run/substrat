@@ -284,11 +284,13 @@ export function App() {
         <div className="t-meta" style={{ marginBottom: 18 }}>
           {session === null
             ? 'Sign in to work the desk.'
-            : session.firstSignInOpen
-              ? 'This desk has no owner yet. Sign in to claim it.'
-              : 'This desk has no owner yet, and the window for claiming it by signing in has closed. Ask whoever installed it for a claim link from the dashboard.'}
+            : session.ownerAddressReserved
+              ? 'This desk was set up for the address you asked for it with. Sign in with that address to claim it.'
+              : session.firstSignInOpen
+                ? 'This desk has no owner yet. Sign in to claim it.'
+                : 'This desk has no owner yet, and the window for claiming it by signing in has closed. Ask whoever installed it for a claim link from the dashboard.'}
         </div>
-        {(session === null || session.firstSignInOpen) && (
+        {(session === null || session.firstSignInOpen || session.ownerAddressReserved) && (
           <button className="btn btn-primary" onClick={() => auth.login(location.hash || '/')}>
             Sign in
           </button>

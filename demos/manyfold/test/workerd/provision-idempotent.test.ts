@@ -92,4 +92,19 @@ describe('manyfold provision is idempotent (#1653)', () => {
 
     expect(again).toEqual(once);
   });
+
+  it("a manager's provision for one person's address (#3202) opens no window, and its retry still reports the seat reserved", async () => {
+    const tenant = tenantId.parse(ulid());
+    const scope = scopeId.parse(ulid());
+    const install = { tenantId: tenant, scopeId: scope, owner, slug: 'south-yard', name: 'South Yard', entitlements, ownerEmail: 'founder@example.com' };
+    for (let i = 0; i < 2; i++) {
+      const res = await platform('/internal/provision', install);
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({ ownerAddressReserved: true });
+    }
+    const directory = env.AUTH.get(env.AUTH.idFromName(tenant));
+    expect(await directory.ownerSeat(scope)).toMatchObject({ state: 'unclaimed', firstSignIn: { open: false } });
+    // Inside what a dashboard install's window would be, a stranger's plain sign-in takes nothing.
+    expect(await directory.resolvePrincipal(scope, 'sub-stranger')).toBeNull();
+  });
 });

@@ -209,7 +209,12 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   fields of its own. The route answers `{ principal, display, email }` with those fields beside
   it, `{ status: 'needs-setup', firstSignInOpen }` while the owner seat is unclaimed, or 401, and
   reports the login's place to the identity pool. `display` is the issuer's name, else the email,
-  else "You".
+  else "You". A seat reserved for an address adds `ownerAddressReserved: true` to the
+  `needs-setup` answer: no first-sign-in window is open, but a sign-in whose issuer verified that
+  address claims the seat, so the app should offer one. The address is never in the answer.
+- `resolveSignedIn(directory, scopeId, subject)` — the principal a signed-in subject is in a
+  scope, for a worker that resolves its own callers: `resolvePrincipal`, then the claim of a seat
+  reserved for the address the subject's issuer verified.
 - `transferOwner(scopeId, from, to)` — the owner hand-over. Moves the owner of record, which
   `setPendingOwner` never does after its first write, and which a reconcile re-seats when a
   scope is locked out. It refuses, changing nothing, when the seat is still unclaimed, `from`

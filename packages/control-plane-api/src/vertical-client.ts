@@ -456,6 +456,14 @@ export interface ProvisionInstanceInput {
    * predates the field ignores it (its body parse strips unknown keys).
    */
   parentScopeId?: ScopeId;
+  /**
+   * The address a manager provisioned this tenant for (#3202, `provision-tenant`'s
+   * `instance.ownerEmail`): the vertical reserves the owner seat for a sign-in whose issuer
+   * verified it, with no first-sign-in window. A vertical that honours it answers
+   * `ownerAddressReserved: true`; one that predates the field strips it and opens the window, so a
+   * caller that sends it must refuse an answer without that word (`provisionTenantHandler` does).
+   */
+  ownerEmail?: string;
   slug: string;
   name: string;
   /**
@@ -573,10 +581,15 @@ export interface ProvisionedInstance {
   result?: Record<string, string>;
   /** What the deployment switched off inside the provision's unit (#1742), when asked to. */
   switchedOff?: SwitchedOffInUnit[];
+  /**
+   * The deployment's word that the owner seat is reserved for the input's `ownerEmail` (#3202).
+   * Absent from a deployment that dropped the address, which then opened a first-sign-in window.
+   */
+  ownerAddressReserved?: true;
 }
 
 /** The ack fields every provision response carries — everything else is `result` material. */
-const PROVISION_ACK_FIELDS = new Set(['tenantId', 'scopeId', 'owner', 'result', 'switchedOff']);
+const PROVISION_ACK_FIELDS = new Set(['tenantId', 'scopeId', 'owner', 'result', 'switchedOff', 'ownerAddressReserved']);
 
 /**
  * A deployment's report of what it switched off in the unit (#1742). Read only to audit
@@ -765,7 +778,12 @@ export class VerticalClient {
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     const ack = { tenantId: input.tenantId, scopeId: input.scopeId, owner: input.owner };
     const result = provisionResultFrom(body);
-    return { ...ack, ...(result ? { result } : {}), ...switchedOffFrom(body['switchedOff']) };
+    return {
+      ...ack,
+      ...(result ? { result } : {}),
+      ...switchedOffFrom(body['switchedOff']),
+      ...(body['ownerAddressReserved'] === true ? { ownerAddressReserved: true as const } : {}),
+    };
   }
 
   /**

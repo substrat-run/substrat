@@ -77,6 +77,7 @@ import {
   mintOwnerClaimLink,
   placesReporter,
   reportScopeMembers,
+  resolveSignedIn,
   type AuthProvider,
   type InstanceAuth,
 } from '@substrat-run/vertical-auth';
@@ -471,7 +472,8 @@ async function sessionFor(env: Env, req: Request): Promise<{ principal: Principa
   const subject = await (await authProviderFor(env, req)).resolve(req.headers);
   if (!subject) return null;
   const node = nodeFor(req, env);
-  const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
+  // #3202: a seat reserved for the address this subject's issuer verified is claimed here too.
+  const principal = await resolveSignedIn(identityDo(env, node), node.scopeId, subject);
   if (!principal) return null;
   return { principal: principalId.parse(principal), ...(subject.expiresAt ? { expiresAt: subject.expiresAt } : {}) };
 }
@@ -535,7 +537,8 @@ mountSession(app, {
     // identity-DO round trip on the request every screen makes first.
     const instance = await instanceConfig(c.env, node);
     const subject = await providerOf(instance).resolve(c.req.raw.headers);
-    const principal = subject ? await identityDo(c.env, node).resolvePrincipal(node.scopeId, subject.sub) : null;
+    // #3202: as `sessionFor` does, so the owner a manager provisioned this desk for is bound here.
+    const principal = subject ? await resolveSignedIn(identityDo(c.env, node), node.scopeId, subject) : null;
     return { node, subject, principal: principal ? principalId.parse(principal) : null, identity: instance.identity };
   },
   directory: identityDo,
@@ -1169,7 +1172,7 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: OWNER_ROLE_KEY,
   onProvision: async (env, b) => {
     const node = { tenantId: b.tenantId, scopeId: b.scopeId };
-    await identityDo(env, node).setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
+    const seat = await identityDo(env, node).setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
     // The desk's widget, assistant and relay accounts. Idempotent, and done here rather
     // than lazily on first use: a principal minted on a request path is a principal
     // minted by whoever got there first.
@@ -1185,6 +1188,8 @@ mountPlatformSurface<Env>(app, {
     // issuer that keeps no index. It never throws.
     const identity = (await instanceConfig(env, node)).identity;
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
+    // #3202: the seat's word on a reserved address, which the provision route checks.
+    return seat;
   },
   onDeleteScope: async (env, s, tenantId) => {
     // A reaped desk's alarm must never wake it again.

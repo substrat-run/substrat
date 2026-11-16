@@ -25,6 +25,11 @@
  *      on every re-provision, so a sweep could hand a claimed desk's ownership to the
  *      next stranger to sign in.
  *
+ * A seat can also be RESERVED for one address (#3202, `recordAddressedOwnerSeat`): a manager that
+ * provisions a tenant for the person who asked names the address that person's own sign-in
+ * verified, and the seat opens no window at all. Only a sign-in whose issuer verified that same
+ * address claims it (`claimOwnerByAddress`), and a claim link still works as it does for any seat.
+ *
  * A CLOSED window is not a lost desk: `pending_owner` stays until a claim binds it, so
  * `needsSetup` keeps reporting the truth and a claim link always works. What a closed
  * window refuses is exactly the unbounded part — a stranger's plain sign-in.
@@ -35,6 +40,7 @@
  */
 
 import type { z, ownerTransferAbandon, ownerTransferRecord } from '@substrat-run/contracts';
+import { addressAdmits } from './address.js';
 import type { RegistrySql } from './site-registry.js';
 
 /** How long after provision a plain first sign-in still claims the seat. */
@@ -71,6 +77,12 @@ export const OWNER_SEAT_DDL: readonly string[] = [
   // hand-over, which must finish it, from any other request that merely finds the record naming
   // `to`, which must not revoke anybody.
   `CREATE TABLE IF NOT EXISTS owner_transfer (scope_id TEXT PRIMARY KEY, prev_principal TEXT NOT NULL, principal TEXT NOT NULL, state TEXT NOT NULL)`,
+  // The address a pending seat is reserved for (#3202): a sign-in whose issuer verified it claims
+  // the seat. A person's address, so it is kept no longer than it has a use: whichever claim binds
+  // the seat first clears `email` (the row stays, NULL, to say the seat WAS reserved, so a re-run
+  // of the provision still reports the reservation honoured), and deleting the scope deletes the
+  // row (`forgetOwnerAddress`).
+  `CREATE TABLE IF NOT EXISTS owner_address (scope_id TEXT PRIMARY KEY, email TEXT)`,
 ];
 
 /**
@@ -98,6 +110,12 @@ export interface OwnerSeat {
   firstSignIn: { open: boolean; until: string | null } | null;
   /** While unclaimed: the outstanding claim link's expiry (ISO), or null when none is live. */
   claimLink: { expiresAt: string } | null;
+  /**
+   * Present (true) only while unclaimed and reserved for an address (#3202): a sign-in whose issuer
+   * verified that address claims the seat, though `firstSignIn` is closed. The address itself is
+   * never part of the answer: the seat is read by whoever opens the app, signed in or not.
+   */
+  addressReserved?: true;
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -157,6 +175,80 @@ export function recordSiblingOwnerSeat(
   if (bound.length === 0) {
     sql.exec('INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)', scopeId, principal, now);
   }
+}
+
+/**
+ * Record the seat of a tenant provisioned for one person (#3202): a manager's `provision-tenant`
+ * naming `email`, the address that person's sign-in at the manager verified. No first-sign-in
+ * window is opened — under `recordOwnerSeat` the business went to whichever login reached its
+ * hostname first — and only a sign-in whose issuer verified `email` claims it
+ * (`claimOwnerByAddress`). A claim link still binds it, as for any pending seat. First write wins,
+ * as in `recordOwnerSeat`, so a re-run naming another address changes nothing.
+ *
+ * Answers whether the seat IS reserved for `email`: true when this call reserved it, and on a
+ * re-run when it was reserved for that address (or for an address since claimed). False when the
+ * seat was recorded some other way first — a first-sign-in window, a sibling's seat, or another
+ * address — which the provision route reports as the reservation NOT honoured, so the platform
+ * fails the request rather than calling a tenant with an open window the requester's.
+ */
+export function recordAddressedOwnerSeat(
+  sql: RegistrySql,
+  scopeId: string,
+  principal: string,
+  email: string,
+  now: number,
+): boolean {
+  if (ownerOfRecord(sql, scopeId) !== null) {
+    const reserved = reservedAddress(sql, scopeId);
+    return reserved !== undefined && (reserved === null || addressAdmits(reserved, email));
+  }
+  sql.exec('INSERT INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
+  sql.exec('INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)', scopeId, principal, now);
+  sql.exec('INSERT OR REPLACE INTO owner_address (scope_id, email) VALUES (?, ?)', scopeId, email);
+  return true;
+}
+
+/**
+ * The address a seat is reserved for: undefined when it never was, null when it was and a claim
+ * has since bound it (the address itself is cleared then).
+ */
+function reservedAddress(sql: RegistrySql, scopeId: string): string | null | undefined {
+  const row = [...sql.exec('SELECT email FROM owner_address WHERE scope_id = ?', scopeId)][0] as
+    | { email: string | null }
+    | undefined;
+  return row === undefined ? undefined : row.email;
+}
+
+/**
+ * Drop a scope's address reservation, claimed or not (#3202): the scope is being deleted, and a
+ * person's address must not outlive the seat it was kept for.
+ */
+export function forgetOwnerAddress(sql: RegistrySql, scopeId: string): void {
+  sql.exec('DELETE FROM owner_address WHERE scope_id = ?', scopeId);
+}
+
+/**
+ * Claim a seat reserved for an address (#3202): `sub`, signed in with `verifiedEmail`, is bound
+ * to the pending owner when the seat's reserved address is that one (`addressAdmits`, the rule a
+ * member invite by address uses). Null, writing nothing, when the seat is not pending, is reserved
+ * for no address or another one, or the issuer verified none. A subject already bound here gets
+ * its own principal back and claims nothing.
+ */
+export function claimOwnerByAddress(
+  sql: RegistrySql,
+  scopeId: string,
+  sub: string,
+  verifiedEmail: string | null,
+): string | null {
+  const bound = boundPrincipal(sql, scopeId, sub);
+  if (bound !== null) return bound;
+  if (verifiedEmail === null) return null;
+  const pending = pendingRow(sql, scopeId);
+  if (!pending) return null;
+  const reserved = reservedAddress(sql, scopeId);
+  // `addressAdmits(null, …)` admits anyone (a bearer invite), so a cleared address is refused here.
+  if (typeof reserved !== 'string' || !addressAdmits(reserved, verifiedEmail)) return null;
+  return bindSeat(sql, scopeId, sub, pending.principal);
 }
 
 /** The scope's durable owner of record, or null if never provisioned through this directory. */
@@ -327,6 +419,8 @@ function bindSeat(sql: RegistrySql, scopeId: string, sub: string, principal: str
   sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, principal);
   sql.exec('DELETE FROM pending_owner WHERE scope_id = ?', scopeId);
   sql.exec('DELETE FROM owner_claim_capability WHERE scope_id = ?', scopeId);
+  // The reservation is spent: the address goes, and the row stays to say the seat was reserved.
+  sql.exec('UPDATE owner_address SET email = NULL WHERE scope_id = ?', scopeId);
   return principal;
 }
 
@@ -357,6 +451,7 @@ export function ownerSeat(sql: RegistrySql, scopeId: string, now: number): Owner
       until: pending.claim_until === null ? null : iso(pending.claim_until),
     },
     claimLink: claim ? { expiresAt: iso(claim.expires_at) } : null,
+    ...(typeof reservedAddress(sql, scopeId) === 'string' ? { addressReserved: true as const } : {}),
   };
 }
 

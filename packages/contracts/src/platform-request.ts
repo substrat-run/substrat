@@ -278,6 +278,13 @@ export const provisionTenantPayload = z.object({
     slug: z.string().min(1),
     name: scopeText,
     owner: principalId,
+    /**
+     * The address of the person this tenant is for (#3202): the one their sign-in at the manager
+     * verified (`ctx.verifiedEmail`). The new scope's owner seat then opens no first-sign-in
+     * window, and only a sign-in whose issuer verified this address claims it. Absent, the seat
+     * opens the window as a dashboard install's does.
+     */
+    ownerEmail: z.string().email().optional(),
   }),
   /** SKUs to grant the new tenant + project into the scope (#310). */
   entitlements: z.array(entitlementSelection),

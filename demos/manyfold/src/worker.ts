@@ -35,6 +35,7 @@ import {
   mintOwnerClaimLink,
   placesReporter,
   reportScopeMembers,
+  resolveSignedIn,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
@@ -200,7 +201,8 @@ async function callerFor(env: Env, req: Request) {
   const instance = await authWiringFor(env, base);
   const subject = await providerOf(instance).resolve(req.headers);
   const node = await nodeFor(req, env);
-  const principal = subject ? await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub) : null;
+  // #3202: a seat reserved for the address this subject's issuer verified is claimed here too.
+  const principal = subject ? await resolveSignedIn(identityDo(env, node), node.scopeId, subject) : null;
   return {
     identity: instance.identity,
     subject,
@@ -300,7 +302,7 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: 'admin',
   onProvision: async (env, b) => {
     const id = identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId });
-    await id.setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
+    const seat = await id.setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
     // Remember this site in the vertical's own per-tenant registry (M2), so the app can list
     // and switch between its sites without reaching the control-plane directory. Idempotent.
     if (b.slug && b.name) await id.recordSite(b.scopeId, b.slug, b.name);
@@ -311,6 +313,8 @@ mountPlatformSurface<Env>(app, {
     // for an issuer that keeps no index. Never throws.
     const { identity } = await authWiringFor(env, { tenantId: b.tenantId, scopeId: b.scopeId });
     await reportScopeMembers(id, placesReporter({ identity }), b.scopeId);
+    // #3202: the seat's word on a reserved address, which the provision route checks.
+    return seat;
   },
   // The delivery half of the per-install identity: the dashboard's `substrat:auth` choice and the
   // Env tab's values arrive here and land in the tenant's identity directory, keyed by the SCOPE

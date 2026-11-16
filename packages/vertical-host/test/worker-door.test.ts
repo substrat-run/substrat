@@ -58,8 +58,9 @@ function door(bound: string | null = ann, join?: (scope: unknown, who: { display
   const grantSelfShapesLocal = vi.fn(async () => []);
   const directory = {
     resolvePrincipal: async () => bound,
-    // No member invite names anyone here: admission (K-61 phase 3) has its own cases below.
+    // No member invite or reserved seat names anyone here: admission (K-61 phase 3) has its own cases below.
     openInviteFor: async () => null,
+    claimOwnerByAddress: async () => null,
     setPendingOwner: vi.fn(),
     getOwnerOfRecord: async () => ann,
   };
@@ -166,7 +167,14 @@ describe('workerDoor (K-61)', () => {
     const { built, directory } = door();
     const owner = ulid();
     await built.platform.onProvision({}, { ...node, owner } as never);
-    expect(directory.setPendingOwner).toHaveBeenCalledWith(node.scopeId, owner, undefined);
+    expect(directory.setPendingOwner).toHaveBeenCalledWith(node.scopeId, owner, undefined, undefined);
+    // #3202: a manager's provision for one person reserves the seat for their address, and the
+    // hook hands the seat's word back for the provision route to check.
+    directory.setPendingOwner.mockResolvedValueOnce({ ownerAddressReserved: true });
+    expect(await built.platform.onProvision({}, { ...node, owner, ownerEmail: 'founder@example.com' } as never)).toEqual({
+      ownerAddressReserved: true,
+    });
+    expect(directory.setPendingOwner).toHaveBeenLastCalledWith(node.scopeId, owner, undefined, 'founder@example.com');
     expect(await built.settings({}, node)).toEqual({ SHOP_NAME: 'delivered' });
     expect(await built.platform.resolveOwner({}, node)).toBe(ann);
   });
@@ -183,6 +191,8 @@ describe('an invited person (K-61 phase 3)', () => {
     exchanged?: unknown;
     open?: unknown;
     boundAfter?: string | null;
+    /** The principal a seat reserved for the caller's address seats them as (#3202). */
+    owner?: string;
     /** The worker's invites, given the log the fakes write to so its operations can write there too. */
     invites?: (calls: string[]) => NonNullable<Parameters<typeof workerDoor>[0]['invites']>;
   } = {}) {
@@ -191,6 +201,7 @@ describe('an invited person (K-61 phase 3)', () => {
     const stub = { tenantId: node.tenantId, scopeId: node.scopeId, invoke: vi.fn() };
     const directory = {
       resolvePrincipal: vi.fn(async () => bound ?? over.boundAfter ?? null),
+      claimOwnerByAddress: vi.fn(async () => over.owner ?? null),
       openInviteFor: vi.fn(async (_scope: string, email: string) => {
         calls.push(`openInviteFor ${email}`);
         return over.open === undefined ? { principal: invited, capabilityId: link } : over.open;
@@ -250,11 +261,24 @@ describe('an invited person (K-61 phase 3)', () => {
     expect(host.getScope).toHaveBeenCalledWith(invited, node.tenantId, node.scopeId, { verifiedEmail: 'Cleo@Acme.example' });
   });
 
+  it('is seated as the owner when a manager reserved the seat for their verified address (#3202), and no invite is looked for', async () => {
+    subject = signedIn({ sub: 'founder', email: 'Founder@Acme.example' });
+    const owner = principalId.parse(ulid());
+    const { app, calls, directory, host } = admitting({ owner });
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect((await app.request('/')).status).toBe(200);
+    logged.mockRestore();
+    expect(directory.claimOwnerByAddress).toHaveBeenCalledWith(node.scopeId, 'founder', 'Founder@Acme.example');
+    expect(calls).toEqual([]);
+    expect(host.getScope).toHaveBeenCalledWith(owner, node.tenantId, node.scopeId, { verifiedEmail: 'Founder@Acme.example' });
+  });
+
   it('with an address the issuer did not verify, no invite is looked for — 401', async () => {
     subject = signedIn({ sub: 'cleo', emailVerified: false });
-    const { app, calls } = admitting();
+    const { app, calls, directory } = admitting();
     expect((await app.request('/')).status).toBe(401);
     expect(calls).toEqual([]);
+    expect(directory.claimOwnerByAddress).not.toHaveBeenCalled();
   });
 
   it.each([

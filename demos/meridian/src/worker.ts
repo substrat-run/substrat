@@ -51,6 +51,7 @@ import {
   mintOwnerClaimLink,
   placesReporter,
   reportScopeMembers,
+  resolveSignedIn,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
@@ -263,7 +264,8 @@ async function callerFor(env: Env, req: Request) {
   const instance = await authWiringFor(env, node);
   const subject = await providerOf(instance).resolve(req.headers);
   if (!subject) return { identity: instance.identity, subject: null, principal: null };
-  const principal = await identityDo(env, node).resolvePrincipal(node.scopeId, subject.sub);
+  // #3202: a seat reserved for the address this subject's issuer verified is claimed here too.
+  const principal = await resolveSignedIn(identityDo(env, node), node.scopeId, subject);
   return { identity: instance.identity, subject, principal: principal ? principalId.parse(principal) : null };
 }
 
@@ -308,7 +310,7 @@ mountPlatformSurface<Env>(app, {
   // reviewed registry (`permissions.entityGrants`, declared `bootstrap`) and tops each employee up,
   // so a key added to it reaches the employees linked before the release that added it.
   onProvision: async (env, b) => {
-    await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
+    const seat = await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner, b.parentScopeId, b.ownerEmail);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
     // `/internal/reconcile`, which is how a scope provisioned before the sweeper existed
     // joins. Meridian is a listed vertical, so a promote moves none of its installs'
@@ -322,6 +324,8 @@ mountPlatformSurface<Env>(app, {
     const node = { tenantId: b.tenantId, scopeId: b.scopeId };
     const { identity } = await authWiringFor(env, node);
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
+    // #3202: the seat's word on a reserved address, which the provision route checks.
+    return seat;
   },
   // A reaped scope's alarm must never wake it again.
   onDeleteScope: async (env, s, tenantId) => {

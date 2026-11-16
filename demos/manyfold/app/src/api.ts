@@ -93,7 +93,7 @@ export interface Site { slug: string; name: string }
 export interface Caps { read: boolean; author: boolean; review: boolean; publish: boolean; admin: boolean }
 export type Me =
   | { mode: 'authed'; principal: string; display: string; site: string | null; can: Caps; role: string }
-  | { mode: 'needs-setup'; firstSignInOpen: boolean }
+  | { mode: 'needs-setup'; firstSignInOpen: boolean; ownerAddressReserved: boolean }
   | { mode: 'anon' };
 
 export function capsFromRole(role: string | null): Caps {
@@ -132,9 +132,11 @@ export const api = {
     const res = await fetch('/api/me', { headers: headers(), credentials: 'same-origin' });
     if (res.status === 401) return { mode: 'anon' };
     const b = (await res.json().catch(() => ({}))) as {
-      status?: string; firstSignInOpen?: boolean; can?: Caps; principal?: string; display?: string; site?: string;
+      status?: string; firstSignInOpen?: boolean; ownerAddressReserved?: boolean; can?: Caps; principal?: string; display?: string; site?: string;
     };
-    if (b.status === 'needs-setup') return { mode: 'needs-setup', firstSignInOpen: b.firstSignInOpen === true };
+    if (b.status === 'needs-setup') {
+      return { mode: 'needs-setup', firstSignInOpen: b.firstSignInOpen === true, ownerAddressReserved: b.ownerAddressReserved === true };
+    }
     if (b.can) return { mode: 'authed', principal: b.principal ?? '', display: b.display ?? 'You', site: b.site ?? null, can: b.can, role: roleLabel(b.can) };
     return { mode: 'anon' };
   },

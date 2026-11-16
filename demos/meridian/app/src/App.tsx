@@ -51,7 +51,7 @@ export default function App() {
   // One session, so one cache key. It used to be the persona the picker had selected; the
   // picker now lives at the issuer, and a switch comes back through a full page load.
   const sessionKey = 'session';
-  const { data: empData, loading, error, unauthorized, needsSetup, firstSignInOpen, reload: reloadEmp } = useAppData(sessionKey);
+  const { data: empData, loading, error, unauthorized, needsSetup, firstSignInOpen, ownerAddressReserved, reload: reloadEmp } = useAppData(sessionKey);
   const me = empData?.me ?? null;
   const hasMyWork = !!me?.employeeId;
   const canManage = me?.role === 'manager' || me?.role === 'hr-admin';
@@ -193,7 +193,11 @@ export default function App() {
     );
   // Freshly-provisioned instance with no admin yet → first-run setup: signing in claims the
   // owner seat (→ hr-admin) while the window is open; after that, only a claim link does.
-  if (needsSetup) return <SignIn firstRun firstSignInOpen={firstSignInOpen} onDone={() => window.location.reload()} />;
+  if (needsSetup) {
+    return (
+      <SignIn firstRun firstSignInOpen={firstSignInOpen} ownerAddressReserved={ownerAddressReserved} onDone={() => window.location.reload()} />
+    );
+  }
   // No session (hosted instance, not signed in) → the sign-in/sign-up screen. On success
   // it reloads and /api/me resolves (the first sign-in claims the owner seat → hr-admin).
   if (unauthorized) return <SignIn onDone={() => window.location.reload()} />;
