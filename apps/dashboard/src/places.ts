@@ -42,9 +42,10 @@ import type { DashboardAppRow } from './module.js';
  * ## What it does not cover
  *
  * Apps of OTHER teams signing in at this team's issuer. The dashboard is tenant-narrowed and
- * delivers only its own team's apps, so a managed tenant provisioned through the platform-
- * request drain, or an app whose identity was typed in by hand to name another team's
- * auth-server, is not registered by anything yet. Listed on #1670 as open.
+ * delivers only its own team's apps. A managed tenant provisioned with `instance.signIn` is
+ * registered by the `provision-tenant` drain instead, under its own tenant's key (#3202, D-72),
+ * so the two never write the same entry. An app whose identity was typed in by hand to name
+ * another team's auth-server is not registered by anything yet. Listed on #1670 as open.
  */
 
 /** How often an unchanged team is reconciled again, at most, per isolate. */

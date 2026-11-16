@@ -75,9 +75,27 @@ or the scope is deleted.
 The platform gives each created tenant the address `<tenant-slug>-<vertical>.global.substrat.run`.
 If another app already holds that name, it appends the last six characters of the scope's
 id. The request's result in the intent journal records the address as `hostname`.
-The platform does not yet register a sign-in client for that address at your issuer, so
-deliver `substrat:auth` in the request's `config`, with a client that accepts
-`https://<address>/api/auth/callback`.
+To have customers sign in where your own app does, name one of your team's auth servers
+in the payload as `instance.signIn.issuer`, for example `https://auth-yourteam.global.substrat.run`.
+The platform then registers a sign-in client for the new tenant's address at that auth
+server and gives it to the tenant's app. It also lists the tenant on that auth server's
+**Your account** page, under the tenant's name, for everyone who is a member of it
+([your places](/concepts/identity)). The issuer has to be an auth server running in your
+own tenant; any other issuer is refused, and nothing is created. Do not also deliver
+`substrat:auth` in `config`.
+
+Without `signIn`, the platform registers no sign-in client. Deliver `substrat:auth` in
+`config` instead, with a client that accepts `https://<address>/api/auth/callback`. The
+tenant is then not listed on any account page.
+
+### A switcher for a person's businesses
+
+Your app cannot list the other tenants a person belongs to: no vertical sees across
+tenants. The auth server can. Link your app's switcher, or the **Manage account** item of
+`<sub-user-menu account-url="…">`, to `<issuer>/account`. That page lists every app on
+that auth server the person is a member of, each with a link to its address. It includes
+businesses they were invited into later, after their first sign-in there. It lists only
+the person's own memberships, and nobody can ask it about someone else.
 
 ### Each customer gets your vertical in their own tenant
 

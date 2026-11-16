@@ -49,6 +49,9 @@ import {
   withoutUpstreamReference,
   grantableEntitlements,
   bareSlug,
+  PLACES_CONFIG_PREFIX,
+  SHARED_ISSUER_CONFIG_KEY,
+  placeRegistration,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -946,6 +949,83 @@ export interface ManagedTenantDeps {
    * test), `provision-tenant` binds no hostname, as before.
    */
   hostnameDomain?: string;
+  /**
+   * Register an OIDC client at a team auth-server (#3202, D-72) — `@substrat-run/oidc-rp`'s
+   * `registerOidcClient`, as the dashboard registers one at an install. Absent (a self-host, a
+   * test), a payload naming `instance.signIn` is refused before any write.
+   */
+  registerOidcClient?: (issuer: string, input: { appName: string; redirectUri: string }) => Promise<{ clientId: string; clientSecret: string }>;
+}
+
+/** The delivered-config key a vertical reads its sign-in from (`@substrat-run/vertical-auth`'s `AUTH_CONFIG_KEY`). */
+const AUTH_CONFIG_KEY = 'substrat:auth';
+
+/** A managed tenant's sign-in issuer (#3202, D-72), resolved and checked before any write. */
+interface ManagedSignIn {
+  /** The issuer as the new scope's `substrat:auth` names it: `https://<its hostname>`. */
+  issuer: string;
+  /** The auth-server instance behind it — always the manager's own tenant. */
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  client: VerticalClient;
+}
+
+/** The refusal for an issuer that is not one of the manager's own team auth-servers. Names nothing it found. */
+const NOT_A_TEAM_ISSUER: { refusal: PlatformRequestOutcome } = {
+  refusal: {
+    status: 'failed',
+    error: "instance.signIn.issuer is not an active team auth-server of this vertical's tenant",
+    failure: { origin: 'platform', code: 'permission_denied', permission: null },
+  },
+};
+
+/**
+ * Resolve `instance.signIn` (#3202, D-72) before anything is written: the platform can register a
+ * client at all, the payload does not also deliver a sign-in of its own, the tenant's name can
+ * stand as a place's name, and the issuer is one of the MANAGER's own team auth-servers — an
+ * active hostname of an active scope in the drained scope's tenant, running a vertical that
+ * provides `oidc-issuer`. The tenant comes from the directory, never from the payload, so a
+ * manager cannot have the platform register a client or a place at another team's issuer. A
+ * refusal here settles `failed`, and nothing was written: no tenant, no client, no place.
+ */
+async function resolveManagedSignIn(
+  deps: ManagedTenantDeps,
+  ctx: PlatformRequestContext,
+  payload: z.infer<typeof provisionTenantPayload>,
+  requested: { issuer: string },
+): Promise<ManagedSignIn | { refusal: PlatformRequestOutcome }> {
+  const refuse = (error: string): { refusal: PlatformRequestOutcome } => ({ refusal: { status: 'failed', error, failure: INPUT_REFUSED } });
+  if (!deps.registerOidcClient || !deps.hostnameDomain) {
+    return {
+      refusal: {
+        status: 'failed',
+        error: 'this platform does not register sign-in clients for managed tenants, so instance.signIn cannot be honoured; deliver substrat:auth in config instead',
+      },
+    };
+  }
+  if (payload.config && (AUTH_CONFIG_KEY in payload.config || SHARED_ISSUER_CONFIG_KEY in payload.config)) {
+    return refuse(`instance.signIn and a '${AUTH_CONFIG_KEY}' entry in config both name a sign-in; send one`);
+  }
+  if (!placeRegistration.shape.name.safeParse(payload.tenant.name).success) {
+    return refuse("tenant.name cannot name a place (one line of plain text, at most 120 characters), so instance.signIn cannot register one");
+  }
+  let url: URL;
+  try {
+    url = new URL(requested.issuer);
+  } catch {
+    return refuse('instance.signIn.issuer is not a URL');
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || (url.pathname !== '/' && url.pathname !== '') || url.search || url.hash) {
+    return refuse('instance.signIn.issuer must be an https origin with no path, port, query or credentials: https://<the auth-server\'s hostname>');
+  }
+  const target = await deps.host.admin.resolveHostname(url.hostname);
+  if (!target || target.tenantId !== ctx.tenantId || !target.verticalSlug) return NOT_A_TEAM_ISSUER;
+  const issuerVertical = (await deps.host.admin.listVerticals(deps.actor)).find((v) => v.slug === target.verticalSlug);
+  if (!issuerVertical?.provides?.includes('oidc-issuer')) return NOT_A_TEAM_ISSUER;
+  const record = await deps.host.admin.getScopeRecord(deps.actor, target.tenantId, target.scopeId);
+  const client = record ? await deps.resolveVerticalForScope(record) : undefined;
+  if (!client) return NOT_A_TEAM_ISSUER;
+  return { issuer: `https://${url.hostname}`, tenantId: target.tenantId, scopeId: target.scopeId, client };
 }
 
 /**
@@ -1067,6 +1147,12 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     });
     if (!checked.ok) return checked.refusal;
     const { tenantId, scopeId, scopeInput } = checked.value;
+    let signIn: ManagedSignIn | undefined;
+    if (payload.instance.signIn) {
+      const resolved = await resolveManagedSignIn(deps, ctx, payload, payload.instance.signIn);
+      if ('refusal' in resolved) return resolved.refusal;
+      signIn = resolved;
+    }
     const { host, actor } = deps;
     const admin = host.admin;
     try {
@@ -1193,11 +1279,82 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
         tenantSlug: payload.tenant.slug,
         vertical: payload.instance.vertical,
       });
+      if (signIn) {
+        if (!hostname) {
+          return {
+            status: 'failed',
+            result: { tenantId, scopeId, hostname },
+            error: 'no address could be bound for the tenant, so no sign-in client was registered for it',
+          };
+        }
+        step = 'registering its sign-in client';
+        const registered = await registerManagedSignIn(deps, signIn, {
+          tenantId,
+          scopeId,
+          hostname,
+          name: payload.tenant.name,
+          vertical,
+        });
+        if (registered === 'unconfigurable') {
+          return {
+            status: 'failed',
+            result: { tenantId, scopeId, hostname },
+            error: `the '${payload.instance.vertical}' deployment takes no delivered configuration, so it cannot be given a sign-in client`,
+          };
+        }
+        return { status: 'done', result: { tenantId, scopeId, hostname, signIn: { issuer: signIn.issuer, clientId: registered.clientId } } };
+      }
     } catch (e) {
       return withheldThrow(e, `provisioning tenant '${payload.tenant.slug}' did not complete while ${step}`, { tenantId, scopeId });
     }
     return { status: 'done', result: { tenantId, scopeId, hostname } };
   };
+}
+
+/**
+ * Give a managed tenant its sign-in and its place (#3202, D-72), the platform's two writes the
+ * dashboard makes for an app it installs (#1670): register an OIDC client for the tenant's address
+ * at the manager's team auth-server, deliver it as the scope's `substrat:auth` (beside the shared-
+ * issuer marker every team auth-server's client carries, #1683), then register the scope as a
+ * place there under the tenant's own key: `substrat:places:<tenant id>` = exactly this app. The
+ * place goes LAST, so a pass that stops anywhere before it leaves no place behind; a pass that
+ * registered a client and stopped leaves a client nothing names as a place, and the retry
+ * registers a fresh one, which supersedes it.
+ *
+ * Who appears under the place is not this function's to say: the vertical reports the subjects
+ * bound in its scope, as this client, and the issuer keeps one only if it has itself issued to
+ * this client for it. So an invited member is listed after their first sign-in, and nobody else.
+ */
+async function registerManagedSignIn(
+  deps: ManagedTenantDeps,
+  signIn: ManagedSignIn,
+  app: { tenantId: TenantId; scopeId: ScopeId; hostname: string; name: string; vertical: VerticalClient },
+): Promise<{ clientId: string } | 'unconfigurable'> {
+  const client = await deps.registerOidcClient!(signIn.issuer, {
+    appName: app.name,
+    redirectUri: `https://${app.hostname}/api/auth/callback`,
+  });
+  try {
+    await app.vertical.configureInstance({
+      tenantId: app.tenantId,
+      scopeId: app.scopeId,
+      entries: [
+        { key: AUTH_CONFIG_KEY, value: JSON.stringify({ mode: 'oidc', issuer: signIn.issuer, clientId: client.clientId, clientSecret: client.clientSecret }) },
+        { key: SHARED_ISSUER_CONFIG_KEY, value: 'true' },
+      ],
+    });
+  } catch (e) {
+    // 501 = a deployment with no live configuration: no retry gives it a sign-in.
+    if (e instanceof ControlPlaneError && e.status === 501) return 'unconfigurable';
+    throw e;
+  }
+  const place = placeRegistration.parse({ appScopeId: app.scopeId, clientId: client.clientId, hostname: app.hostname, name: app.name });
+  await signIn.client.configureInstance({
+    tenantId: signIn.tenantId,
+    scopeId: signIn.scopeId,
+    entries: [{ key: `${PLACES_CONFIG_PREFIX}${app.tenantId}`, value: JSON.stringify([place]) }],
+  });
+  return { clientId: client.clientId };
 }
 
 /** The refusal a manager reads when the target vertical cannot reserve the owner seat (#3202). */

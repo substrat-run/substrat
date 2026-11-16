@@ -668,6 +668,45 @@ describe("a login's places at the identity pool (#1670)", () => {
     expect((await placesOf(w.p, w.ann.cookie)).body).toEqual({ places: [] });
   });
 
+  it("managed tenants (#3202, D-72): each login lists exactly the ones it holds a principal in, and never another's", async () => {
+    // Two businesses another team's manager provisioned, each signing in here as its OWN client
+    // and registered under its own tenant's key, as the provision-tenant drain delivers them.
+    const p = await pool();
+    const shopA = await client(p, 'Shop A');
+    const shopB = await client(p, 'Shop B');
+    const [tenantA, tenantB] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
+    const [appA, appB] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+    const entryA = { tenantId: tenantA, scopeId: appA, hostname: 'shop-a-product.global.substrat.test', name: 'Shop A' };
+    const entryB = { tenantId: tenantB, scopeId: appB, hostname: 'shop-b-product.global.substrat.test', name: 'Shop B' };
+    const placeOf = (e: typeof entryA, rp: { clientId: string }) => [{ appScopeId: e.scopeId, clientId: rp.clientId, hostname: e.hostname, name: e.name }];
+    expect((await register(p, tenantA, placeOf(entryA, shopA))).status).toBe(200);
+    expect((await register(p, tenantB, placeOf(entryB, shopB))).status).toBe(200);
+    const as = (rp: { clientId: string; clientSecret: string }, scope: string) => ({ client_id: rp.clientId, client_secret: rp.clientSecret, scope_id: scope });
+
+    // Ann owns A. Ben owns B, and is invited into A later; carol signs in to neither.
+    const ann = await signUp(p, `ann-${ulid()}@shop.test`);
+    const ben = await signUp(p, `ben-${ulid()}@shop.test`);
+    const carol = await signUp(p, `carol-${ulid()}@shop.test`);
+    await signInTo(p, ann, shopA);
+    await signInTo(p, ben, shopB);
+    await report(p, { ...as(shopA, appA), op: 'present', sub: ann.sub });
+    await report(p, { ...as(shopB, appB), op: 'present', sub: ben.sub });
+    await signInTo(p, ben, shopA);
+    await report(p, { ...as(shopA, appA), op: 'present', sub: ben.sub });
+    // B's deployment names ann, who never signed in to it: the issuer has no evidence, so nothing.
+    expect((await report(p, { ...as(shopB, appB), op: 'present', sub: ann.sub })).status).toBe(204);
+
+    expect((await placesOf(p, ann.cookie)).body).toEqual({ places: [entryA] });
+    expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryA, entryB] });
+    expect((await placesOf(p, carol.cookie)).body).toEqual({ places: [] });
+    // Asking for another login's list answers the caller's own, whatever it names.
+    expect((await placesOf(p, carol.cookie, `?sub=${ann.sub}`)).body).toEqual({ places: [] });
+    expect((await placesOf(p, ann.cookie, `?sub=${ben.sub}`)).body).toEqual({ places: [entryA] });
+    // B's delivery again — a retried provision — never touches A's registration or entries.
+    expect((await register(p, tenantB, placeOf(entryB, shopB))).status).toBe(200);
+    expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryA, entryB] });
+  });
+
   it('refuses a malformed registration whole, and a caller without the platform secret', async () => {
     const w = await world();
     const before = await dumpOf(w.p.scope);

@@ -49,6 +49,7 @@ import {
   type ScopeStoreNeed,
   type StoreDriverRegistration,
   mailInRelayRequest,
+  oidcPostLogoutUrls,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
@@ -215,6 +216,7 @@ import { problemForThrow, refuse, refuseRelayed, refuseStatus } from './problem.
 import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
+import { registerOidcClient } from '@substrat-run/oidc-rp/register';
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
 import { MAIL_IN_ACTOR, handleInboundEmail, mailInAddressDeps } from './mail-in.js';
@@ -2553,6 +2555,10 @@ async function drainOneScope(
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
     hostnameDomain: platformBaseDomains(env)[0],
+    // #3202, D-72: a managed tenant that signs in at the manager's team auth-server gets its client
+    // registered there, as an install's is, with its own origin as the post-logout return.
+    registerOidcClient: (issuer, input) =>
+      registerOidcClient(issuer, { ...input, postLogoutRedirectUris: oidcPostLogoutUrls(new URL(input.redirectUri).host) }),
   };
   const attempted: string[] = [];
   const report = await drainScopePlatformRequests(

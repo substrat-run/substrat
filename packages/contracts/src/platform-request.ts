@@ -285,6 +285,16 @@ export const provisionTenantPayload = z.object({
      * opens the window as a dashboard install's does.
      */
     ownerEmail: z.string().email().optional(),
+    /**
+     * Where the new tenant signs in (#3202, D-72): one of the MANAGER's own tenant's team
+     * auth-servers, named by its issuer URL (`https://<its hostname>`). The platform registers
+     * an OIDC client for the new tenant's address there, delivers it as the scope's
+     * `substrat:auth`, and registers the tenant as a PLACE at that issuer (D-62), so a person's
+     * account page lists every managed tenant they hold a principal in. The issuer must be an
+     * active instance of a vertical that provides `oidc-issuer`, in the manager's tenant; anything
+     * else is refused before a write. Exclusive with a `substrat:auth` entry in `config`.
+     */
+    signIn: z.object({ issuer: z.string().url() }).strict().optional(),
   }),
   /** SKUs to grant the new tenant + project into the scope (#310). */
   entitlements: z.array(entitlementSelection),

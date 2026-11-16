@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-132 decisions · 71 plan · 61 kernel
+133 decisions · 72 plan · 61 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -120,7 +120,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-45](decisions/K-045-archive-and-trash-are-two-kernel-gated-states-on-the-entity.md) | 2026-10-05 | kernel | Archive and trash are two kernel-gated states on the entity's own row, distinct from erasure and tenant deletion <br>*awaiting ratification* <br>*amends K-41* | #119 |
 | [K-46](decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md) | 2026-10-06 | kernel | Subject erasure reaches a module's own tables by declaration or by a narrow synchronous hook, in the spine's transaction <br>*awaiting ratification* <br>*amends K-37* | #2068, #37 |
 | [K-47](decisions/K-047-notifications-are-an-engine-composed-by-call-the-kernel-s-part.md) | 2026-10-10 | kernel | Notifications are an engine composed by call; the kernel's part is the send intent <br>*awaiting ratification* | #118 |
-| [D-62](decisions/D-062-a-login-s-places-are-an-index-at-its-identity-pool-shown-only-t.md) | 2026-10-11 | plan | A login's places are an index at its identity pool, shown only to that login on the issuer's own origin; verticals report into it and never read it | #1670, #1694, #2201 |
+| [D-62](decisions/D-062-a-login-s-places-are-an-index-at-its-identity-pool-shown-only-t.md) | 2026-10-11 | plan | A login's places are an index at its identity pool, shown only to that login on the issuer's own origin; verticals report into it and never read it <br>*amended by D-72* | #1670, #1694, #2201 |
 | [K-48](decisions/K-048-a-shape-protected-key-reaches-its-record-only-through-the-record.md) | 2026-10-11 | kernel | A key a declared shape protects reaches a record of the shape's type only through the record <br>*amends K-12* | #2177 |
 | [D-63](decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md) | 2026-10-12 | plan | A store kind is platform code, registered and pinned like a connector <br>*amended by D-65* <br>*amended by D-67* <br>*amended by D-68* <br>*amended by D-69* <br>*amended by D-70* <br>*amended by D-71* | #2207, #2210, #2297, #2390 |
 | [K-49](decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) | 2026-10-12 | kernel | A scope store is a platform-run object per scope, reached by its own door <br>*amended by D-69* <br>*amended by K-50* <br>*amended by K-52* <br>*amended by K-53* | #2207 |
@@ -144,3 +144,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-60](decisions/K-060-a-bind-link-binds-the-existing-member-it-names-when-their-own-session-presents-it.md) | 2026-11-04 | kernel | A bind link binds the existing member it names, when their own session presents it | #2817, #1686 |
 | [D-71](decisions/D-071-a-store-object-a-deletion-has-fenced-refuses-what-it-left-in-flight.md) | 2026-11-07 | plan | A store object a deletion has fenced refuses what that deletion left in flight <br>*awaiting ratification* <br>*amends D-63, D-69, K-50, K-52* | #2285 |
 | [K-61](decisions/K-061-an-operation-reads-the-callers-verified-address-from-the-platform-and-a-share-can-name-an-address.md) | 2026-11-07 | kernel | An operation reads the caller's verified address from the platform, and a share can name an address | #1359 |
+| [D-72](decisions/D-072-a-managed-tenant-signs-in-at-its-provisioner-s-team-auth-server-and-the-platform-registers-its-client-and-place-there.md) | 2026-11-16 | plan | A managed tenant may sign in at its provisioner's team auth-server, and the platform registers its client and its place there <br>*awaiting ratification* <br>*amends D-62* | #3202 |
