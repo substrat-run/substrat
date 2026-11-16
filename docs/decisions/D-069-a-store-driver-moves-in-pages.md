@@ -118,7 +118,9 @@ writes it for any driver rather than for one language.
   The fixture is staged a row a page between a first and a last page that carry only its table
   headings, so the stage is several pages whatever its size, and a commit that keeps only its first
   or last page, or counts fragments, is refused. A fixture is small by intent: at most
-  `STORE_CANARY_FIXTURE_MAX_ROWS` (200) rows, since each costs two calls inside a rollout's hold.
+  `STORE_CANARY_FIXTURE_MAX_ROWS` (300) rows, since each costs two calls inside a rollout's
+  request, which makes the fixture a store move of that many pages: the most one request moves of
+  any store (300 pages, below). A graph repository is 241 rows after its first write (#2854).
   The canary then stages a second stage, sends its first page again (which answers
   `staged: false`), discards it, runs `substrat.selfcheck` over the loaded data, erases, wipes, and
   reads once more to see nothing is left. It compares dumps as their pages merge, so a driver that
