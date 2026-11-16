@@ -5730,6 +5730,12 @@ const routeHandlers = {
         byVertical: raw.builds.byVertical.map((row) => ({ vertical: row.vertical, builds: row.builds, ms: row.ms })),
         breakdownTruncated: raw.builds.breakdownTruncated,
       },
+      reviews: raw.reviews && {
+        state: projectPlaneScalar(raw.reviews.state), calls: raw.reviews.calls, reportedCalls: raw.reviews.reportedCalls,
+        inputTokens: raw.reviews.inputTokens, outputTokens: raw.reviews.outputTokens, unpriced: raw.reviews.unpriced,
+        wouldCostUsd: raw.reviews.wouldCostUsd, chargedUsd: raw.reviews.chargedUsd, zeroRated: raw.reviews.zeroRated,
+        lowerBound: projectPlaneScalar(raw.reviews.lowerBound), since: raw.reviews.since, until: raw.reviews.until,
+      },
       // A plane deployed before this field answers without it; the chart then says it has no days.
       days: (raw.days ?? []).map((row) => ({
         day: row.day, requests: row.requests, modelCalls: row.modelCalls, tokens: row.tokens,

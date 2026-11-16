@@ -218,7 +218,7 @@ import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { BuildUsageInput, TenantBuildUsageFilter, TenantBuildUsageRow } from './build-usage.js';
-import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow, TenantModelUsageMeterFilter, TenantModelUsageMeterRow } from './model-usage.js';
+import type { ModelUsageFilter, ModelUsageInput, ModelUsagePricing, ModelUsageWindow, TenantModelUsageMeterFilter, TenantModelUsageMeterRow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter, TenantRequestMeterRow, RequestMeterDayRow } from './request-rollup.js';
@@ -4653,9 +4653,10 @@ export interface HostAdmin {
    * Meter 3, folded: per (tenant, vertical, model) over a half-open window, list price
    * summed exactly and the platform's margin applied at read time (`foldModelUsage`).
    * Nothing is stored by the read — D-30's "meter, don't bill" holds; the invoice is
-   * still somebody else's.
+   * still somebody else's. `pricing` names lines priced at zero for now (`ModelUsagePricing`):
+   * they keep their list price and show what they would cost, and are left out of `billedUsd`.
    */
-  summarizeModelUsage(actor: PlatformActorId, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary>;
+  summarizeModelUsage(actor: PlatformActorId, window: ModelUsageWindow, marginPercent: number, pricing?: ModelUsagePricing): Promise<ModelUsageSummary>;
 
   /**
    * The staff access log (K-24) — who READ the directory, when, and how much came

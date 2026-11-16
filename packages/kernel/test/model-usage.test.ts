@@ -35,6 +35,16 @@ const window = {
 };
 
 describe('foldModelUsage', () => {
+  it('prices a zero-rated scope\'s lines at zero within their row, keeping the list price and what they would cost', () => {
+    const reviews = scopeId.parse('01JZ0000000000000000RVW001');
+    const review = { tenant: t1, scope: reviews, vertical: '@substrat-run/demo-ticket0', version: '0.1.0', operation: 'review/read' };
+    const lines = [entry({ listUsd: '0.1' }), entry({ listUsd: '0.05', attribution: review }), entry({ listUsd: null, attribution: review })];
+    const s = foldModelUsage(lines, { ...window, zeroRatedScopes: [reviews] });
+    expect(s.rows).toMatchObject([{ calls: 3, unpriced: 1, listUsd: '0.15', billedUsd: '0.12', zeroRatedCalls: 2, zeroRatedUsd: '0.06' }]);
+    expect(s.totals).toMatchObject({ listUsd: '0.15', billedUsd: '0.12', zeroRatedCalls: 2, zeroRatedUsd: '0.06' });
+    expect(foldModelUsage(lines, window).totals).toMatchObject({ billedUsd: '0.18', zeroRatedCalls: 0, zeroRatedUsd: '0' });
+  });
+
   it('groups per (tenant, vertical, model), sums money exactly, and applies the margin at read time', () => {
     const s = foldModelUsage(
       [
@@ -73,6 +83,8 @@ describe('foldModelUsage', () => {
       outputTokens: 0,
       listUsd: '0',
       billedUsd: '0',
+      zeroRatedCalls: 0,
+      zeroRatedUsd: '0',
     });
   });
 });

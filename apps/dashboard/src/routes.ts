@@ -903,6 +903,17 @@ export const meteredUsageOut = z.object({
     byVertical: z.array(z.object({ vertical: z.string(), builds: z.number().int(), ms: z.number().int() })),
     breakdownTruncated: z.boolean(),
   }).optional(),
+  // Absent from a plane deployed before this field. The team's code reviews, the one priced figure
+  // here: tokens, what they would cost at the platform's rate, and what is charged (nothing while
+  // `zeroRated`). Money is a decimal string of US dollars.
+  reviews: z.object({
+    // Plane-owned coverage; currently unavailable/empty/complete/truncated.
+    state: planeScalar,
+    calls: z.number().int().nullable(), reportedCalls: z.number().int(),
+    inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
+    unpriced: z.number().int(), wouldCostUsd: z.string().nullable(), chargedUsd: z.string().nullable(),
+    zeroRated: z.boolean(), lowerBound: planeScalar, since: z.string(), until: z.string(),
+  }).optional(),
   // One row per closed UTC day. A null is a day with no reading behind it, never a day of no usage.
   days: z.array(z.object({
     day: z.string(),
@@ -937,7 +948,7 @@ export const dashboardRoutes = defineRoutes({
     http: { method: 'GET', path: '/entitlements' },
   },
   'dashboard/read-metered-usage': {
-    summary: "Read this team's persisted metered usage without prices (owner or admin)",
+    summary: "Read this team's persisted metered usage (owner or admin). Only code reviews are priced: what they would cost, and what is charged",
     output: meteredUsageOut,
     http: { method: 'GET', path: '/metered-usage' },
   },

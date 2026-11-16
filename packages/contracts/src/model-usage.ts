@@ -138,6 +138,13 @@ export const modelUsageSummaryRow = z.object({
   cacheWriteTokens: z.number().int().nonnegative(),
   listUsd: z.string(),
   billedUsd: z.string(),
+  /**
+   * Calls priced at zero for now (#2365: a code review, in the runner's preview phases), and what
+   * they would cost at the platform's rate. Their list price stays in `listUsd`; `billedUsd`
+   * leaves them out. Default 0, so a summary from a plane before this field still parses.
+   */
+  zeroRatedCalls: z.number().int().nonnegative().default(0),
+  zeroRatedUsd: z.string().default('0'),
 });
 export type ModelUsageSummaryRow = z.infer<typeof modelUsageSummaryRow>;
 
@@ -155,6 +162,8 @@ export const modelUsageSummary = z.object({
     outputTokens: z.number().int().nonnegative(),
     listUsd: z.string(),
     billedUsd: z.string(),
+    zeroRatedCalls: z.number().int().nonnegative().default(0),
+    zeroRatedUsd: z.string().default('0'),
   }),
 });
 export type ModelUsageSummary = z.infer<typeof modelUsageSummary>;

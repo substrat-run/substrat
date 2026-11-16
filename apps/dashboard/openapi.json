@@ -23065,7 +23065,7 @@
     "/api/teams/{teamId}/metered-usage": {
       "get": {
         "operationId": "dashboard-read-metered-usage",
-        "summary": "Read this team's persisted metered usage without prices (owner or admin)",
+        "summary": "Read this team's persisted metered usage (owner or admin). Only code reviews are priced: what they would cost, and what is charged",
         "parameters": [
           {
             "name": "teamId",
@@ -23800,6 +23800,139 @@
                         "until",
                         "byVertical",
                         "breakdownTruncated"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reviews": {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "calls": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reportedCalls": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "inputTokens": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "outputTokens": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "unpriced": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "wouldCostUsd": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "chargedUsd": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "zeroRated": {
+                          "type": "boolean"
+                        },
+                        "lowerBound": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "since": {
+                          "type": "string"
+                        },
+                        "until": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "calls",
+                        "reportedCalls",
+                        "inputTokens",
+                        "outputTokens",
+                        "unpriced",
+                        "wouldCostUsd",
+                        "chargedUsd",
+                        "zeroRated",
+                        "since",
+                        "until"
                       ],
                       "additionalProperties": false
                     },

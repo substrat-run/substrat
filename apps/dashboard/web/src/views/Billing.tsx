@@ -10,6 +10,9 @@ type Usage = Awaited<ReturnType<ReturnType<typeof teamApi>['readMeteredUsage']>>
 type UsageResult = { teamId: string; usage: Usage | null; error: 'forbidden' | 'unavailable' | null };
 const number = (value: number) => new Intl.NumberFormat('en-US').format(value);
 const minutes = (ms: number) => `${number(Math.ceil(ms / 60_000))} min`;
+/** A plane's decimal dollar string, for display only: the plane did the arithmetic. */
+const usd = (amount: string) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(amount));
+const reviewCount = (n: number) => `${number(n)} ${n === 1 ? 'review' : 'reviews'}`;
 const date = (value: string | null) => value ? value.slice(0, 10) : 'not available';
 const exclusions: Record<string, string> = { attachments: 'attachment files', 'tenant-stores': 'per-tenant databases', lake: 'event history in the lake' };
 const storageStates = new Set(['unavailable', 'empty', 'not-sampled', 'complete', 'partial', 'stale', 'failing', 'truncated']);
@@ -35,7 +38,7 @@ function Tile({ label, value, caption, badge, kind }: { label: string; value: st
 
 /** The three figures at a glance. The sentences behind each sit under Meter details. */
 function UsageSummary({ usage }: { usage: Usage }) {
-  const { storage, requests, models, builds } = usage;
+  const { storage, requests, models, builds, reviews } = usage;
   const storageExact = isExactUsageFigure({ truncated: storage.lowerBound, reason: storage.truncatedReason, coverage: storage.state, estimated: storage.estimated, complete: storage.basis === 'scope-databases' && storage.sampled === storage.total && storage.failing === 0 });
   const tokens = models.inputTokens === null || models.outputTokens === null ? null : models.inputTokens + models.outputTokens;
   const tokensExact = isExactUsageFigure({ truncated: models.lowerBound, reason: models.truncatedReason, coverage: models.state, estimated: models.estimated, complete: models.calls !== null && models.reportedCalls === models.calls });
@@ -70,6 +73,15 @@ function UsageSummary({ usage }: { usage: Usage }) {
           caption={builds.builds === null ? 'No builds recorded' : `${number(builds.builds)} successful ${builds.builds === 1 ? 'build' : 'builds'}`}
           badge="Measured"
           kind="info"
+        />
+      )}
+      {reviews && reviews.calls !== null && reviews.chargedUsd !== null && reviews.wouldCostUsd !== null && (
+        <Tile
+          label="Code reviews"
+          value={`${reviews.lowerBound === false ? '' : '≥ '}${usd(reviews.chargedUsd)}`}
+          caption={`${reviewCount(reviews.calls)} · would cost ${usd(reviews.wouldCostUsd)}`}
+          badge={reviews.zeroRated ? 'Free in preview' : 'Charged'}
+          kind={reviews.zeroRated ? 'success' : 'info'}
         />
       )}
     </section>
@@ -129,11 +141,22 @@ function UsageCards({ usage, names }: { usage: Usage; names: VerticalNames }) {
           {usage.builds.breakdownTruncated && <p>Vertical breakdown truncated to 50 entries.</p>}
         </div>
       )}
+      {usage.reviews && (
+        <div style={section}>
+          <h3>Code reviews</h3>
+          <p>{usage.reviews.calls === null ? usage.reviews.state === 'empty' ? 'No code reviews recorded in this window.' : 'not available' : `${usage.reviews.lowerBound === false ? '' : 'At least '}${reviewCount(usage.reviews.calls)}, ${usage.reviews.inputTokens === null || usage.reviews.outputTokens === null ? 'tokens not reported' : `${number(usage.reviews.inputTokens)} input and ${number(usage.reviews.outputTokens)} output tokens as reported`}`}</p>
+          {usage.reviews.wouldCostUsd !== null && usage.reviews.chargedUsd !== null && (
+            <p>Would cost {usd(usage.reviews.wouldCostUsd)} at the platform's rate; charged {usd(usage.reviews.chargedUsd)}.{usage.reviews.zeroRated ? ' Code reviews are free while the reviewer is in preview, so you can see what they cost before you are charged.' : ''}</p>
+          )}
+          {usage.reviews.unpriced > 0 && <p>{reviewCount(usage.reviews.unpriced)} ran on a model with no price and {usage.reviews.unpriced === 1 ? 'is' : 'are'} not counted in the cost.</p>}
+          <p>Coverage: reviews from {date(usage.reviews.since)} to {date(usage.reviews.until)} · {coverage(usage.reviews.state, modelStates)}.</p>
+        </div>
+      )}
     </>
   );
 }
 
-/** The team's persisted usage, per vertical by name; no prices or payments. */
+/** The team's persisted usage, per vertical by name; no payments, and no prices but a code review's. */
 export function Billing({ teamId, canRead, names }: { teamId: string; canRead: boolean; names: VerticalNames }) {
   const [usageResult, setUsageResult] = useState<UsageResult | null>(null);
 

@@ -355,6 +355,7 @@ import {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type ModelUsagePricing,
   type BuildUsageInput,
   type TenantBuildUsageFilter,
   type TenantBuildUsageRow,
@@ -11411,10 +11412,10 @@ export class CloudflareScopeHost implements ScopeHost {
           { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
         return rows;
       },
-      summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
+      summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number, pricing?: ModelUsagePricing): Promise<ModelUsageSummary> => {
         const rows = await this.cp.listModelUsage({ ...window, order: 'asc' });
         await this.recordAccess(actor, 'summarizeModelUsage', { tenantId: window.tenantId ?? null }, window, rows.length);
-        return foldModelUsage(rows.map(modelUsageEntryOf), { readAt: new Date().toISOString(), ...window, marginPercent });
+        return foldModelUsage(rows.map(modelUsageEntryOf), { readAt: new Date().toISOString(), ...window, marginPercent, ...pricing });
       },
     };
   }

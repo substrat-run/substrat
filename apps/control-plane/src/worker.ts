@@ -21,7 +21,7 @@ import { Hono, type Context } from 'hono';
 import { readGithubChanges } from './github-changes.js';
 import { pruneReviews } from './review-store.js';
 import { createReviewApi, REVIEW_ENTITLEMENT } from './reviews.js';
-import { ReviewJobDO, reviewConfig, spendDeps, spendReadsFor } from './review-job.js';
+import { ReviewJobDO, REVIEW_SENTINEL_SCOPE, reviewConfig, spendDeps, spendReadsFor } from './review-job.js';
 import { reviewSpend } from './review-spend.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv, type RelayScopeLookup } from './relay-caller.js';
@@ -251,6 +251,12 @@ import {
   type ConnectorEnv,
 } from './connectors.js';
 import { verticalConnectorBinderFor, verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
+
+/**
+ * Whether code reviews are priced at zero (hosted-review-runner.md Q1b: zero-rated in phases 1–2,
+ * billed from phase 3). The tenant sees each review's tokens and what it would cost either way.
+ */
+const REVIEWS_ZERO_RATED = true;
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
@@ -3807,6 +3813,8 @@ export default {
         crossVertical: crossVerticalFor(env, apiHost),
         // #1054: the platform's margin over list for model usage it provides. Whole percent.
         ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
+        // #2365: code reviews are metered to the tenant and zero-rated through the runner's phase 2.
+        reviewUsage: { scope: REVIEW_SENTINEL_SCOPE, zeroRated: REVIEWS_ZERO_RATED },
         // #3108: a seeded preview's login, at this control plane's own persona issuer.
         ...(personaIssuerSeam(env) ? { personaIssuer: personaIssuerSeam(env) } : {}),
         // #971: the CLI freshness nudge. Deployment vars, passed through only when set so
