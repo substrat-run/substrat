@@ -18,7 +18,8 @@
  * `/internal/export` dumps an instance in full and `/internal/delete-scope` wipes one
  * (#590 — backed-up reap, wipe, and data-carrying rebind), `/internal/preview-client`
  * mints and deletes a preview's own client (#1704), and `/internal/machine-client` ensures
- * and removes an app's machine client (#3134);
+ * and removes an app's machine client (#3134), and `/internal/managed-client` ensures and
+ * removes a managed tenant's sign-in client (#3261);
  * every OTHER `/internal/*` path answers a JSON 501 — NEVER the SPA fallback. (A platform
  * call once fell through to the SPA catch-all, returned 200 text/html, and surfaced as
  * "Provisioning failed — internal error" in the dashboard. The fallback route and its
@@ -35,6 +36,9 @@ import {
   MACHINE_CLIENT_PATH,
   machineClientEnsure,
   machineClientRemove,
+  MANAGED_CLIENT_PATH,
+  managedClientEnsure,
+  managedClientRemove,
   PLACES_DISCOVERY_PATH,
   PREVIEW_CLIENT_PATH,
   previewClientCheck,
@@ -529,6 +533,28 @@ app.delete(MACHINE_CLIENT_PATH, async (c) => {
   assertPlatform(c.env, c.req.raw);
   const body = machineClientRemove.parse(await c.req.json());
   return answerPreviewCall(c, stubFor(c.env, body.scopeId).removeMachineClient(body), 200);
+});
+
+/**
+ * A MANAGED tenant's sign-in client (#3202, D-72, #3261, `src/managed-clients.ts`; the protocol
+ * is `@substrat-run/contracts`' `managed-client.ts`). Gated and addressed like the routes above,
+ * and refused by the DO for any scope that is not this tenant's own instance:
+ *
+ *   - `POST   /internal/managed-client` — ensure the managed app's client; always its secret.
+ *   - `DELETE /internal/managed-client` — remove it, with the app's place and redirect record.
+ *
+ * A deployment built before these existed answers the 501 below, as for the preview routes.
+ */
+app.post(MANAGED_CLIENT_PATH, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = managedClientEnsure.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).ensureManagedClient(body), 200);
+});
+
+app.delete(MANAGED_CLIENT_PATH, async (c) => {
+  assertPlatform(c.env, c.req.raw);
+  const body = managedClientRemove.parse(await c.req.json());
+  return answerPreviewCall(c, stubFor(c.env, body.scopeId).removeManagedClient(body), 200);
 });
 
 /**

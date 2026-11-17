@@ -84,6 +84,13 @@ export type AuthServerStub = {
   removeMachineClient(
     input: import('@substrat-run/contracts').MachineClientRemove,
   ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').RemovedMachineClient>>;
+  /** A managed tenant's sign-in client (#3261) — ensure, remove; each refuses another tenant's call. */
+  ensureManagedClient(
+    input: import('@substrat-run/contracts').ManagedClientEnsure,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').EnsuredManagedClient>>;
+  removeManagedClient(
+    input: import('@substrat-run/contracts').ManagedClientRemove,
+  ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').RemovedManagedClient>>;
 };
 
 /** The verified subject behind a session, as the `/__session` probe returns it. */

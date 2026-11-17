@@ -99,6 +99,14 @@ function fakeAuth() {
           previewCalls.push({ doName, verb: 'remove-machine', input });
           return previewAnswer.next as never;
         },
+        ensureManagedClient: async (input) => {
+          previewCalls.push({ doName, verb: 'ensure-managed', input });
+          return previewAnswer.next as never;
+        },
+        removeManagedClient: async (input) => {
+          previewCalls.push({ doName, verb: 'remove-managed', input });
+          return previewAnswer.next as never;
+        },
       };
     },
   };
@@ -161,6 +169,8 @@ it.each([
   ['DELETE', '/internal/preview-client', () => ({ tenantId: ulid(), scopeId: ulid(), previewScopeId: ulid() })],
   ['POST', '/internal/machine-client', () => ({ tenantId: ulid(), scopeId: ulid(), appScopeId: ulid(), clientName: 'Desk', scopes: ['read:users'] })],
   ['DELETE', '/internal/machine-client', () => ({ tenantId: ulid(), scopeId: ulid(), appScopeId: ulid() })],
+  ['POST', '/internal/managed-client', () => ({ tenantId: ulid(), scopeId: ulid(), appTenantId: ulid(), appScopeId: ulid(), hostname: 'acme.test', clientName: 'Acme' })],
+  ['DELETE', '/internal/managed-client', () => ({ tenantId: ulid(), scopeId: ulid(), appTenantId: ulid(), appScopeId: ulid() })],
 ] as const)('%s %s refuses a call without the platform secret before touching any DO', async (method, path, body) => {
   const res = await app.request(path, {
     method,
@@ -446,6 +456,38 @@ describe('/internal/machine-client (#3134 — an app’s machine client)', () =>
     expect((await call('POST', { ...ensureBody(), scopes: ['openid'] })).status).toBe(400);
     expect((await call('DELETE', { ...address(), appScopeId: 'nope' })).status).toBe(400);
     expect(auth.touched).toHaveLength(reached);
+  });
+});
+
+describe('/internal/managed-client (#3261 — a managed tenant’s sign-in client)', () => {
+  const call = (method: string, body: unknown) =>
+    Promise.resolve(app.request(
+      '/internal/managed-client',
+      { method, headers: { 'content-type': 'application/json', 'x-substrat-platform': PLATFORM_SECRET }, body: JSON.stringify(body) },
+      env,
+    ));
+  const address = () => ({ tenantId: ulid(), scopeId: ulid(), appTenantId: ulid(), appScopeId: ulid() });
+  const ensureBody = () => ({ ...address(), hostname: 'acme.test', clientName: 'Acme' });
+
+  it.each([
+    ['POST', ensureBody, 'ensure-managed'],
+    ['DELETE', address, 'remove-managed'],
+  ] as const)('%s reaches the BODY-named issuer DO and answers what it answered', async (method, body, verb) => {
+    const b = body();
+    auth.previewAnswer.next = { ok: true, value: { answered: verb } };
+    const res = await call(method, b);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ answered: verb });
+    expect(auth.previewCalls).toEqual([{ doName: b.scopeId, verb, input: b }]);
+  });
+
+  it('never addresses a DO for a body naming a URI instead of a hostname, or no managed tenant', async () => {
+    // The issuer derives every URI from the hostname; a URI, or an extra field carrying one, is refused.
+    expect((await call('POST', { ...ensureBody(), hostname: 'https://evil.test/callback' })).status).toBe(400);
+    expect((await call('POST', { ...ensureBody(), redirectUri: 'https://evil.test/callback' })).status).toBe(400);
+    const { appTenantId: _dropped, ...noTenant } = address();
+    expect((await call('DELETE', noTenant)).status).toBe(400);
+    expect(auth.touched).toEqual([]);
   });
 });
 

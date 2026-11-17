@@ -127,6 +127,7 @@ export * from './delegations.js';
 export * from './social-relay.js';
 export * from './preview-client.js';
 export * from './machine-client.js';
+export * from './managed-client.js';
 export * from './seeded-preview.js';
 export * from './client-redirects.js';
 export * from './source-build.js';
