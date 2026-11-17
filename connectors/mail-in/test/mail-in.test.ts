@@ -45,7 +45,7 @@ import {
   type MailInLanding,
   type MailInLimits,
 } from '../src/index.js';
-import { MESSAGE_PREFIX, QUOTA_KEY, type MailInMessageEntry } from '../src/address.js';
+import { MESSAGE_PREFIX, QUOTA_KEY, STATS_KEY, type MailInMessageEntry } from '../src/address.js';
 
 /**
  * Inbound mail end to end on the pure adapter (#2611): a real scope running a vertical module that
@@ -411,8 +411,36 @@ describe('accepting at SMTP time', () => {
   });
 
   describe('abuse limits', () => {
-    const sendWith = (w: Awaited<ReturnType<typeof world>>, limits: Partial<MailInLimits>, to: string, raw: Uint8Array) =>
-      acceptInboundMail(w.host, { ...w.deps, limits }, { to, envelopeFrom: 'billing@supplier.example', rawSize: raw.byteLength, raw: async () => raw });
+    type World = Awaited<ReturnType<typeof world>>;
+    const offer = (host: World['host'], deps: World['deps'], limits: Partial<MailInLimits>, to: string, raw: Uint8Array) =>
+      acceptInboundMail(host, { ...deps, limits }, { to, envelopeFrom: 'billing@supplier.example', rawSize: raw.byteLength, raw: async () => raw });
+    const sendWith = (w: World, limits: Partial<MailInLimits>, to: string, raw: Uint8Array) => offer(w.host, w.deps, limits, to, raw);
+    /**
+     * The scope host, except that the first read of `key` runs `during` before it answers: another
+     * accept lands between this one's read and its write.
+     */
+    const interleaved = (w: World, key: string, during: () => Promise<void>) => {
+      let pending = true;
+      const bound = (target: object, prop: string | symbol) => {
+        const v = Reflect.get(target, prop) as unknown;
+        return typeof v === 'function' ? (v as (...args: unknown[]) => unknown).bind(target) : v;
+      };
+      const admin = new Proxy(w.host.admin, {
+        get(target, prop) {
+          if (prop !== 'getConnectorState') return bound(target, prop);
+          return async (id: never, k: string) => {
+            const held = await target.getConnectorState(id, k);
+            if (k === key && pending) {
+              pending = false;
+              await during();
+            }
+            return held;
+          };
+        },
+      });
+      return new Proxy(w.host, { get: (target, prop) => (prop === 'admin' ? admin : bound(target, prop)) });
+    };
+    const quotaOf = async (w: World, connectionId: string) => (await w.host.admin.getConnectorState(connectionId as never, QUOTA_KEY)) as { hour: string; messages: number; day: string; bytes: number };
 
     it('holds an address to its messages per hour: a duplicate does not count, and a slot taken mid-count is not taken twice', async () => {
       expect(DEFAULT_MAIL_IN_LIMITS).toEqual({ messagesPerHour: MAIL_IN_MAX_MESSAGES_PER_HOUR, bytesPerDay: MAIL_IN_MAX_BYTES_PER_DAY });
@@ -425,34 +453,10 @@ describe('accepting at SMTP time', () => {
       expect(await sendWith(w, limits, a.address, nth(1))).toMatchObject({ accepted: true, duplicate: false });
       expect(await sendWith(w, limits, a.address, nth(1))).toMatchObject({ accepted: true, duplicate: true });
       // Message 3 reads the count (1 of 2), and before it writes, message 2 takes the last slot.
-      let interleave = true;
-      const admin = new Proxy(w.host.admin, {
-        get(target, prop) {
-          if (prop === 'getConnectorState') {
-            return async (id: never, key: string) => {
-              const held = await target.getConnectorState(id, key);
-              if (key === QUOTA_KEY && interleave) {
-                interleave = false;
-                expect(await sendWith(w, limits, a.address, nth(2))).toMatchObject({ accepted: true });
-              }
-              return held;
-            };
-          }
-          const v = Reflect.get(target, prop) as unknown;
-          return typeof v === 'function' ? (v as (...args: unknown[]) => unknown).bind(target) : v;
-        },
+      const host = interleaved(w, QUOTA_KEY, async () => {
+        expect(await sendWith(w, limits, a.address, nth(2))).toMatchObject({ accepted: true });
       });
-      const host = new Proxy(w.host, {
-        get(target, prop) {
-          if (prop === 'admin') return admin;
-          const v = Reflect.get(target, prop) as unknown;
-          return typeof v === 'function' ? (v as (...args: unknown[]) => unknown).bind(target) : v;
-        },
-      });
-      const third = nth(3);
-      expect(
-        await acceptInboundMail(host, { ...w.deps, limits }, { to: a.address, envelopeFrom: 'billing@supplier.example', rawSize: third.byteLength, raw: async () => third }),
-      ).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.overLimit, reason: 'rate-limited' });
+      expect(await offer(host, w.deps, limits, a.address, nth(3))).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.overLimit, reason: 'rate-limited' });
       // The refused message was not stored, and is counted as a refusal.
       expect(w.store.keys()).toHaveLength(2);
       expect((await mailInAddressOf(w.host, w.actor, w.t, w.s))!.stats).toMatchObject({ received: 2, rejected: 1, lastRejectReason: 'rate-limited' });
@@ -461,20 +465,64 @@ describe('accepting at SMTP time', () => {
       expect(await sendWith(w, limits, a.address, nth(4))).toMatchObject({ accepted: true });
     });
 
-    it('holds an address to its bytes per UTC day', async () => {
+    it('charges a message once: two copies arriving together, and a retry after the store failed', async () => {
+      const w = await world();
+      const a = await w.request();
+      const first = mail({ to: a.address, messageId: '<c1@supplier.example>' });
+      // Room for exactly one message, in both counters.
+      const limits = { messagesPerHour: 1, bytesPerDay: first.byteLength };
+
+      // A copy of the same message lands between this one's quota read and its write: one charge,
+      // and this copy is the duplicate rather than refused at the limit the other used.
+      const host = interleaved(w, QUOTA_KEY, async () => {
+        expect(await sendWith(w, limits, a.address, first)).toMatchObject({ accepted: true, duplicate: false });
+      });
+      expect(await offer(host, w.deps, limits, a.address, first)).toMatchObject({ accepted: true, duplicate: true });
+      expect(await quotaOf(w, a.connectionId)).toMatchObject({ messages: 1, bytes: first.byteLength });
+
+      // The next message's store fails after its charge; the sender's retry is not refused for it.
+      w.advance(24 * 60 * 60 * 1000);
+      const next = mail({ to: a.address, messageId: '<c2@supplier.example>' });
+      const failing = { ...w.deps, store: { ...w.deps.store, put: () => Promise.reject(new Error('R2 is down')) } };
+      await expect(offer(w.host, failing, limits, a.address, next)).rejects.toThrow('R2 is down');
+      expect(await sendWith(w, limits, a.address, next)).toMatchObject({ accepted: true, duplicate: false });
+      expect(await quotaOf(w, a.connectionId)).toMatchObject({ messages: 1, bytes: next.byteLength });
+    });
+
+    it('counts in the newer window when the hour turns mid-count, never writing the older one over it', async () => {
+      const w = await world();
+      const a = await w.request();
+      const limits = { messagesPerHour: 5 };
+      // This accept read the clock at 09:59; while it counts, one at 10:00 lands.
+      const before = { ...w.deps, now: () => new Date('2026-10-26T09:59:59.000Z') };
+      const after = { ...w.deps, now: () => new Date('2026-10-26T10:00:00.000Z') };
+      const host = interleaved(w, QUOTA_KEY, async () => {
+        expect(await offer(w.host, after, limits, a.address, mail({ to: a.address, messageId: '<h2@supplier.example>' }))).toMatchObject({ accepted: true });
+      });
+      expect(await offer(host, before, limits, a.address, mail({ to: a.address, messageId: '<h1@supplier.example>' }))).toMatchObject({ accepted: true });
+      expect(await quotaOf(w, a.connectionId)).toMatchObject({ hour: '2026-10-26T10', messages: 2 });
+    });
+
+    it('holds an address to its bytes per UTC day, and counts two refusals arriving together', async () => {
       const w = await world();
       const a = await w.request();
       const first = mail({ to: a.address, messageId: '<d1@supplier.example>' });
       const limits = { bytesPerDay: first.byteLength + 10 };
 
       expect(await sendWith(w, limits, a.address, first)).toMatchObject({ accepted: true });
-      expect(await sendWith(w, limits, a.address, mail({ to: a.address, messageId: '<d2@supplier.example>' }))).toMatchObject({
+      const over = (n: number) => mail({ to: a.address, messageId: `<d${n}@supplier.example>` });
+      // A second refusal is counted between this one's read of the counts and its write.
+      const host = interleaved(w, STATS_KEY, async () => {
+        expect(await sendWith(w, limits, a.address, over(3))).toMatchObject({ accepted: false });
+      });
+      expect(await offer(host, w.deps, limits, a.address, over(2))).toMatchObject({
         accepted: false,
         smtp: SMTP_REFUSALS.overLimit,
         reason: 'over-daily-volume',
       });
+      expect((await mailInAddressOf(w.host, w.actor, w.t, w.s))!.stats).toMatchObject({ rejected: 2 });
       w.advance(24 * 60 * 60 * 1000);
-      expect(await sendWith(w, limits, a.address, mail({ to: a.address, messageId: '<d3@supplier.example>' }))).toMatchObject({ accepted: true });
+      expect(await sendWith(w, limits, a.address, over(4))).toMatchObject({ accepted: true });
     });
   });
 });

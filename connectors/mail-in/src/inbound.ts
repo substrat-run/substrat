@@ -128,13 +128,21 @@ export const DEFAULT_MAIL_IN_LIMITS: MailInLimits = {
   bytesPerDay: MAIL_IN_MAX_BYTES_PER_DAY,
 };
 
-/** What an address's quota row holds: the hour and day it counts, and what it counted in each. */
+/**
+ * What an address's quota row holds: the hour and day it counts, what it counted in each, and which
+ * messages it charged that day — the first {@link CHARGE_TAG_CHARS} of each one's id — so a message
+ * is charged once however often it is offered.
+ */
 interface MailInQuota {
   hour: string;
   messages: number;
   day: string;
   bytes: number;
+  charged: string[];
 }
+
+/** How much of a message's id the quota row keeps to know it charged it: 64 bits. */
+const CHARGE_TAG_CHARS = 16;
 
 /** Compare-and-set tries before a quota take gives up as contended. */
 const QUOTA_TRIES = 8;
@@ -200,29 +208,44 @@ export function senderAdmitted(binding: Pick<MailInBinding, 'allowlist'>, verdic
 }
 
 /**
- * Count one message of `bytes` against the address's hour and day, or say which limit it would
- * cross. A compare-and-set from the row as read, retried, so two messages accepted together cannot
- * both slip under a limit only one of them fits. A take that loses every try throws: the handler
- * answers that as a failure to accept, which the sender retries, rather than guessing.
+ * Charge one message of `bytes` to the address's hour and day, or say which limit it would cross.
+ *
+ * - **Once per message.** The row keeps which messages it charged today, and a message already
+ *   charged passes without charging again: two copies of one `Message-ID` arriving together are
+ *   charged once (the second becomes a duplicate), and a retry after an accept that failed to store
+ *   the message reuses its charge instead of being refused at the limit it used itself.
+ * - **Compare-and-set**, retried, so two messages arriving together cannot both slip under a limit
+ *   only one of them fits.
+ * - **Never an older window.** A message that read the clock before an hour or a day turned, and
+ *   finds the row already in the newer one, is counted in the newer one, rather than writing its
+ *   older window over it and wiping what was counted there.
+ *
+ * A take that loses every try throws: the handler answers that as a failure to accept, which the
+ * sender retries, rather than guessing.
  */
 async function takeQuota(
   host: ScopeHost,
   connectionId: ConnectionId,
+  messageId: string,
   bytes: number,
   limits: MailInLimits,
   now: Date,
 ): Promise<'ok' | 'rate-limited' | 'over-daily-volume'> {
   const iso = now.toISOString();
-  const hour = iso.slice(0, 13);
-  const day = iso.slice(0, 10);
+  const tag = messageId.slice(0, CHARGE_TAG_CHARS);
   for (let i = 0; i < QUOTA_TRIES; i += 1) {
     const held = await host.admin.getConnectorState(connectionId, QUOTA_KEY);
     const q = held && typeof held === 'object' ? (held as Partial<MailInQuota>) : {};
+    // ISO prefixes order as the instants do.
+    const hour = q.hour && q.hour > iso.slice(0, 13) ? q.hour : iso.slice(0, 13);
+    const day = q.day && q.day > iso.slice(0, 10) ? q.day : iso.slice(0, 10);
+    const charged = q.day === day ? (q.charged ?? []) : [];
+    if (charged.includes(tag)) return 'ok';
     const messages = q.hour === hour ? (q.messages ?? 0) : 0;
     const used = q.day === day ? (q.bytes ?? 0) : 0;
     if (messages + 1 > limits.messagesPerHour) return 'rate-limited';
     if (used + bytes > limits.bytesPerDay) return 'over-daily-volume';
-    const next: MailInQuota = { hour, messages: messages + 1, day, bytes: used + bytes };
+    const next: MailInQuota = { hour, messages: messages + 1, day, bytes: used + bytes, charged: [...charged, tag] };
     if (await host.admin.swapConnectorState(connectionId, QUOTA_KEY, held, next)) return 'ok';
   }
   throw new Error(`mail-in: the quota of ${connectionId} was contended on every try`);
@@ -258,7 +281,7 @@ export async function acceptInboundMail(host: ScopeHost, deps: MailInInboundDeps
   const duplicate = { accepted: true, connectionId: connection.id, messageId, duplicate: true } as const;
   if (await host.admin.getConnectorState(connection.id, key)) return duplicate;
   const limits = { ...DEFAULT_MAIL_IN_LIMITS, ...deps.limits };
-  const quota = await takeQuota(host, connection.id, raw.byteLength, limits, nowOf(deps));
+  const quota = await takeQuota(host, connection.id, messageId, raw.byteLength, limits, nowOf(deps));
   if (quota !== 'ok') return refuse(SMTP_REFUSALS.overLimit, quota);
   const objectKey = objectKeyOf(binding, connection.id, messageId);
   // The bytes first: a state row that names an object that never landed would be a pending

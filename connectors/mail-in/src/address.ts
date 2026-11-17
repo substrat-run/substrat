@@ -220,12 +220,24 @@ export async function readStats(host: Pick<ScopeHost, 'admin'>, id: ConnectionId
   return v && typeof v === 'object' ? { ...EMPTY_STATS, ...(v as Partial<MailInStats>) } : { ...EMPTY_STATS };
 }
 
+/** Compare-and-set tries before a stats update gives up. */
+const STATS_TRIES = 8;
+
+/**
+ * Apply `change` to the address's counts, by compare-and-set from the row as read, so two messages
+ * counted together are both counted. Counts only: one that loses every try is dropped, rather than
+ * failing the mail it counts.
+ */
 export async function bumpStats(
   host: Pick<ScopeHost, 'admin'>,
   id: ConnectionId,
   change: (s: MailInStats) => MailInStats,
 ): Promise<void> {
-  await host.admin.putConnectorState(id, STATS_KEY, change(await readStats(host, id)));
+  for (let i = 0; i < STATS_TRIES; i += 1) {
+    const held = await host.admin.getConnectorState(id, STATS_KEY);
+    const stats = held && typeof held === 'object' ? { ...EMPTY_STATS, ...(held as Partial<MailInStats>) } : { ...EMPTY_STATS };
+    if (await host.admin.swapConnectorState(id, STATS_KEY, held, change(stats))) return;
+  }
 }
 
 export async function messageEntries(host: Pick<ScopeHost, 'admin'>, id: ConnectionId): Promise<{ key: string; entry: MailInMessageEntry }[]> {
