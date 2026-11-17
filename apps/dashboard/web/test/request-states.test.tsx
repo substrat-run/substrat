@@ -19,13 +19,13 @@ import { button } from './wa';
 // Every read the views make besides the one under test stays in flight, so nothing else on
 // the page settles into text the assertions could trip on.
 const never = () => new Promise<never>(() => {});
-const domainsRead = vi.hoisted(() => ({ listDomains: vi.fn() }));
+const domainsRead = vi.hoisted(() => ({ listDomains: vi.fn(), listApps: vi.fn() }));
 vi.mock('../src/lib/api', async (importOriginal) => {
   const pending = new Proxy({}, { get: (_t, key) => (key === 'then' ? undefined : () => new Promise(() => {})) });
   return {
     ...(await importOriginal<typeof import('../src/lib/api')>()),
     api: pending,
-    teamApi: () => new Proxy(pending, { get: (t, key) => (key === 'listDomains' ? domainsRead.listDomains : Reflect.get(t, key)) }),
+    teamApi: () => new Proxy(pending, { get: (t, key) => (key === 'listDomains' || key === 'listApps' ? domainsRead[key] : Reflect.get(t, key)) }),
   };
 });
 
@@ -83,6 +83,7 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   domainsRead.listDomains.mockReset();
+  domainsRead.listApps.mockReset().mockReturnValue(new Promise(() => {}));
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -140,5 +141,24 @@ describe('Domains: its own read, through the same states (#3244)', () => {
     await act(async () => button('Try again', container)!.click());
     expect(domainsRead.listDomains).toHaveBeenCalledTimes(2);
     expect(container.querySelector(BUSY)).not.toBeNull();
+  });
+
+  it('a failed read of the picker’s apps is retried — on reopening the dialog, and from its own Try again', async () => {
+    domainsRead.listDomains.mockResolvedValue({ entries: [], nextCursor: null });
+    domainsRead.listApps
+      .mockRejectedValueOnce(new Error('apps down'))
+      .mockRejectedValueOnce(new Error('apps still down'))
+      .mockResolvedValueOnce({ entries: [{ app_scope_id: 'S1', name: 'Shop' }], nextCursor: null });
+    await act(async () => root.render(<Domains teamId="T" />));
+    await settle();
+    await act(async () => button('Add domain', container)!.click());
+    await settle();
+    expect(domainsRead.listApps).toHaveBeenCalledTimes(2);
+    expect(error()?.textContent).toContain('apps still down');
+    await act(async () => button('Try again', container)!.click());
+    await settle();
+    expect(domainsRead.listApps).toHaveBeenCalledTimes(3);
+    expect(error()).toBeNull();
+    expect(container.textContent).toContain('Shop');
   });
 });

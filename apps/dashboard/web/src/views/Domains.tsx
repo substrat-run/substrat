@@ -1,5 +1,5 @@
 import { useCallback, useState, type CSSProperties } from 'react';
-import { Button, Dialog, IconButton, Input, RequestView, Select, Skeleton, SkeletonRegion, mapOk, useRequest, type RequestState } from '@substrat-run/ui/wa';
+import { Button, Dialog, IconButton, Input, RequestError, RequestView, Select, Skeleton, SkeletonRegion, mapOk, useRequest, type RequestState } from '@substrat-run/ui/wa';
 import { teamApi, type AppRow, type DnsRecord, type DomainRow } from '../lib/api';
 import { ApiError } from '../lib/api.generated';
 import { DEV_MOCK } from '../lib/mock';
@@ -128,7 +128,14 @@ export function Domains({ teamId }: { teamId: string }) {
           }
         />
         <div style={{ flex: 1 }} />
-        <Button icon={<Ic name="plus" />} onClick={() => setAdd(true)}>
+        <Button
+          icon={<Ic name="plus" />}
+          onClick={() => {
+            setAdd(true);
+            // A picker whose apps read failed earlier reads them again when it is opened.
+            if (appsReq.state.state === 'error') void appsReq.reload();
+          }}
+        >
           Add domain
         </Button>
       </div>
@@ -184,7 +191,7 @@ export function Domains({ teamId }: { teamId: string }) {
         automatically and not listed here.
       </div>
 
-      <AddDomainDialog teamId={teamId} open={add} apps={appsReq.state} onClose={() => setAdd(false)} onAdded={load} />
+      <AddDomainDialog teamId={teamId} open={add} apps={appsReq.state} onRetryApps={() => void appsReq.reload()} onClose={() => setAdd(false)} onAdded={load} />
     </Page>
   );
 }
@@ -312,12 +319,13 @@ function RecordRow({ r }: { r: DnsRecord }) {
 }
 
 function AddDomainDialog({
-  teamId, open, apps, onClose, onAdded,
+  teamId, open, apps, onRetryApps, onClose, onAdded,
 }: {
   teamId: string;
   open: boolean;
   /** A request (#3244): "No apps yet" only once the apps have been read. */
   apps: RequestState<AppRow[]>;
+  onRetryApps: () => void;
   onClose: () => void;
   onAdded: () => Promise<void> | void;
 }) {
@@ -328,7 +336,7 @@ function AddDomainDialog({
   const [saving, setSaving] = useState(false);
 
   const appOptions = apps.state === 'ok' ? apps.value.map((a) => ({ value: a.app_scope_id, label: a.name })) : [];
-  const noApps = apps.state === 'loading' ? 'Reading apps…' : apps.state === 'error' ? 'Could not read the apps — close and try again' : 'No apps yet';
+  const noApps = apps.state === 'loading' ? 'Reading apps…' : apps.state === 'error' ? 'Could not read the apps' : 'No apps yet';
   const chosen = appScopeId || appOptions[0]?.value || '';
 
   const reset = () => {
@@ -387,6 +395,7 @@ function AddDomainDialog({
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {apps.state === 'error' && <RequestError what="this team's apps" error={apps.error} onRetry={onRetryApps} style={{ padding: 0 }} />}
           <Select
             label="App"
             options={appOptions.length ? appOptions : [{ value: '', label: noApps, disabled: true }]}
