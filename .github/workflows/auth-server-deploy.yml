@@ -20,6 +20,14 @@ name: Deploy to Substrat
 # preview jobs back; delete them again, or implement /internal/restore first. Note what a fork
 # would mean here even once it exists: a preview URL carrying a copy of prod's users, password
 # hashes and JWKS signing keys.
+#
+# EDITED AFTER GENERATION, in a second respect: the CLI is the one built from this checkout
+# (`node packages/cli/dist/cli.js`, built with the vertical's closure, which declares it), not the
+# generated `npx @substrat-run/cli@latest`. The push gate runs the layer rules from the
+# boundary-lint the CLI bundles, so a registry CLI judges main's code by the LAST RELEASE's rules
+# while CI's lint:boundaries judges it by main's: #3274 declared `src/social-relay-self.ts` a
+# network boundary in the workspace rules, CI passed it, and this job's push refused it as R3
+# until the next release. `pnpm lint:workspace-cli` refuses a registry CLI in any workflow here.
 
 # The default GITHUB_TOKEN, narrowed to what these jobs actually use. A repository whose
 # default is read/write would otherwise hand every job below write access to issues, packages
@@ -140,7 +148,7 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli@latest push demos/auth-server --slug auth-server | tee release.out
+          node packages/cli/dist/cli.js push demos/auth-server --slug auth-server | tee release.out
           # Matches the CLI's own success line (packages/cli/src/cli.ts: "✓ pushed <slug>.
           # version <id> (<pkg-version>) is <admission>; deploymentRef=<ref>") and the id's
           # actual shape — a 26-char Crockford-base32 ULID (0-9, A-Z minus I/L/O/U,
@@ -182,11 +190,11 @@ jobs:
         run: |
           set -euo pipefail
           BASE=$(node -p "require('./demos/auth-server/package.json').version")
-          npx @substrat-run/cli@latest push demos/auth-server --slug auth-server --version "$BASE-test.${{ github.run_number }}" | tee push.out
+          node packages/cli/dist/cli.js push demos/auth-server --slug auth-server --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep. Same
           # ULID-shaped match as the push step above, not a loose alnum one.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [0-9A-HJKMNP-TV-Z]{26}' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
-          npx @substrat-run/cli@latest scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
+          node packages/cli/dist/cli.js scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot
 
