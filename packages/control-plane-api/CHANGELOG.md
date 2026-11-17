@@ -1,5 +1,21 @@
 # @substrat-run/control-plane-api
 
+## 0.201.0
+
+### Minor Changes
+
+- 1f564fe: A `provision-tenant` request may name one of the manager's own team auth servers in `instance.signIn.issuer`. The platform then registers the new tenant's sign-in client there, delivers it as the tenant's `substrat:auth`, and lists the tenant on that auth server's account page for its members (#3202).
+
+### Patch Changes
+
+- 178ff5d: The Operation facet of the request and line reads lists its top 7 values, as the observability design draws it; the path, entity and process-state facets keep 10.
+- d64e270: A carry never wipes a copy on a deployment built before the fenced wipe: it stays retained, reached by reap and erasure. A carry whose bind landed leaves its destination to the move that took the route off it. A push and a rollback across such a deployment can no longer lose both copies (#3230).
+- Updated dependencies [1f564fe]
+- Updated dependencies [e210618]
+  - @substrat-run/contracts@0.201.0
+  - @substrat-run/control-plane-client@0.9.1
+  - @substrat-run/kernel@0.201.0
+
 ## 0.200.0
 
 ### Minor Changes

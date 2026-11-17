@@ -1,5 +1,32 @@
 # @substrat-run/control-plane
 
+## 0.19.3
+
+### Patch Changes
+
+- 1f564fe: A `provision-tenant` request may name one of the manager's own team auth servers in `instance.signIn.issuer`. The platform then registers the new tenant's sign-in client there, delivers it as the tenant's `substrat:auth`, and lists the tenant on that auth server's account page for its members (#3202).
+- e210618: Code reviews have a per-workspace daily spend limit. A review is refused before its model call once the workspace's reviews would cost more today than the limit, and an upload is answered `429` with `reason: review_spend_limit_reached`. Staff set the limit per workspace as the `review` entitlement's quota, in cents. The `rate_limited` problem document may now carry a `reason`.
+- Updated dependencies [178ff5d]
+- Updated dependencies [1f564fe]
+- Updated dependencies [1f564fe]
+- Updated dependencies [d64e270]
+- Updated dependencies [e210618]
+  - @substrat-run/control-plane-api@0.201.0
+  - @substrat-run/contracts@0.201.0
+  - @substrat-run/oidc-rp@0.15.0
+  - @substrat-run/adapter-cloudflare@0.201.0
+  - @substrat-run/connector-bolagsverket@0.0.24
+  - @substrat-run/connector-fortnox@0.7.25
+  - @substrat-run/connector-mail-in@0.1.38
+  - @substrat-run/connector-microsoft365@0.0.62
+  - @substrat-run/connector-planima@0.2.98
+  - @substrat-run/connector-scrive@0.15.3
+  - @substrat-run/connector-stripe@0.0.3
+  - @substrat-run/connector-woocommerce@0.0.7
+  - @substrat-run/kernel@0.201.0
+  - @substrat-run/model-providers@0.5.91
+  - @substrat-run/vertical-host@0.201.0
+
 ## 0.19.2
 
 ### Patch Changes

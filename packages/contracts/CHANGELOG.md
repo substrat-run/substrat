@@ -1,5 +1,12 @@
 # @substrat-run/contracts
 
+## 0.201.0
+
+### Minor Changes
+
+- 1f564fe: A `provision-tenant` request may name one of the manager's own team auth servers in `instance.signIn.issuer`. The platform then registers the new tenant's sign-in client there, delivers it as the tenant's `substrat:auth`, and lists the tenant on that auth server's account page for its members (#3202).
+- e210618: Code reviews have a per-workspace daily spend limit. A review is refused before its model call once the workspace's reviews would cost more today than the limit, and an upload is answered `429` with `reason: review_spend_limit_reached`. Staff set the limit per workspace as the `review` entitlement's quota, in cents. The `rate_limited` problem document may now carry a `reason`.
+
 ## 0.200.0
 
 ### Minor Changes
