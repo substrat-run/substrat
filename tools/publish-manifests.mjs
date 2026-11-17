@@ -44,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import npa from 'npm-package-arg';
 import { PUBLISH_GUARD } from './publish-guard.mjs';
+import { RUNTIME_FIELDS } from './registry-wait.mjs';
 
 const run = promisify(execFile);
 
@@ -76,7 +77,7 @@ export function pnpmMissing(error) {
 /** Specifier protocols that mean something inside a workspace and nothing on npm. */
 export const UNPUBLISHABLE_PROTOCOLS = ['workspace:', 'catalog:', 'link:', 'file:', 'portal:'];
 /** The fields npm installs for a consumer — a private member named here can never resolve. */
-export const RUNTIME_FIELDS = ['dependencies', 'peerDependencies', 'optionalDependencies'];
+export { RUNTIME_FIELDS };
 /**
  * Every field `pnpm publish` rewrites. npm ignores a dependency's devDependencies, so an
  * unresolvable one there breaks no install — but it means the manifest was never rewritten,

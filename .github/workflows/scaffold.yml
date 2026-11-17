@@ -33,7 +33,8 @@ on:
 jobs:
   scaffold:
     runs-on: ubuntu-latest
-    # The publish wait is bounded at three minutes, then npm/pnpm installs and the gates.
+    # It first waits, at most ten minutes, until npm serves every version the scaffold
+    # installs (#3260), then the npm/pnpm installs and the gates.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
