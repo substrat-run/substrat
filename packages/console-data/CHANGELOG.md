@@ -1,5 +1,14 @@
 # @substrat-run/console-data
 
+## 0.1.50
+
+### Patch Changes
+
+- Updated dependencies [1f564fe]
+- Updated dependencies [e210618]
+  - @substrat-run/contracts@0.201.0
+  - @substrat-run/model-view@0.6.52
+
 ## 0.1.49
 
 ### Patch Changes

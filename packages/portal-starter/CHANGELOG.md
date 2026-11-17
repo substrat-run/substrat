@@ -1,5 +1,11 @@
 # @substrat-run/portal-starter
 
+## 0.1.13
+
+### Patch Changes
+
+- @substrat-run/elements@0.8.8
+
 ## 0.1.12
 
 ### Patch Changes

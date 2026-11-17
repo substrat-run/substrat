@@ -1,5 +1,16 @@
 # @substrat-run/vertical-host
 
+## 0.201.0
+
+### Patch Changes
+
+- Updated dependencies [1f564fe]
+- Updated dependencies [e210618]
+  - @substrat-run/contracts@0.201.0
+  - @substrat-run/kernel@0.201.0
+  - @substrat-run/model-providers@0.5.91
+  - @substrat-run/vertical-auth@0.37.2
+
 ## 0.200.0
 
 ### Minor Changes

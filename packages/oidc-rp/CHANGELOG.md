@@ -1,5 +1,11 @@
 # @substrat-run/oidc-rp
 
+## 0.15.0
+
+### Minor Changes
+
+- 1f564fe: `@substrat-run/oidc-rp/register` exports `registerOidcClient`, dynamic client registration at an issuer, shared by the dashboard and the control plane.
+
 ## 0.14.0
 
 ### Minor Changes
