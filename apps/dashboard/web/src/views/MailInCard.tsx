@@ -49,7 +49,10 @@ type Confirm = 'rotate' | 'revoke' | null;
 export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
   const [standing, setStanding] = useState<Standing | null>(null);
   const [hidden, setHidden] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  /** The standing could not be read. Cleared by the next read. */
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  /** The last act failed. Kept across the read that follows it, until the next act or a cancel. */
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [senders, setSenders] = useState<string | null>(null);
@@ -62,7 +65,7 @@ export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
       return;
     }
     let live = true;
-    setErr(null);
+    setLoadErr(null);
     teamApi(teamId)
       .getAppMailIn({ scopeId: app.app_scope_id })
       .then((v) => live && setStanding(v))
@@ -70,7 +73,7 @@ export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
         if (!live) return;
         // Someone who may not manage integrations sees no address, the same as on the other doors.
         if (isApiError(e) && e.status === 403) setHidden(true);
-        else setErr(isApiError(e) ? e.message : String(e));
+        else setLoadErr(isApiError(e) ? e.message : String(e));
       });
     return () => {
       live = false;
@@ -80,19 +83,40 @@ export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
   const act = async (action: 'request' | 'rotate' | 'revoke', allowlist?: string[]) => {
     if (busy) return;
     setBusy(true);
-    setErr(null);
+    setActionErr(null);
     try {
       if (!DEV_MOCK) await teamApi(teamId).setAppMailIn({ scopeId: app.app_scope_id, action, ...(allowlist ? { allowlist } : {}) });
       setConfirm(null);
       setSenders(null);
     } catch (e) {
-      setErr(isApiError(e) ? e.message : String(e));
+      // Shown in the dialog that is still open, or on the card when the act had none.
+      setActionErr(isApiError(e) ? e.message : String(e));
     }
     setBusy(false);
+    // Read again either way: a refused act may still mean the address changed under us.
     setNonce((n) => n + 1);
   };
+  const dismiss = () => {
+    setConfirm(null);
+    setSenders(null);
+    setActionErr(null);
+  };
 
-  if (hidden || !standing) return null;
+  if (hidden) return null;
+  if (!standing) {
+    // A read that failed is shown, with a way to try again; only a successful read hides the card.
+    if (!loadErr) return null;
+    return (
+      <div style={{ ...card, padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div role="alert" style={{ flex: 1, fontSize: 13, color: 'var(--status-danger-fg)' }}>
+          Couldn’t load inbound email — {loadErr}
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => setNonce((n) => n + 1)}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
   const { address, landing, receiving } = standing;
   if (!address && !landing) return null;
 
@@ -143,13 +167,16 @@ export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
           declares it.
         </div>
       )}
-      {err && <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>}
+      {loadErr && <div role="alert" style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>Couldn’t refresh — {loadErr}</div>}
+      {actionErr && senders === null && confirm === null && (
+        <div role="alert" style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{actionErr}</div>
+      )}
 
       <Dialog
         open={senders !== null}
         title="Who may send to this address"
         confirmLabel={busy ? 'Saving…' : 'Save'}
-        onCancel={() => setSenders(null)}
+        onCancel={dismiss}
         onConfirm={() =>
           act(
             'request',
@@ -166,6 +193,7 @@ export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
             its domain’s checks can send. With a list, the sender must also be proven — a name in the From line is not enough.
           </div>
           <Textarea ariaLabel="Allowed senders" mono rows={5} placeholder={'me@example.com\n@supplier.example'} value={senders ?? ''} onChange={(e) => setSenders(e.target.value)} />
+          {actionErr && <div role="alert" style={{ color: 'var(--status-danger-fg)' }}>{actionErr}</div>}
         </div>
       </Dialog>
 
@@ -174,13 +202,14 @@ export function MailInCard({ teamId, app }: { teamId: string; app: AppRow }) {
         title={confirm === 'revoke' ? 'Turn off this address' : 'Replace this address'}
         confirmLabel={busy ? 'Working…' : confirm === 'revoke' ? 'Turn off' : 'Replace'}
         danger={confirm === 'revoke'}
-        onCancel={() => setConfirm(null)}
+        onCancel={dismiss}
         onConfirm={() => confirm && act(confirm)}
       >
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
           {confirm === 'revoke'
             ? 'Mail to this address is refused from now on, and mail it accepted but has not yet delivered is deleted. Everything already delivered stays in the app. Getting an address again gives a new one.'
             : 'You get a new address with the same senders list. Mail to the old one is refused from now on; mail it accepted but has not yet delivered moves to the new one. Use this if the address has leaked.'}
+          {actionErr && <div role="alert" style={{ marginTop: 8, color: 'var(--status-danger-fg)' }}>{actionErr}</div>}
         </div>
       </Dialog>
     </div>

@@ -91,18 +91,19 @@ export function mailInAddressDeps(env: MailInEnv, host: CloudflareScopeHost): Ma
 
 /**
  * The tenant door (#2611) the control-plane API mounts at `…/scopes/:s/mail-in`: the dashboard's
- * way to the same lifecycle the relay serves a vertical's worker. The host is built per call, as
- * the relay's is: the landing lookup needs the Cloudflare host's stored manifests.
+ * way to the same lifecycle the relay serves a vertical's worker.
+ *
+ * The lifecycle runs on the host the API hands in: for a tenant credential minted for a person it is
+ * the attributed view (#977), so the admin log names that person — and any impersonation — beside the
+ * mail-in actor on the address's create, grant and revoke. A fresh Cloudflare host is built only for
+ * the landing lookup, a read of the stored manifests that names nobody.
  */
 export function mailInTenantDoor(env: MailInEnv, hostOf: () => CloudflareScopeHost): MailInTenantDoor {
+  const depsOn = () => mailInAddressDeps(env, hostOf());
   return {
-    standing: async (_host, { tenantId, scopeId }) => {
-      const host = hostOf();
-      return mailInStandingOf(host, mailInAddressDeps(env, host), tenantId, scopeId);
-    },
-    act: async (_host, key, { action, createdBy, allowlist }) => {
-      const host = hostOf();
-      const deps = mailInAddressDeps(env, host);
+    standing: async (host, { tenantId, scopeId }) => mailInStandingOf(host, depsOn(), tenantId, scopeId),
+    act: async (host, key, { action, createdBy, allowlist }) => {
+      const deps = depsOn();
       if (action === 'revoke') {
         await revokeMailInAddress(host, deps, key);
         return null;
