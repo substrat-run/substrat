@@ -99,9 +99,12 @@ async function eachIssuer(
   deps: ManagedSignInDeps,
   tenantId: TenantId,
   act: (issuer: { scope: Scope; client: VerticalClient }, manager: TenantId) => Promise<string | null>,
+  commit?: () => Promise<void>,
 ): Promise<ManagedSignInOutcome> {
   const found = await managerIssuersOf(deps, tenantId);
   if (!found) return { manager: null, reached: [], removedClients: [] };
+  // Only when an auth-server is about to be told: a tenant with nothing there commits nothing.
+  if (commit && found.issuers.length > 0) await commit();
   const outcome: ManagedSignInOutcome = { manager: found.manager, reached: [], removedClients: [] };
   const failed: Array<{ issuerScopeId: ScopeId; reason: string }> = [];
   for (const { scope, client } of found.issuers) {
@@ -142,12 +145,23 @@ export function unlistManagedTenant(deps: ManagedSignInDeps, tenantId: TenantId)
 
 /**
  * One of the managed tenant's scopes is being reaped: remove its client, its place and its
- * redirect record at every one of its manager's auth-servers. An auth-server deployed before the
+ * redirect record at every one of its manager's auth-servers.
+ *
+ * `commit` runs first, once it is known an auth-server will be asked: the reap's point of no
+ * return, `markScopeStoresFenced` (D-71). It refuses in the same write unless the scope is still
+ * archived (and, for a tenant reap, the tenant still deleting), and from then on the host refuses
+ * the scope's unarchive and the tenant's un-delete. So a recovery that gets in first keeps its
+ * client, and none can get in while the client is being deleted. An auth-server deployed before the
  * keyed verb answers 501; it cannot hold a keyed client, so it is told the un-registrations a
  * plain delivery can say (the place under the tenant's key, the scope's redirects), and the
  * client it was registered by open registration (#3249) stays there, listed by nothing.
  */
-export function removeManagedSignIn(deps: ManagedSignInDeps, tenantId: TenantId, scopeId: ScopeId): Promise<ManagedSignInOutcome> {
+export function removeManagedSignIn(
+  deps: ManagedSignInDeps,
+  tenantId: TenantId,
+  scopeId: ScopeId,
+  commit?: () => Promise<void>,
+): Promise<ManagedSignInOutcome> {
   return eachIssuer(deps, tenantId, async ({ scope, client }, manager) => {
     try {
       const removed = await client.removeManagedClient({ tenantId: manager, scopeId: scope.id, appTenantId: tenantId, appScopeId: scopeId });
@@ -164,5 +178,5 @@ export function removeManagedSignIn(deps: ManagedSignInDeps, tenantId: TenantId,
       });
       return null;
     }
-  });
+  }, commit);
 }

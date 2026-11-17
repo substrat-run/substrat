@@ -2882,7 +2882,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const fenceStores = await platformStoresFence(c, scope, { outlives: true, whileTenantDeleting: true });
         // #3261, D-72: past the backup and the stores' preflight, which touch nothing, and before
         // the fence and the wipe, so an auth-server that cannot be reached stops the reap here.
-        await removeManagedSignIn(managedSignInDeps(c), tenantId, scope.id);
+        // The mark commits the reap first, so no un-delete can land while the client is deleted.
+        await removeManagedSignIn(managedSignInDeps(c), tenantId, scope.id, () =>
+          c.var.admin.markScopeStoresFenced(actor, tenantId, scope.id, { whileTenantDeleting: true }));
         await fenceStores();
         if (vertical) await vertical.deleteScope({ tenantId, scopeId: scope.id });
         // Tenant teardown reaps every scope and releases every name by design — force past
@@ -7066,7 +7068,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #3261, D-72: past every refusal above, which touch nothing, and before the unroute and the
     // wipe, so an auth-server that cannot be reached stops the reap with the scope whole, and a
     // refused reap keeps the client the scope still signs in with.
-    if (signIn.managed) await removeManagedSignIn(managedSignInDeps(c), scope.tenantId, scope.id);
+    // The mark commits the reap first, so no unarchive can land while the client is deleted.
+    if (signIn.managed) {
+      await removeManagedSignIn(managedSignInDeps(c), scope.tenantId, scope.id, () =>
+        c.var.admin.markScopeStoresFenced(actor, scope.tenantId, scope.id));
+    }
     // Stop routing first: that is the fast path, which ends new requests. A call already past the
     // router, or signed and still on its way, is what the fence below is for (D-71). It would
     // otherwise recreate the store object after the wipe, and nothing left could reach it.

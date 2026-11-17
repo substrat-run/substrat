@@ -2174,7 +2174,7 @@ export async function reapRetainedScope(
      * (`removeManagedSignIn`). A throw stops the reap before anything is wiped, and the next pass
      * retries it.
      */
-    removeManagedSignIn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<unknown>;
+    removeManagedSignIn?: (tenantId: TenantId, scopeId: ScopeId, commit: () => Promise<void>) => Promise<unknown>;
   },
   tenantId: TenantId,
   scopeId: ScopeId,
@@ -2188,21 +2188,14 @@ export async function reapRetainedScope(
   else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
   // Past its retention it is archived, so the router no longer serves it, and reapScope below releases its names.
   // Built here, before it runs, so its stores are named (a refusal) before anything is touched.
-  const fence = rec
-    ? await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, () =>
-        host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {}))
-    : null;
+  const mark = () => host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {});
+  const fence = rec ? await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, mark) : null;
   // #3261: past every refusal that touches nothing, and BEFORE the fence, whose run wipes the
-  // stores and marks the scope for good: an auth-server that cannot be reached stops the reap with
-  // nothing wiped. The scope is read again, since the sweep chose it: one unarchived, or whose
-  // tenant was un-deleted, since then keeps its sign-in, and the mark or `reapScope` refuses it.
-  if (deps.removeManagedSignIn) {
-    const current = await host.admin.getScopeRecord(actor, tenantId, scopeId);
-    const tenant = opts.whileTenantDeleting ? await host.admin.getTenant(actor, tenantId) : undefined;
-    if (current?.status === 'archived' && (!opts.whileTenantDeleting || tenant?.status === 'deleting')) {
-      await deps.removeManagedSignIn(tenantId, scopeId);
-    }
-  }
+  // stores: an auth-server that cannot be reached stops the reap with nothing wiped. The fence's
+  // mark commits the reap first (it refuses unless the scope is still archived and, for a tenant
+  // reap, the tenant still deleting, and then blocks both recoveries), so a recovery either got in
+  // first and keeps its client, or cannot land while the client is deleted.
+  if (deps.removeManagedSignIn) await deps.removeManagedSignIn(tenantId, scopeId, mark);
   if (fence) await fence();
   if (resolveRef) {
     // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
@@ -2761,8 +2754,8 @@ export default {
       ...(resolveRef ? { resolveRef } : {}),
       ...(resolveVersion ? { resolveVersion } : {}),
       // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
-      removeManagedSignIn: (tenantId: TenantId, scopeId: ScopeId) =>
-        removeManagedSignIn({ admin: host.admin, actor: SWEEP_ACTOR, resolveVerticalForScope: resolveVerticalForScopeFor(env) }, tenantId, scopeId),
+      removeManagedSignIn: (tenantId: TenantId, scopeId: ScopeId, commit: () => Promise<void>) =>
+        removeManagedSignIn({ admin: host.admin, actor: SWEEP_ACTOR, resolveVerticalForScope: resolveVerticalForScopeFor(env) }, tenantId, scopeId, commit),
     };
     // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
     if (resolveRef) {

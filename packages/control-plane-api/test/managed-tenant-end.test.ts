@@ -41,6 +41,8 @@ type Call =
   | { at: string; verb: 'wipe' };
 let calls: Call[];
 let issuerMode: 'ok' | 'down' | 'legacy';
+/** Set to hold the issuer's removal open until released: a deletion in flight. */
+let paused: { reached: () => void; release: Promise<void> } | null;
 
 /** One fake deployment per vertical; each records the scope it was addressed for. */
 const issuerClient = {
@@ -51,6 +53,10 @@ const issuerClient = {
   removeManagedClient: async (input: { tenantId: string; scopeId: string; appTenantId: string; appScopeId: string }) => {
     if (issuerMode === 'down') throw new Error('auth server unreachable');
     if (issuerMode === 'legacy') throw new ControlPlaneError(501, 'the auth server predates managed clients (#3261) — redeploy it');
+    if (paused) {
+      paused.reached();
+      await paused.release;
+    }
     calls.push({ at: input.scopeId, verb: 'remove', tenantId: input.tenantId, appTenantId: input.appTenantId, appScopeId: input.appScopeId });
     return { removed: `client-of-${input.appScopeId}`, unlisted: true };
   },
@@ -115,7 +121,17 @@ afterAll(async () => {
 beforeEach(() => {
   calls = [];
   issuerMode = 'ok';
+  paused = null;
 });
+
+/** Hold the next removal open; resolves once the reap reaches it, with the release. */
+function pauseRemoval(): { reached: Promise<void>; release: () => void } {
+  let reached!: () => void;
+  let release!: () => void;
+  const reachedP = new Promise<void>((r) => (reached = r));
+  paused = { reached, release: new Promise<void>((r) => (release = r)) };
+  return { reached: reachedP, release };
+}
 
 describe("a managed tenant's end at its manager's auth-servers (#3261, D-72)", () => {
   it("deleting takes its place off the manager's auth-server only, and keeps the client", async () => {
@@ -174,9 +190,9 @@ describe("a managed tenant's end at its manager's auth-servers (#3261, D-72)", (
     });
     expect(calls).toEqual([]);
     expect((await host.admin.getTenant(staff, t))?.status).toBe('deleting');
-    // Archived, which an un-delete reverses, but neither fenced nor wiped.
+    // Committed (marked, so no un-delete can land under the half-done removal), and nothing wiped.
     expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('archived');
-    expect(await host.admin.scopeStoresFencedAt(staff, t, s)).toBeNull();
+    expect(await host.admin.scopeStoresFencedAt(staff, t, s)).not.toBeNull();
 
     issuerMode = 'ok';
     expect((await reapTenant(t)).status).toBe(200);
@@ -201,6 +217,27 @@ describe("a managed tenant's end at its manager's auth-servers (#3261, D-72)", (
     expect(calls).toEqual([]);
     expect((await host.admin.getScopeRecord(staff, a.t, a.s))?.status).toBe('archived');
     expect((await host.admin.getTenant(staff, b.t))?.status).toBe('deleting');
+  });
+
+  it('no recovery lands while the client is being deleted: an unarchive, or an un-delete, is refused', async () => {
+    const a = await business();
+    await host.admin.archiveScope(staff, a.t, a.s);
+    const held = pauseRemoval();
+    const scopeReap = reapScope(a.t, a.s);
+    await held.reached;
+    await expect(host.admin.unarchiveScope(staff, a.t, a.s)).rejects.toThrow();
+    held.release();
+    expect((await scopeReap).status).toBe(200);
+
+    const b = await business();
+    await host.admin.setTenantStatus(staff, b.t, 'deleting');
+    const heldB = pauseRemoval();
+    const tenantReap = reapTenant(b.t);
+    await heldB.reached;
+    await expect(host.admin.setTenantStatus(staff, b.t, 'active')).rejects.toThrow(/un-deleted/);
+    heldB.release();
+    expect((await tenantReap).status).toBe(200);
+    expect((await host.admin.getTenant(staff, b.t))?.status).toBe('reaped');
   });
 
   it("an auth-server deployed before the keyed verb is told the un-registrations a delivery can say", async () => {

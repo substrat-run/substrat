@@ -116,18 +116,20 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const { t, fork: scope, hostname } = await routedFork(host);
     await host.admin.archiveScope(staff, t, scope);
     const { stores, seen } = witness(host, () => hostname);
-    const failing = async () => {
+    const failing = async (_t: unknown, _s: unknown, commit: () => Promise<void>) => {
+      await commit();
       throw new Error("the manager's auth-server is unreachable");
     };
     await expect(reapRetainedScope({ host, stores, drivers: [graph], removeManagedSignIn: failing }, t, scope)).rejects.toThrow(/unreachable/);
-    // Nothing wiped and nothing marked: the store fence never ran, so the scope is still whole.
+    // Nothing wiped: the store fence never ran. The reap is committed (marked), so no unarchive
+    // can land under the half-done removal, and the next pass finishes it.
     expect(seen).toEqual([]);
-    expect(await host.admin.scopeStoresFencedAt(staff, t, scope)).toBeNull();
+    expect(await host.admin.scopeStoresFencedAt(staff, t, scope)).not.toBeNull();
     expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
 
     const order: string[] = [];
     const ordered: PlatformScopeStores = { ...stores, fenceStores: async () => void order.push('fence') };
-    await reapRetainedScope({ host, stores: ordered, drivers: [graph], removeManagedSignIn: async () => void order.push('sign-in') }, t, scope);
+    await reapRetainedScope({ host, stores: ordered, drivers: [graph], removeManagedSignIn: async (_t, _s, commit) => { await commit(); order.push('sign-in'); } }, t, scope);
     expect(order).toEqual(['sign-in', 'fence']);
     expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('reaped');
   });
@@ -139,10 +141,10 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     await host.admin.unarchiveScope(staff, t, scope);
     const { stores } = witness(host, () => hostname);
     const removed: string[] = [];
-    // No store, so no fence mark refuses it first: the reap's own re-read is what keeps the sign-in.
+    // No store to fence, so the commit the removal is handed is what refuses it, before any issuer is asked.
     await expect(
-      reapRetainedScope({ host, stores, drivers: [], removeManagedSignIn: async (_t, s) => void removed.push(s) }, t, scope),
-    ).rejects.toThrow(/archived/);
+      reapRetainedScope({ host, stores, drivers: [], removeManagedSignIn: async (_t, s, commit) => { await commit(); removed.push(s); } }, t, scope),
+    ).rejects.toThrow(/not archived/);
     expect(removed).toEqual([]);
   });
 
