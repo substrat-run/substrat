@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { Miniflare } from 'miniflare';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateScopeStoreKeyPair, issueScopeStoreEnvelope } from '@substrat-run/contracts/scope-store-envelope';
 import { withPythonStoreEntry } from '@substrat-run/control-plane-api';
 
@@ -22,14 +23,45 @@ import { withPythonStoreEntry } from '@substrat-run/control-plane-api';
  * kept under `node_modules/.cache`. A wheel that cannot be fetched fails here, by name: skipping would
  * leave the shape that broke untested.
  *
- * Over the workerd test budget, and on purpose: a Python worker boots in about 3 s, and one restart costs
- * another. The timeout is 3x what a run takes.
+ * Over the workerd test budget, and on purpose: a Python worker boots in 2–4 s, which each block pays in
+ * its `beforeAll` and the restart test pays once more inside its own `it`. The timeout is far over 3x the
+ * slowest of them on CI, because a boot is also the one step that can wait on the network (below).
  */
 const TIMEOUT_MS = 60_000;
 
 const PACKAGE = fileURLToPath(new URL('../../../packages/store-entry-python/', import.meta.url));
 const SCRIPT = 'substrat-store-counter-docs';
 const CACHE = fileURLToPath(new URL('../node_modules/.cache/store-entry-python/', import.meta.url));
+
+/**
+ * workerd, given no disk cache, downloads the Pyodide bundle (17 MB, from pyodide-capnp-bin.edgeworker.net)
+ * every time it starts, and Miniflare gives it none. This file starts workerd four times, so a run made
+ * four downloads, and one slow or reset download was a 60 s timeout or a runtime that "failed to start"
+ * (#3266). Miniflare takes no extra workerd arguments, only another binary, so the binary it runs is a
+ * wrapper adding the cache: one download on a fresh checkout, none after. Windows runs workerd uncached,
+ * since a `.cmd` cannot be spawned without a shell.
+ */
+function workerdWithBundleCache(): string | undefined {
+  if (process.platform === 'win32') return undefined;
+  const workerd = (createRequire(fileURLToPath(import.meta.resolve('miniflare')))('workerd') as { default: string }).default;
+  const bundles = join(CACHE, 'pyodide');
+  mkdirSync(bundles, { recursive: true });
+  const quoted = (s: string) => `'${s.replaceAll('\'', '\'\\\'\'')}'`;
+  const wrapper = join(CACHE, 'workerd');
+  // Written aside and renamed, so a run beside this one never executes a half-written script.
+  const draft = `${wrapper}.${process.pid}`;
+  writeFileSync(draft, `#!/bin/sh\nexec ${quoted(workerd)} "$@" ${quoted(`--pyodide-bundle-disk-cache-dir=${bundles}`)}\n`, { mode: 0o755 });
+  renameSync(draft, wrapper);
+  return wrapper;
+}
+
+beforeAll(() => {
+  const wrapper = workerdWithBundleCache();
+  if (wrapper) vi.stubEnv('MINIFLARE_WORKERD_PATH', wrapper);
+});
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 /** The wheel `uv.lock` pins for the SDK: its URL and SHA-256. */
 function lockedSdkWheel(): { url: string; sha256: string } {
@@ -138,6 +170,8 @@ describe.each([
       durableObjectsPersist: persist,
     });
     mf = start();
+    // The boot is setup: a runtime that cannot start fails here, not in whichever `it` asks first.
+    await mf.ready;
   }, TIMEOUT_MS);
 
   afterAll(async () => {
