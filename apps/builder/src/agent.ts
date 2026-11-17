@@ -43,7 +43,7 @@ import {
 	type TurnResult,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { BUILD_COMMAND_TIMEOUT_MS, BuildQueue, BuildWaitExpired, busyDetail, busyRefusal, type Occupant } from './build-queue.js';
+import { beforeDeadline, BUILD_LIFETIME_MS, BuildQueue, BuildWaitExpired, busyDetail, busyRefusal, commandBudget, type Occupant } from './build-queue.js';
 import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, interruptedRecord, interruptionOf, invalidFields, orBuildFailure, RECORD_INDEX, RECORD_PREFIX, retained, ulid, type BuildRecord } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
@@ -133,18 +133,24 @@ interface ProjectState {
 	lastGateReport?: string;
 }
 
-/** Bridge the real sandbox stub to the structural slice ContainerWorkspace takes. */
-function sandboxLike(sb: Sandbox, timeout?: number): SandboxLike {
+/**
+ * Bridge the real sandbox stub to the structural slice ContainerWorkspace takes. A source
+ * build passes its `deadline` (epoch ms): every command then runs within what is left of the
+ * build's lifetime, and a file read or write is refused once it is spent (#3259).
+ */
+function sandboxLike(sb: Sandbox, deadline?: number): SandboxLike {
+	const bounded = <T>(work: () => Promise<T>) => (deadline === undefined ? work() : beforeDeadline(deadline, work));
 	return {
 		exec: async (cmd, opts) => {
+			const timeout = deadline === undefined ? undefined : commandBudget(deadline, Date.now());
 			const r = await sb.exec(cmd, { ...(opts?.cwd ? { cwd: opts.cwd } : {}), ...(timeout ? { timeout } : {}) });
 			return { stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode };
 		},
 		readFile: async (path) => {
-			const r = await sb.readFile(path);
+			const r = await bounded(() => sb.readFile(path));
 			return typeof r === 'string' ? r : { content: (r as { content: string }).content };
 		},
-		writeFile: async (path, content) => await sb.writeFile(path, content),
+		writeFile: async (path, content) => await bounded(() => sb.writeFile(path, content)),
 		mkdir: async (path, opts) => await sb.mkdir(path, opts),
 		listFiles: async (path) => {
 			const r = (await sb.listFiles(path)) as unknown;
@@ -373,9 +379,11 @@ export class BuilderAgent extends DurableObject<Env> {
 	async #build(slug: string, request: SourceBuildRequest, buildId: string): Promise<Response> {
 		/** Where a submitted snapshot builds from; undefined for a pinned revision. */
 		const submittedDirectory = request.snapshot?.directory;
+		// The build's whole life fits inside the container's rollout grace period (#3259).
+		const deadline = Date.now() + BUILD_LIFETIME_MS;
 		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`);
 		const log = new BuildLog(buildId, slug, (record) => this.ctx.storage.put(`${RECORD_PREFIX}${buildId}`, record));
-		const sb = log.sandbox(sandboxLike(raw, BUILD_COMMAND_TIMEOUT_MS));
+		const sb = log.sandbox(sandboxLike(raw, deadline));
 		let entry: ProjectEntry | undefined;
 		let revision: string | undefined;
 		try {
@@ -439,7 +447,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'building', startedAt: new Date().toISOString() });
 				const toolchain = await checkedExec(sb, 'cat /workspace/substrat/.toolchain-id');
 				const input = { root: directory === '.' ? root : `${root}/${directory}`, slug, request: { ...request, snapshot: undefined, revision } };
-				await raw.writeFile('/build/request.json', JSON.stringify(input));
+				await sb.writeFile('/build/request.json', JSON.stringify(input));
 				// Source code and dependency hooks run without repository or control-plane credentials.
 				await checkedExec(sb, 'chown -R substrat-build:substrat-build /build');
 				const install = "cd /build/source && pnpm install --frozen-lockfile";
@@ -449,7 +457,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				await checkedExec(sb, `su -s /bin/sh substrat-build -c ${shellQuote(`${install} && ${run}`)}`);
 				await log.begin('collect the release');
 				const { form, dataLoss } = await collectRelease(async (path) => {
-					const file = await raw.readFile(path);
+					const file = await sb.readFile(path);
 					return typeof file === 'string' ? file : file.content;
 				});
 				const gate = JSON.parse(form.get('origin') as string)?.gate;

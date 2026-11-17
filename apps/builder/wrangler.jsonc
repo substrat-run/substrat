@@ -53,8 +53,9 @@
 	// build starts a sandbox of its own (`build:<buildId>`), so with the default of 0 a
 	// rollout SIGTERMs a build that started moments before it, and the build's running
 	// command dies with the sandbox's control server — ours in a release, and a tenant's
-	// push that lands during one. An hour is above the longest a build holds its sandbox
-	// (test/rollout-grace.test.ts derives the bound). Older sandboxes are still replaced;
+	// push that lands during one. An hour is above the 45 minutes a build may live
+	// (BUILD_LIFETIME_MS, enforced on every command and file operation of the build, and
+	// held below this value by test/rollout-grace.test.ts). Older sandboxes are still replaced;
 	// a younger one keeps the previous image until it ends or ages past the window.
 	"containers": [
 		{
