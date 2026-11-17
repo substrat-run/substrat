@@ -202,3 +202,29 @@ export type MailInRelayRequest = Omit<z.input<typeof mailInRelayRequest>, 'actio
 
 export const mailInRelayResult = z.object({ address: mailInAddress.nullable() });
 export type MailInRelayResult = z.infer<typeof mailInRelayResult>;
+
+/**
+ * A team's act on one of its apps' addresses, through the control plane's tenant surface
+ * (`POST /tenants/:t/scopes/:s/mail-in`) — what the dashboard sends once its own in-scope check
+ * has passed, naming the principal that check was for. The same three acts as the relay's, from
+ * the other door: the relay's caller is the vertical's worker, this one's is a person in the team.
+ */
+export const mailInAddressAct = z.object({
+  action: z.enum(['request', 'rotate', 'revoke']),
+  /** The principal whose check authorized the act. */
+  createdBy: z.string().min(1),
+  allowlist: z.array(mailInAllowEntry).max(MAIL_IN_MAX_ALLOWLIST).optional(),
+});
+export type MailInAddressAct = z.infer<typeof mailInAddressAct>;
+
+/**
+ * One scope's mail-in standing, as the tenant surface reads it: its live address (if any), the
+ * landing its running version declares (null ⇒ the app cannot receive mail), and whether this
+ * deployment receives mail at all.
+ */
+export const mailInStanding = z.object({
+  address: mailInAddress.nullable(),
+  landing: z.object({ operation: z.string(), permission: z.string() }).nullable(),
+  receiving: z.boolean(),
+});
+export type MailInStanding = z.infer<typeof mailInStanding>;

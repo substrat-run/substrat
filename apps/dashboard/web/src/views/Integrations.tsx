@@ -30,6 +30,7 @@ import {
 import { Page } from '../components/layout';
 import { card, HonestyBanner, MonoTag, PageTitle, Pill, type PillKind , SweepStrip } from '../components/ui';
 import { relativeTime, untilTime } from '../lib/format';
+import { MailInCard } from './MailInCard';
 import { ApiError as TeamApiError } from '../lib/api.generated';
 
 /**
@@ -1140,6 +1141,8 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
           );
         })}
       </div>
+
+      <MailInCard teamId={teamId} app={app} />
 
       {dialog && (
         <ConnectDialog

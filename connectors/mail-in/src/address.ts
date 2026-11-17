@@ -9,6 +9,7 @@ import {
   type Connection,
   type ConnectionId,
   type MailInAddress,
+  type MailInStanding,
   type PlatformActorId,
   type ScopeId,
   type TenantId,
@@ -315,6 +316,31 @@ export async function mailInAddressOf(
 ): Promise<MailInAddress | null> {
   const live = await liveAddress(host, actor, tenantId, scopeId);
   return live ? view(host, live.connection, live.binding) : null;
+}
+
+/**
+ * A scope's standing, for a settings screen: its live address, the landing its running version
+ * declares (null for a preview or fork, which may never receive, or a version declaring none), and
+ * whether this deployment receives mail at all. A scope that is not the tenant's is a 404, as one
+ * that does not exist is.
+ */
+export async function mailInStandingOf(
+  host: ScopeHost,
+  deps: MailInAddressDeps,
+  tenantId: TenantId,
+  scopeId: ScopeId,
+): Promise<MailInStanding> {
+  const rec = await host.admin.getScopeRecord(deps.actor, tenantId, scopeId);
+  if (!rec) throw new MailInError('scope not found', 404);
+  const landing =
+    rec.vertical && isPrimaryScope(rec)
+      ? await deps.landingOf({ tenantId, scopeId, vertical: rec.vertical, verticalVersionId: rec.verticalVersionId ?? null, servingRef: rec.servingRef ?? null })
+      : null;
+  return {
+    address: await mailInAddressOf(host, deps.actor, tenantId, scopeId),
+    landing: landing ? { operation: landing.operation, permission: landing.permission } : null,
+    receiving: deps.domain !== undefined,
+  };
 }
 
 /** Every live address of a tenant, for a console. */

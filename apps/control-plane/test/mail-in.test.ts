@@ -5,6 +5,7 @@ import { MAIL_IN_PROVIDER, connectionId, platformActorId, principalId, scopeId, 
 import { BINDING_KEY, MESSAGE_PREFIX, SMTP_REFUSALS, addressOf, mintLocalPart, type MailInBinding, type MailInMessageEntry } from '@substrat-run/connector-mail-in';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import worker, { RelayGateway } from '../src/worker.js';
+import { mailInTenantDoor } from '../src/mail-in.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -139,6 +140,24 @@ describe('inbound mail on the control plane', () => {
     await host.admin.putConnectorState(other, BINDING_KEY, { address: addressOf(local, env.MAIL_IN_DOMAIN!), scopeId: s, tenantId: t, vertical, operation: 'a/b', permission: 'a:b', allowlist: [], createdAt: new Date().toISOString(), createdBy: 'p' });
     await host.admin.revokeConnection(staff, other);
     expect((await deliver(addressOf(local, env.MAIL_IN_DOMAIN!), raw('rv'))).rejected).toBe(SMTP_REFUSALS.unknown);
+  });
+
+  it("acts on the tenant door through the host it is handed, so the admin log names the person (#977)", async () => {
+    const host = hostFor();
+    // A scope and address of this test's own: revoking leaves every other test's address alone.
+    const own = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: own, vertical });
+    await host.admin.activateScope(staff, t, own);
+    const id = connectionId.parse(ulid());
+    const local = mintLocalPart(vertical);
+    await host.admin.createConnection(staff, { id, tenantId: t, vertical, provider: MAIL_IN_PROVIDER, label: 'x', externalAccountRef: local, secret: { address: 'x' } });
+    await host.admin.putConnectorState(id, BINDING_KEY, { address: addressOf(local, env.MAIL_IN_DOMAIN!), scopeId: own, tenantId: t, vertical, operation: 'a/b', permission: 'a:b', allowlist: [], createdAt: new Date().toISOString(), createdBy: 'p' } satisfies MailInBinding);
+
+    const person = principalId.parse(ulid());
+    const door = mailInTenantDoor(testEnv(), hostFor);
+    expect(await door.act(host.attributed({ principal: person, tenantId: t }), { tenantId: t, scopeId: own }, { action: 'revoke', createdBy: person })).toBeNull();
+    const rows = (await host.admin.auditLog(staff, { tenantId: t })).filter((r) => r.action === 'revokeConnection' && (r.after as { id?: string } | null)?.id === id);
+    expect(rows.map((r) => r.onBehalfOf?.principal)).toEqual([person]);
   });
 
   describe('the address relay', () => {

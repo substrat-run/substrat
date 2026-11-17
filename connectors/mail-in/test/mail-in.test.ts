@@ -32,6 +32,7 @@ import {
   deliverInboundMail,
   headerFields,
   mailInAddressOf,
+  mailInStandingOf,
   memoryMailInStore,
   messageEntries,
   mintLocalPart,
@@ -226,6 +227,19 @@ describe('the address', () => {
     expect(conn!.createdBy).toBe(w.reader);
     const grants = await w.host.connectionGrantsInScope(w.t, w.s);
     expect(grants.filter((g) => g.connectionId === conn!.id).map((g) => g.permission)).toEqual([RECEIVE]);
+  });
+
+  it('stands as the settings screen reads it: the address, the declared landing, whether mail is received', async () => {
+    const w = await world();
+    const standing = () => mailInStandingOf(w.host, w.deps, w.t, w.s);
+    expect(await standing()).toEqual({ address: null, landing: LANDING, receiving: true });
+    const a = await w.request();
+    expect(await standing()).toMatchObject({ address: { address: a.address }, landing: LANDING, receiving: true });
+    expect(await mailInStandingOf(w.host, { ...w.deps, domain: undefined }, w.t, w.s)).toMatchObject({ receiving: false });
+    // Not this tenant's scope, or none at all: the same 404.
+    await expect(mailInStandingOf(w.host, w.deps, tenantId.parse(ulid()), w.s)).rejects.toMatchObject({ status: 404 });
+    await expect(mailInStandingOf(w.host, w.deps, w.t, scopeId.parse(ulid()))).rejects.toMatchObject({ status: 404 });
+    expect(await mailInStandingOf(w.host, { ...w.deps, landingOf: async () => null }, w.t, w.s)).toMatchObject({ landing: null });
   });
 
   it('is one address when two requests race to mint, and both answer it', async () => {

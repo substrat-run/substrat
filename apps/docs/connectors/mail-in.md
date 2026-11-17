@@ -90,7 +90,13 @@ never names one, so the original is not deleted unnoticed.
 
 ## Getting an address
 
-From the app's own worker — the act checked by your own operation first, as with
+**From the dashboard.** An app whose vertical declares a mail-in landing shows an **Inbound email**
+card under Settings → Integrations. There a team owner or admin gets the address, copies it, sets
+who may send, replaces it, or turns it off, and sees what it has received: delivered, waiting,
+refused and failed counts, and why the last message was refused. The address is shown only to those
+who may manage integrations, since whoever has it can send mail into the app.
+
+**From the app itself**, when it offers its own settings screen — from the app's own worker — the act checked by your own operation first, as with
 [`requestConnectUrl`](/reference/vertical-host#requestconnecturl-request):
 
 ```ts
@@ -175,8 +181,6 @@ counted twice. Refusals show in the address's counts, with the reason (`rate-lim
 
 ## What's missing
 
-- **The dashboard view of an address** (request, rotate, revoke from Settings) is not there yet;
-  today an app asks through `mailInAddress`.
 - **Replaying a dead-lettered message** is an operator's act with no button: the message is kept,
   but nothing re-queues it yet.
 - **Previews and forks** cannot have an address — they cause no outbound effects, and an address

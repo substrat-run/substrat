@@ -189,6 +189,7 @@ export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/app-members': 'app roster was not an assistant tool before this route moved',
   'dashboard/get-app-auth': 'identity configuration was not an assistant tool before this route moved',
   'dashboard/get-app-integrations': 'connection metadata was not an assistant tool before this route moved',
+  'dashboard/get-app-mail-in': 'a mail-in address is a capability: whoever reads it can send mail into the app, so the assistant does not hand it out',
   'dashboard/get-app-integration-activity': 'connection activity was not an assistant tool before this route moved',
   'dashboard/get-app-connection-activity': 'connection activity was not an assistant tool before this route moved',
   'dashboard/list-app-connect-links': 'outstanding connect links were not an assistant tool before this route moved',

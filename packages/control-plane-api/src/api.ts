@@ -182,6 +182,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
+import { mailInAddressAct, mailInStanding, type MailInAddress, type MailInAddressAct, type MailInStanding } from '@substrat-run/contracts';
 import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, MailSender, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, storesFencedRefusal, type StoreErasureReplay } from '@substrat-run/kernel';
@@ -400,6 +401,22 @@ import {
   type SocialRelayOptions,
   type SocialRelayOutcome,
 } from './social-relay.js';
+
+/**
+ * Inbound mail's tenant door (#2611): a team reads, requests, rotates and revokes one of its apps'
+ * mail-in addresses, behind `GET`/`POST /tenants/:t/scopes/:s/mail-in`. Host-injected, because the
+ * address lifecycle is the platform's mail-in connector, which this package does not carry. Both
+ * halves take the scope with its tenant, and answer a scope that is not the tenant's as one that
+ * does not exist.
+ *
+ * A refusal is thrown as an error carrying `status` (and, where the taxonomy has one, `code`): a
+ * status under 500 is answered as the caller's problem, anything else is the platform's.
+ */
+export interface MailInTenantDoor {
+  standing(host: ScopeHost, scope: { tenantId: TenantId; scopeId: ScopeId }): Promise<MailInStanding>;
+  /** The address after the act: null once revoked. */
+  act(host: ScopeHost, scope: { tenantId: TenantId; scopeId: ScopeId }, act: MailInAddressAct): Promise<MailInAddress | null>;
+}
 
 /**
  * What one provider can answer about a live connection (#605) — the seam behind
@@ -814,6 +831,11 @@ export interface ControlPlaneApiOptions {
    * `POST …/connections/:id/send-test` (#2343); a provider absent here 501s there.
    */
   mailSenders?: Readonly<Record<string, MailSender>>;
+  /**
+   * Inbound mail's tenant door (#2611), behind `…/scopes/:s/mail-in`. Absent ⇒ those routes 501:
+   * this deployment has no mail-in connector wired.
+   */
+  mailIn?: MailInTenantDoor;
   /**
    * The inspector for a vertical-defined provider (`<namespace>.<name>`, vertical-connectors.md
    * §6.4), which `connectionInspectors` never names: built per (tenant, vertical), since its code
@@ -1747,6 +1769,9 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // #2343: a mail connection's test send. The dashboard sends it only to the signed-in person.
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/send-test$/, pin: 'path' },
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/senders$/, pin: 'path' },
+  // #2611: one app's mail-in address — read it, and request, rotate or revoke it.
+  { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/mail-in$/, pin: 'path' },
+  { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/mail-in$/, pin: 'path' },
   // A vertical's mailed connect links (connections.md §3.5.4): the consent landing's liveness
   // read, the callback's spend and its undo, and the integrations card's list and revoke.
   { method: 'GET', re: /\/tenants\/[^/]+\/connect-links$/, pin: 'path' },
@@ -4007,6 +4032,60 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         status: typeof status === 'number' ? status : null,
         error: (e instanceof Error ? e.message : String(e)).slice(0, 600),
       }));
+    }
+  });
+
+  /**
+   * **One app's mail-in address** (#2611): its standing, and the three acts on it. The caller has
+   * already made its own in-scope check (the dashboard's `dashboard/begin-connection`) and names
+   * the principal it was for as `createdBy`; the tenant is the path's. Not an admin-log mutation
+   * of its own: the address's connection is created, granted and revoked through `HostAdmin`,
+   * which logs each. Who asked is on the request record, beside the connection's `createdBy`.
+   */
+  const mailInScope = (c: Context) => ({
+    tenantId: tenantIdSchema.parse(c.req.param('tenantId')),
+    scopeId: scopeIdSchema.parse(c.req.param('scopeId')),
+  });
+  const mailInRefusal = (c: Context, e: unknown): Response | undefined => {
+    const status = (e as { status?: unknown } | null)?.status;
+    if (typeof status !== 'number' || status >= 500 || !(e instanceof Error)) return undefined;
+    const code = (e as { code?: ErrorCode }).code;
+    return code ? refuse(c, code, e.message) : refuseStatus(c, status, e.message);
+  };
+  app.get('/tenants/:tenantId/scopes/:scopeId/mail-in', async (c) => {
+    const door = options.mailIn;
+    if (!door) return refuseStatus(c, 501, 'inbound mail is not wired on this deployment');
+    try {
+      return c.json(mailInStanding.parse(await door.standing(c.var.host, mailInScope(c))));
+    } catch (e) {
+      const refused = mailInRefusal(c, e);
+      if (refused) return refused;
+      throw e;
+    }
+  });
+  app.post('/tenants/:tenantId/scopes/:scopeId/mail-in', async (c) => {
+    const door = options.mailIn;
+    if (!door) return refuseStatus(c, 501, 'inbound mail is not wired on this deployment');
+    const body = mailInAddressAct.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      const first = body.error.issues[0];
+      return refuse(c, 'validation_failed', `invalid mail-in act: ${first ? `${first.path.join('.') || '(root)'} — ${first.message}` : 'malformed body'}`);
+    }
+    const scope = mailInScope(c);
+    const principal = c.get('principal');
+    console.log('mail-in.address', {
+      tenantId: scope.tenantId,
+      scopeId: scope.scopeId,
+      action: body.data.action,
+      actor: c.get('actor'),
+      onBehalfOf: principal.kind === 'tenant' ? (principal.onBehalfOf?.principal ?? null) : null,
+    });
+    try {
+      return c.json({ address: await door.act(c.var.host, scope, body.data) });
+    } catch (e) {
+      const refused = mailInRefusal(c, e);
+      if (refused) return refused;
+      throw e;
     }
   });
 

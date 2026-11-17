@@ -32,6 +32,8 @@ async function submitConnection(response: Response) {
         connectFlow: null, multiAccount: false, required: true, connection: null, connections: [],
       }] });
     }
+    // The Inbound email card reads its own standing; this app declares no mail-in landing.
+    if (path === '/api/teams/team-a/apps/app-a/mail-in') return Response.json({ address: null, landing: null, receiving: true });
     return response;
   }));
   await act(async () => root.render(<AppIntegrations teamId="team-a" app={{ app_scope_id: 'app-a' } as AppRow} />));

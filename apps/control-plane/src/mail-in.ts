@@ -7,7 +7,11 @@ import {
 import {
   acceptInboundMail,
   deliverInboundMail,
+  mailInStandingOf,
   r2MailInStore,
+  requestMailInAddress,
+  revokeMailInAddress,
+  rotateMailInAddress,
   type MailInAddressDeps,
   type MailInInboundDeps,
   type MailInLandingOf,
@@ -15,6 +19,7 @@ import {
 } from '@substrat-run/connector-mail-in';
 import { runningVersionOf, type ScopeHost } from '@substrat-run/kernel';
 import type { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
+import type { MailInTenantDoor } from '@substrat-run/control-plane-api';
 
 /**
  * Inbound mail's control-plane half (#2611): the `email()` handler Email Routing calls, and the
@@ -82,6 +87,31 @@ export function landingOfFor(host: CloudflareScopeHost): MailInLandingOf {
 export function mailInAddressDeps(env: MailInEnv, host: CloudflareScopeHost): MailInAddressDeps {
   const inbound = mailInInboundDeps(env);
   return { actor: MAIL_IN_ACTOR, domain: inbound.domain, store: inbound.store, landingOf: landingOfFor(host) };
+}
+
+/**
+ * The tenant door (#2611) the control-plane API mounts at `…/scopes/:s/mail-in`: the dashboard's
+ * way to the same lifecycle the relay serves a vertical's worker.
+ *
+ * The lifecycle runs on the host the API hands in: for a tenant credential minted for a person it is
+ * the attributed view (#977), so the admin log names that person — and any impersonation — beside the
+ * mail-in actor on the address's create, grant and revoke. A fresh Cloudflare host is built only for
+ * the landing lookup, a read of the stored manifests that names nobody.
+ */
+export function mailInTenantDoor(env: MailInEnv, hostOf: () => CloudflareScopeHost): MailInTenantDoor {
+  const depsOn = () => mailInAddressDeps(env, hostOf());
+  return {
+    standing: async (host, { tenantId, scopeId }) => mailInStandingOf(host, depsOn(), tenantId, scopeId),
+    act: async (host, key, { action, createdBy, allowlist }) => {
+      const deps = depsOn();
+      if (action === 'revoke') {
+        await revokeMailInAddress(host, deps, key);
+        return null;
+      }
+      const act = action === 'request' ? requestMailInAddress : rotateMailInAddress;
+      return act(host, deps, { ...key, createdBy, ...(allowlist ? { allowlist } : {}) });
+    },
+  };
 }
 
 /** The relay's and the API's scope key. */
