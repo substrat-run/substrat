@@ -1,0 +1,14 @@
+{
+  "id": "outside-vite-proxy-shorthand",
+  "kind": "outside",
+  "origin": "#1388: Vite's string proxy shorthand rewrites Host, so the OIDC callback lands on the API's port. No checklist item covers it.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "app/vite.config.ts",
+      "package.json"
+    ]
+  },
+  "expect": []
+}

@@ -1,0 +1,14 @@
+{
+  "id": "clean-migration-appended",
+  "kind": "clean",
+  "origin": "The twin of s4-shipped-migration-edited: the same column, added by a new migration appended after the shipped one.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "engines/absence",
+    "files": [
+      "package.json",
+      "src/index.ts"
+    ]
+  },
+  "expect": []
+}

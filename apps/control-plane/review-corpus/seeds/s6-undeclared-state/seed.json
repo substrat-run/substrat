@@ -1,0 +1,57 @@
+{
+  "id": "s6-undeclared-state",
+  "kind": "bad",
+  "origin": "S6 and #2386: lint:lifecycle-writes reads only declared lifecycles, so a state field with its transitions coded inline and no declaration passes it.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "CONFORMANCE.md",
+      "MIGRATIONS.md",
+      "PERMISSIONS.md",
+      "app/src/api.generated.ts",
+      "journal.json",
+      "model.json",
+      "openapi.json",
+      "package.json",
+      "spec/model.ts",
+      "src/migrations.generated.ts",
+      "src/module.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S6",
+      "anyOf": [
+        {
+          "file": "spec/model.ts",
+          "from": "stage: z.enum(['open', 'doing', 'done']).nullable(),",
+          "before": 1,
+          "after": 0
+        },
+        {
+          "file": "src/module.ts",
+          "from": "const current = item.stage ?? 'open';",
+          "through": "ctx.sql.exec('UPDATE todo_items SET stage = ?"
+        }
+      ]
+    }
+  ],
+  "allow": [
+    {
+      "item": "S8",
+      "anyOf": [
+        {
+          "file": "src/module.ts",
+          "from": "'todo/move-item': async (ctx, input) => {",
+          "after": 2
+        },
+        {
+          "file": "spec/model.ts",
+          "from": "'todo/move-item': {",
+          "after": 2
+        }
+      ]
+    }
+  ]
+}

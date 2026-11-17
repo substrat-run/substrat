@@ -1,0 +1,14 @@
+diff --git a/spec/concept.md b/spec/concept.md
+index 74a37f0..aa4b756 100644
+--- a/spec/concept.md
++++ b/spec/concept.md
+@@ -10,7 +10,8 @@ same app: the person who owns a list, and the person it was shared with.
+ 
+ Two nouns — a **list**, and the **items** on it. An item is open or done, and it
+ can go back; that is the entire lifecycle. There are no stages to skip because
+-there are no stages.
++there are no stages. A list can be archived when it is finished with, or put in
++the bin, and both can be undone; the bin empties itself after thirty days.
+ 
+ This is a record, not a workflow. It composes no engine, and that is a fact about
+ the app rather than an omission.

@@ -1,0 +1,35 @@
+{
+  "id": "s8-untested-operation",
+  "kind": "bad",
+  "origin": "S8 and #2386: an operation added with no scenario calling it. lint:operation-tests only warns, and is the gate a reader backs up.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "CONFORMANCE.md",
+      "PERMISSIONS.md",
+      "app/src/api.generated.ts",
+      "openapi.json",
+      "package.json",
+      "spec/model.ts",
+      "src/module.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S8",
+      "anyOf": [
+        {
+          "file": "src/module.ts",
+          "from": "'todo/rename-item': async (ctx, input) => {",
+          "after": 2
+        },
+        {
+          "file": "spec/model.ts",
+          "from": "'todo/rename-item': {",
+          "after": 2
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "s1-other-module-table",
+  "kind": "bad",
+  "origin": "Decision 28 and boundary-lint R5: a module reaching into another module's private tables. Here todo deletes the notes plugin's rows directly when a list is deleted.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "src/module.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S1",
+      "file": "src/module.ts",
+      "from": "'DELETE FROM notes_item_notes",
+      "before": 2,
+      "after": 1
+    }
+  ]
+}

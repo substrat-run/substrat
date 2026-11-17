@@ -1,0 +1,210 @@
+/**
+ * The seeded corpus, read by candidate models: the measurement behind choosing `REVIEW_MODEL`
+ * (RFC hosted-review-runner Q1a, Q7 C; #2365). An opt-in probe that spends real money. It never
+ * runs in CI and sets no configuration: choosing the model is the owner's decision.
+ *
+ *   pnpm --filter @substrat-run/control-plane review-corpus --dry-run --model <spec> …
+ *   pnpm --filter @substrat-run/control-plane review-corpus --budget 5 --model <spec> … [--repeat 2]
+ *
+ * Each read is the hosted job's own: the seed's diff from `diffReview`, the job's system and
+ * prompt, `REVIEW_CALL` with the job's output cap, and `readReply` (the assembler's drop rule
+ * included). Only the `cloudflare` gateway row is a candidate (Q3e). Its two variables are read
+ * from the environment, or from `--env-file` (only those two lines, never printed).
+ *
+ * Spend: before any call, the worst case of one attempt per read (input at its UTF-8 byte bound,
+ * output at the cap) is priced from the rate card and refused over `--budget`. During the run, every HTTP attempt (a retry
+ * included) first holds its own worst case against the budget, and starts only if it fits.
+ */
+import { readFileSync, writeFileSync } from 'node:fs';
+import { parseArgs } from 'node:util';
+import { modelAttribution } from '@substrat-run/contracts';
+import { parseModelSpec, providerRow } from '@substrat-run/model-providers';
+import { createModelHost, type ModelRun } from '@substrat-run/vertical-host/model';
+import type { ChangedFile } from '../src/review-diff.js';
+import { estimateTokens, gatesNotRun, readReply, REVIEW_CALL, REVIEW_MAX_OUTPUT_TOKENS, reviewPrompt, reviewSystem } from '../src/review-reader.js';
+import { REVIEW_PLUGIN_VERSION, REVIEW_RULES_DIGEST } from '../src/review-rules.generated.js';
+import { loadSeeds, priceOf, resolveAllowed, resolveExpectations, scoreSeed, summarise, summaryTable, type Resolved, type Seed, type SeedRun } from './corpus.mts';
+import { materialize, SEEDS_DIR, seedDiff } from './materialize.mts';
+
+const GATEWAY_VARS = ['CLOUDFLARE_AI_BASE_URL', 'CLOUDFLARE_AI_API_TOKEN', 'CLOUDFLARE_AI_GATEWAY_ID'] as const;
+/**
+ * What a chat template and the provider's own framing may add to a request, in tokens. Generous:
+ * it only widens the hold.
+ */
+const TEMPLATE_TOKENS = 2_048;
+/**
+ * An upper bound on a request's input tokens, for the budget's holds: a byte-level tokenizer never
+ * makes more tokens than the text has UTF-8 bytes, plus what the template adds. The job's own
+ * `estimateTokens` (three characters a token) is an estimate, and is what the guard and the
+ * display use; it is not a bound, so it never sizes a hold.
+ */
+const inputBound = (...texts: string[]): number => texts.reduce((n, t) => n + new TextEncoder().encode(t).byteLength, TEMPLATE_TOKENS);
+/** The job's own deadline for one call. */
+const CALL_TIMEOUT_MS = 5 * 60_000;
+
+const { values } = parseArgs({
+  options: {
+    model: { type: 'string', multiple: true, default: [] },
+    seed: { type: 'string', multiple: true, default: [] },
+    repeat: { type: 'string', default: '1' },
+    budget: { type: 'string' },
+    'dry-run': { type: 'boolean', default: false },
+    'env-file': { type: 'string' },
+    out: { type: 'string' },
+    /** The output cap. Default: the job's own; the job reads `REVIEW_MAX_OUTPUT_TOKENS` from config, so a higher one is a setting, not a code change. */
+    'max-output': { type: 'string' },
+  },
+});
+
+function gatewayEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of GATEWAY_VARS) if (process.env[name]) env[name] = process.env[name]!;
+  if (values['env-file']) {
+    for (const line of readFileSync(values['env-file'], 'utf8').split('\n')) {
+      const m = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+      if (m && (GATEWAY_VARS as readonly string[]).includes(m[1]!) && !env[m[1]!]) env[m[1]!] = m[2]!.replace(/^(["'])(.*)\1$/, '$2');
+    }
+  }
+  return env;
+}
+
+interface Prepared { seed: Seed; files: readonly ChangedFile[]; resolved: Resolved[]; allowed: Resolved[]; system: string; prompt: string; estimatedInput: number; inputBound: number }
+
+async function prepare(seed: Seed): Promise<Prepared> {
+  const tree = materialize(seed);
+  const diff = await seedDiff(tree);
+  if (diff.kind !== 'diff') throw new Error(`${seed.id}: the diff is ${diff.kind}`);
+  const nonce = crypto.randomUUID();
+  const system = reviewSystem(nonce);
+  const prompt = reviewPrompt({ files: diff.files, deleted: diff.deleted, notSent: diff.notSent, gates: gatesNotRun(), fullTree: diff.fullTree, nonce });
+  return { seed, files: diff.files, resolved: resolveExpectations(seed, tree.head), allowed: resolveAllowed(seed, tree.head), system, prompt, estimatedInput: estimateTokens(system) + estimateTokens(prompt), inputBound: inputBound(system, prompt) };
+}
+
+const transient = (e: unknown) => {
+  const status = (e as { statusCode?: unknown } | null)?.statusCode;
+  return typeof status === 'number' ? status === 408 || status === 429 || status >= 500 : (e as { isRetryable?: unknown })?.isRetryable === true;
+};
+
+async function main(): Promise<void> {
+  const models = values.model!;
+  if (models.length === 0) throw new Error('name at least one --model, e.g. cloudflare:@cf/zai-org/glm-5.3');
+  for (const spec of models) {
+    const row = providerRow(parseModelSpec(spec).provider);
+    if (row?.kind !== 'compatible' || row.request !== 'cloudflare-gateway') throw new Error(`${spec}: not on the gateway row (Q3e)`);
+  }
+  const maxOutput = values['max-output'] === undefined ? REVIEW_MAX_OUTPUT_TOKENS : Number(values['max-output']);
+  if (!Number.isInteger(maxOutput) || maxOutput < 1) throw new Error('--max-output is a whole number of tokens');
+  const repeat = Number(values.repeat);
+  if (!Number.isInteger(repeat) || repeat < 1) throw new Error('--repeat is a whole number of reads per seed');
+  const wanted = new Set(values.seed);
+  const seeds = loadSeeds(SEEDS_DIR).filter((s) => wanted.size === 0 || wanted.has(s.id));
+  const prepared = await Promise.all(seeds.map(prepare));
+
+  const worst = (spec: string, p: Prepared) => Number(priceOf(spec, p.inputBound, maxOutput) ?? NaN);
+  let total = 0;
+  console.log(`rules ${REVIEW_RULES_DIGEST.slice(0, 12)} · ${prepared.length} seeds × ${repeat} · worst case: input at its byte bound, output at the ${maxOutput}-token cap`);
+  for (const spec of models) {
+    const cost = prepared.reduce((n, p) => n + worst(spec, p), 0) * repeat;
+    if (Number.isNaN(cost)) throw new Error(`${spec}: unpriced on the rate card, so its spend cannot be capped`);
+    total += cost;
+    const input = prepared.reduce((n, p) => n + p.estimatedInput, 0);
+    console.log(`  ${spec}: ≤ $${cost.toFixed(4)} (≈${input.toLocaleString('en-US')} input tokens a pass)`);
+  }
+  console.log(`  total ≤ $${total.toFixed(4)}`);
+  if (values['dry-run']) return;
+  const budget = Number(values.budget);
+  if (!(budget > 0)) throw new Error('a paid run needs --budget <usd>');
+  if (total > budget) throw new Error(`the worst case $${total.toFixed(4)} is over the budget $${budget}; nothing was called`);
+
+  const host = createModelHost({ env: gatewayEnv(), sent: 'the seeded review corpus: this repository\'s own history' });
+  for (const spec of models) {
+    const status = host.status(spec);
+    if (!status.configured) throw new Error(`${spec}: missing ${status.missing.join(', ')}`);
+  }
+  const attribution = modelAttribution.parse({
+    tenant: '01JZ0000000000000000RVW000', scope: '01JZ0000000000000000RVW001',
+    vertical: '@substrat-run/review-runner', version: REVIEW_PLUGIN_VERSION, operation: 'review/corpus',
+  });
+
+  /**
+   * What is spent or held. Every HTTP attempt holds its worst case before it starts, and the hold
+   * is taken synchronously, so the model queues running side by side see each other's holds. A
+   * call that answers settles its hold to its list price; one that fails keeps it, since what the
+   * provider billed for it is unknown.
+   */
+  let spent = 0;
+  const hold = (usd: number): boolean => {
+    if (spent + usd > budget) return false;
+    spent += usd;
+    return true;
+  };
+  const runs: SeedRun[] = [];
+  // One queue per model, so a slow model does not hold up the others; the budget is shared.
+  await Promise.all(models.map(async (spec) => {
+    for (let pass = 0; pass < repeat; pass++) {
+      for (const p of prepared) {
+        const started = Date.now();
+        let run: ModelRun | null = null;
+        let held = 0;
+        let attempts = 0;
+        let outOfBudget = false;
+        for (let attempt = 0; attempt < 2 && !run; attempt++) {
+          held = worst(spec, p);
+          if (!hold(held)) {
+            outOfBudget = true;
+            break;
+          }
+          attempts++;
+          try {
+            run = await host.run({ ...REVIEW_CALL, spec, attribution, system: p.system, prompt: p.prompt, maxOutputTokens: maxOutput, abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
+          } catch (error) {
+            if (attempt === 0 && transient(error)) await new Promise((r) => setTimeout(r, 10_000));
+            else {
+              const e = error as { statusCode?: number; message?: string; name?: string };
+              console.log(`  ${spec} ${p.seed.id}: call failed (${e?.statusCode ?? e?.name}: ${String(e?.message ?? '').slice(0, 160)})`);
+            }
+          }
+        }
+        const latencyMs = Date.now() - started;
+        if (!run) {
+          // A read that made a call is recorded even when the budget refused its retry: its usage is
+          // unknown, its holds stay spent, and it counts as failed against what the seed owes.
+          if (attempts > 0) {
+            runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: 'failed', reason: 'call failed', score: scoreSeed(p.resolved, [], p.allowed), findings: [], dropped: 0, inputTokens: 0, outputTokens: 0, costUsd: null, latencyMs });
+          }
+          if (outOfBudget) {
+            console.log(`  ${spec} ${p.seed.id}: stopped, the budget would not hold another call`);
+            return;
+          }
+          continue;
+        }
+        const read = readReply(run, p.files);
+        // A provider that reports no usage leaves zero tokens on the line, which would price as
+        // free: its cost is unknown, and its hold stays spent like a failed call's.
+        const price = run.line.reported ? priceOf(spec, run.line.inputTokens, run.line.outputTokens) : null;
+        // The answering call's hold becomes its list price; a failed first attempt's hold stays.
+        if (price !== null) spent += Number(price) - held;
+        // What a failed first attempt was billed is unknown, so neither is the read's cost.
+        const costUsd = attempts > 1 ? null : price;
+        const findings = read.assembled.findings.map(({ item, file, line }) => ({ item, file, line }));
+        const score = scoreSeed(p.resolved, findings, p.allowed);
+        runs.push({ model: spec, seed: p.seed.id, kind: p.seed.kind, state: read.state, reason: read.reason, score, findings, dropped: read.assembled.dropped, inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, costUsd, latencyMs });
+        const owed = score.expected.map((e) => `${e.item}${e.hit ? '✓' : '✗'}`).join(' ') || 'clean';
+        const extra = score.falseFindings.map((f) => `${f.item}@${f.file}:${f.line}`).join(' ');
+        console.log(`  ${spec} ${p.seed.id}: ${read.state}${read.reason ? ` (${read.reason})` : ''} · ${owed}${extra ? ` · false ${extra}` : ''} · ${(latencyMs / 1000).toFixed(1)} s · $${costUsd ?? '?'}`);
+      }
+    }
+  }));
+
+  const summaries = summarise(runs);
+  console.log(`\nspent $${spent.toFixed(4)} of $${budget}\n`);
+  console.log(summaryTable(summaries));
+  if (values.out) {
+    writeFileSync(values.out, `${JSON.stringify({ rulesDigest: REVIEW_RULES_DIGEST, runner: REVIEW_PLUGIN_VERSION, at: new Date().toISOString(), repeat, maxOutput, runs, summaries }, null, 2)}\n`);
+  }
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

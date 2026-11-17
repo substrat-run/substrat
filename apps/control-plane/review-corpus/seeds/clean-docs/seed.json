@@ -1,0 +1,14 @@
+{
+  "id": "clean-docs",
+  "kind": "clean",
+  "origin": "A documentation change to the approved concept: no code.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "spec/concept.md"
+    ]
+  },
+  "expect": []
+}

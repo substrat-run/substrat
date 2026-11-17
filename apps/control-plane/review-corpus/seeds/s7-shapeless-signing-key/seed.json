@@ -1,0 +1,22 @@
+{
+  "id": "s7-shapeless-signing-key",
+  "kind": "bad",
+  "origin": "S7 and #2386: lint:secret-literals refuses credentials with an issuer's shape; a hand-made HMAC key has none, so only a reader sees it.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "src/module.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S7",
+      "file": "src/module.ts",
+      "from": "const INVITE_LINK_KEY = '",
+      "before": 0,
+      "after": 4
+    }
+  ]
+}

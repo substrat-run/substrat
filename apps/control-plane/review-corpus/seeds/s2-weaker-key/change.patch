@@ -1,0 +1,53 @@
+diff --git a/app/src/api.generated.ts b/app/src/api.generated.ts
+index ae255dc21..51ac9901c 100644
+--- a/app/src/api.generated.ts
++++ b/app/src/api.generated.ts
+@@ -153,7 +153,7 @@ export interface TodoClient {
+   deleteItem(input: { itemId: string }): Promise<{ id: string; deleted: boolean }>;
+ 
+   /**
+-   * Delete a list and everything on it
++   * Delete a list for good, with its items, shares and pending invitations
+    *
+    * `DELETE /lists/{listId}` — `todo/delete-list`
+    */
+diff --git a/openapi.json b/openapi.json
+index 4319cfdba..7afc59e07 100644
+--- a/openapi.json
++++ b/openapi.json
+@@ -771,7 +771,7 @@
+     "/api/lists/{listId}": {
+       "delete": {
+         "operationId": "todo-delete-list",
+-        "summary": "Delete a list and everything on it",
++        "summary": "Delete a list for good, with its items, shares and pending invitations",
+         "parameters": [
+           {
+             "name": "listId",
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6f1..fd7dfd478 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -347,7 +347,7 @@ export const todoOperations = defineOperations(todoEntities, TODO_PERMISSIONS)({
+   },
+ 
+   'todo/delete-list': {
+-    summary: 'Delete a list and everything on it',
++    summary: 'Delete a list for good, with its items, shares and pending invitations',
+     permission: { key: 'list:manage', entity: 'list', idFrom: 'listId' },
+     // The permanent delete: it empties the bin, and it is what the 30-day horizon runs.
+     trashed: 'purges',
+diff --git a/src/module.ts b/src/module.ts
+index 372b49bad..a41453801 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -253,7 +253,8 @@ const bound = operationsFor(todoOperations)({
+   },
+ 
+   'todo/delete-list': async (ctx, input) => {
+-    assertAllowed(await ctx.check(TODO_PERM.listManage, listRef(input.listId)));
++    // Anyone working on a list may clear it away once it is done with.
++    assertAllowed(await ctx.check(TODO_PERM.listContribute, listRef(input.listId)));
+     // The permanent delete empties the bin, so it reaches binned lists too (`trashed: 'purges'`),
+     // and it is what the 30-day purge horizon runs — as todo's system principal.
+     listOrThrow(ctx, input.listId);

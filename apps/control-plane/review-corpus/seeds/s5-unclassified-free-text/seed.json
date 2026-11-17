@@ -1,0 +1,28 @@
+{
+  "id": "s5-unclassified-free-text",
+  "kind": "bad",
+  "origin": "S5 and #2084: a new field holding free text a person wrote, not in `erasable`, so subject erasure leaves it behind.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "MIGRATIONS.md",
+      "app/src/api.generated.ts",
+      "journal.json",
+      "model.json",
+      "openapi.json",
+      "package.json",
+      "spec/model.ts",
+      "src/migrations.generated.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S5",
+      "file": "spec/model.ts",
+      "from": "      message: z.string().nullable(),",
+      "before": 1,
+      "through": "erasable: ['email'],"
+    }
+  ]
+}

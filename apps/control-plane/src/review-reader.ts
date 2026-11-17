@@ -132,6 +132,37 @@ function nearRemovals(file: ChangedFile): Set<number> {
   return near;
 }
 
+/** The reader's output cap; a reply cut at it is recorded `incomplete: output cap`. */
+export const REVIEW_MAX_OUTPUT_TOKENS = 8_000;
+
+/**
+ * The one model call the reader makes, the same for the job and for the seeded corpus that
+ * chooses its model (#2365): one step, no tools, no SDK retries (one attempt is one HTTP call),
+ * and no sampling spread.
+ */
+export const REVIEW_CALL = { maxSteps: 1, maxRetries: 0, temperature: 0 } as const;
+
+/** What a reply makes of the record: the assembled findings, and whether the read completed. */
+export interface ReadReply {
+  readonly assembled: Assembled;
+  readonly parseFailures: 0 | 1;
+  readonly state: 'completed' | 'incomplete';
+  readonly reason: 'output cap' | 'unparseable reply' | null;
+}
+
+/** A reply, read: parsed, held to the drop rule, and judged complete or not. */
+export function readReply(run: { readonly text: string; readonly finishReason: string }, files: readonly ChangedFile[]): ReadReply {
+  const reply = parseReply(run.text);
+  const assembled = reply ? assemble(reply, files) : { findings: [], dropped: 0, checkedClean: [], notApplicable: [] };
+  const cut = run.finishReason === 'length';
+  return {
+    assembled,
+    parseFailures: reply ? 0 : 1,
+    state: cut || !reply ? 'incomplete' : 'completed',
+    reason: cut ? 'output cap' : reply ? null : 'unparseable reply',
+  };
+}
+
 /** A conservative token estimate: three characters a token, so the guard refuses early rather than late. */
 export const estimateTokens = (text: string): number => Math.ceil(text.length / 3);
 

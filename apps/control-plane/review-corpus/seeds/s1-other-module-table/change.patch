@@ -1,0 +1,16 @@
+diff --git a/src/module.ts b/src/module.ts
+index 372b49b..508934c 100644
+--- a/src/module.ts
++++ b/src/module.ts
+@@ -257,6 +257,11 @@ const bound = operationsFor(todoOperations)({
+     // The permanent delete empties the bin, so it reaches binned lists too (`trashed: 'purges'`),
+     // and it is what the 30-day purge horizon runs — as todo's system principal.
+     listOrThrow(ctx, input.listId);
++    // The notes plugin keeps a note per item; take them with the list so none is left pointing at nothing.
++    ctx.sql.exec(
++      'DELETE FROM notes_item_notes WHERE item_id IN (SELECT id FROM todo_items WHERE list_id = ?)',
++      [input.listId],
++    );
+     ctx.sql.exec('DELETE FROM todo_items WHERE list_id = ?', [input.listId]);
+     ctx.sql.exec('DELETE FROM todo_shares WHERE list_id = ?', [input.listId]);
+     ctx.sql.exec('DELETE FROM todo_invites WHERE list_id = ?', [input.listId]);

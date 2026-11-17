@@ -1,0 +1,31 @@
+diff --git b/app/src/extensions/bridge.ts b/app/src/extensions/bridge.ts
+new file mode 100644
+index 0000000..d38a407
+--- /dev/null
++++ b/app/src/extensions/bridge.ts
+@@ -0,0 +1,25 @@
++/**
++ * The page's side of an installed extension. The extension runs in a sandboxed iframe and asks
++ * the page for todo data over postMessage; the page answers from the API.
++ */
++export interface ExtensionRequest {
++  readonly id: string;
++  readonly method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
++  readonly path: string;
++  readonly body?: unknown;
++}
++
++export function mountExtension(frame: HTMLIFrameElement, origin: string, session: { accessToken: string }): () => void {
++  const onMessage = async (event: MessageEvent<ExtensionRequest>) => {
++    if (event.origin !== origin || event.source !== frame.contentWindow) return;
++    const { id, method, path, body } = event.data;
++    const response = await fetch(`/api${path}`, {
++      method,
++      headers: { 'content-type': 'application/json', authorization: `Bearer ${session.accessToken}` },
++      body: body === undefined ? undefined : JSON.stringify(body),
++    });
++    frame.contentWindow?.postMessage({ id, status: response.status, body: await response.json() }, origin);
++  };
++  window.addEventListener('message', onMessage);
++  return () => window.removeEventListener('message', onMessage);
++}

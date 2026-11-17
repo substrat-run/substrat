@@ -432,6 +432,11 @@ jobs:
       # its own fixtures first.
       - run: pnpm test:review-checklist
       - run: pnpm lint:review-checklist
+      # The seeded corpus the reader's model is chosen against (#2365, RFC Q7 C): the scorer, and
+      # every seed materialised from its pinned commit (this job's full history) into the diff the
+      # hosted job would send, its expectations on lines the assembler accepts. No model is called;
+      # the paid read is `pnpm review-corpus`, an opt-in probe.
+      - run: pnpm test:review-corpus
       # No promise in a workerd suite floats (#2131). A forgotten `await` is a rejection nobody
       # handles, and the workerd setup file fails a test on one only when the test drives that
       # path; oxlint's type-aware `no-floating-promises` sees every path. Reads the built

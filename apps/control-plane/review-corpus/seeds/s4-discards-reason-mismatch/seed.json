@@ -1,0 +1,31 @@
+{
+  "id": "s4-discards-reason-mismatch",
+  "kind": "bad",
+  "origin": "#115 and S4: a declared loss is not a pass. The reason says the notes move to a new table; the SQL only drops the column.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "engines/absence",
+    "files": [
+      "package.json",
+      "src/index.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S4",
+      "file": "src/index.ts",
+      "anyOf": [
+        {
+          "from": "'absence_requests.note': 'moved to",
+          "before": 1,
+          "after": 0
+        },
+        {
+          "from": "ALTER TABLE absence_requests DROP COLUMN note;",
+          "before": 2,
+          "after": 0
+        }
+      ]
+    }
+  ]
+}

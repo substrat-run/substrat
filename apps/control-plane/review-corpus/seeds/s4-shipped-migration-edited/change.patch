@@ -1,0 +1,12 @@
+diff --git a/src/index.ts b/src/index.ts
+index 7551a55..7ec6019 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -202,6 +202,7 @@ export const absenceMigrations = [
+         start_date      TEXT NOT NULL,
+         end_date        TEXT NOT NULL,
+         days            TEXT NOT NULL,
++        half_day        INTEGER NOT NULL DEFAULT 0,
+         status          TEXT NOT NULL CHECK (status IN
+                           ('requested','approved','rejected','cancelled')),
+         note            TEXT,
