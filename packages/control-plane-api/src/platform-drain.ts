@@ -952,12 +952,6 @@ export interface ManagedTenantDeps {
    * test), `provision-tenant` binds no hostname, as before.
    */
   hostnameDomain?: string;
-  /**
-   * Register an OIDC client at a team auth-server (#3202, D-72) — `@substrat-run/oidc-rp`'s
-   * `registerOidcClient`, as the dashboard registers one at an install. Absent (a self-host, a
-   * test), a payload naming `instance.signIn` is refused before any write.
-   */
-  registerOidcClient?: (issuer: string, input: { appName: string; redirectUri: string }) => Promise<{ clientId: string; clientSecret: string }>;
 }
 
 /** The delivered-config key a vertical reads its sign-in from (`@substrat-run/vertical-auth`'s `AUTH_CONFIG_KEY`). */
@@ -998,7 +992,9 @@ async function resolveManagedSignIn(
   requested: { issuer: string },
 ): Promise<ManagedSignIn | { refusal: PlatformRequestOutcome }> {
   const refuse = (error: string): { refusal: PlatformRequestOutcome } => ({ refusal: { status: 'failed', error, failure: INPUT_REFUSED } });
-  if (!deps.registerOidcClient || !deps.hostnameDomain) {
+  // The client is registered for the tenant's own address, so a platform that binds none (a
+  // self-host, a test) cannot honour a sign-in.
+  if (!deps.hostnameDomain) {
     return {
       refusal: {
         status: 'failed',
@@ -1316,18 +1312,22 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
 
 /**
  * Give a managed tenant its sign-in and its place (#3202, D-72), the platform's two writes the
- * dashboard makes for an app it installs (#1670): register an OIDC client for the tenant's address
- * at the manager's team auth-server, deliver it as the scope's `substrat:auth` (beside the shared-
- * issuer marker every team auth-server's client carries, #1683), then tell the issuer, in ONE
- * delivery, the client's hostnames (`substrat:redirects:<app scope>`, #2904) and the scope's place
- * under the tenant's own key (`substrat:places:<tenant id>` = exactly this app). The redirects
- * delivery is what turns RP-initiated logout on for the client, which open DCR cannot, so a
- * person can sign out of a managed tenant and switch accounts; the dashboard cannot send it,
- * since it pairs an app with an issuer of its own tenant only. That delivery goes LAST, and the
- * issuer applies it in one transaction, so a pass that stops anywhere before it leaves no place
- * behind; a pass that
- * registered a client and stopped leaves a client nothing names as a place, and the retry
- * registers a fresh one, which supersedes it.
+ * dashboard makes for an app it installs (#1670): ensure the tenant's OIDC client at the
+ * manager's team auth-server, deliver it as the scope's `substrat:auth` (beside the shared-issuer
+ * marker every team auth-server's client carries, #1683), then tell the issuer, in ONE delivery,
+ * the client's hostnames (`substrat:redirects:<app scope>`, #2904) and the scope's place under
+ * the tenant's own key (`substrat:places:<tenant id>` = exactly this app). The redirects delivery
+ * is what turns RP-initiated logout on for the client, which open DCR cannot, so a person can
+ * sign out of a managed tenant and switch accounts; the dashboard cannot send it, since it pairs
+ * an app with an issuer of its own tenant only. That delivery goes LAST, and the issuer applies
+ * it in one transaction, so a pass that stops anywhere before it leaves no place behind.
+ *
+ * The client comes from the issuer's keyed ensure (`/internal/managed-client`, #3261), keyed by
+ * the tenant's scope, which a retry repeats: a pass that registered the client and stopped is
+ * retried onto the SAME client, with a new secret delivered in its turn, so a retried provision
+ * ends with one client at the issuer, not one per attempt. The same key is what the tenant's end
+ * removes it by (`managed-sign-in.ts`). An issuer deployed before the verb answers 501, which
+ * throws here and leaves the request pending until the auth server is redeployed.
  *
  * Who appears under the place is not this function's to say: the vertical reports the subjects
  * bound in its scope, as this client, and the issuer keeps one only if it has itself issued to
@@ -1338,9 +1338,13 @@ async function registerManagedSignIn(
   signIn: ManagedSignIn,
   app: { tenantId: TenantId; scopeId: ScopeId; hostname: string; name: string; vertical: VerticalClient },
 ): Promise<{ clientId: string } | 'unconfigurable'> {
-  const client = await deps.registerOidcClient!(signIn.issuer, {
-    appName: app.name,
-    redirectUri: `https://${app.hostname}/api/auth/callback`,
+  const client = await signIn.client.ensureManagedClient({
+    tenantId: signIn.tenantId,
+    scopeId: signIn.scopeId,
+    appTenantId: app.tenantId,
+    appScopeId: app.scopeId,
+    hostname: app.hostname,
+    clientName: app.name,
   });
   try {
     await app.vertical.configureInstance({

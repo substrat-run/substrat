@@ -21,6 +21,10 @@ import type {
   PreviewClientClaim,
   PreviewClientMint,
   PreviewClientRetire,
+  ManagedClientEnsure,
+  ManagedClientRemove,
+  EnsuredManagedClient,
+  RemovedManagedClient,
   PrincipalId,
   RetiredPreviewClients,
   PeerGrantsEntry,
@@ -73,6 +77,9 @@ import type {
 import {
   CAPTURE_REFUSALS,
   PREVIEW_CLIENT_PATH,
+  MANAGED_CLIENT_PATH,
+  ensuredManagedClient,
+  removedManagedClient,
   attachmentRecord,
   projectedConnectionGrant,
   denialFilterParams,
@@ -1700,6 +1707,21 @@ export class VerticalClient {
     return this.previewClientCall('DELETE', PREVIEW_CLIENT_PATH, input, retiredPreviewClients, 'preview-client retire', input.scopeId);
   }
 
+  /**
+   * A MANAGED tenant's sign-in client at its manager's team auth-server (#3202, D-72, #3261,
+   * `@substrat-run/contracts`' `managed-client.ts`): ensure it (every answer carries a secret), or
+   * remove it with the tenant's place and redirect record there. Addressed to the ISSUER's
+   * deployment, under the same skew rule as the preview-client verbs: a deployment built before
+   * them is a 501 saying to redeploy the auth server, never "nothing to remove".
+   */
+  async ensureManagedClient(input: ManagedClientEnsure): Promise<EnsuredManagedClient> {
+    return this.previewClientCall('POST', MANAGED_CLIENT_PATH, input, ensuredManagedClient, 'managed-client ensure', input.scopeId, 'managed clients (#3261)');
+  }
+
+  async removeManagedClient(input: ManagedClientRemove): Promise<RemovedManagedClient> {
+    return this.previewClientCall('DELETE', MANAGED_CLIENT_PATH, input, removedManagedClient, 'managed-client remove', input.scopeId, 'managed clients (#3261)');
+  }
+
   private async previewClientCall<T>(
     method: 'POST' | 'DELETE',
     path: string,
@@ -1707,14 +1729,15 @@ export class VerticalClient {
     schema: { safeParse(v: unknown): { success: true; data: T } | { success: false } },
     verb: string,
     issuerScopeId: ScopeId,
+    feature = 'preview clients (#1704)',
   ): Promise<T> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const rule = {
       legacy501: true,
       lost: `the auth server serving scope ${issuerScopeId} may or may not have acted on it.`,
       predates:
-        `the auth server serving scope ${issuerScopeId} predates preview clients (#1704) — redeploy it, ` +
-        `then re-run. Nothing was minted or deleted there.`,
+        `the auth server serving scope ${issuerScopeId} predates ${feature} — redeploy it, ` +
+        `then re-run. Nothing was registered or deleted there.`,
       shape: `auth server answered ${verb} with an unexpected shape for scope ${issuerScopeId}.`,
     };
     return this.parsedAnswer(verb, rule, schema, () =>
