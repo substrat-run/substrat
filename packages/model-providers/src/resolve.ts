@@ -169,6 +169,11 @@ export function createModel(spec: string, env: CredentialEnv, options: CreateMod
 		baseURL: creds.baseUrl,
 		// Local runtimes ignore this but the client still wants a value.
 		apiKey: creds.apiKey ?? 'local',
+		// A streamed call asks for its usage (`stream_options.include_usage`): a provider that
+		// waits to be asked sends none otherwise, and a line with no usage is unpriced, so the
+		// call escapes every budget that counts priced spend (#2365). Unstreamed calls are
+		// unaffected.
+		includeUsage: true,
 		...(row.wire === 'qwen-cache' ? { fetch: qwenCacheFetch() } : {}),
 	});
 	return {

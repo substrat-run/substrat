@@ -340,10 +340,14 @@ describe('review job: the reader half with a model double', () => {
       chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: content.slice(0, 10) }, finish_reason: null }] }),
       chunk({ choices: [{ index: 0, delta: { content: content.slice(10) }, finish_reason: null }] }),
       chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
-      chunk({ choices: [], usage: { prompt_tokens: 900, completion_tokens: 40, total_tokens: 940 } }),
-      'data: [DONE]\n\n',
-    ].join('');
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(sse, { headers: { 'content-type': 'text/event-stream' } }));
+    ];
+    // Usage only when the request asks for it, as an OpenAI-compatible provider may do: a reply
+    // with none is unpriced and escapes the spend limit.
+    const usage = chunk({ choices: [], usage: { prompt_tokens: 900, completion_tokens: 40, total_tokens: 940 } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const asked = (JSON.parse(String(init?.body)) as { stream_options?: { include_usage?: boolean } }).stream_options?.include_usage === true;
+      return new Response([...sse, ...(asked ? [usage] : []), 'data: [DONE]\n\n'].join(''), { headers: { 'content-type': 'text/event-stream' } });
+    });
     const production = reviewJobDeps({
       ...testEnv, REVIEW_MODEL: SPEC, REVIEW_PLATFORM_TENANT: platformTenant,
       CLOUDFLARE_AI_BASE_URL: 'https://gateway.example/v1', CLOUDFLARE_AI_API_TOKEN: 'test-gateway-key',
@@ -360,8 +364,8 @@ describe('review job: the reader half with a model double', () => {
     expect(new Headers(init.headers).get('cf-aig-gateway-id')).toBeNull();
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty('tools');
-    expect(body).toMatchObject({ model: MODEL_ID, max_tokens: REVIEW_MAX_OUTPUT_TOKENS, stream: true });
-    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', usage: { inputTokens: 900 } });
+    expect(body).toMatchObject({ model: MODEL_ID, max_tokens: REVIEW_MAX_OUTPUT_TOKENS, stream: true, stream_options: { include_usage: true } });
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', usage: { inputTokens: 900, outputTokens: 40, reported: true } });
   });
 });
 
