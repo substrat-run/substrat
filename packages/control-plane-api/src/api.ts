@@ -191,7 +191,6 @@ import {
   BIND_EXPORT_BREAK_REFUSAL,
   CARRIED_AWAY_KEY,
   bindExportBreakRefusal,
-  carriedAwayDump,
   dumpMetaValue,
   metaValueIn,
   crossVerticalHealth,
@@ -5183,13 +5182,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * Wipe one copy of a scope that no route reaches (#1722), without reaping it. Fenced where the
-   * deployment can fence it: the wipe runs only if nothing was loaded into that DO since
-   * `expectLoadStamp`, compared inside the wipe's own transaction, and `false` means something
-   * was (a rollback restored there), so the copy stays. A deployment built before the fence
-   * answers `'unfenced'`, and the wipe is then an unconditional load of the tombstone through
-   * the restore verb every deployment has. The caller re-reads the route first; that re-read is
-   * all that guards an unfenced wipe.
+   * Wipe one copy of a scope that no route reaches (#1722), without reaping it. Fenced: the wipe
+   * runs only if nothing was loaded into that DO since `expectLoadStamp`, compared inside the
+   * wipe's own transaction; `'refused'` means something was (a rollback restored there), so the
+   * copy stays.
+   *
+   * A deployment built before the fence answers `'unfenced'`, and then nothing is wiped: the caller
+   * leaves the copy `retained`, reached by reap and erasure, as the sweep and crash recovery
+   * already do (#3230). A wipe there could only be an unconditional load of the tombstone, and a
+   * rollback can make that script live again between the route read that decides the wipe and
+   * the load landing. That is how a push and a rollback across a pre-fence script lost both copies.
    */
   const wipeCarriedCopy = async (
     holder: VerticalClient,
@@ -5198,10 +5200,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     carriedTo: string,
     /** The scope was read routing elsewhere: a copy changed in any way since is kept (#1722 r8). */
     protectIfChanged = false,
-  ): Promise<boolean> => {
+  ): Promise<'wiped' | 'refused' | 'unfenced'> => {
     const at = new Date().toISOString();
     // #2005 (Codex #2008 r10): the directory's word that the scope is not primary goes with the
-    // wipe, on both paths, so a copy made before the marker leaves it marked — tombstoned or kept.
+    // wipe, so a copy made before the marker leaves it marked — tombstoned or kept.
     const markCopy = copyLineageOf(scope);
     const fenced = await retryTransient(() =>
       holder.wipeCarriedCopy({
@@ -5214,16 +5216,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ...(markCopy ? { markCopy } : {}),
       }),
     );
-    if (fenced !== 'unfenced') return fenced.wiped;
-    await retryTransient(() =>
-      holder.restoreScope(scope.tenantId, scope.id, carriedAwayDump({ to: carriedTo, at }), {
-        sourceScopeId: scope.id,
-        exact: true,
-        // #2005: as every restore onto a non-primary scope, so the wiped copy stays a copy.
-        ...(markCopy ? { markCopy } : {}),
-      }),
-    );
-    return true;
+    if (fenced === 'unfenced') return 'unfenced';
+    return fenced.wiped ? 'wiped' : 'refused';
   };
 
   /**
@@ -5381,18 +5375,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * The copy a carry restored for a bind that did not land, wiped unless the scope routes to
    * that script now. Best effort: it never throws, and a failure is recorded.
+   *
+   * `bound`: the bind DID land, and the route has moved off this carry's destination since (#3230).
+   * That store was live, so whatever moved the route away from it carried out of it, and wipes it
+   * under its own fence once its destination is known to hold the data. This carry leaves it alone:
+   * its own wipe, fenced only on its own load stamp (an export is a read and moves no stamp), would
+   * pass while that mover is still reading the store, a tombstone re-carry included.
    */
-  const dropUnboundCopy = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
+  const dropUnboundCopy = async (
+    c: ReqCtx, scope: Scope, versionId: string, carried: Carried, opts: { bound?: boolean } = {},
+  ): Promise<void> => {
     let route: string | null = null;
     try {
       route = await currentRoute(c, scope, versionId, carried);
-      if (route === carried.to) {
+      if (route === carried.to || opts.bound) {
+        // The bind settled this entry `done` already; a destination the route reached is the
+        // concern of the move that left it, which names it as its own source.
         await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.to, carried.moveId, 'done');
         return;
       }
       const wiped = await wipeCarriedCopy(carried.dest, scope, { loadStamp: carried.restoredStamp }, route ?? carried.from);
+      // Refused (a load since) or pre-fence (#3230): the copy stays, named for reap and erasure.
       await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.to, carried.moveId,
-        wiped ? 'done' : 'retained');
+        wiped === 'wiped' ? 'done' : 'retained');
     } catch (e) {
       recordCarryCleanup(c, scope, versionId, 'unbound-copy', e);
       await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.to, carried.moveId,
@@ -5488,8 +5493,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The caller read the route elsewhere, so a copy that changed in any way since the export (a
     // load as much as a write: a staff restore-forward into it racing this carry, Codex #2008 r8)
     // is kept in the store rather than left an unmarked orphan.
-    if (await wipeCarriedCopy(carried.source, scope, expect, carried.to, true)) {
+    const wiped = await wipeCarriedCopy(carried.source, scope, expect, carried.to, true);
+    if (wiped === 'wiped') {
       await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.from, carried.moveId, 'done', expect);
+      return;
+    }
+    if (wiped === 'unfenced') {
+      // A script built before the fence is never wiped (#3230): its copy stays, reached by reap
+      // and erasure, so a rollback onto it can never meet a wipe that this carry decided earlier.
+      await c.var.admin.settleScopeScriptCopy(c.get('actor'), scope.tenantId, scope.id, carried.from, carried.moveId, 'retained', expect);
       return;
     }
     // A rollback that restored into it since made it the live store again: it is no kept copy, and
@@ -5521,15 +5533,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * Wipe the copy a landed carry left in its source script (#1722), once nothing routes there.
    *
    * The route is read again first. A scope that routes to the source again was bound back to it
-   * (a rollback that has landed), and its copy stays. A scope that routes to this carry's
-   * destination has its store checked for the `carried_away` tombstone first: an unfenced wipe
-   * from an earlier carry out of this script can overtake this carry's restore when this carry
-   * IS the rollback, and then the source, which nothing has wiped yet, is carried again before
-   * it goes. The fenced wipe in a deployment that has it makes the overtaking impossible.
+   * (a rollback that has landed), and its copy stays. A scope that routes elsewhere leaves this
+   * carry's destination to the move that took the route off it (`dropUnboundCopy`, `bound`).
    *
-   * Left open, for a script built before the fence only: an unfenced wipe whose request reaches
-   * the old script after a rollback's bind and this check, both, still destroys the rollback's
-   * restore. Narrow, and recorded here rather than claimed closed.
+   * Every wipe is fenced (#3230): a script built before the fence is never wiped, its copy stays
+   * `retained`. A fenced wipe compares the store's load stamp inside its own transaction, so it
+   * cannot overtake a later restore, and a rollback can never find its destination wiped after it
+   * restored there. The `carried_away` check below is kept for a tombstone that lands anyway: an
+   * unconditional wipe sent by a control plane that predates #3230, during a deploy's overlap. The
+   * source, which nothing has wiped yet, is then carried again before it goes.
    */
   const settleCarriedSource = async (c: ReqCtx, scope: Scope, versionId: string, carried: Carried): Promise<void> => {
     const actor = c.get('actor');
@@ -5537,13 +5549,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if ((await currentRoute(c, scope, versionId, carried)) === carried.to) {
         await c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, carried.to, carried.moveId, 'done');
       } else {
-        await dropUnboundCopy(c, scope, versionId, carried);
+        await dropUnboundCopy(c, scope, versionId, carried, { bound: true });
       }
     };
     try {
       const route = await currentRoute(c, scope, versionId, carried);
       if (route !== carried.to) {
-        await dropUnboundCopy(c, scope, versionId, carried);
+        await dropUnboundCopy(c, scope, versionId, carried, { bound: true });
         return;
       }
       // The store this carry landed in is live; a kept marker another carry set while racing it
@@ -5553,7 +5565,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (await isCarriedAway(carried.dest, scope)) {
         // No size gate (#2450): the bind has landed on this store, so refusing the re-carry would
         // leave the scope serving a wiped copy. Its destination predates the fenced wipe (#1722),
-        // and so the stage too: it takes the pages merged, the version-skew fallback.
+        // and so the stage too: it takes the pages merged, the version-skew fallback. Its source
+        // is not wiped under it: the carry the rollback overtook leaves that store alone (#3230).
         const { dump, loadStamp: stamp, revision, meta } = await transferScope(
           carried.source, carried.dest, { from: scope.id }, { retry: retryTransient },
         );

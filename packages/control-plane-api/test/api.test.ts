@@ -2118,8 +2118,8 @@ describe('control-plane API', () => {
           calls.push(`export ${ref} ${sid}`);
           return { tables: storeOf(ref).get(sid) ?? [], loadStamp: null };
         },
-        // #1722: a deployment built before the fenced wipe — no stamp on its export, an unfenced
-        // wipe (a tombstone load through the restore verb), and the meta read the cleanup checks.
+        // #1722: a deployment built before the fenced wipe — no stamp on its export, no fenced wipe
+        // (so nothing wipes its copy, #3230), and the meta read the cleanup checks.
         wipeCarriedCopy: async () => 'unfenced',
         loadMarker: async () => 'unfenced',
         keptCopy: async () => null,
@@ -2213,21 +2213,21 @@ describe('control-plane API', () => {
       const second = await push('pr-1', v2);
       expect(second.status).toBe(200);
       expect(second.body).toMatchObject({ scopeId: preview, reused: true });
-      // Out of the script the router resolved it to, into v2's own, and bound only then.
-      // …and the copy left in v1's script wiped once the bind landed (#1722).
+      // Out of the script the router resolved it to, into v2's own, and bound only then. Nothing
+      // is loaded into v1 afterwards: a script built before the fence is never wiped (#3230).
       expect(calls).toEqual([
         `export ${refOf.get(v1)} ${preview}`,
         `restore ${refOf.get(v2)} ${preview}`,
-        `restore ${refOf.get(v1)} ${preview}`,
       ]);
       expect(rows(v2, preview)).toEqual([['prod-row'], ['review-row']]);
       expect((await boundOf(preview)).verticalVersionId).toBe(v2);
       // The loss window is said where the person pushing reads it.
       expect(second.body.notes.find((n) => n.startsWith('Data:'))).toMatch(/may be lost/);
-      // The old copy is wiped, to the tombstone naming where the data went (#1722).
-      expect(storeOf(refOf.get(v1)!).get(preview)).toEqual([
-        expect.objectContaining({ name: '_substrat_meta', rows: [['carried_away', expect.stringContaining(refOf.get(v2)!)]] }),
-      ]);
+      // The old copy stays, retained: reached by reap and erasure, never swept (#3230).
+      expect(rows(v1, preview)).toEqual([['prod-row'], ['review-row']]);
+      expect((await host.admin.listScopeScriptCopies(staff, { tenantId: tH, scopeId: preview }))
+        .filter((copy) => copy.scriptRef === refOf.get(v1) && copy.role === 'source')
+        .map((copy) => copy.state)).toEqual(['retained']);
     });
 
     it('a retried push of the same version carries nothing, so it cannot clobber the copy', async () => {
@@ -2270,7 +2270,6 @@ describe('control-plane API', () => {
       expect(calls).toEqual([
         `export ${refOf.get(v2)} ${preview}`,
         `restore ${refOf.get(v3)} ${preview}`,
-        `restore ${refOf.get(v2)} ${preview}`,
       ]);
       expect(rows(v3, preview)).toEqual([['prod-row'], ['review-row'], ['after-push']]);
       expect((await boundOf(preview)).verticalVersionId).toBe(v3);
@@ -2317,7 +2316,6 @@ describe('control-plane API', () => {
         `export ${refOf.get(v1)} ${testEnv}`,
         `restore ${refOf.get(v5)} ${testEnv}`,
         `snapshot ${refOf.get(v1)} ${testEnv}`,
-        `restore ${refOf.get(v1)} ${testEnv}`, // #1722: the source copy, wiped after the bind
       ]);
       expect(rows(v5, testEnv)).toEqual([['prod-row'], ['qa-row']]);
       expect(((await res.json()) as { verticalVersionId: string }).verticalVersionId).toBe(v5);
@@ -2350,7 +2348,7 @@ describe('control-plane API', () => {
       calls.length = 0;
       const repaired = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
       expect(repaired.status).toBe(200);
-      expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`, `restore carry-vert ${legacy}`]);
+      expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
       expect(rows(v2, legacy)).toEqual([['serving-script-row']]);
       const bound = await boundOf(legacy);
       expect(bound.verticalVersionId).toBe(v2);
@@ -2371,7 +2369,6 @@ describe('control-plane API', () => {
       expect(calls).toEqual([
         `export carry-vert ${same.body.scopeId}`,
         `restore ${refOf.get(v1)} ${same.body.scopeId}`,
-        `restore carry-vert ${same.body.scopeId}`, // #1722: the serving script's copy, wiped
       ]);
       expect(rows(v1, same.body.scopeId)).toEqual([['same-version-row']]);
       expect((await boundOf(same.body.scopeId)).servingRef ?? null).toBeNull();
@@ -2397,16 +2394,15 @@ describe('control-plane API', () => {
           // Retained until the carry's tail rules out an overtaken destination (review r1).
           confirmMove: expect.objectContaining({ source: 'retained' }),
         });
-        // #1722: the copy restored into v2 is routed by nothing while the pin stands, so the
-        // failed unpin wipes it (the tombstone load, on a deployment without a fenced wipe) and the
-        // ledger stops naming it; the retry below carries again from the pinned store.
-        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`,
-          `restore ${refOf.get(v2)} ${legacy}`]);
+        // #1722: the copy restored into v2 is routed by nothing while the pin stands. v2 cannot
+        // fence a wipe, so the failed unpin leaves that copy retained, named for reap and erasure
+        // (#3230); the retry below carries again from the pinned store, over it.
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
         // Binding has advanced, but the pin still selects the serving script's store.
         expect(await boundOf(legacy)).toMatchObject({ verticalVersionId: v2, servingRef: 'carry-vert' });
-        expect(storeOf(refOf.get(v2)!).get(legacy)?.some((tb) => tb.name === 't')).toBe(false);
         expect((await host.admin.listScopeScriptCopies(staff, { tenantId: tH, scopeId: legacy }))
-          .filter((copy) => copy.state !== 'done')).toEqual([]);
+          .filter((copy) => copy.state !== 'done').map((copy) => [copy.scriptRef, copy.role, copy.state]))
+          .toEqual([[refOf.get(v2), 'destination', 'retained']]);
         expect(await host.admin.resolveHostname(previewHostname)).toMatchObject({ scopeId: legacy, deploymentRef: 'carry-vert' });
 
         // A write while the pin is still active must survive the same-version retry.
@@ -2415,7 +2411,7 @@ describe('control-plane API', () => {
         const retried = await dj(`/tenants/${tH}/scopes/${legacy}/version`, 'POST', { versionId: v2 });
         expect(retried.status).toBe(200);
         expect(clear).toHaveBeenCalledTimes(2);
-        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`, `restore carry-vert ${legacy}`]);
+        expect(calls).toEqual([`export carry-vert ${legacy}`, `restore ${refOf.get(v2)} ${legacy}`]);
         expect(rows(v2, legacy)).toEqual([['serving-row'], ['after-failed-clear']]);
         const bound = await boundOf(legacy);
         expect(bound.verticalVersionId).toBe(v2);

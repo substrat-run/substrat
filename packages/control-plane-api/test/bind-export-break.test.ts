@@ -76,8 +76,8 @@ describe('the bind gate route (#1756)', () => {
         calls.push(`export ${ref}`);
         return { tables: storeOf(ref).get(sid) ?? [], loadStamp: null };
       },
-      // #1722: a deployment built before the fenced wipe — no stamp on its export, an unfenced
-      // wipe (a tombstone load through the restore verb), and the meta read the cleanup checks.
+      // #1722: a deployment built before the fenced wipe — no stamp on its export, no fenced wipe
+      // (so nothing wipes its copy, #3230), and the meta read the cleanup checks.
       wipeCarriedCopy: async () => 'unfenced',
       loadMarker: async () => 'unfenced',
       keptCopy: async () => null,
@@ -199,8 +199,8 @@ describe('the bind gate route (#1756)', () => {
     calls.length = 0;
     const res = await bind(asStaff, { versionId: kept });
     expect(res.status).toBe(200);
-    // #1722: the copy left in v1's script is wiped once the bind lands (a tombstone load there).
-    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(kept)}`, `restore ${refOf.get(v1)}`]);
+    // #3230: the copy left in v1's script stays: a script built before the fence is never wiped.
+    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(kept)}`]);
     expect(await boundTo()).toBe(kept);
     expect(rows(kept)).toEqual([['row-1']]);
     // #1869: the carry names its own scope as the source, exported by the platform.
@@ -221,9 +221,11 @@ describe('the bind gate route (#1756)', () => {
     } finally {
       impact.mockRestore();
     }
-    // #1722: the copy the refused carry restored is wiped (a tombstone load), since nothing routes there.
-    expect(calls).toEqual([`export ${refOf.get(kept)}`, `restore ${refOf.get(dropped)}`, `restore ${refOf.get(dropped)}`]);
-    expect(storeOf(refOf.get(dropped)!).get(producerScope)?.[0]?.name).toBe('_substrat_meta');
+    // Nothing routes to the copy the refused carry restored, and its script cannot fence a wipe,
+    // so the copy stays, retained for reap and erasure (#3230).
+    expect(calls).toEqual([`export ${refOf.get(kept)}`, `restore ${refOf.get(dropped)}`]);
+    expect((await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: producerScope }))
+      .filter((copy) => copy.scriptRef === refOf.get(dropped)).map((copy) => copy.state)).toEqual(['retained']);
     expect(await boundTo()).toBe(kept);
     expect(rows(kept)).toEqual([['row-1'], ['row-2']]);
 
@@ -233,14 +235,14 @@ describe('the bind gate route (#1756)', () => {
     calls.length = 0;
     const acked = await bind(asStaff, { versionId: dropped, acknowledge: { exportBreak: true } });
     expect(acked.status).toBe(200);
-    expect(calls).toEqual([`export ${refOf.get(kept)}`, `restore ${refOf.get(dropped)}`, `restore ${refOf.get(kept)}`]);
+    expect(calls).toEqual([`export ${refOf.get(kept)}`, `restore ${refOf.get(dropped)}`]);
     expect(await boundTo()).toBe(dropped);
     expect(rows(dropped)).toEqual([['row-1'], ['row-2'], ['row-3']]);
   });
 
   it("a tenant's own credential binds with the acknowledgement; another tenant's and a builder's cannot bind at all", async () => {
     // Back to an exporting version, so the next move is a break again. Through the route, so
-    // the data comes back with it: v1's own copy was wiped when the scope left it (#1722).
+    // the data comes back with it: v1's own copy is the one the scope had when it left (#3230).
     expect((await bind(asStaff, { versionId: v1 })).status).toBe(200);
     for (const who of [asOtherTenant, asBuilder]) {
       const res = await bind(who, { versionId: dropped, acknowledge: { exportBreak: true } });
@@ -377,9 +379,9 @@ describe('the bind gate route (#1756)', () => {
     } finally {
       impact.mockRestore();
     }
-    // #1722: the copy the carry restored is wiped, since no bind will route to it.
-    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(crossing)}`, `restore ${refOf.get(crossing)}`]);
-    expect(storeOf(refOf.get(crossing)!).get(s)?.[0]?.name).toBe('_substrat_meta');
+    // No bind will route to the copy the carry restored; its script cannot fence a wipe, so it
+    // stays, retained for reap and erasure (#3230).
+    expect(calls).toEqual([`export ${refOf.get(v1)}`, `restore ${refOf.get(crossing)}`]);
     expect(storeOf(refOf.get(v1)!).get(s)?.[0]?.rows).toEqual([['snap-row']]);
     expect(await scopesNow()).toBe(before);
     expect((await host.admin.getScopeRecord(staff, t, s))?.verticalVersionId).toBe(v1);
@@ -466,8 +468,8 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     ({
       exportScope: async (sc: string) => ensure(ref).get(sc) ?? [],
       exportScopeStamped: async (sc: string) => ({ tables: ensure(ref).get(sc) ?? [], loadStamp: null }),
-      // #1722: a deployment built before the fenced wipe — no stamp on its export, an unfenced
-      // wipe (a tombstone load through the restore verb), and the meta read the cleanup checks.
+      // #1722: a deployment built before the fenced wipe — no stamp on its export, no fenced wipe
+      // (so nothing wipes its copy, #3230), and the meta read the cleanup checks.
       wipeCarriedCopy: async () => 'unfenced',
       loadMarker: async () => 'unfenced',
       keptCopy: async () => null,
