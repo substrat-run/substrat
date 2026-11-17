@@ -5,7 +5,7 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { createAdminApi } from '../src/admin-api.js';
 import type { SqlExec } from '../src/introspect.js';
 import { syncSocialRelay } from '../src/social-relay.js';
-import { AUTO_HEAL_INTERVAL_MS, claimHeal } from '../src/social-relay-heal.js';
+import { AUTO_HEAL_INTERVAL_MS, claimHeal, readHealRecord, recordHealResult } from '../src/social-relay-heal.js';
 import { runHeal } from '../src/social-relay-self.js';
 
 /**
@@ -108,6 +108,14 @@ describe('when opening the Connections page asks the platform', () => {
     expect(asked).toEqual([]);
   });
 
+  it('files a result under its own attempt, and drops one that finishes after a newer claim', () => {
+    const auto = claimHeal(sql, INSTANCE, 'auto', T0)!;
+    const manual = claimHeal(sql, INSTANCE, 'manual', T0)!;
+    recordHealResult(sql, manual.attempt, { status: 'delivered', providers: ['github'] });
+    recordHealResult(sql, auto.attempt, { status: 'failed', reason: 'slow' });
+    expect(readHealRecord(sql)).toMatchObject({ attempt: manual.attempt, trigger: 'manual', result: { status: 'delivered' } });
+  });
+
   it("tells the operator the platform's own sentence when it refuses", async () => {
     const { transport } = world(['github'], () =>
       Response.json({ status: 403, detail: "relay refused: 'x' may only act for its own scope" }, { status: 403, headers: { 'content-type': 'application/problem+json' } }),
@@ -136,7 +144,7 @@ describe("the admin API's half", () => {
     expect(await read(true)).toEqual({ clientHeld: false, last: null });
     const sync = await api(true).request('/social-relay/sync', { method: 'POST' });
     expect(await sync.json()).toMatchObject({ ...INSTANCE, hasClient: false });
-    expect(await read(true)).toEqual({ clientHeld: false, last: { at: T0.toISOString(), trigger: 'manual' } });
+    expect(await read(true)).toEqual({ clientHeld: false, last: { attempt: expect.any(String), at: T0.toISOString(), trigger: 'manual' } });
 
     expect(await read(false)).toBeNull();
     expect((await api(false).request('/social-relay/sync', { method: 'POST' })).status).toBe(501);

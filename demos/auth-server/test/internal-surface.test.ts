@@ -40,7 +40,7 @@ function fakeAuth() {
   };
   /** Platform sign-in's self-heal (#1544): how the admin API answers, claims made, results recorded. */
   const heal = { adminStatus: 200, claims: 0, recorded: [] as HealResult[] };
-  const healClaim: HealClaim = { tenantId: 'tenant-a', scopeId: 'scope-a', hasClient: false, relayOrigin: null, providerIds: [] };
+  const healClaim: HealClaim = { attempt: 'attempt-1', tenantId: 'tenant-a', scopeId: 'scope-a', hasClient: false, relayOrigin: null, providerIds: [] };
   const namespace = {
     idFromName: (name: string) => name,
     get(id: unknown): AuthServerStub {
@@ -116,7 +116,8 @@ function fakeAuth() {
           return previewAnswer.next as never;
         },
         claimSocialRelayHeal: async () => (heal.claims++, healClaim),
-        recordSocialRelayHeal: async (result) => {
+        recordSocialRelayHeal: async (attempt, result) => {
+          expect(attempt).toBe(healClaim.attempt);
           heal.recorded.push(result);
         },
       };

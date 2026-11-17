@@ -367,8 +367,8 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     return claimHeal(this.ctx.storage.sql, this.socialRelayInstance(), 'auto', new Date());
   }
 
-  async recordSocialRelayHeal(result: HealResult): Promise<void> {
-    recordHealResult(this.ctx.storage.sql, result);
+  async recordSocialRelayHeal(attempt: string, result: HealResult): Promise<void> {
+    recordHealResult(this.ctx.storage.sql, attempt, result);
   }
 
   /**

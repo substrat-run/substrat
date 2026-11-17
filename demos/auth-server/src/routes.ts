@@ -229,7 +229,7 @@ async function autoHeal(issuer: AuthServerStub, transport: HealTransport): Promi
     const claim = await issuer.claimSocialRelayHeal();
     if (!claim) return;
     const result = await runHeal(claim, 'auto', transport);
-    await issuer.recordSocialRelayHeal(result);
+    await issuer.recordSocialRelayHeal(claim.attempt, result);
     log.info('social relay self-heal', { trigger: 'auto', ...result });
   } catch (e) {
     log.error('social relay self-heal failed', { trigger: 'auto', error: e });
@@ -259,8 +259,9 @@ app.post('/api/admin/social-relay/sync', async (c) => {
   if (!transport) return refuseStatus(c, 501, 'platform sign-in is not available on this issuer');
   const res = await forwardAdmin(c, issuer);
   if (!res.ok) return res;
-  const result = await runHeal((await res.json()) as HealClaim, 'manual', transport);
-  await issuer.recordSocialRelayHeal(result);
+  const claim = (await res.json()) as HealClaim;
+  const result = await runHeal(claim, 'manual', transport);
+  await issuer.recordSocialRelayHeal(claim.attempt, result);
   log.info('social relay self-heal', { trigger: 'manual', ...result });
   return c.json({ result });
 });

@@ -44,6 +44,8 @@ export type HealResult =
   | { status: 'current' };
 
 export interface HealRecord {
+  /** Which attempt this is: a result is recorded only against the claim it answers. */
+  attempt: string;
   /** When the attempt was claimed, ISO 8601. */
   at: string;
   trigger: 'auto' | 'manual';
@@ -53,6 +55,8 @@ export interface HealRecord {
 
 /** What the worker needs to make one attempt: who to ask for, and what to compare. */
 export interface HealClaim {
+  /** The attempt this claim recorded (`HealRecord.attempt`), which its result is filed under. */
+  attempt: string;
   tenantId: string;
   scopeId: string;
   /** This install holds a relay client — the platform must then never rotate its secret. */
@@ -96,8 +100,10 @@ export function claimHeal(
     const lastAt = last ? Date.parse(last.at) : Number.NaN;
     if (!Number.isNaN(lastAt) && now.getTime() - lastAt < intervalMs) return null;
   }
-  writeHealRecord(sql, { at: now.toISOString(), trigger });
+  const attempt = crypto.randomUUID();
+  writeHealRecord(sql, { attempt, at: now.toISOString(), trigger });
   return {
+    attempt,
     tenantId: instance.tenantId,
     scopeId: instance.scopeId,
     hasClient: relayClientId(sql) !== null,
@@ -106,10 +112,14 @@ export function claimHeal(
   };
 }
 
-/** Record what the claimed attempt came to, beside the time it was claimed. */
-export function recordHealResult(sql: SqlExec, result: HealResult): void {
+/**
+ * Record what the claimed attempt came to, beside the time it was claimed — only while it is still
+ * the latest. An attempt that finishes after a newer one was claimed (a slow automatic one behind
+ * the operator's button) is dropped, so the page never shows its outcome as the newer attempt's.
+ */
+export function recordHealResult(sql: SqlExec, attempt: string, result: HealResult): void {
   const last = readHealRecord(sql);
-  if (!last) return;
+  if (last?.attempt !== attempt) return;
   writeHealRecord(sql, { ...last, result });
 }
 
