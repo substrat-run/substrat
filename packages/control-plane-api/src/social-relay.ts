@@ -33,7 +33,10 @@ import type { CustomHostnameProvisioner, FetchFn } from './custom-hostnames.js';
  * each one a trigger — deliver their secrets out of order and leave the stale one in place.
  *
  * Triggers (#1544): a hostname of an Auth Server install becoming active, which covers install
- * time and every custom domain; and a staff-run pass over every install after a provider change.
+ * time and every custom domain; a staff-run pass over every install after a provider change; and
+ * the install itself (`SOCIAL_RELAY_SELF_PATH`), when its operator opens its Connections page and
+ * it holds no relay client or lacks a provider the relay serves, or presses "Set up". The last
+ * never rotates a secret for an install that says it holds a client (`rotate: false`).
  */
 
 /** How the control plane reaches the relay: its public origin (issuers derive from it) and a fetch. */
@@ -84,7 +87,18 @@ export interface ReconcileInput {
   hostnames: readonly string[];
   /** Deliver config entries to the install (`VerticalClient.configureInstance`). */
   configure(entries: { key: string; value: string }[]): Promise<void>;
+  /**
+   * May this run rotate the client's secret when the install answers that it holds none?
+   * Default true. False skips instead (`SELF_ROTATION_REFUSED`): the install's own call says it
+   * holds a relay client, and a call an install makes must never replace a secret it may be
+   * signing people in with.
+   */
+  rotate?: boolean;
 }
+
+/** Why a run that may not rotate skipped: the install holds a client, but not this one's secret. */
+export const SELF_ROTATION_REFUSED =
+  'the install holds a relay client but no secret for the one the relay keeps for it; a platform operator’s reconcile rotates it';
 
 export async function reconcileSocialRelay(relay: SocialRelayOptions, input: ReconcileInput): Promise<SocialRelayOutcome> {
   const origin = relay.origin.replace(/\/+$/, '');
@@ -114,6 +128,7 @@ export async function reconcileSocialRelay(relay: SocialRelayOptions, input: Rec
     await deliver(ensured.clientSecret);
   } catch (e) {
     if (!(e instanceof ControlPlaneError && e.status === 409 && e.message === SOCIAL_RELAY_SECRET_NEEDED)) throw e;
+    if (input.rotate === false) return { status: 'skipped', reason: SELF_ROTATION_REFUSED };
     const { clientSecret } = (await relayJson(
       relay,
       'POST',
@@ -183,6 +198,7 @@ export async function reconcileScopeSocialRelay<S extends { vertical: string | n
   deps: ScopeReconcileDeps<S>,
   tenantId: string,
   scopeId: string,
+  opts: { rotate?: boolean } = {},
 ): Promise<SocialRelayOutcome> {
   const scope = await deps.getScope(tenantId, scopeId);
   if (!scope) return { status: 'skipped', reason: 'unknown scope' };
@@ -194,7 +210,32 @@ export async function reconcileScopeSocialRelay<S extends { vertical: string | n
     scopeId,
     hostnames: await deps.activeHostnames(scopeId),
     configure: (entries) => deployment.configureInstance({ tenantId, scopeId, entries }),
+    ...(opts.rotate === undefined ? {} : { rotate: opts.rotate }),
   });
+}
+
+/**
+ * The install's own call (`SOCIAL_RELAY_SELF_PATH`), once the route has held the caller to the
+ * scope it names. A refusal is a value the route answers as a problem document: an unknown scope,
+ * or one that is not an Auth Server install — the self call registers only the platform's own
+ * issuer, whatever else holds the platform credential. Otherwise the same reconcile every trigger
+ * runs, rotating only for an install that says it holds no client (`hasClient`, which narrows:
+ * a `false` cannot rotate a working install, since only its own delivery's
+ * `SOCIAL_RELAY_SECRET_NEEDED` answer leads to a rotation, and it holds the secret it signs in with).
+ */
+export async function selfReconcileSocialRelay<S extends { vertical: string | null }>(
+  deps: ScopeReconcileDeps<S>,
+  request: { tenantId: string; scopeId: string; hasClient: boolean },
+): Promise<{ ok: true; outcome: SocialRelayOutcome } | { ok: false; code: 'not_found' | 'forbidden'; detail: string }> {
+  const scope = await deps.getScope(request.tenantId, request.scopeId);
+  if (!scope) return { ok: false, code: 'not_found', detail: `unknown scope ${request.scopeId}` };
+  if (!isSocialRelayVertical(scope.vertical)) {
+    return { ok: false, code: 'forbidden', detail: `scope ${request.scopeId} is not an Auth Server install; only one may ask for the social relay` };
+  }
+  const outcome = await reconcileScopeSocialRelay({ ...deps, getScope: async () => scope }, request.tenantId, request.scopeId, {
+    rotate: !request.hasClient,
+  });
+  return { ok: true, outcome };
 }
 
 /** One call to the relay, refused loudly: a reconcile that half-ran must say which half. */

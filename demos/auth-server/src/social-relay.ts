@@ -115,10 +115,18 @@ export function relayClientId(sql: SqlExec): string | null {
 export function relayHop(sql: SqlExec): { origin: string; clientId: string; clientSecret: string } | null {
   const client = storedClient(sql);
   if (!client) return null;
+  const origin = relayOrigin(sql);
+  return origin ? { origin, ...client } : null;
+}
+
+/** The relay's origin, read off a delivered provider row's issuer; null until one is delivered. */
+export function relayOrigin(sql: SqlExec): string | null {
+  const client = storedClient(sql);
+  if (!client) return null;
   const row = readProviders(sql).find((r) => isPlatformRow(r, client.clientId) && r.issuer);
   if (!row?.issuer) return null;
   try {
-    return { origin: new URL(row.issuer).origin, ...client };
+    return new URL(row.issuer).origin;
   } catch {
     return null;
   }

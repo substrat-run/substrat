@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scopeId, tenantId } from './ids.js';
 
 /**
  * PLATFORM-PROVIDED social sign-in for a team Auth Server (#1544).
@@ -81,3 +82,35 @@ export const socialRelayDelivery = z.object({
   providers: z.array(socialRelayProvider).max(32),
 });
 export type SocialRelayDelivery = z.infer<typeof socialRelayDelivery>;
+
+/**
+ * Where an Auth Server install asks the control plane to reconcile ITS OWN relay client (#1544):
+ * the self-heal for an install whose install-time reconcile failed, that predates the relay, or
+ * that was registered before the relay gained a provider. Gated like every relay the control
+ * plane serves (the platform credential, and the caller the egress worker proves), and held to
+ * the caller's own scope there.
+ *
+ * `hasClient` is what the install says about itself: that it holds a relay client already. It
+ * can only NARROW what the call may do — with it the platform never rotates the client's secret,
+ * and without it a rotation still happens only when the install's own delivery answers
+ * `SOCIAL_RELAY_SECRET_NEEDED`, which an install holding a working secret never does.
+ */
+export const SOCIAL_RELAY_SELF_PATH = '/internal/social-relay/self';
+
+export const socialRelaySelfRequest = z.object({
+  tenantId,
+  scopeId,
+  hasClient: z.boolean(),
+});
+export type SocialRelaySelfRequest = z.infer<typeof socialRelaySelfRequest>;
+
+/**
+ * What the self call answers on a 200: the reconcile's outcome. `delivered` names the providers
+ * delivered; `skipped` says why nothing was (no hostname yet, no provider, or a rotation only a
+ * platform operator may make). Read loosely by the install, which shows it to its operator.
+ */
+export const socialRelaySelfOutcome = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('delivered'), providers: z.array(z.string()), rotated: z.boolean() }).passthrough(),
+  z.object({ status: z.literal('skipped'), reason: z.string() }).passthrough(),
+]);
+export type SocialRelaySelfOutcome = z.infer<typeof socialRelaySelfOutcome>;

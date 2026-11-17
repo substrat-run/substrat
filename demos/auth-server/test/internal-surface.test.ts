@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { ulid } from '@substrat-run/kernel';
 import app, { type Env } from '../src/routes.js';
 import type { AuthServerStub, ConfigEntry, InstanceMeta } from '../src/do-contract.js';
+import type { HealClaim, HealResult } from '../src/social-relay-heal.js';
 
 /**
  * The platform + routing surface of the worker app (`src/routes.ts`), driven in node with a
@@ -37,6 +38,9 @@ function fakeAuth() {
   const previewAnswer: { next: { ok: true; value: unknown } | { ok: false; status: 400 | 403 | 409; error: string } } = {
     next: { ok: true, value: { claimed: true } },
   };
+  /** Platform sign-in's self-heal (#1544): how the admin API answers, claims made, results recorded. */
+  const heal = { adminStatus: 200, claims: 0, recorded: [] as HealResult[] };
+  const healClaim: HealClaim = { attempt: 'attempt-1', tenantId: 'tenant-a', scopeId: 'scope-a', hasClient: false, relayOrigin: null, providerIds: [] };
   const namespace = {
     idFromName: (name: string) => name,
     get(id: unknown): AuthServerStub {
@@ -47,6 +51,10 @@ function fakeAuth() {
           // Path AND query — `/__client-options` forwards its `client_id` in the query string.
           const url = new URL(request.url);
           forwarded.push(`${url.pathname}${url.search}`);
+          if (url.pathname.startsWith('/__admin') && heal.adminStatus !== 200) {
+            return Response.json({ error: 'administrator role required' }, { status: heal.adminStatus });
+          }
+          if (url.pathname === '/__admin/social-relay/sync') return Response.json(healClaim);
           return Response.json({ ok: true, doName });
         },
         issuerState: async () => ({ needsSetup: true, signupEnabled: false, providers: [] }),
@@ -107,6 +115,11 @@ function fakeAuth() {
           previewCalls.push({ doName, verb: 'remove-managed', input });
           return previewAnswer.next as never;
         },
+        claimSocialRelayHeal: async () => (heal.claims++, healClaim),
+        recordSocialRelayHeal: async (attempt, result) => {
+          expect(attempt).toBe(healClaim.attempt);
+          heal.recorded.push(result);
+        },
       };
     },
   };
@@ -122,6 +135,7 @@ function fakeAuth() {
     forwarded,
     previewCalls,
     previewAnswer,
+    heal,
   };
 }
 
@@ -549,6 +563,56 @@ describe('the issuer’s own admin API (/api/admin)', () => {
     expect(res.status).toBe(200);
     expect(auth.touched).toEqual([scope]);
     expect(auth.forwarded).toEqual(['/__admin/settings']);
+  });
+});
+
+describe('platform sign-in’s self-heal (#1544)', () => {
+  const CP = 'https://cp.test';
+
+  /** One request, then every task it left behind, as the runtime's `waitUntil` runs them. */
+  async function run(path: string, init: RequestInit, over: Partial<Env> = {}) {
+    const asked: unknown[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string, i?: RequestInit) => {
+      asked.push({ url: String(input), secret: new Headers(i?.headers).get('x-substrat-platform'), body: JSON.parse(String(i?.body)) });
+      return Response.json({ status: 'delivered', providers: ['github'], rotated: false });
+    }) as typeof fetch;
+    try {
+      const pending: Promise<unknown>[] = [];
+      const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {}, props: {} };
+      const res = await app.request(path, init, { ...env, CONTROL_PLANE_URL: CP, ...over }, ctx as never);
+      await Promise.all(pending);
+      return { res, asked };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+  const self = { url: `${CP}/internal/social-relay/self`, secret: PLATFORM_SECRET, body: { tenantId: 'tenant-a', scopeId: 'scope-a', hasClient: false } };
+
+  it('the Connections read asks behind an administrator’s answer, and only where there is a platform to ask', async () => {
+    const hosted = await run('/api/admin/providers', {});
+    expect(hosted.res.status).toBe(200);
+    expect(hosted.asked).toEqual([self]);
+    expect(auth.heal.recorded).toEqual([{ status: 'delivered', providers: ['github'] }]);
+
+    auth.heal.adminStatus = 403;
+    const refused = await run('/api/admin/providers', {});
+    auth.heal.adminStatus = 200;
+    const standalone = await run('/api/admin/providers', {}, { CONTROL_PLANE_URL: undefined });
+    expect([refused.res.status, refused.asked, standalone.asked]).toEqual([403, [], []]);
+    expect(auth.heal.claims).toBe(1);
+  });
+
+  it('the button asks once the admin API has claimed it, and answers with what the platform said', async () => {
+    auth.heal.adminStatus = 403;
+    const refused = await run('/api/admin/social-relay/sync', { method: 'POST' });
+    expect([refused.res.status, refused.asked]).toEqual([403, []]);
+
+    auth.heal.adminStatus = 200;
+    const { res, asked } = await run('/api/admin/social-relay/sync', { method: 'POST' });
+    expect(await res.json()).toEqual({ result: { status: 'delivered', providers: ['github'] } });
+    expect(asked).toEqual([self]);
+    expect(auth.heal.recorded).toEqual([{ status: 'delivered', providers: ['github'] }]);
   });
 });
 

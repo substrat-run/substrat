@@ -5,6 +5,7 @@ import { isPlacesAnswer, placesOf, type Place } from './places';
 import type { ImportEntry, ImportResult } from '../../src/user-import-wire.js';
 import type { ClientTheme } from '../../src/theme-wire.js';
 import type { Locale } from '../../src/locale-wire.js';
+import type { HealRecord, HealResult } from '../../src/social-relay-heal.js';
 import { translate } from '../../src/messages.js';
 
 export type { Place } from './places';
@@ -1144,11 +1145,27 @@ export interface ProviderDraft {
   disabled: boolean;
 }
 
+/**
+ * Platform sign-in (#1544) on an install the platform provisioned: whether it holds the relay
+ * client the platform registers it with, and how the last attempt to bring that up to date went.
+ * Null standalone, where there is no platform to ask.
+ */
+export interface PlatformSignIn {
+  clientHeld: boolean;
+  last: HealRecord | null;
+}
+
 export async function identityProviders(): Promise<{
   catalogue: ProviderCatalogueEntry[];
   providers: ConfiguredProvider[];
+  platformSignIn: PlatformSignIn | null;
 }> {
   return admin('/providers');
+}
+
+/** Ask the platform to register this issuer for its sign-in providers now, and say what it answered. */
+export async function syncPlatformSignIn(): Promise<HealResult> {
+  return (await admin<{ result: HealResult }>('/social-relay/sync', { method: 'POST' })).result;
 }
 
 export async function saveIdentityProvider(id: string, draft: ProviderDraft): Promise<ConfiguredProvider> {

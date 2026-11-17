@@ -5,9 +5,11 @@ import {
   identityProviders,
   issuerSettings,
   listOAuthClients,
+  syncPlatformSignIn,
   type BankIdSettings,
   type ConfiguredProvider,
   type IssuerSettings,
+  type PlatformSignIn,
   type ProviderCatalogueEntry,
   type RegisteredClient,
 } from '../api';
@@ -16,6 +18,7 @@ import { connectionPath } from '../console/routes';
 import { ConnectionLink } from './connections/ConnectionLink';
 import { connectionStatus, connectionsFrom, enabledFor, signsIn, type Connection } from './connections/model';
 import { ProviderEditor } from './connections/ProviderSettings';
+import type { HealResult } from '../../../src/social-relay-heal.js';
 
 const COLUMNS = 'minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.6fr) 110px';
 
@@ -37,6 +40,7 @@ export function ConnectionsView({ issuer }: { issuer: string | null }) {
   const [catalogue, setCatalogue] = useState<ProviderCatalogueEntry[] | null>(null);
   const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
   const [providersErr, setProvidersErr] = useState<string | null>(null);
+  const [platformSignIn, setPlatformSignIn] = useState<PlatformSignIn | null>(null);
   // `undefined` while loading, `null` when BankID is not configured — two different answers.
   const [bankid, setBankid] = useState<BankIdSettings | null>();
   const [bankidErr, setBankidErr] = useState<string | null>(null);
@@ -54,6 +58,7 @@ export function ConnectionsView({ issuer }: { issuer: string | null }) {
       const state = await identityProviders();
       setCatalogue(state.catalogue);
       setProviders(state.providers);
+      setPlatformSignIn(state.platformSignIn ?? null);
     } catch (e) {
       setProvidersErr(e instanceof Error ? e.message : String(e));
     }
@@ -127,6 +132,8 @@ export function ConnectionsView({ issuer }: { issuer: string | null }) {
         </section>
       )}
 
+      {platformSignIn && <PlatformSignInPanel state={platformSignIn} onSynced={() => void reload()} />}
+
       {providersErr && <p className="error">{providersErr}</p>}
       {bankidErr && <p className="error">Could not load BankID: {bankidErr}</p>}
       {clientsErr && <p className="error">Could not load applications: {clientsErr}</p>}
@@ -179,4 +186,69 @@ function ConnectionRow({
       <span style={{ textAlign: 'right', color: 'var(--text-secondary)' }}>{enabled ?? '—'}</span>
     </Row>
   );
+}
+
+/**
+ * Sign-in provided by Substrat (#1544), when it needs the operator: this issuer holds no client at
+ * the platform's relay, or the last attempt to bring it up to date did not deliver. Opening this
+ * page already asks the platform now and then; the button asks now, and says what it answered.
+ */
+function PlatformSignInPanel({ state, onSynced }: { state: PlatformSignIn; onSynced: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [answer, setAnswer] = useState<HealResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const last = answer ?? state.last?.result ?? null;
+  const settled = last === null || last.status === 'delivered' || last.status === 'current';
+  if (state.clientHeld && settled && !answer) return null;
+  // The operator's own ask just succeeded. The text follows that answer rather than the state the
+  // page loaded with: it described what the answer has ended, and the reload a delivery triggers
+  // may not have landed yet.
+  const succeeded = answer?.status === 'delivered' || answer?.status === 'current';
+  const registered = state.clientHeld || succeeded;
+
+  const sync = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const result = await syncPlatformSignIn();
+      setAnswer(result);
+      if (result.status === 'delivered') onSynced();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Sign-in provided by Substrat</h2></div>
+      <p className="muted">
+        {succeeded
+          ? 'This issuer is registered for the sign-in providers the platform offers.'
+          : state.clientHeld
+            ? 'The last attempt to bring the providers the platform offers up to date did not finish.'
+            : 'This issuer is not registered for the sign-in providers the platform offers yet.'}
+        {' '}Each provider arrives switched off; nothing changes for your users until you enable it.
+      </p>
+      {last && <p className={last.status === 'failed' ? 'error' : 'muted'}>{describeHeal(last)}</p>}
+      {err && <p className="error">{err}</p>}
+      <Button onClick={() => void sync()} loading={busy}>
+        {registered ? 'Re-sync platform sign-in' : 'Set up platform sign-in'}
+      </Button>
+    </section>
+  );
+}
+
+function describeHeal(result: HealResult): string {
+  switch (result.status) {
+    case 'delivered':
+      return `Delivered: ${result.providers.join(', ')}.`;
+    case 'current':
+      return 'Up to date.';
+    case 'skipped':
+      return `Nothing changed: ${result.reason}.`;
+    case 'failed':
+      return `Failed: ${result.reason}.`;
+  }
 }

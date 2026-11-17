@@ -91,6 +91,14 @@ export type AuthServerStub = {
   removeManagedClient(
     input: import('@substrat-run/contracts').ManagedClientRemove,
   ): Promise<PreviewClientOutcome<import('@substrat-run/contracts').RemovedManagedClient>>;
+  /**
+   * Platform sign-in's self-heal (#1544, `social-relay-heal.ts`): claim an automatic attempt —
+   * null when this install cannot ask, or asked inside the interval — and record what it came to,
+   * under the claim's `attempt` (dropped once a newer attempt has been claimed).
+   * Called by the worker only after the admin API answered the Connections read.
+   */
+  claimSocialRelayHeal(): Promise<import('./social-relay-heal.js').HealClaim | null>;
+  recordSocialRelayHeal(attempt: string, result: import('./social-relay-heal.js').HealResult): Promise<void>;
 };
 
 /** The verified subject behind a session, as the `/__session` probe returns it. */
