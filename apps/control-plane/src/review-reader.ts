@@ -132,15 +132,24 @@ function nearRemovals(file: ChangedFile): Set<number> {
   return near;
 }
 
-/** The reader's output cap; a reply cut at it is recorded `incomplete: output cap`. */
-export const REVIEW_MAX_OUTPUT_TOKENS = 8_000;
+/**
+ * The reader's output cap; a reply cut at it is recorded `incomplete: output cap`. A reasoning
+ * model spends most of it thinking: on the seeded corpus (#2365) the completed reads used up to
+ * about 27k tokens (DeepSeek V4.1 Flash, GLM 5.3), and 8k cut every larger seed. 32k holds them,
+ * and at the ~160 tokens a second those reads streamed, a read at the cap ends inside the job's
+ * five-minute deadline. The plane's `REVIEW_MAX_OUTPUT_TOKENS` overrides it.
+ */
+export const REVIEW_MAX_OUTPUT_TOKENS = 32_000;
 
 /**
  * The one model call the reader makes, the same for the job and for the seeded corpus that
  * chooses its model (#2365): one step, no tools, no SDK retries (one attempt is one HTTP call),
- * and no sampling spread.
+ * and no sampling spread. Streamed: the gateway closed an unstreamed read at about 60 s, so every
+ * read a reasoning model took longer over came back `model unavailable` (the corpus, #2365); a
+ * streamed read stays open while tokens flow, up to the job's own deadline. The host assembles
+ * the stream before the job sees it, so nothing downstream reads a partial reply.
  */
-export const REVIEW_CALL = { maxSteps: 1, maxRetries: 0, temperature: 0 } as const;
+export const REVIEW_CALL = { maxSteps: 1, maxRetries: 0, temperature: 0, stream: true } as const;
 
 /** What a reply makes of the record: the assembled findings, and whether the read completed. */
 export interface ReadReply {
