@@ -2187,14 +2187,15 @@ export async function reapRetainedScope(
   if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
   else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
   // Past its retention it is archived, so the router no longer serves it, and reapScope below releases its names.
-  if (rec) {
-    const fence = await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, () =>
-      host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {}));
-    await fence();
-  }
-  // Past the refusals the fence's mark makes, before any byte goes. Read again, since a scope
-  // with no store is not marked: a scope unarchived, or a tenant un-deleted, since the sweep chose
-  // it keeps its sign-in, and `reapScope` below refuses it.
+  // Built here, before it runs, so its stores are named (a refusal) before anything is touched.
+  const fence = rec
+    ? await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, () =>
+        host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {}))
+    : null;
+  // #3261: past every refusal that touches nothing, and BEFORE the fence, whose run wipes the
+  // stores and marks the scope for good: an auth-server that cannot be reached stops the reap with
+  // nothing wiped. The scope is read again, since the sweep chose it: one unarchived, or whose
+  // tenant was un-deleted, since then keeps its sign-in, and the mark or `reapScope` refuses it.
   if (deps.removeManagedSignIn) {
     const current = await host.admin.getScopeRecord(actor, tenantId, scopeId);
     const tenant = opts.whileTenantDeleting ? await host.admin.getTenant(actor, tenantId) : undefined;
@@ -2202,6 +2203,7 @@ export async function reapRetainedScope(
       await deps.removeManagedSignIn(tenantId, scopeId);
     }
   }
+  if (fence) await fence();
   if (resolveRef) {
     // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
     const { storageStranded } = await drainScopeScriptCopies({ admin: host.admin, actor, resolveRef }, tenantId, scopeId);

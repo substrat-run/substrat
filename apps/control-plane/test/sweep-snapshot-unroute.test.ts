@@ -115,16 +115,20 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const { t, fork: scope, hostname } = await routedFork(host);
     await host.admin.archiveScope(staff, t, scope);
-    const { stores } = witness(host, () => hostname);
+    const { stores, seen } = witness(host, () => hostname);
     const failing = async () => {
       throw new Error("the manager's auth-server is unreachable");
     };
     await expect(reapRetainedScope({ host, stores, drivers: [graph], removeManagedSignIn: failing }, t, scope)).rejects.toThrow(/unreachable/);
+    // Nothing wiped and nothing marked: the store fence never ran, so the scope is still whole.
+    expect(seen).toEqual([]);
+    expect(await host.admin.scopeStoresFencedAt(staff, t, scope)).toBeNull();
     expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
 
-    const removed: string[] = [];
-    await reapRetainedScope({ host, stores, drivers: [graph], removeManagedSignIn: async (_t, s) => void removed.push(s) }, t, scope);
-    expect(removed).toEqual([scope]);
+    const order: string[] = [];
+    const ordered: PlatformScopeStores = { ...stores, fenceStores: async () => void order.push('fence') };
+    await reapRetainedScope({ host, stores: ordered, drivers: [graph], removeManagedSignIn: async () => void order.push('sign-in') }, t, scope);
+    expect(order).toEqual(['sign-in', 'fence']);
     expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('reaped');
   });
 
