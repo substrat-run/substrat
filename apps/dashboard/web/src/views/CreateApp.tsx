@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RequestIdNote, requestIdOf } from '../components/RequestIdNote';
 import { Button, Input, RequestView, Select, Skeleton, SkeletonRegion, mapOk, valueOr, type RequestState } from '@substrat-run/ui/wa';
-import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec } from '../lib/api';
+import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec, type ModelCatalogOption } from '../lib/api';
+import { ModelSettingPicker } from './ModelSettingPicker';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';
 import { slugify } from '../lib/format';
@@ -49,6 +50,7 @@ export function CreateApp({
   authServers,
   onCancel,
   onCreate,
+  loadModelCatalog,
 }: {
   /** A request, not an array (#3244): "Nothing is published" waits for an answer. */
   catalog: RequestState<CatalogEntry[]>;
@@ -59,13 +61,15 @@ export function CreateApp({
   authServers: AppRow[];
   onCancel: () => void;
   onCreate: (input: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => Promise<void>;
+  /** The models a `kind: 'model'` setting may hold (#1054) — read only when the picked vertical declares one. */
+  loadModelCatalog?: () => Promise<ModelCatalogOption[]>;
 }) {
   const [source, setSource] = useState<Source | null>(null);
 
   if (!source) {
     return <ChooseVertical catalog={catalog} onRetry={onRetryCatalog} onCancel={onCancel} onPick={setSource} />;
   }
-  return <Configure source={source} teamName={teamName} authServers={authServers} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={valueOr(catalog, []).length === 0} />;
+  return <Configure source={source} teamName={teamName} authServers={authServers} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} loadModelCatalog={loadModelCatalog} disabled={valueOr(catalog, []).length === 0} />;
 }
 
 function Stepper({ step }: { step: 1 | 2 }) {
@@ -212,7 +216,7 @@ function ChooseVertical({
   );
 }
 
-function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, disabled }: { source: Source; teamName?: string; authServers: AppRow[]; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => Promise<void>; disabled: boolean }) {
+function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, loadModelCatalog, disabled }: { source: Source; teamName?: string; authServers: AppRow[]; onBack: () => void; onCancel: () => void; onCreate: (i: { verticalSlug: string; name: string; auth?: AppAuthChoice; config?: Record<string, string> }) => Promise<void>; loadModelCatalog?: () => Promise<ModelCatalogOption[]>; disabled: boolean }) {
   const [name, setName] = useState(source.defaultName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -221,9 +225,35 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
   // provisioning — the instance is born configured (an issuer with its admin) instead of
   // live-but-unconfigured until someone finds the Env tab. Non-secrets prefill their
   // declared default; secrets always start blank.
+  // A model setting (#1054) starts blank instead: its declared default is preselected only once the
+  // catalog says it is listed, since the install refuses a model the catalog does not price.
   const [config, setConfig] = useState<Record<string, string>>(() =>
-    Object.fromEntries(source.envSpec.map((s) => [s.key, s.secret ? '' : s.default ?? ''])),
+    Object.fromEntries(source.envSpec.map((s) => [s.key, s.secret || s.kind === 'model' ? '' : s.default ?? ''])),
   );
+  const declaresModel = source.envSpec.some((s) => s.kind === 'model');
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogOption[]>([]);
+  const [modelCatalogError, setModelCatalogError] = useState<string>();
+  useEffect(() => {
+    if (!declaresModel || !loadModelCatalog) return;
+    let live = true;
+    loadModelCatalog()
+      .then((catalog) => {
+        if (!live) return;
+        setModelCatalog(catalog);
+        const listed = new Set(catalog.filter((m) => m.status === 'active').map((m) => m.id));
+        setConfig((m) => {
+          const next = { ...m };
+          for (const s of source.envSpec) {
+            if (s.kind === 'model' && !next[s.key] && s.default && listed.has(s.default)) next[s.key] = s.default;
+          }
+          return next;
+        });
+      })
+      .catch((e: unknown) => live && setModelCatalogError((e as Error).message || 'The model list could not be read.'));
+    return () => {
+      live = false;
+    };
+  }, [declaresModel, loadModelCatalog, source.envSpec]);
   const requiredMissing = source.envSpec.filter((s) => s.required && !(config[s.key] ?? '').trim());
   const configGroups = new Map<string, EnvVarSpec[]>();
   for (const s of source.envSpec) {
@@ -323,7 +353,15 @@ function Configure({ source, teamName, authServers, onBack, onCancel, onCreate, 
         {[...configGroups.entries()].map(([group, specs]) => (
           <div key={group} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', paddingTop: 4 }}>{group}</div>
-            {specs.map((s) => (
+            {specs.map((s) => s.kind === 'model' ? (
+              <div key={s.key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-secondary)' }}>{`${s.label ?? s.key}${s.required ? '' : ' (optional)'}`}</div>
+                <ModelSettingPicker value={config[s.key] ?? ''} catalog={modelCatalog} onChange={(value) => setConfig((m) => ({ ...m, [s.key]: value }))} />
+                {modelCatalogError
+                  ? <div role="alert" style={{ fontSize: 11, color: 'var(--status-danger-fg)' }}>{modelCatalogError}</div>
+                  : s.description && <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{s.description}</div>}
+              </div>
+            ) : (
               <Input
                 key={s.key}
                 label={`${s.label ?? s.key}${s.required ? '' : ' (optional)'}`}

@@ -116,6 +116,7 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     // -- env + identity
     await call(own, 'dashboard/set-app-env', {
       appScopeId: app,
+      modelKeys: [],
       entries: [{ key: 'PUBLIC_ORIGIN', value: 'https://one.example.test' }, { key: 'API_KEY', value: 'k', secret: true }],
     });
     await call(own, 'dashboard/list-app-env', { appScopeId: app });
@@ -333,6 +334,7 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     const app = ulid();
     await own.invoke('dashboard/set-app-env', {
       appScopeId: app,
+      modelKeys: [],
       entries: ['E_KEY', 'B_KEY', 'D_KEY', 'A_KEY', 'C_KEY'].map((key) => ({ key, value: key.toLowerCase() })),
     });
     const rows = await byTwo<{ key: string }>('dashboard/list-app-env', { appScopeId: app });

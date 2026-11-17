@@ -192,6 +192,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // Set a non-secret and a secret.
     const saved = (await dash.invoke('dashboard/set-app-env', {
       appScopeId,
+      modelKeys: [],
       entries: [
         { key: 'PUBLIC_ORIGIN', value: 'https://hr.acme.com', secret: false },
         { key: 'ADMIN_PASSWORD', value: 'super-secret-pw', secret: true },
@@ -208,7 +209,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(secret.hasValue).toBe(true);
 
     // An empty value leaves the secret unchanged (the form submits blank to keep it).
-    await dash.invoke('dashboard/set-app-env', { appScopeId, entries: [{ key: 'ADMIN_PASSWORD', value: '', secret: true }] });
+    await dash.invoke('dashboard/set-app-env', { appScopeId, modelKeys: [], entries: [{ key: 'ADMIN_PASSWORD', value: '', secret: true }] });
     const still = await walkAll(dash, 'dashboard/list-app-env', { appScopeId });
     expect(still.find((v) => v.key === 'ADMIN_PASSWORD')?.hasValue).toBe(true);
 

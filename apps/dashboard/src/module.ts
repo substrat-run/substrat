@@ -31,7 +31,7 @@ import {
   operationsFor,
 } from '@substrat-run/kernel';
 import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
-import { selectableModel } from '@substrat-run/model-providers';
+import { refuseUnlistedModels } from './model-setting.js';
 
 // ============================================================================
 // The Dashboard — the tenant-facing self-service surface, built AS a Substrat
@@ -588,12 +588,16 @@ function keysetPage<R>(
 
 // -- operations --------------------------------------------------------------
 
+const envKey = z.string().regex(/^[A-Z][A-Z0-9_]*$/, 'env keys are UPPER_SNAKE_CASE');
+
 const provisionAppInput = z.object({
   /** The scope id the app will run under (minted by the caller). */
   appScopeId: z.string().min(1),
   /** Which vertical this app runs — 'meridian', 'callout', … (catalog slug). */
   verticalSlug,
   name: z.string().min(1),
+  /** The vertical's `kind: 'model'` env keys, remembered for the app's later writes (#1054). */
+  modelKeys: z.array(envKey).optional(),
 });
 
 /**
@@ -614,6 +618,7 @@ const provisionAppOp: OperationHandler<z.infer<typeof provisionAppInput>, Dashbo
      VALUES (?, ?, ?, ?, 'provisioning', NULL, ?, ?)`,
     [id, input.appScopeId, input.verticalSlug, input.name, ctx.principal, ctx.now()],
   );
+  if (input.modelKeys?.length) rememberModelKeys(ctx, input.appScopeId, input.modelKeys);
   recordAppEvent(ctx, input.appScopeId, 'created', input.verticalSlug);
   return ctx.sql.query<DashboardAppRow>('SELECT * FROM dashboard_apps WHERE id = ?', [id])[0]!;
 };
@@ -1008,12 +1013,51 @@ const appEventsOp: OperationHandler<z.infer<typeof appEventsInput> & PagedInput,
 
 // -- app environment / config ------------------------------------------------
 
-const envKey = z.string().regex(/^[A-Z][A-Z0-9_]*$/, 'env keys are UPPER_SNAKE_CASE');
+/**
+ * Where the module remembers which of an app's settings are `kind: 'model'` (#1054). The keys
+ * come from the vertical's env-spec, which module code cannot read, so the worker hands them in
+ * on every write and at install; the module keeps their union, so a later write that names fewer
+ * (or none) is still held to the catalog. In the reserved `substrat:*` namespace, which no
+ * `set-app-env` key can spell and `list-app-env` never shows.
+ */
+const APP_MODEL_KEYS_KEY = 'substrat:model-keys';
+
+function storedEnvValue(ctx: OperationContext, appScopeId: string, key: string): string | undefined {
+  return ctx.sql.query<{ value: string }>('SELECT value FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?', [
+    appScopeId,
+    key,
+  ])[0]?.value;
+}
+
+/** The app's remembered model keys plus `given`, written back when `given` adds one. */
+function rememberModelKeys(ctx: OperationContext, appScopeId: string, given: readonly string[]): Set<string> {
+  let stored: string[] = [];
+  try {
+    stored = z.array(z.string()).parse(JSON.parse(storedEnvValue(ctx, appScopeId, APP_MODEL_KEYS_KEY) ?? '[]'));
+  } catch {
+    stored = [];
+  }
+  const keys = new Set([...stored, ...given]);
+  if (keys.size > stored.length) {
+    ctx.sql.exec(
+      `INSERT INTO dashboard_app_env (id, app_scope_id, key, value, is_secret, updated_by, updated_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?)
+       ON CONFLICT (app_scope_id, key) DO UPDATE SET
+         value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+      [ulid(), appScopeId, APP_MODEL_KEYS_KEY, JSON.stringify([...keys].sort()), ctx.principal, ctx.now()],
+    );
+  }
+  return keys;
+}
 
 const setAppEnvInput = z.object({
   appScopeId: z.string().min(1),
-  /** Trusted manifest model keys supplied by the dashboard worker. */
-  modelKeys: z.array(envKey).optional(),
+  /**
+   * The vertical's `kind: 'model'` keys, from its env-spec — required, so no caller can leave the
+   * catalog check out by omission. Added to the keys the app already remembers, never replacing
+   * them (`rememberModelKeys`).
+   */
+  modelKeys: z.array(envKey),
   entries: z
     .array(z.object({ key: envKey, value: z.string(), secret: z.boolean().default(false) }))
     .min(1),
@@ -1031,17 +1075,10 @@ const setAppEnvOp: OperationHandler<z.infer<typeof setAppEnvInput>, { saved: num
   const input = setAppEnvInput.parse(raw);
   const now = ctx.now();
   const saved: string[] = [];
+  const modelKeys = rememberModelKeys(ctx, input.appScopeId, input.modelKeys);
+  refuseUnlistedModels(input.entries, modelKeys, (key) => storedEnvValue(ctx, input.appScopeId, key));
   for (const e of input.entries) {
     if (e.value === '') continue; // leave-unchanged (untouched secret)
-    if (input.modelKeys?.includes(e.key)) {
-      const old = ctx.sql.query<{ value: string }>(
-        'SELECT value FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?',
-        [input.appScopeId, e.key],
-      )[0];
-      if (e.secret || (!selectableModel(e.value) && old?.value !== e.value)) {
-        throw substratError('validation_failed', `${e.key} must be a listed model`);
-      }
-    }
     ctx.sql.exec(
       `INSERT INTO dashboard_app_env (id, app_scope_id, key, value, is_secret, updated_by, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)

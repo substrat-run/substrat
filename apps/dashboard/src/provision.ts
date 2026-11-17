@@ -281,6 +281,7 @@ export async function createApp(
      * the embedded path has no delivery seam (modules there read authored config).
      */
     appConfig?: Array<{ key: string; value: string; secret: boolean }>;
+    /** The vertical's `kind: 'model'` env keys, held to the platform catalog on every write (#1054). */
     modelKeys?: string[];
     /**
      * The install form's Identity choice (§2.4): which issuer this app authenticates
@@ -310,6 +311,9 @@ export async function createApp(
     appScopeId: input.appScopeId,
     verticalSlug: input.verticalSlug,
     name: input.name,
+    // Remembered by the app's record, so every later write of a model setting is held to the
+    // catalog whoever makes it (#1054) — including an install that set no config at all.
+    ...(input.modelKeys?.length ? { modelKeys: input.modelKeys } : {}),
   });
 
   // 1.5. AUTHOR the install form's config before any platform effect (#426), so what
@@ -317,7 +321,7 @@ export async function createApp(
   //      for a retry) — the whole point of the form is that these values never exist
   //      only in one in-flight request.
   if (input.appConfig?.length) {
-    await scope.invoke('dashboard/set-app-env', { appScopeId: input.appScopeId, entries: input.appConfig, modelKeys: input.modelKeys });
+    await scope.invoke('dashboard/set-app-env', { appScopeId: input.appScopeId, entries: input.appConfig, modelKeys: input.modelKeys ?? [] });
   }
 
   // 2. Effect the app scope IN THE CALLER'S OWN TENANT (node.tenantId, ambient —
@@ -698,6 +702,8 @@ export async function retryApp(
     appOwnerGrants?: PermissionKey[];
     controlPlane?: TenantNarrowedControlPlane;
     tenantName?: string;
+    /** The vertical's `kind: 'model'` env keys, remembered by the fresh app record (#1054). */
+    modelKeys?: string[];
   },
 ): Promise<DashboardAppRow> {
   await deprovisionApp(host, {
@@ -714,6 +720,7 @@ export async function retryApp(
     appOwnerGrants: input.appOwnerGrants,
     controlPlane: input.controlPlane,
     tenantName: input.tenantName,
+    ...(input.modelKeys ? { modelKeys: input.modelKeys } : {}),
   });
 }
 

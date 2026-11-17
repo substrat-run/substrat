@@ -275,6 +275,12 @@ export function App() {
     return teamApi(currentTeamId);
   }, [currentTeamId]);
 
+  // The install form's model picker (#1054): the same priced catalog the Environment tab reads.
+  const loadModelCatalog = useCallback(
+    () => (DEV_MOCK || !currentTeamId ? Promise.resolve([]) : teamApi(currentTeamId).modelCatalog()),
+    [currentTeamId],
+  );
+
   // ⌘K Ask (#2283): offered only where this deployment writes AI text, asked once per team.
   const [aiOffered, setAiOffered] = useState(false);
   useEffect(() => {
@@ -1082,6 +1088,7 @@ export function App() {
           authServers={authServers}
           onCancel={() => go('/apps')}
           onCreate={createApp}
+          loadModelCatalog={loadModelCatalog}
         />
       ) : route.section === 'apps' && openApp ? (
         <AppDetail

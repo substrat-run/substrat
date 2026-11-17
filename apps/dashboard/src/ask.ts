@@ -199,6 +199,7 @@ export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/list-app-snapshots': 'app preview copies were not an assistant tool before this route moved',
   'dashboard/get-app-env': 'configuration values were not an assistant tool before this route moved',
   'dashboard/list-catalog': 'the install catalog was not an assistant tool before this route moved',
+  'dashboard/model-catalog': 'the platform model price list feeds the install form’s picker; it says nothing about the team',
   'dashboard/explanations-status': 'the AI features’ own switch and budget',
   'dashboard/get-finding-explanation': 'an earlier model’s text, not the dashboard’s data',
   'dashboard/get-process-note': 'an earlier model’s text, not the dashboard’s data',
