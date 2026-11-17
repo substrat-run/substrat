@@ -490,9 +490,15 @@ const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer
 /**
  * `git diff` as both CLIs list changed files. `--no-renames` names a moved file at BOTH ends:
  * with rename detection on, a move out of a package lists only where it went, and a READS
- * path (or the package it left) would never be seen.
+ * path (or the package it left) would never be seen. `-z` because a newline-delimited list
+ * C-quotes a path holding a non-ASCII byte or a double quote (`"demos/x/caf\303\251.svg"`,
+ * quotes included) under git's default `core.quotePath`, and that string matches no package
+ * (#3256). Read the output with `splitNames`.
  */
-export const CHANGED_NAMES = ['diff', '--name-only', '--no-renames'];
+export const CHANGED_NAMES = ['diff', '--name-only', '--no-renames', '-z'];
+
+/** A `-z` listing (`CHANGED_NAMES`, `ls-files -z`) as paths, spelled exactly as the tree spells them. */
+export const splitNames = (out) => out.split('\0').filter(Boolean);
 
 function workspace(filters) {
   const out = execFileSync('pnpm', ['ls', '-r', '--depth', '-1', '--json', ...filters.map((f) => `--filter=${f}`)], {
@@ -563,7 +569,7 @@ function main(argv) {
       event,
       base,
       head: process.env.GITHUB_HEAD_REF || undefined,
-      files: event === 'pull_request' ? git(...CHANGED_NAMES, base, 'HEAD').split('\n').filter(Boolean) : [],
+      files: event === 'pull_request' ? splitNames(git(...CHANGED_NAMES, base, 'HEAD')) : [],
       lockfile: () => lockfileScope(git('show', `${base}:${LOCKFILE}`), git('show', `HEAD:${LOCKFILE}`)),
       all,
       selectChanged: (extra) => {

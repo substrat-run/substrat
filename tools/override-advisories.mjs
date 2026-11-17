@@ -349,7 +349,8 @@ function main() {
   const prChanges =
     event === 'pull_request'
       ? attempt(`cannot compare against ${base}`, () => ({
-          changedFiles: run('git', 'diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean),
+          // NUL-delimited, so a quoted path is read as the tree spells it (#3256).
+          changedFiles: run('git', 'diff', '--name-only', '-z', base, 'HEAD').split('\0').filter(Boolean),
           baseOverrides: effectiveOverrides(run('git', 'show', `${base}:pnpm-workspace.yaml`)),
           headOverrides: overrides,
         }))

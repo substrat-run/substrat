@@ -24,7 +24,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { buildNames, CHANGED_NAMES, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS } from './ci-scope.mjs';
+import { buildNames, CHANGED_NAMES, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS, splitNames } from './ci-scope.mjs';
 import { nodeOptions } from './vitest/node-options.mjs';
 
 /**
@@ -47,7 +47,6 @@ export function ownersOf(files, all) {
 }
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-const lines = (s) => s.split('\n').filter(Boolean);
 
 // The workspace members, minus the gitignored builder-studio scratch projects the root
 // scripts exclude too (#769).
@@ -79,8 +78,8 @@ function main(argv) {
   const base = arg('--base') ?? git('merge-base', 'HEAD', 'origin/main').trim();
   const files = [
     ...new Set([
-      ...lines(git(...CHANGED_NAMES, base)),
-      ...lines(git('ls-files', '--others', '--exclude-standard')),
+      ...splitNames(git(...CHANGED_NAMES, base)),
+      ...splitNames(git('ls-files', '-z', '--others', '--exclude-standard')),
     ]),
   ].sort();
 

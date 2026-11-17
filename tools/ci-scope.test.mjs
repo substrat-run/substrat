@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertPartition, assignShards, buildNames, CHANGED_NAMES, enclosingNames, classify, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, READS, readersOf, unitsOf } from './ci-scope.mjs';
+import { assertPartition, assignShards, buildNames, CHANGED_NAMES, enclosingNames, classify, splitNames, decide, lockfileScope, parseLockfile, parseUnit, PARTS, PINNED, READS, readersOf, unitsOf } from './ci-scope.mjs';
 
 // A lockfile in pnpm v9's shape: two workspace packages sharing one third-party
 // dependency, plus the root importer.
@@ -293,9 +293,31 @@ test('CHANGED_NAMES: a file moved out of an engine is listed where it left, too'
     git('commit', '-qm', 'base');
     git('mv', 'engines/x/src/index.ts', 'engines/x/src/manifest.ts');
     git('commit', '-qm', 'move');
-    const files = git(...CHANGED_NAMES, 'HEAD~1', 'HEAD').split('\n').filter(Boolean).sort();
+    const files = splitNames(git(...CHANGED_NAMES, 'HEAD~1', 'HEAD')).sort();
     assert.deepEqual(files, ['engines/x/src/index.ts', 'engines/x/src/manifest.ts']);
     assert.deepEqual(readersOf(files), ['@substrat-run/console', '@substrat-run/contracts']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+test('CHANGED_NAMES: a non-ASCII or quoted path is listed as the tree spells it, inside its package (#3256)', () => {
+  // core.quotePath at its default: a newline-delimited list would C-quote both names, and
+  // classify would call them changed outside every package.
+  const dir = mkdtempSync(join(tmpdir(), 'ci-scope-'));
+  try {
+    const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });
+    git('init', '-q');
+    writeFileSync(join(dir, 'README.md'), 'x\n');
+    git('add', '-A');
+    git('commit', '-qm', 'base');
+    const names = ['demos/todo/app/public/caf\u00e9.svg', 'demos/todo/say "hi".txt'];
+    mkdirSync(join(dir, 'demos/todo/app/public'), { recursive: true });
+    for (const n of names) writeFileSync(join(dir, n), 'x\n');
+    git('add', '-A');
+    git('commit', '-qm', 'add');
+    const files = splitNames(git(...CHANGED_NAMES, 'HEAD~1', 'HEAD')).sort();
+    assert.deepEqual(files, [...names].sort());
+    assert.deepEqual(classify(files), { widening: [], inMembers: 2, lockfile: false });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
