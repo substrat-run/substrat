@@ -85,3 +85,52 @@ kernel open question 14 and wants its own decision — §6 says the action list
 should settle it, and the action list is now real.
 The dev-actor stub — which names a subject with cross-tenant reach — is mounted
 only under `dev`/test, never in `wrangler.jsonc` (control-plane.md §6).
+
+## Inbound mail: switching on Email Routing (#2611)
+
+The control plane receives mail for scopes' mail-in addresses through its `email()` handler. The
+code is deployed with every release; **receiving starts only once an operator does the steps
+below by hand**. Nothing in this repo changes DNS or routing rules, and nothing should: wrangler's
+`addresses` key is top-level and would claim the rule for both environments.
+
+| | Production | Test |
+|---|---|---|
+| Receiving domain (`MAIL_IN_DOMAIN`) | `in.substrat.run` | `in-test.substrat.run` |
+| Worker the rule targets | `substrat-control-plane` | `substrat-control-plane-test` |
+| R2 bucket (`MAIL_IN_BUCKET`) | `substrat-mail-in` | `substrat-mail-in-test` |
+
+**The apex is not ours to touch.** `substrat.run`'s own MX points at another mail provider, and
+Email Routing is switched on for the **subdomain only**. Cloudflare's docs say it adds the records
+the subdomain needs; they do not promise to leave the apex alone, so the check in step 1 and step
+6 is what holds that.
+
+1. **Write down the apex MX** before anything else: `dig +short MX substrat.run`. Keep the output;
+   step 6 compares against it.
+2. **Create the bucket** if it does not exist (`wrangler r2 bucket list`):
+   `wrangler r2 bucket create substrat-mail-in` (and `substrat-mail-in-test`). The control-plane
+   deploy binds it, and with no bucket every message is refused.
+3. **Add the subdomain.** Dashboard → Email Service → Email Routing → the `substrat.run` zone →
+   Settings → Subdomains → add `in` (and `in-test`). If the dashboard offers to add or replace MX
+   records **on the apex**, stop: decline, and ask before going on. Only records on the subdomain
+   are expected.
+4. **Turn on subaddressing** (Email Routing → Settings → Subaddressing). Every address the platform
+   mints is `mail+<tag>@<domain>`, matched by one rule for `mail@<domain>`; without subaddressing
+   none of them match.
+5. **Add one routing rule** per environment: custom address `mail@in.substrat.run`, action *Send to
+   a Worker*, target the worker in the table. A subdomain takes no catch-all rule (Cloudflare
+   allows one on the apex only), which is why there is one literal rule rather than one per scope.
+6. **Check the apex again**: `dig +short MX substrat.run` must print exactly what step 1 did. If it
+   does not, remove the subdomain from Email Routing and restore the apex records from step 1.
+7. **Check the subdomain**: `dig +short MX in.substrat.run` names Cloudflare's routing MX.
+8. **Send a test.** Mail to `mail@in.substrat.run` itself bounces with *No such address* — that bounce
+   is the worker answering, since a bare `mail@` is not a minted address. Then request an address
+   for a test scope (`mailInAddress` from its worker, or the dashboard) and send to it: the worker's
+   logs show `mail-in: received` and then `mail-in: delivered`.
+
+**Turning it off** is removing the rule (mail then bounces at Cloudflare), or removing the subdomain
+from Email Routing (no MX, so senders cannot deliver at all). Neither touches the apex. Mail already
+accepted stays in the bucket and is delivered by the connector sweep; addresses keep their rows and
+work again when the rule is back.
+
+**Limits a sender meets** are set in code, not here: 25 MiB a message (Email Routing's own cap too),
+and per address 60 messages an hour and 250 MiB a day (`MAIL_IN_MAX_*` in `@substrat-run/contracts`).

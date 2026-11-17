@@ -27,6 +27,7 @@ export {
   MAIL_IN_BASE,
   MESSAGE_PREFIX,
   MailInError,
+  QUOTA_KEY,
   STATS_KEY,
   addressOf,
   listMailInAddresses,
@@ -43,6 +44,7 @@ export {
 export type { MailInAddressDeps, MailInBinding, MailInLanding, MailInLandingOf, MailInMessageEntry, MailInStats } from './address.js';
 export {
   DEDUPE_RETENTION_MS,
+  DEFAULT_MAIL_IN_LIMITS,
   MAX_DELIVERY_ATTEMPTS,
   SMTP_REFUSALS,
   SWEEP_BATCH,
@@ -52,7 +54,7 @@ export {
   senderAdmitted,
   sweepMailIn,
 } from './inbound.js';
-export type { AcceptOutcome, DeliveryOutcome, InboundMessage, MailInInboundDeps, MailInSweepResult } from './inbound.js';
+export type { AcceptOutcome, DeliveryOutcome, InboundMessage, MailInInboundDeps, MailInLimits, MailInSweepResult } from './inbound.js';
 export { CLOUDFLARE_AUTHSERV_ID, authVerdict, headerFields } from './headers.js';
 export type { AuthVerdict } from './headers.js';
 export { memoryMailInStore, r2MailInStore } from './store.js';

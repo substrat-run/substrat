@@ -1,6 +1,8 @@
 import PostalMime, { type Address, type Attachment } from 'postal-mime';
 import {
   MAIL_IN_MAX_ATTACHMENTS,
+  MAIL_IN_MAX_BYTES_PER_DAY,
+  MAIL_IN_MAX_MESSAGES_PER_HOUR,
   MAIL_IN_MAX_MESSAGE_BYTES,
   MAIL_IN_MAX_TEXT_CHARS,
   MAIL_IN_PROVIDER,
@@ -15,6 +17,7 @@ import {
 import { bytesStream, connectorUploadBody, ulid, type ByteBody, type ScopeAttachments, type ScopeHost } from '@substrat-run/kernel';
 import {
   MESSAGE_PREFIX,
+  QUOTA_KEY,
   bumpStats,
   localPartOf,
   messageEntries,
@@ -47,6 +50,12 @@ import type { MailInStore } from './store.js';
  * a message over the size cap, and — when the address has an allowlist — a sender off it or not
  * proven to be who it says. The answers are deliberately few and plain; an unknown address and a
  * revoked one read the same, so the bounce is no oracle for which addresses were ever live.
+ *
+ * Last, the address's **abuse limits** (`MailInLimits`): messages per clock hour and bytes per UTC
+ * day. Email Routing sets no inbound rate of its own, so without them an address with no allowlist
+ * that leaked could be flooded — every message stored, then delivered into the scope. They are
+ * judged after every other check, so a refusal tells a sender nothing acceptance would not, and a
+ * redelivered duplicate never counts against them.
  *
  * What passes is written to the store and recorded `pending` on the address's connection, keyed by
  * the hash of its `Message-ID` (or of its bytes when it carries none). A redelivery of the same
@@ -103,7 +112,32 @@ export const SMTP_REFUSALS = {
   tooLarge: 'Message too large',
   notAllowed: 'Sender not allowed for this address',
   malformed: 'Malformed message',
+  overLimit: 'Too much mail for this address right now; send it again later',
 } as const;
+
+/** One address's abuse limits. Both default to the platform's (`MAIL_IN_MAX_*` in contracts). */
+export interface MailInLimits {
+  /** Messages accepted per clock hour, UTC. */
+  messagesPerHour: number;
+  /** Raw bytes accepted per UTC day. */
+  bytesPerDay: number;
+}
+
+export const DEFAULT_MAIL_IN_LIMITS: MailInLimits = {
+  messagesPerHour: MAIL_IN_MAX_MESSAGES_PER_HOUR,
+  bytesPerDay: MAIL_IN_MAX_BYTES_PER_DAY,
+};
+
+/** What an address's quota row holds: the hour and day it counts, and what it counted in each. */
+interface MailInQuota {
+  hour: string;
+  messages: number;
+  day: string;
+  bytes: number;
+}
+
+/** Compare-and-set tries before a quota take gives up as contended. */
+const QUOTA_TRIES = 8;
 
 export interface MailInInboundDeps {
   actor: PlatformActorId;
@@ -112,6 +146,8 @@ export interface MailInInboundDeps {
   domain: string | undefined;
   /** Whose `Authentication-Results` are trusted. Defaults to Cloudflare Email Routing's. */
   authservId?: string;
+  /** The abuse limits every address is held to. Defaults to {@link DEFAULT_MAIL_IN_LIMITS}. */
+  limits?: Partial<MailInLimits>;
   now?: () => Date;
 }
 
@@ -163,6 +199,35 @@ export function senderAdmitted(binding: Pick<MailInBinding, 'allowlist'>, verdic
   return envelope.includes('@') && allowed(binding.allowlist, envelope) && envelopeFromProven(verdict, envelope);
 }
 
+/**
+ * Count one message of `bytes` against the address's hour and day, or say which limit it would
+ * cross. A compare-and-set from the row as read, retried, so two messages accepted together cannot
+ * both slip under a limit only one of them fits. A take that loses every try throws: the handler
+ * answers that as a failure to accept, which the sender retries, rather than guessing.
+ */
+async function takeQuota(
+  host: ScopeHost,
+  connectionId: ConnectionId,
+  bytes: number,
+  limits: MailInLimits,
+  now: Date,
+): Promise<'ok' | 'rate-limited' | 'over-daily-volume'> {
+  const iso = now.toISOString();
+  const hour = iso.slice(0, 13);
+  const day = iso.slice(0, 10);
+  for (let i = 0; i < QUOTA_TRIES; i += 1) {
+    const held = await host.admin.getConnectorState(connectionId, QUOTA_KEY);
+    const q = held && typeof held === 'object' ? (held as Partial<MailInQuota>) : {};
+    const messages = q.hour === hour ? (q.messages ?? 0) : 0;
+    const used = q.day === day ? (q.bytes ?? 0) : 0;
+    if (messages + 1 > limits.messagesPerHour) return 'rate-limited';
+    if (used + bytes > limits.bytesPerDay) return 'over-daily-volume';
+    const next: MailInQuota = { hour, messages: messages + 1, day, bytes: used + bytes };
+    if (await host.admin.swapConnectorState(connectionId, QUOTA_KEY, held, next)) return 'ok';
+  }
+  throw new Error(`mail-in: the quota of ${connectionId} was contended on every try`);
+}
+
 const objectKeyOf = (binding: MailInBinding, connectionId: ConnectionId, messageId: string) =>
   `mail-in/${binding.tenantId}/${connectionId}/${messageId}.eml`;
 
@@ -192,6 +257,9 @@ export async function acceptInboundMail(host: ScopeHost, deps: MailInInboundDeps
   const key = `${MESSAGE_PREFIX}${messageId}`;
   const duplicate = { accepted: true, connectionId: connection.id, messageId, duplicate: true } as const;
   if (await host.admin.getConnectorState(connection.id, key)) return duplicate;
+  const limits = { ...DEFAULT_MAIL_IN_LIMITS, ...deps.limits };
+  const quota = await takeQuota(host, connection.id, raw.byteLength, limits, nowOf(deps));
+  if (quota !== 'ok') return refuse(SMTP_REFUSALS.overLimit, quota);
   const objectKey = objectKeyOf(binding, connection.id, messageId);
   // The bytes first: a state row that names an object that never landed would be a pending
   // message nothing can deliver, where a stored object with no row is only re-stored by a retry.

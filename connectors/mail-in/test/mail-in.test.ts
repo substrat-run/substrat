@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  MAIL_IN_MAX_BYTES_PER_DAY,
+  MAIL_IN_MAX_MESSAGES_PER_HOUR,
   MAIL_IN_MAX_MESSAGE_BYTES,
   MAIL_IN_PROVIDER,
   connectionId,
@@ -20,6 +22,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { testOperations } from '@substrat-run/contract-tests';
 import {
   BINDING_KEY,
+  DEFAULT_MAIL_IN_LIMITS,
   MAX_DELIVERY_ATTEMPTS,
   MailInError,
   SMTP_REFUSALS,
@@ -39,8 +42,9 @@ import {
   rotateMailInAddress,
   sweepMailIn,
   type MailInLanding,
+  type MailInLimits,
 } from '../src/index.js';
-import { MESSAGE_PREFIX, type MailInMessageEntry } from '../src/address.js';
+import { MESSAGE_PREFIX, QUOTA_KEY, type MailInMessageEntry } from '../src/address.js';
 
 /**
  * Inbound mail end to end on the pure adapter (#2611): a real scope running a vertical module that
@@ -390,6 +394,74 @@ describe('accepting at SMTP time', () => {
     const bare = mail({ to: a.address, messageId: null });
     expect(await w.send(a.address, bare)).toMatchObject({ duplicate: false });
     expect(await w.send(a.address, bare)).toMatchObject({ duplicate: true });
+  });
+
+  describe('abuse limits', () => {
+    const sendWith = (w: Awaited<ReturnType<typeof world>>, limits: Partial<MailInLimits>, to: string, raw: Uint8Array) =>
+      acceptInboundMail(w.host, { ...w.deps, limits }, { to, envelopeFrom: 'billing@supplier.example', rawSize: raw.byteLength, raw: async () => raw });
+
+    it('holds an address to its messages per hour: a duplicate does not count, and a slot taken mid-count is not taken twice', async () => {
+      expect(DEFAULT_MAIL_IN_LIMITS).toEqual({ messagesPerHour: MAIL_IN_MAX_MESSAGES_PER_HOUR, bytesPerDay: MAIL_IN_MAX_BYTES_PER_DAY });
+      expect(MAIL_IN_MAX_BYTES_PER_DAY).toBe(10 * MAIL_IN_MAX_MESSAGE_BYTES);
+      const w = await world();
+      const a = await w.request();
+      const limits = { messagesPerHour: 2 };
+      const nth = (n: number) => mail({ to: a.address, messageId: `<n${n}@supplier.example>` });
+
+      expect(await sendWith(w, limits, a.address, nth(1))).toMatchObject({ accepted: true, duplicate: false });
+      expect(await sendWith(w, limits, a.address, nth(1))).toMatchObject({ accepted: true, duplicate: true });
+      // Message 3 reads the count (1 of 2), and before it writes, message 2 takes the last slot.
+      let interleave = true;
+      const admin = new Proxy(w.host.admin, {
+        get(target, prop) {
+          if (prop === 'getConnectorState') {
+            return async (id: never, key: string) => {
+              const held = await target.getConnectorState(id, key);
+              if (key === QUOTA_KEY && interleave) {
+                interleave = false;
+                expect(await sendWith(w, limits, a.address, nth(2))).toMatchObject({ accepted: true });
+              }
+              return held;
+            };
+          }
+          const v = Reflect.get(target, prop) as unknown;
+          return typeof v === 'function' ? (v as (...args: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+      const host = new Proxy(w.host, {
+        get(target, prop) {
+          if (prop === 'admin') return admin;
+          const v = Reflect.get(target, prop) as unknown;
+          return typeof v === 'function' ? (v as (...args: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+      const third = nth(3);
+      expect(
+        await acceptInboundMail(host, { ...w.deps, limits }, { to: a.address, envelopeFrom: 'billing@supplier.example', rawSize: third.byteLength, raw: async () => third }),
+      ).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.overLimit, reason: 'rate-limited' });
+      // The refused message was not stored, and is counted as a refusal.
+      expect(w.store.keys()).toHaveLength(2);
+      expect((await mailInAddressOf(w.host, w.actor, w.t, w.s))!.stats).toMatchObject({ received: 2, rejected: 1, lastRejectReason: 'rate-limited' });
+
+      w.advance(60 * 60 * 1000);
+      expect(await sendWith(w, limits, a.address, nth(4))).toMatchObject({ accepted: true });
+    });
+
+    it('holds an address to its bytes per UTC day', async () => {
+      const w = await world();
+      const a = await w.request();
+      const first = mail({ to: a.address, messageId: '<d1@supplier.example>' });
+      const limits = { bytesPerDay: first.byteLength + 10 };
+
+      expect(await sendWith(w, limits, a.address, first)).toMatchObject({ accepted: true });
+      expect(await sendWith(w, limits, a.address, mail({ to: a.address, messageId: '<d2@supplier.example>' }))).toMatchObject({
+        accepted: false,
+        smtp: SMTP_REFUSALS.overLimit,
+        reason: 'over-daily-volume',
+      });
+      w.advance(24 * 60 * 60 * 1000);
+      expect(await sendWith(w, limits, a.address, mail({ to: a.address, messageId: '<d3@supplier.example>' }))).toMatchObject({ accepted: true });
+    });
   });
 });
 

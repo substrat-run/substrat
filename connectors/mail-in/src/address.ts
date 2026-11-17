@@ -41,6 +41,8 @@ export const STATE_PREFIX = 'mail-in:';
 export const BINDING_KEY = `${STATE_PREFIX}address`;
 export const STATS_KEY = `${STATE_PREFIX}stats`;
 export const MESSAGE_PREFIX = `${STATE_PREFIX}msg:`;
+/** The address's abuse-limit counters: this hour's messages and this day's bytes. */
+export const QUOTA_KEY = `${STATE_PREFIX}quota`;
 
 /** The literal address the receiving domain's one routing rule names; every address is a `+tag` of it. */
 export const MAIL_IN_BASE = 'mail';
