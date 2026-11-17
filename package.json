@@ -116,7 +116,7 @@
     "test:publish-manifests": "node --test tools/publish-manifests.test.mjs",
     "test:bare-regexp": "node --test tools/bare-regexp.test.mjs",
     "test:version-label": "node --test tools/version-label.test.mjs",
-    "test:publish-packages": "node --test tools/publish-packages.test.mjs tools/registry-wait.test.mjs",
+    "test:publish-packages": "node --test tools/publish-packages.test.mjs tools/registry-wait.test.mjs tools/scaffold-check.test.mjs",
     "test:attachment-writers": "node --test tools/attachment-writers.test.mjs",
     "test:review-checklist": "node --test tools/review-checklist.test.mjs",
     "test:review-corpus": "tsx --test apps/control-plane/review-corpus/corpus.test.mts",

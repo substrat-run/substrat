@@ -94,6 +94,16 @@ function scaffoldTargets() {
   return installClosure(['create-substrat', ...roots], members);
 }
 
+function run(cmd, argv, cwd) {
+  const r = spawnSync(cmd, argv, { cwd, encoding: 'utf8', env: { ...process.env, CI: '1' } });
+  const output = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+  return { ok: r.status === 0, status: r.status, output };
+}
+
+function log(line = '') {
+  process.stdout.write(`${line}\n`);
+}
+
 /** `^0.83.0` → `0.83.0`. The floor is what the pin was written against. */
 function floorOf(range) {
   const m = /(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(range ?? '');

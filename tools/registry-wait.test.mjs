@@ -77,3 +77,26 @@ test('the wait is bounded, and resolves to what npm still does not serve with th
   assert.deepEqual(missing, [{ name: '@s/contracts', version: '1.0.0', reason: 'its tarball answered 404' }]);
   assert.equal(npm.now(), 30_000);
 });
+
+test('the deadline holds while a request hangs, and nothing queued starts after it', async () => {
+  let started = 0;
+  const hanging = (url, init) => {
+    started += 1;
+    // A real hanging request keeps a socket open, and so the event loop alive; this timer stands in for it.
+    const socket = setTimeout(() => {}, 60_000);
+    return new Promise((_, reject) =>
+      init.signal.addEventListener('abort', () => {
+        clearTimeout(socket);
+        reject(init.signal.reason);
+      }),
+    );
+  };
+  // Nine targets against a pool of eight: the ninth waits for a slot, which opens only at the deadline.
+  const targets = Array.from({ length: 9 }, (_, i) => ({ name: `@s/p${i}`, version: '1.0.0' }));
+  const begun = Date.now();
+  const missing = await waitUntilServed(targets, { registry: REGISTRY, fetch: hanging, timeoutMs: 50, intervalMs: 10_000, log: () => {} });
+  assert.ok(Date.now() - begun < 1_000);
+  assert.equal(started, 8);
+  assert.match(missing[0].reason, /^the packument request failed/);
+  assert.equal(missing[8].reason, 'the wait ran out before it was asked');
+});

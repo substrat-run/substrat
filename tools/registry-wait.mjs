@@ -124,10 +124,12 @@ export function checkoutMembers(root = process.cwd()) {
  * packument lists the version and the tarball it names answers 200. A request that fails
  * outright is a reason like any other, so a flaky network is waited out rather than thrown.
  */
-export async function unservedReason({ name, version }, { registry = registryUrl(), fetch = globalThis.fetch } = {}) {
+export async function unservedReason({ name, version }, { registry = registryUrl(), fetch = globalThis.fetch, signal } = {}) {
+  // A wait that has run out starts no new request: the round reports what it has.
+  if (signal?.aborted) return 'the wait ran out before it was asked';
   let packument;
   try {
-    packument = await fetch(`${registry}/${name.replace('/', '%2f')}`, { headers: { accept: INSTALL_ACCEPT } });
+    packument = await fetch(`${registry}/${name.replace('/', '%2f')}`, { headers: { accept: INSTALL_ACCEPT }, signal });
   } catch (error) {
     return `the packument request failed (${error?.message ?? error})`;
   }
@@ -144,7 +146,7 @@ export async function unservedReason({ name, version }, { registry = registryUrl
   if (!tarball) return 'the packument lists it with no tarball';
   let head;
   try {
-    head = await fetch(tarball, { method: 'HEAD' });
+    head = await fetch(tarball, { method: 'HEAD', signal });
   } catch (error) {
     return `the tarball request failed (${error?.message ?? error})`;
   }
@@ -168,6 +170,9 @@ async function pool(items, limit, fn) {
 /**
  * Ask until npm serves every one of `targets`, or `timeoutMs` has passed. Resolves to what is
  * still not served, each with the last reason it gave: empty means every one is fetchable.
+ *
+ * The deadline holds during a request too: every request and body read in a round carries a
+ * signal that aborts at the deadline, so a stalled registry cannot hold the wait past its bound.
  */
 export async function waitUntilServed(
   targets,
@@ -185,7 +190,9 @@ export async function waitUntilServed(
   let pending = [...unique.values()];
   const deadline = now() + timeoutMs;
   for (;;) {
-    const reasons = await pool(pending, 8, (target) => unservedReason(target, { registry, fetch }));
+    // At least 1 ms, so a deadline already reached still asks nothing rather than throwing.
+    const signal = AbortSignal.timeout(Math.max(1, deadline - now()));
+    const reasons = await pool(pending, 8, (target) => unservedReason(target, { registry, fetch, signal }));
     pending = pending.map((target, i) => ({ ...target, reason: reasons[i] })).filter((t) => t.reason !== null);
     if (pending.length === 0) return [];
     if (now() + intervalMs > deadline) return pending;
