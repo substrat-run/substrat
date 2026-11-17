@@ -1,3 +1,4 @@
+import { requestOk } from '@substrat-run/ui/wa';
 import { act, useEffect, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -201,7 +202,7 @@ function UrlPage({ apps = [{ app_scope_id: 'app-a', name: 'App A' } as AppRow] }
   const q = readObsQuery(search);
   return (
     <Observability teamId="team-a"
-      apps={apps}
+      apps={requestOk(apps)}
       query={search}
       scopeId={q.app ?? null}
       view={q.view ?? null}
@@ -292,7 +293,7 @@ it('preserves URL event grouping and type through refresh without remounting con
   await act(async () =>
     root.render(
       <Observability teamId="team-a"
-        apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+        apps={requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow])}
         query={query}
         scopeId="app-a"
         view="events"
@@ -327,7 +328,7 @@ it('a drag across a Pulse sparkline narrows the whole card to that interval, wit
   await act(async () =>
     root.render(
       <Observability teamId="team-a"
-        apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+        apps={requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow])}
         query={new URLSearchParams({ from: windowRange.since, to: windowRange.until }).toString()}
         scopeId={null}
         view="traffic"
@@ -377,7 +378,7 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
     { app_scope_id: 'app-b', name: 'App B', vertical_slug: 'crm', status: 'active' },
   ] as AppRow[];
   await act(async () =>
-    root.render(<Observability teamId="team-a" apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={onNav} />),
+    root.render(<Observability teamId="team-a" apps={requestOk(apps)} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={onNav} />),
   );
   expect(metrics).toHaveBeenCalledWith('team-a', 24);
   expect(connectorCalls).toHaveBeenCalledWith('team-a', { hours: 24 });
@@ -421,7 +422,7 @@ it('Pulse draws the business outcomes by default — today, yesterday, the chang
     { app_scope_id: 'app-b', name: 'App B', vertical_slug: 'crm', status: 'active' },
   ] as AppRow[];
   await act(async () =>
-    root.render(<Observability teamId="team-a" apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={vi.fn()} />),
+    root.render(<Observability teamId="team-a" apps={requestOk(apps)} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={vi.fn()} />),
   );
   expect(business).toHaveBeenCalledWith('team-a', { hours: 24 });
   const businessRows = () => [...container.querySelectorAll('[data-pulse-card] div[role="row"]')]
@@ -456,7 +457,7 @@ it('relative presets retain hours-only requests for legacy readers and shared ca
   vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
   vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
   const team = vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
-  const props = { apps: [{ app_scope_id: 'app-a', name: 'App A' } as AppRow], view: 'traffic', focusEventType: null, cursor: null, onNav: vi.fn() };
+  const props = { apps: requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow]), view: 'traffic', focusEventType: null, cursor: null, onNav: vi.fn() };
   await act(async () => root.render(<Observability teamId="team-a" {...props} query="app=app-a&hours=24" scopeId="app-a" />));
   expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24' });
   expect(overlays).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24' });
@@ -486,7 +487,7 @@ describe('menu children (#1767)', () => {
     await act(async () =>
       root.render(
         <Observability teamId="team-a"
-          apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+          apps={requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow])}
           query={new URLSearchParams({ view, ...(scopeId ? { app: scopeId } : {}) }).toString()}
           scopeId={scopeId}
           view={view}
@@ -523,7 +524,7 @@ describe('menu children (#1767)', () => {
     await act(async () =>
       root.render(
         <Observability teamId="team-a"
-          apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+          apps={requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow])}
           query="view=patterns&app=app-a&level=error&search=boom&invocationId=01J8Z3KX0Q5R7T9V1W2Y4A6B8C"
           scopeId="app-a"
           view="patterns"
@@ -552,7 +553,7 @@ describe('menu children (#1767)', () => {
       await act(async () =>
         root.render(
           <Observability teamId="team-a"
-            apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+            apps={requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow])}
             query="view=requests&app=app-a&live=1"
             scopeId="app-a"
             view="requests"
@@ -605,7 +606,7 @@ it('opens retained failure details without relying on the recent schedule histor
   const read = vi.spyOn(teamApi('team-a'), 'getAppFailures').mockResolvedValue({ entries: [{ id: 'failed-run', kind: 'sweep', at: windowRange.since, operation: 'widgets/queue-due', stage: 'schedule', message, code: null }], unavailableSources: [], incompleteSources: [] });
   const schedules = vi.spyOn(api, 'appSchedules');
   const onNav = vi.fn();
-  await act(async () => root.render(<Observability teamId="team-a" apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]} query={`app=app-a&view=failures&level=warn&tpl=unrelated&search=other&invocationId=old-call&from=${windowRange.since}&to=${windowRange.until}`} scopeId="app-a" view="failures" cursor={{ from: windowRange.since, to: windowRange.until }} focusEventType={null} onNav={onNav} />));
+  await act(async () => root.render(<Observability teamId="team-a" apps={requestOk([{ app_scope_id: 'app-a', name: 'App A' } as AppRow])} query={`app=app-a&view=failures&level=warn&tpl=unrelated&search=other&invocationId=old-call&from=${windowRange.since}&to=${windowRange.until}`} scopeId="app-a" view="failures" cursor={{ from: windowRange.since, to: windowRange.until }} focusEventType={null} onNav={onNav} />));
   expect(read).toHaveBeenCalledWith({ scopeId: 'app-a', ...windowRange });
   expect(schedules).not.toHaveBeenCalled();
   expect(container.querySelector('h1')?.textContent).toBe('Failures');
@@ -622,7 +623,7 @@ it('opens retained failure details without relying on the recent schedule histor
 
 it('shows a failure read error and does not claim that no failures exist', async () => {
   vi.spyOn(teamApi('team-a'), 'getAppFailures').mockRejectedValue(new Error('unavailable'));
-  await act(async () => root.render(<Observability teamId="team-a" apps={[]} query="app=app-a&view=failures" scopeId="app-a" view="failures" cursor={null} focusEventType={null} onNav={vi.fn()} />));
+  await act(async () => root.render(<Observability teamId="team-a" apps={requestOk([])} query="app=app-a&view=failures" scopeId="app-a" view="failures" cursor={null} focusEventType={null} onNav={vi.fn()} />));
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('unavailable');
   expect(container.textContent).not.toContain('No failures recorded');
 });

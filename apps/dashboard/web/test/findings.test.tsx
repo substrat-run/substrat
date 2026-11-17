@@ -1,3 +1,4 @@
+import { requestOk } from '@substrat-run/ui/wa';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -740,7 +741,7 @@ describe('Findings view', () => {
       const render = (canManageFindings: boolean) =>
         act(async () =>
           root.render(
-            <Observability apps={[]} query="?view=findings&tab=acked" scopeId={null} view="findings" focusEventType={null} cursor={null} onNav={onNav} teamId="T1" canManageFindings={canManageFindings} />,
+            <Observability apps={requestOk([])} query="?view=findings&tab=acked" scopeId={null} view="findings" focusEventType={null} cursor={null} onNav={onNav} teamId="T1" canManageFindings={canManageFindings} />,
           ),
         );
       await render(false);

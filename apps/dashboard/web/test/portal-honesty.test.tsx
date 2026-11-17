@@ -1,3 +1,4 @@
+import { requestOk } from '@substrat-run/ui/wa';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -55,7 +56,7 @@ it('does not present fixture notifications as a live feed', () => {
 });
 
 it('does not offer the fixture permissions matrix', () => {
-  act(() => root.render(<Team members={[]} meEmail="" canManage={false} onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />));
+  act(() => root.render(<Team members={requestOk([])} meEmail="" canManage={false} onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />));
   expect(container.textContent).not.toContain('Roles & permissions');
 });
 

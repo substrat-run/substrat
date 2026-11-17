@@ -15,6 +15,8 @@ export type { SwitchProps } from './Switch';
 
 export { Spinner } from './Spinner';
 export type { SpinnerProps } from './Spinner';
+export { Skeleton, SkeletonRegion, skeletonPulse } from './Skeleton';
+export type { SkeletonProps, SkeletonRegionProps } from './Skeleton';
 
 export { Card } from './Card';
 export type { CardProps } from './Card';

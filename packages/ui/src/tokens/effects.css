@@ -18,7 +18,9 @@
   --shadow-popover:0 0 0 1px rgba(255,255,255,0.06),0 4px 8px rgba(0,0,0,0.4),0 12px 32px rgba(0,0,0,0.5);
 }
 
-/* The one animation the primitives need: a Button's in-flight spinner. Lives with the
-   motion tokens because the components carry inline styles only — a keyframe cannot be
-   expressed inline, so it has to be here, where both apps already load it. */
+/* The animations the primitives need: a Button's in-flight spinner, and a skeleton's
+   pulse (#3244). They live with the motion tokens because the components carry inline
+   styles only — a keyframe cannot be expressed inline, so it has to be here, where both
+   apps already load it. */
 @keyframes substrat-spin { to { transform: rotate(360deg); } }
+@keyframes substrat-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

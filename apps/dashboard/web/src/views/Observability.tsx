@@ -1,6 +1,6 @@
 import { readObsQuery, queryWindow, type ObsQuery } from '../lib/observability-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Select } from '@substrat-run/ui/wa';
+import { Button, RequestView, Select, Skeleton, SkeletonRegion, valueOr, type RequestState } from '@substrat-run/ui/wa';
 import { api, type AppMetricsView, type AppRow, type OverlayMarker } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_METRICS } from '../lib/mock';
 import { navigate } from '../lib/router';
@@ -65,7 +65,8 @@ function windowAround(at: string, padMs = CURSOR_PAD_MS): { from: string; to: st
 
 /** Render the URL-selected observability view and preserve its app, time interval, and filters. */
 export function Observability({
-  apps,
+  apps: appsReq,
+  onRetryApps,
   query,
   scopeId,
   view,
@@ -75,7 +76,9 @@ export function Observability({
   teamId,
   canManageFindings = true,
 }: {
-  apps: AppRow[];
+  /** A request, not an array (#3244): the picker's "no apps yet" waits for an answer. */
+  apps: RequestState<AppRow[]>;
+  onRetryApps?: () => void;
   query: string;
   /** The app the page is narrowed to, or null for all of them. */
   scopeId: string | null;
@@ -89,6 +92,7 @@ export function Observability({
   /** A hint from the caller's role for drawing the Findings actions; the plane is the gate. */
   canManageFindings?: boolean;
 }) {
+  const apps = useMemo(() => valueOr(appsReq, NO_APPS), [appsReq]);
   const q = readObsQuery(query);
   const hours = Number(q.hours ?? 24);
   const onNav = (next: ObsQuery) =>
@@ -212,7 +216,7 @@ export function Observability({
         {refresh}
       </div>
       {scopeId ? <AppFailures teamId={teamId} scopeId={scopeId} window={window} nonce={nonce} onNav={onNav} />
-        : <PickApp section="pulse" apps={apps} onPick={(app) => onNav({ app, view: 'failures' })} />}
+        : <PickApp section="pulse" apps={appsReq} onRetry={onRetryApps} onPick={(app) => onNav({ app, view: 'failures' })} />}
       {slideOver}
     </Page>;
   }
@@ -222,7 +226,8 @@ export function Observability({
       <>
       <Pulse
         teamId={teamId}
-        apps={apps}
+        apps={appsReq}
+        onRetryApps={onRetryApps}
         scopeId={scopeId}
         hours={hours}
         window={panelWindow}
@@ -287,7 +292,7 @@ export function Observability({
           onChange={(v) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: v })}
         />
         {!app ? (
-          <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: sub })} />
+          <PickApp section={section} apps={appsReq} onRetry={onRetryApps} onPick={(s) => onNav({ app: s, view: sub })} />
         ) : sub === 'flow' ? (
           <Flow key={`${app.app_scope_id}:${nonce}`} teamId={teamId} app={app} />
         ) : (
@@ -446,7 +451,7 @@ export function Observability({
           )}
         </LogStream>
       ) : (
-        <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: logMode, ...(cursor ?? {}) })} />
+        <PickApp section={section} apps={appsReq} onRetry={onRetryApps} onPick={(s) => onNav({ app: s, view: logMode, ...(cursor ?? {}) })} />
       )}
       {slideOver}
     </Page>
@@ -514,29 +519,45 @@ function LinesMode({
   );
 }
 
+const NO_APPS: AppRow[] = [];
+
 /**
  * Logs and Processes answer per app. With the filter on All apps they say so and list
  * the apps to pick, rather than falling back to Pulse — the menu would then name a page
  * the reader is not on.
  */
-function PickApp({ section, apps, onPick }: { section: ObsSection; apps: AppRow[]; onPick: (scopeId: string) => void }) {
+function PickApp({ section, apps, onRetry, onPick }: { section: ObsSection; apps: RequestState<AppRow[]>; onRetry?: () => void; onPick: (scopeId: string) => void }) {
   return (
     <div style={{ ...card, padding: 16, display: 'grid', gap: 10 }}>
       <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Pick an app</div>
       <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
         {section === 'logs' ? 'Logs and events are read one app at a time.' : 'The flow map is drawn one app at a time.'}
       </div>
-      {apps.length === 0 ? (
-        <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>This team has no apps yet.</div>
-      ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {apps.map((a) => (
-            <Button key={a.app_scope_id} variant="secondary" size="sm" onClick={() => onPick(a.app_scope_id)}>
-              {a.name}
-            </Button>
-          ))}
-        </div>
-      )}
+      <RequestView
+        state={apps}
+        what="this team's apps"
+        onRetry={onRetry}
+        errorStyle={{ padding: 0 }}
+        skeleton={
+          // The app buttons, as blocks of a small button's height.
+          <SkeletonRegion label="Loading apps…" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {[96, 120, 84].map((w, i) => (
+              <Skeleton key={i} w={w} h={28} r={8} />
+            ))}
+          </SkeletonRegion>
+        }
+        empty={<div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>This team has no apps yet.</div>}
+      >
+        {(rows) => (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {rows.map((a) => (
+              <Button key={a.app_scope_id} variant="secondary" size="sm" onClick={() => onPick(a.app_scope_id)}>
+                {a.name}
+              </Button>
+            ))}
+          </div>
+        )}
+      </RequestView>
     </div>
   );
 }

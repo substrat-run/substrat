@@ -1,6 +1,6 @@
 import { compareNamed } from '../lib/name-order';
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Input, Segmented, Select } from '@substrat-run/ui/wa';
+import { Button, Input, Segmented, Select, Skeleton as Sk, SkeletonRegion, skeletonPulse } from '@substrat-run/ui/wa';
 import type { AppRow, InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
 import { relativeTime } from '../lib/format';
@@ -161,11 +161,6 @@ export function Apps({
   );
 }
 
-/** One skeleton block. Static — the pulse lives on each card's content wrapper. */
-function Sk({ w, h = 12, r = 6, style }: { w: number | string; h?: number; r?: number; style?: React.CSSProperties }) {
-  return <span aria-hidden style={{ display: 'block', width: w, height: h, borderRadius: r, background: 'var(--surface-active)', ...style }} />;
-}
-
 /**
  * The loading Overview — same geometry as the loaded page (title row, toolbar,
  * 3-column card grid) so nothing jumps when data lands. Cards pulse with a small
@@ -174,7 +169,7 @@ function Sk({ w, h = 12, r = 6, style }: { w: number | string; h?: number; r?: n
 function AppsSkeleton() {
   return (
     <Page>
-      <div role="status" aria-label="Loading apps…" aria-busy style={{ display: 'contents' }}>
+      <SkeletonRegion label="Loading apps…" pulse={false} style={{ display: 'contents' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <Sk w={92} h={22} />
@@ -192,7 +187,7 @@ function AppsSkeleton() {
         <div className="apps-grid" style={{ display: 'grid', gap: 16 }}>
           {Array.from({ length: 6 }, (_, i) => (
             <div key={i} style={{ background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, padding: 16, boxShadow: 'var(--shadow-sm)' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, animation: 'sub-pulse 1.8s ease-in-out infinite', animationDelay: `${i * 120}ms` }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, ...skeletonPulse(i * 120) }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Sk w={8} h={8} r={4} />
                   <Sk w="55%" h={14} />
@@ -209,7 +204,7 @@ function AppsSkeleton() {
             </div>
           ))}
         </div>
-      </div>
+      </SkeletonRegion>
     </Page>
   );
 }
