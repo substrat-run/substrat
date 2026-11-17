@@ -364,6 +364,8 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/send-test dashboard/send-test-app-connection',
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify dashboard/verify-app-connection',
       'POST /apps/{scopeId}/integrations/{provider}/verify dashboard/verify-app-integration',
+      // #2611: an app's mail-in address; its gate and attribution are held in mail-in.test.ts.
+      'POST /apps/{scopeId}/mail-in dashboard/set-app-mail-in',
       'POST /apps/{scopeId}/members dashboard/app-invite-member',
       'POST /apps/{scopeId}/members/{principal}/remove dashboard/app-remove-member',
       'POST /apps/{scopeId}/members/{principal}/role dashboard/app-change-member-role',
