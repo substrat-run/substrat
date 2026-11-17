@@ -1,0 +1,12 @@
+diff --git a/spec/model.ts b/spec/model.ts
+index e885bb6f1..edf17e281 100644
+--- a/spec/model.ts
++++ b/spec/model.ts
+@@ -83,6 +83,7 @@ export const todoEntities = defineEntities({
+       id: z.string(),
+       owner_id: z.string(),
+       name: z.string(),
++      colour: z.string().nullable(),
+       created_at: z.string(),
+     }),
+     parents: ['owner'],
