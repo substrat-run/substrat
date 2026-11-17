@@ -406,6 +406,9 @@ function IntegrationDetail({
   };
 
   const s = STATUS[health.status];
+  // #2422: a fresh probe's answer over the recorded one, which can predate a re-consent.
+  const consent = probe?.consent ?? activity?.consent ?? null;
+  const reconsent = health.status !== 'revoked' && consent !== null && consent.missing.length > 0 ? consent : null;
   return (
     <Dialog
       open
@@ -423,6 +426,7 @@ function IntegrationDetail({
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Pill kind={s.kind}>{s.label}</Pill>
+              {reconsent && <Pill kind="warning">Needs re-consent</Pill>}
               <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{health.label}</span>
             </div>
             <HealthLine conn={health} />
@@ -432,6 +436,25 @@ function IntegrationDetail({
             Rotate
           </Button>
         </div>
+
+        {/* #2422: the consent is short of what the platform asks for. Not a refused credential —
+            the keys work — so the repair offered is a new consent round, not new keys. */}
+        {reconsent && (
+          <div style={{ ...card, padding: 12, display: 'flex', alignItems: 'center', gap: 12, borderColor: 'var(--status-warning-fg)' }}>
+            <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--text-primary)' }}>
+              The {provider.name} consent does not cover <strong>{reconsent.missing.join(', ')}</strong>, so what needs{' '}
+              {reconsent.missing.length === 1 ? 'it' : 'them'} will not run. The credential works: the company approving the
+              connection again grants {reconsent.missing.length === 1 ? 'it' : 'them'}.
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+                Granted: {reconsent.granted.join(', ') || 'nothing'} · checked {relativeTime(reconsent.checkedAt)}. After
+                re-consenting, Test connection checks again.
+              </div>
+            </div>
+            <Button variant="primary" size="sm" onClick={onRotate}>
+              Re-consent
+            </Button>
+          </div>
+        )}
 
         {/* The probe's answer. A refused credential is reported as the provider's own
             words — that difference is the reason this button exists. */}
@@ -443,7 +466,11 @@ function IntegrationDetail({
         {probe && (
           <div style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Pill kind={probe.ok ? 'success' : 'danger'}>{probe.ok ? 'Credential accepted' : 'Refused'}</Pill>
+              {probe.consent && probe.consent.missing.length > 0 ? (
+                <Pill kind="warning">Needs re-consent</Pill>
+              ) : (
+                <Pill kind={probe.ok ? 'success' : 'danger'}>{probe.ok ? 'Credential accepted' : 'Refused'}</Pill>
+              )}
               {probe.accountLabel && <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{probe.accountLabel}</span>}
             </div>
             {probe.error && <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{probe.error}</div>}

@@ -115,7 +115,7 @@ import {
   type LinkRefusal,
   type RoundLinkRow,
 } from './connect-round.js';
-import { completeFortnoxConsent, fortnoxConsentUrl, FortnoxApiError } from '@substrat-run/connector-fortnox';
+import { completeFortnoxConsent, fortnoxConsentUrl, FortnoxApiError, FORTNOX_CONSENT_SCOPES } from '@substrat-run/connector-fortnox';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 
 /**
@@ -3338,7 +3338,7 @@ function fortnoxConfig(env: Env): FortnoxConnectConfig | null {
   return {
     clientId: env.FORTNOX_CLIENT_ID,
     clientSecret: env.FORTNOX_CLIENT_SECRET,
-    scopes: (env.FORTNOX_SCOPES ?? 'bookkeeping companyinformation supplierinvoice archive connectfile').split(/[\s,]+/).filter(Boolean),
+    scopes: env.FORTNOX_SCOPES ? env.FORTNOX_SCOPES.split(/[\s,]+/).filter(Boolean) : [...FORTNOX_CONSENT_SCOPES],
     ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
     ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
   };
@@ -3751,10 +3751,17 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
   // using. The return carries what the vertical cannot otherwise know yet — which of its
   // client rows this was for, and which company actually consented, which is the check
   // that catches a consent granted while signed into the wrong Fortnox company.
+  // #2422: a company's administrator can approve fewer scopes than were asked for (a module the
+  // company has no licence for, say). The connection is stored — its keys work — and the person
+  // still here is told what is missing; the connection view shows "needs re-consent" until a
+  // round grants it. Unknown when Fortnox named no scopes, which says nothing.
+  const granted = completion.grantedScopes;
+  const missing = granted === null ? [] : cfg.scopes.filter((scope) => !granted.includes(scope));
   const back = connectReturn(round, {
     connected: '1',
     account: completion.secret.tenantId,
     ...(completion.company.CompanyName ? { company: completion.company.CompanyName } : {}),
+    ...(missing.length > 0 ? { missing: missing.join(' ') } : {}),
   });
   if (back) return c.redirect(back);
 
@@ -3763,7 +3770,17 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
     `Fortnox company <strong>${escapeHtml(completion.company.CompanyName || '(unnamed)')}</strong>` +
       ` (org.nr ${escapeHtml(completion.company.OrganizationNumber || '—')},` +
       ` database ${escapeHtml(completion.secret.tenantId)}) is now connected to Substrat.` +
-      ` ${completion.financialYears} financial year${completion.financialYears === 1 ? '' : 's'} readable.`,
+      (completion.financialYears === null
+        ? ''
+        : ` ${completion.financialYears} financial year${completion.financialYears === 1 ? '' : 's'} readable.`),
+    ...(missing.length > 0
+      ? [
+          `<strong>Fortnox granted fewer permissions than were asked for.</strong> Missing: ` +
+            `${missing.map((scope) => escapeHtml(scope)).join(', ')}. The connection is saved, but what needs ` +
+            'them will not run until the company approves them in a new consent round: Re-consent in the ' +
+            "dashboard's connection view, or a new connect link. The company may first need the matching Fortnox licence.",
+        ]
+      : []),
     sender === 'sender'
       ? 'If this is not the company you meant to connect, tell whoever sent you the link — they can disconnect it.'
       : 'If this is not the company you meant to connect, tell your Substrat administrator — they can disconnect it from the dashboard.',

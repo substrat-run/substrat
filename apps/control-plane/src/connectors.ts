@@ -139,6 +139,12 @@ export interface ConnectorEnv extends MailInEnv {
   FORTNOX_API_BASE?: string;
   FORTNOX_OAUTH_BASE?: string;
   /**
+   * #2422: the scopes this deployment's Fortnox Connect asks for, when the dashboard's
+   * `FORTNOX_SCOPES` overrides the connector's default. A consent lacking any of them shows as
+   * "needs re-consent", so the two must name the same set. Unset means the connector's default.
+   */
+  FORTNOX_SCOPES?: string;
+  /**
    * Planima host override, for a test deployment pointed at a stub. Unset means the
    * REAL host (`api.planima.se`) — safe as a default for Fortnox's reason: Planima runs
    * no separate testbed origin, so there is no wrong environment to default into.
@@ -441,6 +447,12 @@ const SCRIVE: ConnectorRegistration = {
  * is per company and there is no bulk grant, so a bureau runs the round as often as it
  * takes on new clients.
  */
+/** #2422: the set a consent is held to, when this deployment asks for other scopes than the default. */
+const fortnoxConsentScopes = (env: ConnectorEnv): { consentScopes?: string[] } => {
+  const scopes = (env.FORTNOX_SCOPES ?? '').split(/[\s,]+/).filter(Boolean);
+  return scopes.length > 0 ? { consentScopes: scopes } : {};
+};
+
 const FORTNOX: ConnectorRegistration = {
   provider: 'fortnox',
   grants: FORTNOX_CONNECTION_GRANTS,
@@ -457,6 +469,7 @@ const FORTNOX: ConnectorRegistration = {
         fetch: globalFetch,
         ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
         ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+        ...fortnoxConsentScopes(env),
       }),
     activity: async (h, row) => fortnoxConnectionActivity(h, row.id),
     credential: (h, row) => fortnoxCredentialSummary(h, row),
@@ -465,6 +478,7 @@ const FORTNOX: ConnectorRegistration = {
         fetch: globalFetch,
         ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
         ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+        ...fortnoxConsentScopes(env),
       }),
   }),
   sweep: (env) => async (h, id, o) =>
@@ -472,12 +486,14 @@ const FORTNOX: ConnectorRegistration = {
       ...o,
       ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
       ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+      ...fortnoxConsentScopes(env),
     }),
   syncScope: (env) => (h, row, scopeId) =>
     pollFortnoxScope(h, row.id, scopeId, {
       fetch: globalFetch,
       ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
       ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+      ...fortnoxConsentScopes(env),
     }),
   consent: { startPath: '/api/integrations/fortnox/connect' },
 };

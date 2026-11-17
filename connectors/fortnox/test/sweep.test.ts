@@ -24,6 +24,8 @@ import {
   FortnoxMock,
   bindFortnoxScope,
   fortnoxConnectionActivity,
+  probeFortnoxConnection,
+  probeFortnoxSecret,
   listFortnoxBindings,
   pollFortnoxScope,
   sweepFortnoxLedger,
@@ -887,6 +889,47 @@ describe('fortnox connector — inbound sync', () => {
       expect(fortnox.calls.filter((c) => c.includes('/archive/'))).toHaveLength(reads);
     });
 
+    it('fails the binding as "needs re-consent" when the consent lacks supplierinvoice, reading nothing and leaving health alone', async () => {
+      await bindInvoices();
+      invoice('12', '2026-06-10 09:00');
+      // A company that consented before the platform asked for supplier invoices (#2265's round).
+      fortnox.grantedScope = 'bookkeeping companyinformation';
+
+      const short = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(short.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/^needs re-consent: .* the supplierinvoice scope a supplier-invoice binding needs/) }]);
+      // Asked before reading, so no 403 wrote the connection's health as a refused credential.
+      expect(fortnox.calls.filter((c) => c.includes('supplierinvoices'))).toEqual([]);
+      const [row] = await host.admin.listConnections(staff, { tenantId: t });
+      expect({ status: row!.status, lastError: row!.lastError }).toEqual({ status: 'active', lastError: null });
+      expect((await fortnoxConnectionActivity(host, connId)).consent).toEqual({
+        granted: ['bookkeeping', 'companyinformation'],
+        missing: ['supplierinvoice', 'archive', 'connectfile'],
+        checkedAt: new Date(NOW).toISOString(),
+      });
+
+      // The company approves Connect again: the same credential now lands, and the state clears.
+      fortnox.grantedScope = 'bookkeeping companyinformation supplierinvoice archive connectfile';
+      const after = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+      expect(after.failed).toEqual([]);
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['12']]);
+      expect((await fortnoxConnectionActivity(host, connId)).consent?.missing).toEqual([]);
+    });
+
+    it('lands the invoices and says "needs re-consent" for their files when the consent lacks the file scopes', async () => {
+      await bindInvoices(FILED_OPERATION);
+      filed('1', 'a.pdf');
+      fortnox.grantedScope = 'bookkeeping companyinformation supplierinvoice';
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1']]);
+      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/^needs re-consent: .* the connectfile, archive scopes an invoice's files need/) }]);
+      expect(fortnox.calls.filter((c) => c.includes('fileconnections') || c.includes('/archive/'))).toEqual([]);
+      // Still queued, so a pass after the re-consent reads them.
+      expect((await binding()).files?.map((f) => f.givenNumber)).toEqual(['1']);
+    });
+
     it('says the consent is short when Fortnox refuses a file, reads no more of them, and keeps landing invoices', async () => {
       await bindInvoices(FILED_OPERATION);
       filed('1', 'a.pdf');
@@ -1594,6 +1637,79 @@ describe('fortnox connector — inbound sync', () => {
     expect(activity.entries[0]!.facts).toContainEqual({
       label: 'Lands through',
       value: OPERATION,
+    });
+  });
+
+  it('keeps a ledger binding landing on a consent short of the full set, and records what it lacks (#2422)', async () => {
+    await bind();
+    fortnox.grantedScope = 'bookkeeping companyinformation';
+
+    const result = await sweepFortnoxLedger(host, connId, options());
+
+    expect(result.failed).toEqual([]);
+    expect(landed).toHaveLength(1);
+    expect((await fortnoxConnectionActivity(host, connId)).consent?.missing).toEqual(['supplierinvoice', 'archive', 'connectfile']);
+  });
+
+  it('fails a ledger binding as "needs re-consent" when the consent lacks bookkeeping', async () => {
+    await bind();
+    fortnox.grantedScope = 'companyinformation supplierinvoice';
+
+    const result = await sweepFortnoxLedger(host, connId, options());
+
+    expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/^needs re-consent: .* the bookkeeping scope a ledger binding needs/) }]);
+    expect(fortnox.calls).toEqual([]);
+  });
+
+  it('records no consent when the mint names no scopes, and judges nothing by it', async () => {
+    await bind();
+    fortnox.grantedScope = null;
+
+    const result = await sweepFortnoxLedger(host, connId, options());
+
+    expect(result.failed).toEqual([]);
+    expect(landed).toHaveLength(1);
+    expect((await fortnoxConnectionActivity(host, connId)).consent).toBeUndefined();
+  });
+
+  describe('the probe on a consent short of what the platform asks for (#2422)', () => {
+    const probeOptions = () => ({ fetch: fortnox.fetch, apiBase: fortnox.apiBase, oauthBase: fortnox.oauthBase });
+
+    it('accepts the credential, names what the consent lacks, and records it for the console', async () => {
+      fortnox.grantedScope = 'bookkeeping companyinformation';
+
+      const probe = await probeFortnoxConnection(host, { tenantId: t, vertical: 'forecast' }, probeOptions());
+
+      expect(probe).toMatchObject({ ok: true, refused: false, error: null, accountRef: '123456' });
+      expect(probe.consent).toMatchObject({ granted: ['bookkeeping', 'companyinformation'], missing: ['supplierinvoice', 'archive', 'connectfile'] });
+      expect(probe.facts).toContainEqual({ label: 'Consent', value: expect.stringMatching(/^needs re-consent — missing supplierinvoice, archive, connectfile/) });
+      expect((await fortnoxConnectionActivity(host, connId)).consent?.missing).toEqual(['supplierinvoice', 'archive', 'connectfile']);
+    });
+
+    it('answers "needs re-consent", not refused, when the consent cannot even name the company — before reading it', async () => {
+      fortnox.grantedScope = 'bookkeeping';
+
+      const probe = await probeFortnoxConnection(host, { tenantId: t, vertical: 'forecast' }, probeOptions());
+
+      expect(probe).toMatchObject({ ok: false, refused: false, error: expect.stringMatching(/^needs re-consent: .* companyinformation/) });
+      expect(fortnox.calls).toEqual([]);
+    });
+
+    it('never refuses a candidate for a short consent, so a connect still stores it', async () => {
+      fortnox.grantedScope = 'bookkeeping companyinformation supplierinvoice';
+
+      const probe = await probeFortnoxSecret({ clientId: 'client-id', clientSecret: 'client-secret', tenantId: '123456' }, probeOptions());
+
+      expect(probe).toMatchObject({ ok: true, refused: false, consent: { missing: ['archive', 'connectfile'] } });
+    });
+
+    it('holds the consent to the set a deployment asks for', async () => {
+      fortnox.grantedScope = 'bookkeeping companyinformation';
+
+      const probe = await probeFortnoxConnection(host, { tenantId: t, vertical: 'forecast' }, { ...probeOptions(), consentScopes: ['bookkeeping', 'companyinformation'] });
+
+      expect(probe.consent?.missing).toEqual([]);
+      expect(probe.facts).toContainEqual({ label: 'Consent', value: 'covers bookkeeping, companyinformation' });
     });
   });
 
