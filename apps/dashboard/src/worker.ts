@@ -4106,7 +4106,7 @@ async function retryAppIn({ c, host, node }: TeamContext, failedScopeId: string)
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'failed') throw new HTTPException(409, { message: 'only a failed app can be retried' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const { entitlements, ownerGrants } = await installSpecFor(host, appRow.vertical_slug, cp);
+  const { entitlements, ownerGrants, envSpec } = await installSpecFor(host, appRow.vertical_slug, cp);
   const team = await host.admin.getTenant(STAFF, node.tenantId);
   return retryApp(host, {
     node,
@@ -4119,6 +4119,8 @@ async function retryAppIn({ c, host, node }: TeamContext, failedScopeId: string)
     controlPlane: cp,
     // The TEAM's name, never the login's (same as create).
     tenantName: team?.name ?? 'Workspace',
+    // The fresh scope remembers the vertical's model keys as an install's does (#1054).
+    modelKeys: envSpec.filter((s) => s.kind === 'model').map((s) => s.key),
   });
 }
 

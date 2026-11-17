@@ -702,6 +702,8 @@ export async function retryApp(
     appOwnerGrants?: PermissionKey[];
     controlPlane?: TenantNarrowedControlPlane;
     tenantName?: string;
+    /** The vertical's `kind: 'model'` env keys, remembered by the fresh app record (#1054). */
+    modelKeys?: string[];
   },
 ): Promise<DashboardAppRow> {
   await deprovisionApp(host, {
@@ -718,6 +720,7 @@ export async function retryApp(
     appOwnerGrants: input.appOwnerGrants,
     controlPlane: input.controlPlane,
     tenantName: input.tenantName,
+    ...(input.modelKeys ? { modelKeys: input.modelKeys } : {}),
   });
 }
 

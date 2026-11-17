@@ -125,6 +125,13 @@ it('holds every write of a model setting to the catalog, with one problem docume
     expect(await direct(third!.app_scope_id, UNLISTED)).toEqual(expected);
     expect(await stored(third!.app_scope_id)).toBeUndefined();
 
+    // Retry of that failed install provisions a fresh scope; the fresh record remembers the keys too.
+    await request('POST', `/apps/${third!.app_scope_id}/retry`);
+    const retried = (await walkAll(dash, 'dashboard/list-apps', {})).find((a) => a.name === 'Third' && a.app_scope_id !== third!.app_scope_id);
+    expect(retried).toBeDefined();
+    expect(await direct(retried!.app_scope_id, UNLISTED)).toEqual(expected);
+    expect(await stored(retried!.app_scope_id)).toBeUndefined();
+
     // The install form's picker reads the same catalog.
     const catalog = (await (await request('GET', '/model-catalog')).json()) as Array<{ id: string }>;
     expect(catalog.map((m) => m.id)).toContain(LISTED);
