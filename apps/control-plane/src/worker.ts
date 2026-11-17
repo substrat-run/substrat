@@ -210,6 +210,7 @@ import {
   advanceCopyJob,
   copyJobThrewRetryMs,
   type CopyJobRecord,
+  removeManagedSignIn,
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
 import { problemForThrow, refuse, refuseRelayed, refuseStatus } from './problem.js';
@@ -2168,6 +2169,12 @@ export async function reapRetainedScope(
     resolveRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
     resolveVersion?: (slug: string, versionId: string, actor: PlatformActorId) => Promise<VerticalClient | undefined>;
     drivers?: readonly StoreDriverRegistration[];
+    /**
+     * #3261, D-72: remove a managed tenant's client and place at its manager's auth-servers
+     * (`removeManagedSignIn`). A throw stops the reap before anything is wiped, and the next pass
+     * retries it.
+     */
+    removeManagedSignIn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<unknown>;
   },
   tenantId: TenantId,
   scopeId: ScopeId,
@@ -2184,6 +2191,16 @@ export async function reapRetainedScope(
     const fence = await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, () =>
       host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {}));
     await fence();
+  }
+  // Past the refusals the fence's mark makes, before any byte goes. Read again, since a scope
+  // with no store is not marked: a scope unarchived, or a tenant un-deleted, since the sweep chose
+  // it keeps its sign-in, and `reapScope` below refuses it.
+  if (deps.removeManagedSignIn) {
+    const current = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+    const tenant = opts.whileTenantDeleting ? await host.admin.getTenant(actor, tenantId) : undefined;
+    if (current?.status === 'archived' && (!opts.whileTenantDeleting || tenant?.status === 'deleting')) {
+      await deps.removeManagedSignIn(tenantId, scopeId);
+    }
   }
   if (resolveRef) {
     // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
@@ -2741,6 +2758,9 @@ export default {
       stores: platformStoresFor(env),
       ...(resolveRef ? { resolveRef } : {}),
       ...(resolveVersion ? { resolveVersion } : {}),
+      // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
+      removeManagedSignIn: (tenantId: TenantId, scopeId: ScopeId) =>
+        removeManagedSignIn({ admin: host.admin, actor: SWEEP_ACTOR, resolveVerticalForScope: resolveVerticalForScopeFor(env) }, tenantId, scopeId),
     };
     // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
     if (resolveRef) {

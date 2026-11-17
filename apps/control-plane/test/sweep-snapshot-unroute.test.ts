@@ -110,6 +110,38 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
   });
 
+  // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
+  it("a retention reap removes the scope's managed sign-in before it reaps, and a failure leaves the scope archived", async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    const { stores } = witness(host, () => hostname);
+    const failing = async () => {
+      throw new Error("the manager's auth-server is unreachable");
+    };
+    await expect(reapRetainedScope({ host, stores, drivers: [graph], removeManagedSignIn: failing }, t, scope)).rejects.toThrow(/unreachable/);
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
+
+    const removed: string[] = [];
+    await reapRetainedScope({ host, stores, drivers: [graph], removeManagedSignIn: async (_t, s) => void removed.push(s) }, t, scope);
+    expect(removed).toEqual([scope]);
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('reaped');
+  });
+
+  it('a retention reap of a scope unarchived since the sweep chose it keeps its managed sign-in', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    await host.admin.unarchiveScope(staff, t, scope);
+    const { stores } = witness(host, () => hostname);
+    const removed: string[] = [];
+    // No store, so no fence mark refuses it first: the reap's own re-read is what keeps the sign-in.
+    await expect(
+      reapRetainedScope({ host, stores, drivers: [], removeManagedSignIn: async (_t, s) => void removed.push(s) }, t, scope),
+    ).rejects.toThrow(/archived/);
+    expect(removed).toEqual([]);
+  });
+
   it('a retention reap that finds the scope unarchived since the sweep chose it fences nothing (D-71)', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const { t, fork: scope, hostname } = await routedFork(host);

@@ -130,6 +130,13 @@ export {
   type ProvisionSiblingInput,
   type ProvisionSiblingResult,
 } from './platform-drain.js';
+export {
+  removeManagedSignIn,
+  unlistManagedTenant,
+  ManagedSignInIncomplete,
+  type ManagedSignInDeps,
+  type ManagedSignInOutcome,
+} from './managed-sign-in.js';
 export { reconcileOutcomeOf, reconcilePayloadFor, reconcileThenReassert, reviewedEntityGrants, switchCarryFor, type SwitchCarry } from './reconcile.js';
 export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
