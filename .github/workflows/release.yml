@@ -14,7 +14,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # The publish waits, before each of its topological waves (four today), until npm serves
+    # what the wave pins, at most ten minutes a wave (tools/publish-packages.mjs, #3260).
+    # Usually seconds; the bound is what this leaves room for, beside the deploys below.
+    timeout-minutes: 60
     outputs:
       # The same signal the prod-deploy steps below gate on, exported so the scaffold
       # checkpoint can be its own job rather than another `if:` on every step.
@@ -43,6 +46,13 @@ jobs:
       # `changeset publish`: with OIDC available, changesets publishes through npm
       # but still passes pnpm's --git-checks flag, which npm 11 rejects outright
       # (EUNKNOWNCONFIG). pnpm skips already-published versions on its own.
+      #
+      # It publishes in topological waves (tools/publish-packages.mjs, #3260), and before each
+      # wave asks the registry until every workspace package the wave pins is SERVED: its
+      # packument lists the version and the tarball answers 200. Order alone was not enough —
+      # on 2026-11-16 npm served `cli@0.60.2` before the `contracts@0.200.0` it pins, which
+      # had been accepted 52 s earlier, and `npx @substrat-run/cli@latest` failed in between.
+      # A version npm does not serve within the bound stops the publish before its dependents.
       #
       # A publish can fail part-way: the packages before the failure are on npm, the rest
       # are not, and every prod deploy below is skipped with them. Two transients are known —

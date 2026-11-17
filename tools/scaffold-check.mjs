@@ -63,6 +63,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // The gates a scaffolded project ships with — every one runs, even after a failure.
 import { GATES } from './scaffold-gates.mjs';
+import { packageJson } from '../packages/create-substrat/project-files.js';
+import { checkoutMembers, describeUnserved, installClosure, waitUntilServed, WAIT_MS } from './registry-wait.mjs';
 
 const args = process.argv.slice(2);
 const KEEP = args.includes('--keep');
@@ -76,37 +78,20 @@ const PKG_DIR = 'packages/create-substrat';
 const VERSION = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')).version;
 
 /**
- * The npm packument is not readable the instant `pnpm publish` returns, so a
- * post-release run can arrive before the version it is meant to test. Bounded on
- * purpose: if it never appears, that is a failed release, and reporting "the release
- * did not publish" is more useful than a scaffold error twenty minutes later.
+ * npm does not serve a version the instant `pnpm publish` returns: the packument has to list
+ * it and the tarball has to reach the CDN, each package on its own clock (#3260). On
+ * 2026-11-16 this check resolved `engine-workorder@0.13.25` from a packument that listed it
+ * and got a 404 on the tarball, and reported a red scaffold over a release with nothing wrong.
+ * So before anything runs, it waits until npm serves `create-substrat@<version>` and every
+ * `@substrat-run/*` version the scaffold installs: the template's pins and everything they
+ * reach at runtime, at this checkout's versions. Bounded on purpose: a version npm never
+ * serves is a release that did not land, and saying so beats a scaffold error.
  */
-const PUBLISH_WAIT_TRIES = 12;
-const PUBLISH_WAIT_MS = 15_000;
-
-
-function run(cmd, argv, cwd) {
-  const r = spawnSync(cmd, argv, { cwd, encoding: 'utf8', env: { ...process.env, CI: '1' } });
-  const output = `${r.stdout ?? ''}${r.stderr ?? ''}`;
-  return { ok: r.status === 0, status: r.status, output };
-}
-
-function log(line = '') {
-  process.stdout.write(`${line}\n`);
-}
-
-/** `npm view` on an exact version: prints it when published, exits non-zero when not. */
-function isPublished(version) {
-  return run('npm', ['view', `create-substrat@${version}`, 'version'], process.cwd()).ok;
-}
-
-async function waitForPublish(version) {
-  for (let i = 1; i <= PUBLISH_WAIT_TRIES; i++) {
-    if (isPublished(version)) return true;
-    log(`  create-substrat@${version} not on the registry yet (${i}/${PUBLISH_WAIT_TRIES}) …`);
-    await new Promise((r) => setTimeout(r, PUBLISH_WAIT_MS));
-  }
-  return isPublished(version);
+function scaffoldTargets() {
+  const members = checkoutMembers();
+  const pinned = JSON.parse(packageJson('scaffold-check'));
+  const roots = Object.keys({ ...pinned.dependencies, ...pinned.devDependencies }).filter((name) => members.has(name));
+  return installClosure(['create-substrat', ...roots], members);
 }
 
 /** `^0.83.0` → `0.83.0`. The floor is what the pin was written against. */
@@ -205,16 +190,22 @@ async function main() {
     //    actually landed rather than trusting `@latest` to have caught up.
     log(`# scaffold-check — create-substrat@${VERSION} (--from=${FROM})\n`);
     if (FROM === 'registry') {
-      if (!(await waitForPublish(VERSION))) {
-        log(`FAIL  create-substrat@${VERSION} is not on the registry.`);
+      const targets = scaffoldTargets();
+      log(`Waiting until npm serves the ${targets.length} versions the scaffold installs …`);
+      const missing = await waitUntilServed(targets, { timeoutMs: WAIT_MS, log });
+      if (missing.length > 0) {
+        log(`FAIL  npm did not serve ${missing.length} of them within ${WAIT_MS / 60_000} minutes:`);
+        for (const line of describeUnserved(missing)) log(`    ${line.trim()}`);
         log('');
-        log('      The checkout says that version; npm does not have it. This is a');
-        log('      release that did not publish, not a broken scaffold — check the');
-        log('      publish step in release.yml before looking at the template.');
+        log('      The checkout says these versions; npm does not hand them out. This is a');
+        log('      release that did not publish (or has not reached npm\'s CDN), not a broken');
+        log('      scaffold — check the publish step in release.yml before the template.');
         summarise([
-          '### Scaffold check — release did not publish',
+          '### Scaffold check — release not served by npm',
           '',
-          `\`create-substrat@${VERSION}\` is in the checkout but not on the registry.`,
+          'The checkout names these versions and npm did not serve them in time:',
+          '',
+          ...missing.map((t) => `- \`${t.name}@${t.version}\`: ${t.reason}`),
         ]);
         failed = true;
         return false;
