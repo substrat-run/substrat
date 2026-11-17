@@ -169,16 +169,38 @@ describe("a managed tenant's end at its manager's auth-servers (#3261, D-72)", (
     const res = await reapTenant(t);
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({
-      detail: expect.stringMatching(/not reaped .* nothing was wiped/),
+      detail: expect.stringMatching(/not reaped .* nothing more was wiped/),
       reason: expect.stringContaining(`${managerIssuer}: auth server unreachable`),
     });
     expect(calls).toEqual([]);
     expect((await host.admin.getTenant(staff, t))?.status).toBe('deleting');
-    expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('active');
+    // Archived, which an un-delete reverses, but neither fenced nor wiped.
+    expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('archived');
+    expect(await host.admin.scopeStoresFencedAt(staff, t, s)).toBeNull();
 
     issuerMode = 'ok';
     expect((await reapTenant(t)).status).toBe(200);
     expect(calls.map((c) => c.verb)).toEqual(['remove', 'wipe']);
+  });
+
+  it('a reap refused before its wipe keeps the client the scope still signs in with', async () => {
+    // The scope reap: a copy of the scope in another script, which this platform (no script
+    // dispatch) cannot reach, refuses it in the storage preflight.
+    const a = await business();
+    await host.admin.recordScopeScriptCopy(staff, a.t, a.s, 'managed-product-old', ulid(), { role: 'source' });
+    await host.admin.archiveScope(staff, a.t, a.s);
+    expect((await reapScope(a.t, a.s)).status).not.toBe(200);
+    expect(calls).toEqual([]);
+    // The tenant reap: a backup asked for, which this control plane has nowhere to store.
+    const b = await business();
+    await host.admin.setTenantStatus(staff, b.t, 'deleting');
+    calls = [];
+    const refused = await api().request(`/tenants/${b.t}/reap`, { method: 'POST', headers: auth, body: JSON.stringify({ backup: true }) });
+    expect(refused.status).toBe(501);
+    // Neither refused reap asked an auth-server to remove anything, or wiped anything.
+    expect(calls).toEqual([]);
+    expect((await host.admin.getScopeRecord(staff, a.t, a.s))?.status).toBe('archived');
+    expect((await host.admin.getTenant(staff, b.t))?.status).toBe('deleting');
   });
 
   it("an auth-server deployed before the keyed verb is told the un-registrations a delivery can say", async () => {
