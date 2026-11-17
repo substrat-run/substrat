@@ -129,12 +129,27 @@ a leaked address becomes close to useless.
 
 Everything refused is refused while the sending server waits, so the sender gets a bounce and
 nothing is stored: an address that does not exist, one that was revoked, a message over 25 MiB,
-and a sender the allowlist does not admit. An unknown and a revoked address get the same answer.
+a sender the allowlist does not admit, and mail past the address's limits (below). An unknown and
+a revoked address get the same answer.
+
+## Abuse limits
+
+Each address accepts at most **60 messages an hour** and **250 MiB a day** (summed over the raw
+messages, UTC hours and days). Past either, mail is refused at SMTP time until the hour or the day
+turns, with a bounce that asks the sender to try again later. They are there for an address that
+leaks: Email Routing puts no rate on inbound mail of its own, so without them anyone holding an
+address with no allowlist could fill your app with mail.
+
+They are judged last, after the address and the sender have passed, so the bounce tells a sender
+nothing that accepting the mail would not. A message sent again with the same `Message-ID` is not
+counted twice. Refusals show in the address's counts, with the reason (`rate-limited` or
+`over-daily-volume`).
 
 ## The flow
 
 1. Email Routing on `in.substrat.run` hands the message to the platform.
-2. The address is looked up; anything refused is refused here, at SMTP time.
+2. The address is looked up, the sender checked and the address's limits counted; anything
+   refused is refused here, at SMTP time.
 3. The message is stored and recorded as waiting, keyed on its `Message-ID` (or its bytes when
    it has none). The same message sent again is accepted and not stored twice.
 4. Delivery runs straight away: the message is parsed, the `message` change lands, then the
@@ -151,6 +166,8 @@ and a sender the allowlist does not admit. An unknown and a revoked address get 
 | | |
 |---|---|
 | Message size | 25 MiB, refused at SMTP time above it |
+| Messages per address | 60 an hour, refused at SMTP time above it |
+| Bytes per address | 250 MiB a day, refused at SMTP time above it |
 | Attachments landed per message | 20 (the rest are listed on the `message` change, not stored) |
 | Text body carried | 64 KiB, `textTruncated: true` above it |
 | HTML body | not on the `message` change (`hasHtml` says whether there was one); it is inside the original when you answer `raw: true` |

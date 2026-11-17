@@ -38,6 +38,17 @@ export const MAIL_IN_MAX_ATTACHMENTS = 20;
 export const MAIL_IN_MAX_TEXT_CHARS = 64 * 1024;
 /** The most addresses an allowlist holds. */
 export const MAIL_IN_MAX_ALLOWLIST = 20;
+/**
+ * The most messages one address accepts in a clock hour (UTC). Past it, mail is refused at SMTP
+ * time until the next hour. An abuse limit, not a quota: Email Routing sets no inbound rate of its
+ * own, so without it a leaked address with no allowlist could be flooded into the scope.
+ */
+export const MAIL_IN_MAX_MESSAGES_PER_HOUR = 60;
+/**
+ * The most bytes, summed over raw messages, one address accepts in a UTC day. Past it, mail is
+ * refused at SMTP time until the next day. Ten messages at the size cap.
+ */
+export const MAIL_IN_MAX_BYTES_PER_DAY = 10 * MAIL_IN_MAX_MESSAGE_BYTES;
 
 /** An address's sender allowlist entry: a whole address, or `@domain` for any address there. */
 export const mailInAllowEntry = z
