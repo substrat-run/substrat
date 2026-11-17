@@ -357,6 +357,16 @@ ${models
     app_scope_id TEXT PRIMARY KEY NOT NULL,
     client_id TEXT NOT NULL UNIQUE REFERENCES oauth_client(client_id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))\`,
+  // A MANAGED tenant's sign-in client (#3202, D-72, #3261, \`src/managed-clients.ts\`): the
+  // client the platform registered here for a tenant a manager provisioned, keyed by that
+  // tenant's scope, so a retried provision finds the client its first pass registered and the
+  // tenant's end removes it. Every platform verb finds its client in this table and nowhere
+  // else. Cascades with the client, as \`app_machine_client\` does.
+  \`CREATE TABLE IF NOT EXISTS managed_client (
+    app_scope_id TEXT PRIMARY KEY NOT NULL,
+    app_tenant_id TEXT NOT NULL,
+    client_id TEXT NOT NULL UNIQUE REFERENCES oauth_client(client_id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))\`,
 ];
 `;
 

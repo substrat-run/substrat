@@ -50,7 +50,6 @@ import {
   type ScopeStoreNeed,
   type StoreDriverRegistration,
   mailInRelayRequest,
-  oidcPostLogoutUrls,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
@@ -211,13 +210,13 @@ import {
   advanceCopyJob,
   copyJobThrewRetryMs,
   type CopyJobRecord,
+  removeManagedSignIn,
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
 import { problemForThrow, refuse, refuseRelayed, refuseStatus } from './problem.js';
 import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
-import { registerOidcClient } from '@substrat-run/oidc-rp/register';
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
 import { MAIL_IN_ACTOR, handleInboundEmail, mailInAddressDeps } from './mail-in.js';
@@ -2170,6 +2169,12 @@ export async function reapRetainedScope(
     resolveRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
     resolveVersion?: (slug: string, versionId: string, actor: PlatformActorId) => Promise<VerticalClient | undefined>;
     drivers?: readonly StoreDriverRegistration[];
+    /**
+     * #3261, D-72: remove a managed tenant's client and place at its manager's auth-servers
+     * (`removeManagedSignIn`). A throw stops the reap before anything is wiped, and the next pass
+     * retries it.
+     */
+    removeManagedSignIn?: (tenantId: TenantId, scopeId: ScopeId, commit: () => Promise<void>) => Promise<unknown>;
   },
   tenantId: TenantId,
   scopeId: ScopeId,
@@ -2182,11 +2187,16 @@ export async function reapRetainedScope(
   if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
   else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
   // Past its retention it is archived, so the router no longer serves it, and reapScope below releases its names.
-  if (rec) {
-    const fence = await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, () =>
-      host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {}));
-    await fence();
-  }
+  // Built here, before it runs, so its stores are named (a refusal) before anything is touched.
+  const mark = () => host.admin.markScopeStoresFenced(actor, tenantId, scopeId, opts.whileTenantDeleting ? { whileTenantDeleting: true } : {});
+  const fence = rec ? await declaredScopeStoresFence(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS, mark) : null;
+  // #3261: past every refusal that touches nothing, and BEFORE the fence, whose run wipes the
+  // stores: an auth-server that cannot be reached stops the reap with nothing wiped. The fence's
+  // mark commits the reap first (it refuses unless the scope is still archived and, for a tenant
+  // reap, the tenant still deleting, and then blocks both recoveries), so a recovery either got in
+  // first and keeps its client, or cannot land while the client is deleted.
+  if (deps.removeManagedSignIn) await deps.removeManagedSignIn(tenantId, scopeId, mark);
+  if (fence) await fence();
   if (resolveRef) {
     // As the snapshot reap above: a stranded script is recorded, then the reap goes on.
     const { storageStranded } = await drainScopeScriptCopies({ admin: host.admin, actor, resolveRef }, tenantId, scopeId);
@@ -2569,10 +2579,6 @@ async function drainOneScope(
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
     hostnameDomain: platformBaseDomains(env)[0],
-    // #3202, D-72: a managed tenant that signs in at the manager's team auth-server gets its client
-    // registered there, as an install's is, with its own origin as the post-logout return.
-    registerOidcClient: (issuer, input) =>
-      registerOidcClient(issuer, { ...input, postLogoutRedirectUris: oidcPostLogoutUrls(new URL(input.redirectUri).host) }),
   };
   const attempted: string[] = [];
   const report = await drainScopePlatformRequests(
@@ -2747,6 +2753,9 @@ export default {
       stores: platformStoresFor(env),
       ...(resolveRef ? { resolveRef } : {}),
       ...(resolveVersion ? { resolveVersion } : {}),
+      // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
+      removeManagedSignIn: (tenantId: TenantId, scopeId: ScopeId, commit: () => Promise<void>) =>
+        removeManagedSignIn({ admin: host.admin, actor: SWEEP_ACTOR, resolveVerticalForScope: resolveVerticalForScopeFor(env) }, tenantId, scopeId, commit),
     };
     // #1722: before the reaps below, so a preview whose carry crashed is settled, not refused.
     if (resolveRef) {

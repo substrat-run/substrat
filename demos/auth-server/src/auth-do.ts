@@ -64,17 +64,22 @@ import {
   type RegisterClientFn,
 } from './preview-clients.js';
 import { ensureMachineClient, removeMachineClient } from './app-machine-clients.js';
+import { ensureManagedClient, removeManagedClient } from './managed-clients.js';
 import type { ConfigEntry, InstanceMeta, IssuerState, PreviewClientOutcome, SessionSubject } from './do-contract.js';
 import type {
   EnsuredMachineClient,
+  EnsuredManagedClient,
   MachineClientEnsure,
   MachineClientRemove,
+  ManagedClientEnsure,
+  ManagedClientRemove,
   MintedPreviewClient,
   PreviewClientCheck,
   PreviewClientClaim,
   PreviewClientMint,
   PreviewClientRetire,
   RemovedMachineClient,
+  RemovedManagedClient,
   RetiredPreviewClients,
 } from '@substrat-run/contracts';
 import { log, noteVersion } from './log.js';
@@ -449,6 +454,24 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   async removeMachineClient(input: MachineClientRemove): Promise<PreviewClientOutcome<RemovedMachineClient>> {
     return this.previewCall(input, () =>
       this.ctx.storage.transactionSync(() => removeMachineClient(this.ctx.storage.sql, input)),
+    );
+  }
+
+  /**
+   * A managed tenant's sign-in client (#3202, D-72, #3261, `managed-clients.ts`): ensure it, or
+   * remove it with its place and redirect record. Addressed and refused like the machine client.
+   */
+  async ensureManagedClient(input: ManagedClientEnsure): Promise<PreviewClientOutcome<EnsuredManagedClient>> {
+    return this.previewCall(input, () =>
+      ensureManagedClient(this.ctx.storage.sql, this.registerClient("the managed tenant's client"), input, (fn) =>
+        this.ctx.storage.transactionSync(fn),
+      ),
+    );
+  }
+
+  async removeManagedClient(input: ManagedClientRemove): Promise<PreviewClientOutcome<RemovedManagedClient>> {
+    return this.previewCall(input, () =>
+      this.ctx.storage.transactionSync(() => removeManagedClient(this.ctx.storage.sql, input, Date.now())),
     );
   }
 

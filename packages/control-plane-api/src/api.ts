@@ -228,6 +228,7 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { issuerOnlyConfigKeyOf } from './issuer-config.js';
 import { COPY_MAX_BYTES, abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { ManagedSignInIncomplete, removeManagedSignIn, unlistManagedTenant, type ManagedSignInDeps } from './managed-sign-in.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
   type CopyJobRecord, type CopyJobs,
@@ -2819,6 +2820,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // under the tenant. The blast radius is the console's to show; the audit row
     // is this layer's to guarantee.
     await c.var.admin.setTenantStatus(c.get('actor'), tenantId, status);
+    // #3261, D-72: a managed tenant entering `deleting` is taken off its manager's auth-servers'
+    // account pages, so nobody's list shows a business being deleted. After the transition, so
+    // the containment never waits on an auth-server; a failure is answered rather than hidden,
+    // and the reap removes the place again.
+    if (status === 'deleting') {
+      try {
+        await unlistManagedTenant(managedSignInDeps(c), tenantId);
+      } catch (e) {
+        if (!(e instanceof ManagedSignInIncomplete)) throw e;
+        return refuseStatus(
+          c,
+          502,
+          `tenant ${tenantId} is deleting, but its place may still be listed at its manager's auth-server — ` +
+            'repeat this request to retry; reaping the tenant removes it too',
+          { reason: e.message },
+        );
+      }
+    }
     return c.json(await c.var.admin.getTenant(c.get('actor'), tenantId));
   });
 
@@ -2840,6 +2859,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (tenant.status !== 'deleting') {
       return refuse(c, 'conflict', `tenant ${tenantId} is ${tenant.status}, not deleting — only a deleting tenant may be reaped`);
     }
+    // #3261, D-72: a managed tenant's client and place at its manager's auth-servers go BEFORE
+    // anything is wiped, so a failure leaves the tenant whole and the reap is simply retried.
     try {
       for (const scope of await c.var.admin.listScopes(actor, { tenantId })) {
         if (scope.status === 'reaped') continue;
@@ -2858,7 +2879,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const vertical = await verticalForScope(c, scope);
         // Archived above, so the router no longer serves it (`READ_ROUTE_SQL` wants an active scope of
         // an active tenant), and reapScope below releases its names.
-        await (await platformStoresFence(c, scope, { outlives: true, whileTenantDeleting: true }))();
+        const fenceStores = await platformStoresFence(c, scope, { outlives: true, whileTenantDeleting: true });
+        // #3261, D-72: past the backup and the stores' preflight, which touch nothing, and before
+        // the fence and the wipe, so an auth-server that cannot be reached stops the reap here.
+        // The mark commits the reap first, so no un-delete can land while the client is deleted.
+        await removeManagedSignIn(managedSignInDeps(c), tenantId, scope.id, () =>
+          c.var.admin.markScopeStoresFenced(actor, tenantId, scope.id, { whileTenantDeleting: true }));
+        await fenceStores();
         if (vertical) await vertical.deleteScope({ tenantId, scopeId: scope.id });
         // Tenant teardown reaps every scope and releases every name by design — force past
         // the bound-hostname guard (which fences the interactive per-scope reap route below).
@@ -2870,6 +2897,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.reapTenant(actor, tenantId);
       return c.json(await c.var.admin.getTenant(actor, tenantId));
     } catch (e) {
+      if (e instanceof ManagedSignInIncomplete) return refuseStatus(c, 502, ...notReapedForSignIn(e));
       if (e instanceof ControlPlaneError) {
         return relayRefusal(c, e);
       }
@@ -4172,6 +4200,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: ReqCtx,
     scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
   ): Promise<VerticalClient | undefined> => (await deploymentForScope(c, scope))?.client;
+
+  /** What `managed-sign-in.ts` needs, for this request (#3261). */
+  const managedSignInDeps = (c: ReqCtx): ManagedSignInDeps => ({
+    admin: c.var.admin,
+    actor: c.get('actor'),
+    resolveVerticalForScope: (scope) => verticalForScope(c, scope),
+  });
+
+  /** The refusal of a reap whose managed sign-in could not be removed (#3261): nothing was wiped. */
+  const notReapedForSignIn = (e: ManagedSignInIncomplete) =>
+    ["not reaped — the managed tenant's sign-in could not be removed at its manager's auth-server, and nothing more was wiped; retry", { reason: e.message }] as const;
 
   /**
    * Reconcile one install's client at the social relay (#1544). Skips — never throws for — an
@@ -7012,7 +7051,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * it was before the ledger. Without per-script resolution there is only that deployment, and
    * a ledgered copy the platform cannot reach refuses the reap.
    */
-  const reapScopeStorage = async (c: ReqCtx, scope: Scope, row: { outlives: boolean } = { outlives: false }): Promise<boolean> => {
+  const reapScopeStorage = async (
+    c: ReqCtx,
+    scope: Scope,
+    row: { outlives: boolean } = { outlives: false },
+    /** #3261: also remove a managed tenant's sign-in at its manager's auth-servers (throws `ManagedSignInIncomplete`). */
+    signIn: { managed?: boolean } = {},
+  ): Promise<boolean> => {
     const actor = c.get('actor');
     const dispatch = options.resolveVerticalRef;
     // #2285: every refusal that can be decided up front comes before anything is destroyed, the
@@ -7020,6 +7065,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (dispatch) await claimScopeScriptReap({ admin: c.var.admin, actor }, scope.tenantId, scope.id);
     else await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
     const fenceStores = await platformStoresFence(c, scope, row);
+    // #3261, D-72: past every refusal above, which touch nothing, and before the unroute and the
+    // wipe, so an auth-server that cannot be reached stops the reap with the scope whole, and a
+    // refused reap keeps the client the scope still signs in with.
+    // The mark commits the reap first, so no unarchive can land while the client is deleted.
+    if (signIn.managed) {
+      await removeManagedSignIn(managedSignInDeps(c), scope.tenantId, scope.id, () =>
+        c.var.admin.markScopeStoresFenced(actor, scope.tenantId, scope.id));
+    }
     // Stop routing first: that is the fast path, which ends new requests. A call already past the
     // router, or signed and still on its way, is what the fence below is for (D-71). It would
     // otherwise recreate the store object after the wipe, and nothing left could reach it.
@@ -7868,16 +7921,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
       }
     }
+    // #3261, D-72: a managed tenant's scope takes its client and place at its manager's
+    // auth-servers with it, before its bytes go, so a failure leaves the scope as it was.
     try {
       // By this point the backup contract has resolved (a copy landed, or the caller
       // explicitly declined one), so stranding is a bookkeeping fact, not data loss.
-      const storageStranded = await reapScopeStorage(c, scope, { outlives: true });
+      const storageStranded = await reapScopeStorage(c, scope, { outlives: true }, { managed: true });
       await c.var.admin.reapScope(actor, tenantId, scopeId, {
         ...(backup ? { backupRef: backupRefOf(backup) } : {}),
       });
       const reaped = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
       return c.json({ ...reaped, backup, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
+      if (e instanceof ManagedSignInIncomplete) return refuseStatus(c, 502, ...notReapedForSignIn(e));
       if (e instanceof ControlPlaneError) {
         return relayRefusal(c, e);
       }

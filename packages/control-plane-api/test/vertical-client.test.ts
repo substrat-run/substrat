@@ -1317,6 +1317,9 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
     clientName: 'Desk (pr-7)',
   };
   const retire = { ...address, previewScopeId: mint.previewScopeId, keep: 'c1' };
+  // #3261: a managed tenant's client goes through the same call, under the same skew rule.
+  const managed = { ...address, appTenantId: tenantId.parse(ulid()), appScopeId: scopeId.parse(ulid()) };
+  const ensureManaged = { ...managed, hostname: 'acme-shop.global.substrat.test', clientName: 'Acme AB' };
   const answering = (res: () => Response, seen: { method: string; path: string; body: unknown }[] = []) =>
     new VerticalClient({
       fetch: (async (u: string, init: RequestInit) => {
@@ -1329,6 +1332,8 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
     ['check', (c: VerticalClient) => c.checkPreviewClient(check)],
     ['mint', (c: VerticalClient) => c.mintPreviewClient(mint)],
     ['retire', (c: VerticalClient) => c.retirePreviewClients(retire)],
+    ['managed ensure', (c: VerticalClient) => c.ensureManagedClient(ensureManaged)],
+    ['managed remove', (c: VerticalClient) => c.removeManagedClient(managed)],
   ] as const;
 
   it('speaks the contract’s paths and methods, and reads each answer', async () => {
@@ -1340,10 +1345,19 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
     await expect(
       answering(() => Response.json({ deleted: ['c0'], kept: true, superseded: false }), seen).retirePreviewClients(retire),
     ).resolves.toEqual({ deleted: ['c0'], kept: true, superseded: false });
+    await expect(
+      answering(() => Response.json({ clientId: 'c1', clientSecret: 'shh', registered: false }), seen).ensureManagedClient(ensureManaged),
+    ).resolves.toEqual({ clientId: 'c1', clientSecret: 'shh', registered: false });
+    await expect(answering(() => Response.json({ removed: 'c1', unlisted: true }), seen).removeManagedClient(managed)).resolves.toEqual({
+      removed: 'c1',
+      unlisted: true,
+    });
     expect(seen).toEqual([
       { method: 'POST', path: '/internal/preview-client/check', body: check },
       { method: 'POST', path: '/internal/preview-client', body: mint },
       { method: 'DELETE', path: '/internal/preview-client', body: retire },
+      { method: 'POST', path: '/internal/managed-client', body: ensureManaged },
+      { method: 'DELETE', path: '/internal/managed-client', body: managed },
     ]);
   });
 
@@ -1355,12 +1369,12 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
       const err = await run(answering(res)).then(() => null, (e: unknown) => e);
       expect(err).toBeInstanceOf(ControlPlaneError);
       expect((err as ControlPlaneError).status).toBe(501);
-      expect((err as ControlPlaneError).message).toMatch(/predates preview clients.*redeploy it/);
+      expect((err as ControlPlaneError).message).toMatch(/predates (preview|managed) clients.*redeploy it/);
     }
   });
 
   // #2010: a mint that ran and lost its answer may have left a client behind; it is a 502 that
-  // says so, never "Nothing was minted or deleted there".
+  // says so, never "Nothing was registered or deleted there".
   it.each([
     ['truncated JSON', truncated('{"clientId":"c1","clientSecret":')],
     ['a body whose stream fails mid-read', brokenStream],
@@ -1373,7 +1387,7 @@ describe('VerticalClient preview-client verbs (#1704)', () => {
       expect(err).toBeInstanceOf(ControlPlaneError);
       expect(err.status).toBe(502);
       expect(err.message).toMatch(new RegExp(`auth server serving scope ${issuer} may or may not have acted on it`));
-      expect(err.message).not.toMatch(/Nothing was minted|redeploy|clientSecret/);
+      expect(err.message).not.toMatch(/Nothing was registered|redeploy|clientSecret/);
     }
   });
 

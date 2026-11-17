@@ -84,6 +84,10 @@ server and gives it to the tenant's app. It also lists the tenant on that auth s
 own tenant; any other issuer is refused, and nothing is created. Do not also deliver
 `substrat:auth` in `config`.
 
+A retried request reuses the client it registered, so the auth server holds one client per
+tenant. When the tenant is deleted, it leaves those **Your account** pages straight away. When
+its data is finally removed, its client goes from the auth server too.
+
 Without `signIn`, the platform registers no sign-in client. Deliver `substrat:auth` in
 `config` instead, with a client that accepts `https://<address>/api/auth/callback`. The
 tenant is then not listed on any account page.

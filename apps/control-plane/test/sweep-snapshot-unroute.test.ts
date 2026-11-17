@@ -110,6 +110,44 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
   });
 
+  // #3261, D-72: a managed tenant's scope takes its client and place at its manager's auth-servers with it.
+  it("a retention reap removes the scope's managed sign-in before it reaps, and a failure leaves the scope archived", async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    const { stores, seen } = witness(host, () => hostname);
+    const failing = async (_t: unknown, _s: unknown, commit: () => Promise<void>) => {
+      await commit();
+      throw new Error("the manager's auth-server is unreachable");
+    };
+    await expect(reapRetainedScope({ host, stores, drivers: [graph], removeManagedSignIn: failing }, t, scope)).rejects.toThrow(/unreachable/);
+    // Nothing wiped: the store fence never ran. The reap is committed (marked), so no unarchive
+    // can land under the half-done removal, and the next pass finishes it.
+    expect(seen).toEqual([]);
+    expect(await host.admin.scopeStoresFencedAt(staff, t, scope)).not.toBeNull();
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('archived');
+
+    const order: string[] = [];
+    const ordered: PlatformScopeStores = { ...stores, fenceStores: async () => void order.push('fence') };
+    await reapRetainedScope({ host, stores: ordered, drivers: [graph], removeManagedSignIn: async (_t, _s, commit) => { await commit(); order.push('sign-in'); } }, t, scope);
+    expect(order).toEqual(['sign-in', 'fence']);
+    expect((await host.admin.getScopeRecord(staff, t, scope))?.status).toBe('reaped');
+  });
+
+  it('a retention reap of a scope unarchived since the sweep chose it keeps its managed sign-in', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: scope, hostname } = await routedFork(host);
+    await host.admin.archiveScope(staff, t, scope);
+    await host.admin.unarchiveScope(staff, t, scope);
+    const { stores } = witness(host, () => hostname);
+    const removed: string[] = [];
+    // No store to fence, so the commit the removal is handed is what refuses it, before any issuer is asked.
+    await expect(
+      reapRetainedScope({ host, stores, drivers: [], removeManagedSignIn: async (_t, s, commit) => { await commit(); removed.push(s); } }, t, scope),
+    ).rejects.toThrow(/not archived/);
+    expect(removed).toEqual([]);
+  });
+
   it('a retention reap that finds the scope unarchived since the sweep chose it fences nothing (D-71)', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const { t, fork: scope, hostname } = await routedFork(host);

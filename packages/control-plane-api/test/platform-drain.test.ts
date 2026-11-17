@@ -1405,19 +1405,39 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
   const ctx = { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' };
   const ISSUER = 'https://auth.manager.test';
 
-  /** Everything the platform did outside the directory, in order: registrations and deliveries. */
+  /** Everything the platform did outside the directory, in order: ensures at the issuer and deliveries. */
   let calls: Array<
-    | { kind: 'register'; issuer: string; appName: string; redirectUri: string }
+    | { kind: 'ensure'; issuerTenant: string; issuerScope: string; appTenantId: string; appScopeId: string; hostname: string; clientName: string }
     | { kind: 'configure'; scopeId: string; tenantId: string; entries: Array<{ key: string; value: string }> }
   >;
+  /**
+   * The issuer's `managed_client` record, as the auth-server keeps it (#3261): one client per
+   * managed app scope, and a new secret on every ensure.
+   */
+  let recorded: Map<string, string>;
   let minted = 0;
-  let registerFails = false;
+  let secrets = 0;
+  let ensureFails = false;
+  let failConfigureOf: string | null = null;
+  let unconfigurable: string | null = null;
   let addressed: 'reserved' | 'dropped' = 'reserved';
-  const registerOidcClient = async (issuer: string, input: { appName: string; redirectUri: string }) => {
-    calls.push({ kind: 'register', issuer, ...input });
-    if (registerFails) throw new Error('issuer unreachable');
+  const ensureManagedClient = async (input: { tenantId: string; scopeId: string; appTenantId: string; appScopeId: string; hostname: string; clientName: string }) => {
+    calls.push({
+      kind: 'ensure',
+      issuerTenant: input.tenantId,
+      issuerScope: input.scopeId,
+      appTenantId: input.appTenantId,
+      appScopeId: input.appScopeId,
+      hostname: input.hostname,
+      clientName: input.clientName,
+    });
+    if (ensureFails) throw new Error('issuer unreachable');
+    secrets += 1;
+    const known = recorded.get(input.appScopeId);
+    if (known) return { clientId: known, clientSecret: `secret-${secrets}`, registered: false };
     minted += 1;
-    return { clientId: `client-${minted}`, clientSecret: `secret-${minted}` };
+    recorded.set(input.appScopeId, `client-${minted}`);
+    return { clientId: `client-${minted}`, clientSecret: `secret-${secrets}`, registered: true };
   };
   /** One fake deployment per scope, recording what it is told. */
   const verticalFor = (scope: string) =>
@@ -1430,7 +1450,14 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
       }),
       configureInstance: async (input: { tenantId: string; scopeId: string; entries: Array<{ key: string; value: string }> }) => {
         calls.push({ kind: 'configure', scopeId: input.scopeId, tenantId: input.tenantId, entries: input.entries });
-        void scope;
+        if (failConfigureOf === input.scopeId) throw new Error('deployment unreachable');
+        if (unconfigurable === input.scopeId) throw new ControlPlaneError(501, 'this deployment takes no delivered configuration');
+      },
+      ensureManagedClient,
+      removeManagedClient: async (input: { appScopeId: string }) => {
+        const removed = recorded.get(input.appScopeId) ?? null;
+        recorded.delete(input.appScopeId);
+        return { removed, unlisted: false };
       },
     }) as unknown as VerticalClient;
 
@@ -1439,7 +1466,6 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
     actor: staff,
     resolveVerticalForScope: async (rec: { scopeId?: string } & Record<string, unknown>) => verticalFor(String(rec.scopeId)),
     hostnameDomain: 'substrat.test',
-    registerOidcClient,
   });
 
   const payloadFor = (t: string, s: string, issuer = ISSUER) => ({
@@ -1476,7 +1502,11 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
   });
   const fresh = () => {
     calls = [];
-    registerFails = false;
+    recorded = new Map();
+    minted = 0;
+    ensureFails = false;
+    failConfigureOf = null;
+    unconfigurable = null;
     addressed = 'reserved';
   };
   const placeDeliveries = () =>
@@ -1491,15 +1521,16 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
     const hostname = `${p.tenant.slug}-managed-product.global.substrat.test`;
     expect(outcome).toMatchObject({ status: 'done', result: { tenantId: t, scopeId: s, hostname, signIn: { issuer: ISSUER, clientId: 'client-1' } } });
     expect(calls).toEqual([
-      // The client is registered for the tenant's own address, under the tenant's own name.
-      { kind: 'register', issuer: ISSUER, appName: 'Corner Shop', redirectUri: `https://${hostname}/api/auth/callback` },
+      // The client is ensured at the MANAGER's issuer instance, keyed by the tenant's own scope,
+      // for the tenant's own address, under the tenant's own name (#3261).
+      { kind: 'ensure', issuerTenant: managerTenant, issuerScope: issuerScope, appTenantId: t, appScopeId: s, hostname, clientName: 'Corner Shop' },
       // The scope signs in as that client, at that issuer, as a team auth-server's client does.
       {
         kind: 'configure',
         tenantId: t,
         scopeId: s,
         entries: [
-          { key: 'substrat:auth', value: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'client-1', clientSecret: 'secret-1' }) },
+          { key: 'substrat:auth', value: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'client-1', clientSecret: `secret-${secrets}` }) },
           { key: 'substrat:auth:shared-issuer', value: 'true' },
         ],
       },
@@ -1539,10 +1570,10 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
     expect(await tenantExists(p.tenant.id)).toBe(false);
   });
 
-  it('refuses a sign-in this platform cannot register a client for, before any write', async () => {
+  it('refuses a sign-in on a platform that binds no address to register a client for, before any write', async () => {
     fresh();
     const p = payloadFor(ulid(), ulid());
-    const { registerOidcClient: _absent, ...without } = deps();
+    const { hostnameDomain: _absent, ...without } = deps();
     const outcome = await provisionTenantHandler(without)(ctx, intent('provision-tenant', { payload: p }));
     expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/does not register sign-in clients/) });
     expect(calls).toEqual([]);
@@ -1558,27 +1589,63 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
       intent('provision-tenant', { payload: { ...p, instance: { ...p.instance, ownerEmail: 'founder@example.com' } } }),
     );
     expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/did not reserve the owner seat/) });
-    expect(calls.filter((c) => c.kind === 'register')).toEqual([]);
+    expect(calls.filter((c) => c.kind === 'ensure')).toEqual([]);
     expect(placeDeliveries()).toEqual([]);
   });
 
-  it('a registration that fails leaves no place, and the retry registers a fresh client and its place', async () => {
+  it('a registration that fails leaves no place, and the retry registers the client and its place', async () => {
     fresh();
     const p = payloadFor(ulid(), ulid());
     const req = intent('provision-tenant', { payload: p });
-    registerFails = true;
+    ensureFails = true;
     expect(await provisionTenantHandler(deps())(ctx, req)).toMatchObject({ status: 'pending' });
     expect(placeDeliveries()).toEqual([]);
-    registerFails = false;
+    ensureFails = false;
     const retried = await provisionTenantHandler(deps())(ctx, req);
-    expect(retried).toMatchObject({ status: 'done' });
-    const clientId = (retried as { result: { signIn: { clientId: string } } }).result.signIn.clientId;
+    expect(retried).toMatchObject({ status: 'done', result: { signIn: { clientId: 'client-1' } } });
     const places = placeDeliveries();
     expect(places).toHaveLength(1);
     const placeEntry = (places[0] as { entries: Array<{ key: string; value: string }> }).entries.find((e) => e.key.startsWith('substrat:places:'));
-    expect(JSON.parse(placeEntry!.value)).toEqual([
-      expect.objectContaining({ appScopeId: p.instance.scopeId, clientId }),
-    ]);
+    expect(JSON.parse(placeEntry!.value)).toEqual([expect.objectContaining({ appScopeId: p.instance.scopeId, clientId: 'client-1' })]);
+  });
+
+  it("a deployment that takes no configuration fails the request and leaves no client at the issuer, and no place", async () => {
+    fresh();
+    const p = payloadFor(ulid(), ulid());
+    unconfigurable = p.instance.scopeId;
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: p }));
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/takes no delivered configuration/) });
+    expect(minted).toBe(1);
+    expect(recorded.size).toBe(0);
+    expect(placeDeliveries()).toEqual([]);
+  });
+
+  // #3261: the gap D-72 left. A pass that registered the client and stopped before the place used
+  // to orphan that client, and its retry registered another.
+  it.each([
+    ["the scope's own delivery", 'scope'],
+    ["the place's delivery to the issuer", 'issuer'],
+  ] as const)('a retry after %s failed ends with exactly one client, its newest secret in the scope', async (_case, failing) => {
+    fresh();
+    const p = payloadFor(ulid(), ulid());
+    const req = intent('provision-tenant', { payload: p });
+    failConfigureOf = failing === 'scope' ? p.instance.scopeId : issuerScope;
+    expect(await provisionTenantHandler(deps())(ctx, req)).toMatchObject({ status: 'pending' });
+    failConfigureOf = null;
+    expect(await provisionTenantHandler(deps())(ctx, req)).toMatchObject({ status: 'done', result: { signIn: { clientId: 'client-1' } } });
+
+    expect(minted).toBe(1);
+    expect([...recorded.values()]).toEqual(['client-1']);
+    expect(calls.filter((c) => c.kind === 'ensure')).toHaveLength(2);
+    // The scope's last delivery carries the secret the last ensure answered, so it signs in.
+    const auths = calls.filter((c) => c.kind === 'configure' && c.scopeId === p.instance.scopeId);
+    const last = JSON.parse((auths.at(-1) as { entries: Array<{ value: string }> }).entries[0]!.value) as { clientId: string; clientSecret: string };
+    expect(last).toMatchObject({ clientId: 'client-1', clientSecret: `secret-${secrets}` });
+    // Every place delivered names that one client.
+    for (const d of placeDeliveries() as Array<{ entries: Array<{ key: string; value: string }> }>) {
+      const place = d.entries.find((e) => e.key.startsWith('substrat:places:'))!;
+      expect(JSON.parse(place.value)).toEqual([expect.objectContaining({ clientId: 'client-1' })]);
+    }
   });
 });
 

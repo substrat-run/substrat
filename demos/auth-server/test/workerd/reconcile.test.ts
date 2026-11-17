@@ -738,6 +738,75 @@ describe("a login's places at the identity pool (#1670)", () => {
     expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryA, entryB] });
   });
 
+  it("managed tenants (#3261): a retried provision leaves one client, and the tenant's end leaves nobody listing it", async () => {
+    const p = await pool();
+    const [tenantA, tenantB] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
+    const [appA, appB] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+    const entryA = { tenantId: tenantA, scopeId: appA, hostname: 'shop-a-product.global.substrat.test', name: 'Shop A' };
+    const entryB = { tenantId: tenantB, scopeId: appB, hostname: 'shop-b-product.global.substrat.test', name: 'Shop B' };
+    const managed = (method: 'POST' | 'DELETE', body: Record<string, unknown>) =>
+      SELF.fetch('https://auth-server.test/internal/managed-client', {
+        method,
+        headers: { 'content-type': 'application/json', 'x-substrat-platform': env.PLATFORM_SECRET },
+        body: JSON.stringify({ tenantId: t, scopeId: p.scope, ...body }),
+      });
+    /** The drain's registration: the keyed ensure, then its one delivery to this issuer. */
+    const provision = async (e: typeof entryA) => {
+      const res = await managed('POST', { appTenantId: e.tenantId, appScopeId: e.scopeId, hostname: e.hostname, clientName: e.name });
+      expect(res.status).toBe(200);
+      const rp = (await res.json()) as { clientId: string; clientSecret: string; registered: boolean };
+      // This suite's sign-in round trip returns to RP_CALLBACK, so its host rides along as a second hostname.
+      const delivered = await platform('/internal/configure', {
+        scopeId: p.scope,
+        entries: [
+          { key: `substrat:redirects:${e.scopeId}`, value: JSON.stringify({ clientId: rp.clientId, hostnames: [e.hostname, 'desk.acme.test'] }) },
+          { key: `substrat:places:${e.tenantId}`, value: JSON.stringify([{ appScopeId: e.scopeId, clientId: rp.clientId, hostname: e.hostname, name: e.name }]) },
+        ],
+      });
+      expect(delivered.status).toBe(200);
+      return rp;
+    };
+    const clients = (): Promise<string[]> =>
+      runInDurableObject(stubOf(p.scope), async (_instance, state) =>
+        [...state.storage.sql.exec('SELECT client_id FROM oauth_client')].map((r) => String(r.client_id)),
+      );
+    const before = await clients();
+
+    // A's first pass registered its client and stopped; the retry reuses it, with a new secret.
+    const firstA = await provision(entryA);
+    const shopA = await provision(entryA);
+    expect(shopA).toMatchObject({ clientId: firstA.clientId, registered: false });
+    const shopB = await provision(entryB);
+    expect((await clients()).filter((c) => !before.includes(c)).sort()).toEqual([shopA.clientId, shopB.clientId].sort());
+
+    // Ann belongs to A only, Ben to both.
+    const as = (rp: { clientId: string; clientSecret: string }, scope: string) => ({ client_id: rp.clientId, client_secret: rp.clientSecret, scope_id: scope });
+    const ann = await signUp(p, `ann-${ulid()}@shop.test`);
+    const ben = await signUp(p, `ben-${ulid()}@shop.test`);
+    await signInTo(p, ann, shopA);
+    await signInTo(p, ben, shopA);
+    await signInTo(p, ben, shopB);
+    for (const [rp, app, who] of [[shopA, appA, ann], [shopA, appA, ben], [shopB, appB, ben]] as const) {
+      expect((await report(p, { ...as(rp, app), op: 'present', sub: who.sub })).status).toBe(204);
+    }
+    expect((await placesOf(p, ann.cookie)).body).toEqual({ places: [entryA] });
+    expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryA, entryB] });
+
+    // A ends: its place, its entries and its client go; B, and Ben's entry in it, stay.
+    const removed = await managed('DELETE', { appTenantId: tenantA, appScopeId: appA });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ removed: shopA.clientId, unlisted: true });
+    expect((await placesOf(p, ann.cookie)).body).toEqual({ places: [] });
+    expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryB] });
+    expect((await clients()).filter((c) => !before.includes(c))).toEqual([shopB.clientId]);
+    // A's client reports nothing any more; a repeated removal is a no-op.
+    expect((await report(p, { ...as(shopA, appA), op: 'present', sub: ann.sub })).status).not.toBe(204);
+    expect(await (await managed('DELETE', { appTenantId: tenantA, appScopeId: appA })).json()).toEqual({ removed: null, unlisted: false });
+    // Another tenant's call naming A's scope is refused: the issuer belongs to tenant t.
+    expect((await managed('DELETE', { tenantId: tenantB, appTenantId: tenantB, appScopeId: appB })).status).toBe(403);
+    expect((await placesOf(p, ben.cookie)).body).toEqual({ places: [entryB] });
+  });
+
   it('refuses a malformed registration whole, and a caller without the platform secret', async () => {
     const w = await world();
     const before = await dumpOf(w.p.scope);
