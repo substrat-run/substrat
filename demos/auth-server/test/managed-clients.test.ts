@@ -11,7 +11,6 @@ import { buildAuth } from '../src/auth.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { RegisterClientFn } from '../src/preview-clients.js';
 import { PreviewClientRefusal } from '../src/preview-clients.js';
-import { authenticateClient } from '../src/places-http.js';
 import { syncPlaceRegistrations } from '../src/places.js';
 import { syncClientRedirects } from '../src/client-redirects.js';
 import { ensureManagedClient, removeManagedClient } from '../src/managed-clients.js';
@@ -66,7 +65,21 @@ const handler = (req: Request): Promise<Response> =>
     allowSignup: true,
   }).handler(req as never);
 
-const authenticates = (clientId: string, secret: string) => authenticateClient(sql, handler, ORIGIN, clientId, secret);
+/**
+ * Does the plugin's own client authentication accept this secret? RFC 7662 introspection runs it
+ * exactly as `/oauth2/token` does, which is how the places report authenticates a client
+ * (`places-http.ts`, kept out of this node project for its worker types).
+ */
+async function authenticates(clientId: string, secret: string): Promise<boolean> {
+  const res = await handler(
+    new Request(`${ORIGIN}/api/auth/oauth2/introspect`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: 'probe', client_id: clientId, client_secret: secret }).toString(),
+    }) as never,
+  );
+  return res.status === 200;
+}
 
 const input = (app: string, appTenant: string, hostname: string): ManagedClientEnsure =>
   ({ tenantId: MANAGER, scopeId: ISSUER_SCOPE, appTenantId: appTenant, appScopeId: app, hostname, clientName: 'Acme AB' }) as ManagedClientEnsure;
