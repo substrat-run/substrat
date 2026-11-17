@@ -94,8 +94,12 @@ because a source changed.
   `app/src/api.generated.ts`, `src/migrations.generated.ts` with `journal.json`,
   `PERMISSIONS.md` and `CONFORMANCE.md`. A package's own `SqlMigration[]` (an engine's
   `src/index.ts`, a vertical's migrations) emits its `MIGRATIONS.md`. A vertical's `MODULES` and
-  `ROLES` emit `PERMISSIONS.md`. Emitted artifacts are often listed as changed but not sent to
-  you; a listed path counts as present in the change.
+  `ROLES` emit `PERMISSIONS.md`. The conformance module a package's `package.json` names in
+  `substrat.conformance` (usually `test/conformance.ts`) emits `CONFORMANCE.md` too. An artifact
+  with several sources moves when any one of them does: `CONFORMANCE.md` changing beside an
+  edited conformance module and no model change is a re-emit, not a hand edit. Emitted artifacts
+  are often listed as changed but not sent to you; a listed path counts as present in the
+  change.
 - *Reader:* before raising S3, look for the other half of the pair in the change, among the
   files shown and the files listed as not sent. Raise it only for:
   - **a hand edit**: a `*.generated.*` file, an artifact above, or `@substrat-run/*` code (a
