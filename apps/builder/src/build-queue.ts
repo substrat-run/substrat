@@ -22,6 +22,12 @@ import { refusalProblem } from './problem.js';
  * Longer contention is the CLI's to ride out, by retrying the refusal.
  */
 export const BUILD_WAIT_MS = 2 * 60_000;
+/**
+ * How long one sandbox command of a source build may run. With `BUILD_WAIT_MS` it is what
+ * bounds how long a build holds its sandbox, which the container's rollout grace period in
+ * wrangler.jsonc has to outlast (#3259).
+ */
+export const BUILD_COMMAND_TIMEOUT_MS = 10 * 60_000;
 /** How often a waiting build looks again at a studio operation holding its project. */
 export const BUILD_POLL_MS = 1_000;
 

@@ -43,7 +43,7 @@ import {
 	type TurnResult,
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
-import { BuildQueue, BuildWaitExpired, busyDetail, busyRefusal, type Occupant } from './build-queue.js';
+import { BUILD_COMMAND_TIMEOUT_MS, BuildQueue, BuildWaitExpired, busyDetail, busyRefusal, type Occupant } from './build-queue.js';
 import { BUILD_ID_HEADER, BuildLog, buildIdFrom, errorDetail, failureDetail, interruptedRecord, interruptionOf, invalidFields, orBuildFailure, RECORD_INDEX, RECORD_PREFIX, retained, ulid, type BuildRecord } from './build-log.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
 import {
@@ -375,7 +375,7 @@ export class BuilderAgent extends DurableObject<Env> {
 		const submittedDirectory = request.snapshot?.directory;
 		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`);
 		const log = new BuildLog(buildId, slug, (record) => this.ctx.storage.put(`${RECORD_PREFIX}${buildId}`, record));
-		const sb = log.sandbox(sandboxLike(raw, 600_000));
+		const sb = log.sandbox(sandboxLike(raw, BUILD_COMMAND_TIMEOUT_MS));
 		let entry: ProjectEntry | undefined;
 		let revision: string | undefined;
 		try {
