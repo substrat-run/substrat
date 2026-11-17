@@ -14,6 +14,8 @@ import {
   type PlatformRequestEntry,
   type UndecodablePlatformRequest,
   type EntitlementGrant,
+  type ScopeId,
+  type TenantId,
   ARCHIVE_SCOPE_KIND,
   connectorDispatchKind,
   MODEL_USAGE_KIND,
@@ -1384,6 +1386,199 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(adopted?.servingRef).toBe('managed-product-serving');
     expect(adopted?.verticalVersionId).toBe(vId);
     expect(adopted?.status).toBe('active');
+  });
+});
+
+describe("provisionTenantHandler — a managed tenant signs in at the manager's team auth-server, and is a place there (#3202, D-72)", () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const managerTenant = tenantId.parse(ulid());
+  const managerScope = scopeId.parse(ulid());
+  /** The manager's own team auth-server, and an app of the same tenant that is no issuer. */
+  const issuerScope = scopeId.parse(ulid());
+  const crmScope = scopeId.parse(ulid());
+  /** Another team's auth-server: a real issuer, but not the manager's to name. */
+  const otherTenant = tenantId.parse(ulid());
+  const otherIssuerScope = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const ctx = { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' };
+  const ISSUER = 'https://auth.manager.test';
+
+  /** Everything the platform did outside the directory, in order: registrations and deliveries. */
+  let calls: Array<
+    | { kind: 'register'; issuer: string; appName: string; redirectUri: string }
+    | { kind: 'configure'; scopeId: string; tenantId: string; entries: Array<{ key: string; value: string }> }
+  >;
+  let minted = 0;
+  let registerFails = false;
+  let addressed: 'reserved' | 'dropped' = 'reserved';
+  const registerOidcClient = async (issuer: string, input: { appName: string; redirectUri: string }) => {
+    calls.push({ kind: 'register', issuer, ...input });
+    if (registerFails) throw new Error('issuer unreachable');
+    minted += 1;
+    return { clientId: `client-${minted}`, clientSecret: `secret-${minted}` };
+  };
+  /** One fake deployment per scope, recording what it is told. */
+  const verticalFor = (scope: string) =>
+    ({
+      provisionInstance: async (input: { tenantId: string; scopeId: string; owner: string; ownerEmail?: string }) => ({
+        tenantId: input.tenantId,
+        scopeId: input.scopeId,
+        owner: input.owner,
+        ...(input.ownerEmail && addressed === 'reserved' ? { ownerAddressReserved: true } : {}),
+      }),
+      configureInstance: async (input: { tenantId: string; scopeId: string; entries: Array<{ key: string; value: string }> }) => {
+        calls.push({ kind: 'configure', scopeId: input.scopeId, tenantId: input.tenantId, entries: input.entries });
+        void scope;
+      },
+    }) as unknown as VerticalClient;
+
+  const deps = () => ({
+    host,
+    actor: staff,
+    resolveVerticalForScope: async (rec: { scopeId?: string } & Record<string, unknown>) => verticalFor(String(rec.scopeId)),
+    hostnameDomain: 'substrat.test',
+    registerOidcClient,
+  });
+
+  const payloadFor = (t: string, s: string, issuer = ISSUER) => ({
+    tenant: { id: t, slug: `biz-${t.slice(-8).toLowerCase()}`, name: 'Corner Shop' },
+    instance: { vertical: 'managed-product', scopeId: s, slug: 'main', name: 'Main', owner, signIn: { issuer } },
+    entitlements: [],
+  });
+
+  async function app(t: TenantId, s: ScopeId, vertical: string, hostname: string) {
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.bindHostname(staff, { hostname, tenantId: t, scopeId: s, surface: 'app', region: null, canonical: true });
+    await host.admin.setHostnameStatus(staff, hostname, 'active');
+  }
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-managed-signin-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.registerVertical(staff, { slug: 'manager-console', name: 'Manager Console', source: 'builtin', entitlements: [] });
+    await host.admin.setVerticalTenantProvisioner(staff, 'manager-console', true);
+    await host.admin.registerVertical(staff, { slug: 'team-auth', name: 'Team Auth', source: 'builtin', provides: ['oidc-issuer'] });
+    await host.admin.registerVertical(staff, { slug: 'crm', name: 'CRM', source: 'builtin' });
+    await host.admin.createTenant(staff, { id: managerTenant, slug: 'manager', name: 'Manager' });
+    await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: 'manager-console' });
+    await host.admin.activateScope(staff, managerTenant, managerScope);
+    await app(managerTenant, issuerScope, 'team-auth', 'auth.manager.test');
+    await app(managerTenant, crmScope, 'crm', 'crm.manager.test');
+    await host.admin.createTenant(staff, { id: otherTenant, slug: 'other', name: 'Other' });
+    await app(otherTenant, otherIssuerScope, 'team-auth', 'auth.other.test');
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const fresh = () => {
+    calls = [];
+    registerFails = false;
+    addressed = 'reserved';
+  };
+  const placeDeliveries = () =>
+    calls.filter((c) => c.kind === 'configure' && c.entries.some((e) => e.key.startsWith('substrat:places:')));
+  const tenantExists = async (t: string) => (await host.admin.listTenants(staff)).some((x) => x.id === t);
+
+  it("registers the tenant's own client at the manager's issuer, hands it to the scope, and registers the place last", async () => {
+    fresh();
+    const [t, s] = [ulid(), ulid()];
+    const p = payloadFor(t, s);
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: p }));
+    const hostname = `${p.tenant.slug}-managed-product.global.substrat.test`;
+    expect(outcome).toMatchObject({ status: 'done', result: { tenantId: t, scopeId: s, hostname, signIn: { issuer: ISSUER, clientId: 'client-1' } } });
+    expect(calls).toEqual([
+      // The client is registered for the tenant's own address, under the tenant's own name.
+      { kind: 'register', issuer: ISSUER, appName: 'Corner Shop', redirectUri: `https://${hostname}/api/auth/callback` },
+      // The scope signs in as that client, at that issuer, as a team auth-server's client does.
+      {
+        kind: 'configure',
+        tenantId: t,
+        scopeId: s,
+        entries: [
+          { key: 'substrat:auth', value: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'client-1', clientSecret: 'secret-1' }) },
+          { key: 'substrat:auth:shared-issuer', value: 'true' },
+        ],
+      },
+      // In one delivery to the MANAGER's issuer instance: the client's hostnames, which turns
+      // end-session on so the person can sign out (#2904), and the place, under the managed
+      // tenant's own key: exactly this app, so one tenant's delivery never touches another's.
+      {
+        kind: 'configure',
+        tenantId: managerTenant,
+        scopeId: issuerScope,
+        entries: [
+          { key: `substrat:redirects:${s}`, value: JSON.stringify({ clientId: 'client-1', hostnames: [hostname] }) },
+          {
+            key: `substrat:places:${t}`,
+            value: JSON.stringify([{ appScopeId: s, clientId: 'client-1', hostname, name: 'Corner Shop' }]),
+          },
+        ],
+      },
+    ]);
+  });
+
+  type Payload = ReturnType<typeof payloadFor>;
+  it.each([
+    ["another team's auth-server", (p: Payload) => payloadFor(p.tenant.id, p.instance.scopeId, 'https://auth.other.test'), /not an active team auth-server/],
+    ["an app of the manager's tenant that provides no issuer", (p: Payload) => payloadFor(p.tenant.id, p.instance.scopeId, 'https://crm.manager.test'), /not an active team auth-server/],
+    ['a hostname nothing answers on', (p: Payload) => payloadFor(p.tenant.id, p.instance.scopeId, 'https://nobody.manager.test'), /not an active team auth-server/],
+    ['an issuer with a path', (p: Payload) => payloadFor(p.tenant.id, p.instance.scopeId, `${ISSUER}/tenant-a`), /https origin/],
+    ['an http issuer', (p: Payload) => payloadFor(p.tenant.id, p.instance.scopeId, 'http://auth.manager.test'), /https origin/],
+    ['a sign-in in config as well', (p: Payload) => ({ ...p, config: { 'substrat:auth': '{"mode":"oidc"}' } }), /both name a sign-in/],
+    ['a tenant name no place can carry', (p: Payload) => ({ ...p, tenant: { ...p.tenant, name: 'x'.repeat(121) } }), /cannot name a place/],
+  ])('refuses %s before any write: no tenant, no client, no place', async (_case, change, error) => {
+    fresh();
+    const p = change(payloadFor(ulid(), ulid()));
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: p }));
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(error) });
+    expect(calls).toEqual([]);
+    expect(await tenantExists(p.tenant.id)).toBe(false);
+  });
+
+  it('refuses a sign-in this platform cannot register a client for, before any write', async () => {
+    fresh();
+    const p = payloadFor(ulid(), ulid());
+    const { registerOidcClient: _absent, ...without } = deps();
+    const outcome = await provisionTenantHandler(without)(ctx, intent('provision-tenant', { payload: p }));
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/does not register sign-in clients/) });
+    expect(calls).toEqual([]);
+    expect(await tenantExists(p.tenant.id)).toBe(false);
+  });
+
+  it('a provision that fails registers nothing: no client and no place', async () => {
+    fresh();
+    addressed = 'dropped';
+    const p = payloadFor(ulid(), ulid());
+    const outcome = await provisionTenantHandler(deps())(
+      ctx,
+      intent('provision-tenant', { payload: { ...p, instance: { ...p.instance, ownerEmail: 'founder@example.com' } } }),
+    );
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/did not reserve the owner seat/) });
+    expect(calls.filter((c) => c.kind === 'register')).toEqual([]);
+    expect(placeDeliveries()).toEqual([]);
+  });
+
+  it('a registration that fails leaves no place, and the retry registers a fresh client and its place', async () => {
+    fresh();
+    const p = payloadFor(ulid(), ulid());
+    const req = intent('provision-tenant', { payload: p });
+    registerFails = true;
+    expect(await provisionTenantHandler(deps())(ctx, req)).toMatchObject({ status: 'pending' });
+    expect(placeDeliveries()).toEqual([]);
+    registerFails = false;
+    const retried = await provisionTenantHandler(deps())(ctx, req);
+    expect(retried).toMatchObject({ status: 'done' });
+    const clientId = (retried as { result: { signIn: { clientId: string } } }).result.signIn.clientId;
+    const places = placeDeliveries();
+    expect(places).toHaveLength(1);
+    const placeEntry = (places[0] as { entries: Array<{ key: string; value: string }> }).entries.find((e) => e.key.startsWith('substrat:places:'));
+    expect(JSON.parse(placeEntry!.value)).toEqual([
+      expect.objectContaining({ appScopeId: p.instance.scopeId, clientId }),
+    ]);
   });
 });
 

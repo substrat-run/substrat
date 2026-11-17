@@ -287,8 +287,11 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   platform reconcile sends each app's whole membership, so a report that went missing is
   repaired. It is not available for external issuers (Supabase, Auth0, AuthHero, any OIDC
   provider the platform does not host): the list lives with a pool the platform hosts, so an
-  app signing in elsewhere reports nothing and its users have no places page. Apps of
-  another team that sign in at your auth server are not listed yet either.
+  app signing in elsewhere reports nothing and its users have no places page. A tenant your
+  manager app creates with `provision-tenant` and `instance.signIn` is listed: the platform
+  registers its client and its place at your auth server
+  ([building a platform](/guide/building-a-platform)). Other apps of another team that sign
+  in at your auth server are not listed yet.
 
 ### Bearer tokens: whose token it is
 
