@@ -219,7 +219,7 @@ import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
-import { MAIL_IN_ACTOR, handleInboundEmail, mailInAddressDeps } from './mail-in.js';
+import { MAIL_IN_ACTOR, handleInboundEmail, mailInAddressDeps, mailInTenantDoor } from './mail-in.js';
 import {
   MailInError,
   mailInAddressOf,
@@ -3905,6 +3905,8 @@ export default {
         connectionInspectors: connectionInspectorsFor(env),
         // #2343: a mail connection's send test, through the senders the email relay uses.
         mailSenders: mailSendersFor(env),
+        // #2611: a team's door to its apps' mail-in addresses (the dashboard's Integrations tab).
+        mailIn: mailInTenantDoor(env, () => hostFor(env)),
         // vertical-connectors.md §6.4: a vertical-defined provider, answered by its vertical's code.
         verticalConnectorInspector: (provider, context) =>
           verticalConnectorInspector(verticalConnectorDepsFor(env, hostFor(env), SERVICE_ACTOR), provider, context),

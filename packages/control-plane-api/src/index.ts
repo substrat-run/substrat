@@ -4,7 +4,7 @@ export {
   CLI_MIN_VERSION_HEADER,
   CLI_LATEST_VERSION_HEADER,
 } from './api.js';
-export type { ControlPlaneApiOptions, ConnectionInspector, GithubChange } from './api.js';
+export type { ControlPlaneApiOptions, ConnectionInspector, GithubChange, MailInTenantDoor } from './api.js';
 export {
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,

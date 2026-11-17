@@ -39,6 +39,10 @@ import {
   historyEntry,
   lakeEventsPage,
   LIST_PAGE_MAX,
+  MAIL_IN_MAX_ALLOWLIST,
+  mailInAddress,
+  mailInAllowEntry,
+  mailInStanding,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
   findingEntry,
@@ -1440,6 +1444,23 @@ export const dashboardRoutes = defineRoutes({
       connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
     })) }),
     http: { method: 'GET', path: '/apps/{scopeId}/integrations' },
+  },
+  // -- an app's mail-in address (#2611) --------------------------------------
+  'dashboard/get-app-mail-in': {
+    summary: "One app's mail-in address, the landing its vertical declares, and whether the platform receives mail",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: mailInStanding,
+    http: { method: 'GET', path: '/apps/{scopeId}/mail-in' },
+  },
+  'dashboard/set-app-mail-in': {
+    summary: "Request, rotate or revoke one app's mail-in address; an allowlist replaces the address's senders",
+    input: z.object({
+      scopeId: z.string().min(1),
+      action: z.enum(['request', 'rotate', 'revoke']),
+      allowlist: z.array(mailInAllowEntry).max(MAIL_IN_MAX_ALLOWLIST).optional(),
+    }),
+    output: z.object({ address: mailInAddress.nullable() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/mail-in' },
   },
   'dashboard/list-team-integrations': {
     summary: "Every first-party provider with this team's connections and the team's apps that can connect it",

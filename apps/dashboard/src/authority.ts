@@ -78,6 +78,7 @@ import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import type { MeteredUsageOut } from './routes.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
+import type { MailInAddress, MailInAddressAct, MailInStanding } from '@substrat-run/contracts';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, manifestDelegation, substratError, type BindAcknowledgement, type ExportBreak, type ManifestDelegation, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
 import { z } from 'zod';
 import {
@@ -630,6 +631,19 @@ export class TenantNarrowedControlPlane {
       `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/send-test`,
       input,
     );
+  }
+
+  /**
+   * One app's mail-in standing (#2611): its live address with its counts, the landing its running
+   * version declares (null ⇒ it cannot receive mail), and whether the platform receives at all.
+   */
+  mailInStanding(scopeId: ScopeId): Promise<MailInStanding> {
+    return this.call<MailInStanding>(`/tenants/${this.tenantId}/scopes/${scopeId}/mail-in`);
+  }
+
+  /** Request, rotate or revoke one app's mail-in address (#2611); the answer is the address after it, null once revoked. */
+  async actOnMailIn(scopeId: ScopeId, act: MailInAddressAct): Promise<MailInAddress | null> {
+    return (await this.post<{ address: MailInAddress | null }>(`/tenants/${this.tenantId}/scopes/${scopeId}/mail-in`, act)).address;
   }
 
   /**

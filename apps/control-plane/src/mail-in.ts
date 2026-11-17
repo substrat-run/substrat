@@ -7,7 +7,11 @@ import {
 import {
   acceptInboundMail,
   deliverInboundMail,
+  mailInStandingOf,
   r2MailInStore,
+  requestMailInAddress,
+  revokeMailInAddress,
+  rotateMailInAddress,
   type MailInAddressDeps,
   type MailInInboundDeps,
   type MailInLandingOf,
@@ -15,6 +19,7 @@ import {
 } from '@substrat-run/connector-mail-in';
 import { runningVersionOf, type ScopeHost } from '@substrat-run/kernel';
 import type { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
+import type { MailInTenantDoor } from '@substrat-run/control-plane-api';
 
 /**
  * Inbound mail's control-plane half (#2611): the `email()` handler Email Routing calls, and the
@@ -82,6 +87,30 @@ export function landingOfFor(host: CloudflareScopeHost): MailInLandingOf {
 export function mailInAddressDeps(env: MailInEnv, host: CloudflareScopeHost): MailInAddressDeps {
   const inbound = mailInInboundDeps(env);
   return { actor: MAIL_IN_ACTOR, domain: inbound.domain, store: inbound.store, landingOf: landingOfFor(host) };
+}
+
+/**
+ * The tenant door (#2611) the control-plane API mounts at `…/scopes/:s/mail-in`: the dashboard's
+ * way to the same lifecycle the relay serves a vertical's worker. The host is built per call, as
+ * the relay's is: the landing lookup needs the Cloudflare host's stored manifests.
+ */
+export function mailInTenantDoor(env: MailInEnv, hostOf: () => CloudflareScopeHost): MailInTenantDoor {
+  return {
+    standing: async (_host, { tenantId, scopeId }) => {
+      const host = hostOf();
+      return mailInStandingOf(host, mailInAddressDeps(env, host), tenantId, scopeId);
+    },
+    act: async (_host, key, { action, createdBy, allowlist }) => {
+      const host = hostOf();
+      const deps = mailInAddressDeps(env, host);
+      if (action === 'revoke') {
+        await revokeMailInAddress(host, deps, key);
+        return null;
+      }
+      const act = action === 'request' ? requestMailInAddress : rotateMailInAddress;
+      return act(host, deps, { ...key, createdBy, ...(allowlist ? { allowlist } : {}) });
+    },
+  };
 }
 
 /** The relay's and the API's scope key. */

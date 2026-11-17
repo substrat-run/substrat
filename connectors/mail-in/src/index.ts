@@ -33,6 +33,7 @@ export {
   listMailInAddresses,
   localPartOf,
   mailInAddressOf,
+  mailInStandingOf,
   mintLocalPart,
   readBinding,
   readStats,

@@ -23,6 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import { pricedModelCatalog, selectableModel } from '@substrat-run/model-providers';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import { MAIL_IN_PROVIDER } from '@substrat-run/contracts';
 import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type BindAcknowledgement, type ScopeDumpTable, type ScopeStoreDump, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type DirectoryInventory, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
@@ -3036,6 +3037,40 @@ async function disconnectAppIntegrationIn(ctx: TeamContext, appScopeId: string, 
 }
 
 /**
+ * One app's mail-in address (#2611) — the address a team hands out (or forwards its own mail to) so
+ * mail lands in the app through the operation its vertical declares. Reading it is gated like
+ * managing it, on the in-scope `dashboard:manage-integrations` check: the address is a capability,
+ * and anyone who can read it can send into the app.
+ */
+async function appMailInIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
+  await dash.invoke('dashboard/begin-connection', { provider: MAIL_IN_PROVIDER });
+  return controlPlaneFor(c.env, node.tenantId, node.principal).mailInStanding(scopeId.parse(appRow.app_scope_id));
+}
+
+/**
+ * Request, rotate or revoke it, attributed to the signed-in person whose check passed. Revoking
+ * goes through the mail-in door rather than the generic disconnect, so mail it accepted and had not
+ * delivered is deleted with it instead of left in the platform's bucket.
+ */
+async function actOnAppMailInIn(
+  ctx: TeamContext,
+  appScopeId: string,
+  body: { action: 'request' | 'rotate' | 'revoke'; allowlist?: string[] | undefined },
+) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
+  const authz = (await dash.invoke('dashboard/begin-connection', { provider: MAIL_IN_PROVIDER })) as { principal: string };
+  const address = await controlPlaneFor(c.env, node.tenantId, node.principal).actOnMailIn(scopeId.parse(appRow.app_scope_id), {
+    action: body.action,
+    createdBy: authz.principal,
+    ...(body.allowlist ? { allowlist: body.allowlist } : {}),
+  });
+  return { address };
+}
+
+/**
  * Disconnect ONE connection of a fleet (#1267 follow-up) — the door the un-addressed route
  * above refuses to guess for. The id only selects among this app's own live rows for this
  * provider (`inspectableConnection`), so it can never reach another vertical's connection.
@@ -5906,6 +5941,8 @@ const routeHandlers = {
   'dashboard/set-app-env': async (ctx, { scopeId: app, entries }) => setAppEnvIn(ctx, app, entries ?? []),
   'dashboard/delete-app-env': async (ctx, { scopeId: app, key }) => deleteAppEnvIn(ctx, app, key),
   'dashboard/get-app-integrations': async (ctx, { scopeId: app }) => getAppIntegrationsIn(ctx, app),
+  'dashboard/get-app-mail-in': async (ctx, { scopeId: app }) => appMailInIn(ctx, app),
+  'dashboard/set-app-mail-in': async (ctx, { scopeId: app, action, allowlist }) => actOnAppMailInIn(ctx, app, { action, allowlist }),
   'dashboard/list-team-integrations': async (ctx) => teamIntegrationsIn(ctx),
   'dashboard/connect-app-integration': async (ctx, { scopeId: app, provider, secret, label }) =>
     connectAppIntegrationIn(ctx, app, provider, { secret, label }),

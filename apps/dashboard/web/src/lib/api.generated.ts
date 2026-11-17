@@ -908,6 +908,13 @@ export interface DashboardClient {
   getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; ownerScopeId: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
 
   /**
+   * One app's mail-in address, the landing its vertical declares, and whether the platform receives mail
+   *
+   * `GET /apps/{scopeId}/mail-in` — `dashboard/get-app-mail-in`
+   */
+  getAppMailIn(input: { scopeId: string }): Promise<{ address: { address: string; connectionId: string; tenantId: string; scopeId: string; vertical: string; operation: string; permission: string; allowlist: string[]; createdAt: string; createdBy: string; stats: { received: number; delivered: number; rejected: number; deadLettered: number; pending: number; lastReceivedAt: string | null; lastRejectedAt: string | null; lastRejectReason: string | null } } | null; landing: { operation: string; permission: string } | null; receiving: boolean }>;
+
+  /**
    * The entity model of the version this app scope runs, and of an available update
    *
    * `GET /apps/{scopeId}/model` — `dashboard/get-app-model`
@@ -1456,6 +1463,13 @@ export interface DashboardClient {
   setAppEnv(input: { scopeId: string; entries?: { key: string; value: string; secret?: boolean }[] }): Promise<{ saved: number; delivered: boolean; note?: string }>;
 
   /**
+   * Request, rotate or revoke one app's mail-in address; an allowlist replaces the address's senders
+   *
+   * `POST /apps/{scopeId}/mail-in` — `dashboard/set-app-mail-in`
+   */
+  setAppMailIn(input: { scopeId: string; action: "request" | "rotate" | "revoke"; allowlist?: string[] }): Promise<{ address: { address: string; connectionId: string; tenantId: string; scopeId: string; vertical: string; operation: string; permission: string; allowlist: string[]; createdAt: string; createdBy: string; stats: { received: number; delivered: number; rejected: number; deadLettered: number; pending: number; lastReceivedAt: string | null; lastRejectedAt: string | null; lastRejectReason: string | null } } | null }>;
+
+  /**
    * Choose or clear the instance this app calls for one peer vertical
    *
    * `PUT /apps/{scopeId}/peers/binding` — `dashboard/set-app-peer-binding`
@@ -1727,6 +1741,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/activity`, "GET", undefined, omit(input, ["scopeId","provider"])),
     getAppIntegrations: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppMailIn: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/mail-in`, "GET", undefined, omit(input, ["scopeId"])),
     getAppModel: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/model`, "GET", undefined, omit(input, ["scopeId"])),
     getAppOverlays: (input: Args) =>
@@ -1883,6 +1899,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
     setAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "PUT", omit(input, ["scopeId"]), undefined),
+    setAppMailIn: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/mail-in`, "POST", omit(input, ["scopeId"]), undefined),
     setAppPeerBinding: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/peers/binding`, "PUT", omit(input, ["scopeId"]), undefined),
     setFindingStatus: (input: Args) =>
