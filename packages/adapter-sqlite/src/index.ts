@@ -478,6 +478,7 @@ import {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type ModelUsagePricing,
   BUILD_USAGE_RETENTION_DAYS,
   type BuildUsageInput,
   type TenantBuildUsageFilter,
@@ -14347,10 +14348,10 @@ export class SqliteScopeHost implements ScopeHost {
           { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
         return rows;
       },
-      summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
+      summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number, pricing?: ModelUsagePricing): Promise<ModelUsageSummary> => {
         const rows = this.selectModelUsage({ ...window, order: 'asc' });
         this.recordAccess(actor, 'summarizeModelUsage', { tenantId: window.tenantId ?? null }, window, rows.length);
-        return foldModelUsage(rows, { readAt: new Date().toISOString(), ...window, marginPercent });
+        return foldModelUsage(rows, { readAt: new Date().toISOString(), ...window, marginPercent, ...pricing });
       },
     };
   }

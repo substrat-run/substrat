@@ -260,6 +260,43 @@ it('caps model labels in the reader and omits long labels from the breakdown', a
   expect(body.models.byVerticalModel).toHaveLength(1);
 });
 
+it('prices a tenant\'s code reviews at zero beside what they would cost, on its usage and on the staff summary', async () => {
+  const reviewScope = scopeId.parse('01JZ0000000000000000RVW001');
+  const reviewed = tenantId.parse(ulid());
+  await host.admin.createTenant(actor, { id: reviewed, slug: 'reviewed', name: 'Reviewed' });
+  const reviewing = createControlPlaneApi({
+    host,
+    authenticate: UNSAFE_devPlatformActorAuth(),
+    authenticateTenantService: tenantTokenAuth(secret, serviceActor),
+    reviewUsage: { scope: reviewScope, zeroRated: true },
+  });
+  const at = `${new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)}T13:00:00.000Z`;
+  const line = (n: number, listUsd: string | null) => ({ requestId: `review-${n}`, line: {
+    attribution: { tenant: reviewed, scope: reviewScope, vertical: '@substrat-run/review-runner', version: '1', operation: 'review/read' },
+    model: 'cloudflare:reviewer', provider: 'cloudflare', modelId: 'reviewer', reported: true,
+    inputTokens: 1000, outputTokens: 50, cachedInputTokens: 0, cacheWriteTokens: 0, listUsd, at, elapsedMs: 10,
+  } });
+  await host.admin.recordModelUsage(line(1, '0.01'));
+  await host.admin.recordModelUsage(line(2, '0.025'));
+  // The window's first instant is in it and its last midnight is not, to the millisecond.
+  const today = new Date().toISOString().slice(0, 10);
+  const first = new Date(Date.parse(`${today}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
+  const edge = (n: number, listUsd: string, at: string) => ({ ...line(n, listUsd), line: { ...line(n, listUsd).line, at } });
+  await host.admin.recordModelUsage(edge(3, '0.5', `${first}T00:00:00.500Z`));
+  await host.admin.recordModelUsage(edge(4, '7', `${today}T00:00:00.500Z`));
+
+  const usage = await (await reviewing.request(`/tenants/${reviewed}/metered-usage`, { headers: { [SERVICE_TOKEN_HEADER]: await mintTenantToken(secret, { tenantId: reviewed }) } })).json();
+  expect(usage.reviews).toEqual({
+    state: 'complete', calls: 3, reportedCalls: 3, inputTokens: 3000, outputTokens: 150, unpriced: 0,
+    wouldCostUsd: '0.642', chargedUsd: '0', zeroRated: true, lowerBound: false, since: usage.models.since, until: usage.models.until,
+  });
+  // A plane without the review scope configured prices nothing on the tenant's read.
+  expect((await (await app.request(`/tenants/${own}/metered-usage`, { headers })).json()).reviews).toBeUndefined();
+
+  const summary = await (await reviewing.request(`/model-usage/summary?tenantId=${reviewed}&since=${at.slice(0, 10)}T00:00:00.000Z&until=${today}T00:00:00.000Z`, { headers: { [DEV_ACTOR_HEADER]: actor } })).json();
+  expect(summary.totals).toMatchObject({ listUsd: '0.035', billedUsd: '0', zeroRatedCalls: 2, zeroRatedUsd: '0.042' });
+});
+
 describe('POST /model-usage', () => {
   const staffHeaders = { [DEV_ACTOR_HEADER]: actor, 'content-type': 'application/json' };
   const line = (tenant: string) => ({

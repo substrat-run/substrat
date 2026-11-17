@@ -1,4 +1,4 @@
-import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
+import { addDecimal, sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource, type VerticalChange, type VerticalChanges } from '@substrat-run/contracts';
 import type { BuilderTurnsService } from './builder-turns.js';
 import { SourceBuildInterrupted } from './source-builds.js';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
@@ -221,6 +221,7 @@ import {
   releaseRolesAskScopes,
   releaseRoleSetRefusal,
   withheldOpsFailure,
+  foldModelUsage,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -486,6 +487,13 @@ export interface ControlPlaneApiOptions {
    * today; a per-provider rate is an additive change later. Default 20.
    */
   modelMarginPercent?: number;
+  /**
+   * Where code reviews' model usage is filed, and whether it is priced at zero for now (#2365,
+   * zero-rated through the review runner's phase 2). Set: `GET /model-usage/summary` prices those
+   * lines at zero beside what they would cost, and a tenant's metered usage gains a `reviews`
+   * block with its review tokens, their would-be cost and what is charged. Unset: neither.
+   */
+  reviewUsage?: { readonly scope: ScopeId; readonly zeroRated: boolean };
   host: ScopeHost;
   /**
    * How edge health reaches the two ends of a cross-vertical edge (#1705 PR 3): the phase's own
@@ -1668,6 +1676,11 @@ const modelUsageSummaryQuery = z.object({
 });
 
 export const DEFAULT_MODEL_MARGIN_PERCENT = 20;
+/**
+ * The most review lines one tenant's metered-usage read folds. A tenant's reviews are capped far
+ * below it at intake (50 kept in 30 days), so reaching it marks the figure a lower bound.
+ */
+export const REVIEW_USAGE_READ_MAX = 500;
 
 // -- the tenant-scoped credential's confinement (#977) ----------------------
 //
@@ -3037,6 +3050,47 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const rows = await admin.listScopeStorage(actor, { tenantId, since, until: through, limit: STORAGE_HISTORY_LIMIT_MAX });
       if (rows.length < STORAGE_HISTORY_LIMIT_MAX) storageDays = { rows };
     }
+    // The tenant's code reviews, priced (#2365): the one figure on this read with a price, because
+    // a review is metered to the tenant and the tenant sees what it would cost before it is
+    // charged. The lines are the tenant's own in the review scope, folded as the ledger bills.
+    let reviews: {
+      state: string; calls: number | null; reportedCalls: number; inputTokens: number | null; outputTokens: number | null;
+      unpriced: number; wouldCostUsd: string | null; chargedUsd: string | null; zeroRated: boolean; lowerBound: boolean;
+      since: string; until: string;
+    } | undefined;
+    if (options.reviewUsage) {
+      const window = { since: `${since}T00:00:00Z`, until: `${until}T00:00:00Z` };
+      const zeroRated = options.reviewUsage.zeroRated;
+      reviews = { state: 'unavailable', calls: null, reportedCalls: 0, inputTokens: null, outputTokens: null, unpriced: 0, wouldCostUsd: null, chargedUsd: null, zeroRated, lowerBound: false, ...window };
+      if (usageNow() < deadline) {
+        // The ledger compares `at` as text, and a line's `at` carries milliseconds, so the bounds do
+        // too: `T00:00:00Z` sorts after `T00:00:00.500Z` and would drop the first second of the window.
+        const lines = await admin.listModelUsage(actor, {
+          tenantId, scopeId: options.reviewUsage.scope, since: `${since}T00:00:00.000Z`, until: `${until}T00:00:00.000Z`,
+          limit: REVIEW_USAGE_READ_MAX + 1, order: 'asc',
+        });
+        const kept = lines.slice(0, REVIEW_USAGE_READ_MAX);
+        const clipped = lines.length > REVIEW_USAGE_READ_MAX;
+        const folded = foldModelUsage(kept, {
+          readAt, ...window, marginPercent: options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT,
+          ...(zeroRated ? { zeroRatedScopes: [options.reviewUsage.scope] } : {}),
+        }).totals;
+        const reported = kept.filter((line) => line.reported);
+        reviews = {
+          ...reviews,
+          state: kept.length === 0 ? 'empty' : clipped ? 'truncated' : 'complete',
+          calls: kept.length > 0 ? kept.length : null,
+          reportedCalls: reported.length,
+          inputTokens: reported.length > 0 ? folded.inputTokens : null,
+          outputTokens: reported.length > 0 ? folded.outputTokens : null,
+          unpriced: folded.unpriced,
+          // What they would cost at the platform's rate, and what of that is charged: nothing while zero-rated.
+          wouldCostUsd: kept.length > 0 ? addDecimal(folded.billedUsd, folded.zeroRatedUsd) : null,
+          chargedUsd: kept.length > 0 ? folded.billedUsd : null,
+          lowerBound: clipped,
+        };
+      }
+    }
     const hasModelLedger = typeof admin.listTenantModelUsageMeter === 'function' && !modelSkipped;
     let builds: {
       state: string; builds: number | null; ms: number | null; lowerBound: boolean; since: string; until: string;
@@ -3063,6 +3117,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       requests,
       models,
       builds,
+      ...(reviews ? { reviews } : {}),
       days: usageDays(utcDaysBetween(since, through), {
         requests: requestDays,
         models: hasModelLedger ? { rows: modelDayRows, truncated } : null,
@@ -13694,6 +13749,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       c.get('actor'),
       { ...(q.tenantId ? { tenantId: q.tenantId } : {}), since, until },
       options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT,
+      options.reviewUsage?.zeroRated ? { zeroRatedScopes: [options.reviewUsage.scope] } : {},
     );
     return c.json(summary);
   });

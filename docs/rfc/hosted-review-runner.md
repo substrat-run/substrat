@@ -388,6 +388,15 @@ until then each model change is signed off by the human against the corpus basel
 **Decided: A**, always metered, zero-rated in phases 1–2. The attribution form stays an open
 detail for #1073 (below).
 
+*Zero-rating, as built (#2365).* A review's line keeps its list price in the ledger. Where usage
+is priced for display, the review scope's lines are priced at zero, with what they would cost at
+the platform's rate shown beside them:
+- the staff model-usage summary carries `zeroRatedCalls` and `zeroRatedUsd`, left out of
+  `billedUsd`;
+- the tenant's Billing page shows its reviews' tokens, their would-be cost, and $0.00 charged.
+
+Phase 3 turns the zero-rating off in the control plane's wiring; nothing else changes.
+
 - **A. Metered to the tenant** at list price times the platform margin, through the ledger every
   model call already lands in (`ModelUsageLine`, D-59), as a line attributed to the review.
 - **B. Included** in a plan, the platform absorbing the cost, metered for our own information

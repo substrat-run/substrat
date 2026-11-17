@@ -186,6 +186,19 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
       render: (r) => <span style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{usd(r.billedUsd)}</span>,
     },
     {
+      header: 'Zero-rated',
+      align: 'right',
+      // Calls priced at zero for now (code reviews, #2365): what they would cost, left out of Billed.
+      render: (r) =>
+        (r.zeroRatedCalls ?? 0) > 0 ? (
+          <span title={`${num(r.zeroRatedCalls ?? 0)} zero-rated calls, would cost this at the platform's rate`} style={{ fontFamily: 'var(--font-mono)' }}>
+            {usd(r.zeroRatedUsd ?? '0')}
+          </span>
+        ) : (
+          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+        ),
+    },
+    {
       header: 'Unpriced',
       align: 'right',
       // A model the rate card does not know: counted beside the money, never folded in as $0.
@@ -272,7 +285,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
         title={`Model usage (meter 3)${usage ? ` · ${usage.marginPercent}% over list` : ''}`}
         description={
           usage
-            ? `Since ${new Date(usage.since).toLocaleDateString()} — ${num(usage.totals.calls)} calls, ${num(usage.totals.inputTokens)} tokens in, ${num(usage.totals.outputTokens)} out · list ${usd(usage.totals.listUsd)} · billed ${usd(usage.totals.billedUsd)}${usage.totals.unpriced ? ` · ${num(usage.totals.unpriced)} unpriced` : ''}. Reads emit nothing, so meter 4 stays absent.`
+            ? `Since ${new Date(usage.since).toLocaleDateString()} — ${num(usage.totals.calls)} calls, ${num(usage.totals.inputTokens)} tokens in, ${num(usage.totals.outputTokens)} out · list ${usd(usage.totals.listUsd)} · billed ${usd(usage.totals.billedUsd)}${usage.totals.zeroRatedCalls ? ` · ${num(usage.totals.zeroRatedCalls)} zero-rated, would cost ${usd(usage.totals.zeroRatedUsd ?? '0')}` : ''}${usage.totals.unpriced ? ` · ${num(usage.totals.unpriced)} unpriced` : ''}. Reads emit nothing, so meter 4 stays absent.`
             : 'Model calls made through the platform’s model host, folded per tenant and model. Reading…'
         }
         padding={0}

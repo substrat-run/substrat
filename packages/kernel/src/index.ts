@@ -1149,6 +1149,7 @@ export {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type ModelUsagePricing,
   type TenantModelUsageMeterFilter,
   type TenantModelUsageMeterRow,
 } from './model-usage.js';
