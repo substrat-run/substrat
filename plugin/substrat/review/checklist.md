@@ -83,13 +83,37 @@ gates: `pnpm lint:permissions --check` · `pnpm lint:entity-check-adoption` · `
 
 ### S3 · Generated files and kernel packages are not edited by hand: blocking
 
-- *Gate:* each generated artifact has a `--check` re-emit (`lint:model`, `lint:api`,
-  `lint:client`, `lint:permissions`, `lint:migrations`). Report the red one and name the
-  source file to edit instead.
-- *Reader:* a diff to a `*.generated.*` file, `model.json`, `openapi.json`, an emitted
-  migration or `@substrat-run/*` code, with no change to the source it comes from.
+A generated file moves with its source, in the same change. A source edited **together with**
+the artifacts it emits is the expected shape of a change, not a finding: do not raise S3
+because a source changed.
 
-gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client --check` · `pnpm lint:permissions --check` · `pnpm lint:migrations --check` · `pnpm lint:generated-marks` · judgement
+- *Gate:* each generated artifact has a `--check` re-emit (`lint:model`, `lint:api`,
+  `lint:client`, `lint:permissions`, `lint:migrations`, `lint:conformance`,
+  `lint:migration-ledger`). Report the red one and name the source file to edit instead.
+- *Pairs.* A vertical's `spec/model.ts` emits `model.json`, `openapi.json`,
+  `app/src/api.generated.ts`, `src/migrations.generated.ts` with `journal.json`,
+  `PERMISSIONS.md` and `CONFORMANCE.md`. A package's own `SqlMigration[]` (an engine's
+  `src/index.ts`, a vertical's migrations) emits its `MIGRATIONS.md`. A vertical's `MODULES` and
+  `ROLES` emit `PERMISSIONS.md`. The conformance module a package's `package.json` names in
+  `substrat.conformance` (usually `test/conformance.ts`) emits `CONFORMANCE.md` too. An artifact
+  with several sources moves when any one of them does: `CONFORMANCE.md` changing beside an
+  edited conformance module and no model change is a re-emit, not a hand edit. Emitted artifacts
+  are often listed as changed but not sent to you; a listed path counts as present in the
+  change.
+- *Reader:* before raising S3, look for the other half of the pair in the change, among the
+  files shown and the files listed as not sent. Raise it only for:
+  - **a hand edit**: a `*.generated.*` file, an artifact above, or `@substrat-run/*` code (a
+    `patches/` file or `patchedDependencies` entry against one included) changed with no change
+    to the source it comes from;
+  - **a stale artifact**: a source changed in a way its artifact records (an entity field, an
+    operation, a permission or role, a migration) with that artifact absent from the change;
+  - **a disagreement** you can see: both halves shown, and the artifact does not say what the
+    source now declares.
+
+  An artifact being listed rather than shown is not a finding, and neither is a source change
+  its artifacts do not record (a handler body, a comment).
+
+gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client --check` · `pnpm lint:permissions --check` · `pnpm lint:migrations --check` · `pnpm lint:conformance --check` · `pnpm lint:migration-ledger --check` · `pnpm lint:generated-marks` · judgement
 
 ### S4 · Migrations are append-only and declare what they lose: blocking
 

@@ -6,6 +6,7 @@
     "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
     "root": "engines/absence",
     "files": [
+      "MIGRATIONS.md",
       "package.json",
       "src/index.ts"
     ]

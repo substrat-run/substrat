@@ -1,3 +1,12 @@
+diff --git a/MIGRATIONS.md b/MIGRATIONS.md
+index 03b2b6a33..bb7fd813c 100644
+--- a/MIGRATIONS.md
++++ b/MIGRATIONS.md
+@@ -12,3 +12,4 @@ once it is on the base branch: add a new migration instead.
+ | Module | Version | sha256 |
+ |---|---|---|
+ | @substrat-run/engine-absence | 0001-init | `a71b75c95d07e648f1c4c768c046653486c85029d40d426f25709fb49616fb77` |
++| @substrat-run/engine-absence | 0002-half-day | `b71319eb1c17ad679ae7305e69126cd5062a474aee728d7dba5b05e2d9309bff` |
 diff --git a/src/index.ts b/src/index.ts
 index 7551a55..3f52c46 100644
 --- a/src/index.ts

@@ -1,0 +1,20 @@
+{
+  "id": "s3-model-not-reemitted",
+  "kind": "bad",
+  "origin": "S3 and #987: a field added in spec/model.ts with none of its artifacts re-emitted, so model.json, openapi.json, the client and the migration journal no longer say what the model declares.",
+  "base": {
+    "commit": "d08db0d1a752dc0b3a0f68f7ab4ef57b9b2e9258",
+    "root": "demos/todo",
+    "files": [
+      "package.json",
+      "spec/model.ts"
+    ]
+  },
+  "expect": [
+    {
+      "item": "S3",
+      "file": "spec/model.ts",
+      "from": "      colour: z.string().nullable(),"
+    }
+  ]
+}
