@@ -1356,8 +1356,15 @@ async function registerManagedSignIn(
       ],
     });
   } catch (e) {
-    // 501 = a deployment with no live configuration: no retry gives it a sign-in.
-    if (e instanceof ControlPlaneError && e.status === 501) return 'unconfigurable';
+    // 501 = a deployment with no live configuration: no retry gives it a sign-in, and the request
+    // settles failed. The client just ensured would then be listed by nothing and removed by
+    // nothing short of a reap, so it goes now; if that fails too, the tenant's reap removes it.
+    if (e instanceof ControlPlaneError && e.status === 501) {
+      await signIn.client
+        .removeManagedClient({ tenantId: signIn.tenantId, scopeId: signIn.scopeId, appTenantId: app.tenantId, appScopeId: app.scopeId })
+        .catch(() => undefined);
+      return 'unconfigurable';
+    }
     throw e;
   }
   const place = placeRegistration.parse({ appScopeId: app.scopeId, clientId: client.clientId, hostname: app.hostname, name: app.name });

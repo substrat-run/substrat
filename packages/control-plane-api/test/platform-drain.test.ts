@@ -1419,6 +1419,7 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
   let secrets = 0;
   let ensureFails = false;
   let failConfigureOf: string | null = null;
+  let unconfigurable: string | null = null;
   let addressed: 'reserved' | 'dropped' = 'reserved';
   const ensureManagedClient = async (input: { tenantId: string; scopeId: string; appTenantId: string; appScopeId: string; hostname: string; clientName: string }) => {
     calls.push({
@@ -1450,8 +1451,14 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
       configureInstance: async (input: { tenantId: string; scopeId: string; entries: Array<{ key: string; value: string }> }) => {
         calls.push({ kind: 'configure', scopeId: input.scopeId, tenantId: input.tenantId, entries: input.entries });
         if (failConfigureOf === input.scopeId) throw new Error('deployment unreachable');
+        if (unconfigurable === input.scopeId) throw new ControlPlaneError(501, 'this deployment takes no delivered configuration');
       },
       ensureManagedClient,
+      removeManagedClient: async (input: { appScopeId: string }) => {
+        const removed = recorded.get(input.appScopeId) ?? null;
+        recorded.delete(input.appScopeId);
+        return { removed, unlisted: false };
+      },
     }) as unknown as VerticalClient;
 
   const deps = () => ({
@@ -1499,6 +1506,7 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
     minted = 0;
     ensureFails = false;
     failConfigureOf = null;
+    unconfigurable = null;
     addressed = 'reserved';
   };
   const placeDeliveries = () =>
@@ -1599,6 +1607,17 @@ describe("provisionTenantHandler — a managed tenant signs in at the manager's 
     expect(places).toHaveLength(1);
     const placeEntry = (places[0] as { entries: Array<{ key: string; value: string }> }).entries.find((e) => e.key.startsWith('substrat:places:'));
     expect(JSON.parse(placeEntry!.value)).toEqual([expect.objectContaining({ appScopeId: p.instance.scopeId, clientId: 'client-1' })]);
+  });
+
+  it("a deployment that takes no configuration fails the request and leaves no client at the issuer, and no place", async () => {
+    fresh();
+    const p = payloadFor(ulid(), ulid());
+    unconfigurable = p.instance.scopeId;
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: p }));
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/takes no delivered configuration/) });
+    expect(minted).toBe(1);
+    expect(recorded.size).toBe(0);
+    expect(placeDeliveries()).toEqual([]);
   });
 
   // #3261: the gap D-72 left. A pass that registered the client and stopped before the place used
