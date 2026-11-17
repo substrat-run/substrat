@@ -511,6 +511,16 @@ export interface ConnectionFact {
  * provider's own words are the whole value ("This feature is disabled" and "invalid
  * credentials" send an operator to different places).
  */
+/**
+ * What a connection's consent covers (#2422), apart from whether its credential works. `missing`
+ * non-empty means "needs re-consent": the keys work, and a new consent round is the repair.
+ */
+export interface ConnectionConsentView {
+  granted: string[];
+  missing: string[];
+  checkedAt: string;
+}
+
 export interface ConnectionProbeView {
   ok: boolean;
   refused?: boolean;
@@ -518,6 +528,8 @@ export interface ConnectionProbeView {
   accountLabel: string | null;
   facts: ConnectionFact[];
   error: string | null;
+  /** Present for a provider that reports its consent's scopes. */
+  consent?: ConnectionConsentView;
 }
 
 /** One thing the connection did — a projected dispatch-ledger row. */
@@ -600,6 +612,8 @@ export interface ConnectionActivityView {
   connection: ConnectionView;
   entries: ConnectionActivityEntryView[];
   live: boolean;
+  /** #2422: the consent as the connector last recorded it; absent when it records none. */
+  consent?: ConnectionConsentView;
   grants: string[];
   credential: ConnectionCredentialFieldView[];
   /** #2343: every address a send test may go from, whole; empty or absent for a provider that sends no mail. */

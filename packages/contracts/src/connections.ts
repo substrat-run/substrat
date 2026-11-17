@@ -270,6 +270,27 @@ export const connectionFact = z.object({
 export type ConnectionFact = z.infer<typeof connectionFact>;
 
 /**
+ * What a connection's CONSENT covers, as the provider reports it (#2422) — apart from whether
+ * its credential works. A provider whose consent fixes its scopes (Fortnox: a company approves a
+ * set once, and widening it takes a new consent round) can hold a credential that mints and reads
+ * perfectly well while lacking a scope the platform now asks for. That connection is not refused
+ * and not broken; it needs a new consent, and a console says so instead of "Refused".
+ *
+ * `missing` is what the platform asks for that the grant lacks: non-empty means "needs
+ * re-consent". Absent when the provider reports nothing about its scopes, which is "unknown",
+ * never "complete".
+ */
+export const connectionConsent = z.object({
+  /** The scopes the provider says the grant carries, as it names them. */
+  granted: z.array(z.string().min(1).max(80)).max(64),
+  /** What the platform asks for and the grant lacks. Non-empty: the connection needs a new consent round. */
+  missing: z.array(z.string().min(1).max(80)).max(64),
+  /** When the provider last said so. */
+  checkedAt: instant,
+});
+export type ConnectionConsent = z.infer<typeof connectionConsent>;
+
+/**
  * What a **probe** answers (#605): did this credential just work, and whose account is
  * it? A connection's health (§3.7) is written by whatever call happened last, which
  * means a freshly connected credential has no health at all until the first real
@@ -315,6 +336,12 @@ export const connectionProbe = z.object({
    * provider said, never what was sent.
    */
   error: z.string().max(600).nullable(),
+  /**
+   * What the consent covers (#2422), for a provider that reports it. A shortfall is not a
+   * refusal: `refused` stays false, so a connect is never rejected for it, and a console shows
+   * "needs re-consent" with the scopes named.
+   */
+  consent: connectionConsent.optional(),
 });
 export type ConnectionProbe = z.infer<typeof connectionProbe>;
 
@@ -393,6 +420,11 @@ export const connectionActivity = z.object({
    * a console that blurs the two invents facts.
    */
   live: z.boolean(),
+  /**
+   * The consent as the connector last recorded it (#2422) — from its last probe or sweep, never
+   * a provider read of its own. Absent when the connector records none.
+   */
+  consent: connectionConsent.optional(),
 });
 export type ConnectionActivity = z.infer<typeof connectionActivity>;
 

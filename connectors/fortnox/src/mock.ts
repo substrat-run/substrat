@@ -145,6 +145,12 @@ export class FortnoxMock {
    */
   deniedScopes: string[] = [];
   /**
+   * What every token mint names as the consent's scopes (#2422), as Fortnox's `scope` field does.
+   * `null` sends none, which a connector must read as "unknown". Independent of
+   * {@link deniedScopes}, which is what a read is refused for.
+   */
+  grantedScope: string | null = 'bookkeeping companyinformation supplierinvoice archive connectfile';
+  /**
    * The company books only attested invoices: `bookkeep` on one nobody attested answers `2001109`,
    * as the Fortnox sandbox does. Off by default, because a company can run without Fortnox's attest
    * routine, and whether a booked invoice's block can be cleared there has not been measured.
@@ -204,7 +210,7 @@ export class FortnoxMock {
           access_token: token,
           token_type: 'bearer',
           expires_in: this.expiresIn,
-          scope: 'bookkeeping companyinformation supplierinvoice archive connectfile',
+          ...(this.grantedScope === null ? {} : { scope: this.grantedScope }),
         });
       }
       if ((headers['TenantId'] ?? '') !== this.tenantId) {
@@ -221,7 +227,7 @@ export class FortnoxMock {
         access_token: token,
         token_type: 'bearer',
         expires_in: this.expiresIn,
-        scope: 'bookkeeping companyinformation supplierinvoice archive connectfile',
+        ...(this.grantedScope === null ? {} : { scope: this.grantedScope }),
       });
     }
 

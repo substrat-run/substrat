@@ -11,6 +11,7 @@ import {
   scopeId as scopeIdSchema,
   tenantId as tenantIdSchema,
   type ConnectionActivity,
+  type ConnectionConsent,
   type ConnectionCredential,
   type ConnectionProbe,
   type ConnectionId,
@@ -36,6 +37,18 @@ import {
 } from './api.js';
 import { financialYearFor, summarizeLedger } from './aggregate.js';
 import { parseSie4 } from './sie4.js';
+import {
+  FORTNOX_CONSENT_SCOPES,
+  FORTNOX_INVOICE_FILE_SCOPES,
+  FORTNOX_INVOICE_SCOPES,
+  FORTNOX_LEDGER_SCOPES,
+  FortnoxConsentShortfall,
+  fortnoxConsentOf,
+  needsReconsent,
+  readFortnoxConsent,
+  recordFortnoxConsent,
+  requireFortnoxScopes,
+} from './consent.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as `connector-scrive` does.
@@ -78,6 +91,14 @@ export {
 } from './aggregate.js';
 export { FortnoxMock, type FortnoxMockOptions, type FortnoxMockSupplierInvoice } from './mock.js';
 export { completeFortnoxConsent, type FortnoxConsentCompletion } from './connect.js';
+export {
+  FORTNOX_CONSENT_SCOPES,
+  FORTNOX_INVOICE_FILE_SCOPES,
+  FORTNOX_INVOICE_SCOPES,
+  FORTNOX_LEDGER_SCOPES,
+  FortnoxConsentShortfall,
+  readFortnoxConsent,
+} from './consent.js';
 
 /**
  * The Fortnox connector — the INBOUND half of accounting integration.
@@ -570,6 +591,26 @@ export interface FortnoxConnectorOptions {
   sleep?: (ms: number) => Promise<void>;
   /** One window for every client of a pass; see {@link FortnoxApiOptions.rateWindow}. */
   rateWindow?: number[];
+  /**
+   * The scopes this deployment's Connect asks for (#2422), which a consent is held to: one that
+   * lacks any of them is recorded as needing a new consent. Defaults to {@link FORTNOX_CONSENT_SCOPES}.
+   */
+  consentScopes?: readonly string[];
+}
+
+/**
+ * Record what this consent covers (#2422) — what a console reads back as "needs re-consent".
+ * Costs no round trip: the mint it reads from is the one the pass needs anyway.
+ */
+async function noteConsent(
+  admin: HostAdmin,
+  connectionId: ConnectionId,
+  api: FortnoxApi,
+  options: FortnoxConnectorOptions,
+): Promise<void> {
+  const at = new Date(options.now?.() ?? Date.now()).toISOString();
+  const consent = await fortnoxConsentOf(api, options.consentScopes ?? FORTNOX_CONSENT_SCOPES, at);
+  if (consent) await recordFortnoxConsent(admin, connectionId, consent);
 }
 
 /** The client options a sync builds its `FortnoxApi` with. */
@@ -760,6 +801,9 @@ export async function syncFortnoxScope(
     { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
   );
   const api = new FortnoxApi(conn, apiOptions(options));
+  // #2422: a consent without `bookkeeping` answers every read 403; say so before reading.
+  await noteConsent(admin, connectionId, api, options);
+  await requireFortnoxScopes(api, FORTNOX_LEDGER_SCOPES, 'a ledger binding');
 
   // The period defaults to the calendar year containing "now", which is the sane
   // default for a recurring sync; a caller back-filling names its own.
@@ -898,6 +942,8 @@ export async function syncFortnoxSieFiles(
     { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
   );
   const api = new FortnoxApi(conn, apiOptions(options));
+  await noteConsent(host.admin, connectionId, api, options);
+  await requireFortnoxScopes(api, FORTNOX_LEDGER_SCOPES, 'a ledger binding');
 
   const nowMs = options.now?.() ?? Date.now();
   const year = new Date(nowMs).toISOString().slice(0, 4);
@@ -1047,6 +1093,10 @@ export async function syncFortnoxSupplierInvoices(
     { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
   );
   const api = new FortnoxApi(conn, apiOptions(options));
+  // #2422: without these nothing lands, so the binding fails saying so rather than on a 403. The
+  // files' scopes are checked by the file half, because the invoices land without them.
+  await noteConsent(host.admin, connectionId, api, options);
+  await requireFortnoxScopes(api, FORTNOX_INVOICE_SCOPES, 'a supplier-invoice binding');
 
   const nowMs = options.now?.() ?? Date.now();
   const expired = () => (options.now?.() ?? Date.now()) - nowMs >= INVOICE_PASS_DEADLINE_MS;
@@ -1438,6 +1488,15 @@ class InvoiceFiles {
   /** Read what the budget and the deadline allow. */
   async drain(): Promise<void> {
     const failed: FortnoxInvoiceFileEntry[] = [];
+    // #2422: a consent the mint says lacks the file scopes would refuse every read; stop before the
+    // first, so the row says "needs re-consent" and the connection's health is not written as a 403.
+    if (!this.refused && this.queue.length > 0) {
+      const missing = await this.api.lacks(FORTNOX_INVOICE_FILE_SCOPES);
+      if (missing.length > 0) {
+        this.refused = true;
+        this.failure = new FortnoxConsentShortfall(missing, "an invoice's files");
+      }
+    }
     while (!this.refused && this.budget.details >= INVOICE_FILE_READS && !this.expired()) {
       const at = this.queue.findIndex((e) => !this.tried.has(triedKey(e)));
       if (at < 0) break;
@@ -1457,7 +1516,7 @@ class InvoiceFiles {
           this.refused = true;
           this.failure = new Error(
             `invoice files: Fortnox refused the read (${message}). The company's consent must cover ` +
-              `the connectfile and archive scopes; connect the company again.`,
+              `the connectfile and archive scopes; connect the company again (Re-consent).`,
           );
           break;
         }
@@ -1808,21 +1867,53 @@ export async function probeFortnoxConnection(
     options.timeoutMs ?? 15_000,
     { externalAccountRef: connection.externalAccountRef ?? null },
   );
-  return probeWith(conn, options);
+  // A probe a person asked for is a fresh check, so it always rewrites what the console reads.
+  return probeWith(conn, options, (consent) => recordFortnoxConsent(host.admin, conn.id, consent, true));
 }
 
 async function probeWith(
   conn: ConnectorConnection,
   options: FortnoxConnectorOptions,
+  record?: (consent: ConnectionConsent) => Promise<void>,
 ): Promise<ConnectionProbe> {
   const api = new FortnoxApi(conn, {
     apiBase: options.apiBase,
     oauthBase: options.oauthBase,
     now: options.now,
   });
+  let consent: ConnectionConsent | null = null;
   try {
+    // The mint first: it proves the client pair and the consent, and names what the consent
+    // covers (#2422). A read outside that set would answer 403, which is not a refused key.
+    consent = await fortnoxConsentOf(
+      api,
+      options.consentScopes ?? FORTNOX_CONSENT_SCOPES,
+      new Date(options.now?.() ?? Date.now()).toISOString(),
+    );
+    if (consent && record) await record(consent);
+    const consentFact = consent
+      ? {
+          label: 'Consent',
+          value:
+            consent.missing.length > 0
+              ? `needs re-consent — missing ${consent.missing.join(', ')} (granted: ${consent.granted.join(', ')})`
+              : `covers ${consent.granted.join(', ')}`,
+        }
+      : { label: 'Consent', value: 'Fortnox named no scopes' };
+    if (consent && !consent.granted.includes('companyinformation')) {
+      return {
+        ok: false,
+        // The keys minted: this is the consent, and a connect must not be refused for it.
+        refused: false,
+        accountRef: null,
+        accountLabel: null,
+        facts: [consentFact],
+        error: needsReconsent(['companyinformation'], 'naming the company'),
+        consent,
+      };
+    }
     const company = await api.companyInformation();
-    const years = await api.financialYears();
+    const years = !consent || consent.granted.includes('bookkeeping') ? await api.financialYears() : null;
     const ref = company.DatabaseNumber === undefined ? null : String(company.DatabaseNumber);
     return {
       ok: true,
@@ -1835,15 +1926,19 @@ async function probeWith(
         {
           label: 'Financial years',
           value:
-            years.length === 0
-              ? 'none'
-              : `${years.length} (${years
-                  .map((y) => y.FromDate.slice(0, 4))
-                  .sort()
-                  .join(', ')})`,
+            years === null
+              ? 'not readable without the bookkeeping scope'
+              : years.length === 0
+                ? 'none'
+                : `${years.length} (${years
+                    .map((y) => y.FromDate.slice(0, 4))
+                    .sort()
+                    .join(', ')})`,
         },
+        consentFact,
       ],
       error: null,
+      ...(consent ? { consent } : {}),
     };
   } catch (err) {
     return {
@@ -1856,6 +1951,7 @@ async function probeWith(
       accountLabel: null,
       facts: [],
       error: err instanceof Error ? err.message : String(err),
+      ...(consent ? { consent } : {}),
     };
   }
 }
@@ -1901,9 +1997,13 @@ export async function fortnoxConnectionActivity(
         ],
       };
     });
+  const consent = await readFortnoxConsent(host.admin, connectionId);
   return connectionActivity.parse({
     source: 'ledger',
     entries,
+    // #2422: what the consent covered when a probe or sweep last minted — "needs re-consent"
+    // when it lacks a scope the platform asks for. Recorded, never read from Fortnox here.
+    ...(consent ? { consent } : {}),
     // Never live: this reads the binding ledger, never the provider. The ledger knows
     // what the platform synced, not what Fortnox has since booked, and a console that
     // blurs the two invents facts.

@@ -42,8 +42,17 @@ declare const URLSearchParams: new (init: Record<string, string>) => { toString(
 export interface FortnoxConsentCompletion {
   secret: FortnoxSecret;
   company: FortnoxCompany;
-  /** Visible to the client-credentials token — proof the mint reads real data. */
-  financialYears: number;
+  /**
+   * Visible to the client-credentials token — proof the mint reads real data. `null` when the
+   * consent has no `bookkeeping` scope, so the years cannot be read (#2422).
+   */
+  financialYears: number | null;
+  /**
+   * The scopes the consent granted, as the client-credentials mint names them (#2422), or `null`
+   * when Fortnox named none. A company's administrator can approve fewer than were asked for —
+   * compare with what the consent URL asked, and say so while the person is still there.
+   */
+  grantedScopes: string[] | null;
 }
 
 export async function completeFortnoxConsent(input: {
@@ -137,9 +146,11 @@ export async function completeFortnoxConsent(input: {
     oauthBase,
     ...(input.now ? { now: input.now } : {}),
   });
-  const years = await api.financialYears();
+  const grantedScopes = await api.grantedScopes();
+  // A consent without `bookkeeping` cannot read years; that is a shortfall to report, not a failed connect.
+  const years = grantedScopes === null || grantedScopes.includes('bookkeeping') ? await api.financialYears() : null;
 
-  return { secret, company, financialYears: years.length };
+  return { secret, company, financialYears: years === null ? null : years.length, grantedScopes };
 }
 
 /** A bare connection carrying a candidate secret — the same shape the probe builds. */

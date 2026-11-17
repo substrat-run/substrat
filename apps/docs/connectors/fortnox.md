@@ -234,7 +234,8 @@ the attachment on the entity is the record.
 - **A refused read** (`401`/`403`) stops the files for that pass, because it is the company's
   consent and every other file would answer the same. The scope's row says the consent must cover
   `connectfile` and `archive`. A company that consented before those scopes were asked for has to
-  connect again; nothing compares granted with requested scopes, so this row is how it shows.
+  connect again. When the token mint names the granted scopes, the pass checks them first and the row
+  says "needs re-consent" without reading a file (see [A consent short of the scopes asked for](#a-consent-short-of-the-scopes-asked-for)).
 - **Stepped over, with the reason in the pass's result** (a pass that only stepped over a file is
   reported, not counted as unchanged): a file gone from the archive, and a file
   over 16 MiB, which is the most a pass holds. An invoice with no file connected asks nothing more
@@ -481,6 +482,36 @@ back to every customer. Note also that **every Fortnox scope grants read *and* w
 no read-only variant — so an extra scope widens what the credential *could* do, even for a
 binding that writes nothing.
 :::
+
+### A consent short of the scopes asked for
+
+Every `client_credentials` mint names the scopes the company's consent covers in its `scope`
+field. A company that consented before the platform asked for `supplierinvoice`, `archive` or
+`connectfile`, or whose administrator approved fewer than were asked for, holds keys that work and
+a consent that answers `403` to every read outside it. That is not a refused credential, and the
+connector does not report it as one:
+
+- **The consent callback** compares what the mint granted with what it asked for. The connection
+  is stored, the closing page names what is missing, and a round that came from a vertical returns
+  `missing=<scopes>` beside `connected=1`.
+- **The probe** (Test connection) mints first. A shortfall is `ok: true`, `refused: false` and a
+  `consent` field with `granted` and `missing`. A consent without `companyinformation` cannot name
+  the company, so that probe answers `ok: false` with a "needs re-consent" error, still not
+  `refused`, and reads nothing. A connect is never rejected for a short consent.
+- **The sweep** checks a binding's scopes before reading. A ledger binding needs `bookkeeping`. A
+  supplier-invoice binding needs `supplierinvoice` and `companyinformation`, and its files need
+  `connectfile` and `archive`. A binding that lacks them fails its row with `needs re-consent: …`
+  naming the scopes, and no `403` is written into the connection's health. Without the file
+  scopes the invoices still land and their files stay queued.
+- **The connection's state.** Probe and sweep record what the consent covers against the
+  connection, and the activity view returns it as `consent`. The dashboard's connection view shows
+  **Needs re-consent** with the missing scopes and a **Re-consent** button, which starts the same
+  consent round as Rotate. Approving it rotates the same company's connection in place. The view
+  shows what was last recorded, so press Test connection after a re-consent to check again.
+
+A connection is held to `FORTNOX_CONSENT_SCOPES` (the default this page names) or, where a
+deployment sets `FORTNOX_SCOPES` on the dashboard, to that set, which the control plane must carry
+too. When Fortnox names no scopes, nothing is judged and the reads behave as before.
 
 ### What the customer needs before any of this works
 

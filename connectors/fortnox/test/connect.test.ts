@@ -36,6 +36,17 @@ describe('completeFortnoxConsent', () => {
     expect(mock.mints).toHaveLength(2);
   });
 
+  it('reports the scopes the consent granted, and completes one without bookkeeping (#2422)', async () => {
+    const mock = new FortnoxMock({ consentCode: 'code-1' });
+    mock.grantedScope = 'companyinformation supplierinvoice';
+    const done = await completeFortnoxConsent({ ...options(mock), code: 'code-1' });
+
+    expect(done.grantedScopes).toEqual(['companyinformation', 'supplierinvoice']);
+    // The years need `bookkeeping`: not read, so the shortfall is reported rather than the connect failing.
+    expect(done.financialYears).toBeNull();
+    expect(mock.calls).not.toContain('/3/financialyears');
+  });
+
   it('surfaces a spent code as Fortnox words it — the reloaded-callback-tab case', async () => {
     const mock = new FortnoxMock({ consentCode: 'code-1' });
     await completeFortnoxConsent({ ...options(mock), code: 'code-1' });

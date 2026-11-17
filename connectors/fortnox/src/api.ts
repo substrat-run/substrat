@@ -365,7 +365,7 @@ export class FortnoxApi {
    * and no cross-request state accumulates in a Worker's isolate. A token is an hour
    * long and a pass is seconds, so one mint serves a whole pass.
    */
-  private token: { value: string; expiresAtMs: number } | null = null;
+  private token: { value: string; expiresAtMs: number; scopes: string[] | null } | null = null;
 
   constructor(conn: ConnectorConnection, options?: FortnoxApiOptions) {
     this.conn = conn;
@@ -470,11 +470,32 @@ export class FortnoxApi {
     if (!parsed.success) {
       throw new FortnoxApiError('Fortnox token response was not the documented shape', 502, body);
     }
+    const named = parsed.data.scope.split(/\s+/).filter(Boolean);
     this.token = {
       value: parsed.data.access_token,
       expiresAtMs: this.now() + parsed.data.expires_in * 1000,
+      // Fortnox names what the company's consent covers on every mint (measured in #2265: an
+      // old consent minted `bookkeeping companyinformation`). An empty field says nothing, so it
+      // is unknown — never "granted nothing".
+      scopes: named.length > 0 ? named : null,
     };
     return this.token.value;
+  }
+
+  /**
+   * The scopes the company's consent grants, as the token mint names them (#2422), or `null`
+   * when Fortnox named none. Mints if no token is held, so it costs one round trip at most, and
+   * none in a pass that has already read something.
+   */
+  async grantedScopes(): Promise<string[] | null> {
+    await this.accessToken();
+    return this.token?.scopes ?? null;
+  }
+
+  /** Which of `wanted` the consent lacks — empty when it covers them all or does not say. */
+  async lacks(wanted: readonly string[]): Promise<string[]> {
+    const granted = await this.grantedScopes();
+    return granted === null ? [] : wanted.filter((s) => !granted.includes(s));
   }
 
   /** A JSON GET against the REST host, authenticated with a freshly-ensured token. */
