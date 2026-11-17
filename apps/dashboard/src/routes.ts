@@ -401,6 +401,19 @@ const envSpecRow = z.object({ ...envVarSpec.shape, required: z.boolean(), secret
  * groups it under "Your verticals", `listed` under "Marketplace"; `installable` is false until a
  * pushed vertical has a version promoted to prod.
  */
+/**
+ * One model a `kind: 'model'` environment setting may hold (#1054): the platform's priced catalog,
+ * with its list-price tiers. The Environment tab and the install form draw the same picker from it.
+ */
+export const modelCatalogOption = z.object({
+  id: z.string(), label: z.string(), status: z.enum(['active', 'deprecated']),
+  servedBy: z.string(), tiers: z.array(z.object({
+    upToInputTokens: z.number().int().nullable(),
+    inputPer1M: z.string(), outputPer1M: z.string(),
+    cacheReadPer1M: z.string().nullable(), cacheWritePer1M: z.string().nullable(),
+  })),
+});
+
 export const catalogRow = z.object({
   slug: z.string(),
   name: z.string(),
@@ -1404,14 +1417,7 @@ export const dashboardRoutes = defineRoutes({
         value: z.string().nullable(),
         updatedAt: z.string(),
       })),
-      modelCatalog: z.array(z.object({
-        id: z.string(), label: z.string(), status: z.enum(['active', 'deprecated']),
-        servedBy: z.string(), tiers: z.array(z.object({
-          upToInputTokens: z.number().int().nullable(),
-          inputPer1M: z.string(), outputPer1M: z.string(),
-          cacheReadPer1M: z.string().nullable(), cacheWritePer1M: z.string().nullable(),
-        })),
-      })),
+      modelCatalog: z.array(modelCatalogOption),
     }),
     http: { method: 'GET', path: '/apps/{scopeId}/env' },
   },
@@ -1772,6 +1778,13 @@ export const dashboardRoutes = defineRoutes({
     summary: 'The verticals this team can install: published ones and its own, each saying whether it is installable yet',
     output: z.array(catalogRow),
     http: { method: 'GET', path: '/catalog' },
+  },
+  // The models a `kind: 'model'` setting may hold, for the install form's picker: an app that does
+  // not exist yet has no Environment read to carry them (#1054). The same for every team.
+  'dashboard/model-catalog': {
+    summary: 'The models a model setting may be set to, with their list prices',
+    output: z.array(modelCatalogOption),
+    http: { method: 'GET', path: '/model-catalog' },
   },
 
   // -- deployments & previews (#2170) -----------------------------------------

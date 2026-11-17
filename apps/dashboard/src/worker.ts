@@ -20,7 +20,8 @@ import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { pricedModelCatalog, selectableModel } from '@substrat-run/model-providers';
+import { pricedModelCatalog } from '@substrat-run/model-providers';
+import { refuseUnlistedModels } from './model-setting.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
@@ -2671,11 +2672,16 @@ async function getAppEnvIn(ctx: TeamContext, appScopeId: string) {
   return {
     spec,
     values,
-    modelCatalog: pricedModelCatalog().map(({ id, label, status, servedBy, rate }) => ({
-      id, label, status, servedBy,
-      tiers: [...rate.tiers],
-    })),
+    modelCatalog: modelCatalogOptions(),
   };
+}
+
+/** The priced model catalog as the Environment tab and the install form's picker read it (#1054). */
+function modelCatalogOptions() {
+  return pricedModelCatalog().map(({ id, label, status, servedBy, rate }) => ({
+    id, label, status, servedBy,
+    tiers: [...rate.tiers],
+  }));
 }
 
 function validateModelEntries(
@@ -2683,14 +2689,8 @@ function validateModelEntries(
   entries: readonly { key: string; value: string; secret?: boolean }[],
   stored: readonly { key: string; value: string | null }[] = [],
 ): void {
-  for (const entry of entries) {
-    if (!entry.value) continue;
-    const declaration = spec.find((s) => s.key === entry.key);
-    if (declaration?.kind !== 'model') continue;
-    if (entry.secret || (!selectableModel(entry.value) && stored.find((v) => v.key === entry.key)?.value !== entry.value)) {
-      throw new HTTPException(400, { message: `${entry.key} must be a listed model` });
-    }
-  }
+  const modelKeys = new Set(spec.filter((s) => s.kind === 'model').map((s) => s.key));
+  refuseUnlistedModels(entries, modelKeys, (key) => stored.find((v) => v.key === key)?.value);
 }
 
 async function setAppEnvIn(ctx: TeamContext, appScopeId: string, entries: Array<{ key: string; value: string; secret?: boolean }>) {
@@ -5963,6 +5963,7 @@ const routeHandlers = {
   'dashboard/app-log-volume': async (ctx, input) => appLogCountsIn(ctx, input, 'volume') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-volume']['output']>>,
   'dashboard/app-log-facets': async (ctx, input) => appLogCountsIn(ctx, input, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-facets']['output']>>,
   'dashboard/list-catalog': async (ctx) => teamCatalogIn(ctx),
+  'dashboard/model-catalog': async () => modelCatalogOptions(),
   'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
   'dashboard/promote-deployment': async (ctx, body) => thenSyncDelegations(ctx, promoteDeploymentIn(ctx, body)),
   'dashboard/get-promotion-review': async (ctx, { slug, versionId }) => promotionReviewIn(ctx, slug, versionId),

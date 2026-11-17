@@ -70,7 +70,7 @@ it('keeps an open app environment form on its path team after another tab switch
       const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
       dashboards.push(dash);
       await dash.invoke('dashboard/provision-app', { appScopeId: apps[i]!, verticalSlug: vertical, name: `App ${i}` });
-      await dash.invoke('dashboard/set-app-env', { appScopeId: apps[i]!, entries: [{ key: 'COLOR', value: i === 0 ? 'red' : 'blue', secret: false }] });
+      await dash.invoke('dashboard/set-app-env', { appScopeId: apps[i]!, modelKeys: [], entries: [{ key: 'COLOR', value: i === 0 ? 'red' : 'blue', secret: false }] });
     }
 
     const planeCalls: string[] = [];

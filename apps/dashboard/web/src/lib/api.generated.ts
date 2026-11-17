@@ -1244,6 +1244,13 @@ export interface DashboardClient {
   mintAppConnectLink(input: { scopeId: string; provider: string; ttlMs?: number }): Promise<{ id: string; provider: string; appScopeId: string; status: string; createdBy: string; createdAt: string; expiresAt: string; url: string }>;
 
   /**
+   * The models a model setting may be set to, with their list prices
+   *
+   * `GET /model-catalog` — `dashboard/model-catalog`
+   */
+  modelCatalog(): Promise<({ id: string; label: string; status: "active" | "deprecated"; servedBy: string; tiers: ({ upToInputTokens: number | null; inputPer1M: string; outputPer1M: string; cacheReadPer1M: string | null; cacheWritePer1M: string | null })[] })[]>;
+
+  /**
    * Replay or skip one event edge into this app
    *
    * `POST /apps/{scopeId}/edges/move` — `dashboard/move-app-edge`
@@ -1823,6 +1830,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/lake/events", "GET", undefined, input),
     mintAppConnectLink: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connect-links`, "POST", omit(input, ["scopeId","provider"]), undefined),
+    modelCatalog: () =>
+      send("/model-catalog", "GET", undefined, undefined),
     moveAppEdge: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/edges/move`, "POST", omit(input, ["scopeId"]), undefined),
     moveScopes: (input: Args) =>

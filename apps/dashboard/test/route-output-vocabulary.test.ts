@@ -39,6 +39,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/get-app-overlays spans[].kind': 'the worker derives stale chart spans',
   'dashboard/get-app-auth auth.mode': 'the dashboard scope’s own stored auth shape',
   'dashboard/get-app-env modelCatalog[].status': 'the generated platform model catalog’s own active/deprecated status',
+  'dashboard/model-catalog [].status': 'the generated platform model catalog’s own active/deprecated status',
   'dashboard/get-app-process-map period': 'the period the caller asked for, echoed back once the handler has judged it',
   'dashboard/get-app-process-map unavailable': 'the worker’s own labels for why there is no replay to draw',
   'dashboard/get-app-schedules schedules[].health': 'the verdict `schedules.ts` derives from the sweep rows',
