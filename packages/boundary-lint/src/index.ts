@@ -320,6 +320,10 @@ export const DEFAULT_HARNESS = [
   'bankid-email-step.ts',
   'bankid-transport-node.ts',
   'bankid-transport-hop.ts',
+  // The auth adapter's ask to the platform for its own social-relay client (#1544), in
+  // `bankid-transport-hop.ts`'s class: no `ctx`, no connector, called from the worker only, and
+  // kept apart from the claim it makes so what leaves the issuer is reviewable in one place.
+  'social-relay-self.ts',
   // Better Auth's account invitation, social email and SMS factor adapters. Their verification
   // lifetimes use the issuer's real clock, and their delivery is a server transport,
   // just like the BankID plugin above; neither is reachable from a domain module.

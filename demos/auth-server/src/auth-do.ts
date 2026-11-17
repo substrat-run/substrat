@@ -46,6 +46,7 @@ import { isClientRedirectsEntry, parseClientRedirectsEntry, syncClientRedirects 
 import { authenticateClient, servePlaces, serveReport } from './places-http.js';
 import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
 import { isSocialRelayEntry, parseSocialRelayEntry, relayHop, syncSocialRelay } from './social-relay.js';
+import { claimHeal, recordHealResult, type HealClaim, type HealResult } from './social-relay-heal.js';
 import { exchangeToken } from './token-exchange.js';
 import { backfillActivity, recordClientToken } from './user-activity.js';
 import {
@@ -351,6 +352,23 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       });
     }
     return transportFor(this.env);
+  }
+
+  /**
+   * Platform sign-in's self-heal (#1544): the instance this issuer can ask the platform for,
+   * which needs the platform credential, the control plane's URL and a provisioned instance —
+   * the same three the mail relay above needs. Undefined standalone, where the feature is absent.
+   */
+  private socialRelayInstance(): InstanceMeta | undefined {
+    return this.env.PLATFORM_SECRET && this.env.CONTROL_PLANE_URL ? this.instanceMeta() : undefined;
+  }
+
+  async claimSocialRelayHeal(): Promise<HealClaim | null> {
+    return claimHeal(this.ctx.storage.sql, this.socialRelayInstance(), 'auto', new Date());
+  }
+
+  async recordSocialRelayHeal(result: HealResult): Promise<void> {
+    recordHealResult(this.ctx.storage.sql, result);
   }
 
   /**
@@ -858,6 +876,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           offeredProviders: () => this.offeredProviders(),
           bankidTransport: (cfg) => this.bankidTransport(cfg),
           transaction: (fn) => this.ctx.storage.transactionSync(fn),
+          ...(this.socialRelayInstance()
+            ? { socialRelayHeal: { claim: () => claimHeal(this.ctx.storage.sql, this.socialRelayInstance(), 'manual', new Date()) } }
+            : {}),
         }),
       );
       return api.fetch(request);

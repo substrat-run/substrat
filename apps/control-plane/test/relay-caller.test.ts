@@ -210,6 +210,48 @@ describe('the relay holds a proven caller to its own scope', () => {
     });
   });
 
+  describe("the social relay's self-heal (#1544)", () => {
+    let authA: ScopeId;
+    let authB: ScopeId;
+    const asAuthServer = (s: string) => ({
+      'x-substrat-relay-caller': JSON.stringify({ vertical: 'auth-server', tenantId: tA, scopeId: s }),
+    });
+
+    beforeAll(async () => {
+      const host = hostFor();
+      if (!(await host.admin.listVerticals(staff)).some((v) => v.slug === 'auth-server')) {
+        await host.admin.registerVertical(staff, { slug: 'auth-server', name: 'Auth', source: 'builtin', ownerTenant: null, provides: ['oidc-issuer'] });
+      }
+      const issuerOf = async (t: typeof tA): Promise<ScopeId> => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'auth-server' });
+        await host.admin.activateScope(staff, t, s);
+        return s;
+      };
+      authA = await issuerOf(tA);
+      authB = await issuerOf(tB);
+    });
+
+    it('a proven install reaches the reconcile of its own scope', async () => {
+      const res = await viaGateway('/internal/social-relay/self', { tenantId: tA, scopeId: authA, hasClient: true }, asAuthServer(authA));
+      expect(res.status).toBe(200);
+      // Nothing is deployed for it here, so the reconcile stops before the relay.
+      expect(await res.json()).toEqual({ status: 'skipped', reason: 'no deployment to deliver to' });
+      // Where no relay is wired, it says so rather than skipping.
+      const unwired = await viaGateway('/internal/social-relay/self', { tenantId: tA, scopeId: authA, hasClient: true }, asAuthServer(authA), {
+        SOCIAL_RELAY_ORIGIN: undefined,
+      });
+      expect(unwired.status).toBe(501);
+    });
+
+    it("refuses another tenant's install, and a scope that is not an Auth Server install", async () => {
+      const other = await viaGateway('/internal/social-relay/self', { tenantId: tB, scopeId: authB, hasClient: false }, asAuthServer(authA));
+      const notAuth = await viaGateway('/internal/social-relay/self', { tenantId: tA, scopeId: sA, hasClient: false }, callerHeader(tA, sA));
+      expect([other.status, notAuth.status]).toEqual([403, 403]);
+      expect(await notAuth.json()).toMatchObject({ detail: expect.stringContaining('not an Auth Server install') });
+    });
+  });
+
   describe('the connection relays', () => {
     const upsert = (t: string, s: string) => ({
       tenantId: t,

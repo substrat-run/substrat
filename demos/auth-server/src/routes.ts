@@ -59,7 +59,9 @@ import {
 } from '@substrat-run/vertical-host';
 import type { AuthServerStub, PreviewClientOutcome } from './do-contract.js';
 import { serveAsset } from './assets.js';
-import { noteVersion } from './log.js';
+import { log, noteVersion } from './log.js';
+import type { HealClaim } from './social-relay-heal.js';
+import { runHeal, type HealTransport } from './social-relay-self.js';
 
 /**
  * The worker env, structurally: `AUTH` is the real `DurableObjectNamespace<AuthServerDO>`
@@ -77,6 +79,8 @@ export interface Env {
   PLATFORM_SECRET?: string;
   /** The id of the version being served, injected by the platform (`src/log.ts`). */
   SUBSTRAT_VERSION_ID?: string;
+  /** The control plane, which platform sign-in's self-heal asks (#1544). Unset standalone. */
+  CONTROL_PLANE_URL?: string;
 }
 
 /** The STANDALONE issuer's fixed DO name — one deployment, one issuer (the original shape). */
@@ -189,16 +193,85 @@ app.post('/api/setup', async (c) => {
 });
 
 /**
+ * Platform sign-in's self-heal (#1544, `src/social-relay-self.ts`): this install asking the
+ * platform to register it at the social relay. Made HERE, on the worker's request path, and never
+ * from inside the issuer DO: the platform proves which install is calling only for a worker's own
+ * subrequests. Absent without the platform credential and the control plane's URL — standalone.
+ */
+function healTransport(env: Env): HealTransport | undefined {
+  if (!env.PLATFORM_SECRET || !env.CONTROL_PLANE_URL) return undefined;
+  return {
+    controlPlaneUrl: env.CONTROL_PLANE_URL,
+    platformSecret: env.PLATFORM_SECRET,
+    fetch: (input, init) => globalThis.fetch(input, init),
+  };
+}
+
+function forwardAdmin(c: Context<{ Bindings: Env }>, issuer: AuthServerStub): Promise<Response> {
+  const url = new URL(c.req.url);
+  url.pathname = url.pathname.replace('/api/admin', '/__admin');
+  return issuer.fetch(new Request(url, c.req.raw));
+}
+
+/** Work the response does not wait for: the runtime's `waitUntil`, or a detached promise without one. */
+function inBackground(c: Context<{ Bindings: Env }>, task: Promise<void>): void {
+  try {
+    c.executionCtx.waitUntil(task);
+  } catch {
+    // No execution context (a node harness): the task runs on, unawaited. It never rejects.
+    void task;
+  }
+}
+
+/** The automatic attempt: the DO decides whether one is due and remembers what it came to. */
+async function autoHeal(issuer: AuthServerStub, transport: HealTransport): Promise<void> {
+  try {
+    const claim = await issuer.claimSocialRelayHeal();
+    if (!claim) return;
+    const result = await runHeal(claim, 'auto', transport);
+    await issuer.recordSocialRelayHeal(result);
+    log.info('social relay self-heal', { trigger: 'auto', ...result });
+  } catch (e) {
+    log.error('social relay self-heal failed', { trigger: 'auto', error: e });
+  }
+}
+
+/**
+ * The Connections page's read. Answered by the admin API like every other admin read, and once it
+ * has answered — so only for an administrator — the automatic attempt runs behind it, never
+ * holding the page.
+ */
+app.get('/api/admin/providers', async (c) => {
+  const issuer = issuerFor(c.env, c.req.raw);
+  const res = await forwardAdmin(c, issuer);
+  const transport = healTransport(c.env);
+  if (res.ok && transport) inBackground(c, autoHeal(issuer, transport));
+  return res;
+});
+
+/**
+ * The operator's "Set up platform sign-in". The admin API claims it (its gate is the one editing a
+ * provider passes); the worker asks the platform and answers with what it said.
+ */
+app.post('/api/admin/social-relay/sync', async (c) => {
+  const issuer = issuerFor(c.env, c.req.raw);
+  const transport = healTransport(c.env);
+  if (!transport) return refuseStatus(c, 501, 'platform sign-in is not available on this issuer');
+  const res = await forwardAdmin(c, issuer);
+  if (!res.ok) return res;
+  const result = await runHeal((await res.json()) as HealClaim, 'manual', transport);
+  await issuer.recordSocialRelayHeal(result);
+  log.info('social relay self-heal', { trigger: 'manual', ...result });
+  return c.json({ result });
+});
+
+/**
  * The issuer's OWN admin API — the relying-party registry and the sign-up setting, which
  * Better Auth has no endpoints for. Forwarded whole to the issuer DO (`/__admin/*`), where
  * the `admin` gate and the SQLite both live; the worker adds no gate of its own, exactly as
  * it adds none in front of Better Auth's admin API below. MUST precede the SPA catch-all.
  */
-app.all('/api/admin/*', (c) => {
-  const url = new URL(c.req.url);
-  url.pathname = url.pathname.replace('/api/admin', '/__admin');
-  return issuerFor(c.env, c.req.raw).fetch(new Request(url, c.req.raw));
-});
+app.all('/api/admin/*', (c) => forwardAdmin(c, issuerFor(c.env, c.req.raw)));
 
 /** The verified subject + role behind the current session, or null (the SPA's session probe). */
 app.get('/api/session', async (c) => {

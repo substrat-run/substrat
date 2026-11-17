@@ -26,6 +26,8 @@ import {
   reconcileSocialRelay,
   relayHostnames,
   relayRedirectUris,
+  selfReconcileSocialRelay,
+  SELF_ROTATION_REFUSED,
   type SocialRelayOptions,
   type VerticalClient,
 } from '../src/index.js';
@@ -211,6 +213,46 @@ describe('reconciling one install', () => {
   it('says which call the relay refused', async () => {
     relay.failNext = 500;
     await expect(run(['a.example'])).rejects.toThrow(/social relay refused GET \/providers \(500\)/);
+  });
+});
+
+describe("the install's own call", () => {
+  let relay: FakeRelay;
+  let install: ReturnType<typeof fakeInstall>;
+  const verticals: Record<string, string> = { s1: 'auth-server', s2: 'crm' };
+  const self = (scope: string, hasClient: boolean) =>
+    selfReconcileSocialRelay(
+      {
+        relay: relay.options,
+        getScope: async (_t, s) => (verticals[s] ? { vertical: verticals[s]! } : undefined),
+        activeHostnames: async () => ['acme.global.substrat.run'],
+        deploymentOf: async () => ({ configureInstance: ({ entries }) => install.configure(entries) }),
+      },
+      { tenantId: 't', scopeId: scope, hasClient },
+    );
+
+  beforeEach(async () => {
+    relay = fakeRelay();
+    install = fakeInstall();
+    await self('s1', false); // registered once, so the relay holds the client from here on
+    install.held = null; // and the install has lost its secret
+  });
+
+  it('never rotates for an install that says it holds a client, and rotates for one that says it holds none', async () => {
+    const before = relay.clients.get('scope:s1')!.secret;
+    expect(await self('s1', true)).toEqual({ ok: true, outcome: { status: 'skipped', reason: SELF_ROTATION_REFUSED } });
+    expect(relay.clients.get('scope:s1')!.secret).toBe(before);
+    expect(relay.calls.filter((c) => c.endsWith('/secret'))).toEqual([]);
+
+    expect(await self('s1', false)).toMatchObject({ ok: true, outcome: { status: 'delivered', rotated: true } });
+    expect(install.held).toEqual({ clientId: 'client-1', secret: relay.clients.get('scope:s1')!.secret });
+  });
+
+  it('refuses a scope that is not an Auth Server install, or no scope at all, before the relay is asked', async () => {
+    const calls = relay.calls.length;
+    expect(await self('s2', false)).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(await self('s3', false)).toMatchObject({ ok: false, code: 'not_found' });
+    expect(relay.calls).toHaveLength(calls);
   });
 });
 

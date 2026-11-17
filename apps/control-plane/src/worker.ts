@@ -33,6 +33,8 @@ import {
   tenantId,
   scopeId,
   emailRelayRequest,
+  SOCIAL_RELAY_SELF_PATH,
+  socialRelaySelfRequest,
   PROVISION_SIBLING_KIND,
   ARCHIVE_SCOPE_KIND,
   PEER_INVOKE_KIND,
@@ -137,6 +139,8 @@ import {
   reconcilePendingHostnames,
   reconcileScopeSocialRelay,
   relayHostnames,
+  selfReconcileSocialRelay,
+  type ScopeReconcileDeps,
   isCustomHostname,
   type SocialRelayOptions,
   firstBuilderAuth,
@@ -1654,24 +1658,10 @@ function socialRelayFor(env: Env): SocialRelayOptions | undefined {
 function relayOnActivatedFor(env: Env): ((row: { tenantId: string; scopeId: string; verticalSlug: string | null }) => Promise<void>) | undefined {
   const relay = socialRelayFor(env);
   if (!relay) return undefined;
-  const admin = hostFor(env).admin;
-  const ladder = scopeDeploymentLadderFor(env);
+  const deps = socialRelayDepsFor(env, relay);
   return async (row) => {
     try {
-      const outcome = await reconcileScopeSocialRelay(
-        {
-          relay,
-          getScope: (t, s) => admin.getScopeRecord(SWEEP_ACTOR, tenantId.parse(t), scopeId.parse(s)),
-          activeHostnames: async (s) =>
-            relayHostnames(await admin.listHostnames(SWEEP_ACTOR, { scopeId: scopeId.parse(s), status: 'active' }), {
-              isCustom: (h) => isCustomHostname(h, platformBaseDomains(env)),
-              provisioner: provisionHostnameFor(env),
-            }),
-          deploymentOf: async (scope) => (await scopeDeployment(ladder, SWEEP_ACTOR, scope))?.client,
-        },
-        row.tenantId,
-        row.scopeId,
-      );
+      const outcome = await reconcileScopeSocialRelay(deps, row.tenantId, row.scopeId);
       console.log('social-relay.reconciled', { scopeId: row.scopeId, trigger: 'hostname-sweep', ...outcome });
     } catch (e) {
       console.error('social-relay.reconcile.failed', {
@@ -1680,6 +1670,26 @@ function relayOnActivatedFor(env: Env): ((row: { tenantId: string; scopeId: stri
         detail: e instanceof Error ? e.message : String(e),
       });
     }
+  };
+}
+
+/**
+ * What reconciling one install outside a request reads, as the sweep's actor: the directory, the
+ * install's verified hostnames and its running deployment. The hostname sweep and the install's
+ * own call (`SOCIAL_RELAY_SELF_PATH`) share it.
+ */
+function socialRelayDepsFor(env: Env, relay: SocialRelayOptions): ScopeReconcileDeps<Scope> {
+  const admin = hostFor(env).admin;
+  const ladder = scopeDeploymentLadderFor(env);
+  return {
+    relay,
+    getScope: (t, s) => admin.getScopeRecord(SWEEP_ACTOR, tenantId.parse(t), scopeId.parse(s)),
+    activeHostnames: async (s) =>
+      relayHostnames(await admin.listHostnames(SWEEP_ACTOR, { scopeId: scopeId.parse(s), status: 'active' }), {
+        isCustom: (h) => isCustomHostname(h, platformBaseDomains(env)),
+        provisioner: provisionHostnameFor(env),
+      }),
+    deploymentOf: async (scope) => (await scopeDeployment(ladder, SWEEP_ACTOR, scope))?.client,
   };
 }
 
@@ -3378,6 +3388,40 @@ export default {
       const rec = routedRec ?? (await hostFor(c.env).admin.getScopeRecord(SWEEP_ACTOR, ids.data, sids.data).catch(() => undefined));
       if (!isKickableProducer(rec)) return c.json({ ...report, crossVertical: 'not-a-producer' });
       return c.json({ ...report, crossVertical: await kickCrossVertical(c.env, { tenantId: ids.data, scopeId: sids.data }) });
+    });
+
+    // The social relay's self-heal (#1544): an Auth Server install asks for ITS OWN client at
+    // the platform's social relay to be reconciled, when its Connections page finds none held
+    // or a provider missing, or its operator presses "Set up". Gated like every relay here — the
+    // platform credential, then the caller (`checkRelayCaller`), which a proven call must be for
+    // its own scope — and refused for any scope that is not an Auth Server install. The same
+    // reconcile the hostname trigger runs, except that it never rotates the secret of an install
+    // that says it holds a client (`selfReconcileSocialRelay`). Answers the outcome; a relay or
+    // delivery failure is a 502 naming the half that failed.
+    app.post(SOCIAL_RELAY_SELF_PATH, async (c) => {
+      try {
+        assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+      } catch (e) {
+        if (e instanceof PlatformCallError) return refuse('forbidden', e.message);
+        throw e;
+      }
+      const body: unknown = await c.req.json().catch(() => ({}));
+      const caller = await checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body), relayScopeLookup(c.env));
+      if (!caller.ok) return refuse('forbidden', caller.error);
+      const parsed = socialRelaySelfRequest.safeParse(body);
+      if (!parsed.success) return refuse('validation_failed', 'tenantId, scopeId (ULIDs) and hasClient are required');
+      const relay = socialRelayFor(c.env);
+      if (!relay) return refuseStatus(501, 'no social relay is configured on this control plane');
+      try {
+        const answer = await selfReconcileSocialRelay(socialRelayDepsFor(c.env, relay), parsed.data);
+        if (!answer.ok) return refuse(answer.code, answer.detail);
+        console.log('social-relay.reconciled', { scopeId: parsed.data.scopeId, trigger: 'install', proven: caller.proven, ...answer.outcome });
+        return c.json(answer.outcome);
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        console.error('social-relay.reconcile.failed', { scopeId: parsed.data.scopeId, trigger: 'install', detail });
+        return refuseStatus(502, detail);
+      }
     });
 
     // The email relay (#303). A hosted vertical that holds the `emailSender` grant cannot send

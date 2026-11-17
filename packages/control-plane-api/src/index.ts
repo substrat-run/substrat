@@ -303,6 +303,8 @@ export {
   relayClientRef,
   relayHostnames,
   relayRedirectUris,
+  selfReconcileSocialRelay,
+  SELF_ROTATION_REFUSED,
 } from './social-relay.js';
 export type { ScopeReconcileDeps, SocialRelayOptions, SocialRelayOutcome } from './social-relay.js';
 export type {

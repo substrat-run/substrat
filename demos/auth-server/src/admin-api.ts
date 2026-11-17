@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { substratError } from '@substrat-run/contracts';
-import { problemResponse } from '@substrat-run/vertical-host';
+import { problemResponse, refuseStatus } from '@substrat-run/vertical-host';
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
@@ -43,6 +43,7 @@ import {
 } from './providers.js';
 import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { isPlatformRow, relayClientId } from './social-relay.js';
+import { readHealRecord, type HealClaim } from './social-relay-heal.js';
 import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import {
   bankIdApiUrl,
@@ -151,6 +152,11 @@ export interface AdminApiDeps {
    * promise only until the first row threw.
    */
   transaction<T>(fn: () => T): T;
+  /**
+   * Platform sign-in's self-heal (#1544, `social-relay-heal.ts`), present only on an install the
+   * platform provisioned and can be asked from: claim a manual attempt, which the worker then makes.
+   */
+  socialRelayHeal?: { claim(): HealClaim | null };
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
@@ -625,8 +631,23 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         /** Delivered by the platform (#1544): a switch, not a credential form. */
         platform: isPlatformRow(row, relayClientId(deps.sql)),
       })),
+      /** Whether this install can ask for platform sign-in, and how its last attempt went. */
+      platformSignIn: deps.socialRelayHeal
+        ? { clientHeld: relayClientId(deps.sql) !== null, last: readHealRecord(deps.sql) }
+        : null,
     }),
   );
+
+  /**
+   * The operator's "Set up platform sign-in": claim an attempt and hand the worker what it needs
+   * to make it (`routes.ts`, which asks the platform from its own request path). The gate above
+   * is the one editing a provider passes. Not debounced — pressing it is the deliberate ask.
+   */
+  app.post('/social-relay/sync', (c) => {
+    const claim = deps.socialRelayHeal?.claim() ?? null;
+    if (!claim) return refuseStatus(c, 501, 'platform sign-in is not available on this issuer');
+    return c.json(claim);
+  });
 
   /**
    * Add or edit one upstream. A PUT because the id is the operator's choice — from the closed
