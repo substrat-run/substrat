@@ -52,6 +52,18 @@ The in-vertical switcher, a per-login projection pushed into verticals, was not 
 put cross-tenant membership data inside a vertical, which is what D-62 deferred to a decision of
 its own.
 
-**Not done.** Deleting a managed tenant does not clear its place; that waits for the repair D-62
-lists. A retry that registered a client and stopped before the place leaves that client unused at
-the issuer: it is a client nothing names as a place, so it lists nobody.
+**The client is registered once, and the tenant's end removes it** (#3261). The platform
+registers the client through the issuer's platform-gated `/internal/managed-client`, keyed by the
+tenant's scope, rather than by open registration. A retried provision repeats that scope, so it
+reaches the client its first pass registered and gives it a new secret, which the scope is then
+delivered: a retried provision ends with one client. When the tenant enters `deleting`, its place
+is taken off every one of the manager's team auth-servers; the client stays, so an un-delete
+still signs in. When one of its scopes is reaped (the staff tenant or scope reap, or the
+retention sweep), the issuer removes that scope's client, its place, the members listed under it
+and its redirect record, before anything is wiped. A removal that cannot reach an auth-server
+stops the reap, which is retried; on `deleting` it is answered as an error, and the reap removes
+it again.
+
+**Not done.** An un-deleted managed tenant is not listed again: its client still signs in, but
+nothing re-registers its place. A client registered by open registration before #3261 is not
+deleted at the reap, since the issuer never recorded it; its place and redirects are.
