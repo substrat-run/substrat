@@ -13,7 +13,7 @@
  * it as the 409 it always was, which the CLI retries.
  */
 import { PROBLEM_CONTENT_TYPE } from '@substrat-run/contracts';
-import { refusalProblem } from './problem.js';
+import { refusalProblem, SourceBuildError } from './problem.js';
 
 /**
  * How long a build waits for its vertical before it is refused. Short on purpose: the wait
@@ -22,6 +22,46 @@ import { refusalProblem } from './problem.js';
  * Longer contention is the CLI's to ride out, by retrying the refusal.
  */
 export const BUILD_WAIT_MS = 2 * 60_000;
+/** How long one sandbox command of a source build may run, at most. */
+export const BUILD_COMMAND_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * How long a source build may hold its sandbox, from the moment it is claimed: queue wait,
+ * every command and every file read and write. A build starts a sandbox of its own and
+ * destroys it when it ends, so this bounds the sandbox's age, which the container's
+ * `rollout_active_grace_period` in wrangler.jsonc has to outlast (#3259). A per-command cap
+ * alone bounds nothing: a build runs a dozen commands, and each may take the whole cap.
+ */
+export const BUILD_LIFETIME_MS = 45 * 60_000;
+
+/** A build that ran past `BUILD_LIFETIME_MS`. */
+export class BuildLifetimeExpired extends SourceBuildError {
+	constructor() {
+		super(`the build ran past its ${BUILD_LIFETIME_MS / 60_000}-minute limit`);
+	}
+}
+
+/** The timeout one command gets: the per-command cap, or what is left of the build's lifetime. */
+export function commandBudget(deadline: number, now: number): number {
+	const left = deadline - now;
+	if (left <= 0) throw new BuildLifetimeExpired();
+	return Math.min(BUILD_COMMAND_TIMEOUT_MS, left);
+}
+
+/** `work`, refused once the build's lifetime runs out (a sandbox file read has no timeout of its own). */
+export async function beforeDeadline<T>(deadline: number, work: () => Promise<T>, now = Date.now()): Promise<T> {
+	const left = deadline - now;
+	if (left <= 0) throw new BuildLifetimeExpired();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			work(),
+			new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new BuildLifetimeExpired()), left); }),
+		]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
 /** How often a waiting build looks again at a studio operation holding its project. */
 export const BUILD_POLL_MS = 1_000;
 

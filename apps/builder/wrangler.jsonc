@@ -47,12 +47,23 @@
 	// builder.Dockerfile at the repo root (context must be the monorepo).
 	// standard-3 per builder-studio.md §4.1: pnpm + tsc + vitest + two dev
 	// servers do not fit below 8 GiB. Image version pins to @cloudflare/sandbox.
+	//
+	// rollout_active_grace_period (#3259): a release's container rollout leaves alone any
+	// sandbox connected to its Durable Object for less than this many seconds. Every source
+	// build starts a sandbox of its own (`build:<buildId>`), so with the default of 0 a
+	// rollout SIGTERMs a build that started moments before it, and the build's running
+	// command dies with the sandbox's control server — ours in a release, and a tenant's
+	// push that lands during one. An hour is above the 45 minutes a build may live
+	// (BUILD_LIFETIME_MS, enforced on every command and file operation of the build, and
+	// held below this value by test/rollout-grace.test.ts). Older sandboxes are still replaced;
+	// a younger one keeps the previous image until it ends or ages past the window.
 	"containers": [
 		{
 			"class_name": "Sandbox",
 			"image": "../../builder.Dockerfile",
 			"instance_type": "standard-3",
-			"max_instances": 50
+			"max_instances": 50,
+			"rollout_active_grace_period": 3600
 		}
 	],
 
@@ -80,7 +91,7 @@
 				{ "name": "Sandbox", "class_name": "Sandbox" },
 				{ "name": "SCOPE", "class_name": "ScopeDO" }
 			] },
-			"containers": [{ "class_name": "Sandbox", "image": "../../builder.Dockerfile", "instance_type": "standard-3", "max_instances": 50 }],
+			"containers": [{ "class_name": "Sandbox", "image": "../../builder.Dockerfile", "instance_type": "standard-3", "max_instances": 50, "rollout_active_grace_period": 3600 }],
 			"artifacts": [{ "binding": "ARTIFACTS", "namespace": "substrat-projects-test" }],
 			"d1_databases": [{ "binding": "AUTH_DB", "database_name": "substrat-control-plane-auth-test", "database_id": "${CF_D1_AUTH_DB_ID_TEST}" }]
 		}
