@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { Button, Dialog, IconButton, Input, Select } from '@substrat-run/ui/wa';
+import { useCallback, useState, type CSSProperties } from 'react';
+import { Button, Dialog, IconButton, Input, RequestError, RequestView, Select, Skeleton, SkeletonRegion, mapOk, useRequest, type RequestState } from '@substrat-run/ui/wa';
 import { teamApi, type AppRow, type DnsRecord, type DomainRow } from '../lib/api';
 import { ApiError } from '../lib/api.generated';
 import { DEV_MOCK } from '../lib/mock';
@@ -44,46 +44,40 @@ const STATUS = new Map<string, { kind: PillKind; label: string; pulse?: boolean 
 
 /** Domains — account level (screens 1o, 1p). Custom hostnames across the team's apps. */
 export function Domains({ teamId }: { teamId: string }) {
-  const [domains, setDomains] = useState<DomainRow[]>([]);
   // Non-null ⇒ older domains exist beyond the loaded page window ("Load more").
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [apps, setApps] = useState<AppRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [add, setAdd] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // The list and the picker's apps are two reads (#3244): neither waits for the other, and
+  // a failed one is its own error — a rejected list read used to leave "Loading…" forever.
   // Refresh = back to the first page (verify/remove change rows the loaded window shows).
-  const load = useCallback(async () => {
+  const domainsReq = useRequest<DomainRow[]>(async () => {
     if (DEV_MOCK) {
-      setDomains(MOCK_DOMAINS);
       setCursor(null);
-      setLoading(false);
-      return;
+      return MOCK_DOMAINS;
     }
     // The team the TAB is on, named in each request's URL (#2170), not the shared cookie's.
-    const client = teamApi(teamId);
-    const [d, a] = await Promise.all([
-      client.listDomains({}),
-      // The Add-domain picker wants every app — one max-size page covers it.
-      client.listApps({ limit: 200 }).then((p) => p.entries).catch(() => []),
-    ]);
-    setDomains(d.entries);
-    setCursor(d.nextCursor);
-    setApps(a);
-    setLoading(false);
+    const page = await teamApi(teamId).listDomains({});
+    setCursor(page.nextCursor);
+    return page.entries;
   }, [teamId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // The Add-domain picker wants every app — one max-size page covers it.
+  const appsReq = useRequest<AppRow[]>(
+    async () => (DEV_MOCK ? [] : (await teamApi(teamId).listApps({ limit: 200 })).entries),
+    [teamId],
+  );
+  const domains = domainsReq.state;
+  const load = domainsReq.reload;
+  const setDomains = domainsReq.set;
 
   const loadMore = useCallback(async () => {
     if (DEV_MOCK || loadingMore || !cursor) return;
     setLoadingMore(true);
     try {
       const page = await teamApi(teamId).listDomains({ cursor });
-      setDomains((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.hostname === e.hostname))]);
+      setDomains(mapOk((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.hostname === e.hostname))]));
       setCursor(page.nextCursor);
     } finally {
       setLoadingMore(false);
@@ -107,7 +101,7 @@ export function Domains({ teamId }: { teamId: string }) {
   const onRemove = useCallback(
     async (hostname: string) => {
       if (DEV_MOCK) {
-        setDomains((ds) => ds.filter((d) => d.hostname !== hostname));
+        setDomains(mapOk((ds) => ds.filter((d) => d.hostname !== hostname)));
         return;
       }
       setBusy(hostname);
@@ -134,7 +128,14 @@ export function Domains({ teamId }: { teamId: string }) {
           }
         />
         <div style={{ flex: 1 }} />
-        <Button icon={<Ic name="plus" />} onClick={() => setAdd(true)}>
+        <Button
+          icon={<Ic name="plus" />}
+          onClick={() => {
+            setAdd(true);
+            // A picker whose apps read failed earlier reads them again when it is opened.
+            if (appsReq.state.state === 'error') void appsReq.reload();
+          }}
+        >
           Add domain
         </Button>
       </div>
@@ -153,25 +154,31 @@ export function Domains({ teamId }: { teamId: string }) {
           <span>Added</span>
           <span />
         </div>
-        {loading ? (
-          <div style={{ padding: '18px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>Loading…</div>
-        ) : domains.length === 0 ? (
-          <div style={{ padding: '18px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>
-            No custom domains yet. Add one to serve an app on your own hostname.
-          </div>
-        ) : (
-          domains.map((d, i) => (
-            <DomainRowView
-              key={d.hostname}
-              d={d}
-              last={i === domains.length - 1}
-              busy={busy === d.hostname}
-              onVerify={() => onVerify(d.hostname)}
-              onRemove={() => onRemove(d.hostname)}
-            />
-          ))
-        )}
-        {cursor !== null && !loading && (
+        <RequestView
+          state={domains}
+          what="this team's domains"
+          onRetry={() => void load()}
+          skeleton={<DomainsSkeleton />}
+          empty={
+            <div style={{ padding: '18px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>
+              No custom domains yet. Add one to serve an app on your own hostname.
+            </div>
+          }
+        >
+          {(rows) =>
+            rows.map((d, i) => (
+              <DomainRowView
+                key={d.hostname}
+                d={d}
+                last={i === rows.length - 1}
+                busy={busy === d.hostname}
+                onVerify={() => onVerify(d.hostname)}
+                onRemove={() => onRemove(d.hostname)}
+              />
+            ))
+          }
+        </RequestView>
+        {cursor !== null && domains.state === 'ok' && (
           <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}>
             <Button variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
               {loadingMore ? 'Loading…' : 'Load more'}
@@ -184,8 +191,25 @@ export function Domains({ teamId }: { teamId: string }) {
         automatically and not listed here.
       </div>
 
-      <AddDomainDialog teamId={teamId} open={add} apps={apps} onClose={() => setAdd(false)} onAdded={load} />
+      <AddDomainDialog teamId={teamId} open={add} apps={appsReq.state} onRetryApps={() => void appsReq.reload()} onClose={() => setAdd(false)} onAdded={load} />
     </Page>
+  );
+}
+
+/** Domain rows while the list is read: the loaded row's height, in its columns (#3244). */
+function DomainsSkeleton() {
+  return (
+    <SkeletonRegion label="Loading domains…">
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 40, padding: '0 16px', borderBottom: i === 2 ? 'none' : '1px solid var(--border-subtle)' }}>
+          <Skeleton w="60%" h={12} />
+          <Skeleton w="50%" h={12} />
+          <Skeleton w={72} h={20} r={999} />
+          <Skeleton w={60} h={11} />
+          <span />
+        </div>
+      ))}
+    </SkeletonRegion>
   );
 }
 
@@ -295,11 +319,13 @@ function RecordRow({ r }: { r: DnsRecord }) {
 }
 
 function AddDomainDialog({
-  teamId, open, apps, onClose, onAdded,
+  teamId, open, apps, onRetryApps, onClose, onAdded,
 }: {
   teamId: string;
   open: boolean;
-  apps: AppRow[];
+  /** A request (#3244): "No apps yet" only once the apps have been read. */
+  apps: RequestState<AppRow[]>;
+  onRetryApps: () => void;
   onClose: () => void;
   onAdded: () => Promise<void> | void;
 }) {
@@ -309,7 +335,8 @@ function AddDomainDialog({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const appOptions = apps.map((a) => ({ value: a.app_scope_id, label: a.name }));
+  const appOptions = apps.state === 'ok' ? apps.value.map((a) => ({ value: a.app_scope_id, label: a.name })) : [];
+  const noApps = apps.state === 'loading' ? 'Reading apps…' : apps.state === 'error' ? 'Could not read the apps' : 'No apps yet';
   const chosen = appScopeId || appOptions[0]?.value || '';
 
   const reset = () => {
@@ -368,9 +395,10 @@ function AddDomainDialog({
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {apps.state === 'error' && <RequestError what="this team's apps" error={apps.error} onRetry={onRetryApps} style={{ padding: 0 }} />}
           <Select
             label="App"
-            options={appOptions.length ? appOptions : [{ value: '', label: 'No apps yet', disabled: true }]}
+            options={appOptions.length ? appOptions : [{ value: '', label: noApps, disabled: true }]}
             value={chosen}
             onChange={(e) => setAppScopeId(e.target.value)}
           />

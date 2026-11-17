@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { Badge, Button, IconButton, Tabs } from '@substrat-run/ui/wa';
+import { Badge, Button, IconButton, RequestView, Skeleton, SkeletonRegion, Tabs, valueOr, type RequestState } from '@substrat-run/ui/wa';
 import {
   api,
   isApiError,
@@ -85,7 +85,8 @@ function around(at: string): { from: string; to: string } {
 /** Display app traffic and health with release, failure, and schedule evidence on one clock. */
 export function Pulse({
   teamId,
-  apps,
+  apps: appsReq,
+  onRetryApps,
   scopeId,
   hours,
   window,
@@ -101,7 +102,9 @@ export function Pulse({
   onMarker,
 }: {
   teamId: string;
-  apps: AppRow[];
+  /** A request, not an array (#3244): "No apps yet" waits for the team's apps to be read. */
+  apps: RequestState<AppRow[]>;
+  onRetryApps?: () => void;
   scopeId: string | null;
   hours: number;
   /** The card's clock — the page's range, or the custom window a drag or a link set. */
@@ -118,6 +121,7 @@ export function Pulse({
   onRefresh: () => void;
   onMarker: (m: OverlayMarker) => void;
 }) {
+  const apps = useMemo(() => valueOr(appsReq, NO_APPS), [appsReq]);
   const oneApp = scopeId !== null;
   const app = scopeId ? apps.find((a) => a.app_scope_id === scopeId) : undefined;
   const [series, setSeries] = useState<TeamTrafficSeries | null>(null);
@@ -376,10 +380,15 @@ export function Pulse({
           cells={['Apps', 'Requests', 'Errors', 'p95', bins ? `Requests · errors · p95 trend, ${bins} bins` : 'Requests · errors · p95 trend', 'Status']}
           first={!oneApp}
         />
-        {apps.length === 0 ? (
-          <Note>No apps yet — traffic appears here once one is serving.</Note>
-        ) : (
-          rows.map((r) => (
+        <RequestView
+          state={appsReq}
+          what="this team's apps"
+          onRetry={onRetryApps}
+          errorStyle={{ borderTop: '1px solid var(--border-subtle)' }}
+          skeleton={<AppLinesSkeleton />}
+          empty={<Note>No apps yet — traffic appears here once one is serving.</Note>}
+        >
+          {() => rows.map((r) => (
             <AppLine
               key={r.scopeId}
               row={r}
@@ -391,8 +400,8 @@ export function Pulse({
               onOpen={() => openRow(r)}
               href={teamPath(r.verdict === 'failing' ? obsPath({ app: r.scopeId, view: 'failures', hours: '24' }) : oneApp ? `/apps/${r.scopeId}/overview` : obsPath({ app: r.scopeId }))}
             />
-          ))
-        )}
+          ))}
+        </RequestView>
         {series && !series.available && (
           <Note>
             {chartError
@@ -862,6 +871,29 @@ function AxisRow({ window, schedules }: { window: { from: string; to: string }; 
       </span>
       <span />
     </div>
+  );
+}
+
+const NO_APPS: AppRow[] = [];
+
+/** The apps section while the team's apps are read: `AppLine`'s height, in its grid (#3244). */
+function AppLinesSkeleton() {
+  return (
+    <SkeletonRegion label="Loading apps…">
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: PULSE_GRID, alignItems: 'center', padding: '0 16px', height: 48, borderTop: '1px solid var(--border-subtle)' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Skeleton w={8} h={8} r={4} />
+            <Skeleton w="60%" h={12} />
+          </span>
+          <Skeleton w={40} h={12} />
+          <Skeleton w={32} h={12} />
+          <Skeleton w={44} h={12} />
+          <Skeleton w="85%" h={22} />
+          <Skeleton w={64} h={20} r={999} />
+        </div>
+      ))}
+    </SkeletonRegion>
   );
 }
 

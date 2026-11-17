@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RequestIdNote, requestIdOf } from '../components/RequestIdNote';
-import { Button, Input, Select } from '@substrat-run/ui/wa';
+import { Button, Input, RequestView, Select, Skeleton, SkeletonRegion, mapOk, valueOr, type RequestState } from '@substrat-run/ui/wa';
 import { type AppAuthChoice, type AppRow, type CatalogEntry, type EnvVarSpec } from '../lib/api';
 import { ENV_OPTS, verticalMeta } from '../lib/demo';
 import { Ic } from '../lib/icons';
@@ -44,12 +44,15 @@ const TEMPLATE_BLURBS: Record<string, string> = {
  */
 export function CreateApp({
   catalog,
+  onRetryCatalog,
   teamName,
   authServers,
   onCancel,
   onCreate,
 }: {
-  catalog: CatalogEntry[];
+  /** A request, not an array (#3244): "Nothing is published" waits for an answer. */
+  catalog: RequestState<CatalogEntry[]>;
+  onRetryCatalog?: () => void;
   /** The current team's display name — slugified into the hostname preview, mirroring the worker. */
   teamName?: string;
   /** The team's ACTIVE Auth Server apps — offered as one-click issuers in the Identity section. */
@@ -60,9 +63,9 @@ export function CreateApp({
   const [source, setSource] = useState<Source | null>(null);
 
   if (!source) {
-    return <ChooseVertical catalog={catalog} onCancel={onCancel} onPick={setSource} />;
+    return <ChooseVertical catalog={catalog} onRetry={onRetryCatalog} onCancel={onCancel} onPick={setSource} />;
   }
-  return <Configure source={source} teamName={teamName} authServers={authServers} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={catalog.length === 0} />;
+  return <Configure source={source} teamName={teamName} authServers={authServers} onBack={() => setSource(null)} onCancel={onCancel} onCreate={onCreate} disabled={valueOr(catalog, []).length === 0} />;
 }
 
 function Stepper({ step }: { step: 1 | 2 }) {
@@ -90,6 +93,24 @@ function Header({ onCancel }: { onCancel: () => void }) {
       <div style={{ flex: 1 }} />
       <Button variant="ghost" onClick={onCancel}>Cancel</Button>
     </div>
+  );
+}
+
+/** Catalog rows while the catalog is read — `VerticalRow`'s height and parts (#3244). */
+function CatalogSkeleton() {
+  return (
+    <SkeletonRegion label="Loading the catalog…">
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, height: 56, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+          <Skeleton w={8} h={8} r={4} />
+          <span style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: 1 }}>
+            <Skeleton w="35%" h={12} />
+            <Skeleton w="55%" h={10} />
+          </span>
+          <Skeleton w={64} h={28} r={8} />
+        </div>
+      ))}
+    </SkeletonRegion>
   );
 }
 
@@ -137,17 +158,19 @@ function VerticalRow({ entry, onPick }: { entry: CatalogEntry; onPick: (s: Sourc
 
 function ChooseVertical({
   catalog,
+  onRetry,
   onCancel,
   onPick,
 }: {
-  catalog: CatalogEntry[];
+  catalog: RequestState<CatalogEntry[]>;
+  onRetry?: () => void;
   onCancel: () => void;
   onPick: (s: Source) => void;
 }) {
   // One registry, two lenses: the public marketplace, and what your team pushed
   // (which may ALSO be published — it stays in your group, badged, not duplicated).
-  const marketplace = catalog.filter((e) => e.listed && !e.owned);
-  const mine = catalog.filter((e) => e.owned);
+  const marketplace = mapOk((c: CatalogEntry[]) => c.filter((e) => e.listed && !e.owned))(catalog);
+  const mine = valueOr(catalog, []).filter((e) => e.owned);
 
   return (
     <Page maxWidth={720}>
@@ -159,11 +182,15 @@ function ChooseVertical({
           <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Marketplace</span>
           <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>ready to install</span>
         </div>
-        {marketplace.length === 0 ? (
-          <div style={{ padding: '20px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>Nothing is published to the marketplace yet.</div>
-        ) : (
-          marketplace.map((entry) => <VerticalRow key={entry.slug} entry={entry} onPick={onPick} />)
-        )}
+        <RequestView
+          state={marketplace}
+          what="the catalog"
+          onRetry={onRetry}
+          skeleton={<CatalogSkeleton />}
+          empty={<div style={{ padding: '20px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>Nothing is published to the marketplace yet.</div>}
+        >
+          {(entries) => entries.map((entry) => <VerticalRow key={entry.slug} entry={entry} onPick={onPick} />)}
+        </RequestView>
       </div>
 
       {mine.length > 0 && (

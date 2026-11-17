@@ -1,3 +1,4 @@
+import { requestOk } from '@substrat-run/ui/wa';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -231,7 +232,7 @@ describe('App › Overview traffic card (#1767)', () => {
           <AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />
           <Pulse
             teamId="team-a"
-            apps={[{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow]}
+            apps={requestOk([{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow])}
             scopeId="app-a"
             hours={24}
             window={{ from: day.since, to: day.until }}
@@ -272,7 +273,7 @@ describe('App › Overview traffic card (#1767)', () => {
     await act(async () => root.render(
       <Pulse
         teamId="team-a"
-        apps={[{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow]}
+        apps={requestOk([{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow])}
         scopeId="app-a"
         hours={24}
         window={{ from: day.since, to: day.until }}

@@ -1,5 +1,5 @@
-import { useRef, useState, type CSSProperties } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui/wa';
+import { useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Button, Dialog, Input, RequestView, Select, Skeleton, SkeletonRegion, mapOk, type RequestState } from '@substrat-run/ui/wa';
 import type { InviteRole, Member } from '../lib/api';
 import { Ic } from '../lib/icons';
 import { Avatar } from '../components/DashShell';
@@ -58,6 +58,7 @@ function fmtDate(iso: string): string {
  */
 export function Team({
   members,
+  onRetry,
   meEmail,
   canManage,
   onInvite,
@@ -69,7 +70,9 @@ export function Team({
   loadingMore,
   onLoadMore,
 }: {
-  members: Member[];
+  /** A request, not an array (#3244): "No members yet" waits for an answer. */
+  members: RequestState<Member[]>;
+  onRetry?: () => void;
   meEmail: string;
   canManage: boolean;
   onInvite: (email: string, roleKey: InviteRole) => Promise<{ acceptUrl: string; emailDelivered?: boolean } | void>;
@@ -101,7 +104,7 @@ export function Team({
   /** Which "Copy link" request the dialog is waiting on; closing it or asking again supersedes it. */
   const linkRequest = useRef(0);
 
-  const rows = members.filter((m) => m.status !== 'revoked');
+  const roster = useMemo(() => mapOk((ms: Member[]) => ms.filter((m) => m.status !== 'revoked'))(members), [members]);
 
   const reset = () => {
     setInvite(false);
@@ -156,10 +159,14 @@ export function Team({
         <div style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
           <span>Member</span><span>Role</span><span>Status</span><span>Added</span><span />
         </div>
-        {rows.length === 0 && (
-          <div style={{ padding: '20px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>No members yet.</div>
-        )}
-        {rows.map((m, i) => {
+        <RequestView
+          state={roster}
+          what="this team's members"
+          onRetry={onRetry}
+          skeleton={<MembersSkeleton />}
+          empty={<div style={{ padding: '20px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>No members yet.</div>}
+        >
+        {(rows) => rows.map((m, i) => {
           const s = STATUS.get(m.status) ?? { kind: 'neutral' as const, label: m.status };
           // An owner whose sign-in carried no verified address is stored without one (#1359).
           const you = m.email !== '' && m.email === meEmail;
@@ -204,6 +211,7 @@ export function Team({
             </div>
           );
         })}
+        </RequestView>
         {hasMore && onLoadMore && (
           <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 16px', borderTop: '1px solid var(--border-subtle)' }}>
             <Button variant="secondary" onClick={onLoadMore} disabled={loadingMore}>
@@ -299,5 +307,28 @@ export function Team({
         )}
       </Dialog>
     </Page>
+  );
+}
+
+/** The roster while it is read: rows at the loaded height, in the same columns (#3244). */
+function MembersSkeleton() {
+  return (
+    <SkeletonRegion label="Loading members…">
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={{ display: 'grid', gridTemplateColumns: COLS, alignItems: 'center', height: 48, padding: '0 16px', borderBottom: i === 2 ? 'none' : '1px solid var(--border-subtle)' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Skeleton w={26} h={26} r={13} />
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <Skeleton w={90} h={12} />
+              <Skeleton w={140} h={10} />
+            </span>
+          </span>
+          <Skeleton w={56} h={18} r={4} />
+          <Skeleton w={60} h={20} r={999} />
+          <Skeleton w={70} h={11} />
+          <span />
+        </div>
+      ))}
+    </SkeletonRegion>
   );
 }

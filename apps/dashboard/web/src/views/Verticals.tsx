@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Button, Checkbox, Input, Select, Table, type TableColumn } from '@substrat-run/ui/wa';
+import { Button, Checkbox, Input, RequestView, Select, Skeleton, SkeletonRegion, Table, type RequestState, type TableColumn } from '@substrat-run/ui/wa';
 import {
   api,
   connectGithub,
@@ -993,6 +993,7 @@ export function VerticalDetail({
 export function Verticals({
   teamId,
   deployments,
+  onRetry,
   onPromote,
   onRemove,
   onOpen,
@@ -1000,7 +1001,9 @@ export function Verticals({
   loadGitRepos,
 }: {
   teamId: string;
-  deployments: Deployment[];
+  /** A request, not an array (#3244): "Nothing pushed yet" waits for an answer. */
+  deployments: RequestState<Deployment[]>;
+  onRetry: () => void;
   onPromote: (slug: string, versionId: string, channel: 'prod') => void;
   onRemove: (slug: string) => void;
   onOpen: (slug: string) => void;
@@ -1027,9 +1030,10 @@ export function Verticals({
 
   // Sort newest-active first by the most recent version id.
   const sorted = useMemo(
-    () => [...deployments].sort((a, b) => (a.versions[0]?.id ?? '') < (b.versions[0]?.id ?? '') ? 1 : -1),
+    () => (deployments.state === 'ok' ? [...deployments.value].sort((a, b) => (a.versions[0]?.id ?? '') < (b.versions[0]?.id ?? '') ? 1 : -1) : []),
     [deployments],
   );
+  const listed = deployments.state === 'ok' && sorted.length > 0;
 
   return (
     <Page>
@@ -1037,19 +1041,28 @@ export function Verticals({
         title="Verticals"
         subtitle="The software your team builds — every app is an install of a vertical. A private vertical is yours end to end: promote any channel, prod included, and roll back from the go-live history. Marketplace listing — and prod of a listed vertical — is reviewed by the Substrat team."
       />
-      {sorted.length === 0 ? (
-        <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-          Nothing pushed yet — import a repository or push from your terminal below.
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gap: 28 }}>
-          {sorted.map((d) => (
-            <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} onRemove={() => onRemove(d.slug)} onOpen={() => onOpen(d.slug)} />
-          ))}
-        </div>
-      )}
+      <RequestView
+        state={deployments}
+        what="this team's verticals"
+        onRetry={onRetry}
+        errorStyle={{ ...card }}
+        skeleton={<VerticalsSkeleton />}
+        empty={
+          <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
+            Nothing pushed yet — import a repository or push from your terminal below.
+          </div>
+        }
+      >
+        {() => (
+          <div style={{ display: 'grid', gap: 28 }}>
+            {sorted.map((d) => (
+              <VerticalCard key={d.slug} d={d} busy={busy} onPromote={(vid, ch) => onPromote(d.slug, vid, ch)} onRemove={() => onRemove(d.slug)} onOpen={() => onOpen(d.slug)} />
+            ))}
+          </div>
+        )}
+      </RequestView>
 
-      <div style={{ marginTop: sorted.length === 0 ? 0 : 16, display: 'grid', gap: 12 }}>
+      <div style={{ marginTop: listed ? 16 : 0, display: 'grid', gap: 12 }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>Add a vertical</h3>
         {repo ? (
           <RepoDeploy teamId={teamId} repo={repo} onBack={() => setRepo(null)} onDone={() => setRepo(null)} />
@@ -1060,6 +1073,70 @@ export function Verticals({
           </div>
         )}
       </div>
+    </Page>
+  );
+}
+
+/** One vertical card's header row — name, slug, visibility, prod — as blocks. */
+function VerticalHeadSkeleton({ title }: { title: number }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <Skeleton w={160} h={title} />
+      <Skeleton w={84} h={18} r={4} />
+      <Skeleton w={64} h={20} r={999} />
+      <span style={{ marginLeft: 'auto' }}>
+        <Skeleton w={120} h={12} />
+      </span>
+    </div>
+  );
+}
+
+/** A versions table's rows as blocks — the card the loaded page draws, at its row height. */
+function VersionRowsSkeleton({ rows }: { rows: number }) {
+  return (
+    <div style={{ ...card, overflow: 'hidden' }}>
+      {Array.from({ length: rows + 1 }, (_, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 16, height: i === 0 ? 36 : 44, padding: '0 16px', borderTop: i === 0 ? 'none' : '1px solid var(--border-subtle)' }}>
+          <Skeleton w={i === 0 ? 60 : 72} h={i === 0 ? 10 : 12} />
+          <Skeleton w="22%" h={i === 0 ? 10 : 12} />
+          <Skeleton w="18%" h={i === 0 ? 10 : 12} />
+          <span style={{ marginLeft: 'auto' }}>
+            <Skeleton w={i === 0 ? 40 : 72} h={i === 0 ? 10 : 24} r={i === 0 ? 6 : 8} />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The loading vertical list: two cards laid out as `VerticalCard` draws them (#3244). */
+function VerticalsSkeleton() {
+  return (
+    <SkeletonRegion label="Loading verticals…" style={{ display: 'grid', gap: 28 }}>
+      {[0, 1].map((i) => (
+        <div key={i} style={{ display: 'grid', gap: 12 }}>
+          <VerticalHeadSkeleton title={16} />
+          <VersionRowsSkeleton rows={VERSIONS_PREVIEW} />
+        </div>
+      ))}
+    </SkeletonRegion>
+  );
+}
+
+/** A deep-linked vertical while the team's verticals are read: its page's header and versions. */
+export function VerticalDetailSkeleton() {
+  return (
+    <Page>
+      <SkeletonRegion label="Loading vertical…" style={{ display: 'grid', gap: 20 }}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <Skeleton w={90} h={12} />
+          <VerticalHeadSkeleton title={20} />
+        </div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          <Skeleton w={70} h={15} />
+          <VersionRowsSkeleton rows={5} />
+        </div>
+      </SkeletonRegion>
     </Page>
   );
 }

@@ -1,7 +1,7 @@
 import { sortApps } from './lib/name-order';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SupportWidget, useAutoRefresh } from '@substrat-run/ui';
-import { Toast, Dialog, Input } from '@substrat-run/ui/wa';
+import { Toast, Dialog, Input, RequestError, mapOk, requestFailed, requestLoading, requestOk, settleFailure, valueOr, type RequestState } from '@substrat-run/ui/wa';
 import { api, signIn, signOut, teamApi, isApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { removalRefusalDetail } from './lib/bound-scopes';
@@ -23,7 +23,7 @@ import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
 import { Onboarding } from './views/Onboarding';
 import { Apps } from './views/Apps';
 import { Overview } from './views/Overview';
-import { Verticals, VerticalDetail } from './views/Verticals';
+import { Verticals, VerticalDetail, VerticalDetailSkeleton } from './views/Verticals';
 import { CreateApp } from './views/CreateApp';
 import { AppDetail } from './views/AppDetail';
 import { Team } from './views/Team';
@@ -129,6 +129,33 @@ function orgFrom(email?: string | null): string {
   return domain ? domain.charAt(0).toUpperCase() + domain.slice(1) : 'Workspace';
 }
 
+const NO_MEMBERS: Member[] = [];
+const NO_CATALOG: CatalogEntry[] = [];
+const NO_DEPLOYMENTS: Deployment[] = [];
+
+/**
+ * Settle one list's request from a read (#3244): its answer, or — when nothing is shown yet —
+ * its error. A failed refresh over a shown answer keeps the answer. Never rejects.
+ */
+function settleInto<T>(set: (fn: RequestState<T> | ((prev: RequestState<T>) => RequestState<T>)) => void, read: Promise<T>, live: () => boolean): Promise<void> {
+  return read.then(
+    (value) => {
+      if (live()) set(requestOk(value));
+    },
+    (error) => {
+      if (live()) set(settleFailure<T>(error));
+    },
+  );
+}
+
+/** The roster's first page; its cursor is the paged list's own state. */
+function readMembers(team: ReturnType<typeof teamApi>, setCursor: (c: string | null) => void): Promise<Member[]> {
+  return team.listMembers({}).then((page) => {
+    setCursor(page.nextCursor);
+    return page.entries;
+  });
+}
+
 export function App() {
   const [me, setMe] = useState<MeResult | null | undefined>(undefined);
   const [newTeamOpen, setNewTeamOpen] = useState(false);
@@ -145,9 +172,16 @@ export function App() {
   );
   // Keyset cursors for the paged lists (#458-shape): non-null ⇒ older entries exist
   // ("Load more"); null ⇒ the loaded window is the whole list.
+  // A failed FIRST read of the apps (#3244). Without it a rejected listApps() left the
+  // skeleton up forever; with only `appsLoading` cleared it would flash the onboarding.
+  const [appsError, setAppsError] = useState<{ error: unknown } | null>(null);
   const [appsCursor, setAppsCursor] = useState<string | null>(null);
   const [appsLoadingMore, setAppsLoadingMore] = useState(false);
-  const [members, setMembers] = useState<Member[]>([]);
+  // #3244: each team list is a request, not an array defaulting to [] — `[]` before the
+  // first answer read as "no members", "nothing pushed yet" and "nothing published", and a
+  // failed read was swallowed into the same empty page. Each settles on its own.
+  const [membersReq, setMembersReq] = useState<RequestState<Member[]>>(requestLoading);
+  const members = useMemo(() => valueOr(membersReq, NO_MEMBERS), [membersReq]);
   // #977: the admin log names a member by principal; the page names them by email.
   const personName = useCallback(
     (principal: string) => members.find((m) => m.principal === principal)?.email || null,
@@ -155,8 +189,10 @@ export function App() {
   );
   const [membersCursor, setMembersCursor] = useState<string | null>(null);
   const [membersLoadingMore, setMembersLoadingMore] = useState(false);
-  const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
-  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [catalogReq, setCatalogReq] = useState<RequestState<CatalogEntry[]>>(requestLoading);
+  const catalog = useMemo(() => valueOr(catalogReq, NO_CATALOG), [catalogReq]);
+  const [deploymentsReq, setDeploymentsReq] = useState<RequestState<Deployment[]>>(requestLoading);
+  const deployments = useMemo(() => valueOr(deploymentsReq, NO_DEPLOYMENTS), [deploymentsReq]);
   const [promoting, setPromoting] = useState(false);
   const [route, setRoute] = useState<Route>(parsePath);
   const [dark, setDark] = useState(() => {
@@ -268,6 +304,7 @@ export function App() {
     const page = await teamApi(currentTeamId).listApps({});
     setApps(page.entries);
     setAppsCursor(page.nextCursor);
+    setAppsError(null);
   }, [currentTeamId]);
 
   const appsMoreRef = useRef(false);
@@ -294,7 +331,7 @@ export function App() {
 
   const reloadDeployments = useCallback(async () => {
     if (DEV_MOCK || !currentTeamId) return;
-    setDeployments(await teamApi(currentTeamId).listDeployments());
+    setDeploymentsReq(requestOk(await teamApi(currentTeamId).listDeployments()));
   }, [currentTeamId]);
 
   // Git-import state is fetched lazily by the Create-App view (it hits GitHub), so it
@@ -315,10 +352,12 @@ export function App() {
         return;
       }
       setMe(MOCK_ME);
+      // `?loading=1` pins every list in flight, so each view's skeleton is previewable.
+      if (new URLSearchParams(window.location.search).get('loading') === '1') return;
       setApps(MOCK_APPS);
-      setMembers(MOCK_MEMBERS);
-      setCatalog(MOCK_CATALOG);
-      setDeployments(MOCK_DEPLOYMENTS);
+      setMembersReq(requestOk(MOCK_MEMBERS));
+      setCatalogReq(requestOk(MOCK_CATALOG));
+      setDeploymentsReq(requestOk(MOCK_DEPLOYMENTS));
       return;
     }
     let live = true;
@@ -396,20 +435,27 @@ export function App() {
       setMe(m);
       // A teamless login (onboarding) has nothing to load yet — skip the fetches.
       if (m && !needsOnboarding(m)) {
-        const emptyPage = { entries: [] as Member[], nextCursor: null };
-        const [a, mem, c, d] = await Promise.all([
-          teamApi(m.currentTeamId).listApps({}),
-          teamApi(m.currentTeamId).listMembers({}).catch(() => emptyPage),
-          teamApi(m.currentTeamId).listCatalog(),
-          teamApi(m.currentTeamId).listDeployments().catch(() => []),
-        ]);
-        if (!live) return;
-        setApps(a.entries);
-        setAppsCursor(a.nextCursor);
-        setMembers(mem.entries);
-        setMembersCursor(mem.nextCursor);
-        setCatalog(c);
-        setDeployments(d);
+        // Four independent reads, each settling its own list (#3244): one slow read no
+        // longer holds the others, and a failed one is that list's error, not its empty page.
+        const team = teamApi(m.currentTeamId);
+        const isLive = () => live;
+        void team.listApps({}).then(
+          (a) => {
+            if (!live) return;
+            setApps(a.entries);
+            setAppsCursor(a.nextCursor);
+            setAppsLoading(false);
+          },
+          (error) => {
+            if (!live) return;
+            setAppsError({ error });
+            setAppsLoading(false);
+          },
+        );
+        void settleInto(setMembersReq, readMembers(team, setMembersCursor), isLive);
+        void settleInto(setCatalogReq, team.listCatalog(), isLive);
+        void settleInto(setDeploymentsReq, team.listDeployments(), isLive);
+        return;
       }
       setAppsLoading(false);
     })();
@@ -583,13 +629,13 @@ export function App() {
       setPromoting(true);
       try {
         if (DEV_MOCK) {
-          setDeployments((ds) =>
+          setDeploymentsReq(mapOk((ds) =>
             ds.map((d) =>
               d.slug !== slug
                 ? d
                 : { ...d, channels: [...d.channels.filter((c) => c.channel !== channel), { channel, versionId }] },
             ),
-          );
+          ));
         } else {
           // The §4 checkpoint (#1677): read what the promotion changes BEFORE promoting, put
           // it in a dialog, and send only the acknowledgements the person gave, one per kind.
@@ -651,7 +697,7 @@ export function App() {
       setPromoting(true);
       try {
         if (DEV_MOCK) {
-          setDeployments((ds) => ds.filter((d) => d.slug !== slug));
+          setDeploymentsReq(mapOk((ds) => ds.filter((d) => d.slug !== slug)));
         } else {
           await teamClient().deleteDeployment({ slug });
           await reloadDeployments();
@@ -738,9 +784,9 @@ export function App() {
 
   const reloadMembers = useCallback(async () => {
     if (DEV_MOCK || !currentTeamId) return;
-    const page = await teamApi(currentTeamId).listMembers({}).catch(() => ({ entries: [] as Member[], nextCursor: null }));
-    setMembers(page.entries);
-    setMembersCursor(page.nextCursor);
+    // Never rejects (its callers follow a write): a failed read keeps the roster shown, or
+    // is the page's error when there was none — never an empty roster (#3244).
+    await settleInto(setMembersReq, readMembers(teamApi(currentTeamId), setMembersCursor), () => true);
   }, [currentTeamId]);
 
   // Keep the dashboard live without a manual browser reload: refetch when the tab
@@ -749,7 +795,7 @@ export function App() {
   // along so a freshly pushed vertical version shows up too.
   const refreshAll = useCallback(async () => {
     if (DEV_MOCK || !currentTeamId) return;
-    await Promise.all([reloadApps(), reloadMembers(), reloadDeployments(), teamApi(currentTeamId).listCatalog().then(setCatalog)]);
+    await Promise.all([reloadApps(), reloadMembers(), reloadDeployments(), settleInto(setCatalogReq, teamApi(currentTeamId).listCatalog(), () => true)]);
   }, [reloadApps, reloadMembers, reloadDeployments, currentTeamId]);
   useAutoRefresh(refreshAll, { enabled: !DEV_MOCK && me != null && !needsOnboarding(me) && !inviteBlock });
 
@@ -760,7 +806,7 @@ export function App() {
     setMembersLoadingMore(true);
     try {
       const page = await teamApi(currentTeamId).listMembers({ cursor: membersCursor });
-      setMembers((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.id === e.id))]);
+      setMembersReq(mapOk((prev) => [...prev, ...page.entries.filter((e) => !prev.some((p) => p.id === e.id))]));
       setMembersCursor(page.nextCursor);
     } finally {
       membersMoreRef.current = false;
@@ -774,10 +820,10 @@ export function App() {
     async (email: string, roleKey: InviteRole): Promise<{ acceptUrl: string; emailDelivered?: boolean } | void> => {
       if (DEV_MOCK) {
         const id = String(Date.now());
-        setMembers((ms) => [
+        setMembersReq(mapOk((ms) => [
           { id, principal: null, email, role_key: roleKey, status: 'invited', invitation_id: id, invited_by: 'you', invited_at: new Date().toISOString(), joined_at: null },
           ...ms,
-        ]);
+        ]));
         return { acceptUrl: `${window.location.origin}/invite/demo-${id}` };
       }
       const res = await teamClient().inviteMember({ email, roleKey });
@@ -800,7 +846,7 @@ export function App() {
   const revokeInvite = useCallback(
     async (invitationId: string) => {
       try {
-        if (DEV_MOCK) setMembers((ms) => ms.filter((m) => m.invitation_id !== invitationId));
+        if (DEV_MOCK) setMembersReq(mapOk((ms) => ms.filter((m) => m.invitation_id !== invitationId)));
         else {
           await teamClient().revokeInvite({ invitationId });
           await reloadMembers();
@@ -839,7 +885,7 @@ export function App() {
   const removeMember = useCallback(
     async (memberId: string) => {
       try {
-        if (DEV_MOCK) setMembers((ms) => ms.filter((m) => m.id !== memberId));
+        if (DEV_MOCK) setMembersReq(mapOk((ms) => ms.filter((m) => m.id !== memberId)));
         else {
           await teamClient().removeMember({ memberId });
           await reloadMembers();
@@ -853,6 +899,36 @@ export function App() {
   );
 
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
+  // Retry after a failed first read (#3244): back to the skeleton, then the read again.
+  const retryApps = useCallback(() => {
+    setAppsError(null);
+    setAppsLoading(true);
+    void reloadApps()
+      .catch((error: unknown) => setAppsError({ error }))
+      .finally(() => setAppsLoading(false));
+  }, [reloadApps]);
+  const retryMembers = useCallback(() => {
+    setMembersReq(requestLoading());
+    void reloadMembers();
+  }, [reloadMembers]);
+  const retryCatalog = useCallback(() => {
+    if (!currentTeamId) return;
+    setCatalogReq(requestLoading());
+    void settleInto(setCatalogReq, teamApi(currentTeamId).listCatalog(), () => true);
+  }, [currentTeamId]);
+  const retryDeployments = useCallback(() => {
+    if (!currentTeamId) return;
+    setDeploymentsReq(requestLoading());
+    void settleInto(setDeploymentsReq, teamApi(currentTeamId).listDeployments(), () => true);
+  }, [currentTeamId]);
+  // The apps list as a request, for the views that take one. It stays the array + flag
+  // App.tsx has always walked (paged, polled), with its first-read error beside it.
+  const appsReq = useMemo<RequestState<AppRow[]>>(
+    () => (appsLoading ? requestLoading() : appsError ? requestFailed(appsError.error) : requestOk(apps)),
+    [apps, appsLoading, appsError],
+  );
+  const appsFailed = appsError ? <RequestError what="this team's apps" error={appsError.error} onRetry={retryApps} style={{ margin: 24 }} /> : null;
+
   const openVertical = useMemo(() => (route.vertical ? deployments.find((d) => d.slug === route.vertical) : undefined), [deployments, route.vertical]);
 
   // The app's Audit and Observability tabs both became team-level pages (#1447). A
@@ -1000,7 +1076,8 @@ export function App() {
 
       {route.section === 'new' ? (
         <CreateApp
-          catalog={catalog}
+          catalog={catalogReq}
+          onRetryCatalog={retryCatalog}
           teamName={currentTeam?.name}
           authServers={authServers}
           onCancel={() => go('/apps')}
@@ -1018,6 +1095,10 @@ export function App() {
           canRestore={isTeamAdmin}
           canManageApp={canManageApp}
         />
+      ) : appsFailed && (route.section === 'apps' || route.section === 'overview') ? (
+        // A failed first read of the apps is said as one — never the "Create your first
+        // app" onboarding, and never a 404 for a deep link it could not resolve (#3244).
+        appsFailed
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being
         // walked for a deep link — the app is merely unresolved, not missing: the
@@ -1042,18 +1123,21 @@ export function App() {
           onBack={() => go('/verticals')}
         />
       ) : route.section === 'verticals' && route.vertical ? (
-        // The deployments list loads with the first session fetch — while it's in flight
-        // the vertical is unresolved, not missing (the same 404-flash guard as apps).
-        appsLoading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-tertiary)' }}>Loading…</div>
+        // While the deployments read is in flight the vertical is unresolved, not missing
+        // (the same 404-flash guard as apps); a failed read is an error, not a 404.
+        deploymentsReq.state === 'loading' ? (
+          <VerticalDetailSkeleton />
+        ) : deploymentsReq.state === 'error' ? (
+          <RequestError what="this team's verticals" error={deploymentsReq.error} onRetry={retryDeployments} style={{ margin: 24 }} />
         ) : (
           <NotFound label="That vertical could not be found." backLabel="Back to verticals" onBack={() => go('/verticals')} />
         )
       ) : route.section === 'verticals' ? (
-        <Verticals teamId={me.currentTeamId} deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
+        <Verticals teamId={me.currentTeamId} deployments={deploymentsReq} onRetry={retryDeployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
-          members={members}
+          members={membersReq}
+          onRetry={retryMembers}
           meEmail={me.email ?? ''}
           canManage={isTeamAdmin}
           onInvite={inviteMember}
@@ -1076,7 +1160,8 @@ export function App() {
       ) : route.section === 'observability' ? (
         <Observability
           query={window.location.search}
-          apps={apps}
+          apps={appsReq}
+          onRetryApps={retryApps}
           scopeId={route.app ?? null}
           view={route.view ?? null}
           focusEventType={route.type ?? null}

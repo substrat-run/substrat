@@ -1,3 +1,4 @@
+import { requestOk } from '@substrat-run/ui/wa';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -48,7 +49,7 @@ describe('Team: Copy link on a pending invite', () => {
     act(() => {
       root.render(
         <Team
-          members={props.members ?? ROSTER}
+          members={requestOk(props.members ?? ROSTER)}
           meEmail="owner@acme.test"
           canManage={props.canManage}
           onInvite={async () => undefined}
@@ -160,7 +161,7 @@ describe('Team: Copy link on a pending invite', () => {
     act(() => {
       root.render(
         <Team
-          members={ROSTER}
+          members={requestOk(ROSTER)}
           meEmail="owner@acme.test"
           canManage
           onInvite={async () => ({ acceptUrl: 'https://x.test/invite/new', emailDelivered: true })}

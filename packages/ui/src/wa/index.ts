@@ -28,3 +28,12 @@ export { Dialog } from './Dialog';
 export type { DialogProps } from './Dialog';
 export { Table } from './Table';
 export type { TableColumn, TableProps } from './Table';
+export { RequestError, RequestView } from './RequestView';
+export type { RequestErrorProps, RequestViewProps } from './RequestView';
+// Plain React with no Web Awesome of its own, re-exported so a view on this subpath draws its
+// loading, error and empty states from one import (#3244).
+export { Skeleton, SkeletonRegion, skeletonPulse } from '../components/Skeleton';
+export type { SkeletonProps, SkeletonRegionProps } from '../components/Skeleton';
+export { useRequest } from '../hooks/use-request';
+export type { Request } from '../hooks/use-request';
+export * from '../request-state';

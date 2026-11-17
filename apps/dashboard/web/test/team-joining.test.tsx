@@ -1,3 +1,4 @@
+import { requestOk } from '@substrat-run/ui/wa';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -39,7 +40,7 @@ describe('Team: a membership still being applied, or refused', () => {
   const render = (rows: Member[]) =>
     act(() => {
       root.render(
-        <Team members={rows} meEmail="owner@acme.test" canManage onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />,
+        <Team members={requestOk(rows)} meEmail="owner@acme.test" canManage onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />,
       );
     });
   const removeButtons = () => buttons(container).filter((b) => b.textContent === 'Remove');

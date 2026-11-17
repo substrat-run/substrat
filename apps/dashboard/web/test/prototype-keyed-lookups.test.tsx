@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BoundScopesView, Deployment, DeploymentVersion, Member, ObservabilityLogEvent } from '../src/lib/api';
-import { Table } from '@substrat-run/ui/wa';
+import { Table, requestOk } from '@substrat-run/ui/wa';
 import { actorOf, entryVia } from '../src/lib/audit-activity';
 import { InstallSteps } from '../src/components/InstallSteps';
 import { LogList } from '../src/components/LogList';
@@ -90,7 +90,7 @@ describe('plane-owned pill vocabularies (#2427)', () => {
   it.each(PROTOTYPE_NAMES)('a team member whose status is %s shows as named', async (status) => {
     const m = { id: 'm', principal: 'p1', email: 'rae@acme.test', role_key: 'member', status, invitation_id: null, invited_by: null, invited_at: null, joined_at: null } as unknown as Member;
     await act(async () =>
-      root.render(<Team members={[m]} meEmail="owner@acme.test" canManage onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />),
+      root.render(<Team members={requestOk([m])} meEmail="owner@acme.test" canManage onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />),
     );
     expect(container.textContent).toContain(status);
   });
