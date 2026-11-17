@@ -4,6 +4,7 @@ import { platformActorId, tenantId, type TenantId } from '@substrat-run/contract
 import { SERVICE_TOKEN_HEADER } from '@substrat-run/control-plane-api';
 import { ulid } from '@substrat-run/kernel';
 import { createReviewApi, MAX_KEPT_REVIEWS_PER_TENANT, MAX_REVIEWS_IN_PROGRESS_PER_TENANT, REVIEW_READING_WINDOW_MS } from '../src/reviews.js';
+import type { ReviewSpend } from '../src/review-spend.js';
 import { validateReviewArchive } from '../src/review-archive.js';
 import { pruneReviews, readReview, receiveReview, ReviewCollisionError, writeReviewResult } from '../src/review-store.js';
 import { archive, archiveRaw, BLOCK, octal, tar } from './review-fixtures.js';
@@ -267,8 +268,11 @@ describe('a builder review', () => {
     authenticateBuilder: async (r) => builders[r.headers.get('x-test-builder') as keyof typeof builders] ?? null,
     ownerOf: async (_actor, slug) => owners[slug],
     entitled: async (tenant) => tenant !== tenantB || reviewsForB,
+    spend: async (tenant) => (tenant === tenantB && spendForB) || { kind: 'unset' },
+    now: () => new Date('2026-11-16T23:00:00Z'),
   });
   let reviewsForB = true;
+  let spendForB: ReviewSpend | null = null;
   const upload = async (who: keyof typeof builders, slug?: string, store?: R2Bucket) => {
     const src = await archive();
     const form = new FormData();
@@ -309,6 +313,23 @@ describe('a builder review', () => {
       expect((await get('b', `/reviews/${((await kept.json()) as { id: string }).id}`)).status).toBe(200);
     } finally {
       reviewsForB = true;
+    }
+  });
+
+  it('refuses an upload once the workspace is at its daily spend limit, naming the limit and when it resets', async () => {
+    spendForB = { kind: 'reached', limitUsd: '5', spentUsd: '5.04', day: '2026-11-16', readCapped: false };
+    try {
+      const refused = await upload('b', 'garden');
+      expect(refused.status).toBe(429);
+      expect(refused.headers.get('retry-after')).toBe('3600');
+      expect(await refused.json()).toMatchObject({
+        code: 'rate_limited', reason: 'review_spend_limit_reached', retryAfter: 3600,
+        detail: 'code reviews for this workspace: spend limit reached: $5.04 of $5.00 for 2026-11-16 (UTC day)',
+      });
+      spendForB = { kind: 'within', limitUsd: '5', spentUsd: '4.99', day: '2026-11-16' };
+      expect((await upload('b', 'garden')).status).toBe(201);
+    } finally {
+      spendForB = null;
     }
   });
 

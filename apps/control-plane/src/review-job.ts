@@ -1,11 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { modelAttribution, scopeId, tenantId, type ModelUsageLine } from '@substrat-run/contracts';
-import { parseModelSpec, providerRow } from '@substrat-run/model-providers';
-import { createModelHost, type ModelHost, type ModelRun } from '@substrat-run/vertical-host/model';
+import { modelAttribution, scopeId, tenantId, type ModelUsageLine, type TenantId } from '@substrat-run/contracts';
+import { normalizeModelSpec, parseModelSpec, providerRow, rateFor } from '@substrat-run/model-providers';
+import { createModelHost, type ModelHost, type ModelHostOptions, type ModelRun } from '@substrat-run/vertical-host/model';
 import { diffReview, REVIEW_MAX_DIFF_BYTES } from './review-diff.js';
 import { estimateTokens, readReply, REVIEW_CALL, REVIEW_MAX_OUTPUT_TOKENS, reviewPrompt, reviewSystem } from './review-reader.js';
 import { REVIEW_PLUGIN_VERSION, REVIEW_RULES_DIGEST } from './review-rules.generated.js';
+import { defaultLimitUsd, REVIEW_SPEND_READER, reviewSpend, spendReachedDetail, type ReviewSpendDeps } from './review-spend.js';
 import { emptyReviewResult, hasReviewResult, REVIEW_READING_WINDOW_MS, readReceipt, readReviewArchive, writeReviewResult, type ReviewReceipt, type ReviewResult } from './review-store.js';
 
 /**
@@ -38,15 +39,31 @@ export interface ReviewConfig {
   readonly maxInputTokens?: number | undefined;
   readonly maxOutputTokens?: number | undefined;
   readonly modelTimeoutMs?: number | undefined;
+  /**
+   * `REVIEW_DAILY_SPEND_LIMIT_USD`: the plane's default daily limit on a tenant's review spend, in
+   * dollars, used where staff set no override. Unset or not a positive amount: no default, and a
+   * tenant without an override has no customer review read by the model (review-spend.ts).
+   */
+  readonly dailySpendLimitUsd?: string | undefined;
+  /** `MODEL_MARGIN_PERCENT`, the margin the ledger bills at; the limit counts spend at that rate. */
+  readonly marginPercent?: number | undefined;
 }
+
+/** The ledger margin when the plane sets none: `control-plane-api`'s own default. */
+export const REVIEW_DEFAULT_MARGIN_PERCENT = 20;
 
 export interface ReviewJobDeps {
   readonly bucket: R2Bucket;
   readonly config: ReviewConfig;
-  /** Builds the model host. Production passes the two gateway keys and no `aiBinding`; a test passes a double. */
-  readonly modelHost: () => ModelHost;
+  /**
+   * Builds the model host around the given guard (the spend limit, for a customer review).
+   * Production passes the two gateway keys and no `aiBinding`; a test passes a double.
+   */
+  readonly modelHost: (guard?: ModelHostOptions['guard']) => ModelHost;
   /** The ledger write: `host.admin.recordModelUsage`, deduplicated on the review id. */
   readonly recordUsage: (input: { requestId: string; line: ModelUsageLine }) => Promise<unknown>;
+  /** The two reads the spend limit takes: the tenant's review lines and its entitlements. */
+  readonly spendReads: Pick<ReviewSpendDeps, 'listUsage' | 'listEntitlements'>;
   readonly now?: () => Date;
   readonly log?: (event: string, detail: Record<string, unknown>) => void;
 }
@@ -77,6 +94,49 @@ function failureFacts(error: unknown): { status: number | null; kind: string } {
 }
 
 class ModelTimeout extends Error {}
+
+/** The guard's refusal: the review is recorded `skipped` with this reason, and no model is called. */
+class SpendRefused extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+/** The guard could not read the ledger or the entitlement store: nothing is called, and the attempt may retry. */
+class SpendUnreadable extends Error {}
+
+/** The entitlement whose `quota` is the staff override of a tenant's daily limit (reviews.ts). */
+const SPEND_ENTITLEMENT = 'review';
+
+/** The limit's whole configuration: the reads, the sentinel scope, the default and the margin. */
+export function spendDeps(reads: ReviewJobDeps['spendReads'], config: ReviewConfig): ReviewSpendDeps {
+  return {
+    ...reads,
+    scope: REVIEW_SENTINEL_SCOPE,
+    entitlementKey: SPEND_ENTITLEMENT,
+    defaultLimitUsd: defaultLimitUsd(config.dailySpendLimitUsd),
+    marginPercent: config.marginPercent ?? REVIEW_DEFAULT_MARGIN_PERCENT,
+  };
+}
+
+/**
+ * The spend limit, as the model host's guard: read immediately before the call, so reviews that
+ * finished while this one was being diffed are counted. Unset fails closed. A burst of reviews in
+ * flight at once can each pass it and overshoot the limit together, by at most their own caps
+ * (the input and output bounds of Q1c); that overshoot is accepted.
+ */
+function spendGuard(deps: ReviewJobDeps, tenant: TenantId, now: () => Date): NonNullable<ModelHostOptions['guard']> {
+  return async () => {
+    let spend;
+    try {
+      spend = await reviewSpend(spendDeps(deps.spendReads, deps.config), tenant, now());
+    } catch {
+      throw new SpendUnreadable();
+    }
+    if (spend.kind === 'unset') throw new SpendRefused('no spend limit set');
+    if (spend.kind === 'reached') throw new SpendRefused(spendReachedDetail(spend));
+  };
+}
 
 const positive = (value: number | undefined, fallback: number) => (value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback);
 
@@ -146,7 +206,13 @@ export async function reviewOnce(
   }
   const row = providerRow(provider);
   if (row?.kind !== 'compatible' || row.request !== 'cloudflare-gateway') return skipped('model path not the gateway');
-  const host = deps.modelHost();
+  // The spend limit counts a review's cost, so a model the rate card cannot price is never
+  // called: its lines would read as free and the limit would never be reached.
+  if (!rateFor(normalizeModelSpec(spec))) return skipped('model unpriced');
+  // A builder's review is spent on its tenant's behalf, as a builder turn is; a staff review on the platform's own.
+  const customer = receipt.tenantId ? tenantId.safeParse(receipt.tenantId) : null;
+  if (customer && !customer.success) return finish({ ...empty, state: 'incomplete', reason: 'review tenant unreadable' });
+  const host = deps.modelHost(customer ? spendGuard(deps, customer.data, now) : undefined);
   if (!host.status(spec).configured) return skipped('model not configured on this plane');
 
   const source = await readReviewArchive(deps.bucket, reviewId, 'source');
@@ -172,7 +238,6 @@ export async function reviewOnce(
   if (estimateTokens(system) + estimateTokens(prompt) > maxInputTokens) {
     return skipped(`too large: over ${maxInputTokens} estimated input tokens`, sent);
   }
-  // A builder's review is spent on its tenant's behalf, as a builder turn is; a staff review on the platform's own.
   const tenant = tenantId.safeParse(receipt.tenantId ?? deps.config.platformTenant);
   const attribution = modelAttribution.parse({
     tenant: tenant.success ? tenant.data : UNSET_TENANT, scope: REVIEW_SENTINEL_SCOPE,
@@ -199,6 +264,12 @@ export async function reviewOnce(
       maxOutputTokens: positive(deps.config.maxOutputTokens, REVIEW_MAX_OUTPUT_TOKENS),
     });
   } catch (error) {
+    if (error instanceof SpendRefused) return skipped(error.reason, sent);
+    if (error instanceof SpendUnreadable) {
+      if (attempt + 1 < REVIEW_MAX_ATTEMPTS) return { kind: 'retry', retryInMs: REVIEW_RETRY_DELAYS_MS[attempt] ?? REVIEW_RETRY_DELAYS_MS.at(-1)! };
+      log('review.spend.unreadable', { reviewId, attempt });
+      return finish({ ...empty, ...sent, state: 'incomplete', reason: 'spend limit unreadable' });
+    }
     if (controller.signal.aborted) return finish({ ...empty, ...sent, state: 'incomplete', reason: 'model timed out' });
     if (transientModelError(error) && attempt + 1 < REVIEW_MAX_ATTEMPTS) {
       return { kind: 'retry', retryInMs: REVIEW_RETRY_DELAYS_MS[attempt] ?? REVIEW_RETRY_DELAYS_MS.at(-1)! };
@@ -257,8 +328,30 @@ export interface ReviewJobEnv {
   REVIEW_MAX_DIFF_BYTES?: string;
   REVIEW_MAX_INPUT_TOKENS?: string;
   REVIEW_MAX_OUTPUT_TOKENS?: string;
+  REVIEW_DAILY_SPEND_LIMIT_USD?: string;
+  MODEL_MARGIN_PERCENT?: string;
   CLOUDFLARE_AI_BASE_URL?: string;
   CLOUDFLARE_AI_API_TOKEN?: string;
+}
+
+/** The plane's review settings, read from its vars. */
+export function reviewConfig(env: ReviewJobEnv): ReviewConfig {
+  return {
+    model: env.REVIEW_MODEL, platformTenant: env.REVIEW_PLATFORM_TENANT,
+    maxDiffBytes: configNumber(env.REVIEW_MAX_DIFF_BYTES), maxInputTokens: configNumber(env.REVIEW_MAX_INPUT_TOKENS),
+    maxOutputTokens: configNumber(env.REVIEW_MAX_OUTPUT_TOKENS),
+    dailySpendLimitUsd: env.REVIEW_DAILY_SPEND_LIMIT_USD,
+    ...(env.MODEL_MARGIN_PERCENT ? { marginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
+  };
+}
+
+/** The spend limit's two reads, through the directory, audited under the limit's own reader. */
+export function spendReadsFor(env: Pick<ReviewJobEnv, 'SCOPE' | 'CONTROL_PLANE'>): ReviewJobDeps['spendReads'] {
+  const admin = () => new CloudflareScopeHost({ scope: env.SCOPE as never, controlPlane: env.CONTROL_PLANE as never }).admin;
+  return {
+    listUsage: (filter) => admin().listModelUsage(REVIEW_SPEND_READER, filter),
+    listEntitlements: (tenant) => admin().listEntitlements(REVIEW_SPEND_READER, tenant),
+  };
 }
 
 /**
@@ -267,15 +360,13 @@ export interface ReviewJobEnv {
  */
 export function reviewJobDeps(env: ReviewJobEnv, bucket: R2Bucket): ReviewJobDeps {
   const gateway = { CLOUDFLARE_AI_BASE_URL: env.CLOUDFLARE_AI_BASE_URL, CLOUDFLARE_AI_API_TOKEN: env.CLOUDFLARE_AI_API_TOKEN };
+  const admin = () => new CloudflareScopeHost({ scope: env.SCOPE as never, controlPlane: env.CONTROL_PLANE as never }).admin;
   return {
     bucket,
-    config: {
-      model: env.REVIEW_MODEL, platformTenant: env.REVIEW_PLATFORM_TENANT,
-      maxDiffBytes: configNumber(env.REVIEW_MAX_DIFF_BYTES), maxInputTokens: configNumber(env.REVIEW_MAX_INPUT_TOKENS),
-      maxOutputTokens: configNumber(env.REVIEW_MAX_OUTPUT_TOKENS),
-    },
-    modelHost: () => createModelHost({ env: gateway, sent: 'the changed files of a staff-uploaded review' }),
-    recordUsage: (input) => new CloudflareScopeHost({ scope: env.SCOPE as never, controlPlane: env.CONTROL_PLANE as never }).admin.recordModelUsage(input),
+    config: reviewConfig(env),
+    modelHost: (guard) => createModelHost({ env: gateway, sent: 'the changed files of a staff-uploaded review', ...(guard ? { guard } : {}) }),
+    recordUsage: (input) => admin().recordModelUsage(input),
+    spendReads: spendReadsFor(env),
   };
 }
 

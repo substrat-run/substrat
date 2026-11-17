@@ -178,7 +178,11 @@ export const PROBLEM_EXTENSIONS = {
     reason: z.string().min(1).optional(),
     ...storeCarry,
   }),
-  rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional(), ...storeCarry }),
+  /**
+   * `reason` narrows a budget that is not a request rate: `review_spend_limit_reached` (#2365), a
+   * workspace whose code reviews would cost more today than its daily limit allows.
+   */
+  rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional(), reason: z.string().min(1).optional(), ...storeCarry }),
   /**
    * `reason` narrows a refusal a caller should wait out rather than report, as `forbidden`'s does:
    * `system_door_wait` (#1834), a scope that kept restarting under a module's system door.

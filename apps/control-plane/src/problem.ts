@@ -5,6 +5,7 @@ import {
   substratError,
   toProblem,
   type ErrorCode,
+  type ExtensionsFor,
   type Problem,
 } from '@substrat-run/contracts';
 
@@ -30,8 +31,12 @@ function problemResponse(body: Problem, carried?: Readonly<Record<string, unknow
 }
 
 /** A refusal this worker decided, by its code: the status follows from the catalog. */
-export function refuse(code: ErrorCode, detail: string): Response {
-  return problemResponse(toProblem(substratError(code, detail)));
+export function refuse<C extends ErrorCode>(code: C, detail: string, extensions?: ExtensionsFor<C>): Response {
+  const response = problemResponse(toProblem(substratError(code, detail, extensions)));
+  // RFC 9110 §10.2.3: the wait a `rate_limited` body carries is the header's too.
+  const retryAfter = (extensions as { retryAfter?: number } | undefined)?.retryAfter;
+  if (retryAfter !== undefined) response.headers.set('retry-after', String(retryAfter));
+  return response;
 }
 
 /**
