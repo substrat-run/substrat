@@ -1,5 +1,37 @@
 # @substrat-run/dashboard
 
+## 0.49.20
+
+### Patch Changes
+
+- 6694000: The dashboard's lists no longer show their empty state before the first answer arrives. Verticals, Team, the Create-app catalog, the Observability app picker, the Pulse apps table and Domains each show a skeleton shaped like their rows while loading, show the empty state only once the read has answered with nothing, and show a failed read as an error with a Try again button, never as an empty list. Each team list now loads on its own, so one slow read no longer holds the others back.
+- 7892b6b: A connection probe and a connection's activity can now say what its consent covers (`consent: { granted, missing, checkedAt }`). A non-empty `missing` means the connection needs a new consent round, not new keys.
+
+  Fortnox reads the scopes each token mint names. A consent missing a scope the platform asks for shows as "needs re-consent", never as a refused credential. The probe reports it without refusing, and the sweep fails only the bindings that need the missing scopes, with a readable reason and no 403. `completeFortnoxConsent` returns `grantedScopes`, and its `financialYears` is `null` when the consent has no `bookkeeping` scope.
+
+  The dashboard's connection view shows **Needs re-consent** with the missing scopes and a **Re-consent** button that starts the usual consent round. The consent callback names a shortfall, and passes it back to a vertical as `missing`.
+
+- d8530ae: An app's mail-in address in the dashboard: Settings → Integrations shows it with its counts, and a team owner or admin can get, replace or turn it off and set who may send. The control-plane API gains `GET`/`POST /tenants/:t/scopes/:s/mail-in` over a host-injected `mailIn` door, and contracts gain `mailInAddressAct` and `mailInStanding`.
+- 0ac6f3e: A model setting is now held to the platform's model catalog on every write, not only the Environment tab's: the install form picks it from the same catalog picker instead of a text field, and an app remembers which of its settings are models, so a write that reaches the app's environment another way is refused with the same "must be a listed model" problem (#1054).
+- b59a4af: Code reviews are shown priced at zero beside what they would cost. The model-usage summary takes the scopes whose lines are zero-rated, and each row and the totals carry `zeroRatedCalls` and `zeroRatedUsd`, left out of `billedUsd`. A team's usage gains a `reviews` block (tokens, would-be cost, charged), which the dashboard's Billing page shows as "free in preview". The console's model-usage table shows the zero-rated amount.
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [54fbd42]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+  - @substrat-run/connector-fortnox@0.8.0
+  - @substrat-run/control-plane-api@0.202.0
+  - @substrat-run/vertical-host@0.202.0
+  - @substrat-run/model-providers@0.5.92
+  - @substrat-run/kernel@0.202.0
+  - @substrat-run/adapter-cloudflare@0.202.0
+  - @substrat-run/engine-invites@0.9.79
+  - @substrat-run/engine-protocol@0.14.2
+  - @substrat-run/control-plane-client@0.9.2
+
 ## 0.49.19
 
 ### Patch Changes

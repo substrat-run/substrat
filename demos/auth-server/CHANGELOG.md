@@ -1,5 +1,22 @@
 # @substrat-run/demo-auth-server
 
+## 0.18.10
+
+### Patch Changes
+
+- 44ce6fd: A managed tenant's sign-in client is registered once at its manager's auth server, keyed by its scope, so a retried `provision-tenant` reuses it. Deleting the tenant takes it off that auth server's account pages, and reaping it removes its client there too (#3261).
+- f642a08: An Auth Server install can ask the platform to register it for platform-provided social sign-in itself (#1544). Opening its Connections page asks when it holds no relay client or lacks a provider the relay serves, at most once an hour, and a "Set up platform sign-in" button asks on demand and shows what the platform answered. The platform reconciles only the calling install's own scope, and never rotates the secret of an install that says it already holds a client.
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [54fbd42]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+  - @substrat-run/vertical-host@0.202.0
+  - @substrat-run/kernel@0.202.0
+
 ## 0.18.9
 
 ### Patch Changes

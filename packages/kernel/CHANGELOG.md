@@ -1,5 +1,21 @@
 # @substrat-run/kernel
 
+## 0.202.0
+
+### Minor Changes
+
+- b59a4af: Code reviews are shown priced at zero beside what they would cost. The model-usage summary takes the scopes whose lines are zero-rated, and each row and the totals carry `zeroRatedCalls` and `zeroRatedUsd`, left out of `billedUsd`. A team's usage gains a `reviews` block (tokens, would-be cost, charged), which the dashboard's Billing page shows as "free in preview". The console's model-usage table shows the zero-rated amount.
+
+### Patch Changes
+
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+
 ## 0.201.0
 
 ### Patch Changes
