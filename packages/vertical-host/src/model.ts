@@ -24,7 +24,7 @@
  * metadata, spend limits) are layered on that row by the provider package when the
  * host asks for them; the line this produces is the same for every row.
  */
-import { generateText, stepCountIs, tool, zodSchema, type LanguageModelUsage, type ToolSet } from 'ai';
+import { generateText, stepCountIs, streamText, tool, zodSchema, type LanguageModelUsage, type ToolSet } from 'ai';
 import {
   createModel,
   credentialsFrom,
@@ -94,6 +94,14 @@ export interface ModelRequest extends ModelIntent {
   readonly abortSignal?: AbortSignal;
   /** Retries the AI SDK makes on its own after a retryable failure. Default 2; 0 makes one request one HTTP call. */
   readonly maxRetries?: number;
+  /**
+   * Stream the reply and assemble it before returning: the run, its line and its steps are what an
+   * unstreamed call gives. An upstream that closes an unstreamed call it has waited on too long
+   * keeps a streamed one open while tokens flow — the gateway closed the review reader's
+   * unstreamed reads at about 60 s (#2365). A stream that fails partway throws its own error and
+   * records nothing; its partial text is never returned as a reply.
+   */
+  readonly stream?: boolean;
 }
 
 /** One model call inside a run, and the tool calls it made: what a turn record shows. */
@@ -286,7 +294,7 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
         )
       : undefined;
     const started = now();
-    const result = await generateText({
+    const call = {
       model: resolved.model,
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(request.system ? { system: request.system } : {}),
@@ -296,7 +304,8 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
       ...(request.maxRetries !== undefined ? { maxRetries: request.maxRetries } : {}),
-    });
+    };
+    const result = request.stream ? await streamed(call) : await generateText(call);
     const finished = now();
 
     const tokens = stepTokensOf(result.totalUsage);
@@ -330,4 +339,25 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
   };
 
   return { status, run };
+}
+
+/**
+ * A streamed call, assembled into what `generateText` returns. The AI SDK reports a stream's
+ * failure only to `onError`: a stream that fails partway still RESOLVES with the text it had,
+ * and one that fails before any output rejects with `NoOutputGeneratedError`, which hides the
+ * provider's own error (its status, whether it is retryable). So the first error the stream
+ * reports is kept and thrown in both cases, and an abort throws the signal's reason.
+ */
+async function streamed(call: Parameters<typeof streamText>[0]) {
+  let failure: { readonly error: unknown } | undefined;
+  const result = streamText({ ...call, onError: ({ error }) => { failure ??= { error }; } });
+  let assembled;
+  try {
+    const [text, finishReason, totalUsage, steps] = await Promise.all([result.text, result.finishReason, result.totalUsage, result.steps]);
+    assembled = { text, finishReason, totalUsage, steps };
+  } catch (error) {
+    throw failure ? failure.error : error;
+  }
+  if (failure) throw failure.error;
+  return assembled;
 }

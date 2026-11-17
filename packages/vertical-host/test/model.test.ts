@@ -6,7 +6,8 @@
  * is the governance around the call, not any provider's wire format.
  */
 import { describe, expect, it } from 'vitest';
-import { MockLanguageModelV3 } from 'ai/test';
+import { APICallError } from 'ai';
+import { MockLanguageModelV3, simulateReadableStream } from 'ai/test';
 import { scopeId, tenantId, z, type ModelUsageLine } from '@substrat-run/contracts';
 import { createModelHost, MODEL_MAX_STEPS, stepTokensOf, type ModelIntent } from '../src/model.js';
 
@@ -145,6 +146,52 @@ describe('run', () => {
     // nothing half-recorded. Validated after the fact, this cost a model call.
     expect(model.doGenerateCalls).toHaveLength(0);
     expect(guarded).toBe(0);
+    expect(lines).toHaveLength(0);
+  });
+});
+
+/**
+ * A streamed reply: reasoning, then the text in pieces, then the finish with its usage. `fail`
+ * makes the provider fail before any output (`before`) or after part of the text (`partway`).
+ */
+const streamingModel = (fail?: 'before' | 'partway') =>
+  new MockLanguageModelV3({
+    doStream: async () => {
+      const closed = new APICallError({ message: 'other side closed', url: 'https://gateway.invalid', requestBodyValues: {}, statusCode: 503, isRetryable: true });
+      // The HTTP call itself failing: the SDK would otherwise hide it behind `NoOutputGeneratedError`.
+      if (fail === 'before') throw closed;
+      const chunks: unknown[] = [
+        { type: 'stream-start', warnings: [] },
+        { type: 'reasoning-start', id: 'r' }, { type: 'reasoning-delta', id: 'r', delta: 'weighing it' }, { type: 'reasoning-end', id: 'r' },
+        { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'Forty' },
+        ...(fail === 'partway' ? [{ type: 'error', error: closed }] : []),
+        { type: 'text-delta', id: 't', delta: '-two.' }, { type: 'text-end', id: 't' },
+        { type: 'finish', finishReason: { unified: 'length', raw: 'length' }, usage: { inputTokens: { total: 100_000, noCache: 100_000, cacheRead: 0, cacheWrite: undefined }, outputTokens: { total: 10_000, text: 9_000, reasoning: 1_000 } } },
+      ];
+      return { stream: simulateReadableStream({ chunks }) } as never;
+    },
+  });
+
+describe('run, streamed (#2365)', () => {
+  it('assembles the streamed reply into the same run and line an unstreamed call gives', async () => {
+    const lines: ModelUsageLine[] = [];
+    const host = hostWith(streamingModel(), { record: (line) => void lines.push(line) });
+    const run = await host.run({ spec: 'claude-opus-5', attribution, prompt: 'What is the answer?', stream: true, maxRetries: 0 });
+
+    expect(run.text).toBe('Forty-two.');
+    expect(run.finishReason).toBe('length');
+    expect(run.steps).toHaveLength(1);
+    expect(lines).toEqual([run.line]);
+    expect(run.line).toMatchObject({ reported: true, inputTokens: 100_000, outputTokens: 10_000, listUsd: '0.75' });
+  });
+
+  it.each(['before', 'partway'] as const)('a stream that fails %s throws the provider’s own error and records nothing', async (fail) => {
+    const lines: ModelUsageLine[] = [];
+    const host = hostWith(streamingModel(fail), { record: (line) => void lines.push(line) });
+    const run = host.run({ spec: 'claude-opus-5', attribution, prompt: 'hi', stream: true, maxRetries: 0 });
+    // The provider's error, status and retryability intact, so a caller's retry rule still reads
+    // it; never the partial "Forty" read as a reply.
+    await expect(run).rejects.toMatchObject({ name: 'AI_APICallError', statusCode: 503, isRetryable: true });
     expect(lines).toHaveLength(0);
   });
 });

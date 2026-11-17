@@ -1004,7 +1004,8 @@ changes. `REVIEW_PLATFORM_TENANT` is the platform team's own tenant, which the u
 filed under (with a fixed platform-owned sentinel scope until #1073); it is an id, set the same
 way and never written in public text. Check: the model-usage ledger shows one `review/read`
 line for that review. Unset, the review still runs, keeps its usage on the record, and writes
-no ledger line. The caps default to 256 KiB of changed text and 8k output tokens; each is a
+no ledger line. The caps default to 256 KiB of changed text and 32k output tokens (the reader's call is
+streamed, so a long read is not closed by the gateway, #2365); each is a
 setting (`REVIEW_MAX_DIFF_BYTES`, `REVIEW_MAX_OUTPUT_TOKENS`, and `REVIEW_MAX_INPUT_TOKENS`
 for the guard, default 120k estimated).
 

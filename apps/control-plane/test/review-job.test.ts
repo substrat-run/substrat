@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MockLanguageModelV3 } from 'ai/test';
+import { MockLanguageModelV3, simulateReadableStream } from 'ai/test';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { mulDecimal, platformActorId, tenantId, type EntitlementGrant, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
@@ -9,7 +9,7 @@ import { walkReviewArchive } from '../src/review-archive.js';
 import { diffReview, type ChangedFile } from '../src/review-diff.js';
 import { lineChanges } from '../src/review-lines.js';
 import {
-  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, reviewOnce, runReviewJob, transientModelError,
+  REVIEW_LIST_MAX, REVIEW_MAX_ATTEMPTS, REVIEW_MAX_OUTPUT_TOKENS, REVIEW_RETRY_DELAYS_MS, REVIEW_WRITE_EXPIRY_MARGIN_MS, REVIEW_SENTINEL_SCOPE, REVIEW_WRITE_RETRY_MAX_MS, REVIEW_WRITE_RETRY_MS, reviewAlarm, reviewJobDeps, reviewOnce, runReviewJob, transientModelError,
   type ReviewConfig, type ReviewJobDeps,
 } from '../src/review-job.js';
 import { assemble, parseReply, redact, reviewPrompt, reviewSystem } from '../src/review-reader.js';
@@ -42,25 +42,36 @@ async function stored(source: Entry[], base: Entry[] | null) {
   return { id: record.id, actor };
 }
 
-type Step = { text?: string; finish?: 'stop' | 'length'; error?: unknown; hang?: boolean };
+type Step = { text?: string; finish?: 'stop' | 'length'; error?: unknown; hang?: boolean; cut?: unknown };
 
-/** The model double: createModelHost's own `factories` seam, scripted replies, and a call counter. */
+/**
+ * The model double: createModelHost's own `factories` seam, scripted replies, and a call counter.
+ * The reader streams (`REVIEW_CALL`), so each reply arrives in two pieces; `cut` fails the stream
+ * after the first piece.
+ */
 function double(script: Step[]) {
   const calls = { n: 0, prompts: [] as string[], aborted: false };
   const model = new MockLanguageModelV3({
-    doGenerate: async (options) => {
+    doStream: async (options) => {
       calls.prompts.push(JSON.stringify(options.prompt));
       const step = script[Math.min(calls.n++, script.length - 1)]!;
       if (step.hang) {
         await new Promise((_, reject) => options.abortSignal?.addEventListener('abort', () => { calls.aborted = true; reject(options.abortSignal!.reason); }));
       }
       if (step.error) throw step.error;
-      return {
-        content: [{ type: 'text', text: step.text ?? '' }],
-        finishReason: { unified: step.finish ?? 'stop', raw: step.finish ?? 'stop' },
-        usage: { inputTokens: { total: 1200, noCache: 1200, cacheRead: 0, cacheWrite: undefined }, outputTokens: { total: 80, text: 80, reasoning: undefined } },
-        warnings: [],
-      } as never;
+      const body = step.text ?? '';
+      const half = Math.ceil(body.length / 2);
+      const chunks: unknown[] = [
+        { type: 'stream-start', warnings: [] },
+        { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: body.slice(0, half) },
+        ...(step.cut ? [{ type: 'error', error: step.cut }] : []),
+        { type: 'text-delta', id: 't', delta: body.slice(half) }, { type: 'text-end', id: 't' },
+        {
+          type: 'finish', finishReason: { unified: step.finish ?? 'stop', raw: step.finish ?? 'stop' },
+          usage: { inputTokens: { total: 1200, noCache: 1200, cacheRead: 0, cacheWrite: undefined }, outputTokens: { total: 80, text: 80, reasoning: undefined } },
+        },
+      ];
+      return { stream: simulateReadableStream({ chunks }) } as never;
     },
   });
   return { calls, host: (guard?: Parameters<ReviewJobDeps['modelHost']>[0]) => createModelHost({ env: {}, ...(guard ? { guard } : {}), factories: { cloudflare: () => () => model as never } }) };
@@ -223,6 +234,15 @@ describe('review job: the reader half with a model double', () => {
     expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'archive changed since intake' });
   });
 
+  it('(f3) a stream cut partway is retried, never read as the partial reply it had sent', async () => {
+    const { id, actor } = await stored(CHANGED.source, CHANGED.base);
+    const cut = Object.assign(new Error('Network connection lost.'), { retryable: true });
+    const model = double([{ text: reply({ findings: [finding] }), cut }]);
+    expect(await runReviewJob(id, 0, deps(model))).toEqual({ done: false, retryInMs: REVIEW_RETRY_DELAYS_MS[0] });
+    expect(await runReviewJob(id, 2, deps(model))).toEqual({ done: true });
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'incomplete', reason: 'model unavailable', usage: null, findings: [] });
+  });
+
   it('(f) a 429 on every attempt is one call per attempt, asks for the backoff twice, then writes `incomplete: model unavailable`', async () => {
     const { id, actor } = await stored(CHANGED.source, CHANGED.base);
     const model = double([{ error: Object.assign(new Error('rate limited'), { statusCode: 429 }) }]);
@@ -313,11 +333,21 @@ describe('review job: the reader half with a model double', () => {
 
   it('(h) the production model host posts to the gateway over HTTP: payload logging off, no tools, and none of the env beyond the gateway pair', async () => {
     const { id, actor } = await stored(CHANGED.source, CHANGED.base);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({
-      id: 'c1', object: 'chat.completion', created: 1, model: MODEL_ID,
-      choices: [{ index: 0, message: { role: 'assistant', content: reply({ findings: [] }) }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 900, completion_tokens: 40, total_tokens: 940 },
-    }));
+    // The reader streams (#2365): the reply arrives as server-sent chunks, usage in the last one.
+    const content = reply({ findings: [] });
+    const chunk = (body: Record<string, unknown>) => `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: MODEL_ID, ...body })}\n\n`;
+    const sse = [
+      chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: content.slice(0, 10) }, finish_reason: null }] }),
+      chunk({ choices: [{ index: 0, delta: { content: content.slice(10) }, finish_reason: null }] }),
+      chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    ];
+    // Usage only when the request asks for it, as an OpenAI-compatible provider may do: a reply
+    // with none is unpriced and escapes the spend limit.
+    const usage = chunk({ choices: [], usage: { prompt_tokens: 900, completion_tokens: 40, total_tokens: 940 } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const asked = (JSON.parse(String(init?.body)) as { stream_options?: { include_usage?: boolean } }).stream_options?.include_usage === true;
+      return new Response([...sse, ...(asked ? [usage] : []), 'data: [DONE]\n\n'].join(''), { headers: { 'content-type': 'text/event-stream' } });
+    });
     const production = reviewJobDeps({
       ...testEnv, REVIEW_MODEL: SPEC, REVIEW_PLATFORM_TENANT: platformTenant,
       CLOUDFLARE_AI_BASE_URL: 'https://gateway.example/v1', CLOUDFLARE_AI_API_TOKEN: 'test-gateway-key',
@@ -334,8 +364,8 @@ describe('review job: the reader half with a model double', () => {
     expect(new Headers(init.headers).get('cf-aig-gateway-id')).toBeNull();
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(body).not.toHaveProperty('tools');
-    expect(body).toMatchObject({ model: MODEL_ID, max_tokens: 8000 });
-    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', usage: { inputTokens: 900 } });
+    expect(body).toMatchObject({ model: MODEL_ID, max_tokens: REVIEW_MAX_OUTPUT_TOKENS, stream: true, stream_options: { include_usage: true } });
+    expect(await readReview(bucket, actor, id)).toMatchObject({ state: 'completed', usage: { inputTokens: 900, outputTokens: 40, reported: true } });
   });
 });
 
