@@ -200,6 +200,11 @@ function PlatformSignInPanel({ state, onSynced }: { state: PlatformSignIn; onSyn
   const last = answer ?? state.last?.result ?? null;
   const settled = last === null || last.status === 'delivered' || last.status === 'current';
   if (state.clientHeld && settled && !answer) return null;
+  // The operator's own ask just succeeded. The text follows that answer rather than the state the
+  // page loaded with: it described what the answer has ended, and the reload a delivery triggers
+  // may not have landed yet.
+  const succeeded = answer?.status === 'delivered' || answer?.status === 'current';
+  const registered = state.clientHeld || succeeded;
 
   const sync = async () => {
     setBusy(true);
@@ -219,15 +224,17 @@ function PlatformSignInPanel({ state, onSynced }: { state: PlatformSignIn; onSyn
     <section className="panel">
       <div className="panel-head"><h2>Sign-in provided by Substrat</h2></div>
       <p className="muted">
-        {state.clientHeld
-          ? 'The last attempt to bring the providers the platform offers up to date did not finish.'
-          : 'This issuer is not registered for the sign-in providers the platform offers yet.'}
+        {succeeded
+          ? 'This issuer is registered for the sign-in providers the platform offers.'
+          : state.clientHeld
+            ? 'The last attempt to bring the providers the platform offers up to date did not finish.'
+            : 'This issuer is not registered for the sign-in providers the platform offers yet.'}
         {' '}Each provider arrives switched off; nothing changes for your users until you enable it.
       </p>
       {last && <p className={last.status === 'failed' ? 'error' : 'muted'}>{describeHeal(last)}</p>}
       {err && <p className="error">{err}</p>}
       <Button onClick={() => void sync()} loading={busy}>
-        {state.clientHeld ? 'Re-sync platform sign-in' : 'Set up platform sign-in'}
+        {registered ? 'Re-sync platform sign-in' : 'Set up platform sign-in'}
       </Button>
     </section>
   );
