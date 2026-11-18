@@ -41,6 +41,34 @@ export interface ProviderField {
    * certificate now" is one; the connector reads it and never stores it.
    */
   toggle?: true;
+  /**
+   * #3281: a choice between alternatives rather than part of the credential — Microsoft 365's
+   * sign-in method. Sent as the chosen `value`; anything not listed is left out, never stored as
+   * typed. The connector reads it and never stores it. A new connection starts on the first
+   * choice; a rotation starts on the one the connection holds: the first whose `heldWhen` names a
+   * key of the stored credential's summary (`ConnectionCredential.fields`).
+   */
+  choices?: { value: string; label: string; hint?: string; heldWhen?: string[] }[];
+  /**
+   * #3281: shown, and sent, only while the named choice field holds one of `values` (`''` for
+   * the choice left out). A field hidden by its choice is dropped before the credential leaves
+   * the dashboard, whatever the form held.
+   */
+  showWhen?: { field: string; values: string[] };
+  /**
+   * #3281: an `optional` field the dialog requires on a NEW connection while its `showWhen` choice
+   * holds one of these values. Not when rotating: left empty there, the connector keeps what the
+   * connection holds, and refuses in its own words when it holds nothing to keep.
+   */
+  requiredWhen?: string[];
+  /** #3281: a date (`YYYY-MM-DD`) rather than text. */
+  input?: 'date';
+  /**
+   * #3281: the value may come from a file, read in the browser: a text file (PEM) as its text, a
+   * binary one (a DER `.cer`) as the base64 of its bytes — or be pasted. `accept` is the file
+   * picker's filter.
+   */
+  file?: { accept: string };
 }
 
 export interface ProviderSpec {
@@ -94,8 +122,8 @@ export interface ProviderSpec {
   sendsMail?: true;
   /**
    * #2100 — the connection may sign in with a certificate the PLATFORM generated, which the
-   * tenant downloads from the connection and uploads on the provider's side. The detail view
-   * shows it; nothing about it is secret.
+   * tenant downloads from the connection and uploads on the provider's side, or (#3281) one the
+   * owner generated and supplied. The detail view shows it; nothing about it is secret.
    */
   certificate?: true;
 }
@@ -254,18 +282,94 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     name: 'Microsoft 365',
     description:
       "Send mail as your organisation's own addresses, and keep documents in one Teams channel's folder, " +
-      'through an app registration in your Entra directory. ' +
-      'Leave the client secret empty and a certificate is generated for this connection: download it here ' +
-      'and upload it under Certificates & secrets.',
+      'through an app registration in your Entra directory. It signs in with a client secret (the quickest), ' +
+      'a certificate generated for this connection (the most secure: its private key never leaves the platform), ' +
+      'or a certificate of your own.',
     monogram: 'M3',
     fields: [
       { key: 'tenantId', label: 'Directory (tenant) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
       { key: 'clientId', label: 'Application (client) ID', secret: false, placeholder: '00000000-0000-0000-0000-000000000000' },
       { key: 'senders', label: 'Sender addresses (comma-separated)', secret: false, placeholder: 'noreply@example.com' },
       { key: 'siteUrl', label: 'SharePoint site URL', secret: false, placeholder: 'https://example.sharepoint.com/sites/Team' },
-      { key: 'clientSecret', label: 'Client secret', secret: true, optional: true, placeholder: 'leave empty to use a certificate' },
+      // `SIGN_IN_FIELD` in the connector (#3281), in the owner's order: the simplest first. `heldWhen`
+      // names the summary keys `microsoft365CredentialSummary` writes for each method, so a rotation
+      // starts on the method the connection holds. A switch to a generated certificate still under
+      // way (`nextCertificate`) reads as the generated one, so a save continues it.
+      {
+        key: 'signInWith',
+        label: 'Sign in with',
+        secret: false,
+        optional: true,
+        choices: [
+          {
+            value: 'client-secret',
+            label: 'Client secret',
+            hint: 'The simplest. Microsoft generates it: Certificates & secrets → Client secrets → New. Paste its value, and the date Entra shows it expires.',
+            heldWhen: ['clientSecret'],
+          },
+          {
+            value: 'certificate',
+            label: 'Platform-generated certificate',
+            hint: 'The most secure: the private key never leaves the platform. After saving, download the certificate here and upload it under Certificates & secrets → Certificates. It is renewed before it ends.',
+            heldWhen: ['nextCertificate', 'certificateGenerated'],
+          },
+          {
+            value: 'own-certificate',
+            label: 'Your own certificate',
+            hint: 'A certificate you generated and your Entra admin already uploaded. Give its private key and its .cer. The platform does not renew it.',
+            heldWhen: ['certificateSupplied'],
+          },
+        ],
+      },
+      // Shown with no choice too ('' — a caller from before the choice), where a given secret still signs in.
+      {
+        key: 'clientSecret',
+        label: 'Client secret',
+        secret: true,
+        optional: true,
+        showWhen: { field: 'signInWith', values: ['client-secret', ''] },
+        requiredWhen: ['client-secret'],
+      },
+      // `CLIENT_SECRET_EXPIRY_FIELD` in the connector: the secret carries no end, Entra shows it.
+      {
+        key: 'clientSecretExpiresOn',
+        label: 'Secret expires on',
+        secret: false,
+        optional: true,
+        input: 'date',
+        showWhen: { field: 'signInWith', values: ['client-secret', ''] },
+      },
+      // `OWN_KEY_FIELD` / `OWN_CERTIFICATE_FIELD` in the connector. Read once there, sealed, never echoed.
+      {
+        key: 'ownPrivateKey',
+        label: 'Private key (PEM, unencrypted)',
+        secret: true,
+        optional: true,
+        placeholder: '-----BEGIN PRIVATE KEY-----',
+        showWhen: { field: 'signInWith', values: ['own-certificate'] },
+        requiredWhen: ['own-certificate'],
+        file: { accept: '.pem,.key,.txt' },
+      },
+      {
+        key: 'ownCertificate',
+        label: 'Certificate (.cer, DER or PEM)',
+        secret: false,
+        optional: true,
+        placeholder: '-----BEGIN CERTIFICATE-----',
+        showWhen: { field: 'signInWith', values: ['own-certificate'] },
+        requiredWhen: ['own-certificate'],
+        file: { accept: '.cer,.crt,.pem,.der' },
+      },
       // `ROTATE_FIELD` in the connector. Without it, a save within 30 days of the certificate's end rotates anyway.
-      { key: 'rotateCertificate', label: 'Generate a new certificate now', secret: false, optional: true, toggle: true },
+      // Never a certificate you supplied: the platform does not rotate that one.
+      {
+        key: 'rotateCertificate',
+        label: 'Generate a new certificate now',
+        secret: false,
+        optional: true,
+        toggle: true,
+        showWhen: { field: 'signInWith', values: ['certificate', ''] },
+      },
     ],
     // Mail lands nothing in a scope, and the channel-folder sync lands through the vertical's own
     // operation, checked at bind — so no standing grant (`MICROSOFT365_CONNECTION_GRANTS`).
@@ -333,13 +437,28 @@ export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<st
   const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
   const secret: Record<string, string> = {};
   const missing: string[] = [];
+  // A field its choice hides is dropped, whatever the form held (#3281).
+  const chosen = (field: string) => {
+    const v = body[field];
+    const choice = spec.fields.find((f) => f.key === field);
+    return typeof v === 'string' && choice?.choices?.some((c) => c.value === v) ? v : '';
+  };
   for (const f of spec.fields) {
+    if (f.showWhen && !f.showWhen.values.includes(chosen(f.showWhen.field))) continue;
     const v = body[f.key];
+    // A choice is one of its listed values or absent; anything else is left out, never stored as typed.
+    if (f.choices) {
+      const c = chosen(f.key);
+      if (c) secret[f.key] = c;
+      continue;
+    }
     // A toggle is `'yes'` or absent; anything else is left out, never stored as typed.
     if (f.toggle) {
       if (v === 'yes') secret[f.key] = 'yes';
       continue;
     }
+    // `requiredWhen` is the dialog's, for a new connection: here an empty one may be a rotation
+    // keeping what is stored, which only the connector can judge.
     if (typeof v === 'string' && v.trim() !== '') secret[f.key] = v.trim();
     else if (!f.optional) missing.push(f.key);
   }

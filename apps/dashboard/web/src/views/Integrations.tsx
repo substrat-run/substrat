@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useState } from 'react';
-import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui/wa';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { Button, Checkbox, Dialog, Input, RadioGroup, Select, Textarea } from '@substrat-run/ui/wa';
 import {
   api,
   teamApi,
@@ -342,7 +342,8 @@ function IntegrationDetail({
   /** The app whose vertical owns the connection — the routes are per-app by design. */
   scopeId: string;
   connection: ConnectionView;
-  onRotate: () => void;
+  /** `held`: the keys of the stored credential's summary, so the dialog starts on the method the connection holds (#3281). */
+  onRotate: (held: string[]) => void;
   onClose: () => void;
 }) {
   /**
@@ -432,7 +433,7 @@ function IntegrationDetail({
             <HealthLine conn={health} />
             <SweepStrip runs={activity?.sweepRuns ?? []} skippedNote="nothing polls this connection" />
           </div>
-          <Button variant="secondary" size="sm" onClick={onRotate}>
+          <Button variant="secondary" size="sm" onClick={() => onRotate(activity?.credential.map((f) => f.key) ?? [])}>
             Rotate
           </Button>
         </div>
@@ -450,7 +451,7 @@ function IntegrationDetail({
                 re-consenting, Test connection checks again.
               </div>
             </div>
-            <Button variant="primary" size="sm" onClick={onRotate}>
+            <Button variant="primary" size="sm" onClick={() => onRotate(activity?.credential.map((f) => f.key) ?? [])}>
               Re-consent
             </Button>
           </div>
@@ -523,27 +524,41 @@ function IntegrationDetail({
               Secrets are shown only by their last four characters — enough to tell two credentials apart, never
               enough to use. Rotate to replace them.
             </div>
+            {/* #3281: a client secret's end, when the owner gave it. Nothing renews it. */}
+            {clientSecretEnd(activity.credential) && (
+              <ExpiryNotice notAfter={clientSecretEnd(activity.credential)!} subject="client secret" />
+            )}
           </div>
         )}
 
         {/* #2100: the certificate the platform generated for this connection. Public — the
-            private key never leaves the plane — and the tenant's next step until it is uploaded. */}
+            private key never leaves the plane — and the tenant's next step until it is uploaded.
+            #3281: or the owner's own, which the platform does not renew, so its end is a warning. */}
         {activity?.certificate && (
           <div>
-            <CertificateCard
-              title="Certificate"
-              certificate={activity.certificate}
-              download="Download certificate (.cer)"
-              filename={provider.provider}
-              note="Upload it to your app registration under Certificates & secrets, then test the connection. The thumbprint Entra shows should match the one above. The private key stays with the platform."
-            />
+            {activity.certificate.supplied ? (
+              <>
+                <CertificateCard
+                  title="Certificate (yours, supplied)"
+                  certificate={activity.certificate}
+                  note="You supplied this certificate and its private key; the platform does not renew it. The thumbprint Entra shows under Certificates & secrets should match the one above."
+                />
+                <ExpiryNotice notAfter={activity.certificate.notAfter} subject="certificate" />
+              </>
+            ) : (
+              <CertificateCard
+                title="Certificate"
+                certificate={activity.certificate}
+                download={{ label: 'Download certificate (.cer)', filename: provider.provider }}
+                note="Upload it to your app registration under Certificates & secrets, then test the connection. The thumbprint Entra shows should match the one above. The private key stays with the platform."
+              />
+            )}
             {activity.certificate.next && (
               <div style={{ marginTop: 10 }}>
                 <CertificateCard
                   title="New certificate"
                   certificate={activity.certificate.next}
-                  download="Download new certificate (.cer)"
-                  filename={`${provider.provider}-new`}
+                  download={{ label: 'Download new certificate (.cer)', filename: `${provider.provider}-new` }}
                   note={`Upload it beside the current one before ${activity.certificate.notAfter.slice(0, 10)}, then save the connection: it switches to the new certificate once Entra accepts it, and you can then remove the old one from the app registration. Until then the current certificate keeps signing.`}
                 />
               </div>
@@ -664,6 +679,7 @@ function ConnectDialog({
   teamId,
   provider,
   rotate,
+  held,
   scopeId,
   pickTarget,
   onDone,
@@ -679,6 +695,8 @@ function ConnectDialog({
     multiAccount?: boolean;
   };
   rotate: boolean;
+  /** #3281: the stored credential's summary keys, from the connection the dialog was opened on. */
+  held?: string[];
   /** The fixed target app (the per-app tab). Omit to render the account-level picker. */
   scopeId?: string;
   pickTarget?: Array<{ scopeId: string; name: string; connected: boolean }>;
@@ -689,7 +707,15 @@ function ConnectDialog({
   const fleet = provider.multiAccount === true;
   const unit = fleetUnit(provider);
   const [manual, setManual] = useState(!redirect);
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string>>(() => initialValues(provider.fields, held));
+  /**
+   * #3281: which file a field's value was read from, kept with the value rather than in the field:
+   * switching method unmounts the field, and a remounted one that forgot would draw the key.
+   */
+  const [loadedFrom, setLoadedFrom] = useState<Record<string, string | null>>({});
+  /** #3281: fields whose file is still being read; Connect waits for them, so it never sends the file before. */
+  const [reading, setReading] = useState<Record<string, boolean>>({});
+  const form: FormState = { values, rotate, held, fields: provider.fields };
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -701,7 +727,11 @@ function ConnectDialog({
   const [links, setLinks] = useState<ConnectLinkView[]>([]);
   /** The link just minted for sharing — shown once; listing never returns the URL. */
   const [minted, setMinted] = useState<{ url: string; expiresAt: string; copied: boolean } | null>(null);
-  const complete = provider.fields.every((f) => f.optional || (values[f.key] ?? '').trim() !== '') && target !== '';
+  const shown = (f: ProviderField) => fieldShown(f, values);
+  const complete =
+    provider.fields.every((f) => !fieldRequired(f, form) || (values[f.key] ?? '').trim() !== '') &&
+    !Object.values(reading).some(Boolean) &&
+    target !== '';
 
   useEffect(() => {
     if (!redirect || DEV_MOCK || target === '') return;
@@ -774,11 +804,12 @@ function ConnectDialog({
     setRefusal(null);
     setUnavailable(null);
     try {
-      // An optional field left empty is left out, not sent as '' (#2100).
+      // An optional field left empty is left out, not sent as '' (#2100), and so is one its
+      // choice hides (#3281): a key typed before switching to a client secret is not sent.
       const secret = Object.fromEntries(
         provider.fields.flatMap((f) => {
           const v = (values[f.key] ?? '').trim();
-          return v ? [[f.key, v]] : [];
+          return v && shown(f) ? [[f.key, v]] : [];
         }),
       );
       await teamApi(teamId).connectAppIntegration({ scopeId: target, provider: provider.provider, secret });
@@ -938,8 +969,29 @@ function ConnectDialog({
         )}
 
         {(!redirect || manual) &&
-          provider.fields.map((f) =>
-            f.toggle ? (
+          provider.fields.filter(shown).map((f) =>
+            f.choices ? (
+              <ChoiceField
+                key={f.key}
+                field={f}
+                rotate={rotate}
+                value={values[f.key] ?? ''}
+                onChange={(v) => setValues((prev) => ({ ...prev, [f.key]: v }))}
+              />
+            ) : f.file ? (
+              <FileField
+                key={f.key}
+                field={f}
+                suffix={fieldSuffix(f, form)}
+                value={values[f.key] ?? ''}
+                loaded={loadedFrom[f.key] ?? null}
+                onReading={(on) => setReading((prev) => ({ ...prev, [f.key]: on }))}
+                onChange={(v, from) => {
+                  setValues((prev) => ({ ...prev, [f.key]: v }));
+                  setLoadedFrom((prev) => ({ ...prev, [f.key]: from }));
+                }}
+              />
+            ) : f.toggle ? (
               <Checkbox
                 key={f.key}
                 label={f.label}
@@ -949,8 +1001,8 @@ function ConnectDialog({
             ) : (
               <Input
                 key={f.key}
-                label={f.optional ? `${f.label} (optional)` : f.label}
-                type={f.secret ? 'password' : 'text'}
+                label={`${f.label}${fieldSuffix(f, form)}`}
+                type={f.input === 'date' ? 'date' : f.secret ? 'password' : 'text'}
                 placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
                 value={values[f.key] ?? ''}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
@@ -969,6 +1021,228 @@ function ConnectDialog({
       </div>
     </Dialog>
   );
+}
+
+/**
+ * #3281: what the form starts with. A choice starts on the method the connection holds — the first
+ * whose `heldWhen` names a key of its stored credential's summary — and otherwise on its first
+ * option, so a save that corrects one field never changes how the connection signs in.
+ */
+function initialValues(fields: ProviderField[], held: string[] | undefined): Record<string, string> {
+  return Object.fromEntries(
+    fields.flatMap((f) => {
+      const choice = f.choices?.find((c) => c.heldWhen?.some((k) => held?.includes(k))) ?? f.choices?.[0];
+      return choice ? [[f.key, choice.value]] : [];
+    }),
+  );
+}
+
+/** Shown, and sent, only while its choice holds one of the values that show it. */
+function fieldShown(f: ProviderField, values: Record<string, string>): boolean {
+  return !f.showWhen || f.showWhen.values.includes(values[f.showWhen.field] ?? '');
+}
+
+/** What the dialog's requirement rules read: the form, and the connection it was opened on. */
+interface FormState {
+  values: Record<string, string>;
+  rotate: boolean;
+  /** The stored credential's summary keys, when the dialog was opened on a connection. */
+  held?: string[];
+  fields: ProviderField[];
+}
+
+/**
+ * Whether the dialog holds Connect until the field is filled. A `requiredWhen` field (a client
+ * secret, the owner's own key and certificate) is required, except when rotating a connection that
+ * holds the chosen method already: left empty there, the connector keeps what it holds. A pair of
+ * files is replaced whole, so once one of them is given, the other is required too.
+ */
+function fieldRequired(f: ProviderField, form: FormState): boolean {
+  if (!fieldShown(f, form.values) || f.toggle || f.choices) return false;
+  if (!f.optional) return true;
+  if (!f.showWhen) return false;
+  const chosen = form.values[f.showWhen.field] ?? '';
+  if (!(f.requiredWhen ?? []).includes(chosen)) return false;
+  if (!keepsChosen(f.showWhen.field, chosen, form)) return true;
+  return f.file !== undefined && form.fields.some(
+    (g) => g.file && g.showWhen?.field === f.showWhen!.field && (g.requiredWhen ?? []).includes(chosen) && (form.values[g.key] ?? '').trim() !== '',
+  );
+}
+
+/** Is the dialog rotating a connection that already signs in the chosen way, so empty keeps it? */
+function keepsChosen(choiceField: string, chosen: string, form: FormState): boolean {
+  if (!form.rotate) return false;
+  const choice = form.fields.find((g) => g.key === choiceField)?.choices?.find((c) => c.value === chosen);
+  return choice?.heldWhen?.some((k) => form.held?.includes(k)) ?? false;
+}
+
+/** What follows a field's label: nothing when required, what empty means otherwise. */
+function fieldSuffix(f: ProviderField, form: FormState): string {
+  if (fieldRequired(f, form)) return '';
+  return f.requiredWhen && f.showWhen && keepsChosen(f.showWhen.field, form.values[f.showWhen.field] ?? '', form)
+    ? ' (empty keeps the one stored)'
+    : ' (optional)';
+}
+
+/** #3281: one choice between alternatives — Microsoft 365's sign-in method — and what it means. */
+function ChoiceField({
+  field,
+  rotate,
+  value,
+  onChange,
+}: {
+  field: ProviderField;
+  rotate: boolean;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const hint = field.choices?.find((c) => c.value === value)?.hint;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <RadioGroup
+        label={field.label}
+        options={(field.choices ?? []).map((c) => ({ value: c.value, label: c.label }))}
+        value={value}
+        onChange={onChange}
+      />
+      {hint && (
+        <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+          {hint}
+          {rotate ? ' Fields left empty keep what the connection holds.' : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The largest file read: a key or a certificate is a few KB; the connector refuses past 64 KB too. */
+const MAX_FILE_BYTES = 64 * 1024;
+
+/**
+ * #3281: a value read from a file in the browser, or pasted. A text file (PEM) is sent as its
+ * text; a binary one (a DER `.cer`) as the base64 of its bytes, which the connector reads as DER.
+ * A secret read from a file is never drawn: the field says which file it came from, nothing more.
+ */
+function FileField({
+  field,
+  suffix,
+  value,
+  loaded,
+  onReading,
+  onChange,
+}: {
+  field: ProviderField;
+  /** What follows the label: nothing when required, what empty means otherwise. */
+  suffix: string;
+  value: string;
+  /** The file the value was read from, held by the dialog so it outlives this field; null when typed or pasted. */
+  loaded: string | null;
+  /** Whether a file is being read for this field, so the dialog can hold Connect until it is. */
+  onReading: (reading: boolean) => void;
+  onChange: (value: string, loadedFrom: string | null) => void;
+}) {
+  const [problem, setProblem] = useState<string | null>(null);
+  /**
+   * The current read. Every pick, paste, clear and unmount starts a new one, so a slow read that
+   * finishes after a newer choice is dropped instead of overwriting it.
+   */
+  const attempt = useRef(0);
+  const supersede = () => {
+    attempt.current += 1;
+    onReading(false);
+  };
+  // Hidden by another method: a read still running must neither land nor hold Connect.
+  useEffect(() => () => supersede(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const read = async (file: File | undefined) => {
+    setProblem(null);
+    if (!file) return;
+    if (file.size > MAX_FILE_BYTES) {
+      setProblem(`${file.name} is larger than 64 KB — that is not one key or certificate.`);
+      return;
+    }
+    const mine = ++attempt.current;
+    onReading(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (mine === attempt.current) onChange(fileValue(bytes), file.name);
+    } catch {
+      if (mine === attempt.current) setProblem(`${file.name} could not be read — choose it again, or paste its contents below.`);
+    } finally {
+      if (mine === attempt.current) onReading(false);
+    }
+  };
+  const clear = () => {
+    supersede();
+    setProblem(null);
+    onChange('', null);
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>
+        {field.label}
+        {suffix}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <label style={{ fontSize: 12, cursor: 'pointer' }}>
+          <input
+            type="file"
+            aria-label={`${field.label}: choose a file`}
+            accept={field.file?.accept}
+            style={{ fontSize: 12 }}
+            onChange={(e) => {
+              void read(e.target.files?.[0]);
+              // The same file chosen again after Clear still fires.
+              e.target.value = '';
+            }}
+          />
+        </label>
+        {loaded && (
+          <>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Read from {loaded}</span>
+            <Button variant="ghost" size="sm" onClick={clear}>
+              Clear
+            </Button>
+          </>
+        )}
+      </div>
+      {!loaded && (
+        <Textarea
+          ariaLabel={`${field.label} — or paste it here`}
+          placeholder={`…or paste it here: ${field.placeholder ?? ''}`}
+          rows={3}
+          mono
+          spellCheck={false}
+          value={value}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+            supersede();
+            setProblem(null);
+            onChange(e.target.value, null);
+          }}
+        />
+      )}
+      {field.secret && (
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+          Read in your browser and sent once to be sealed with the connection; it is never shown again. Once the
+          connection works, delete your local copy.
+        </div>
+      )}
+      {problem && <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{problem}</div>}
+    </div>
+  );
+}
+
+/** A file's bytes as the value the connector reads: PEM as text, anything else as base64. */
+function fileValue(bytes: Uint8Array): string {
+  let text: string | null = null;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    text = null;
+  }
+  if (text !== null && text.includes('-----BEGIN')) return text;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
 }
 
 /**
@@ -1022,7 +1296,7 @@ function FleetRows({
 export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<AppIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<{ provider: AppIntegration; rotate: boolean } | null>(null);
+  const [dialog, setDialog] = useState<{ provider: AppIntegration; rotate: boolean; held?: string[] } | null>(null);
   const [detail, setDetail] = useState<{ provider: AppIntegration; connection: ConnectionView } | null>(null);
   /**
    * `addressed` disconnects that one row by id (a fleet's company); otherwise the
@@ -1177,6 +1451,7 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
           scopeId={app.app_scope_id}
           provider={dialog.provider}
           rotate={dialog.rotate}
+          held={dialog.held}
           onDone={() => {
             setDialog(null);
             setNonce((n) => n + 1);
@@ -1191,9 +1466,9 @@ export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }
           provider={detail.provider}
           scopeId={app.app_scope_id}
           connection={detail.connection}
-          onRotate={() => {
+          onRotate={(held) => {
             // From a fleet row this is a re-consent for that same company.
-            setDialog({ provider: detail.provider, rotate: true });
+            setDialog({ provider: detail.provider, rotate: true, held });
             setDetail(null);
           }}
           onClose={() => {
@@ -1235,6 +1510,16 @@ export function Integrations({ teamId }: { teamId: string }) {
   const [view, setView] = useState<AccountIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
+  /**
+   * #3281: set when the dialog rotates a connection opened in Details — its app, and its stored
+   * credential's summary keys, so the dialog starts on its method and keeps what is left empty.
+   * Unset for Connect, which is a new connection.
+   */
+  const [rotation, setRotation] = useState<{ scopeId: string; held: string[] } | null>(null);
+  const openConnect = (p: AccountIntegration) => {
+    setRotation(null);
+    setDialog(p);
+  };
   const [detail, setDetail] = useState<{ provider: AccountIntegration; scopeId: string; connection: ConnectionView } | null>(null);
   // Addressed by the connection's own id at the team's door, which needs no serving app: a
   // connection can outlive every app it served, and the page lists it all the same.
@@ -1359,7 +1644,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                       const first = p.connections[0];
                       const scope = first?.apps[0]?.scopeId ?? p.connectTargets.find((t) => t.connected)?.scopeId;
                       if (first && scope) setDetail({ provider: p, scopeId: scope, connection: first });
-                      else setDialog(p);
+                      else openConnect(p);
                     }}
                     disabled={p.connectTargets.length === 0 && !connected}
                   >
@@ -1368,7 +1653,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                   {/* A fleet provider (#1267) keeps growing: Manage opens one company, so
                       adding the next one needs its own door. */}
                   {p.multiAccount && connected && p.connectTargets.length > 0 && (
-                    <Button variant="ghost" size="sm" onClick={() => setDialog(p)}>
+                    <Button variant="ghost" size="sm" onClick={() => openConnect(p)}>
                       Connect another
                     </Button>
                   )}
@@ -1385,7 +1670,8 @@ export function Integrations({ teamId }: { teamId: string }) {
           provider={detail.provider}
           scopeId={detail.scopeId}
           connection={detail.connection}
-          onRotate={() => {
+          onRotate={(keys) => {
+            setRotation({ scopeId: detail.scopeId, held: keys });
             setDialog(detail.provider);
             setDetail(null);
           }}
@@ -1431,8 +1717,10 @@ export function Integrations({ teamId }: { teamId: string }) {
         <ConnectDialog
           teamId={teamId}
           provider={dialog}
-          rotate={false}
-          pickTarget={dialog.connectTargets}
+          rotate={rotation !== null}
+          held={rotation?.held}
+          // A rotation is of the connection it was opened on; a new connection picks its app.
+          {...(rotation ? { scopeId: rotation.scopeId } : { pickTarget: dialog.connectTargets })}
           onDone={() => {
             setDialog(null);
             setNonce((n) => n + 1);
@@ -1444,18 +1732,57 @@ export function Integrations({ teamId }: { teamId: string }) {
   );
 }
 
-/** One public certificate: its thumbprint and end, a download, and what to do with it. */
+/** The client secret's end the stored credential's summary names (`YYYY-MM-DD`), if it names one. */
+function clientSecretEnd(credential: ConnectionActivityView['credential']): string | undefined {
+  const v = credential.find((f) => f.key === 'clientSecretExpiresAt')?.value;
+  return v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T00:00:00.000Z` : undefined;
+}
+
+/** How far ahead an end nothing renews is warned of — the platform's own rotation window. */
+const EXPIRY_WARNING_DAYS = 30;
+
+/** #3281: what to do before an end the platform does not renew, by what ends. */
+const RENEW = {
+  certificate:
+    'Before then, generate a new pair, have its certificate uploaded to the app registration, and rotate this connection with it under "Your own certificate" — or rotate to "Platform-generated certificate", which keeps yours signing until Entra accepts the new one.',
+  'client secret':
+    'Before then, create a new one under Certificates & secrets → Client secrets → New, and rotate this connection with it and its new end date. Delete the old one from the app registration once the connection works.',
+} as const;
+
+/**
+ * #3281: the end of a credential the platform does not renew — a certificate the owner supplied,
+ * or a client secret whose end they gave. From 30 days out it is a warning saying what to do;
+ * until then, a line saying it.
+ */
+function ExpiryNotice({ notAfter, subject }: { notAfter: string; subject: keyof typeof RENEW }) {
+  const days = Math.floor((Date.parse(notAfter) - Date.now()) / 86_400_000);
+  const what = RENEW[subject];
+  if (days > EXPIRY_WARNING_DAYS) {
+    return <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>{what}</div>;
+  }
+  return (
+    <div style={{ ...card, padding: 10, marginTop: 8, borderColor: 'var(--status-warning-fg)', fontSize: 12, color: 'var(--text-secondary)' }}>
+      <div style={{ color: 'var(--status-warning-fg)', marginBottom: 4 }}>
+        {days < 0
+          ? `Your ${subject} expired on ${notAfter.slice(0, 10)} — this connection cannot sign in.`
+          : `Your ${subject} expires on ${notAfter.slice(0, 10)}, in ${days} day${days === 1 ? '' : 's'}.`}
+      </div>
+      {what}
+    </div>
+  );
+}
+
+/** One public certificate: its thumbprint and end, a download when it is ours to hand out, and what to do with it. */
 function CertificateCard({
   title,
   certificate,
   download,
-  filename,
   note,
 }: {
   title: string;
   certificate: CertificateView;
-  download: string;
-  filename: string;
+  /** Absent for a certificate the owner supplied: they hold it already. */
+  download?: { label: string; filename: string };
   note: string;
 }) {
   return (
@@ -1469,11 +1796,13 @@ function CertificateCard({
         <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
         <span style={{ color: 'var(--text-secondary)' }}>{certificate.notAfter.slice(0, 10)}</span>
       </div>
-      <div style={{ marginTop: 6 }}>
-        <Button variant="secondary" size="sm" onClick={() => downloadCertificate(certificate.pem, filename)}>
-          {download}
-        </Button>
-      </div>
+      {download && (
+        <div style={{ marginTop: 6 }}>
+          <Button variant="secondary" size="sm" onClick={() => downloadCertificate(certificate.pem, download.filename)}>
+            {download.label}
+          </Button>
+        </div>
+      )}
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>{note}</div>
     </>
   );

@@ -37,6 +37,43 @@ describe('parseProviderSecret with an optional field (#2100)', () => {
     expect(parseProviderSecret(m365, filled)).toEqual(filled);
   });
 
+  it('a choice is one of its values or left out; a field its choice hides is dropped (#3281)', () => {
+    const own = { ...filled, signInWith: 'own-certificate', ownPrivateKey: 'KEY', ownCertificate: 'CERT' };
+    expect(parseProviderSecret(m365, { ...own, clientSecret: 'S', rotateCertificate: 'yes' })).toEqual(own);
+    expect(parseProviderSecret(m365, { ...filled, signInWith: 'certificate', ownPrivateKey: 'KEY', rotateCertificate: 'yes' })).toEqual({
+      ...filled,
+      signInWith: 'certificate',
+      rotateCertificate: 'yes',
+    });
+    // Left out (a caller from before the choice), the client secret and the rotate flag are what they were before it.
+    expect(parseProviderSecret(m365, { ...filled, clientSecret: 'S', ownPrivateKey: 'KEY' })).toEqual({ ...filled, clientSecret: 'S' });
+    for (const v of ['password', '', 1]) expect(parseProviderSecret(m365, { ...filled, signInWith: v, ownPrivateKey: 'KEY' })).toEqual(filled);
+  });
+
+  it('a client secret and its end date go with the client-secret choice; an empty one is the connector\'s to judge (#3281)', () => {
+    const chosen = { ...filled, signInWith: 'client-secret' };
+    // Empty may be a rotation keeping the stored secret: only the connector knows, and refuses if none is.
+    expect(parseProviderSecret(m365, chosen)).toEqual(chosen);
+    expect(parseProviderSecret(m365, { ...chosen, clientSecret: 'S', clientSecretExpiresOn: '2027-05-31' })).toEqual({
+      ...chosen,
+      clientSecret: 'S',
+      clientSecretExpiresOn: '2027-05-31',
+    });
+    expect(parseProviderSecret(m365, { ...filled, signInWith: 'certificate', clientSecretExpiresOn: '2027-05-31' })).toEqual({
+      ...filled,
+      signInWith: 'certificate',
+    });
+  });
+
+  it('offers the three methods in order, the client secret first, each saying which stored summary key holds it (#3281)', () => {
+    const choice = m365.fields.find((f) => f.key === 'signInWith')!;
+    expect(choice.choices!.map((c) => [c.value, c.heldWhen])).toEqual([
+      ['client-secret', ['clientSecret']],
+      ['certificate', ['nextCertificate', 'certificateGenerated']],
+      ['own-certificate', ['certificateSupplied']],
+    ]);
+  });
+
   it('the door says the connection sends mail and carries a certificate', () => {
     expect(m365).toMatchObject({ sendsMail: true, certificate: true, grants: [] });
   });

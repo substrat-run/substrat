@@ -483,6 +483,12 @@ export const connectionCertificate = certificateView.extend({
    * in use, so a consumer that ignores this one still shows the truth, only not the next step.
    */
   next: certificateView.optional(),
+  /**
+   * #3281: the certificate in use is one the OWNER generated and supplied, not one the platform
+   * did. The platform does not renew it, so a consumer warns of its end rather than promising a
+   * rotation. Absent means generated, and on a plane that predates the choice.
+   */
+  supplied: z.boolean().optional(),
 });
 export type ConnectionCertificate = z.infer<typeof connectionCertificate>;
 

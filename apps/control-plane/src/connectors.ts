@@ -60,6 +60,7 @@ import {
 } from '@substrat-run/connector-woocommerce';
 import {
   MICROSOFT365_CONNECTION_GRANTS,
+  Microsoft365CertificateRefusal,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
   unbindMicrosoft365Scope,
@@ -732,7 +733,9 @@ const BOLAGSVERKET: ConnectorRegistration = {
  * certificate. The connection is saved before the tenant can upload that certificate, which is
  * why the connector reports "not on the app registration yet" as inconclusive. It also rotates
  * the certificate: within 30 days of its end it mints a successor beside it, and promotes the
- * successor on a later save once Entra accepts it (`prepareMicrosoft365`).
+ * successor on a later save once Entra accepts it (`prepareMicrosoft365`). Or it takes the owner's
+ * own pair (#3281): checked to be one RSA key and its certificate, sealed as a generated pair is,
+ * and never rotated by the platform.
  *
  * The channel folder is a binding (`bindScope`): the folder's drive path, resolved to its item id
  * when bound. Writes are a dispatch of `microsoft365.channel-files-requested`; reads are the
@@ -756,7 +759,16 @@ const MICROSOFT365: ConnectorRegistration = {
     probe: async (h, row) => probeMicrosoft365Connection(h, row, microsoft365Options(env)),
     credential: (h, row) => microsoft365CredentialSummary(h, row),
     probeCandidate: async (secret) => probeMicrosoft365Secret(secret, microsoft365Options(env)),
-    prepareCandidate: prepareMicrosoft365({ ...microsoft365Options(env), commonName: 'Substrat' }),
+    // #3281: an owner's own pair the connector will not store (not their key's certificate, an
+    // encrypted key, …) is a 422 in the connector's words, which never quote what was given.
+    prepareCandidate: async (candidate, previous) => {
+      try {
+        return await prepareMicrosoft365({ ...microsoft365Options(env), commonName: 'Substrat' })(candidate, previous);
+      } catch (err) {
+        if (err instanceof Microsoft365CertificateRefusal) throw new ConnectionRelayError(err.message, err.status);
+        throw err;
+      }
+    },
     certificate: (h, row) => microsoft365Certificate(h, row),
   }),
   dispatch: (env) => microsoft365FilesConnector(microsoft365Options(env)),

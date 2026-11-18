@@ -2,7 +2,7 @@
 // the props of the ones in the root export. Its own subpath, because the root export is
 // imported by apps that register no Web Awesome. An app using these imports
 // `@substrat-run/ui/wa/register` once and `@substrat-run/ui/wa.css` once.
-export { Button, Checkbox, Dropdown, IconButton, Input, Segmented, Select, SelectBox, Switch, Tabs, Textarea, UNSET_BUTTON } from './controls';
+export { Button, Checkbox, Dropdown, IconButton, Input, RadioGroup, Segmented, Select, SelectBox, Switch, Tabs, Textarea, UNSET_BUTTON } from './controls';
 export type {
   ButtonProps,
   CheckboxProps,
@@ -11,6 +11,7 @@ export type {
   FieldHandle,
   IconButtonProps,
   InputProps,
+  RadioGroupProps,
   SegmentedProps,
   SelectOption,
   SelectProps,

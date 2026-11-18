@@ -128,6 +128,14 @@ const integrationProviderForm = z.object({
   fields: z.array(z.object({
     key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
     optional: z.boolean().optional(), toggle: z.boolean().optional(),
+    // #3281: a choice, a field shown only for some of its values, and a field read from a file.
+    choices: z.array(z.object({
+      value: z.string(), label: z.string(), hint: z.string().optional(), heldWhen: z.array(z.string()).optional(),
+    })).optional(),
+    showWhen: z.object({ field: z.string(), values: z.array(z.string()) }).optional(),
+    requiredWhen: z.array(z.string()).optional(),
+    input: z.literal('date').optional(),
+    file: z.object({ accept: z.string() }).optional(),
   })),
   connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(),
 });
@@ -148,6 +156,8 @@ const integrationActivity = connectionActivity.extend({
   certificate: z.object({
     pem: z.string(), thumbprint: z.string(), notAfter: z.string(),
     next: z.object({ pem: z.string(), thumbprint: z.string(), notAfter: z.string() }).optional(),
+    /** #3281: the certificate in use is the owner's own; the platform does not renew it. */
+    supplied: z.boolean().optional(),
   }).nullable(),
   /** #2343: the addresses a send test may go from; empty for a provider that sends no mail. */
   mailSenders: z.array(z.string()),

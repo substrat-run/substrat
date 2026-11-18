@@ -11,6 +11,7 @@ import {
   processFacts,
   processProvenance,
   redact,
+  redactDocument,
   sweepsOf,
 } from '../src/explain.js';
 
@@ -48,6 +49,35 @@ describe('redact', () => {
   it('removes a PEM block whole', () => {
     const pem = '-----BEGIN ' + 'PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASC\n-----END ' + 'PRIVATE KEY-----';
     expect(redact(`could not parse ${pem} as PKCS#8`)).toBe('could not parse [key] as PKCS#8');
+  });
+
+  it('removes a PEM block cut off before its END line, base64 slashes and all (#3281)', () => {
+    const cut = '-----BEGIN ' + 'RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redact(`Unexpected token in "${cut}`)).toBe('Unexpected token in "[key]');
+  });
+
+  it('stops a cut-off PEM block at a blank line, and takes a JSON-escaped one whole (#3281)', () => {
+    const cut = '-----BEGIN ' + 'PRIVATE KEY-----\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redactDocument(`${cut}\n\nRetry after 502.`)).toBe('[key]\n\nRetry after 502.');
+    const escaped = '-----BEGIN ' + 'PRIVATE KEY-----\\nMIIEow/IBAAKC+AQEAu3/Xq9\\nab/cd';
+    expect(redact(`{"detail":"${escaped}"}`)).toBe('{"detail":"[key]"}');
+  });
+
+  it('takes a cut-off PEM body after a blank line inside the block, and keeps the paragraph after it (#3281)', () => {
+    const blankFirst = '-----BEGIN ' + 'PRIVATE KEY-----\n\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redactDocument(`${blankFirst}\n\nRetry after 502.`)).toBe('[key]\n\nRetry after 502.');
+    const legacy = '-----BEGIN ' + 'RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0A1B2C\n\nMIIEow/IBAAKC+AQEAu3/Xq9\nab/cd/ef';
+    expect(redactDocument(`${legacy}\n\nRetry after 502.`)).toBe('[key]\n\nRetry after 502.');
+    for (const text of [blankFirst, legacy]) expect(redact(text)).not.toMatch(/MIIEow|ab\/cd/);
+  });
+
+  it('takes a cut-off PEM serialized as JSON, LF or CRLF, and keeps what follows a serialized blank line (#3281)', () => {
+    for (const eol of ['\n', '\r\n']) {
+      const pem = ['-----BEGIN ' + 'PRIVATE KEY-----', 'MIIEow/IBAAKC+AQEAu3/Xq9', 'ab/cd'].join(eol);
+      expect(redact(JSON.stringify({ detail: pem }))).toBe('{"detail":"[key]"}');
+      const withParagraph = JSON.stringify({ detail: `${pem}${eol}${eol}Retry after 502.` });
+      expect(redact(withParagraph)).toBe(`{"detail":"[key]${JSON.stringify(eol + eol).slice(1, -1)}Retry after 502."}`);
+    }
   });
 
   it('keeps what a reader needs to find the occurrence: ids, timestamps, statuses, paths, versions', () => {

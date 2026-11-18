@@ -116,13 +116,57 @@ The site grant covers the whole site. The connector narrows it to the one channe
 ### 4. Connect it in the dashboard
 
 Open the app's **Integrations**, choose **Microsoft 365**, and enter the directory ID, client ID,
-sender addresses and site URL.
+sender addresses and site URL. Then pick how it signs in under **Sign in with**. Each is a
+complete choice; nothing is inferred from a field left empty.
 
-- **With a certificate (recommended):** leave the client secret empty. The platform generates a
-  keypair for this connection and keeps the private key; open the connection and **Download
-  certificate**, upload it under **Certificates & secrets → Certificates**, then **Test
-  connection**. The thumbprint Entra shows should match the one on the connection.
-- **With a client secret:** create one (at most 12 months) and paste it.
+1. **Client secret** — the quickest. Pick it to get going today. Microsoft generates it: in the app
+   registration, **Certificates & secrets → Client secrets → New**, then paste its **Value** (shown
+   only once). Give **Secret expires on**, the date Entra shows beside it: the secret itself carries
+   no end, and Microsoft does not tell the app, so this date is the only way the connection can
+   warn you (from 30 days before) to make a new one. A secret lives at most 24 months.
+2. **Platform-generated certificate** — the most secure. Pick it when you can upload one file to
+   the app registration. The platform generates a keypair for this connection and keeps the private
+   key, which never exists anywhere else: not on a laptop, in a mailbox, a ticket or a backup. After
+   saving, open the connection, **Download certificate**, upload it under **Certificates & secrets →
+   Certificates**, then **Test connection**. The thumbprint Entra shows should match the one on the
+   connection. It is renewed before it ends (see [Rotation](#rotation-and-revocation)).
+3. **Your own certificate** — pick it when your Entra admin has already uploaded a certificate you
+   generated, so no further round with them is needed. Give its private key and its `.cer`, each
+   from a file or pasted (below). The key existed on the machine that generated it, and on every
+   machine it was copied to on the way here, which is why the platform-generated certificate is the
+   more secure of the two. The platform does not renew yours.
+
+When you rotate a connection, **Sign in with** starts on the method it uses now, and a client
+secret, private key or certificate left empty keeps the one stored, so changing a sender does not
+mean retyping a secret. Pick another method to switch.
+
+#### Using your own certificate
+
+The pair must be an **RSA key of at least 2048 bits** and **its certificate**, still valid. Entra
+signs in with RSA certificates only.
+
+- **Private key:** a PEM file beginning `-----BEGIN PRIVATE KEY-----` (PKCS#8) or
+  `-----BEGIN RSA PRIVATE KEY-----` (PKCS#1), **unencrypted**. A password-protected key is refused,
+  because the platform has to be able to sign with it unattended. Export an unencrypted copy with
+  `openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-unencrypted.pem` (it asks for the password).
+  A `.pfx` or `.p12` holds both halves behind a password: split it with
+  `openssl pkcs12 -in cert.pfx -nocerts -nodes -out key.pem` and
+  `openssl pkcs12 -in cert.pfx -clcerts -nokeys -out cert.pem`.
+- **Certificate:** the `.cer` that was uploaded to the app registration, DER or PEM. A PEM file with
+  a chain is read for its first certificate, which must be the one Entra holds.
+
+The files are read in your browser and sent once to be checked and sealed with the connection.
+The platform checks that the key is the certificate's key, and refuses a pair that is not one,
+before anything is stored. The connection then shows the certificate's thumbprint (the one Entra
+shows under **Certificates & secrets**) and its end, marked as yours. The private key is never
+shown again, by the dashboard or anywhere else.
+
+**Then delete your local copy of the key.** Once **Test connection** signs in, the platform holds
+everything it needs, and any other copy is one more place the key can leak from. Delete the
+unencrypted file you made: `key-unencrypted.pem` from the `openssl pkcs8` export, or `key.pem` from
+splitting a `.pfx` (`rm` it, or move it to the trash and empty it). Delete any copy in Downloads,
+email or chat too. Keep the certificate if you like: it is public. If your
+organisation needs the key kept, keep it only in the encrypted form it came in.
 
 **Test connection** signs in and reads the site. "The certificate is not on the app registration
 yet" or "no access to the site yet" mean a step above is still to do; the connection is saved
@@ -263,6 +307,35 @@ the box ticked, so the one you downloaded stays the one to upload. The save that
 new certificate never generates another one, even with the box ticked: tick it on a later save if
 you want to rotate again.
 
-Switching the connection to a client secret drops both certificates and clears the expiry with
-them, since Microsoft does not report a client secret's end to the app. Disabling or deleting the
+### Client secrets
+
+The platform cannot renew a client secret: Microsoft makes it, in your directory. With **Secret
+expires on** given, the connection shows the date and, from 30 days before it, a warning. Before
+then, create a new secret, rotate the connection with it and its new date, then delete the old
+secret from the app registration. A new secret saved without a date clears the old date, since it
+described the old secret.
+
+### Your own certificate
+
+The platform **never renews a certificate you supplied**: no save, inside the 30-day window or with
+**Generate a new certificate now** ticked, generates one beside it. Its end is still the
+connection's expiry, and from 30 days before it the connection shows a warning. Before it ends,
+either:
+
+- **Supply a new pair.** Generate a new key and certificate, have the certificate uploaded to the
+  app registration, then rotate the connection with **Your own certificate** and the new files. The
+  new pair replaces the old one at once, so upload first, then save.
+- **Switch to a platform-generated certificate.** Rotate the connection with **Platform-generated
+  certificate**. The platform generates one beside yours, and yours keeps signing: download the
+  new certificate, upload it, and save again, exactly as in the steps above. Once Entra accepts it,
+  the connection switches and your key is dropped.
+
+Rotating with **Your own certificate** and the files left empty (to change a sender, say) leaves
+your certificate as it is.
+
+### Client secrets and revoking
+
+Switching the connection to a client secret drops both certificates; the connection's expiry
+becomes the secret's end date if you give one, and is cleared if you do not, since Microsoft does
+not report a client secret's end to the app. Disabling or deleting the
 app under **Enterprise applications** revokes everything at once.
