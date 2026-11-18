@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { connectionId, platformActorId, tenantId, type Connection } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { ulid, webCryptoSecretBox, type ScopeHost } from '@substrat-run/kernel';
 import { connectionInspectorsFor, type ConnectorEnv } from '../src/connectors.js';
 import scriptConfig from '../../../connectors/bolagsverket/wrangler.jsonc?raw';
 import { warmControlPlane } from './do-warmup.js';
@@ -165,6 +165,36 @@ describe('a connector run as its own script (docs/rfc/connector-scripts.md)', ()
       // Both sides ran each time: two provider calls each way.
       expect(inProcess).toHaveBeenCalledTimes(4);
       expect((await harness()).provider).toHaveLength(4);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps health writes out of both hop samples, whichever side is placed, and records only the placed one', async () => {
+    // A recorder this slow would move hopMs by ±2 × WRITE_MS if either sample timed the writes.
+    const WRITE_MS = 150;
+    const real = host();
+    const recorded: unknown[] = [];
+    const slow = {
+      admin: {
+        openConnection: (...a: Parameters<typeof real.admin.openConnection>) => real.admin.openConnection(...a),
+        recordConnectionUse: async (_id: unknown, use: unknown) => {
+          recorded.push(use);
+          await new Promise((resolve) => setTimeout(resolve, WRITE_MS));
+        },
+      },
+    } as unknown as ScopeHost;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      for (const placement of [REMOTE, {}]) {
+        recorded.length = 0;
+        expect(await bolagsverket({ ...placement, PROBE_CONNECTOR_HOP: 'bolagsverket' }).probe!(slow, await connection())).toMatchObject({ ok: true });
+        // The placed side's token mint and ping, once each; the shadow's are never recorded.
+        expect(recorded).toEqual([expect.objectContaining({ ok: true, status: 200 }), expect.objectContaining({ ok: true, status: 200 })]);
+      }
+      const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)) as { connector?: string; answeredBy: string; hopMs: number }).filter((l) => l.connector === 'connector-hop-probe');
+      expect(lines.map((l) => l.answeredBy)).toEqual(['script', 'in-process']);
+      for (const { hopMs } of lines) expect(Math.abs(hopMs)).toBeLessThan(WRITE_MS);
     } finally {
       log.mockRestore();
     }

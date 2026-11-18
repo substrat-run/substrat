@@ -10,7 +10,7 @@ import {
   type ConnectorCallTransportResult,
   type ConnectorScriptCallRequest,
 } from '@substrat-run/contracts';
-import { globalFetch, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
+import { globalFetch, settleConnectionUse, type FetchLike, type ScopeHost } from '@substrat-run/kernel';
 
 /**
  * A first-party connector run as its own deployed script (docs/rfc/connector-scripts.md, phase 1).
@@ -83,96 +83,115 @@ const failure = (error: string, refused = false): ConnectionProbe => ({
   error: error.slice(0, ERROR_MAX),
 });
 
-/** One call's timing: the control plane's wall clock, and the share the provider's calls took. */
+/**
+ * One call, timed and not yet persisted: the probe, the control plane's wall clock, the share the
+ * provider's calls took, and the uses those calls made. Nothing is recorded while the clock runs:
+ * persisting the uses is the caller's step, after it, so the hop probe compares the same work.
+ */
 interface Timed {
   probe: ConnectionProbe;
   totalMs: number;
   providerMs: number;
+  uses: ConnectionUseOutcomeWire[];
 }
+
+/** The tenant's live connection of this provider — the row the in-process probe opens — and its credential as strings. */
+async function openFor(host: ScopeHost, connection: Connection, provider: string) {
+  const open = await host.admin.openConnection(tenantIdSchema.parse(connection.tenantId), connection.vertical, provider);
+  if (!open) return { ok: false, refused: `no live '${provider}' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'` } as const;
+  const secret: Record<string, string> = {};
+  for (const [key, value] of Object.entries(open.secret as Record<string, unknown>)) {
+    if (typeof value !== 'string') return { ok: false, refused: `the stored credential holds a non-string value under '${key}'` } as const;
+    secret[key] = value;
+  }
+  return { ok: true, open, secret } as const;
+}
+type Opened = Extract<Awaited<ReturnType<typeof openFor>>, { ok: true }>;
+
+/** One call into the script, timed. Records nothing. */
+async function callScript(env: ConnectorScriptEnv, spec: ConnectorScriptSpec, tenantId: string | null, request: ConnectorScriptCallRequest): Promise<Timed> {
+  const started = Date.now();
+  const done = (probe: ConnectionProbe, uses: ConnectionUseOutcomeWire[] = []): Timed => ({
+    probe,
+    totalMs: Date.now() - started,
+    providerMs: uses.reduce((sum, u) => sum + (u.durationMs ?? 0), 0),
+    uses,
+  });
+  const calls = env.CONNECTOR_CALLS;
+  // Called as a method on the binding, never lifted off it: an RPC stub's method is a proxy.
+  if (!calls?.callScript) return done(failure(`${spec.provider} runs as a script here, and this control plane has no route to it (CONNECTOR_CALLS.callScript)`));
+  let answer: ConnectorCallTransportResult;
+  try {
+    answer = await calls.callScript({ script: connectorScriptName(spec.provider), tenantId, hosts: spec.hosts() }, request);
+  } catch (e) {
+    return done(failure(`the ${spec.provider} connector script did not answer: ${message(e)}`));
+  }
+  // A refusal of the call itself is the platform's failure, never the tenant's credential.
+  if (answer.status !== 200) {
+    const detail = (answer.body as { error?: unknown } | null)?.error;
+    return done(failure(`the ${spec.provider} connector script answered HTTP ${answer.status}${typeof detail === 'string' ? `: ${detail}` : ''}`));
+  }
+  const parsed = connectorCallResponse.safeParse(answer.body);
+  if (!parsed.success) return done(failure(`the ${spec.provider} connector script answered something that is not a connector-call response`));
+  const response = parsed.data;
+  if (!response.ok) return done(failure(response.error, response.refused), response.uses);
+  // Phase 1 carries no connector state, so a script that writes some is not one this plane runs.
+  if (response.state.length > 0) return done(failure(`the ${spec.provider} connector script wrote connector state, which a probe never does`), response.uses);
+  const probe = connectionProbe.safeParse(response.result);
+  return done(probe.success ? probe.data : failure(`the ${spec.provider} connector script answered a probe that does not read as one`), response.uses);
+}
+
+/** A stored connection's probe through the script, for an opened row. Records nothing. */
+function scriptProbe(env: ConnectorScriptEnv, spec: ConnectorScriptSpec, connection: Connection, { open, secret }: Opened): Promise<Timed> {
+  return callScript(env, spec, connection.tenantId, {
+    role: 'probe',
+    provider: spec.provider,
+    connection: {
+      id: open.id,
+      tenantId: connection.tenantId,
+      vertical: connection.vertical,
+      provider: spec.provider,
+      externalAccountRef: connection.externalAccountRef,
+      expiresAt: open.expiresAt === null ? null : instant.parse(open.expiresAt),
+      secret,
+    },
+    state: [],
+    config: spec.config(),
+  });
+}
+
+const scriptCandidate = (env: ConnectorScriptEnv, spec: ConnectorScriptSpec, secret: Record<string, string>): Promise<Timed> =>
+  // No connection exists yet, so no tenant is metered and there is nothing to record against.
+  callScript(env, spec, null, { role: 'probe-candidate', provider: spec.provider, secret, config: spec.config() });
 
 /**
- * The probes made through the script. `record: false` is the hop probe's shadow: the provider is
- * called, and nothing is recorded against the connection.
+ * One in-process probe of a credential, timed: the connector's candidate probe over a `fetch` that
+ * times each provider call and collects it as a use, exactly as the script reports its own. Records
+ * nothing, like the script side.
  */
-function scriptProbes(env: ConnectorScriptEnv, spec: ConnectorScriptSpec, record = true) {
-  const call = async (tenantId: string | null, request: ConnectorScriptCallRequest, onUses: (uses: ConnectionUseOutcomeWire[]) => Promise<void>): Promise<Timed> => {
+async function localCandidate(spec: ConnectorScriptSpec, secret: Record<string, string>): Promise<Timed> {
+  const uses: ConnectionUseOutcomeWire[] = [];
+  let providerMs = 0;
+  const timed: FetchLike = async (input, init) => {
     const started = Date.now();
-    const done = (probe: ConnectionProbe, providerMs = 0): Timed => ({ probe, totalMs: Date.now() - started, providerMs });
-    const calls = env.CONNECTOR_CALLS;
-    // Called as a method on the binding, never lifted off it: an RPC stub's method is a proxy.
-    if (!calls?.callScript) return done(failure(`${spec.provider} runs as a script here, and this control plane has no route to it (CONNECTOR_CALLS.callScript)`));
-    let answer: ConnectorCallTransportResult;
+    const settle = (settled: Parameters<typeof settleConnectionUse>[2]) => {
+      const ms = Math.max(0, Date.now() - started);
+      providerMs += ms;
+      const use = settleConnectionUse(spec.provider, ms, settled);
+      uses.push(use.ok ? use : { ...use, error: use.error.slice(0, ERROR_MAX) });
+    };
     try {
-      answer = await calls.callScript({ script: connectorScriptName(spec.provider), tenantId, hosts: spec.hosts() }, request);
-    } catch (e) {
-      return done(failure(`the ${spec.provider} connector script did not answer: ${message(e)}`));
-    }
-    // A refusal of the call itself is the platform's failure, never the tenant's credential.
-    if (answer.status !== 200) {
-      const detail = (answer.body as { error?: unknown } | null)?.error;
-      return done(failure(`the ${spec.provider} connector script answered HTTP ${answer.status}${typeof detail === 'string' ? `: ${detail}` : ''}`));
-    }
-    const parsed = connectorCallResponse.safeParse(answer.body);
-    if (!parsed.success) return done(failure(`the ${spec.provider} connector script answered something that is not a connector-call response`));
-    const response = parsed.data;
-    await onUses(response.uses);
-    const providerMs = response.uses.reduce((sum, u) => sum + (u.durationMs ?? 0), 0);
-    if (!response.ok) return done(failure(response.error, response.refused), providerMs);
-    // Phase 1 carries no connector state, so a script that writes some is not one this plane runs.
-    if (response.state.length > 0) return done(failure(`the ${spec.provider} connector script wrote connector state, which a probe never does`), providerMs);
-    const probe = connectionProbe.safeParse(response.result);
-    return done(probe.success ? probe.data : failure(`the ${spec.provider} connector script answered a probe that does not read as one`), providerMs);
-  };
-  return {
-    probe: async (host: ScopeHost, connection: Connection): Promise<Timed> => {
-      const started = Date.now();
-      try {
-        // The same row the in-process probe opens: the tenant's live connection of this provider.
-        const open = await host.admin.openConnection(tenantIdSchema.parse(connection.tenantId), connection.vertical, spec.provider);
-        if (!open) return { probe: failure(`no live '${spec.provider}' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`), totalMs: Date.now() - started, providerMs: 0 };
-        const secret: Record<string, string> = {};
-        for (const [key, value] of Object.entries(open.secret as Record<string, unknown>)) {
-          if (typeof value !== 'string') return { probe: failure(`the stored credential holds a non-string value under '${key}'`), totalMs: Date.now() - started, providerMs: 0 };
-          secret[key] = value;
-        }
-        const request: ConnectorScriptCallRequest = {
-          role: 'probe',
-          provider: spec.provider,
-          connection: { id: open.id, tenantId: connection.tenantId, vertical: connection.vertical, provider: spec.provider, externalAccountRef: connection.externalAccountRef, expiresAt: open.expiresAt === null ? null : instant.parse(open.expiresAt), secret },
-          state: [],
-          config: spec.config(),
-        };
-        const timed = await call(connection.tenantId, request, async (uses) => {
-          if (record) for (const use of uses) await host.admin.recordConnectionUse(open.id, use);
-        });
-        return { ...timed, totalMs: Date.now() - started };
-      } catch (e) {
-        return { probe: failure(`the probe could not run: ${message(e)}`), totalMs: Date.now() - started, providerMs: 0 };
-      }
-    },
-    // No connection exists yet, so nothing is recorded, and no tenant is metered.
-    probeCandidate: (secret: Record<string, string>): Promise<Timed> =>
-      call(null, { role: 'probe-candidate', provider: spec.provider, secret, config: spec.config() }, async () => {}),
-  };
-}
-
-/** A `fetch` that adds each call's duration to `sink.ms`. */
-function timedFetch(fetch: FetchLike, sink: { ms: number }): FetchLike {
-  return async (input, init) => {
-    const started = Date.now();
-    try {
-      return await fetch(input, init);
-    } finally {
-      sink.ms += Date.now() - started;
+      const response = await globalFetch(input, init);
+      settle({ response });
+      return response;
+    } catch (error) {
+      settle({ error });
+      throw error;
     }
   };
-}
-
-async function timeLocal(run: (fetch: FetchLike) => Promise<ConnectionProbe>): Promise<Timed> {
-  const sink = { ms: 0 };
   const started = Date.now();
-  const probe = await run(timedFetch(globalFetch, sink));
-  return { probe, totalMs: Date.now() - started, providerMs: sink.ms };
+  const probe = await spec.local(timed).probeCandidate(secret);
+  return { probe, totalMs: Date.now() - started, providerMs, uses };
 }
 
 /**
@@ -183,17 +202,34 @@ export function placedProbes(env: ConnectorScriptEnv, spec: ConnectorScriptSpec)
   const remote = runsAsScript(env, spec.provider);
   if (!listed(env.PROBE_CONNECTOR_HOP, spec.provider)) {
     if (!remote) return spec.local(globalFetch);
-    const script = scriptProbes(env, spec);
     return {
-      probe: async (host, connection) => (await script.probe(host, connection)).probe,
-      probeCandidate: async (secret) => (await script.probeCandidate(secret)).probe,
+      probe: async (host, connection) => {
+        try {
+          const opened = await openFor(host, connection, spec.provider);
+          if (!opened.ok) return failure(opened.refused);
+          const { probe, uses } = await scriptProbe(env, spec, connection, opened);
+          for (const use of uses) await host.admin.recordConnectionUse(opened.open.id, use);
+          return probe;
+        } catch (e) {
+          return failure(`the probe could not run: ${message(e)}`);
+        }
+      },
+      probeCandidate: async (secret) => (await scriptCandidate(env, spec, secret)).probe,
     };
   }
-  // The hop probe. The placed side answers and records; the shadow calls the provider and records
-  // nothing, so a stored connection's shadow runs as a candidate probe of its opened credential.
-  const placed = scriptProbes(env, spec, true);
-  const shadow = scriptProbes(env, spec, false);
-  const compare = async (role: 'probe' | 'probe-candidate', inProcess: () => Promise<Timed>, viaScript: () => Promise<Timed>): Promise<ConnectionProbe> => {
+
+  /**
+   * The hop probe. Both samples do the same work and only that work: one provider round over an
+   * already-opened credential, timed, with its uses collected and nothing persisted. Once both
+   * clocks have stopped, the placed side's uses are recorded against the connection, so health
+   * reads as one probe and its write latency is in neither sample.
+   */
+  const compare = async (
+    role: 'probe' | 'probe-candidate',
+    inProcess: () => Promise<Timed>,
+    viaScript: () => Promise<Timed>,
+    persist: (uses: ConnectionUseOutcomeWire[]) => Promise<void>,
+  ): Promise<ConnectionProbe> => {
     const scriptFirst = Math.random() < 0.5;
     const first = await (scriptFirst ? viaScript() : inProcess());
     const second = await (scriptFirst ? inProcess() : viaScript());
@@ -212,23 +248,29 @@ export function placedProbes(env: ConnectorScriptEnv, spec: ConnectorScriptSpec)
         agree: local.probe.ok === script.probe.ok && local.probe.refused === script.probe.refused,
       }),
     );
-    return (remote ? script : local).probe;
+    const placed = remote ? script : local;
+    await persist(placed.uses);
+    return placed.probe;
   };
   return {
-    probe: (host, connection) =>
-      compare(
-        'probe',
-        () =>
-          remote
-            ? timeLocal(async (fetch) => {
-                const open = await host.admin.openConnection(tenantIdSchema.parse(connection.tenantId), connection.vertical, spec.provider);
-                if (!open) return failure(`no live '${spec.provider}' connection`);
-                return spec.local(fetch).probeCandidate(open.secret as Record<string, string>);
-              })
-            : timeLocal((fetch) => spec.local(fetch).probe(host, connection)),
-        () => (remote ? placed : shadow).probe(host, connection),
-      ),
+    probe: async (host, connection) => {
+      try {
+        // Opened once, before either clock starts: both samples probe the same credential.
+        const opened = await openFor(host, connection, spec.provider);
+        if (!opened.ok) return failure(opened.refused);
+        return await compare(
+          'probe',
+          () => localCandidate(spec, opened.secret),
+          () => scriptProbe(env, spec, connection, opened),
+          async (uses) => {
+            for (const use of uses) await host.admin.recordConnectionUse(opened.open.id, use);
+          },
+        );
+      } catch (e) {
+        return failure(`the probe could not run: ${message(e)}`);
+      }
+    },
     probeCandidate: (secret) =>
-      compare('probe-candidate', () => timeLocal((fetch) => spec.local(fetch).probeCandidate(secret)), () => placed.probeCandidate(secret)),
+      compare('probe-candidate', () => localCandidate(spec, secret), () => scriptCandidate(env, spec, secret), async () => {}),
   };
 }
