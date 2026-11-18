@@ -30,12 +30,12 @@ import { DEV_SERVERS } from './dev-servers.js';
 // The runtime packages release together off one version line (the changesets `fixed`
 // group), so one constant is right for all of them. Engines do NOT share a line —
 // each versions on its own, so one pin per engine, deliberately.
-const SUBSTRAT = '^0.203.0';
-const ENGINE_WORKORDER = '^0.13.28';
-const ENGINE_INVOICING = '^0.11.87';
+const SUBSTRAT = '^0.204.0';
+const ENGINE_WORKORDER = '^0.13.29';
+const ENGINE_INVOICING = '^0.11.88';
 const BOUNDARY_LINT = '^0.9.2';
-const DEV_ISSUER = '^0.9.5';
-const ATTACHMENT_EXTRACTORS = '^0.2.64';
+const DEV_ISSUER = '^0.9.6';
+const ATTACHMENT_EXTRACTORS = '^0.2.65';
 
 export const TSCONFIG = `${JSON.stringify(
   {
