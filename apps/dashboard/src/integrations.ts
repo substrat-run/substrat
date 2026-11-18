@@ -236,7 +236,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     name: 'Bolagsverket',
     description:
       "Stores your app's Bolagsverket API client (the Companies Registration Office) as a connection, " +
-      'and Test connection checks that it can sign in and look organisations up.',
+      'so your app can look organisation numbers up. Test connection checks that it can sign in and look organisations up.',
     monogram: 'Bv',
     // The OAuth2 client Bolagsverket issues after a kundanmälan, keyed exactly as the
     // connector's `bolagsverketCredential` schema parses it. The connection mints its own
@@ -245,7 +245,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       { key: 'clientId', label: 'Client ID', secret: false, placeholder: 'From Bolagsverket, after the kundanmälan' },
       { key: 'clientSecret', label: 'Client secret', secret: true },
     ],
-    // Empty, as `BOLAGSVERKET_CONNECTION_GRANTS` is: v1 lands nothing in a scope.
+    // Empty, as `BOLAGSVERKET_CONNECTION_GRANTS` is: a lookup lands through the operation the app's
+    // `connections` landing declares, and the platform grants that declaration's key.
     grants: [],
     // No `accountRefField`: one client per app, and a re-paste rotates it in place.
   },

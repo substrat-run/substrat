@@ -80,7 +80,9 @@ Bolagsverket
   `REMOTE_CONNECTORS`, the two probes go through the script (`placedProbes` in
   `apps/control-plane/src/connector-scripts.ts`); without it they run in-process, exactly as before.
   The credential summary (a read of the platform's own store) and the sweep (a no-op that calls
-  nothing) stay in-process either way. Bolagsverket has no dispatch, so "its operations" are the probes.
+  nothing) stay in-process either way. So does the organisation lookup dispatch, added after the pilot
+  shipped: `dispatch` is a scoped role, which phase 1 does not carry (§3.5), so "its operations" here
+  are the probes.
 
 ### 3.2 Credentials and configuration travel per call
 

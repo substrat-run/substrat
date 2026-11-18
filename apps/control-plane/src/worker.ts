@@ -2634,7 +2634,7 @@ async function drainOneScope(
       // legitimate can enqueue one.
       ...Object.fromEntries(
         CONNECTORS.flatMap((connector) => {
-          const dispatch = connector.dispatch?.(env);
+          const dispatch = connector.dispatch?.(env, host);
           if (!dispatch) return [];
           return [[
             connectorDispatchKind(connector.provider),

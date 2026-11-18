@@ -26,11 +26,61 @@ control plane registers:
   client credential names no account, so both report the environment and the granted
   scopes. A client granted the ping scope but not `vardefulla-datamangder:read` fails the
   probe, since it would fail every lookup.
-- `sweepBolagsverket`: a no-op. Nothing is bound to a connection in v1.
+- `bolagsverketConnector`: the dispatch. It looks a number up and lands the answer in the
+  scope that asked (below).
+- `bindBolagsverketScope`, `listBolagsverketBindings`, `unbindBolagsverketScope`: where a
+  scope's answers land. The platform's connector pass calls them from the vertical's
+  declaration.
+- `sweepBolagsverket`: a no-op. A binding only says where answers land, and the dispatch
+  lands them, so there is nothing to re-read.
 
-There is no dispatch yet, so a vertical cannot ask for a validation through the platform.
-That is the next step. The control plane uses production unless `BOLAGSVERKET_ENV=test`;
-`BOLAGSVERKET_TOKEN_URL` and `BOLAGSVERKET_API_BASE` override the hosts.
+The control plane uses production unless `BOLAGSVERKET_ENV=test`; `BOLAGSVERKET_TOKEN_URL`
+and `BOLAGSVERKET_API_BASE` override the hosts.
+
+### Looking a number up from a vertical
+
+A vertical asks for a lookup by emitting an event, and gets the answer as a call to one of
+its own operations, made as the connection. Three pieces, all in the vertical:
+
+1. **Ask.** An operation emits `bolagsverket.organisation-lookup-requested`
+   (`BOLAGSVERKET_LOOKUP_REQUESTED`) with a payload `bolagsverketLookupRequested` parses:
+   the vertical's own `requestId`, the `organisationNumber`, and optionally the `subject`
+   (an `EntityRef`, such as the customer the number belongs to), which comes back unchanged.
+   Check the number with `parseOrgnr` first: a personnummer is refused and never sent to
+   Bolagsverket, but the event that carried it is already in the scope's outbox.
+
+   ```ts
+   ctx.emit({
+     type: BOLAGSVERKET_LOOKUP_REQUESTED,
+     schemaVersion: 1,
+     entity: { entityType: 'customer', entityId: customerId },
+     piiClass: 'none',
+     payload: { requestId, organisationNumber, subject: { entityType: 'customer', entityId: customerId } },
+   });
+   ```
+
+2. **Say where the answer lands.** The module manifest declares a connection landing:
+
+   ```ts
+   connections: [{ provider: 'bolagsverket', operation: 'crm/record-organisation-lookup', permission: 'crm:organisation-lookup:record' }],
+   ```
+
+   The platform's connector pass grants that key to each live Bolagsverket connection and
+   binds it to every primary, active install. The operation receives a
+   `bolagsverketLookupLanding`: `requestId`, `subject`, `connectionId`, `checkedAt`, an
+   `outcome` of `found`, `not_found`, `invalid` (with `reason` `format`, `checksum` or
+   `personnummer`) or `refused` (Bolagsverket turned the tenant's client away), and the
+   `result` for `found` and `not_found`. It should upsert on `requestId`: delivery is at
+   least once.
+
+3. **Route the event.** The vertical's scope host registers it for routing only, so a
+   delivery becomes a `connector:bolagsverket` platform intent:
+   `declareBolagsverketConnector(host)`, beside `declareScriveConnector(host)` if it has one.
+
+The router kicks the platform's drain as soon as the request commits, so the answer usually
+lands within seconds. A rate limit or an outage lands nothing and is retried by the drain. A
+lookup that arrives before the connector pass has bound the scope waits for it too (the pass
+runs every 15 minutes). There is no caching yet: every request is a call to Bolagsverket.
 
 ### As its own script (pilot)
 
@@ -38,7 +88,7 @@ The package also ships a Worker entry, `src/script.ts`, that serves the connecto
 platform's connector call contract, deployed by `wrangler.jsonc` into the dispatch namespace as
 `substrat-connector-bolagsverket`. The control plane calls it through the router only when
 `REMOTE_CONNECTORS` names `bolagsverket`, which no environment does; otherwise everything above runs
-in-process as before. It declares no binding: the credential and the configuration arrive in each call.
+in-process as before. The lookup dispatch always runs in-process. It declares no binding: the credential and the configuration arrive in each call.
 See [docs/rfc/connector-scripts.md](../../docs/rfc/connector-scripts.md), phase 1.
 
 ## What it is

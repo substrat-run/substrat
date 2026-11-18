@@ -16,8 +16,9 @@ import type { Fetch } from './token.js';
 export const BOLAGSVERKET_PROVIDER = 'bolagsverket';
 
 /**
- * The standing grants a connection needs: none yet. A grant is for the return path, the
- * operation a result is landed through, and v1 lands nothing: there is no dispatch.
+ * The standing grants a connection needs: none. A lookup lands through the operation a
+ * vertical declares in its `connections` landing, and the platform grants that declaration's
+ * key to the connection, so there is no key every Bolagsverket connection holds.
  */
 export const BOLAGSVERKET_CONNECTION_GRANTS = [] as const;
 
@@ -126,8 +127,8 @@ export async function bolagsverketCredentialSummary(
 }
 
 /**
- * The poll floor every registration has. Nothing is bound to a Bolagsverket connection in
- * v1, so there is nothing to re-read and the provider is not called.
+ * The poll floor every registration has. A binding only says where a lookup's answer lands,
+ * and the dispatch lands it, so there is nothing to re-read and the provider is not called.
  */
 export async function sweepBolagsverket(): Promise<{ found: number; failed: never[] }> {
   return { found: 0, failed: [] };
