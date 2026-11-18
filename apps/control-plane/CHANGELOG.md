@@ -1,5 +1,44 @@
 # @substrat-run/control-plane
 
+## 0.19.4
+
+### Patch Changes
+
+- 7892b6b: A connection probe and a connection's activity can now say what its consent covers (`consent: { granted, missing, checkedAt }`). A non-empty `missing` means the connection needs a new consent round, not new keys.
+
+  Fortnox reads the scopes each token mint names. A consent missing a scope the platform asks for shows as "needs re-consent", never as a refused credential. The probe reports it without refusing, and the sweep fails only the bindings that need the missing scopes, with a readable reason and no 403. `completeFortnoxConsent` returns `grantedScopes`, and its `financialYears` is `null` when the consent has no `bookkeeping` scope.
+
+  The dashboard's connection view shows **Needs re-consent** with the missing scopes and a **Re-consent** button that starts the usual consent round. The consent callback names a shortfall, and passes it back to a vertical as `missing`.
+
+- ef4631e: Mail-in addresses have abuse limits: `MAIL_IN_MAX_MESSAGES_PER_HOUR` (60) and `MAIL_IN_MAX_BYTES_PER_DAY` (250 MiB) per address, refused at SMTP time past either.
+- d8530ae: An app's mail-in address in the dashboard: Settings → Integrations shows it with its counts, and a team owner or admin can get, replace or turn it off and set who may send. The control-plane API gains `GET`/`POST /tenants/:t/scopes/:s/mail-in` over a host-injected `mailIn` door, and contracts gain `mailInAddressAct` and `mailInStanding`.
+- 44ce6fd: A managed tenant's sign-in client is registered once at its manager's auth server, keyed by its scope, so a retried `provision-tenant` reuses it. Deleting the tenant takes it off that auth server's account pages, and reaping it removes its client there too (#3261).
+- 54fbd42: The model host takes `stream: true`: the reply is streamed and assembled into the same run and usage line, so an upstream that closes a long unstreamed call keeps a streamed one open; a stream that fails partway throws the provider's own error and records nothing. An OpenAI-compatible row asks for usage on a streamed call. The code review reader streams its call and has a higher output cap.
+- ae93c40: The code review reader's S3 rule names each source and the artifacts it emits, and no longer flags a source change that ships its re-emitted artifacts.
+- b59a4af: Code reviews are shown priced at zero beside what they would cost. The model-usage summary takes the scopes whose lines are zero-rated, and each row and the totals carry `zeroRatedCalls` and `zeroRatedUsd`, left out of `billedUsd`. A team's usage gains a `reviews` block (tokens, would-be cost, charged), which the dashboard's Billing page shows as "free in preview". The console's model-usage table shows the zero-rated amount.
+- f642a08: An Auth Server install can ask the platform to register it for platform-provided social sign-in itself (#1544). Opening its Connections page asks when it holds no relay client or lacks a provider the relay serves, at most once an hour, and a "Set up platform sign-in" button asks on demand and shows what the platform answered. The platform reconciles only the calling install's own scope, and never rotates the secret of an install that says it already holds a client.
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [54fbd42]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+  - @substrat-run/connector-fortnox@0.8.0
+  - @substrat-run/control-plane-api@0.202.0
+  - @substrat-run/vertical-host@0.202.0
+  - @substrat-run/model-providers@0.5.92
+  - @substrat-run/kernel@0.202.0
+  - @substrat-run/adapter-cloudflare@0.202.0
+  - @substrat-run/connector-bolagsverket@0.0.25
+  - @substrat-run/connector-mail-in@0.1.39
+  - @substrat-run/connector-microsoft365@0.0.63
+  - @substrat-run/connector-planima@0.2.99
+  - @substrat-run/connector-scrive@0.15.4
+  - @substrat-run/connector-stripe@0.0.4
+  - @substrat-run/connector-woocommerce@0.0.8
+
 ## 0.19.3
 
 ### Patch Changes

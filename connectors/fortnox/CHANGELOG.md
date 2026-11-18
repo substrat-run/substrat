@@ -1,5 +1,26 @@
 # @substrat-run/connector-fortnox
 
+## 0.8.0
+
+### Minor Changes
+
+- 7892b6b: A connection probe and a connection's activity can now say what its consent covers (`consent: { granted, missing, checkedAt }`). A non-empty `missing` means the connection needs a new consent round, not new keys.
+
+  Fortnox reads the scopes each token mint names. A consent missing a scope the platform asks for shows as "needs re-consent", never as a refused credential. The probe reports it without refusing, and the sweep fails only the bindings that need the missing scopes, with a readable reason and no 403. `completeFortnoxConsent` returns `grantedScopes`, and its `financialYears` is `null` when the consent has no `bookkeeping` scope.
+
+  The dashboard's connection view shows **Needs re-consent** with the missing scopes and a **Re-consent** button that starts the usual consent round. The consent callback names a shortfall, and passes it back to a vertical as `missing`.
+
+### Patch Changes
+
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+  - @substrat-run/kernel@0.202.0
+
 ## 0.7.25
 
 ### Patch Changes

@@ -1,5 +1,25 @@
 # @substrat-run/vertical-host
 
+## 0.202.0
+
+### Minor Changes
+
+- 54fbd42: The model host takes `stream: true`: the reply is streamed and assembled into the same run and usage line, so an upstream that closes a long unstreamed call keeps a streamed one open; a stream that fails partway throws the provider's own error and records nothing. An OpenAI-compatible row asks for usage on a streamed call. The code review reader streams its call and has a higher output cap.
+
+### Patch Changes
+
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [54fbd42]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+  - @substrat-run/model-providers@0.5.92
+  - @substrat-run/kernel@0.202.0
+  - @substrat-run/vertical-auth@0.37.3
+
 ## 0.201.0
 
 ### Patch Changes

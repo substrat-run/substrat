@@ -1,5 +1,28 @@
 # @substrat-run/builder
 
+## 0.14.6
+
+### Patch Changes
+
+- 658d3fa: A builder release no longer stops a source build in flight: the sandbox container's rollout leaves any sandbox younger than an hour on its current image until it ends, so a push that starts while a release rolls out finishes instead of failing with "the source build stopped unexpectedly". To keep every build inside that hour, a source build now has a 45-minute limit, and one that runs past it fails with "the build ran past its 45-minute limit" (#3259).
+- Updated dependencies [7892b6b]
+- Updated dependencies [ef4631e]
+- Updated dependencies [d8530ae]
+- Updated dependencies [44ce6fd]
+- Updated dependencies [54fbd42]
+- Updated dependencies [b59a4af]
+- Updated dependencies [f642a08]
+  - @substrat-run/contracts@0.202.0
+  - @substrat-run/control-plane-api@0.202.0
+  - @substrat-run/model-providers@0.5.92
+  - @substrat-run/kernel@0.202.0
+  - @substrat-run/adapter-cloudflare@0.202.0
+  - @substrat-run/engine-assistant@0.1.54
+  - @substrat-run/engine-metering@0.6.86
+  - @substrat-run/builder-workspace@0.13.18
+  - @substrat-run/cli@0.60.4
+  - @substrat-run/builder-generator@0.12.19
+
 ## 0.14.5
 
 ### Patch Changes
