@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Vertical, VerticalSource } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, RequestError, Select, Skeleton, SkeletonRegion, Table, Tag, useRequest, valueOr } from '../components';
+import { Badge, Button, Card, Dialog, Input, RequestError, Select, Skeleton, SkeletonRegion, Table, Tag, requestOk, settleFailure, useRequest, valueOr } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
@@ -35,6 +35,18 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
   // mutation keeps the rows shown, so a flag flip re-resolves the detail without a flash.
   const registry = useRequest(() => walkAll((p) => api.listVerticals(p)), [api]);
   const verticals = valueOr(registry.state, NONE);
+  // The re-read after a mutation (here or in the detail). `registry.reload` would keep the
+  // rows and say nothing when it fails, so the vertical just registered would stay missing
+  // with no word why. This keeps the rows too, and says so — what the detail does when its
+  // own re-walk fails.
+  async function refresh() {
+    try {
+      registry.set(requestOk(await walkAll((p) => api.listVerticals(p))));
+    } catch (e) {
+      registry.set(settleFailure<Vertical[]>(e));
+      onToast('Failed to refresh verticals', (e as Error).message, 'danger');
+    }
+  }
   const [q, setQ] = useState('');
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -58,7 +70,7 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     try {
       await fn();
-      void registry.reload();
+      void refresh();
       onToast(title, detail);
     } catch (e) {
       onToast('Refused', (e as Error).message, 'danger');
@@ -135,7 +147,7 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
         api={api}
         vertical={resolved}
         onBack={onBack}
-        onChanged={() => void registry.reload()}
+        onChanged={() => void refresh()}
         onOpenFailures={onOpenFailures}
         onToast={onToast}
       />
