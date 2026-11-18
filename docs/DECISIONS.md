@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-134 decisions · 73 plan · 61 kernel
+135 decisions · 73 plan · 62 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -146,3 +146,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-61](decisions/K-061-an-operation-reads-the-callers-verified-address-from-the-platform-and-a-share-can-name-an-address.md) | 2026-11-07 | kernel | An operation reads the caller's verified address from the platform, and a share can name an address | #1359 |
 | [D-72](decisions/D-072-a-managed-tenant-signs-in-at-its-provisioner-s-team-auth-server-and-the-platform-registers-its-client-and-place-there.md) | 2026-11-16 | plan | A managed tenant may sign in at its provisioner's team auth-server, and the platform registers its client and its place there <br>*awaiting ratification* <br>*amends D-62* | #3202 |
 | [D-73](decisions/D-073-a-connector-is-its-own-deployable-unit-with-one-call-contract.md) | 2026-11-18 | plan | A connector is its own deployable unit with one call contract, and where it runs is a choice <br>*awaiting ratification* <br>*amends D-64* | #2855 |
+| [K-62](decisions/K-062-an-operation-does-not-await-an-outside-call-inside-its-transaction.md) | 2026-11-18 | kernel | An operation does not await an outside call inside its transaction; an exchange that decides a commit is an attempt committed before the request leaves <br>*awaiting ratification* | #3289 |
