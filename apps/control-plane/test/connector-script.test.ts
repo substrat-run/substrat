@@ -117,6 +117,10 @@ describe('a connector run as its own script (docs/rfc/connector-scripts.md)', ()
       refused: true,
       error: expect.stringMatching(/not granted vardefulla-datamangder:read/),
     });
+    // A refusal whose text runs past the display limit is still a refusal, as it is in-process.
+    const long = await bolagsverket(REMOTE).probeCandidate!(candidate('long-refusal-client'));
+    expect(long).toMatchObject({ ok: false, refused: true, error: expect.stringMatching(/^Bolagsverket token mint failed: client unknown: x+$/) });
+    expect(long.error).toHaveLength(600);
     await harness('/undeploy');
     expect(await bolagsverket(REMOTE).probeCandidate!(candidate('candidate-client'))).toMatchObject({
       ok: false,

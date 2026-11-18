@@ -45,7 +45,8 @@ const harnessBinding = async (request: Request): Promise<Response> => {
 };
 /**
  * Bolagsverket, as this suite answers it: a token per client id (`refused-client` is turned away,
- * `ping-only-client` is granted the ping scope alone) and a health ping.
+ * `long-refusal-client` too with a 700-character description, `ping-only-client` is granted the
+ * ping scope alone) and a health ping.
  */
 const provider = async (request: Request): Promise<Response> => {
   const url = new URL(request.url);
@@ -54,6 +55,8 @@ const provider = async (request: Request): Promise<Response> => {
   harness.provider.push({ host: url.hostname, path: url.pathname, clientId, authorization: request.headers.get('authorization') });
   if (url.pathname.endsWith('/oauth2/token')) {
     if (clientId === 'refused-client') return Response.json({ error: 'invalid_client' }, { status: 401 });
+    // A refusal whose description runs past what a probe may display (600 characters).
+    if (clientId === 'long-refusal-client') return Response.json({ error: 'invalid_client', error_description: `client unknown: ${'x'.repeat(700)}` }, { status: 401 });
     const scope = clientId === 'ping-only-client' ? 'vardefulla-datamangder:ping' : 'vardefulla-datamangder:read vardefulla-datamangder:ping';
     return Response.json({ access_token: `token-for-${clientId}`, token_type: 'Bearer', expires_in: 3600, scope });
   }

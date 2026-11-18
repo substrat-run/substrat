@@ -137,8 +137,34 @@ async function callScript(env: ConnectorScriptEnv, spec: ConnectorScriptSpec, te
   if (!response.ok) return done(failure(response.error, response.refused), response.uses);
   // Phase 1 carries no connector state, so a script that writes some is not one this plane runs.
   if (response.state.length > 0) return done(failure(`the ${spec.provider} connector script wrote connector state, which a probe never does`), response.uses);
-  const probe = connectionProbe.safeParse(response.result);
+  const probe = connectionProbe.safeParse(clippedForDisplay(response.result));
   return done(probe.success ? probe.data : failure(`the ${spec.provider} connector script answered a probe that does not read as one`), response.uses);
+}
+
+const clip = (value: unknown, max: number): unknown => (typeof value === 'string' && value.length > max ? value.slice(0, max) : value);
+
+/**
+ * A probe's display text, bounded to what `connectionProbe` admits, before it is parsed. In-process a
+ * probe is handed on unparsed, so a provider's long `error_description` on a refusal still reads as
+ * refused; through the script it is parsed, and without this the same refusal would fail the parse and
+ * come back inconclusive, which a connect or a rotation does not stop on. Only text a person reads is
+ * clipped: `ok` and `refused` are held strictly, and `accountRef`, an identity, is never shortened.
+ */
+function clippedForDisplay(result: unknown): unknown {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  const r = result as Record<string, unknown>;
+  return {
+    ...r,
+    error: clip(r.error, ERROR_MAX),
+    accountLabel: clip(r.accountLabel, 200),
+    ...(Array.isArray(r.facts)
+      ? {
+          facts: r.facts.slice(0, 16).map((f: unknown) =>
+            f !== null && typeof f === 'object' ? { ...(f as Record<string, unknown>), label: clip((f as { label?: unknown }).label, 80), value: clip((f as { value?: unknown }).value, 400) } : f,
+          ),
+        }
+      : {}),
+  };
 }
 
 /** A stored connection's probe through the script, for an opened row. Records nothing. */
