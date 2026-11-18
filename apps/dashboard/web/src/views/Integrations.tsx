@@ -1236,7 +1236,32 @@ export function Integrations({ teamId }: { teamId: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
   const [detail, setDetail] = useState<{ provider: AccountIntegration; scopeId: string; connection: ConnectionView } | null>(null);
+  // Addressed by the connection's own id, through one app it serves — the same door the app
+  // panel's fleet rows use, and the one that still answers once the vertical stopped declaring it.
+  const [disconnect, setDisconnect] = useState<{
+    provider: AccountIntegration;
+    scopeId: string;
+    connection: AccountIntegration['connections'][number];
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
   const [nonce, setNonce] = useState(0);
+
+  const confirmDisconnect = async () => {
+    if (!disconnect || busy) return;
+    setBusy(true);
+    try {
+      await teamApi(teamId).disconnectAppConnection({
+        scopeId: disconnect.scopeId,
+        provider: disconnect.provider.provider,
+        connectionId: disconnect.connection.id,
+      });
+    } catch {
+      // The refetch below shows the surviving state either way.
+    }
+    setBusy(false);
+    setDisconnect(null);
+    setNonce((n) => n + 1);
+  };
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -1267,6 +1292,9 @@ export function Integrations({ teamId }: { teamId: string }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16 }}>
           {view.map((p) => {
             const connected = p.connections.length > 0;
+            // A vertical-defined provider no vertical declares any more: no form to connect or
+            // rotate with, and nothing to inspect — the one thing left is withdrawing it.
+            const formless = p.fields.length === 0;
             return (
               <div key={p.provider} style={{ ...card, padding: 16, display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 <Monogram text={p.monogram} />
@@ -1286,9 +1314,14 @@ export function Integrations({ teamId }: { teamId: string }) {
                         </span>
                         {/* Detail is per-APP because the routes are: a connection is keyed to a
                             vertical, and any app of that vertical is a valid door to it. */}
-                        {c.apps[0] && (
+                        {c.apps[0] && !formless && (
                           <Button variant="ghost" size="sm" onClick={() => setDetail({ provider: p, scopeId: c.apps[0]!.scopeId, connection: c })}>
                             Details
+                          </Button>
+                        )}
+                        {c.apps[0] && (
+                          <Button variant="ghost" size="sm" onClick={() => setDisconnect({ provider: p, scopeId: c.apps[0]!.scopeId, connection: c })}>
+                            Disconnect
                           </Button>
                         )}
                       </div>
@@ -1304,8 +1337,8 @@ export function Integrations({ teamId }: { teamId: string }) {
                   {/* Manage used to open the empty connect form, which read as "your
                       credentials are gone". A connected provider opens its detail; the
                       rotate form is one click further in, where replacing a credential
-                      belongs. */}
-                  <Button
+                      belongs. A formless card has neither: its rows' Disconnect is all. */}
+                  {!formless && <Button
                     variant="secondary"
                     size="sm"
                     onClick={() => {
@@ -1317,7 +1350,7 @@ export function Integrations({ teamId }: { teamId: string }) {
                     disabled={p.connectTargets.length === 0 && !connected}
                   >
                     {connected ? 'Manage' : 'Connect'}
-                  </Button>
+                  </Button>}
                   {/* A fleet provider (#1267) keeps growing: Manage opens one company, so
                       adding the next one needs its own door. */}
                   {p.multiAccount && connected && p.connectTargets.length > 0 && (
@@ -1348,6 +1381,26 @@ export function Integrations({ teamId }: { teamId: string }) {
           }}
         />
       )}
+
+      <Dialog
+        open={!!disconnect}
+        title={disconnect ? `Disconnect ${disconnect.connection.label}` : ''}
+        confirmLabel={busy ? 'Disconnecting…' : 'Disconnect'}
+        danger
+        onCancel={() => setDisconnect(null)}
+        onConfirm={confirmDisconnect}
+      >
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+          {disconnect && (
+            <>
+              The stored {disconnect.provider.name} credential is deleted and every grant it carried is revoked — this cannot
+              be undone. Every app it serves loses it
+              {disconnect.connection.apps.length > 0 ? ` (${disconnect.connection.apps.map((a) => a.name).join(', ')})` : ''}.
+              Deliveries already queued stay queued and resume if it is connected again.
+            </>
+          )}
+        </div>
+      </Dialog>
 
       {dialog && (
         <ConnectDialog
