@@ -701,6 +701,13 @@ so the shorthand puts the login callback on the API's port. Nine of eleven demo 
 carried it and every suite stayed green, because a scenario drives the module and never
 reaches `server.ts`, #1388. A whole file opts out with `vite-proxy-allow: <reason>` —
 `demos/auth-server` does, taking its origin from `PORT` instead),
+`lint:workspace-cli` (`tools/workspace-cli.mjs`, fixtures via `pnpm test:workspace-cli`: a workflow
+in this repo runs the CLI built from its checkout, `node packages/cli/dist/cli.js`, never a registry
+`@substrat-run/cli` or `@substrat-run/boundary-lint`. `substrat push` gates on the layer rules its
+bundled boundary-lint carries, so a registry CLI judges main by the last release's rules while
+`lint:boundaries` judges it by main's: #3274 added a harness entry, passed CI, and the auth-server
+deploy's push refused the same file. A line that must read the registry says why with
+`# workspace-cli-allow: <reason>`),
 `lint:invocation-log` (`tools/invocation-log.mjs`: a **deployable** vertical — one that
 declares `substrat.slug` and ships a `src/worker.ts`, plus the scaffold template — mounts
 `app.use('*', invocationLog({ routerSecret: … }))` as the **first** registration on its

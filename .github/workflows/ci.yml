@@ -132,6 +132,13 @@ jobs:
       # sign-in and every suite was green: a scenario drives the module and never
       # reaches `server.ts` (#1388). Only a source check can see this.
       - run: pnpm lint:vite-proxy
+      # A workflow here runs the CLI built from this checkout, never `npx @substrat-run/cli`:
+      # `substrat push` gates on the layer rules its bundled boundary-lint carries, so a
+      # registry CLI judges main by the LAST RELEASE's rules while the lint:boundaries above
+      # judges it by main's. #3274 added a harness entry, passed here, and the auth-server
+      # deploy's push refused the same file as R3. The scanner's fixtures run first.
+      - run: pnpm test:workspace-cli
+      - run: pnpm lint:workspace-cli
       # A LIKE or GLOB pattern over 50 bytes runs on node, where the limit is 50 000, and
       # fails on a Durable Object, where it is 50 — `LIKE or GLOB pattern too complex`, on
       # every hosted call, with every suite green (#1646, #1655). This reads the source for
